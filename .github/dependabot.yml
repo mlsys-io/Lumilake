@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["ci"]
+    # Wait 7 days after an action is released before bumping. Protects
+    # against actively-malicious releases and 0-days in fresh versions.
+    cooldown:
+      default-days: 7

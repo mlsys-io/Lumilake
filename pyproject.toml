@@ -1,0 +1,144 @@
+[project]
+name = "lumilake"
+version = "0.1.0"
+description = "Optimizing Agentic Workflows Execution for Lakehouse"
+readme = "README.md"
+requires-python = "<3.13,>=3.12"
+dependencies = [
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi[standard]>=0.115.6",
+    "openai>=1.58.1",
+    "backoff>=2.2.1",
+    "requests>=2.32.3",
+    "urllib3>=2.7.0",
+    "aiohttp>=3.11.11",
+    "shortuuid>=1.0.13",
+    "pandas>=2.2.3",
+    "minio>=7.2.8",
+    "networkx[default]>=3.4.2",
+    "matplotlib>=3.10.1",
+    "cachetools>=6.2.0",
+    "dill>=0.4.0",
+    "psycopg[binary]>=3.2.0",
+    "psycopg-pool>=3.2.0",
+    "sqlglot>=26.30.0",
+    "rich>=13.6.0",
+    "tabulate>=0.9.0",
+    "lumid-hooks==0.1.0",
+    "flowmesh-sdk==0.1.0",
+    "lumid-data-sdk==0.1.0",
+]
+deploy = [
+    "lumilake[server]",
+    "docker>=7.1.0",
+    "pyyaml>=6.0",
+    "flowmesh-sdk-stack==0.1.0",
+    "flowmesh-cli==0.1.0",
+    "flowmesh-cli-stack==0.1.0",
+]
+cli = [
+    "typer>=0.12.5",
+    "lumilake[deploy]",
+]
+sdk = [
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+lumilake = "lumilake.cli.cli:main"
+
+[dependency-groups]
+lint = [
+    "black==25.12.0",
+    "ruff==0.14.10",
+    "mypy==1.20.2",
+    "codespell==2.4.2",
+    "isort==8.0.1",
+    "types-requests==2.33.0.20260503",
+    "types-cachetools==7.0.0.20260503",
+    "types-pyyaml==6.0.12.20260408",
+    "types-docker==7.1.0.20260409",
+    "pre-commit==4.6.0",
+]
+delta = [
+    "deltalake>=0.22.0,<2.0.0",
+    "pyarrow>=17.0.0",
+    "polars>=1.0.0,<2.0.0",
+]
+dev = [
+    "ipywidgets>=8.1.5,<9.0.0",
+    "pyvis==0.3.1",
+    "ipykernel>=6.29.5,<7.0.0",
+]
+test = [
+    "pytest>=8.3.5,<9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "pytest-timeout>=2.4.0,<3.0.0",
+    "respx>=0.21.0",
+    {include-group = "delta"},
+]
+
+[tool.uv]
+default-groups = []
+
+[tool.isort]
+profile = "black"
+skip = [".venv"]
+
+[tool.ruff]
+target-version = "py312"
+exclude = [".venv", "agent_space"]
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "I"]
+ignore = ["I001"]
+
+[tool.black]
+force-exclude = "\\.venv"
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+files = ["src/lumilake", "scripts", "tests"]
+
+[tool.bandit]
+skips = [
+    "B101",  # assert: internal invariants, not shipped with -O
+    "B102",  # exec: agent Python executor sandbox feature
+    "B104",  # 0.0.0.0 bind: containerized; exposure controlled at orchestration
+    "B105",  # hardcoded password string: false positives on path / hash-name literals
+    "B107",  # password default: placeholder, not a real credential
+    "B110",  # try/except/pass: best-effort cleanup paths
+    "B112",  # try/except/continue: iteration over partially-bad inputs
+    "B307",  # eval: agent Python executor sandbox feature
+    "B311",  # random: non-cryptographic sampling / jitter / tie-breaking
+    "B403",  # dill import: paired with B301 nosec at the load-site
+    "B404",  # subprocess module import: actual unsafe patterns caught by B602/B603/B607
+    "B603",  # subprocess call: deploy-time invocations of trusted CLIs (docker, psql, mc)
+    "B606",  # start process w/o shell: same context as B603
+    "B607",  # start process w/ partial path: deploy CLIs resolved through PATH
+    "B608",  # SQL string interpolation: identifiers come from module-level constants
+             # and validated quote helpers; values bind via %s.
+]
+
+[tool.codespell]
+ignore-words-list = ["ans", "assertIn"]
+skip = ["*.csv", "tmp*", "./.venv"]
+
+[tool.pyright]
+exclude = ["**/__pycache__", "**/.*"]
+extraPaths = []
+deprecateTypingAliases = true
+reportDeprecated = "warning"
+reportPrivateImportUsage = "none"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,981 @@
+name: trading-agent
+
+inputs:
+  Stock: []
+
+ops:
+  # ---- Stage 1: SQL Date Planner (structural-outputs LLMChat) -----------
+  - id: "SQL Date Planner"
+    op: LLMChatOp
+    inputs: [Stock]
+    prompt:
+      template: "Generate one start_date for symbol {ref0}. This start_date is the inclusive lower-bound date used by Market, Insider, and News SQL queries. Return only a practical YYYY-MM-DD date for lookback filtering."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are a SQL date planner. Produce exactly one structured field named start_date."
+      - role: user
+        content: ""
+    structural_outputs:
+      - name: start_date
+        type: datetime
+        min: "2024-01-01"
+        max: "2025-12-31"
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  # ---- Stage 2: Four SQL DataRetrievalOps + one S3 --------------------
+  - id: "Fundamentals Query"
+    op: DataRetrievalOp
+    inputs: ["SQL Date Planner"]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        WITH profile AS (
+          SELECT
+            symbol,
+            "companyName",
+            sector,
+            industry,
+            exchange,
+            country,
+            currency,
+            "marketCap",
+            price,
+            beta,
+            "averageVolume",
+            volume,
+            "changePercentage",
+            "isActivelyTrading",
+            "ipoDate",
+            "fullTimeEmployees",
+            website
+          FROM demo.company_profile
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994}'
+          LIMIT 1
+        ),
+        peer_rollup AS (
+          SELECT
+            p.symbol,
+            STRING_AGG(p.peer, ', ' ORDER BY p.peer) AS peers
+          FROM (
+            SELECT symbol, peer
+            FROM demo.company_peer
+            WHERE symbol = '{ref_input_trading_agent_Stock_4994_2}'
+            ORDER BY peer
+            LIMIT 10
+          ) p
+          GROUP BY p.symbol
+        ),
+        recent_income AS (
+          SELECT
+            symbol,
+            date::date AS report_date,
+            period,
+            "fiscalYear",
+            revenue,
+            "grossProfit",
+            "operatingIncome",
+            "netIncome",
+            ebitda,
+            eps,
+            "costOfRevenue",
+            "researchAndDevelopmentExpenses",
+            "sellingGeneralAndAdministrativeExpenses"
+          FROM demo.financial_income_statement
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994_3}'
+          ORDER BY date::date DESC, period
+          LIMIT 12
+        ),
+        recent_balance AS (
+          SELECT
+            symbol,
+            date::date AS report_date,
+            period,
+            "totalAssets",
+            "totalLiabilities",
+            "totalCurrentAssets",
+            "totalCurrentLiabilities",
+            "cashAndCashEquivalents",
+            inventory,
+            "accountsReceivables",
+            "totalDebt",
+            "longTermDebt",
+            "totalStockholdersEquity"
+          FROM demo.financial_balance_sheet
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994_4}'
+          ORDER BY date::date DESC, period
+          LIMIT 12
+        ),
+        recent_cashflow AS (
+          SELECT
+            symbol,
+            date::date AS report_date,
+            period,
+            "operatingCashFlow",
+            "freeCashFlow",
+            "capitalExpenditure",
+            "netCashProvidedByOperatingActivities",
+            "netCashProvidedByInvestingActivities",
+            "netCashProvidedByFinancingActivities",
+            "commonStockRepurchased",
+            "commonDividendsPaid",
+            "stockBasedCompensation"
+          FROM demo.financial_cash_flow
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994_5}'
+          ORDER BY date::date DESC, period
+          LIMIT 12
+        )
+        SELECT
+          ri.symbol,
+          ri.report_date,
+          ri.period,
+          ri."fiscalYear",
+          pr."companyName",
+          pr.sector,
+          pr.industry,
+          pr.exchange,
+          pr.country,
+          pr.currency,
+          pr."marketCap",
+          pr.price,
+          pr.beta,
+          pr."averageVolume",
+          pr.volume,
+          pr."changePercentage",
+          pr."isActivelyTrading",
+          pr."ipoDate",
+          pr."fullTimeEmployees",
+          pr.website,
+          pe.peers,
+          ri.revenue,
+          ri."costOfRevenue",
+          ri."grossProfit",
+          ri."operatingIncome",
+          ri."netIncome",
+          ri.ebitda,
+          ri.eps,
+          ri."researchAndDevelopmentExpenses",
+          ri."sellingGeneralAndAdministrativeExpenses",
+          rb."totalAssets",
+          rb."totalLiabilities",
+          rb."totalCurrentAssets",
+          rb."totalCurrentLiabilities",
+          rb."cashAndCashEquivalents",
+          rb.inventory,
+          rb."accountsReceivables",
+          rb."totalDebt",
+          rb."longTermDebt",
+          rb."totalStockholdersEquity",
+          rc."operatingCashFlow",
+          rc."freeCashFlow",
+          rc."capitalExpenditure",
+          rc."netCashProvidedByOperatingActivities",
+          rc."netCashProvidedByInvestingActivities",
+          rc."netCashProvidedByFinancingActivities",
+          rc."commonStockRepurchased",
+          rc."commonDividendsPaid",
+          rc."stockBasedCompensation",
+          (rb."totalCurrentAssets" / NULLIF(rb."totalCurrentLiabilities", 0)) AS current_ratio,
+          (rb."totalDebt" / NULLIF(rb."totalStockholdersEquity", 0)) AS debt_to_equity,
+          (ri."grossProfit" / NULLIF(ri.revenue, 0)) AS gross_margin,
+          (ri."operatingIncome" / NULLIF(ri.revenue, 0)) AS operating_margin,
+          (ri."netIncome" / NULLIF(ri.revenue, 0)) AS net_margin,
+          (rc."freeCashFlow" / NULLIF(rc."operatingCashFlow", 0)) AS fcf_conversion
+        FROM recent_income ri
+        LEFT JOIN recent_balance rb
+          ON rb.symbol = ri.symbol
+         AND rb.report_date = ri.report_date
+         AND rb.period = ri.period
+        LEFT JOIN recent_cashflow rc
+          ON rc.symbol = ri.symbol
+         AND rc.report_date = ri.report_date
+         AND rc.period = ri.period
+        LEFT JOIN peer_rollup pe
+          ON pe.symbol = ri.symbol
+        CROSS JOIN profile pr
+        ORDER BY ri.report_date DESC, ri.period
+        LIMIT 10;
+      params:
+        - label: ref_input_trading_agent_Stock_4994
+          data:
+            type: list
+            items: []
+        - label: ref_input_trading_agent_Stock_4994_2
+          data:
+            type: list
+            items: []
+        - label: ref_input_trading_agent_Stock_4994_3
+          data:
+            type: list
+            items: []
+        - label: ref_input_trading_agent_Stock_4994_4
+          data:
+            type: list
+            items: []
+        - label: ref_input_trading_agent_Stock_4994_5
+          data:
+            type: list
+            items: []
+
+  - id: "Insider Query"
+    op: DataRetrievalOp
+    inputs: ["SQL Date Planner"]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        WITH sentiment AS (
+          SELECT
+            symbol,
+            make_date(year::int, month::int, 1) AS month_start,
+            SUM(change)::bigint AS sentiment_net_change,
+            AVG(mspr) AS sentiment_avg_mspr,
+            COUNT(*) AS sentiment_samples
+          FROM demo.insider_sentiment
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994}'
+            AND make_date(year::int, month::int, 1) >= ('{ref_llm_trading_agent_SQL_Date_Planner_5713}'::date - interval '24 months')
+          GROUP BY symbol, make_date(year::int, month::int, 1)
+        ),
+        tx AS (
+          SELECT
+            symbol,
+            date_trunc('month', "transactionDate"::date)::date AS month_start,
+            COUNT(*) AS tx_count,
+            SUM(COALESCE(change, 0)) AS tx_net_shares,
+            SUM(ABS(COALESCE(change, 0) * COALESCE("transactionPrice", 0))) AS tx_abs_notional,
+            SUM(COALESCE(change, 0) * COALESCE("transactionPrice", 0)) AS tx_net_notional,
+            COUNT(*) FILTER (WHERE "transactionCode" = 'S') AS sell_count,
+            COUNT(*) FILTER (WHERE "transactionCode" = 'P') AS buy_count
+          FROM demo.insider_transactions
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994_2}'
+            AND "transactionDate"::date >= ('{ref_llm_trading_agent_SQL_Date_Planner_5713_2}'::date - interval '24 months')
+          GROUP BY symbol, date_trunc('month', "transactionDate"::date)::date
+        ),
+        joined AS (
+          SELECT
+            COALESCE(s.symbol, t.symbol) AS symbol,
+            COALESCE(s.month_start, t.month_start) AS month_start,
+            s.sentiment_net_change,
+            s.sentiment_avg_mspr,
+            s.sentiment_samples,
+            t.tx_count,
+            t.tx_net_shares,
+            t.tx_abs_notional,
+            t.tx_net_notional,
+            t.buy_count,
+            t.sell_count
+          FROM sentiment s
+          FULL OUTER JOIN tx t
+            ON s.symbol = t.symbol
+           AND s.month_start = t.month_start
+        )
+        SELECT
+          *,
+          AVG(sentiment_avg_mspr) OVER (
+            ORDER BY month_start
+            ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+          ) AS sentiment_mspr_3m_avg,
+          SUM(COALESCE(tx_net_notional, 0)) OVER (
+            ORDER BY month_start
+            ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+          ) AS tx_net_notional_3m
+        FROM joined
+        ORDER BY month_start DESC
+        LIMIT 10;
+      params:
+        - label: ref_input_trading_agent_Stock_4994
+          data:
+            type: list
+            items: []
+        - label: ref_llm_trading_agent_SQL_Date_Planner_5713
+          node: "SQL Date Planner"
+          path: items.output.start_date
+        - label: ref_input_trading_agent_Stock_4994_2
+          data:
+            type: list
+            items: []
+        - label: ref_llm_trading_agent_SQL_Date_Planner_5713_2
+          node: "SQL Date Planner"
+          path: items.output.start_date
+
+  - id: "Market Query"
+    op: DataRetrievalOp
+    inputs: ["SQL Date Planner"]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        WITH bars AS (
+          SELECT
+            symbol,
+            timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume
+          FROM demo.market_bars
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994}'
+            AND timestamp >= '{ref_llm_trading_agent_SQL_Date_Planner_5713}'::timestamp
+          ORDER BY timestamp DESC
+          LIMIT 3000
+        ),
+        hourly AS (
+          SELECT
+            symbol,
+            date_trunc('hour', timestamp) AS time_bucket,
+            (ARRAY_AGG(open ORDER BY timestamp ASC))[1] AS bucket_open,
+            (ARRAY_AGG(close ORDER BY timestamp DESC))[1] AS bucket_close,
+            MAX(high) AS bucket_high,
+            MIN(low) AS bucket_low,
+            SUM(volume) AS bucket_volume
+          FROM bars
+          GROUP BY symbol, date_trunc('hour', timestamp)
+        ),
+        ranked AS (
+          SELECT
+            *,
+            LAG(bucket_close) OVER (ORDER BY time_bucket) AS prev_close
+          FROM hourly
+        ),
+        metrics AS (
+          SELECT
+            symbol,
+            metric::jsonb AS m
+          FROM demo.market_metrics
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994_2}'
+          ORDER BY version DESC
+          LIMIT 1
+        )
+        SELECT
+          r.symbol,
+          r.time_bucket,
+          r.bucket_open,
+          r.bucket_close,
+          r.bucket_high,
+          r.bucket_low,
+          r.bucket_volume,
+          CASE
+            WHEN r.prev_close IS NULL OR r.prev_close = 0 THEN NULL
+            ELSE (r.bucket_close / r.prev_close) - 1
+          END AS bucket_return,
+          mx.m ->> '52WeekHigh' AS week52_high,
+          mx.m ->> '52WeekHighDate' AS week52_high_date,
+          mx.m ->> '52WeekLow' AS week52_low,
+          mx.m ->> '52WeekLowDate' AS week52_low_date,
+          mx.m ->> 'yearToDatePriceReturnDaily' AS ytd_return_pct,
+          mx.m ->> '13WeekPriceReturnDaily' AS quarter_return_pct,
+          mx.m ->> '5DayPriceReturnDaily' AS five_day_return_pct,
+          mx.m ->> 'beta' AS beta,
+          mx.m ->> 'marketCapitalization' AS market_cap_m,
+          mx.m ->> 'peTTM' AS pe_ttm,
+          mx.m ->> 'pbQuarterly' AS pb_quarterly,
+          mx.m ->> 'revenueGrowthTTMYoy' AS revenue_growth_ttm_yoy_pct,
+          mx.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm_yoy_pct,
+          mx.m ->> 'operatingMarginTTM' AS operating_margin_ttm_pct,
+          mx.m ->> 'netProfitMarginTTM' AS net_profit_margin_ttm_pct
+        FROM ranked r
+        LEFT JOIN metrics mx
+          ON mx.symbol = r.symbol
+        ORDER BY r.time_bucket DESC
+        LIMIT 10;
+      params:
+        - label: ref_input_trading_agent_Stock_4994
+          data:
+            type: list
+            items: []
+        - label: ref_llm_trading_agent_SQL_Date_Planner_5713
+          node: "SQL Date Planner"
+          path: items.output.start_date
+        - label: ref_input_trading_agent_Stock_4994_2
+          data:
+            type: list
+            items: []
+
+  - id: "News Query"
+    op: DataRetrievalOp
+    inputs: ["SQL Date Planner"]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        WITH scoped_news AS (
+          SELECT
+            symbol,
+            id,
+            title,
+            "publishedDate",
+            publisher,
+            source,
+            category,
+            path,
+            LEFT(COALESCE(summary, text, headline), 1200) AS synopsis
+          FROM demo.news_metadata
+          WHERE symbol = '{ref_input_trading_agent_Stock_4994}'
+            AND "publishedDate" IS NOT NULL
+            AND path IS NOT NULL
+            AND path <> ''
+        ),
+        ranked AS (
+          SELECT
+            *,
+            ROW_NUMBER() OVER (
+              PARTITION BY COALESCE(NULLIF(category, ''), 'uncategorized')
+              ORDER BY "publishedDate"::timestamp DESC, id
+            ) AS category_rank,
+            ROW_NUMBER() OVER (
+              ORDER BY "publishedDate"::timestamp DESC, id
+            ) AS recency_rank
+          FROM scoped_news
+        )
+        SELECT
+          symbol,
+          id,
+          title,
+          "publishedDate",
+          publisher,
+          source,
+          category,
+          path,
+          synopsis,
+          synopsis AS summary,
+          recency_rank,
+          category_rank
+        FROM ranked
+        WHERE category_rank <= 10
+        ORDER BY "publishedDate"::timestamp DESC, id
+        LIMIT 10;
+      params:
+        - label: ref_input_trading_agent_Stock_4994
+          data:
+            type: list
+            items: []
+
+  - id: "News Artifact Query"
+    op: DataRetrievalOp
+    inputs: ["News Query"]
+    data_spec:
+      type: s3
+      connection_string: ${S3_URL}
+      template: "example-data/news/images/{id}.png"
+      params:
+        - label: id
+          node: "News Query"
+          path: items.table.id
+      encoding: binary
+
+  # ---- Stage 3: News per-row image-understanding (LLMVision rowwise) ---
+  - id: "News Per-row Summary"
+    op: LLMVisionOp
+    inputs: ["News Query", "News Artifact Query"]
+    image_source: "News Artifact Query"
+    image_path: images
+    messages:
+      - role: system
+        content: "You are a concise data summarization assistant."
+      - role: user
+        content: "Summarize the following retrieved news item in two concise sentences focused on investment impact for {Stock}.\nTitle: {title}\nPublished: {publishedDate}\nCategory: {category}\nSynopsis: {synopsis}\nArtifact: {News_Artifact_Query}"
+    rowwise_template: "Summarize the following retrieved news item in two concise sentences focused on investment impact for {Stock}.\nTitle: {title}\nPublished: {publishedDate}\nCategory: {category}\nSynopsis: {synopsis}\nArtifact: {News_Artifact_Query}"
+    rowwise_columns:
+      - label: Stock
+        data:
+          type: list
+          items: []
+      - label: title
+        node: "News Query"
+        path: items.table.title
+      - label: publishedDate
+        node: "News Query"
+        path: items.table.publishedDate
+      - label: category
+        node: "News Query"
+        path: items.table.category
+      - label: synopsis
+        node: "News Query"
+        path: items.table.synopsis
+      - label: News_Artifact_Query
+        node: "News Artifact Query"
+        path: items.content
+    system_messages:
+      - "You are a concise data summarization assistant."
+    config:
+      model: llava-hf/llava-1.5-7b-hf
+      max_tokens: 512
+      temperature: 0.1
+      top_p: 1
+
+  # ---- Stage 4: Three aggregate reports -------------------------------
+  - id: "Fundamentals Report"
+    op: LLMChatOp
+    inputs: [Stock, "Fundamentals Query", "Insider Query"]
+    prompt:
+      template: "Fundamentals analysis for {ref0}.\n\nUse the integrated SQL evidence below.\n\n{df}\n\nReturn a structured report with sections: Summary, Financial Strength, Profitability, Risks, Open Questions."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: symbol
+        node: "Fundamentals Query"
+        path: items.table.symbol
+      - label: report_date
+        node: "Fundamentals Query"
+        path: items.table.report_date
+      - label: period
+        node: "Fundamentals Query"
+        path: items.table.period
+      - label: revenue
+        node: "Fundamentals Query"
+        path: items.table.revenue
+      - label: net_income
+        node: "Fundamentals Query"
+        path: items.table.netIncome
+      - label: operating_cash_flow
+        node: "Fundamentals Query"
+        path: items.table.operatingCashFlow
+      - label: free_cash_flow
+        node: "Fundamentals Query"
+        path: items.table.freeCashFlow
+      - label: current_ratio
+        node: "Fundamentals Query"
+        path: items.table.current_ratio
+      - label: debt_to_equity
+        node: "Fundamentals Query"
+        path: items.table.debt_to_equity
+      - label: gross_margin
+        node: "Fundamentals Query"
+        path: items.table.gross_margin
+      - label: operating_margin
+        node: "Fundamentals Query"
+        path: items.table.operating_margin
+      - label: net_margin
+        node: "Fundamentals Query"
+        path: items.table.net_margin
+      - label: insider_month
+        node: "Insider Query"
+        path: items.table.month_start
+      - label: insider_sentiment_net_change
+        node: "Insider Query"
+        path: items.table.sentiment_net_change
+      - label: insider_avg_mspr
+        node: "Insider Query"
+        path: items.table.sentiment_avg_mspr
+      - label: insider_tx_count
+        node: "Insider Query"
+        path: items.table.tx_count
+      - label: insider_tx_net_notional
+        node: "Insider Query"
+        path: items.table.tx_net_notional
+      - label: insider_buy_count
+        node: "Insider Query"
+        path: items.table.buy_count
+      - label: insider_sell_count
+        node: "Insider Query"
+        path: items.table.sell_count
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Market Report"
+    op: LLMChatOp
+    inputs: [Stock, "Market Query"]
+    prompt:
+      template: "Market analysis for {ref0}.\n\nUse the integrated market SQL evidence below.\n\n{df}\n\nAnalyze price action, momentum, volatility, and technical signals. Call out notable moves and potential catalysts.\n\nReturn a structured report with sections: Summary, Key Signals, Risks, Open Questions."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: symbol
+        node: "Market Query"
+        path: items.table.symbol
+      - label: time_bucket
+        node: "Market Query"
+        path: items.table.time_bucket
+      - label: open
+        node: "Market Query"
+        path: items.table.bucket_open
+      - label: close
+        node: "Market Query"
+        path: items.table.bucket_close
+      - label: high
+        node: "Market Query"
+        path: items.table.bucket_high
+      - label: low
+        node: "Market Query"
+        path: items.table.bucket_low
+      - label: volume
+        node: "Market Query"
+        path: items.table.bucket_volume
+      - label: bucket_return
+        node: "Market Query"
+        path: items.table.bucket_return
+      - label: week52_high
+        node: "Market Query"
+        path: items.table.week52_high
+      - label: week52_low
+        node: "Market Query"
+        path: items.table.week52_low
+      - label: ytd_return_pct
+        node: "Market Query"
+        path: items.table.ytd_return_pct
+      - label: quarter_return_pct
+        node: "Market Query"
+        path: items.table.quarter_return_pct
+      - label: five_day_return_pct
+        node: "Market Query"
+        path: items.table.five_day_return_pct
+      - label: beta
+        node: "Market Query"
+        path: items.table.beta
+      - label: pe_ttm
+        node: "Market Query"
+        path: items.table.pe_ttm
+      - label: pb_quarterly
+        node: "Market Query"
+        path: items.table.pb_quarterly
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "News Report"
+    op: LLMChatOp
+    inputs: [Stock, "News Query", "News Per-row Summary"]
+    prompt:
+      template: "Given the following per-article summaries, generate an aggregated news summary for {ref0}.\n\n{df}\n\nReturn a structured report with sections: Summary, Key Developments, Impact, Open Questions."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: title
+        node: "News Query"
+        path: items.table.title
+      - label: publishedDate
+        node: "News Query"
+        path: items.table.publishedDate
+      - label: category
+        node: "News Query"
+        path: items.table.category
+      - label: summary
+        node: "News Per-row Summary"
+        path: items.output
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  # ---- Stage 5: 3-round Bull/Bear debate (6 LLMChat nodes) -----------
+  - id: "Bull Researcher R1"
+    op: LLMChatOp
+    inputs: [Stock, "Fundamentals Report", "Market Report", "News Report"]
+    prompt:
+      template: "You are to analyze the {ref0} stock. The resources available are as follows:\n\n**Company fundamentals report:**\n{ref1}\n\n**Market research report:**\n{ref2}\n\n**News report:**\n{ref3}\n\nUse this information to deliver a compelling argument, refute the opponent's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investment decisions."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Fundamentals Report"
+        ref2: "Market Report"
+        ref3: "News Report"
+    messages:
+      - role: system
+        content: "You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.\n\nKey points to focus on:\n- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.\n- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.\n- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.\n- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.\n- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Bear Researcher R1"
+    op: LLMChatOp
+    inputs: [Stock, "Fundamentals Report", "Market Report", "News Report"]
+    prompt:
+      template: "You are to analyze the {ref0} stock. The resources available are as follows:\n\n**Company fundamentals report:**\n{ref1}\n\n**Market research report:**\n{ref2}\n\n**News report:**\n{ref3}\n\nUse this information to deliver a compelling argument, refute the opponent's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investment decisions."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Fundamentals Report"
+        ref2: "Market Report"
+        ref3: "News Report"
+    messages:
+      - role: system
+        content: "You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.\n\nKey points to focus on:\n- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.\n- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.\n- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.\n- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.\n- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Bull Researcher R2"
+    op: LLMChatOp
+    inputs: ["Bull Researcher R1", "Bear Researcher R1"]
+    prompt:
+      template: "Here are the last round arguments:\n\nBull Researcher:\n{ref0}\n\nBear Researcher:\n{ref1}\n\nPlease refute the opponent's claims and continue/assert your argument."
+      format_kwargs:
+        ref0: "Bull Researcher R1"
+        ref1: "Bear Researcher R1"
+    messages:
+      - role: system
+        content: "You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.\n\nKey points to focus on:\n- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.\n- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.\n- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.\n- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.\n- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Bear Researcher R2"
+    op: LLMChatOp
+    inputs: ["Bull Researcher R1", "Bear Researcher R1"]
+    prompt:
+      template: "Here are the last round arguments:\n\nBull Researcher:\n{ref0}\n\nBear Researcher:\n{ref1}\n\nPlease refute the opponent's claims and continue/assert your argument."
+      format_kwargs:
+        ref0: "Bull Researcher R1"
+        ref1: "Bear Researcher R1"
+    messages:
+      - role: system
+        content: "You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.\n\nKey points to focus on:\n- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.\n- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.\n- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.\n- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.\n- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Bull Researcher R3"
+    op: LLMChatOp
+    inputs: ["Bull Researcher R2", "Bear Researcher R2"]
+    prompt:
+      template: "Here are the last round arguments:\n\nBull Researcher:\n{ref0}\n\nBear Researcher:\n{ref1}\n\nPlease refute the opponent's claims and continue/assert your argument."
+      format_kwargs:
+        ref0: "Bull Researcher R2"
+        ref1: "Bear Researcher R2"
+    messages:
+      - role: system
+        content: "You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.\n\nKey points to focus on:\n- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.\n- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.\n- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.\n- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.\n- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Bear Researcher R3"
+    op: LLMChatOp
+    inputs: ["Bull Researcher R2", "Bear Researcher R2"]
+    prompt:
+      template: "Here are the last round arguments:\n\nBull Researcher:\n{ref0}\n\nBear Researcher:\n{ref1}\n\nPlease refute the opponent's claims and continue/assert your argument."
+      format_kwargs:
+        ref0: "Bull Researcher R2"
+        ref1: "Bear Researcher R2"
+    messages:
+      - role: system
+        content: "You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.\n\nKey points to focus on:\n- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.\n- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.\n- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.\n- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.\n- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  # ---- Stage 6: Debate history aggregation (LambdaOp) ------------------
+  - id: "Debate History"
+    op: LambdaOp
+    inputs:
+      - "Bull Researcher R1"
+      - "Bear Researcher R1"
+      - "Bull Researcher R2"
+      - "Bear Researcher R2"
+      - "Bull Researcher R3"
+      - "Bear Researcher R3"
+    fn_name: Debate_History
+    code: |-
+      def Debate_History(args):
+          bull_r1, bear_r1, bull_r2, bear_r2, bull_r3, bear_r3 = args
+          rounds = [(bull_r1, bear_r1), (bull_r2, bear_r2), (bull_r3, bear_r3)]
+          lines = []
+          for idx, (bull, bear) in enumerate(rounds, start=1):
+              lines.append(f"\n## Round {idx}")
+              if bull:
+                  lines.append(f"**Bull Researcher:** {bull}")
+              if bear:
+                  lines.append(f"**Bear Researcher:** {bear}")
+          return "\n".join(lines)
+
+  # ---- Stage 7: Research Manager -> Trader Decision -------------------
+  - id: "Research Manager"
+    op: LLMChatOp
+    inputs: [Stock, "Debate History"]
+    prompt:
+      template: "You are to analyze the {ref0} stock. Here are the arguments from both sides:\n\n{ref1}"
+      format_kwargs:
+        ref0: Stock
+        ref1: "Debate History"
+    messages:
+      - role: system
+        content: "As the portfolio manager and debate facilitator, your role is to critically evaluate this round of debate and make a definitive decision: align with the bear analyst, the bull analyst, or choose Hold only if it is strongly justified based on the arguments presented.\n\nSummarize the key points from both sides concisely, focusing on the most compelling evidence or reasoning. Your recommendation—Buy, Sell, or Hold—must be clear and actionable. Avoid defaulting to Hold simply because both sides have valid points; commit to a stance grounded in the debate's strongest arguments.\n\nAdditionally, develop a detailed investment plan for the trader. This should include:\n\nYour Recommendation: A decisive stance supported by the most convincing arguments.\nRationale: An explanation of why these arguments lead to your conclusion.\nStrategic Actions: Concrete steps for implementing the recommendation.\nPresent your analysis conversationally, as if speaking naturally, without special formatting."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Trader Decision"
+    op: LLMChatOp
+    inputs: [Stock, "Research Manager"]
+    prompt:
+      template: "Make a trading decision for {ref0}.\n\nInvestment plan: {ref1}\n\nReturn: Action (Buy/Sell/Hold), Size, Entry/Exit, Rationale."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Research Manager"
+    messages:
+      - role: system
+        content: "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  # ---- Stage 8: Risk analysts (3) -> Risk Judge -----------------------
+  - id: "Risky Analyst"
+    op: LLMChatOp
+    inputs: [Stock, "Trader Decision", "Fundamentals Report", "Market Report", "News Report"]
+    prompt:
+      template: "Risk map input for {ref0}.\n\nTrader decision to assess:\n{ref1}\n\nFundamentals report:\n{ref2}\n\nMarket report:\n{ref3}\n\nNews report:\n{ref4}\n\nProduce the aggressive-risk perspective only. Focus on upside asymmetry, catalysts, and why taking risk could be rewarded. Do not debate other analysts."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Trader Decision"
+        ref2: "Fundamentals Report"
+        ref3: "Market Report"
+        ref4: "News Report"
+    messages:
+      - role: system
+        content: "As the Aggressive Risk Analyst, produce a concise risk memo focused on upside: (1) upside thesis, (2) high-conviction catalysts, (3) risk budget and position-sizing idea, (4) invalidation triggers. Ground everything in the provided reports."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Safe Analyst"
+    op: LLMChatOp
+    inputs: [Stock, "Trader Decision", "Fundamentals Report", "Market Report", "News Report"]
+    prompt:
+      template: "Risk map input for {ref0}.\n\nTrader decision to assess:\n{ref1}\n\nFundamentals report:\n{ref2}\n\nMarket report:\n{ref3}\n\nNews report:\n{ref4}\n\nProduce the conservative-risk perspective only. Focus on downside, drawdown control, and failure modes. Do not debate other analysts."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Trader Decision"
+        ref2: "Fundamentals Report"
+        ref3: "Market Report"
+        ref4: "News Report"
+    messages:
+      - role: system
+        content: "As the Conservative Risk Analyst, produce a concise risk memo focused on protection: (1) downside thesis, (2) key tail/operational risks, (3) guardrails and stop conditions, (4) hedging or de-risking actions. Ground everything in the provided reports."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Neutral Analyst"
+    op: LLMChatOp
+    inputs: [Stock, "Trader Decision", "Fundamentals Report", "Market Report", "News Report"]
+    prompt:
+      template: "Risk map input for {ref0}.\n\nTrader decision to assess:\n{ref1}\n\nFundamentals report:\n{ref2}\n\nMarket report:\n{ref3}\n\nNews report:\n{ref4}\n\nProduce the balanced-risk perspective only. Focus on base-case probability, scenario weighting, and expected-value trade-offs. Do not debate other analysts."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Trader Decision"
+        ref2: "Fundamentals Report"
+        ref3: "Market Report"
+        ref4: "News Report"
+    messages:
+      - role: system
+        content: "As the Neutral Risk Analyst, produce a concise risk memo focused on balance: (1) base-case view with probability, (2) key bull/bear scenario weights, (3) expected-value assessment, (4) conditions for buy/sell/hold transition. Ground everything in the provided reports."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  - id: "Risk Judge"
+    op: LLMChatOp
+    inputs: [Stock, "Risky Analyst", "Safe Analyst", "Neutral Analyst"]
+    prompt:
+      template: "You are to analyze the {ref0} stock using three independent risk memos.\n\nAggressive-risk memo:\n{ref1}\n\nConservative-risk memo:\n{ref2}\n\nNeutral-risk memo:\n{ref3}\n\nSynthesize these map outputs into one final risk recommendation for the trader. Focus on actionable adjustments and decision quality."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Risky Analyst"
+        ref2: "Safe Analyst"
+        ref3: "Neutral Analyst"
+    messages:
+      - role: system
+        content: "As the Risk Aggregation Judge, merge the three analyst memos into one decision support note. Deliver: (1) Buy/Sell/Hold recommendation, (2) top supporting evidence, (3) top risks and mitigations, (4) explicit edits to the trader's plan (size, entry/exit, safeguards). Be decisive and avoid defaulting to Hold unless strongly justified."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+  # ---- Stage 9: Fund Manager Final (output) ----------------------------
+  - id: "Fund Manager Final"
+    op: LLMChatOp
+    inputs: [Stock, "Trader Decision", "Risk Judge"]
+    prompt:
+      template: "You are to analyze the {ref0} stock. Review both the trader's decision and the risk-judged recommendation.\n\nTrader Decision:\n{ref1}\n\nRisk-Judged Recommendation:\n{ref2}\n\nBased on these inputs, provide a clear and decisive final recommendation: Buy, Sell, or Hold. Your decision must be well-justified and actionable. Always conclude your response with 'FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**' to confirm your recommendation."
+      format_kwargs:
+        ref0: Stock
+        ref1: "Trader Decision"
+        ref2: "Risk Judge"
+    messages:
+      - role: system
+        content: "You are a Fund Manager. Your primary responsibility is to synthesize the analyses and recommendations from your team of specialized trader agents and their risk analysts.\n\nYou will be provided with final recommendations (Buy, Sell, or Hold) and detailed reasoning from the Risk Analysts, who have reviewed the outputs of the specialized trader agents.\n\nYour task is to critically evaluate the provided information to formulate a single, decisive, and final investment recommendation. Your decision should be the result of a comprehensive and holistic review, weighing the potentially conflicting viewpoints to determine the most prudent course of action. Your final output must be a clear Buy, Sell, or Hold decision, supported by a detailed reasoning that explains how you reconciled the different analytical perspectives to arrive at your conclusion."
+      - role: user
+        content: ""
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 1024
+      temperature: 0.7
+      top_p: 1
+
+outputs:
+  - name: final_recommendation
+    ref: "Fund Manager Final"

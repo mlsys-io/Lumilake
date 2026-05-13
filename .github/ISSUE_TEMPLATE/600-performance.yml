@@ -1,0 +1,53 @@
+name: Performance issue
+description: A submission, schedule, or execution is unexpectedly slow / expensive.
+title: "[Perf]: "
+labels: ["performance"]
+
+body:
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where is the slowness?
+      options:
+        - /jobs/preview (graph compile)
+        - /jobs (submission + first schedule)
+        - Scheduler (HALO / dummy optimizer)
+        - Data profiling
+        - Output dump at finalize
+        - FlowMesh dispatch / worker assignment
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Workload
+      description: |
+        A minimal YAML workflow (or CLI command) that reproduces the slowness.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Observed timing
+      description: |
+        Paste wall-clock numbers or profile snapshots. Compare against what
+        you expected if possible.
+
+  - type: textarea
+    attributes:
+      label: Environment
+      value: |
+        - Lumilake version:
+        - Optimizer: (dummy / halo / ...)
+        - CPU / GPU:
+        - Compute DB size (rough):
+    validations:
+      required: true
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true

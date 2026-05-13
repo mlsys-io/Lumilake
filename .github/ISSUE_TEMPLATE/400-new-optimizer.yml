@@ -1,0 +1,39 @@
+name: New optimizer strategy
+description: Propose a new scheduling / optimization strategy.
+title: "[Optimizer]: "
+labels: ["optimizer"]
+
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Optimizer name
+      description: |
+        e.g. ``halo-v2``, ``cost-greedy``, ``spot-aware``.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Motivation
+      description: |
+        What scheduling problem does this solve that the existing strategies
+        (``dummy``, ``halo``) don't handle well?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Approach
+      description: |
+        Short design sketch. How does the planner build its plan? What signals
+        from the runtime does it use? What's the complexity?
+    validations:
+      required: true
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true

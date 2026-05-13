@@ -1,0 +1,50 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras
+
+      - name: Create test .env
+        run: |
+          cat > .env << 'ENVEOF'
+          LUMILAKE_OPTIMIZER_TYPE="halo"
+          LUMILAKE_SERVER_HOST="127.0.0.1"
+          LUMILAKE_SERVER_PORT="9000"
+          LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:7000"
+          LUMILAKE_RUNTIME_TOKEN=""
+          DATABASE_URL=""
+          S3_URL=""
+          S3_USER_DATA_PREFIX=""
+          S3_ARCHIVE_PREFIX="test-bucket/archive"
+          ENVEOF
+          sed -i 's/^[[:space:]]*//' .env
+
+      - name: Run tests
+        run: uv run pytest tests/ -v

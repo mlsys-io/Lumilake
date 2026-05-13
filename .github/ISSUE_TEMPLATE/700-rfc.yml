@@ -1,0 +1,58 @@
+name: RFC
+description: A larger design proposal that needs discussion before implementation.
+title: "[RFC]: "
+labels: ["rfc"]
+
+body:
+  - type: input
+    id: scope
+    attributes:
+      label: Scope
+      description: |
+        Which area does this RFC touch? (server, runtime, CLI, deploy, ...)
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Summary
+      description: |
+        One paragraph on what you want to change and why.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Motivation
+      description: |
+        What problem does this solve? Who benefits? What prompted writing this up now?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Design
+      description: |
+        The detailed proposal: API shape, schemas, migrations, failure
+        modes. Link to existing code / PRs where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+      description: |
+        What else did you think about? Why is this proposal better?
+
+  - type: textarea
+    attributes:
+      label: Rollout
+      description: |
+        How do we land this? One PR or several? Any flags / migrations?
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues for overlapping proposals.
+          required: true

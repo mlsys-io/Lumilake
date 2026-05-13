@@ -1,0 +1,68 @@
+name: Deployment issue
+description: Something went wrong with `lumilake deploy up/down/reset` or the Docker stack.
+title: "[Deploy]: "
+labels: ["deploy"]
+
+body:
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Deploy mode
+      options:
+        - lumid.data
+        - Direct PostgreSQL + S3
+        - Server only
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Command and output
+      description: |
+        Paste the exact command and full output (wrap in triple-backticks).
+      placeholder: |
+        ```
+        $ uv run lumilake deploy up
+        [deploy] ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: .env (redacted)
+      description: |
+        Your ``.env`` with secrets redacted.
+      placeholder: |
+        ```dotenv
+        LUMILAKE_SERVER_PORT="9000"
+        LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"
+        LUMID_DATA_URL="http://127.0.0.1:9102"
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Container status and logs
+      description: |
+        Output of ``docker ps --filter name=lumilake`` plus
+        relevant ``docker logs <container>`` excerpts.
+
+  - type: textarea
+    attributes:
+      label: Environment
+      value: |
+        - Lumilake version:
+        - OS:
+        - Docker version:
+        - Docker Compose version:
+    validations:
+      required: true
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true
