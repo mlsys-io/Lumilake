@@ -10,6 +10,7 @@ This guide collects rules agents and contributors should apply before editing so
 - Prefer the simpler implementation when two designs have the same behavior.
 - Do not add extension points for modules or services that are not part of this repository.
 - Do not keep compatibility layers for unreleased behavior. Replace old paths outright instead of adding aliases, re-exports, stubs, or dual contracts.
+- Do not commit throwaway scripts, scratch files, local experiments, or generated debug output.
 
 ## Python
 
@@ -22,6 +23,9 @@ This guide collects rules agents and contributors should apply before editing so
 - Declare object state as fields. Do not dynamically `setattr` a field and later `getattr` it on the same object.
 - Avoid `hasattr()` for normal control flow; it bypasses useful type checking.
 - Use a specific `# type: ignore[code]` only after exhausting ordinary typing fixes.
+- Missing-dependency type errors should be fixed by adding the dependency or type stub, then refreshing `uv.lock`.
+- Do not use `del arg` to silence unused-parameter lint. Remove the parameter and update callers.
+- Do not enforce keyword-only arguments by default. Use `*` only when it prevents a concrete misuse.
 - Do not add `from __future__ import annotations` unless it is necessary.
 
 ## Logging and Errors
@@ -29,6 +33,7 @@ This guide collects rules agents and contributors should apply before editing so
 - Do not use `print()` in source code. Use the project logger.
 - In `except` blocks, only translate documented expected cases. Re-raise unexpected library errors.
 - Do not return `None` or `False` to hide an error unless the function contract explicitly models a not-found probe.
+- Defaults belong in the env or profile layer. Do not duplicate profile-layer defaults at call sites.
 
 ## Comments and Docs
 
@@ -58,4 +63,5 @@ This guide collects rules agents and contributors should apply before editing so
 - Stage only files related to the commit. Do not use `git add -A` or `git add .`.
 - Sign off every commit with `git commit -s`.
 - Add an AI assistance trailer when applicable: `Co-Authored-By: <agent name> <email>`.
-- Avoid amending pushed commits unless explicitly requested.
+- Before opening a PR, check for duplicate open PRs or issues in the same area.
+- Avoid amending pushed commits unless explicitly requested. If a hook fails, the commit did not happen; fix, re-stage, and commit again.

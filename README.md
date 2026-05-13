@@ -118,7 +118,7 @@ Install deploy support as well if you want `client.deploy.*` methods:
 pip install "lumilake[sdk,deploy]"
 ```
 
-See `src/lumilake/sdk/README.md` for the SDK resource map.
+See `docs/SDK.md` for the SDK resource map.
 
 ## Documentation
 

@@ -49,7 +49,7 @@ uv run lumilake --help
 | `lumilake job inputs <job_id>` | Show resolved job inputs. |
 | `lumilake job watch <job_id>` | Watch status until completion or failure. |
 | `lumilake job cancel <job_id>` | Cancel a job. |
-| `lumilake job artifact <job_id> --path <path>` | Download a stored job artifact. |
+| `lumilake job artifact <job_id> --path <path> --output <file>` | Download a stored job artifact. |
 
 Run `uv run lumilake job --help` for workflow-format, input, and output flags.
 
