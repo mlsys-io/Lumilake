@@ -1148,7 +1148,7 @@ class LumilakeServer:
                 value_len = len(values)
                 if value_len != item.slice_length:
                     raise ValueError(
-                        "Slice input length mismatch for varying key "
+                        "Workflow input length mismatch for varying key "
                         f"'{key}' in {group_context}: workflow_id='{item.workflow_id}' "
                         f"slice_length={item.slice_length} input_len={value_len}"
                     )

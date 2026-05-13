@@ -1,29 +1,15 @@
 import asyncio
-from collections.abc import Coroutine, Iterable, Sequence
+from collections.abc import Coroutine, Sequence
 from threading import Thread
 from typing import Any, TypeVar, cast
 
 import shortuuid
 
 T = TypeVar("T")
-V = TypeVar("V")
 
 
 def unique_id() -> str:
     return str(shortuuid.uuid())
-
-
-def identity[T](x: T) -> T:
-    return x
-
-
-def partition[T](lst: list[T], n: int) -> Iterable[list[T]]:
-    """Partition a list into n approximately equal parts."""
-    k, m = divmod(len(lst), n)
-    for i in range(n):
-        start = i * k + min(i, m)
-        end = (i + 1) * k + min(i + 1, m)
-        yield lst[start:end]
 
 
 def check_and_cast_list[T, V](t: type[T], lst: Sequence[V]) -> list[T]:

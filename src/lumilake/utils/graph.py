@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from typing import Any
 
 
@@ -31,48 +31,3 @@ def topological_sort[T](
         raise ValueError("Graph has at least one cycle.")
 
     return result
-
-
-def reversed_topological_sort[T](
-    graph: dict[T, Iterable[T]], secondary_key: Callable[[T], Any] | None = None
-) -> list[T]:
-    # Reverse the graph
-    reversed_graph: dict[T, set[T]] = {node: set() for node in graph}
-    for node, neighbors in graph.items():
-        for neighbor in neighbors:
-            reversed_graph[neighbor].add(node)
-
-    return topological_sort(reversed_graph, secondary_key)
-
-
-def detect_wccs[T](graph: dict[T, set[T]]) -> list[list[T]]:
-    """Detect weakly connected components (WCCs) in a directed graph"""
-    # Convert directed graph to undirected
-    undirected_graph: dict[T, set[T]] = {}
-    for node, neighbors in graph.items():
-        if node not in undirected_graph:
-            undirected_graph[node] = set()
-        for neighbor in neighbors:
-            if neighbor not in undirected_graph:
-                undirected_graph[neighbor] = set()
-            undirected_graph[node].add(neighbor)
-            undirected_graph[neighbor].add(node)
-
-    # Perform DFS to find WCCs
-    visited = set()
-    wccs = []
-    stack = []
-    for node in undirected_graph:
-        if node not in visited:
-            wcc = []
-            stack.append(node)
-            while stack:
-                current = stack.pop()
-                if current not in visited:
-                    visited.add(current)
-                    wcc.append(current)
-                    for neighbor in undirected_graph[current]:
-                        if neighbor not in visited:
-                            stack.append(neighbor)
-            wccs.append(wcc)
-    return wccs

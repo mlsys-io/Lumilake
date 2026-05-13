@@ -1,28 +1,8 @@
-import json
-from collections.abc import Hashable
 from typing import Any
 
-from lumilake.common import GenerationConfig, Slice
+from lumilake.common import GenerationConfig
 from lumilake.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake.ops.ops import Op
-from lumilake.utils.prefix.radix_tree import (
-    MessagePrefixType,
-    Placeholder,
-    PrefixType,
-    TextPrefixType,
-    to_message_prefix,
-    to_text_prefix,
-)
-
-
-def _structural_outputs_signature(
-    value: dict[str, Any] | list[dict[str, Any]] | None,
-) -> Hashable | None:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return ("dict", json.dumps(value, sort_keys=True))
-    return ("list", tuple(tuple(sorted(item.items())) for item in value))
 
 
 class LLMOp(Op):
@@ -44,22 +24,6 @@ class LLMOp(Op):
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "LLMOp":
-        raise NotImplementedError()
-
-    def _state_signature(self) -> Hashable | None:
-        raise NotImplementedError()
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> PrefixType:
-        raise NotImplementedError()
-
-    def get_input_prefix_template(
-        self, input_templates: dict[str, PrefixType]
-    ) -> PrefixType:
-        raise NotImplementedError()
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
         raise NotImplementedError()
 
 
@@ -149,46 +113,6 @@ class LLMChatOp(LLMOp):
             condition,
         )
 
-    def _state_signature(self) -> Hashable | None:
-        return (
-            tuple(self.config.to_dict().items()),
-            self.return_history,
-            _structural_outputs_signature(self.structural_outputs),
-            (
-                tuple(tuple(sorted(item.items())) for item in self.aggregate_table)
-                if self.aggregate_table
-                else None
-            ),
-            self.rowwise_template,
-            (
-                tuple(tuple(sorted(item.items())) for item in self.rowwise_columns)
-                if self.rowwise_columns
-                else None
-            ),
-            tuple(self.system_messages) if self.system_messages else None,
-            self.cacheable,
-        )
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> PrefixType:
-        op_id = self.id
-        op_id = sliced_op_map.get(op_id, op_id)
-        history = (
-            self.get_input_prefix_template(input_templates)
-            if self.return_history
-            else ()
-        )
-        return history + (Placeholder(op_id),)
-
-    def get_input_prefix_template(
-        self, input_templates: dict[str, PrefixType]
-    ) -> MessagePrefixType:
-        return to_message_prefix(input_templates[self.messages.id])
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        return input_slices[self.messages.id]
-
 
 def llm_chat(
     messages: list[OpMessage] | Op,
@@ -274,13 +198,6 @@ class LLMVisionOp(LLMChatOp):
             cacheable=cacheable,
         )
 
-    def _state_signature(self) -> Hashable | None:
-        return (
-            super()._state_signature(),
-            self.image_source,
-            self.image_path,
-        )
-
 
 def llm_vision(
     messages: list[OpMessage] | Op,
@@ -338,24 +255,6 @@ class ImageGenerationOp(LLMOp):
     ) -> "ImageGenerationOp":
         config = GenerationConfig(**data["config"])
         return cls(other_ops[data["content"]], config, data["cacheable"])
-
-    def _state_signature(self) -> Hashable | None:
-        return (tuple(self.config.to_dict().items()), self.cacheable)
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> TextPrefixType:
-        op_id = self.id
-        op_id = sliced_op_map.get(op_id, op_id)
-        return (Placeholder(op_id),)
-
-    def get_input_prefix_template(
-        self, input_templates: dict[str, PrefixType]
-    ) -> TextPrefixType:
-        return to_text_prefix(input_templates[self.content.id])
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        return input_slices[self.content.id]
 
 
 def image_generation(

@@ -21,7 +21,7 @@ from lumilake.server.hooks.security import (
     require_permission,
     resolve_accessible_ids,
 )
-from lumilake.utils.job_storage import get_job_storage
+from lumilake.utils.job_storage import InMemoryJobStorage, JobStorage, get_job_storage
 from lumilake_hook import ResourceAction, ResourceKind
 
 router = APIRouter(prefix="/trace", tags=["Trace"])
@@ -74,6 +74,7 @@ class TraceResponse(BaseModel):
 
 
 def _iter_job_records(
+    storage: JobStorage | None = None,
     *,
     org_id: str,
     job_ids: frozenset[str] | None,
@@ -87,7 +88,8 @@ def _iter_job_records(
     so this is deliberately capped. The trace UI lists the most recent
     N synced traces; unbounded pagination would cost too much per hit.
     """
-    storage = get_job_storage()
+    if storage is None:
+        storage = get_job_storage()
     records: list[dict[str, Any]] = []
     for page in range(1, max_pages + 1):
         summaries, total = storage.list_summaries(
@@ -108,6 +110,21 @@ def _iter_job_records(
         if page * page_size >= total:
             break
     return records
+
+
+async def _collect_job_records(
+    *,
+    org_id: str,
+    job_ids: frozenset[str] | None,
+) -> list[dict[str, Any]]:
+    storage = get_job_storage()
+    if isinstance(storage, InMemoryJobStorage):
+        return _iter_job_records(storage, org_id=org_id, job_ids=job_ids)
+    return await asyncio.to_thread(
+        _iter_job_records,
+        org_id=org_id,
+        job_ids=job_ids,
+    )
 
 
 def _trace_ids_from_record(record: dict[str, Any]) -> list[str]:
@@ -174,8 +191,7 @@ async def list_execution_traces(
         ResourceAction.READ,
         hook_logger,
     )
-    records = await asyncio.to_thread(
-        _iter_job_records,
+    records = await _collect_job_records(
         org_id=principal.org_id,
         job_ids=readable_job_ids,
     )
@@ -269,8 +285,7 @@ async def get_execution_trace(
         ResourceAction.READ,
         hook_logger,
     )
-    records = await asyncio.to_thread(
-        _iter_job_records,
+    records = await _collect_job_records(
         org_id=principal.org_id,
         job_ids=readable_job_ids,
     )

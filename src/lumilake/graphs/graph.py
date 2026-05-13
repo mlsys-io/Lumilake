@@ -1,21 +1,9 @@
 from collections import defaultdict
-from collections.abc import Callable, Iterable
-from pathlib import Path
-from typing import Any, Literal, TypeVar, overload
+from collections.abc import Iterable
+from typing import Any, TypeVar, overload
 
-import dill
-import matplotlib.pyplot as plt
-import networkx as nx
-from matplotlib.axes import Axes
-
-from lumilake.common import Slice
-from lumilake.ops import DataOp, InputOp, LLMOp, Op, OutputOp
-from lumilake.utils.graph import detect_wccs, topological_sort
-from lumilake.utils.prefix.radix_tree import (
-    PrefixType,
-    TemplatedNodeDependency,
-    TemplatedRadixTree,
-)
+from lumilake.ops import InputOp, Op, OutputOp
+from lumilake.utils.graph import topological_sort
 
 OpType = TypeVar("OpType", bound=Op)
 
@@ -25,8 +13,6 @@ class CompiledGraph:
         self.graph = graph
         self.inputs = inputs
 
-        self._data_size: int | None = None
-        self._input_slices: dict[str, Slice] | None = None
         self._coalesce_rewrite_hits: dict[str, int] | None = None
         self._coalesce_rewrite_skipped: bool | None = None
 
@@ -41,70 +27,11 @@ class CompiledGraph:
         copied._coalesce_rewrite_skipped = self._coalesce_rewrite_skipped
         return copied
 
-    @classmethod
-    def merge(cls, disjoint_graphs: list["CompiledGraph"]) -> "CompiledGraph":
-        output_ops: list[OutputOp] = []
-        inputs: dict[str, list[str]] = {}
-        input_slices: dict[str, Slice] = {}
-        for disjoint_graph in disjoint_graphs:
-            output_ops.extend(disjoint_graph.graph.output_ops.values())
-            inputs.update(disjoint_graph.inputs)
-            input_slices.update(disjoint_graph.input_slices)
-        merged_graph = Graph.from_ops(output_ops).compile(**inputs)
-        # Update input slices
-        merged_graph._input_slices = input_slices
-        return merged_graph
-
-    @property
-    def data_size(self) -> int:
-        if self._data_size is not None:
-            return self._data_size
-
-        data_size = None
-        for op in self.iter_ops(DataOp):
-            op_data_size = len(op.data)
-            if data_size is None:
-                data_size = op_data_size
-            elif op_data_size != data_size:
-                raise ValueError(
-                    f"Data size mismatch: {data_size} != {op_data_size} for op {op.id}"
-                )
-        for input_name, input_data in self.inputs.items():
-            input_data_size = len(input_data)
-            if data_size is None:
-                data_size = input_data_size
-            elif input_data_size != data_size:
-                raise ValueError(
-                    f"Input data size mismatch: {data_size} != {input_data_size} "
-                    f"for input {input_name}"
-                )
-        if data_size is None:
-            raise ValueError("No data found in the graph or inputs.")
-        return data_size
-
-    @property
-    def input_slices(self) -> dict[str, Slice]:
-        if self._input_slices is not None:
-            return self._input_slices
-
-        data_size = self.data_size
-        input_slices: dict[str, Slice] = self.graph.build_input_slices(data_size)
-        self._input_slices = input_slices
-        return input_slices
-
     def serialize(self) -> dict[str, Any]:
         return {
             "graph": self.graph.serialize(),
             "inputs": self.inputs,
         }
-
-    def recompile(self, check_inputs: bool = True) -> "CompiledGraph":
-        graph = Graph.from_ops(list(self.graph.output_ops.values()))
-        if check_inputs:
-            return graph.compile(**self.inputs)
-        input_ops = graph.input_ops
-        inputs = {name: data for name, data in self.inputs.items() if name in input_ops}
-        return graph.compile(**inputs)
 
     @overload
     def iter_ops(self, op_type: None = None) -> Iterable[Op]: ...
@@ -115,41 +42,8 @@ class CompiledGraph:
     def iter_ops(self, op_type: type[Op] | None = None) -> Iterable[Op]:
         return self.graph.iter_ops(op_type)
 
-    def apply_to_data(self, func: Callable[[list[str]], list[str]]) -> "CompiledGraph":
-        self.graph.apply_to_data(func)
-        self.inputs = {name: func(data) for name, data in self.inputs.items()}
-        return self
-
     def dependencies(self) -> dict[Op, set[Op]]:
         return self.graph.dependencies()
-
-    def build_llm_dependencies(self) -> dict[str, set[LLMOp]]:
-        return self.graph.build_llm_dependencies()
-
-    def build_radix_tree(
-        self,
-        worker_assignment: dict[str, str | None],
-        sliced_op_map: dict[str, str] | None = None,
-    ) -> TemplatedRadixTree:
-        return self.graph.build_radix_tree(worker_assignment, sliced_op_map)
-
-    def disjoint_subgraphs(self) -> list["CompiledGraph"]:
-        """Partitions the graph into disjoint subgraphs based on weakly connected
-        components (WCCs)"""
-        dependencies = {op: deps for op, deps in self.dependencies().items()}
-        wccs = detect_wccs(dependencies)
-
-        graphs: list[CompiledGraph] = []
-        for wcc in wccs:
-            inputs: dict[str, list[str]] = {}
-            output_ops: list[OutputOp] = []
-            for op in wcc:
-                if isinstance(op, InputOp):
-                    inputs[op.name] = self.inputs[op.name]
-                elif isinstance(op, OutputOp):
-                    output_ops.append(op)
-            graphs.append(Graph.from_ops(output_ops).compile(**inputs))
-        return graphs
 
 
 class Graph:
@@ -256,11 +150,6 @@ class Graph:
 
         return Graph.from_ops(output_ops)
 
-    def apply_to_data(self, func: Callable[[list[str]], list[str]]) -> "Graph":
-        for op in self.iter_ops(DataOp):
-            op.data = func(op.data)
-        return self
-
     def dependencies(self) -> dict[Op, set[Op]]:
         """Returns a dependency mapping from op to a set of dependent ops"""
         dependencies: defaultdict[Op, set[Op]] = defaultdict(set)
@@ -269,150 +158,6 @@ class Graph:
                 dependencies[dep].add(op)
         return dict(dependencies)
 
-    def visualize(
-        self,
-        save_to: Path | None = None,
-        ax: Axes | None = None,
-        layout: Literal["spring", "planar", "circular", "kamada_kawai"] | None = None,
-    ) -> nx.Graph:
-        # op_id -> op name
-        op_name_map = {
-            op: f"{op.__class__.__name__}\n({op.id})" for op in self.iter_ops()
-        }
-
-        graph_dict: dict[str, list[str]] = {}
-        node_color: list[str] = []
-        dependencies = self.dependencies()
-        for op in self.iter_ops():
-            op_name = op_name_map[op]
-            if op not in dependencies:
-                graph_dict[op_name] = []
-            else:
-                graph_dict[op_name] = [op_name_map[dep] for dep in dependencies[op]]
-
-            match op:
-                case InputOp():
-                    node_color.append("#ff7f0e")
-                case DataOp():
-                    node_color.append("#2ca02c")
-                case OutputOp():
-                    node_color.append("#d62728")
-                case LLMOp():
-                    node_color.append("#9467bd")
-                case _:
-                    node_color.append("#1f77b4")
-
-        nxgraph = nx.DiGraph(graph_dict)  # type: ignore[arg-type]
-        nx.set_node_attributes(
-            nxgraph, {u: color for u, color in zip(nxgraph.nodes, node_color)}, "color"
-        )
-        if layout is None:
-            pos = None
-        elif layout == "spring":
-            pos = nx.spring_layout(nxgraph)
-        elif layout == "planar":
-            pos = nx.planar_layout(nxgraph)
-        elif layout == "circular":
-            pos = nx.circular_layout(nxgraph)
-        elif layout == "kamada_kawai":
-            pos = nx.kamada_kawai_layout(nxgraph)
-        else:
-            raise ValueError("Invalid layout type.")
-        nx.draw_networkx(nxgraph, pos=pos, node_color=node_color, ax=ax)
-        if save_to is not None:
-            plt.savefig(save_to)
-        return nxgraph
-
-    def _get_llm_dependencies(
-        self, op: Op, llm_dependencies: dict[Op, set[LLMOp]]
-    ) -> set[LLMOp]:
-        """Identifies LLM dependencies for the given op
-
-        Returns
-        -------
-        set[LLMOp]
-            A set of LLM ops depended on.
-        """
-        llm_deps: set[LLMOp] = set()
-        for op_inp in op.inputs:
-            if isinstance(op_inp, LLMOp):
-                # Add the current LLM op as a dependency
-                llm_deps.add(op_inp)
-            else:
-                # Inherit LLM dependencies from the input op
-                llm_deps.update(llm_dependencies[op_inp])
-        return llm_deps
-
-    def build_input_slices(self, data_size: int) -> dict[str, Slice]:
-        input_slices: dict[str, Slice] = {}
-        for op_id, op in self._graph.items():
-            input_slices[op_id] = op.get_input_slice(data_size, input_slices)
-        return input_slices
-
-    def build_llm_dependencies(self) -> dict[str, set[LLMOp]]:
-        """Builds the LLM dependencies for LLM ops in the graph
-
-        Returns
-        -------
-        dict[str, set[LLMOp]]
-            A mapping from op ID to a set of LLM ops depended on.
-        """
-        # Get the LLM ops in topological order (input -> output)
-        llm_dependencies: dict[Op, set[LLMOp]] = {}
-        for op in self.iter_ops():
-            llm_dependencies[op] = self._get_llm_dependencies(op, llm_dependencies)
-        return {
-            op.id: deps
-            for op, deps in llm_dependencies.items()
-            if isinstance(op, LLMOp)
-        }
-
-    def build_prefix_templates(
-        self, sliced_op_map: dict[str, str] | None = None
-    ) -> dict[str, tuple[PrefixType, set[LLMOp]]]:
-        """Builds the prefix templates and LLM dependencies for LLM ops in the graph
-
-        Returns
-        -------
-        dict[str, tuple[PrefixType, set[LLMOp]]]
-            A mapping from op ID to a tuple of prefix template and LLM dependencies
-            (LLM ops depended on).
-        """
-        if sliced_op_map is None:
-            sliced_op_map = {}
-        prefix_templates: dict[str, tuple[PrefixType, set[LLMOp]]] = {}
-
-        input_templates: dict[str, PrefixType] = {}
-        llm_dependencies: dict[Op, set[LLMOp]] = {}
-        for op in self.iter_ops():
-            prefix_template = op.get_prefix_template(input_templates, sliced_op_map)
-            llm_deps = self._get_llm_dependencies(op, llm_dependencies)
-            input_templates[op.id] = prefix_template
-            llm_dependencies[op] = llm_deps
-            if isinstance(op, LLMOp):
-                prefix_templates[op.id] = (
-                    op.get_input_prefix_template(input_templates),
-                    llm_deps,
-                )
-        return prefix_templates
-
-    def build_radix_tree(
-        self,
-        worker_assignment: dict[str, str | None],
-        sliced_op_map: dict[str, str] | None = None,
-    ) -> TemplatedRadixTree:
-        """Builds a templated radix tree from the graph"""
-        prefix_templates = self.build_prefix_templates(sliced_op_map)
-        tree = TemplatedRadixTree()
-        node_dict: dict[str, TemplatedNodeDependency] = {}
-        for op_id, (template, dependencies) in prefix_templates.items():
-            worker = worker_assignment[op_id]
-            assert worker is not None
-            node_deps = {node_dict[dep.id] for dep in dependencies}
-            new_node = tree.add(template, worker, op_id, node_deps)
-            node_dict[op_id] = new_node
-        return tree
-
     def topological_sort(self) -> None:
         dependencies: defaultdict[Op, set[Op]] = defaultdict(set)
         for op in self._graph.values():
@@ -420,49 +165,3 @@ class Graph:
                 dependencies[dep].add(op)
         sorted_ops = topological_sort(dict(dependencies))
         self._graph = {op.id: op for op in sorted_ops}
-
-    def save(
-        self,
-        path: str | Path,
-        query_profiling_info: dict[str, dict[str, Any]] | None,
-    ) -> None:
-        obj = {"graph": self, "query_profiling_info": query_profiling_info}
-        with open(path, "wb") as f:
-            dill.dump(obj, f)
-
-    @classmethod
-    def load(
-        cls,
-        path: str | Path,
-    ) -> tuple["Graph", dict[str, dict[str, Any]] | None]:
-        with open(path, "rb") as f:
-            obj = dill.load(
-                f
-            )  # nosec B301 — local-only graph snapshot, not untrusted input
-        if not isinstance(obj, dict) or "graph" not in obj:
-            raise ValueError("Invalid file format")
-        return obj["graph"], obj.get("query_profiling_info", None)
-
-
-def from_ops(ops: list[OutputOp]) -> Graph:
-    return Graph.from_ops(ops)
-
-
-def from_json(json_graph: dict[str, Any]) -> Graph:
-    return Graph.from_json(json_graph)
-
-
-def save(
-    graph: Graph,
-    path: str | Path,
-    query_profiling_info: dict[str, dict[str, Any]] | None = None,
-) -> None:
-    """Saves the graph to a file"""
-    graph.save(path, query_profiling_info)
-
-
-def load(
-    graph: Graph, path: str | Path
-) -> tuple[Graph, dict[str, dict[str, Any]] | None]:
-    """Loads the graph from a file"""
-    return graph.load(path)

@@ -1,21 +1,14 @@
 import re
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import dill
 
-from lumilake.common import Message, Slice
+from lumilake.common import Message
 from lumilake.ops import ops
 from lumilake.ops.data_ops import DataOp
 from lumilake.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake.utils.func_serialization import safe_materialize_function
-from lumilake.utils.prefix.radix_tree import (
-    Placeholder,
-    PrefixType,
-    TextKeyItem,
-    TextPrefixType,
-    to_text_prefix,
-)
 
 
 @Op.registry.register("FormatOp")
@@ -72,45 +65,6 @@ class FormatOp(FunctionalOp):
         format_args = [other_ops[arg] for arg in data["format_args"]]
         format_kwargs = {k: other_ops[v] for k, v in data["format_kwargs"].items()}
         return cls(data["template"], *format_args, **format_kwargs)
-
-    def _input_signature(self) -> Hashable | None:
-        return None  # Implied in state signature
-
-    def _state_signature(self) -> Hashable | None:
-        return (
-            self.template,
-            tuple(arg.id for arg in self.format_args),
-            tuple((k, v.id) for k, v in self.format_kwargs.items()),
-        )
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> TextPrefixType:
-        formatted = self.template.format(
-            *[f"<|op_id={v.id}|>" for v in self.format_args],
-            **{k: f"<|op_id={v.id}|>" for k, v in self.format_kwargs.items()},
-        )
-        op_ids = re.findall(r"<\|op_id=(\w+?)\|>", formatted)
-        split = re.split(r"<\|op_id=\w+?\|>", formatted)
-        template: list[TextKeyItem] = []
-        for s, op_id in zip(split, op_ids):
-            if s:
-                template.append(s)
-            op_template = to_text_prefix(input_templates[op_id])
-            template.extend(op_template)
-        s = split[-1]
-        if s:
-            template.append(s)
-        return tuple(template)
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        if len(self.inputs) == 0:
-            raise ValueError("No inputs found.")
-        input_slice = input_slices[self.inputs[0].id]
-        for inp in self.inputs[1:]:
-            if input_slices[inp.id] != input_slice:
-                raise ValueError("Different input slices found.")
-        return input_slice
 
 
 def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) -> Op:
@@ -192,25 +146,6 @@ class LambdaOp(Op):
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
         return cls(inputs=input_ops, fn=fn, code=code)
-
-    def _state_signature(self) -> Hashable | None:
-        return self.id  # Merging LambdaOps is not supported
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> PrefixType:
-        op_id = self.id
-        op_id = sliced_op_map.get(op_id, op_id)
-        return (Placeholder(op_id),)
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        if len(self.inputs) == 0:
-            raise ValueError("No inputs found.")
-        input_slice = input_slices[self.inputs[0].id]
-        for inp in self.inputs[1:]:
-            if input_slices[inp.id] != input_slice:
-                raise ValueError("Different input slices found.")
-        return input_slice
 
 
 def lambda_op(

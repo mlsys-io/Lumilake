@@ -1,17 +1,8 @@
-from collections.abc import Hashable, Sequence
+from collections.abc import Sequence
 from typing import Any, cast
 
-from lumilake.common import Message, Slice
+from lumilake.common import Message
 from lumilake.ops.ops import FunctionalOp, Op
-from lumilake.utils.prefix.radix_tree import (
-    MessageKeyItem,
-    MessagePrefixType,
-    Placeholder,
-    PrefixType,
-    TextPrefixType,
-    prefix_message,
-    to_text_prefix,
-)
 from lumilake.utils.utils import check_and_cast_list
 
 
@@ -42,19 +33,6 @@ class DataOp(FunctionalOp):
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "DataOp":
         return cls(data=data["data"])
 
-    def _state_signature(self) -> Hashable | None:
-        return self.id  # Merging DataOps is not supported
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> TextPrefixType:
-        op_id = self.id
-        op_id = sliced_op_map.get(op_id, op_id)
-        return (Placeholder(op_id),)
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        return Slice((0, data_size))
-
 
 @Op.registry.register("DataRetrievalOp")
 class DataRetrievalOp(FunctionalOp):
@@ -75,20 +53,6 @@ class DataRetrievalOp(FunctionalOp):
     ) -> "DataRetrievalOp":
         inputs = [other_ops[op_id] for op_id in data.get("_inputs", [])]
         return cls(data_spec=data["data_spec"], inputs=inputs)
-
-    def _state_signature(self) -> Hashable | None:
-        return self.id
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> TextPrefixType:
-        op_id = sliced_op_map.get(self.id, self.id)
-        return (Placeholder(op_id),)
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        if not self.inputs:
-            return Slice((0, data_size))
-        return input_slices[self.inputs[0].id]
 
 
 @Op.registry.register("MessageOp")
@@ -150,36 +114,6 @@ class MessageOp(FunctionalOp):
         ]
         return cls(messages)
 
-    def _input_signature(self) -> Hashable | None:
-        return None  # Implied in state signature
-
-    def _state_signature(self) -> Hashable | None:
-        return tuple((msg.role, msg.content_or_id()) for msg in self.messages)
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> MessagePrefixType:
-        template: list[MessageKeyItem] = []
-        for message in self.messages:
-            message_template = (
-                (message.content,)
-                if isinstance(message.content, str)
-                else input_templates[message.content.id]
-            )
-            template.extend(
-                prefix_message(message.role, to_text_prefix(message_template))
-            )
-        return tuple(template)
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        if len(self.inputs) == 0:
-            raise ValueError("No inputs found.")
-        input_slice = input_slices[self.inputs[0].id]
-        for inp in self.inputs[1:]:
-            if input_slices[inp.id] != input_slice:
-                raise ValueError("Different input slices found.")
-        return input_slice
-
 
 def message_data(data: Sequence[Message | OpMessage]) -> MessageOp:
     return MessageOp(
@@ -209,19 +143,6 @@ class InputOp(FunctionalOp):
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "InputOp":
         return cls(name=data["name"])
 
-    def _state_signature(self) -> Hashable | None:
-        return self.id  # Merging InputOps is not supported
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> TextPrefixType:
-        op_id = self.id
-        op_id = sliced_op_map.get(op_id, op_id)
-        return (Placeholder(op_id),)
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        return Slice((0, data_size))
-
 
 def input_placeholder(name: str) -> InputOp:
     return InputOp(name)
@@ -249,17 +170,6 @@ class OutputOp(FunctionalOp):
         if len(input_ids) != 1:
             raise ValueError("OutputOp must have exactly one input")
         return cls(name=data["name"], output=other_ops[input_ids[0]])
-
-    def _state_signature(self) -> Hashable | None:
-        return self.id  # Merging OutputOps is not supported
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> PrefixType:
-        return input_templates[self.op.id]
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        return input_slices[self.op.id]
 
 
 def as_output(name: str, output: list[str] | Op) -> OutputOp:

@@ -1,10 +1,9 @@
 import copy
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
 from typing import Any, Self, TypeVar
 
-from lumilake.common import Message, Slice
-from lumilake.utils.prefix.radix_tree import PrefixType
+from lumilake.common import Message
 from lumilake.utils.utils import unique_id
 
 T = TypeVar("T")
@@ -97,11 +96,6 @@ class Op(ABC):
         self._traverse_graph(graph)
         return graph
 
-    def replace_input(self, old_op: "Op", new_op: "Op") -> None:
-        for i, op in enumerate(self.inputs):
-            if op.id == old_op.id:
-                self.inputs[i] = new_op
-
     @abstractmethod
     def _serialize(self) -> dict[str, Any]:
         pass
@@ -129,34 +123,6 @@ class Op(ABC):
 
     def __hash__(self) -> int:
         return hash(self.id)
-
-    def signature(self) -> Hashable:
-        state_signature = self._state_signature()
-        if state_signature == self.id:
-            return self.id  # Guaranteed to be unique
-        input_signature = self._input_signature()
-        if state_signature is None:
-            return (self.__class__, input_signature)
-        if input_signature is None:
-            return (self.__class__, state_signature)
-        return (self.__class__, input_signature, state_signature)
-
-    def _input_signature(self) -> Hashable | None:
-        return tuple(op.id for op in self.inputs)
-
-    @abstractmethod
-    def _state_signature(self) -> Hashable | None:
-        pass
-
-    @abstractmethod
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> PrefixType:
-        pass
-
-    @abstractmethod
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        pass
 
 
 class FunctionalOp(Op):
