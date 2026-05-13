@@ -63,8 +63,8 @@ uv run pre-commit run --all-files
 ## Testing
 
 ```bash
-uv run pytest tests/       # Full test suite
-uv run pytest tests/cli/   # CLI-only
+uv run pytest tests/ --ignore=tests/server  # Default unit suite
+uv run pytest tests/cli/                     # CLI-only
 ```
 
 ## Dependency Management
@@ -94,7 +94,7 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 - **Title format** (enforced by CI): `type(scope): description`. Allowed types: `feat, fix, refactor, chore, test, perf, build, ci, docs`. Scope is optional. Prefix with `[BREAKING]` for breaking changes.
 - Keep PRs focused. Split unrelated changes into separate PRs.
 - Fill in the PR template's Purpose / Changes / Design / Test Plan sections.
-- Run `uv run pre-commit run --all-files` and `uv run pytest tests/` locally before opening the PR.
+- Run `uv run pre-commit run --all-files` and `uv run pytest tests/ --ignore=tests/server` locally before opening the PR.
 - If you changed a dependency, update `uv.lock`.
 
 ## CI Workflows
@@ -102,7 +102,7 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `lint-typecheck` | PR / main push | `pre-commit run --all-files` |
-| `unit-tests` | PR / main push | `pytest tests/` |
+| `unit-tests` | PR / main push | `pytest tests/ --ignore=tests/server` |
 | `env-examples` | PR / main push | Validates `.env.example` against the deploy-time env contract |
 | `package-build` | PR / main push | Builds wheel/sdist and smoke-tests the package |
 | `security` | PR / main push | Runs workflow audit, secret scan, Bandit, and dependency audit |

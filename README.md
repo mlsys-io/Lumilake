@@ -160,7 +160,7 @@ A minimal in-memory plugin is available under `examples/plugins/simple_plugin/`.
 uv sync --group lint --group test --extra cli
 uv run pre-commit install --install-hooks -t pre-commit -t prepare-commit-msg -t commit-msg
 uv run pre-commit run --all-files
-uv run pytest tests/
+uv run pytest tests/ --ignore=tests/server
 ```
 
 After changing dependencies, run:

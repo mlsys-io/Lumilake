@@ -1,6 +1,6 @@
 # AGENTS.md - Lumilake
 
-Routing doc for coding agents (Claude Code, Codex, Cursor, etc.) working in this repository. The full project rules live in dedicated docs; read the ones relevant to your task before editing.
+Routing doc for coding agents (Claude Code, Codex, Cursor, etc.) working in this repository. The full project rules live in dedicated docs; read the ones relevant to your task before editing. This file is intentionally pointer-first: link to the source of truth instead of copying details here, because specifics drift and pointers do not.
 
 Lumilake is a data analytics engine for agentic workflows. It accepts workflow specs, optimizes the runtime graph with HALO, dispatches work through FlowMesh, and stores progress, results, traces, and artifacts through the archive layer.
 
@@ -28,6 +28,7 @@ The full justification lives in the linked docs; these are the rules that come u
 - **No back-compat shims**: replace old paths outright; do not keep aliases, re-exports, no-op stubs, or dual contracts for unreleased behavior.
 - **Imports stay at the top** unless a real circular import or optional heavy dependency forces otherwise.
 - **Prefer typed models and explicit fields** over untyped dicts, dynamic `setattr`, or `getattr` for known attributes.
+- **Scratch**: never commit throwaway scripts, local experiments, or generated debug output.
 - **Use `uv run ...`** for local commands. Run the relevant checks from `CONTRIBUTING.md` before pushing.
 - **Cluster management goes through Lumilake CLI/SDK/deploy helpers**. Raw Docker commands are for unsupported diagnostics only.
 
