@@ -86,7 +86,7 @@ skip = [".venv"]
 
 [tool.ruff]
 target-version = "py312"
-exclude = [".venv", "agent_space"]
+exclude = [".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "I"]
