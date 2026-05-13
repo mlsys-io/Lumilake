@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "envs.S3_* reads are config lookups, not literal secrets"
+regexes = [
+  '''envs\.S3_(SECRET_KEY|CONNECTION_VALUE|ACCESS_KEY)''',
+]

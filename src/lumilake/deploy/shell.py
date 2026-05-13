@@ -2,7 +2,6 @@
 
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -114,13 +113,3 @@ def wait_healthy(container: str, timeout: int = 60) -> None:
         if tail:
             sys.stderr.write(tail)
     raise DeployError(f"{container} did not become healthy in {timeout}s")
-
-
-def host_ip() -> str:
-    """Return the host's primary LAN IP, falling back to 127.0.0.1."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.connect(("10.255.255.255", 1))
-            return sock.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"

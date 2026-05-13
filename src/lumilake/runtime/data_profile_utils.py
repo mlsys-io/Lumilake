@@ -502,7 +502,7 @@ def _compute_minio_listing() -> tuple[dict[str, int | None], list[str]]:
         endpoint=endpoint,
         access_key=access_key,
         secret_key=connection_value,
-        cert_file=envs.S3_CERT_LOCATION,
+        cert_file=envs.S3_CERT_FILE,
     )
     sizes: dict[str, int | None] = {}
     folders: set[str] = set()

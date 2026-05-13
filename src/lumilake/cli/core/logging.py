@@ -7,15 +7,6 @@ import typer
 LOG_LEVEL: int = logging.INFO
 
 
-def get_level() -> int:
-    return LOG_LEVEL
-
-
-def set_level(level: int) -> None:
-    global LOG_LEVEL
-    LOG_LEVEL = level
-
-
 def log(
     message: str, level: int = logging.INFO, color: str | None = None, err: bool = False
 ) -> None:

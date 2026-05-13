@@ -36,7 +36,7 @@ def load_env_file_or_raise() -> None:
     if os.environ.get("LUMILAKE_SKIP_DOTENV_CHECK"):
         return
     raise FileNotFoundError(
-        "No .env file found. Copy .env.template to .env, or set "
+        "No .env file found. Copy .env.example to .env, or set "
         "LUMILAKE_SKIP_DOTENV_CHECK=1 if you are deploying via Docker "
         "where env vars are injected directly."
     )
@@ -165,13 +165,9 @@ def _parse_s3_url(
 
 S3_URL: str | None = os.getenv("S3_URL") or None
 
-S3_ENDPOINT, S3_ACCESS_KEY, S3_CONNECTION_VALUE, S3_PUBLIC_DATA_PREFIX = _parse_s3_url(
-    S3_URL
-)
+S3_ENDPOINT, S3_ACCESS_KEY, S3_CONNECTION_VALUE, _ = _parse_s3_url(S3_URL)
 S3_CERT_FILE: str | None = os.getenv("S3_CERT_FILE")
 S3_USER_DATA_PREFIX: str | None = os.getenv("S3_USER_DATA_PREFIX")
-
-S3_CERT_LOCATION: str | None = S3_CERT_FILE
 
 S3_ARCHIVE_PREFIX: str | None = os.getenv("S3_ARCHIVE_PREFIX")
 
@@ -184,12 +180,6 @@ LUMILAKE_IMAGE_TAG: str = os.environ.get("LUMILAKE_IMAGE_TAG", "")
 REDIS_TLS_DIR: str = os.environ.get("REDIS_TLS_DIR", "")
 SERVER_TLS_DIR: str = os.environ.get("SERVER_TLS_DIR", "")
 SERVER_WORKER_CONFIG: str = os.environ.get("SERVER_WORKER_CONFIG", "")
-
-_lumilake_timeout_raw = os.environ.get("LUMILAKE_TIMEOUT")
-LUMILAKE_TIMEOUT: float | None = (
-    float(_lumilake_timeout_raw) if _lumilake_timeout_raw else None
-)
-LUMILAKE_BASE_URL: str | None = os.environ.get("LUMILAKE_BASE_URL") or None
 
 
 @overload

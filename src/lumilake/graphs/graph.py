@@ -9,7 +9,7 @@ import networkx as nx
 from matplotlib.axes import Axes
 
 from lumilake.common import Slice
-from lumilake.ops import CacheFetchOp, DataOp, FutureOp, InputOp, LLMOp, Op, OutputOp
+from lumilake.ops import DataOp, InputOp, LLMOp, Op, OutputOp
 from lumilake.utils.graph import detect_wccs, topological_sort
 from lumilake.utils.prefix.radix_tree import (
     PrefixType,
@@ -79,18 +79,7 @@ class CompiledGraph:
                     f"for input {input_name}"
                 )
         if data_size is None:
-            # Check CacheFetchOp
-            for cache_op in self.iter_ops(CacheFetchOp):
-                op_data_size = len(cache_op.cached_data)
-                if data_size is None:
-                    data_size = op_data_size
-                elif op_data_size != data_size:
-                    raise ValueError(
-                        f"Data size mismatch: {data_size} != {op_data_size} for op"
-                        f" {cache_op.id}"
-                    )
-            if data_size is None:
-                raise ValueError("No data found in the graph or inputs.")
+            raise ValueError("No data found in the graph or inputs.")
         return data_size
 
     @property
@@ -131,8 +120,8 @@ class CompiledGraph:
         self.inputs = {name: func(data) for name, data in self.inputs.items()}
         return self
 
-    def dependencies(self, include_loop: bool = True) -> dict[Op, set[Op]]:
-        return self.graph.dependencies(include_loop)
+    def dependencies(self) -> dict[Op, set[Op]]:
+        return self.graph.dependencies()
 
     def build_llm_dependencies(self) -> dict[str, set[LLMOp]]:
         return self.graph.build_llm_dependencies()
@@ -179,14 +168,6 @@ class Graph:
                 if op.name in self._output_ops:
                     raise ValueError(f"Duplicate output name: {op.name}")
                 self._output_ops[op.name] = op
-
-        # Resolve FutureOps. This is needed to
-        # 1. Remove the wrapped op from its dependencies after graph traversal to
-        # allow scheduling.
-        # 2. set the op attribute to point to the wrapped op.
-        for op in graph.values():
-            if isinstance(op, FutureOp):
-                op.resolve(graph)
 
         # Sort the graph in topological order.
         self.topological_sort()
@@ -270,9 +251,7 @@ class Graph:
         output_ops: list[OutputOp] = []
         for new_op in node_map.values():
             new_op.inputs = [node_map[inp] for inp in new_op.inputs]
-            if isinstance(new_op, FutureOp):
-                new_op.update(node_map[new_op.op])
-            elif isinstance(new_op, OutputOp):
+            if isinstance(new_op, OutputOp):
                 output_ops.append(new_op)
 
         return Graph.from_ops(output_ops)
@@ -282,17 +261,12 @@ class Graph:
             op.data = func(op.data)
         return self
 
-    def dependencies(self, include_loop: bool = True) -> dict[Op, set[Op]]:
+    def dependencies(self) -> dict[Op, set[Op]]:
         """Returns a dependency mapping from op to a set of dependent ops"""
         dependencies: defaultdict[Op, set[Op]] = defaultdict(set)
         for op in self._graph.values():
             for dep in op.inputs:
                 dependencies[dep].add(op)
-                if isinstance(dep, FutureOp) and include_loop:
-                    # Also add dependent ops to the wrapped ops.
-                    dep_op = dep.op
-                    assert dep_op is not None
-                    dependencies[dep_op].add(op)
         return dict(dependencies)
 
     def visualize(
@@ -325,8 +299,6 @@ class Graph:
                     node_color.append("#d62728")
                 case LLMOp():
                     node_color.append("#9467bd")
-                case CacheFetchOp():
-                    node_color.append("#8c564b")
                 case _:
                     node_color.append("#1f77b4")
 
@@ -373,15 +345,8 @@ class Graph:
 
     def build_input_slices(self, data_size: int) -> dict[str, Slice]:
         input_slices: dict[str, Slice] = {}
-        future_ops: list[FutureOp] = []
         for op_id, op in self._graph.items():
-            if isinstance(op, FutureOp):
-                future_ops.append(op)
-            else:
-                input_slices[op_id] = op.get_input_slice(data_size, input_slices)
-        # Resolve FutureOps
-        for op in future_ops:
-            input_slices[op.id] = op.get_input_slice(data_size, input_slices)
+            input_slices[op_id] = op.get_input_slice(data_size, input_slices)
         return input_slices
 
     def build_llm_dependencies(self) -> dict[str, set[LLMOp]]:

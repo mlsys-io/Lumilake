@@ -131,15 +131,6 @@ class BaseClient:
     def post(self, path: str, **kwargs: Any) -> httpx.Response:
         return self.request("POST", path, **kwargs)
 
-    def put(self, path: str, **kwargs: Any) -> httpx.Response:
-        return self.request("PUT", path, **kwargs)
-
-    def delete(self, path: str, **kwargs: Any) -> httpx.Response:
-        return self.request("DELETE", path, **kwargs)
-
-    def patch(self, path: str, **kwargs: Any) -> httpx.Response:
-        return self.request("PATCH", path, **kwargs)
-
     def close(self) -> None:
         if self._owns_client:
             self._http.close()
@@ -200,15 +191,6 @@ class BaseAsyncClient:
 
     async def post(self, path: str, **kwargs: Any) -> httpx.Response:
         return await self.request("POST", path, **kwargs)
-
-    async def put(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self.request("PUT", path, **kwargs)
-
-    async def delete(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self.request("DELETE", path, **kwargs)
-
-    async def patch(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self.request("PATCH", path, **kwargs)
 
     async def close(self) -> None:
         if self._owns_client:

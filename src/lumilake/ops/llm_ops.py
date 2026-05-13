@@ -63,69 +63,6 @@ class LLMOp(Op):
         raise NotImplementedError()
 
 
-@Op.registry.register("LLMCompletionOp")
-class LLMCompletionOp(LLMOp):
-    echo: bool
-
-    def __init__(
-        self,
-        prompt: list[str] | Op,
-        config: GenerationConfig | None = None,
-        echo: bool = False,
-        cacheable: bool = False,
-    ) -> None:
-        prompt = prompt if isinstance(prompt, Op) else DataOp(data=prompt)
-        super().__init__([prompt], config, cacheable)
-        self.echo = echo
-
-    @property
-    def prompt(self) -> Op:
-        return self.inputs[0]
-
-    def _serialize(self) -> dict[str, Any]:
-        return dict(
-            prompt=self.prompt.id,
-            config=self.config.to_dict(),
-            echo=self.echo,
-            cacheable=self.cacheable,
-        )
-
-    @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "LLMCompletionOp":
-        config = GenerationConfig(**data["config"])
-        return cls(other_ops[data["prompt"]], config, data["echo"], data["cacheable"])
-
-    def _state_signature(self) -> Hashable | None:
-        return (tuple(self.config.to_dict().items()), self.echo, self.cacheable)
-
-    def get_prefix_template(
-        self, input_templates: dict[str, PrefixType], sliced_op_map: dict[str, str]
-    ) -> TextPrefixType:
-        op_id = self.id
-        op_id = sliced_op_map.get(op_id, op_id)
-        history = self.get_input_prefix_template(input_templates) if self.echo else ()
-        return history + (Placeholder(op_id),)
-
-    def get_input_prefix_template(
-        self, input_templates: dict[str, PrefixType]
-    ) -> TextPrefixType:
-        return to_text_prefix(input_templates[self.prompt.id])
-
-    def get_input_slice(self, data_size: int, input_slices: dict[str, Slice]) -> Slice:
-        return input_slices[self.prompt.id]
-
-
-def llm_completion(
-    prompt: list[str] | Op,
-    config: GenerationConfig | None = None,
-    echo: bool = False,
-    cacheable: bool = False,
-) -> LLMCompletionOp:
-    return LLMCompletionOp(prompt, config, echo, cacheable)
-
-
 @Op.registry.register("LLMChatOp")
 class LLMChatOp(LLMOp):
     config: GenerationConfig

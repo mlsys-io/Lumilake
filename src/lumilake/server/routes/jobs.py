@@ -981,7 +981,7 @@ def _compute_minio_client():
         endpoint=endpoint,
         access_key=access_key,
         secret_key=connection_value,
-        cert_file=envs.S3_CERT_LOCATION,
+        cert_file=envs.S3_CERT_FILE,
     )
 
 

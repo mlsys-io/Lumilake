@@ -11,12 +11,6 @@ class WorkerStatus(StrEnum):
     BUSY = "BUSY"
 
 
-class WorkerElasticStateResponse(BaseModel):
-    worker_id: str = Field(description="Worker identifier.")
-    enabled: bool = Field(description="Requested enabled state.")
-    elastic_disabled: bool = Field(description="Current elastic disabled flag.")
-
-
 class CPUInfo(BaseModel):
     logical_cores: int = Field(description="Number of logical CPU cores.")
     model: str = Field(description="CPU model name.")
@@ -51,10 +45,6 @@ class WorkerHardware(BaseModel):
     memory: MemoryInfo = Field(description="Memory information.")
     gpu: GpuPlatformInfo = Field(description="GPU information.")
     network: NetworkInfo = Field(description="Network information.")
-
-
-class HardwareUsage(BaseModel):
-    gpu: GpuPlatformInfo = Field(description="GPU information.")
 
 
 class Worker(BaseModel):

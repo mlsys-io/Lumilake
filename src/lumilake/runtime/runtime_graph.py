@@ -12,13 +12,11 @@ from lumilake import envs
 from lumilake.graphs import CompiledGraph
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake.ops import (
-    AppendMessageOp,
     DataOp,
     DataRetrievalOp,
     FormatOp,
     InputOp,
     LambdaOp,
-    LastMessageOp,
     LLMOp,
     MessageOp,
     Op,
@@ -511,7 +509,7 @@ class RuntimeGraphBuilder:
     def _resolve_s3_cert_data(self, spec: dict[str, Any]) -> str | None:
         """Return cert_data for an S3 spec — explicit on the spec wins, else env.
 
-        Parsers stay environment-agnostic (don't read ``S3_CERT_LOCATION`` at
+        Parsers stay environment-agnostic (don't read ``S3_CERT_FILE`` at
         parse time), so the same workflow compiles to identical specs across
         environments. Cert resolution lives here, at the runtime-builder
         layer that already touches the worker config.
@@ -519,14 +517,14 @@ class RuntimeGraphBuilder:
         cert_data = spec.get("cert_data")
         if isinstance(cert_data, str):
             return cert_data
-        if not envs.S3_CERT_LOCATION:
+        if not envs.S3_CERT_FILE:
             return None
         try:
-            return Path(envs.S3_CERT_LOCATION).read_text(encoding="utf-8")
+            return Path(envs.S3_CERT_FILE).read_text(encoding="utf-8")
         except OSError as exc:
             self.logger.warning(
                 "Failed to read S3 cert from %s: %s",
-                envs.S3_CERT_LOCATION,
+                envs.S3_CERT_FILE,
                 exc,
             )
             return None
@@ -1335,19 +1333,6 @@ class RuntimeGraphBuilder:
                                 " Please check if this is intended."
                             )
                             ancestor_buffer[op.id].append((Roles(message.role), msg))
-
-            elif isinstance(op, AppendMessageOp):
-                assert (
-                    len(op.inputs) == 2
-                ), "AppendMessageOp should have exactly two inputs"
-                messages = sum([_trace_ancestors(inp_op) for inp_op in op.inputs], [])
-                ancestor_buffer[op.id] = messages
-
-            elif isinstance(op, LastMessageOp):
-                assert (
-                    len(op.inputs) == 1
-                ), "LastMessageOp should have exactly one input"
-                ancestor_buffer[op.id] = _trace_ancestors(op.inputs[0])[-1:]
 
             elif isinstance(op, FormatOp):
                 assert len(op.inputs) >= 1, "FormatOp should have at least one input"
