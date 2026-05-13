@@ -1,0 +1,35 @@
+name: Lint / Format / Typecheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint + typecheck
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run pre-commit hooks
+        run: uv run pre-commit run --all-files --show-diff-on-failure

@@ -1,0 +1,45 @@
+repos:
+  - repo: https://github.com/pycqa/isort
+    rev: 8.0.1
+    hooks:
+      - id: isort
+
+  - repo: https://github.com/psf/black
+    rev: 25.12.0
+    hooks:
+      - id: black
+        language_version: python3.12
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.10
+    hooks:
+      - id: ruff-check
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.2
+    hooks:
+      - id: codespell
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: auto-signoff
+        name: Auto-append DCO sign-off
+        entry: scripts/ci/prepare_commit_msg.sh
+        language: script
+        stages: [prepare-commit-msg]
+        always_run: true
+
+      - id: check-signoff
+        name: Check commit sign-off (DCO)
+        entry: scripts/ci/check_signoff.sh
+        language: script
+        stages: [commit-msg]
+        always_run: true

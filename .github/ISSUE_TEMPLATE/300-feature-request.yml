@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest a new capability for Lumilake.
+title: "[Feature]: "
+labels: ["enhancement"]
+
+body:
+  - type: textarea
+    attributes:
+      label: Problem
+      description: |
+        What are you trying to do today and why is it hard?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      description: |
+        How would you like it to work? Sketch an API / CLI shape if helpful.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+      description: |
+        Workarounds you've tried, or alternate designs you considered.
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true

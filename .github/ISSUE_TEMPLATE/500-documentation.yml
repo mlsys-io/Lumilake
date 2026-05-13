@@ -1,0 +1,36 @@
+name: Documentation
+description: Something in the docs, README, or CONTRIBUTING is unclear, wrong, or missing.
+title: "[Docs]: "
+labels: ["documentation"]
+
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: |
+        Path to the file, or URL of the page. e.g. ``README.md``, ``CONTRIBUTING.md``, ``CLAUDE.md``, ``docs/``.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: What's wrong or missing?
+      description: |
+        Quote the specific text if it's misleading, or describe what you
+        were looking for and couldn't find.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Suggested fix
+      description: |
+        Proposed replacement text or new section outline, if you have one.
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true

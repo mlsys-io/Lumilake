@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras
+
+      - name: Create test .env
+        run: |
+          cat > .env << 'ENVEOF'
+          LUMILAKE_OPTIMIZER_TYPE="halo"
+          LUMILAKE_SERVER_HOST="127.0.0.1"
+          LUMILAKE_SERVER_PORT="9000"
+          LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:7000"
+          LUMILAKE_RUNTIME_TOKEN="test-token"
+          STATE_S3_ENDPOINT="127.0.0.1:9100"
+          STATE_S3_ACCESS_KEY="test"
+          STATE_S3_SECRET_KEY="test"
+          STATE_S3_PREFIX="test-bucket/state"
+          DATABASE_URL="postgresql://test:test@127.0.0.1:5432/test"
+          S3_ENDPOINT="127.0.0.1:9100"
+          S3_ACCESS_KEY="test"
+          S3_SECRET_KEY="test"
+          S3_DATA_PREFIX="test-bucket/data"
+          ENVEOF
+          sed -i 's/^[[:space:]]*//' .env
+
+      - name: Run tests
+        run: uv run pytest tests/ -v

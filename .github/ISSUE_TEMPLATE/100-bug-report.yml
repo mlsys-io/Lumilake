@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a bug in Lumilake.
+title: "[Bug]: "
+labels: ["bug"]
+
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Before submitting, please search
+        [existing issues](https://github.com/mlsys-io/lumilake/issues?q=is%3Aissue+sort%3Acreated-desc+)
+        to avoid duplicates.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which component is affected?
+      options:
+        - Server / API routes
+        - Runtime / scheduler / optimizer
+        - Ops / operators
+        - CLI (lumilake)
+        - Deploy / Docker
+        - Graphs / YAML / n8n parser
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Describe the bug
+      description: |
+        A clear description of the bug. Include:
+        - What you expected to happen
+        - What actually happened
+        - Steps to reproduce (.env snippets, workflow YAML, CLI commands)
+        - Full error message / traceback if applicable
+
+        Wrap logs and code in triple-backtick blocks.
+      placeholder: |
+        Steps to reproduce:
+        1. ...
+        2. ...
+
+        ```yaml
+        # .env or workflow YAML excerpt
+        ```
+
+        ```
+        Error traceback
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Environment
+      description: |
+        Please provide your environment details:
+        - Lumilake version / commit
+        - Python version
+        - OS
+        - Docker version (if using containers)
+      value: |
+        - Lumilake version:
+        - Python version:
+        - OS:
+        - Docker version:
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: >
+        Any other context, screenshots, or log files.
+
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues and confirmed this is not a duplicate.
+          required: true
