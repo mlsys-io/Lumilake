@@ -86,7 +86,7 @@ The Docker image installs from `pyproject.toml` directly via `pip install .` on 
 uv sync --group test --group lint
 
 # Environment for a local run — can be exported or placed in .env
-cp .env.template .env
+cp .env.example .env
 $EDITOR .env
 
 uv run python -m lumilake.server.main

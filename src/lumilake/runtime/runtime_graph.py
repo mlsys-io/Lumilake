@@ -12,13 +12,11 @@ from lumilake import envs
 from lumilake.graphs import CompiledGraph
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake.ops import (
-    AppendMessageOp,
     DataOp,
     DataRetrievalOp,
     FormatOp,
     InputOp,
     LambdaOp,
-    LastMessageOp,
     LLMOp,
     MessageOp,
     Op,
@@ -49,9 +47,6 @@ class Roles(Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
-
-
-REF_TOKEN_PREFIX = "__lumilake_ref__:"
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -511,7 +506,7 @@ class RuntimeGraphBuilder:
     def _resolve_s3_cert_data(self, spec: dict[str, Any]) -> str | None:
         """Return cert_data for an S3 spec — explicit on the spec wins, else env.
 
-        Parsers stay environment-agnostic (don't read ``S3_CERT_LOCATION`` at
+        Parsers stay environment-agnostic (don't read ``S3_CERT_FILE`` at
         parse time), so the same workflow compiles to identical specs across
         environments. Cert resolution lives here, at the runtime-builder
         layer that already touches the worker config.
@@ -519,14 +514,14 @@ class RuntimeGraphBuilder:
         cert_data = spec.get("cert_data")
         if isinstance(cert_data, str):
             return cert_data
-        if not envs.S3_CERT_LOCATION:
+        if not envs.S3_CERT_FILE:
             return None
         try:
-            return Path(envs.S3_CERT_LOCATION).read_text(encoding="utf-8")
+            return Path(envs.S3_CERT_FILE).read_text(encoding="utf-8")
         except OSError as exc:
             self.logger.warning(
                 "Failed to read S3 cert from %s: %s",
-                envs.S3_CERT_LOCATION,
+                envs.S3_CERT_FILE,
                 exc,
             )
             return None
@@ -1336,19 +1331,6 @@ class RuntimeGraphBuilder:
                             )
                             ancestor_buffer[op.id].append((Roles(message.role), msg))
 
-            elif isinstance(op, AppendMessageOp):
-                assert (
-                    len(op.inputs) == 2
-                ), "AppendMessageOp should have exactly two inputs"
-                messages = sum([_trace_ancestors(inp_op) for inp_op in op.inputs], [])
-                ancestor_buffer[op.id] = messages
-
-            elif isinstance(op, LastMessageOp):
-                assert (
-                    len(op.inputs) == 1
-                ), "LastMessageOp should have exactly one input"
-                ancestor_buffer[op.id] = _trace_ancestors(op.inputs[0])[-1:]
-
             elif isinstance(op, FormatOp):
                 assert len(op.inputs) >= 1, "FormatOp should have at least one input"
                 message_labels = {
@@ -1438,144 +1420,11 @@ class RuntimeGraphBuilder:
 
         return list(upstream_llm_ids), step_config
 
-    def _build_sql_template(
-        self,
-        table: str,
-        filters: list[tuple[str, str, Any]],
-        locked_columns: list[str],
-        limit: Any,
-        inputs_dict: dict[str, list[str]],
-    ) -> tuple[str, list[dict[str, Any]]]:
-        select_cols = (
-            ", ".join(self._quote_column_ref(col) for col in locked_columns)
-            if locked_columns
-            else "*"
-        )
-        params: list[dict[str, Any]] = []
-        seen_labels: set[str] = set()
-
-        def add_param(label: str, payload: dict[str, Any]) -> None:
-            if label in seen_labels:
-                return
-            seen_labels.add(label)
-            params.append({"label": label, **payload})
-
-        def sql_literal(value: Any) -> str:
-            if value is None:
-                return "NULL"
-            if isinstance(value, bool):
-                return "TRUE" if value else "FALSE"
-            if isinstance(value, (int, float)):
-                return str(value)
-            if isinstance(value, str):
-                escaped = value.replace("'", "''")
-                return f"'{escaped}'"
-            escaped = str(value).replace("'", "''")
-            return f"'{escaped}'"
-
-        filter_clauses: list[str] = []
-        for col, op, val in filters:
-            clause_label = self._sql_param_label(col, op)
-            placeholder = f"{{{clause_label}}}"
-            if isinstance(val, InputOp):
-                assert val.name in inputs_dict, (
-                    f"Unknown input name: {val.name}, available inputs:"
-                    f" {list(inputs_dict.keys())}"
-                )
-                label = clause_label
-                add_param(
-                    label,
-                    {
-                        "data": {
-                            "type": "list",
-                            "items": inputs_dict[val.name],
-                        }
-                    },
-                )
-                filter_clauses.append(
-                    f"{self._quote_column_ref(col)} {op} '{placeholder}'"
-                )
-            elif isinstance(val, Op):
-                label = clause_label
-                add_param(label, {"node": val.id, "path": "items.output"})
-                filter_clauses.append(
-                    f"{self._quote_column_ref(col)} {op} '{placeholder}'"
-                )
-            elif isinstance(val, str) and val.startswith(REF_TOKEN_PREFIX):
-                ref_node_id, ref_path = self._decode_ref_token(val)
-                label = clause_label
-                add_param(label, {"node": ref_node_id, "path": ref_path})
-                filter_clauses.append(
-                    f"{self._quote_column_ref(col)} {op} '{placeholder}'"
-                )
-            elif isinstance(val, (list, tuple)):
-                values = ", ".join(sql_literal(item) for item in val)
-                filter_clauses.append(f"{self._quote_column_ref(col)} {op} ({values})")
-            else:
-                filter_clauses.append(
-                    f"{self._quote_column_ref(col)} {op} {sql_literal(val)}"
-                )
-
-        query = f"SELECT {select_cols} FROM {self._quote_table_ref(table)}"
-        if filter_clauses:
-            query += " WHERE " + " AND ".join(filter_clauses)
-        if isinstance(limit, int):
-            query += f" LIMIT {limit}"
-        elif isinstance(limit, str) and limit.startswith(REF_TOKEN_PREFIX):
-            ref_node_id, ref_path = self._decode_ref_token(limit)
-            label = "limit"
-            add_param(label, {"node": ref_node_id, "path": ref_path})
-            query += f" LIMIT {{{label}}}"
-        elif isinstance(limit, InputOp):
-            assert limit.name in inputs_dict, (
-                f"Unknown input name: {limit.name}, available:"
-                f" {list(inputs_dict.keys())}"
-            )
-            label = "limit"
-            add_param(
-                label,
-                {
-                    "data": {
-                        "type": "list",
-                        "items": inputs_dict[limit.name],
-                    }
-                },
-            )
-            query += f" LIMIT {{{label}}}"
-        elif isinstance(limit, Op):
-            label = "limit"
-            add_param(label, {"node": limit.id, "path": "items.output"})
-            query += f" LIMIT {{{label}}}"
-        elif limit is not None:
-            query += f" LIMIT {limit}"
-        return query, params
-
     def _extract_table_from_sql_template(self, template: str) -> str:
         match = re.search(r"\bFROM\s+([^\s]+)", template, re.IGNORECASE)
         if not match:
             raise ValueError(f"Unable to infer SQL table from template: {template}")
         return match.group(1).strip()
-
-    def _quote_identifier(self, ident: str) -> str:
-        stripped = ident.strip()
-        if not stripped:
-            return stripped
-        if stripped.startswith('"') and stripped.endswith('"'):
-            return stripped
-        # Preserve case-sensitive identifiers for PostgreSQL.
-        if any(ch.isupper() for ch in stripped):
-            return f'"{stripped}"'
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", stripped):
-            return stripped
-        return f'"{stripped}"'
-
-    def _quote_table_ref(self, table: str) -> str:
-        parts = [part.strip() for part in table.split(".")]
-        return ".".join(self._quote_identifier(part) for part in parts if part)
-
-    def _quote_column_ref(self, column: str) -> str:
-        parts = [part.strip() for part in column.split(".")]
-        return ".".join(self._quote_identifier(part) for part in parts if part)
 
     def _build_data_profile_constraints(
         self,
@@ -1631,19 +1480,3 @@ class RuntimeGraphBuilder:
             seen.add(label)
 
         return constraints
-
-    def _sql_param_label(self, column: str, operator: str) -> str:
-        clean_column = re.sub(r"[^A-Za-z0-9_]", "", column) or "value"
-        op = operator.strip()
-        if op in {">", ">="}:
-            return f"{clean_column}Min"
-        if op in {"<", "<="}:
-            return f"{clean_column}Max"
-        return clean_column
-
-    def _decode_ref_token(self, token: str) -> tuple[str, str]:
-        payload = token[len(REF_TOKEN_PREFIX) :]
-        node_id, _, path = payload.partition(":")
-        if not node_id or not path:
-            raise ValueError(f"Invalid reference token: {token}")
-        return node_id, path

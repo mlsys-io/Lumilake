@@ -363,7 +363,7 @@ def _derive_s3_profile_for_graph(
         )
 
         if node_fields:
-            # Placeholders classify into one of two buckets:
+            # Template references classify into one of two buckets:
             #  - SQL runtime nodes: file count = estimated_rows from the
             #    upstream SQL profile.
             #  - DSL-only ops (InputOp and siblings) that never materialize
@@ -502,7 +502,7 @@ def _compute_minio_listing() -> tuple[dict[str, int | None], list[str]]:
         endpoint=endpoint,
         access_key=access_key,
         secret_key=connection_value,
-        cert_file=envs.S3_CERT_LOCATION,
+        cert_file=envs.S3_CERT_FILE,
     )
     sizes: dict[str, int | None] = {}
     folders: set[str] = set()

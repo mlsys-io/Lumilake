@@ -478,7 +478,6 @@ class HaloOptimizer(BaseOptimizer):
                 cost=None,
                 raw_cost=raw_cost,
                 explain_json=estimate.explain_json,
-                samples=tuple(),
                 footprints=coerce_data_profile_footprints(estimate.footprints),
             )
             existing = by_plan_id.get(plan_id)

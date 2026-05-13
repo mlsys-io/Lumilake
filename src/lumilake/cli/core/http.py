@@ -46,21 +46,6 @@ class HttpClient:
     ) -> requests.Response:
         return self._request("POST", path, version_prefix, **kwargs)
 
-    def put(
-        self, path: str, version_prefix: bool = False, **kwargs: Any
-    ) -> requests.Response:
-        return self._request("PUT", path, version_prefix, **kwargs)
-
-    def patch(
-        self, path: str, version_prefix: bool = False, **kwargs: Any
-    ) -> requests.Response:
-        return self._request("PATCH", path, version_prefix, **kwargs)
-
-    def delete(
-        self, path: str, version_prefix: bool = False, **kwargs: Any
-    ) -> requests.Response:
-        return self._request("DELETE", path, version_prefix, **kwargs)
-
     def download(
         self,
         path: str,

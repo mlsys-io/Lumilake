@@ -837,38 +837,6 @@ class LumilakeServer:
         }
 
     @staticmethod
-    def _workflow_graph_merge_signature(workflow: Any) -> tuple[Any, ...]:
-        input_keys = tuple(sorted(workflow.dsl_graph.inputs.keys()))
-        varying_input_keys = tuple(sorted(workflow.varying_input_keys))
-        slice_inputs: dict[str, list[str]] = {}
-        for input_key in input_keys:
-            values = workflow.dsl_graph.inputs.get(input_key)
-            if values is None:
-                raise ValueError(f"Missing input key '{input_key}' in workflow slice")
-            slice_inputs[input_key] = list(values)
-        input_signature = hashlib.sha256(
-            json.dumps(
-                slice_inputs,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
-        return (
-            workflow.template_hash,
-            input_keys,
-            varying_input_keys,
-            input_signature,
-        )
-
-    @staticmethod
-    def _parent_workflow_id_for_group(workflows: list[Any]) -> str:
-        workflow_ids = sorted({item.workflow_id for item in workflows})
-        if len(workflow_ids) <= 1:
-            return workflow_ids[0]
-        digest = hashlib.sha256("|".join(workflow_ids).encode("utf-8")).hexdigest()[:12]
-        return f"composite::{digest}"
-
-    @staticmethod
     def _request_workflow_parent_id(workflow: Any) -> str:
         return (
             f"request::{workflow.request_id}::"
@@ -1180,7 +1148,7 @@ class LumilakeServer:
                 value_len = len(values)
                 if value_len != item.slice_length:
                     raise ValueError(
-                        "Slice input length mismatch for varying key "
+                        "Workflow input length mismatch for varying key "
                         f"'{key}' in {group_context}: workflow_id='{item.workflow_id}' "
                         f"slice_length={item.slice_length} input_len={value_len}"
                     )

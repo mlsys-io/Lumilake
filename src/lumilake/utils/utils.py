@@ -1,40 +1,15 @@
 import asyncio
-import itertools
-from collections.abc import AsyncGenerator, Coroutine, Iterable, Sequence
+from collections.abc import Coroutine, Sequence
 from threading import Thread
 from typing import Any, TypeVar, cast
 
 import shortuuid
 
 T = TypeVar("T")
-V = TypeVar("V")
 
 
 def unique_id() -> str:
     return str(shortuuid.uuid())
-
-
-def identity[T](x: T) -> T:
-    return x
-
-
-def iter_batch[T](iterable: Iterable[T], batch_size: int) -> Iterable[list[T]]:
-    """Yield batches of items from an iterable."""
-    it = iter(iterable)
-    while True:
-        batch = list(itertools.islice(it, batch_size))
-        if not batch:
-            break
-        yield batch
-
-
-def partition[T](lst: list[T], n: int) -> Iterable[list[T]]:
-    """Partition a list into n approximately equal parts."""
-    k, m = divmod(len(lst), n)
-    for i in range(n):
-        start = i * k + min(i, m)
-        end = (i + 1) * k + min(i + 1, m)
-        yield lst[start:end]
 
 
 def check_and_cast_list[T, V](t: type[T], lst: Sequence[V]) -> list[T]:
@@ -46,23 +21,6 @@ def check_and_cast_list[T, V](t: type[T], lst: Sequence[V]) -> list[T]:
     if not isinstance(item, t):
         raise ValueError(f"Expected a list of {t}, got a list of {type(item)}")
     return cast(list[T], lst)
-
-
-def indices_to_list(indices: Iterable[int] | slice) -> list[int]:
-    return (
-        list(range(indices.stop))[indices]
-        if isinstance(indices, slice)
-        else list(indices)
-    )
-
-
-async def execute_unordered[T](
-    tasks: Iterable[asyncio.Task[T]],
-) -> AsyncGenerator[set[asyncio.Task[T]], None]:
-    pending = set(tasks)
-    while pending:
-        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-        yield done
 
 
 class _AsyncRunner:
@@ -99,10 +57,6 @@ def async_runner() -> _AsyncRunner:
     if _async_runner is None:
         _async_runner = _AsyncRunner()
     return _async_runner
-
-
-def run_coroutine_blocking[T](coro: Coroutine[Any, Any, T]) -> T:
-    return async_runner().run(coro)
 
 
 def stop_async_runner() -> None:

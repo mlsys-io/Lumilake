@@ -206,7 +206,6 @@ class DPSolver:
             cost=1.0,
             raw_cost=None,
             explain_json=None,
-            samples=tuple(),
             footprints={},
         )
         depth_weight = 1.0 if gpu_depth_cost_weight is None else gpu_depth_cost_weight
@@ -800,19 +799,7 @@ class DPSolver:
             bonus_multiplier = 1.0
 
         if self._is_gpu_node(node_id):
-            bonus_eligible_exec_cost, bonus_invariant_exec_cost = (
-                self._split_bonus_aware_exec_cost(node, exec_cost)
-            )
-            # Super-node (or regular GPU node) base cost:
-            #   BaseCost = BonusEligible * CacheBonus + BonusInvariant + ModelInitCost
-            # Equivalent merged form:
-            #   BaseCost = InnerCost + BonusEligible * (CacheBonus - 1) + ModelInitCost
-            # where BonusEligible/BonusInvariant come from Helium split metadata.
-            base_cost = (
-                bonus_eligible_exec_cost * bonus_multiplier
-                + bonus_invariant_exec_cost
-                + model_cost
-            )
+            base_cost = exec_cost * bonus_multiplier + model_cost
             queries = getattr(node, "db_queries", []) or []
             if not queries:
                 new_state = WorkerState(
@@ -845,32 +832,6 @@ class DPSolver:
             last_node_id=self._node_id_to_int[node.id],
         )
         yield 0.0, 0.0, new_state, {}, enter_window
-
-    @staticmethod
-    def _split_bonus_aware_exec_cost(
-        node: Node, default_exec_cost: float
-    ) -> tuple[float, float]:
-        raw = node.raw if isinstance(node.raw, dict) else {}
-        component = raw.get("helium_component")
-        if not isinstance(component, Mapping):
-            return float(default_exec_cost), 0.0
-        bonus_eligible = component.get("bonus_eligible_exec_halo_units")
-        bonus_invariant = component.get("bonus_invariant_exec_halo_units")
-        if not isinstance(bonus_eligible, (int, float)) or not isinstance(
-            bonus_invariant, (int, float)
-        ):
-            return float(default_exec_cost), 0.0
-        eligible_val = max(0.0, float(bonus_eligible))
-        invariant_val = max(0.0, float(bonus_invariant))
-        if eligible_val <= 0 and invariant_val <= 0:
-            return float(default_exec_cost), 0.0
-        split_total = eligible_val + invariant_val
-        default_val = float(default_exec_cost)
-        if not math.isfinite(split_total) or not math.isclose(
-            split_total, default_val, rel_tol=1e-6, abs_tol=1e-6
-        ):
-            return default_val, 0.0
-        return eligible_val, invariant_val
 
     # === DB queries: enumerate plan combinations (currently assumes a single
     # query per node); window only takes effect within the epoch. ===

@@ -71,18 +71,6 @@ def container_stop(name: str, *, timeout: int = 30) -> bool:
     return True
 
 
-def container_remove(name: str, *, force: bool = False) -> bool:
-    """Remove ``name`` if present. Returns True on success, False if missing."""
-    container = _find_container(name)
-    if container is None:
-        return False
-    try:
-        container.remove(force=force)
-    except APIError as exc:
-        raise DeployError(f"Failed to remove container {name}: {exc}") from exc
-    return True
-
-
 def container_restart(name: str, *, timeout: int = 30) -> None:
     container = _find_container(name)
     if container is None:

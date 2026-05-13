@@ -7,7 +7,7 @@ Guidance for agentic tools (Claude Code, Cursor, Aider, etc.) working in this re
 - Environment is managed by `uv`. The system may not have Python installed directly. Always use `uv run ...` to execute commands.
 - `uv sync --group lint --group test --extra cli` installs everything a development-focused agent needs.
 - `uv run pre-commit run --all-files` runs every formatting / lint / type-check / spell-check the CI runs. This must pass before any PR lands. The exact tool set lives in `.pre-commit-config.yaml`.
-- **Scratch space.** Keep throwaway scripts / experiments under `agent_space/` (gitignored) or alongside existing `.bak` files. Never commit scratch.
+- **Scratch.** Never commit throwaway scripts / experiments.
 
 ## Design Discipline
 

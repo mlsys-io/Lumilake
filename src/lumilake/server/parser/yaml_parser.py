@@ -76,7 +76,7 @@ templating is done by upstream `FormatOp`s.
 Supported op types: ``InputOp`` (auto-generated from ``inputs:`` block),
 ``DataOp``, ``DataRetrievalOp``, ``MessageOp``, ``LLMChatOp``,
 ``LLMVisionOp``, ``ImageGenerationOp``, ``FormatOp``, ``LambdaOp``,
-``FutureOp``, ``OutputOp`` (auto-generated from ``outputs:`` block).
+``OutputOp`` (auto-generated from ``outputs:`` block).
 
 Users with an existing n8n workflow should submit it as
 ``Workflow-Format: n8n`` rather than transliterating it into YAML — no
@@ -102,7 +102,6 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "ImageGenerationOp",
         "FormatOp",
         "LambdaOp",
-        "FutureOp",
     }
 )
 
@@ -358,8 +357,6 @@ def _build_op_dict(
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
         _emit_lambda_op(op_dict, entry)
-    elif entry.op == "FutureOp":
-        _emit_future_op(op_dict, entry, user_id_to_internal)
     else:  # pragma: no cover - guarded upstream
         raise ValueError(f"unsupported op type '{entry.op}'")
 
@@ -922,19 +919,6 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
     op_dict["_code"] = code
 
 
-def _emit_future_op(
-    op_dict: dict[str, Any], entry: _OpEntry, user_id_to_internal: dict[str, str]
-) -> None:
-    op_ref = entry.fields.get("op_id") or entry.fields.get("ref")
-    if not isinstance(op_ref, str):
-        raise ValueError(
-            f"FutureOp '{entry.id}' requires 'op_id' (or 'ref') referencing an op"
-        )
-    if op_ref not in user_id_to_internal:
-        raise ValueError(f"FutureOp '{entry.id}' references unknown id '{op_ref}'")
-    op_dict["op_id"] = user_id_to_internal[op_ref]
-
-
 def _build_generation_config(
     config: dict[str, Any], entry_id: str, op_kind: str = "LLMChatOp"
 ) -> dict[str, Any]:
@@ -1000,6 +984,5 @@ def _op_id_prefix(op_type: str) -> str:
         "ImageGenerationOp": "imagegen",
         "FormatOp": "format",
         "LambdaOp": "lambda",
-        "FutureOp": "future",
     }
     return mapping.get(op_type, op_type.lower())
