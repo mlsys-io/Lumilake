@@ -299,6 +299,7 @@ class RuntimeGraphBuilder:
                     retrieval_op_id,
                     retrieval_op,
                     graph_dict,
+                    inputs_dict,
                 )
                 if runtime_op is None:
                     continue
@@ -899,6 +900,7 @@ class RuntimeGraphBuilder:
         op_id: str,
         op: DataRetrievalOp,
         graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
     ) -> RuntimeOp | None:
         spec = op.data_spec or {}
         spec_type = spec.get("type")
@@ -914,11 +916,31 @@ class RuntimeGraphBuilder:
         if not isinstance(params, list):
             raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
         if spec_type == "sql":
-            # DataProfile should not depend on upstream runtime node outputs;
-            # keep only literal/list params.
-            params = [
-                param for param in params if isinstance(param, dict) and "data" in param
-            ]
+            # Inline InputOp-bound params as literal lists (same shape the
+            # main runtime path emits at build-time). The data-profile path
+            # used to drop these — InputOp values were never reaching the
+            # profiler, so every {symbol}-style placeholder bound to an
+            # input came back unresolved.
+            resolved_params: list[dict[str, Any]] = []
+            for param in params:
+                if not isinstance(param, dict):
+                    continue
+                node_ref = param.get("node")
+                if isinstance(node_ref, str):
+                    upstream = graph_dict.get(node_ref)
+                    if isinstance(upstream, InputOp):
+                        values = inputs_dict.get(upstream.name)
+                        if values:
+                            resolved_params.append(
+                                {
+                                    "label": param.get("label"),
+                                    "data": {"type": "list", "items": list(values)},
+                                }
+                            )
+                        continue
+                if "data" in param:
+                    resolved_params.append(param)
+            params = resolved_params
             constraints = self._build_data_profile_constraints(
                 spec.get("params") or [], graph_dict
             )

@@ -816,8 +816,9 @@ class LumilakeServer:
         )
         if not isinstance(gpu_info, dict):
             return False
-        if isinstance(gpu_info.get("gpus"), list):
-            return len(gpu_info["gpus"]) > 0
+        # FlowMesh worker payload uses ``devices``; the schema mirrors that.
+        if isinstance(gpu_info.get("devices"), list):
+            return len(gpu_info["devices"]) > 0
         count = gpu_info.get("count")
         return isinstance(count, int) and count > 0
 

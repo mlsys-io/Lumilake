@@ -28,9 +28,18 @@ class GpuInfo(BaseModel):
 
 
 class GpuPlatformInfo(BaseModel):
-    driver_version: str | None = Field(description="GPU driver version.")
-    cuda_version: str | None = Field(description="CUDA version.")
-    gpus: list[GpuInfo] = Field(description="List of GPUs.")
+    # FlowMesh worker payload field names. ``devices`` is intentional —
+    # mirrors what the worker actually serializes; ``gpus`` would be a
+    # stale alias that nothing produces.
+    driver_version: str | None = Field(default=None, description="GPU driver version.")
+    cuda_version: str | None = Field(default=None, description="CUDA version.")
+    devices: list[GpuInfo] = Field(default_factory=list, description="List of GPUs.")
+    memory_is_unified: bool = Field(
+        default=False, description="Whether host and device share memory."
+    )
+    shared_memory_total_bytes: int | None = Field(
+        default=None, description="Shared host-device memory in bytes (unified only)."
+    )
 
 
 class NetworkInfo(BaseModel):

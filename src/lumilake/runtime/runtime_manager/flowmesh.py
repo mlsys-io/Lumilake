@@ -864,11 +864,28 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 for item in items
             ]
             flat_outputs[output_op_id] = outputs
-            prompts[output_op_id] = [
-                item["metadata"]["prompt"]
-                + [{"role": Roles.ASSISTANT.value, "content": text}]
-                for item, text in zip(items, outputs)
-            ]
+            # Worker payloads include ``metadata.prompt`` for free-text
+            # generations but skip it for structural-output / image ops.
+            # Drop the chat-history entry rather than failing the job
+            # when it's absent — callers treat ``chat_histories`` as
+            # informational.
+            output_prompts: list[list[dict[str, str]]] = []
+            for item, text in zip(items, outputs):
+                item_metadata: Any = (
+                    item.get("metadata") if isinstance(item, dict) else None
+                )
+                prompt = (
+                    item_metadata.get("prompt")
+                    if isinstance(item_metadata, dict)
+                    else None
+                )
+                if not isinstance(prompt, list):
+                    continue
+                output_prompts.append(
+                    prompt + [{"role": Roles.ASSISTANT.value, "content": text}]
+                )
+            if output_prompts:
+                prompts[output_op_id] = output_prompts
 
         self.logger.info(f"Aggregated {len(flat_outputs)} output results.")
         return {

@@ -1,0 +1,389 @@
+name: trading-debate-demo
+
+# Minimal e2e demo for the HALO optimizer.
+#
+# Four SQL DataRetrievalOps fetch price history, news, insider sentiment,
+# and a company profile from the shared exp_data_1g schema. Six LLMChatOps
+# form a bull/bear research debate that gets adjudicated by a moderator
+# and finalized by a portfolio manager. The portfolio manager is gated by
+# a `condition` on the moderator's signal so HOLD verdicts skip the order
+# step.
+#
+# Each researcher pulls from exactly one upstream query so aggregate_table
+# never has to coalesce sources of different cardinality. The moderator
+# then stitches the four researchers' outputs together via rowwise_template.
+#
+# All structural_outputs are scalar (string / number) — vLLM's template
+# renderer does not accept array-typed params.
+#
+# Inputs:
+#   Stock: list of ticker symbols (e.g. ["NVDA"]).
+#
+# Outputs:
+#   final_recommendation: the portfolio manager's structured order, or
+#   the moderator's HOLD verdict when the order step was skipped.
+
+inputs:
+  Stock: []
+
+ops:
+  # ---- Stage 1: SQL data retrieval ----------------------------------
+
+  - id: "Market Query"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        SELECT
+          symbol,
+          time_bucket('1 hour', timestamp)::text AS bucket_ts,
+          first(open, timestamp)  AS bucket_open,
+          max(high)               AS bucket_high,
+          min(low)                AS bucket_low,
+          last(close, timestamp)  AS bucket_close,
+          sum(volume)             AS bucket_volume
+        FROM exp_data_1g.fact_ohlc_10m
+        WHERE symbol = '{symbol}'
+        GROUP BY symbol, bucket_ts
+        ORDER BY bucket_ts DESC
+        LIMIT 24;
+      params:
+        - label: symbol
+          node: "Stock"
+
+  - id: "News Query"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        SELECT
+          symbol,
+          "publishedDate" AS published,
+          title,
+          COALESCE(category, 'general') AS category,
+          LEFT(COALESCE(text, ''), 400) AS synopsis
+        FROM exp_data_1g."fact_news-metadata"
+        WHERE symbol = '{symbol}'
+        ORDER BY "publishedDate" DESC
+        LIMIT 8;
+      params:
+        - label: symbol
+          node: "Stock"
+
+  - id: "Insider Query"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        SELECT
+          symbol,
+          make_date(year::int, month::int, 1)::text AS month_start,
+          SUM(change)::bigint                       AS sentiment_net_change,
+          AVG(mspr)                                 AS sentiment_avg_mspr,
+          COUNT(*)                                  AS sentiment_samples
+        FROM exp_data_1g.fact_insider_sentiment_finnhub
+        WHERE symbol = '{symbol}'
+        GROUP BY symbol, make_date(year::int, month::int, 1)
+        ORDER BY month_start DESC
+        LIMIT 12;
+      params:
+        - label: symbol
+          node: "Stock"
+
+  - id: "Profile Query"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: sql
+      connection_string: ${DATABASE_URL}
+      template: |-
+        SELECT
+          symbol,
+          "companyName"   AS company_name,
+          sector,
+          industry,
+          "marketCap"     AS market_cap,
+          beta,
+          LEFT(COALESCE(description, ''), 400) AS description
+        FROM exp_data_1g.d_instrument_profile_fmp
+        WHERE symbol = '{symbol}'
+        LIMIT 1;
+      params:
+        - label: symbol
+          node: "Stock"
+
+  # ---- Stage 2: Bull / Bear researchers ----------------------------
+  # Each reads from exactly one query so aggregate_table is uniform.
+
+  - id: "Bull Researcher"
+    op: LLMChatOp
+    inputs: [Stock, "Market Query"]
+    messages:
+      - role: system
+        content: |-
+          You are a bullish equity analyst. From the recent hourly
+          OHLC data below, argue the BUY case. Cite specific moves.
+          Return three scalar fields: a thesis paragraph, a confidence
+          in [0,1], and a comma-separated list of catalysts.
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: bucket_ts
+        node: "Market Query"
+        path: items.table.bucket_ts
+      - label: bucket_open
+        node: "Market Query"
+        path: items.table.bucket_open
+      - label: bucket_close
+        node: "Market Query"
+        path: items.table.bucket_close
+      - label: bucket_high
+        node: "Market Query"
+        path: items.table.bucket_high
+      - label: bucket_low
+        node: "Market Query"
+        path: items.table.bucket_low
+      - label: bucket_volume
+        node: "Market Query"
+        path: items.table.bucket_volume
+    structural_outputs:
+      - name: thesis
+        type: string
+      - name: confidence
+        type: number
+        min: 0
+        max: 1
+      - name: catalysts
+        type: string
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 512
+      temperature: 0.6
+      top_p: 1
+
+  - id: "Bear Researcher"
+    op: LLMChatOp
+    inputs: [Stock, "News Query"]
+    messages:
+      - role: system
+        content: |-
+          You are a bearish equity analyst. From the recent news
+          headlines below, argue the SELL case. Cite specific articles.
+          Return three scalar fields: a thesis paragraph, a confidence
+          in [0,1], and a comma-separated list of risks.
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: published
+        node: "News Query"
+        path: items.table.published
+      - label: title
+        node: "News Query"
+        path: items.table.title
+      - label: category
+        node: "News Query"
+        path: items.table.category
+      - label: synopsis
+        node: "News Query"
+        path: items.table.synopsis
+    structural_outputs:
+      - name: thesis
+        type: string
+      - name: confidence
+        type: number
+        min: 0
+        max: 1
+      - name: risks
+        type: string
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 512
+      temperature: 0.6
+      top_p: 1
+
+  # ---- Stage 3: Risk + Macro analysts ------------------------------
+
+  - id: "Risk Analyst"
+    op: LLMChatOp
+    inputs: [Stock, "Insider Query"]
+    messages:
+      - role: system
+        content: |-
+          You are a risk analyst. From the monthly insider-sentiment
+          aggregates below, score the insider-driven risk on a 0-10
+          scale and list the top risks (comma-separated). Higher score
+          = more concerning.
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: month_start
+        node: "Insider Query"
+        path: items.table.month_start
+      - label: net_change
+        node: "Insider Query"
+        path: items.table.sentiment_net_change
+      - label: avg_mspr
+        node: "Insider Query"
+        path: items.table.sentiment_avg_mspr
+      - label: samples
+        node: "Insider Query"
+        path: items.table.sentiment_samples
+    structural_outputs:
+      - name: risk_score
+        type: number
+        min: 0
+        max: 10
+      - name: top_risks
+        type: string
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 384
+      temperature: 0.4
+      top_p: 1
+
+  - id: "Macro Analyst"
+    op: LLMChatOp
+    inputs: [Stock, "Profile Query"]
+    messages:
+      - role: system
+        content: |-
+          You are a macro analyst. From the company profile (sector,
+          industry, market cap, beta) below, characterize the macro
+          regime the name is exposed to. Return three scalar fields:
+          regime, tailwinds (comma-separated), headwinds (comma-separated).
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: company_name
+        node: "Profile Query"
+        path: items.table.company_name
+      - label: sector
+        node: "Profile Query"
+        path: items.table.sector
+      - label: industry
+        node: "Profile Query"
+        path: items.table.industry
+      - label: market_cap
+        node: "Profile Query"
+        path: items.table.market_cap
+      - label: beta
+        node: "Profile Query"
+        path: items.table.beta
+      - label: description
+        node: "Profile Query"
+        path: items.table.description
+    structural_outputs:
+      - name: regime
+        type: string
+      - name: tailwinds
+        type: string
+      - name: headwinds
+        type: string
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 384
+      temperature: 0.4
+      top_p: 1
+
+  # ---- Stage 4: Moderator + PM (rowwise over the analysts' outputs) ----
+
+  - id: "Debate Moderator"
+    op: LLMChatOp
+    inputs: [Stock, "Bull Researcher", "Bear Researcher", "Risk Analyst", "Macro Analyst"]
+    messages:
+      - role: system
+        content: |-
+          You are the debate moderator. You MUST output exactly the
+          three fields in the schema and nothing else.
+          `signal` MUST be exactly one of: BUY, SELL, HOLD. No prose,
+          no qualifiers like "slightly bullish" or "neutral with a
+          lean". Pick one of those three strings.
+          `confidence` is a calibrated float in [0, 1].
+          `rationale` is at most three short sentences.
+      - role: user
+        content: "Bull case: {bull_thesis}\n(confidence: {bull_confidence})\nCatalysts: {bull_catalysts}\n\nBear case: {bear_thesis}\n(confidence: {bear_confidence})\nRisks: {bear_risks}\n\nRisk score: {risk_score} (top risks: {top_risks})\n\nMacro regime: {macro_regime}\nTailwinds: {tailwinds}\nHeadwinds: {headwinds}"
+    rowwise_template: "Bull case: {bull_thesis}\n(confidence: {bull_confidence})\nCatalysts: {bull_catalysts}\n\nBear case: {bear_thesis}\n(confidence: {bear_confidence})\nRisks: {bear_risks}\n\nRisk score: {risk_score} (top risks: {top_risks})\n\nMacro regime: {macro_regime}\nTailwinds: {tailwinds}\nHeadwinds: {headwinds}"
+    rowwise_columns:
+      - label: bull_thesis
+        node: "Bull Researcher"
+        path: items.output.thesis
+      - label: bull_confidence
+        node: "Bull Researcher"
+        path: items.output.confidence
+      - label: bull_catalysts
+        node: "Bull Researcher"
+        path: items.output.catalysts
+      - label: bear_thesis
+        node: "Bear Researcher"
+        path: items.output.thesis
+      - label: bear_confidence
+        node: "Bear Researcher"
+        path: items.output.confidence
+      - label: bear_risks
+        node: "Bear Researcher"
+        path: items.output.risks
+      - label: risk_score
+        node: "Risk Analyst"
+        path: items.output.risk_score
+      - label: top_risks
+        node: "Risk Analyst"
+        path: items.output.top_risks
+      - label: macro_regime
+        node: "Macro Analyst"
+        path: items.output.regime
+      - label: tailwinds
+        node: "Macro Analyst"
+        path: items.output.tailwinds
+      - label: headwinds
+        node: "Macro Analyst"
+        path: items.output.headwinds
+    structural_outputs:
+      - name: signal
+        type: string
+        enum: ["BUY", "SELL", "HOLD"]
+      - name: confidence
+        type: number
+        min: 0
+        max: 1
+      - name: rationale
+        type: string
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 768
+      temperature: 0.1
+      top_p: 1
+
+  - id: "Verdict"
+    op: LLMChatOp
+    inputs: [Stock, "Debate Moderator"]
+    prompt:
+      template: "Based on the debate moderator's analysis below, output exactly ONE of the following three words and nothing else: BUY, SELL, HOLD.\n\nMODERATOR OUTPUT:\n{moderator_output}\n\nYour answer (one word only):"
+      format_kwargs:
+        moderator_output: "Debate Moderator"
+    messages:
+      - role: system
+        content: |-
+          You are a verdict normalizer. You output exactly one word:
+          BUY, SELL, or HOLD. No other text. No explanations.
+          No leading or trailing whitespace. No punctuation.
+      - role: user
+        content: ""
+    structural_outputs:
+      - name: verdict
+        type: string
+        enum: ["BUY", "SELL", "HOLD"]
+    config:
+      model: google/gemma-3-27b-it
+      max_tokens: 16
+      temperature: 0
+      top_p: 1
+
+outputs:
+  - name: final_recommendation
+    ref: "Verdict"
