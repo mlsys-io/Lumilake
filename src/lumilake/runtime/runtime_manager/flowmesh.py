@@ -871,14 +871,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             # informational.
             output_prompts: list[list[dict[str, str]]] = []
             for item, text in zip(items, outputs):
-                item_metadata: Any = (
-                    item.get("metadata") if isinstance(item, dict) else None
-                )
-                prompt = (
-                    item_metadata.get("prompt")
-                    if isinstance(item_metadata, dict)
-                    else None
-                )
+                try:
+                    prompt = item["metadata"]["prompt"]
+                except (KeyError, TypeError):
+                    continue
                 if not isinstance(prompt, list):
                     continue
                 output_prompts.append(

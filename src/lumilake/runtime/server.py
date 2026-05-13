@@ -811,16 +811,14 @@ class LumilakeServer:
 
     @staticmethod
     def _has_gpu(worker_profile: dict[str, Any]) -> bool:
-        gpu_info = (
-            worker_profile.get("gpu") if isinstance(worker_profile, dict) else None
-        )
-        if not isinstance(gpu_info, dict):
+        # FlowMesh's GpuPlatformInfo serializes the device list under ``devices``;
+        # nothing else in the worker pipeline emits a ``count`` aggregate, so the
+        # presence of any device is the only signal we need.
+        try:
+            devices = worker_profile["gpu"]["devices"]
+        except (KeyError, TypeError):
             return False
-        # FlowMesh worker payload uses ``devices``; the schema mirrors that.
-        if isinstance(gpu_info.get("devices"), list):
-            return len(gpu_info["devices"]) > 0
-        count = gpu_info.get("count")
-        return isinstance(count, int) and count > 0
+        return isinstance(devices, list) and len(devices) > 0
 
     @staticmethod
     def _is_gpu_runtime_backend(backend: str) -> bool:
