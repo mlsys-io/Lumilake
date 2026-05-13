@@ -1,0 +1,44 @@
+name: Package Build
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-build:
+    name: Build and smoke-test package
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "0.11.8"
+
+      - name: Install build environment
+        run: uv sync --all-groups --all-extras --frozen
+
+      - name: Build distributions
+        run: uv build --out-dir dist
+
+      - name: Verify distributions
+        run: uv run scripts/ci/check_package_build.py --dist dist
