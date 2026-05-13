@@ -20,7 +20,7 @@ Typical dependency groups / extras:
 
 | Group or extra | Purpose |
 |----------------|---------|
-| `--extra cli` | Installs `lumilake-cli` (the `lumilake` command) |
+| `--extra cli` | Installs the `lumilake` command |
 | `--group lint` | `black`, `isort`, `ruff`, `mypy`, `codespell` (pinned to CI versions) |
 | `--group test` | `pytest`, `pytest-asyncio`, `pytest-timeout` |
 
@@ -32,7 +32,7 @@ uv sync --all-groups --all-extras
 
 ### Install Pre-commit Hooks
 
-We use [pre-commit](https://pre-commit.com/) to enforce formatting, linting, type-checking, requirements-file sync, and DCO sign-off on every commit.
+We use [pre-commit](https://pre-commit.com/) to enforce formatting, linting, type-checking, spell-checking, and DCO sign-off on every commit.
 
 ```bash
 uv run pre-commit install --install-hooks -t pre-commit -t prepare-commit-msg -t commit-msg
@@ -40,7 +40,7 @@ uv run pre-commit install --install-hooks -t pre-commit -t prepare-commit-msg -t
 
 This installs three hook stages:
 
-- **pre-commit** — runs `isort`, `black`, `ruff`, `mypy`, `codespell`, and the `sync-requirements` check on staged files.
+- **pre-commit** — runs `isort`, `black`, `ruff`, `mypy`, and `codespell` on staged files.
 - **prepare-commit-msg** — automatically appends a [DCO sign-off](#signing-off-commits-dco) line to your commit message.
 - **commit-msg** — verifies the sign-off is present (safety net).
 
@@ -68,16 +68,15 @@ uv run pytest tests/ --ignore=tests/server  # Skip live-server tests
 uv run pytest tests/cli/                   # CLI-only
 ```
 
-## Dependency Pins
+## Dependency Management
 
-`pyproject.toml` uses `>=` floors; `requirements.txt` is an exact `==` pin list auto-generated from `pyproject.toml` + `uv.lock` by `scripts/dev/sync_requirements.py`. Never hand-edit it. After changing a runtime dep:
+`pyproject.toml` is the source of truth for dependency ranges and optional extras. `uv.lock` is committed so local development and CI resolve consistently. After changing dependencies:
 
 ```bash
 uv lock
-uv run scripts/dev/sync_requirements.py --write
 ```
 
-A `sync-requirements` pre-commit hook + `Requirements Sync Check` CI job fail the build on drift.
+Do not add generated requirements files unless a release workflow explicitly needs them.
 
 ## Signing Off Commits (DCO)
 
@@ -97,15 +96,17 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 - Keep PRs focused. Split unrelated changes into separate PRs.
 - Fill in the PR template's Purpose / Changes / Design / Test Plan sections.
 - Run `uv run pre-commit run --all-files` and `uv run pytest tests/ --ignore=tests/server` locally before opening the PR.
-- If you changed a runtime dependency, regenerate `requirements.txt` via `uv run scripts/dev/sync_requirements.py --write`.
+- If you changed a dependency, update `uv.lock`.
 
 ## CI Workflows
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `lint-typecheck` | PR | `black --check`, `isort --check-only`, `ruff check`, `mypy`, `codespell` |
-| `test` | PR | `pytest tests/ --ignore=tests/server` |
-| `requirements-sync` | PR | Runs `sync_requirements.py`; fails on drift |
+| `lint-typecheck` | PR / main push | `pre-commit run --all-files` |
+| `test` | PR / main push | `pytest tests/` |
+| `env-examples` | PR / main push | Validates `.env.example` against the deploy-time env contract |
+| `package-build` | PR / main push | Builds wheel/sdist and smoke-tests the package |
+| `security` | PR / main push | Runs workflow audit, secret scan, Bandit, and dependency audit |
 | `check-signoff` | PR | Every non-merge commit must carry `Signed-off-by:` |
 | `check-pr-title` | PR | Validates the PR title format |
 

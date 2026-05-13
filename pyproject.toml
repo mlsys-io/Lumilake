@@ -1,12 +1,38 @@
 [project]
 name = "lumilake"
 version = "0.1.0"
-description = "Optimizing Agentic Workflows Execution for Lakehouse"
+description = "Data analytics engine for agentic workflows"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Lumilake contributors"},
+]
+keywords = [
+    "agentic-workflows",
+    "data-analytics",
+    "lakehouse",
+    "workflow-orchestration",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
 dependencies = [
     "python-dotenv>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mlsys-io/lumilake_OSS"
+Repository = "https://github.com/mlsys-io/lumilake_OSS"
+Issues = "https://github.com/mlsys-io/lumilake_OSS/issues"
 
 [project.optional-dependencies]
 server = [

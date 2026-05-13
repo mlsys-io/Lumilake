@@ -1,58 +1,62 @@
-name: RFC
-description: A larger design proposal that needs discussion before implementation.
+name: RFC (Request for Comments)
+description: Propose a major architectural change or design decision.
 title: "[RFC]: "
-labels: ["rfc"]
+labels: ["RFC"]
 
 body:
-  - type: input
-    id: scope
+  - type: markdown
     attributes:
-      label: Scope
-      description: |
-        Which area does this RFC touch? (server, runtime, CLI, deploy, ...)
-    validations:
-      required: true
-
-  - type: textarea
-    attributes:
-      label: Summary
-      description: |
-        One paragraph on what you want to change and why.
-    validations:
-      required: true
+      value: >
+        RFCs are for significant changes that affect Lumilake's architecture,
+        protocols, or public APIs. Please review previous
+        [RFCs](https://github.com/mlsys-io/lumilake_OSS/issues?q=label%3ARFC+sort%3Aupdated-desc)
+        for reference.
 
   - type: textarea
     attributes:
       label: Motivation
-      description: |
-        What problem does this solve? Who benefits? What prompted writing this up now?
+      description: >
+        Why is this change needed? What problem does it solve?
     validations:
       required: true
 
   - type: textarea
     attributes:
-      label: Design
-      description: |
-        The detailed proposal: API shape, schemas, migrations, failure
-        modes. Link to existing code / PRs where relevant.
+      label: Proposed change
+      description: >
+        Describe the design in detail. Include affected components
+        (server, runtime, SDK, CLI, deploy, hooks, etc.) and how they interact.
     validations:
       required: true
 
   - type: textarea
     attributes:
       label: Alternatives considered
-      description: |
-        What else did you think about? Why is this proposal better?
+      description: >
+        What other approaches did you evaluate and why were they not chosen?
 
   - type: textarea
     attributes:
-      label: Rollout
-      description: |
-        How do we land this? One PR or several? Any flags / migrations?
+      label: Migration / compatibility
+      description: >
+        How will existing users, workflows, or deployments be affected?
+        What is the migration path?
+
+  - type: textarea
+    attributes:
+      label: Feedback period
+      description: >
+        How long should the feedback period be? (At least one week recommended.)
+
+  - type: textarea
+    attributes:
+      label: CC list
+      description: >
+        Tag people whose input you'd like.
 
   - type: checkboxes
     attributes:
       label: Before submitting
       options:
-        - label: I have searched existing issues for overlapping proposals.
+        - label: I have searched existing issues and confirmed this is not a duplicate.
           required: true
