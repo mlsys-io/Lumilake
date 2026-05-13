@@ -124,9 +124,11 @@ See `src/lumilake/sdk/README.md` for the SDK resource map.
 
 - `docs/ENV.md` - environment variables and data-plane modes.
 - `docs/CLI.md` - command groups and common CLI usage.
+- `docs/SDK.md` - sync and async Python client usage.
 - `docs/API.md` - server route overview and response shape.
 - `docs/ARCHITECTURE.md` - module layout and runtime flow.
 - `docs/PLUGINS.md` - shared hooks and Lumilake plugin model.
+- `docs/CODE_STYLE.md` - coding rules for contributors and agents.
 
 ## Plugins
 
