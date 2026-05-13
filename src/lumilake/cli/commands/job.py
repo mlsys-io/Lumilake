@@ -102,7 +102,7 @@ def _build_inputs(
 
 @app.command()
 def submit(
-    workflow: Path = typer.Argument(..., help="Path to workflow JSON file"),
+    workflow: Path = typer.Argument(..., help="Path to workflow file"),
     workflow_format: str = typer.Option(
         "n8n", "--format", "-f", help="Workflow format (native|n8n|yaml)"
     ),
@@ -594,7 +594,7 @@ def artifact(
 
 @app.command()
 def preview(
-    workflow: Path = typer.Argument(..., help="Path to workflow JSON file"),
+    workflow: Path = typer.Argument(..., help="Path to workflow file"),
     workflow_format: str = typer.Option(
         "n8n", "--format", "-f", help="Workflow format (native|n8n|yaml)"
     ),

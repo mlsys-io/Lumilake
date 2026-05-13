@@ -36,6 +36,8 @@ LUMILAKE_PLUGINS=simple_plugin
 
 Multiple plugins are comma-separated. Plugins should expose an `install()` function that wires their bindings or registrations.
 
+`install()` may return `HookBindings` directly, return an awaitable that resolves to `HookBindings`, or be an async context manager that yields `HookBindings`. Context managers are entered during server startup and unwound during server shutdown.
+
 ## Design Rule
 
 Shared hooks should contain only project-neutral contracts. Resource names, optimizer registration, and workflow/runtime-specific behavior should remain in Lumilake.

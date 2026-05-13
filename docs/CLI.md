@@ -16,8 +16,9 @@ uv run lumilake --help
 | Command | Purpose |
 |---------|---------|
 | `lumilake login <url>` | Save the server URL to `~/.lumilake/config.toml`. |
+| `lumilake logout` | Remove saved CLI configuration. |
 | `lumilake config` | Show saved CLI configuration. |
-| `lumilake info` | Query server status. |
+| `lumilake info` | Query server health metadata. |
 | `lumilake health` | Query server health. |
 
 ## Deploy
@@ -51,7 +52,7 @@ uv run lumilake --help
 | `lumilake job cancel <job_id>` | Cancel a job. |
 | `lumilake job artifact <job_id> --path <path> --output <file>` | Download a stored job artifact. |
 
-Run `uv run lumilake job --help` for workflow-format, input, and output flags.
+Run `uv run lumilake job submit --help` for format, input, and output flags.
 
 ## Workers and Traces
 

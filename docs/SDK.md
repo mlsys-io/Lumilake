@@ -45,9 +45,8 @@ Both clients accept `base_url=` directly or load the server URL with `.from_conf
 | Surface | Sync | Async |
 |---------|------|-------|
 | Health | `client.health()` | `await client.health()` |
-| Info | `client.info.status()` | `await client.info.status()` |
 | Deploy | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
-| Jobs | `client.jobs.submit/list/get/cancel(...)` | same, await |
+| Jobs | `client.jobs.submit/list/get/cancel/wait(...)` | same, await |
 | Workers | `client.workers.list/get(...)` | same, await |
 | Traces | `client.traces.list/get(...)` | same, await |
 

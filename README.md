@@ -53,7 +53,7 @@ Submit and inspect a workflow:
 
 ```bash
 uv run lumilake login http://127.0.0.1:9000
-uv run lumilake job submit examples/templates/yaml/image-generation.yaml
+uv run lumilake job submit examples/templates/yaml/image-generation.yaml --format yaml --input Stock=AAPL --output-prefix demo/image-generation
 uv run lumilake job list
 uv run lumilake job watch <job_id>
 ```
@@ -124,6 +124,8 @@ See `docs/SDK.md` for the SDK resource map.
 
 - `docs/ENV.md` - environment variables and data-plane modes.
 - `docs/CLI.md` - command groups and common CLI usage.
+- `docs/WORKFLOWS.md` - workflow input formats and YAML structure.
+- `docs/OPS.md` - built-in operation classes.
 - `docs/SDK.md` - sync and async Python client usage.
 - `docs/API.md` - server route overview and response shape.
 - `docs/ARCHITECTURE.md` - module layout and runtime flow.

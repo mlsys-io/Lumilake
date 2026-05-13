@@ -63,9 +63,8 @@ uv run pre-commit run --all-files
 ## Testing
 
 ```bash
-uv run pytest tests/                      # All tests
-uv run pytest tests/ --ignore=tests/server  # Skip live-server tests
-uv run pytest tests/cli/                   # CLI-only
+uv run pytest tests/       # Full test suite
+uv run pytest tests/cli/   # CLI-only
 ```
 
 ## Dependency Management
@@ -95,7 +94,7 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 - **Title format** (enforced by CI): `type(scope): description`. Allowed types: `feat, fix, refactor, chore, test, perf, build, ci, docs`. Scope is optional. Prefix with `[BREAKING]` for breaking changes.
 - Keep PRs focused. Split unrelated changes into separate PRs.
 - Fill in the PR template's Purpose / Changes / Design / Test Plan sections.
-- Run `uv run pre-commit run --all-files` and `uv run pytest tests/ --ignore=tests/server` locally before opening the PR.
+- Run `uv run pre-commit run --all-files` and `uv run pytest tests/` locally before opening the PR.
 - If you changed a dependency, update `uv.lock`.
 
 ## CI Workflows

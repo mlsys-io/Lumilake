@@ -55,10 +55,10 @@ Both clients accept `base_url=` directly, or pull it from `~/.lumilake/config.to
 | Surface | Sync | Async |
 |---|---|---|
 | `lumilake login <url>` | writes `~/.lumilake/config.toml` | - |
-| `lumilake info` / `health` | `client.info.status()` / `client.health()` | same, await |
+| `lumilake info` / `health` | `client.health()` | same, await |
 | `lumilake deploy {init,up,down,clean,restart,reset,logs,update-flowmesh}` | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
 | `lumilake deploy {doctor,build,status}` | CLI only | CLI only |
-| Job submit/list/get/cancel | `client.jobs.<verb>(...)` | `await client.jobs.<verb>(...)` |
+| Job submit/list/get/cancel/wait | `client.jobs.<verb>(...)` | `await client.jobs.<verb>(...)` |
 | Job preview/progress/result/inputs/artifact/watch | CLI and HTTP API | CLI and HTTP API |
 | `lumilake worker {list,get}` | `client.workers.<verb>(...)` | `await client.workers.<verb>(...)` |
 | `lumilake trace {list,get}` | `client.traces.<verb>(...)` | `await client.traces.<verb>(...)` |

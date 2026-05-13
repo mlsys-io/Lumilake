@@ -9,9 +9,11 @@ Lumilake is a data analytics engine for agentic workflows. It accepts workflow s
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** - control-plane topology, package map, runtime flow, storage model, FlowMesh integration, and hook placement. Read before any cross-component change.
 - **[`docs/CODE_STYLE.md`](docs/CODE_STYLE.md)** - Python rules, import and typing expectations, deploy constraints, testing expectations, and commit hygiene. Read before writing source code.
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** - setup, pre-commit hooks, validation commands, CI workflows, DCO sign-off, and PR title conventions. Read before committing or opening a PR.
-- **[`docs/API.md`](docs/API.md)** - server route overview, response shape, job lifecycle endpoints, workers, traces, and health/status surfaces. Read before calling the server directly or changing a router.
+- **[`docs/API.md`](docs/API.md)** - server route overview, response shape, job lifecycle endpoints, workers, traces, and health surface. Read before calling the server directly or changing a router.
 - **[`docs/SDK.md`](docs/SDK.md)** - sync and async client usage, install extras, configuration, resource surfaces, and deploy helper behavior.
 - **[`docs/CLI.md`](docs/CLI.md)** - `lumilake ...` command groups, local deploy lifecycle, job operations, workers, and traces.
+- **[`docs/WORKFLOWS.md`](docs/WORKFLOWS.md)** - supported workflow input formats, YAML structure, native graph payloads, n8n exports, inputs, outputs, and examples.
+- **[`docs/OPS.md`](docs/OPS.md)** - built-in Lumilake operation classes and how they map to YAML and native graph payloads.
 - **[`docs/ENV.md`](docs/ENV.md)** - deploy-time environment variables, archive settings, direct data mode, lumid.data mode, model settings, and FlowMesh settings.
 - **[`docs/PLUGINS.md`](docs/PLUGINS.md)** - shared hook interfaces, Lumilake resource kinds, plugin loading, and sample plugin layout.
 

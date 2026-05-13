@@ -1,7 +1,4 @@
-"""Optimization jobs — submit a workflow, list / get / cancel, fetch
-logs, and ``wait()`` for a terminal status (``DONE`` / ``FAILED`` /
-``CANCELLED``). Backed by the lumilake server's ``/api/v1/jobs`` routes.
-"""
+"""Optimization jobs backed by the server's ``/api/v1/jobs`` routes."""
 
 import asyncio
 import logging
@@ -58,17 +55,11 @@ class Jobs(SyncResource):
     def cancel(self, job_id: str) -> dict[str, Any]:
         return unwrap(self._client.post(f"/jobs/{job_id}/cancel"))
 
-    def logs(self, job_id: str, *, limit: int | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if limit is not None:
-            params["limit"] = limit
-        return unwrap(self._client.get(f"/jobs/{job_id}/logs", params=params))
-
     def wait(
         self,
         job_id: str,
         *,
-        terminal_states: tuple[str, ...] = ("DONE", "FAILED", "CANCELLED"),
+        terminal_states: tuple[str, ...] = ("completed", "failed", "cancelled"),
         poll_interval: float = 2.0,
         timeout: float = 600.0,
     ) -> dict[str, Any]:
@@ -110,18 +101,11 @@ class AsyncJobs(AsyncResource):
         response = await self._client.post(f"/jobs/{job_id}/cancel")
         return unwrap(response)
 
-    async def logs(self, job_id: str, *, limit: int | None = None) -> dict[str, Any]:
-        params: dict[str, Any] = {}
-        if limit is not None:
-            params["limit"] = limit
-        response = await self._client.get(f"/jobs/{job_id}/logs", params=params)
-        return unwrap(response)
-
     async def wait(
         self,
         job_id: str,
         *,
-        terminal_states: tuple[str, ...] = ("DONE", "FAILED", "CANCELLED"),
+        terminal_states: tuple[str, ...] = ("completed", "failed", "cancelled"),
         poll_interval: float = 2.0,
         timeout: float = 600.0,
     ) -> dict[str, Any]:
