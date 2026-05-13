@@ -779,13 +779,6 @@ async def _require_location_permission(
     )
 
 
-def _serialize_output_locations(locations: dict[str, IOLocation]) -> dict[str, Any]:
-    serialized: dict[str, Any] = {}
-    for graph_name, location in locations.items():
-        serialized[graph_name] = location.model_dump(by_alias=True, mode="json")
-    return serialized
-
-
 def _coerce_output_values(graph_outputs: Any) -> list[str]:
     """Flatten ``{output_name: [values]}`` to a single string list.
 

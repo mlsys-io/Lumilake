@@ -48,14 +48,6 @@ def check_and_cast_list[T, V](t: type[T], lst: Sequence[V]) -> list[T]:
     return cast(list[T], lst)
 
 
-def indices_to_list(indices: Iterable[int] | slice) -> list[int]:
-    return (
-        list(range(indices.stop))[indices]
-        if isinstance(indices, slice)
-        else list(indices)
-    )
-
-
 async def execute_unordered[T](
     tasks: Iterable[asyncio.Task[T]],
 ) -> AsyncGenerator[set[asyncio.Task[T]], None]:

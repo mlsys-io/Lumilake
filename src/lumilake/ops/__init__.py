@@ -21,18 +21,13 @@ from lumilake.ops.llm_ops import (
 )
 from lumilake.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake.ops.util_ops import (
-    ConcatOp,
     FormatOp,
     LambdaOp,
-    SliceOp,
-    concat,
     format_op,
     lambda_op,
-    slice_op,
 )
 
 __all__ = [
-    "ConcatOp",
     "DataOp",
     "DataRetrievalOp",
     "FormatOp",
@@ -48,9 +43,7 @@ __all__ = [
     "OpMessage",
     "OutputOp",
     "SingleDtype",
-    "SliceOp",
     "as_output",
-    "concat",
     "data",
     "format_op",
     "image_generation",
@@ -59,5 +52,4 @@ __all__ = [
     "llm_chat",
     "llm_vision",
     "message_data",
-    "slice_op",
 ]

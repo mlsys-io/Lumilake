@@ -60,12 +60,6 @@ def run(
     return result
 
 
-def run_output(cmd: Sequence[str], *, cwd: Path | None = None) -> str:
-    """Run a command and return its stripped stdout. Raises on non-zero exit."""
-    result = run(cmd, cwd=cwd, capture_output=True)
-    return result.stdout.decode().strip()
-
-
 def run_silent(
     cmd: Sequence[str],
     *,
