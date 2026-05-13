@@ -20,9 +20,11 @@ body:
         - Server / API routes
         - Runtime / scheduler / optimizer
         - Ops / operators
+        - SDK
         - CLI (lumilake)
         - Deploy / Docker
         - Graphs / YAML / n8n parser
+        - Hooks / plugins
         - Documentation
         - Other
     validations:

@@ -1,4 +1,4 @@
-name: Tests
+name: Unit Tests
 
 on:
   push:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  unit-tests:
     name: Unit tests
     runs-on: self-hosted
 

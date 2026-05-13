@@ -1,5 +1,10 @@
 # Lumilake
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Lint](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml)
+[![Tests](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml)
+
 Lumilake is a data analytics engine for agentic workflows. It accepts workflow specs (native graph JSON, YAML, or n8n JSON), optimizes the runtime graph with HALO, and dispatches tasks through FlowMesh.
 
 ## What Lumilake Provides
@@ -117,11 +122,11 @@ See `src/lumilake/sdk/README.md` for the SDK resource map.
 
 ## Documentation
 
-- `docs/environment.md` - environment variables and data-plane modes.
-- `docs/cli.md` - command groups and common CLI usage.
-- `docs/api.md` - server route overview and response shape.
-- `docs/architecture.md` - module layout and runtime flow.
-- `docs/hooks.md` - shared hooks and Lumilake plugin model.
+- `docs/ENV.md` - environment variables and data-plane modes.
+- `docs/CLI.md` - command groups and common CLI usage.
+- `docs/API.md` - server route overview and response shape.
+- `docs/ARCHITECTURE.md` - module layout and runtime flow.
+- `docs/PLUGINS.md` - shared hooks and Lumilake plugin model.
 
 ## Plugins
 

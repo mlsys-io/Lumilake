@@ -103,7 +103,7 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `lint-typecheck` | PR / main push | `pre-commit run --all-files` |
-| `test` | PR / main push | `pytest tests/` |
+| `unit-tests` | PR / main push | `pytest tests/` |
 | `env-examples` | PR / main push | Validates `.env.example` against the deploy-time env contract |
 | `package-build` | PR / main push | Builds wheel/sdist and smoke-tests the package |
 | `security` | PR / main push | Runs workflow audit, secret scan, Bandit, and dependency audit |
