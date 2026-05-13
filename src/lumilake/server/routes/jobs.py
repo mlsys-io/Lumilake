@@ -413,6 +413,10 @@ def _validate_inputs_shape(data: Any) -> None:
                     f"{sorted(value.keys())}"
                 )
         elif isinstance(value, list):
+            if not value:
+                raise ValueError(
+                    f"inputs['{key}']: expected a non-empty list of strings, got []"
+                )
             for idx, item in enumerate(value):
                 if not isinstance(item, str):
                     raise ValueError(
@@ -1136,6 +1140,29 @@ async def _resolve_s3_input_values(
 
 
 async def _resolve_input_values(
+    *,
+    input_name: str,
+    raw: list[str] | IOLocation,
+    compute_pool: AsyncConnectionPool | None,
+    principal: PrincipalContext,
+    hook_logger: Logger,
+) -> list[str]:
+    values = await _resolve_input_values_raw(
+        input_name=input_name,
+        raw=raw,
+        compute_pool=compute_pool,
+        principal=principal,
+        hook_logger=hook_logger,
+    )
+    if not values:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"input {input_name!r} resolved to an empty value list",
+        )
+    return values
+
+
+async def _resolve_input_values_raw(
     *,
     input_name: str,
     raw: list[str] | IOLocation,
