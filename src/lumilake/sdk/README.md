@@ -1,6 +1,6 @@
 # `lumilake.sdk`
 
-Python SDK for Lumilake. Programmatic equivalent of the `lumilake` CLI — every CLI subcommand has a corresponding method on `LumilakeClient` (sync) and `AsyncLumilakeClient` (async). Two parallel client classes; each resource module ships both sync and async variants. Lives inside the `lumilake` distribution and ships behind the `[sdk]` extra so basic installs stay slim.
+Python SDK for Lumilake server APIs and local deploy helpers. It provides sync and async resource clients for common server surfaces; the CLI remains the complete command surface for operational helpers. The SDK lives inside the `lumilake` distribution and ships behind the `[sdk]` extra so basic installs stay slim.
 
 ## Install
 
@@ -10,7 +10,7 @@ Server-API + filesystem `init` (small surface; httpx only):
 pip install 'lumilake[sdk]'
 ```
 
-Add deploy lifecycle (`client.deploy.up/down/...`). Pulls in `[deploy]` (docker SDK + minio + psycopg + flowmesh-*); `client.deploy.*` calls into `lumilake.deploy` directly, no subprocess:
+Add deploy lifecycle (`client.deploy.up/down/...`). Pulls in `[deploy]` (Docker SDK, psycopg, FlowMesh stack helpers); `client.deploy.*` calls into `lumilake.deploy` directly:
 
 ```bash
 pip install 'lumilake[sdk,deploy]'
@@ -50,14 +50,16 @@ async with AsyncLumilakeClient.from_config() as client:
 
 Both clients accept `base_url=` directly, or pull it from `~/.lumilake/config.toml` via `.from_config()`. Resolution order: explicit arg > `LUMILAKE_BASE_URL` env > saved config.
 
-## CLI ↔ SDK mapping
+## CLI and SDK surfaces
 
-| CLI command | Sync | Async |
+| Surface | Sync | Async |
 |---|---|---|
-| `lumilake login <url>` | (writes `~/.lumilake/config.toml`) | — |
-| `lumilake info` / `health` | `client.info.status()` / `client.health()` | same, await |
-| `lumilake deploy {up,down,clean,restart,reset,logs,init,load-data,update-flowmesh}` | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
-| `lumilake job {submit,list,get,cancel,logs,wait}` | `client.jobs.<verb>(...)` | `await client.jobs.<verb>(...)` |
+| `lumilake login <url>` | writes `~/.lumilake/config.toml` | - |
+| `lumilake info` / `health` | `client.health()` | same, await |
+| `lumilake deploy {init,up,down,clean,restart,reset,logs,update-flowmesh}` | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
+| `lumilake deploy {doctor,build,status}` | CLI only | CLI only |
+| Job submit/list/get/cancel/wait | `client.jobs.<verb>(...)` | `await client.jobs.<verb>(...)` |
+| Job preview/progress/result/inputs/artifact/watch | CLI and HTTP API | CLI and HTTP API |
 | `lumilake worker {list,get}` | `client.workers.<verb>(...)` | `await client.workers.<verb>(...)` |
 | `lumilake trace {list,get}` | `client.traces.<verb>(...)` | `await client.traces.<verb>(...)` |
 
@@ -82,8 +84,8 @@ src/lumilake/sdk/
 
 ## Design notes
 
-- **Sync + async parity.** One sync class, one async class, every resource exposes both. Shared base classes (`BaseClient` / `BaseAsyncClient`) handle version-prefix, envelope unwrapping, and error → exception mapping. Async resources `await` the same code paths.
-- **Two transport modes.** Server-API resources speak HTTP (`httpx.Client` / `httpx.AsyncClient`). Deploy lifecycle calls `lumilake.deploy` directly (no subprocess); async dispatches the same Python calls through `asyncio.to_thread` so the event loop stays responsive across docker / postgres / minio work.
+- **Sync + async parity.** One sync class, one async class, and each SDK resource exposes both. Shared base classes (`BaseClient` / `BaseAsyncClient`) handle version-prefix, envelope unwrapping, and error-to-exception mapping. Async resources `await` the same code paths.
+- **Two transport modes.** Server-API resources speak HTTP (`httpx.Client` / `httpx.AsyncClient`). Deploy lifecycle calls `lumilake.deploy` directly; async dispatches the same Python calls through `asyncio.to_thread` so the event loop stays responsive across Docker and FlowMesh setup work.
 - **Config shared with the CLI.** `from_config()` reads the same `~/.lumilake/config.toml` the CLI writes via `lumilake login`.
 - **Never raw `docker compose up`.** Deploy resource always uses the `lumilake.deploy` machinery — the project rule applies inside the SDK too.
 - **Context-manager support.** `with LumilakeClient(...) as client:` (sync) and `async with AsyncLumilakeClient(...) as client:` close the underlying httpx client cleanly.

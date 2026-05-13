@@ -1,49 +1,44 @@
-name: Performance issue
-description: A submission, schedule, or execution is unexpectedly slow / expensive.
-title: "[Perf]: "
+name: Performance discussion
+description: Report a performance regression or propose an optimization.
+title: "[Performance]: "
 labels: ["performance"]
 
 body:
+  - type: markdown
+    attributes:
+      value: >
+        Before submitting, please search
+        [existing issues](https://github.com/mlsys-io/lumilake_OSS/issues?q=is%3Aissue+sort%3Acreated-desc+)
+        to avoid duplicates.
+
   - type: dropdown
-    id: surface
+    id: category
     attributes:
-      label: Where is the slowness?
+      label: Category
       options:
-        - /jobs/preview (graph compile)
-        - /jobs (submission + first schedule)
-        - Scheduler (HALO / dummy optimizer)
-        - Data profiling
-        - Output dump at finalize
-        - FlowMesh dispatch / worker assignment
-        - Other
+        - Performance regression
+        - Optimization proposal
+        - Benchmarking / profiling
     validations:
       required: true
 
   - type: textarea
     attributes:
-      label: Workload
+      label: Description
       description: |
-        A minimal YAML workflow (or CLI command) that reproduces the slowness.
+        For regressions: provide before/after measurements, the commit or version
+        where regression started, and the workflow used to benchmark.
+
+        For proposals: describe the bottleneck and your proposed optimization.
     validations:
       required: true
-
-  - type: textarea
-    attributes:
-      label: Observed timing
-      description: |
-        Paste wall-clock numbers or profile snapshots. Compare against what
-        you expected if possible.
 
   - type: textarea
     attributes:
       label: Environment
-      value: |
-        - Lumilake version:
-        - Optimizer: (dummy / halo / ...)
-        - CPU / GPU:
-        - Compute DB size (rough):
-    validations:
-      required: true
+      description: >
+        Lumilake version, hardware (CPU/GPU), runtime mode, data-plane mode,
+        worker count, and any relevant config.
 
   - type: checkboxes
     attributes:

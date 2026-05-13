@@ -21,12 +21,12 @@ def test_submit(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
         route = mocked.post("/api/v1/jobs").mock(
             return_value=httpx.Response(
-                200, json={"data": {"id": "j-1", "status": "PENDING"}}
+                200, json={"data": {"id": "j-1", "status": "pending"}}
             )
         )
         result = jobs.submit({"workflow": {"x": 1}})
         assert route.called
-        assert result == {"id": "j-1", "status": "PENDING"}
+        assert result == {"id": "j-1", "status": "pending"}
         body = route.calls.last.request.read()
         assert b'"workflow"' in body
 
@@ -46,9 +46,9 @@ def test_list_with_filters(jobs: Jobs, base_url: str) -> None:
         route = mocked.get("/api/v1/jobs").mock(
             return_value=httpx.Response(200, json={"data": []})
         )
-        jobs.list(status="DONE", limit=10)
+        jobs.list(status="completed", limit=10)
         url = str(route.calls.last.request.url)
-        assert "status=DONE" in url and "limit=10" in url
+        assert "status=completed" in url and "limit=10" in url
 
 
 def test_get(jobs: Jobs, base_url: str) -> None:
@@ -62,9 +62,9 @@ def test_get(jobs: Jobs, base_url: str) -> None:
 def test_cancel(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
         route = mocked.post("/api/v1/jobs/j-1/cancel").mock(
-            return_value=httpx.Response(200, json={"data": {"status": "CANCELLED"}})
+            return_value=httpx.Response(200, json={"data": {"status": "cancelled"}})
         )
-        assert jobs.cancel("j-1") == {"status": "CANCELLED"}
+        assert jobs.cancel("j-1") == {"status": "cancelled"}
         assert route.called
 
 
@@ -72,19 +72,19 @@ def test_wait_terminal(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
         mocked.get("/api/v1/jobs/j").mock(
             side_effect=[
-                httpx.Response(200, json={"data": {"id": "j", "status": "PENDING"}}),
-                httpx.Response(200, json={"data": {"id": "j", "status": "DONE"}}),
+                httpx.Response(200, json={"data": {"id": "j", "status": "pending"}}),
+                httpx.Response(200, json={"data": {"id": "j", "status": "completed"}}),
             ]
         )
         result = jobs.wait("j", poll_interval=0.0, timeout=2.0)
-        assert result["status"] == "DONE"
+        assert result["status"] == "completed"
 
 
 def test_wait_timeout(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
         mocked.get("/api/v1/jobs/j").mock(
             return_value=httpx.Response(
-                200, json={"data": {"id": "j", "status": "PENDING"}}
+                200, json={"data": {"id": "j", "status": "pending"}}
             )
         )
         with pytest.raises(TimeoutError, match="still in status"):
@@ -96,11 +96,11 @@ async def test_async_submit(async_jobs: AsyncJobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
         mocked.post("/api/v1/jobs").mock(
             return_value=httpx.Response(
-                200, json={"data": {"id": "j-1", "status": "PENDING"}}
+                200, json={"data": {"id": "j-1", "status": "pending"}}
             )
         )
         result = await async_jobs.submit({"workflow": {"x": 1}})
-        assert result == {"id": "j-1", "status": "PENDING"}
+        assert result == {"id": "j-1", "status": "pending"}
         await async_jobs._client.close()
 
 
@@ -121,10 +121,10 @@ async def test_async_wait_terminal(async_jobs: AsyncJobs, base_url: str) -> None
     with respx.mock(base_url=base_url) as mocked:
         mocked.get("/api/v1/jobs/j").mock(
             side_effect=[
-                httpx.Response(200, json={"data": {"id": "j", "status": "PENDING"}}),
-                httpx.Response(200, json={"data": {"id": "j", "status": "DONE"}}),
+                httpx.Response(200, json={"data": {"id": "j", "status": "pending"}}),
+                httpx.Response(200, json={"data": {"id": "j", "status": "completed"}}),
             ]
         )
         result = await async_jobs.wait("j", poll_interval=0.0, timeout=2.0)
-        assert result["status"] == "DONE"
+        assert result["status"] == "completed"
         await async_jobs._client.close()

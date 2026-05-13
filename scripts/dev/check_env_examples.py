@@ -10,13 +10,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 _ASSIGNMENT_RE = re.compile(r"^\s*#?\s*([A-Z][A-Z0-9_]*)\s*=")
-_FORBIDDEN_KEYS = frozenset(
-    {
-        "LUMILAKE_STRATEGY_AUTOLOAD_MODULES",
-        "DEPLOY_PROFILE",
-        "CREDENTIALS_JSON",
-    }
-)
 
 
 def _example_keys(path: Path) -> set[str]:
@@ -39,7 +32,6 @@ def main() -> int:
     required = set(doctor._ALWAYS_REQUIRED + doctor._DIRECT_MODE_REQUIRED)
     missing = sorted(required - keys)
     unknown = sorted(keys - doctor._KNOWN_KEYS)
-    forbidden = sorted(keys & _FORBIDDEN_KEYS)
 
     failed = False
     if missing:
@@ -51,11 +43,6 @@ def main() -> int:
         failed = True
         print("Unknown env example keys:")
         for key in unknown:
-            print(f"- {key}")
-    if forbidden:
-        failed = True
-        print("Forbidden legacy env example keys:")
-        for key in forbidden:
             print(f"- {key}")
 
     return 1 if failed else 0

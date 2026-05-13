@@ -45,7 +45,8 @@ Scope (optional): deploy, server, cli, runtime, docker, ...
 - [ ] I have run `uv run pre-commit run --all-files` and fixed any issues.
 - [ ] I have added or updated tests covering my changes (if applicable).
 - [ ] I have verified that `uv run pytest tests/ --ignore=tests/server` passes locally.
+- [ ] If I changed the SDK or CLI, I have verified the affected interface works locally.
 - [ ] If this is a breaking change, I have prefixed the PR title with `[BREAKING]` and described migration steps above.
-- [ ] I have updated documentation (README, AGENTS.md, CLAUDE.md, CONTRIBUTING.md) if user-facing behavior changed.
+- [ ] I have updated documentation or config examples if user-facing behavior changed.
 
 </details>

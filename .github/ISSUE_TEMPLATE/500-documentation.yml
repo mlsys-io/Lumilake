@@ -1,32 +1,29 @@
 name: Documentation
-description: Something in the docs, README, or CONTRIBUTING is unclear, wrong, or missing.
-title: "[Docs]: "
+description: Report a documentation issue or suggest improvements.
+title: "[Doc]: "
 labels: ["documentation"]
 
 body:
-  - type: input
-    id: location
+  - type: markdown
     attributes:
-      label: Where
-      description: |
-        Path to the file, or URL of the page. e.g. ``README.md``, ``CONTRIBUTING.md``, ``CLAUDE.md``, ``docs/``.
-    validations:
-      required: true
+      value: >
+        Before submitting, please search
+        [existing issues](https://github.com/mlsys-io/lumilake_OSS/issues?q=is%3Aissue+sort%3Acreated-desc+)
+        to avoid duplicates.
 
   - type: textarea
     attributes:
-      label: What's wrong or missing?
-      description: |
-        Quote the specific text if it's misleading, or describe what you
-        were looking for and couldn't find.
+      label: Describe the issue
+      description: >
+        What is missing, incorrect, or unclear in the documentation?
     validations:
       required: true
 
   - type: textarea
     attributes:
       label: Suggested fix
-      description: |
-        Proposed replacement text or new section outline, if you have one.
+      description: >
+        How could the documentation be improved?
 
   - type: checkboxes
     attributes:

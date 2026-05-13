@@ -1,64 +1,79 @@
-name: Deployment issue
-description: Something went wrong with `lumilake deploy up/down/reset` or the Docker stack.
+name: Deployment / Installation
+description: Report an issue with installing or deploying Lumilake.
 title: "[Deploy]: "
-labels: ["deploy"]
+labels: ["deployment"]
 
 body:
-  - type: dropdown
-    id: mode
+  - type: markdown
     attributes:
-      label: Deploy mode
+      value: >
+        Before submitting, please search
+        [existing issues](https://github.com/mlsys-io/lumilake_OSS/issues?q=is%3Aissue+sort%3Acreated-desc+)
+        to avoid duplicates.
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Local (uv / pip)
+        - Docker Compose (dev)
+        - Bundled FlowMesh stack
+        - External FlowMesh
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data_plane
+    attributes:
+      label: Data plane
       options:
         - lumid.data
-        - Direct PostgreSQL + S3
-        - Server only
+        - Direct PostgreSQL + S3-compatible storage
+        - Not configured yet
+        - Multiple / unclear
     validations:
       required: true
 
   - type: textarea
     attributes:
-      label: Command and output
+      label: Describe the issue
       description: |
-        Paste the exact command and full output (wrap in triple-backticks).
+        What went wrong during installation or deployment?
+        Include the commands you ran and the full error output.
       placeholder: |
+        Steps to reproduce:
+        1. ...
+
         ```
-        $ uv run lumilake deploy up
-        [deploy] ...
+        Error output
         ```
     validations:
       required: true
-
-  - type: textarea
-    attributes:
-      label: .env (redacted)
-      description: |
-        Your ``.env`` with secrets redacted.
-      placeholder: |
-        ```dotenv
-        LUMILAKE_SERVER_PORT="9000"
-        LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"
-        LUMID_DATA_URL="http://127.0.0.1:9102"
-        ```
-    validations:
-      required: true
-
-  - type: textarea
-    attributes:
-      label: Container status and logs
-      description: |
-        Output of ``docker ps --filter name=lumilake`` plus
-        relevant ``docker logs <container>`` excerpts.
 
   - type: textarea
     attributes:
       label: Environment
+      description: >
+        Lumilake version/commit, OS, Docker version, Docker Compose version,
+        Python version, and runtime/data-plane mode.
       value: |
         - Lumilake version:
         - OS:
         - Docker version:
         - Docker Compose version:
+        - Python version:
+        - Runtime / data plane:
     validations:
       required: true
+
+  - type: textarea
+    attributes:
+      label: Relevant config / logs
+      description: >
+        Paste relevant .env settings with secrets redacted, container status,
+        or logs. Use triple-backtick blocks.
 
   - type: checkboxes
     attributes:

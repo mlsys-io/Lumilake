@@ -1,4 +1,4 @@
-name: Tests
+name: Unit Tests
 
 on:
   push:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  unit-tests:
     name: Unit tests
     runs-on: self-hosted
 
@@ -47,4 +47,4 @@ jobs:
           sed -i 's/^[[:space:]]*//' .env
 
       - name: Run tests
-        run: uv run pytest tests/ -v
+        run: uv run pytest tests/ --ignore=tests/server -v

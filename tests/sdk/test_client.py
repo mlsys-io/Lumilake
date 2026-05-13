@@ -36,6 +36,20 @@ def test_sync_health_passes_through(client: LumilakeClient, base_url: str) -> No
         assert result["ok"] is True
 
 
+def test_sync_info_status_uses_health_endpoint(
+    client: LumilakeClient, base_url: str
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        health = mocked.get("/healthz").mock(
+            return_value=httpx.Response(
+                200, json={"ok": True, "service": "lumilake-server"}
+            )
+        )
+        result = client.info.status()
+        assert result["ok"] is True
+        assert health.called
+
+
 @pytest.mark.asyncio
 async def test_async_health_passes_through(
     async_client: AsyncLumilakeClient, base_url: str
@@ -48,6 +62,22 @@ async def test_async_health_passes_through(
         )
         result = await async_client.health()
         assert result["ok"] is True
+        await async_client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_info_status_uses_health_endpoint(
+    async_client: AsyncLumilakeClient, base_url: str
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        health = mocked.get("/healthz").mock(
+            return_value=httpx.Response(
+                200, json={"ok": True, "service": "lumilake-server"}
+            )
+        )
+        result = await async_client.info.status()
+        assert result["ok"] is True
+        assert health.called
         await async_client.close()
 
 
