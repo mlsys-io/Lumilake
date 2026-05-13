@@ -36,6 +36,10 @@ The full justification lives in the linked docs; these are the rules that come u
 
 Use `CONTRIBUTING.md` for setup, hooks, tests, dependency pins, and commit rules. Use `docs/CLI.md` for local stack and workflow commands.
 
+## Editing This File
+
+Keep this file pointer-first: add routing entries and short high-signal reminders here, and put detailed rules in the focused docs linked above.
+
 ## Auto-loaded references
 
 @docs/ARCHITECTURE.md
