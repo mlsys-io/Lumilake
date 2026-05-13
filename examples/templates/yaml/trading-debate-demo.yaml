@@ -1,23 +1,10 @@
 name: trading-debate-demo
 
-# Minimal e2e demo for the HALO optimizer.
+# E2E demo: 4 SQL pulls + bull/bear/risk/macro debate + moderator + verdict.
+# Inputs:  Stock=["NVDA", ...]
+# Outputs: final_recommendation = {"verdict": "BUY" | "SELL" | "HOLD"}
 #
-# Four SQL DataRetrievalOps fetch price history, news, insider sentiment,
-# and a company profile from the `demo` schema. Six LLMChatOps form a
-# bull/bear research debate that gets adjudicated by a moderator and
-# normalized by a final verdict op into one of {BUY, SELL, HOLD}.
-#
-# Each researcher pulls from exactly one upstream query so aggregate_table
-# never has to coalesce sources of different cardinality. The moderator
-# then stitches the four researchers' outputs together via rowwise_template,
-# and a small Verdict op forces the moderator's signal back onto the
-# enum (gemma tends to ramble past `signal: BUY` if left alone).
-#
-# All structural_outputs are scalar (string / number) — vLLM's template
-# renderer does not accept array-typed params.
-#
-# Schema setup (one-shot, against the shared experiment-data postgres):
-#
+# Schema setup (one-shot):
 #   CREATE SCHEMA IF NOT EXISTS demo;
 #   CREATE TABLE demo.ohlc_10m            AS SELECT * FROM exp_data_1g.fact_ohlc_10m
 #       WHERE symbol IN ('NVDA','AAPL','TSLA','AMD','GOOGL');
@@ -27,12 +14,6 @@ name: trading-debate-demo
 #       WHERE symbol IN ('NVDA','AAPL','TSLA','AMD','GOOGL');
 #   CREATE TABLE demo.instrument_profile  AS SELECT * FROM exp_data_1g.d_instrument_profile_fmp
 #       WHERE symbol IN ('NVDA','AAPL','TSLA','AMD','GOOGL');
-#
-# Inputs:
-#   Stock: list of ticker symbols (e.g. ["NVDA"]).
-#
-# Outputs:
-#   final_recommendation: a single-field JSON ``{"verdict": "BUY" | "SELL" | "HOLD"}``.
 
 inputs:
   Stock: []
@@ -302,7 +283,7 @@ ops:
       temperature: 0.4
       top_p: 1
 
-  # ---- Stage 4: Moderator + PM (rowwise over the analysts' outputs) ----
+  # ---- Stage 4: Moderator + Verdict ----
 
   - id: "Debate Moderator"
     op: LLMChatOp

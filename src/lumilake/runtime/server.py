@@ -811,9 +811,6 @@ class LumilakeServer:
 
     @staticmethod
     def _has_gpu(worker_profile: dict[str, Any]) -> bool:
-        # FlowMesh's GpuPlatformInfo serializes the device list under ``devices``;
-        # nothing else in the worker pipeline emits a ``count`` aggregate, so the
-        # presence of any device is the only signal we need.
         try:
             devices = worker_profile["gpu"]["devices"]
         except (KeyError, TypeError):

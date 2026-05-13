@@ -895,6 +895,26 @@ class RuntimeGraphBuilder:
             dependencies=dependencies if dependencies else None,
         )
 
+    @staticmethod
+    def _resolve_profile_param(
+        param: Any,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+    ) -> dict[str, Any] | None:
+        try:
+            upstream = graph_dict[param["node"]]
+        except (KeyError, TypeError):
+            return param if isinstance(param, dict) and "data" in param else None
+        if not isinstance(upstream, InputOp):
+            return param if isinstance(param, dict) and "data" in param else None
+        values = inputs_dict.get(upstream.name) or []
+        if not values:
+            return None
+        return {
+            "label": param.get("label"),
+            "data": {"type": "list", "items": list(values)},
+        }
+
     def _build_data_profile_node_from_data_retrieval_op(
         self,
         op_id: str,
@@ -916,31 +936,16 @@ class RuntimeGraphBuilder:
         if not isinstance(params, list):
             raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
         if spec_type == "sql":
-            # Inline InputOp-bound params as literal lists (same shape the
-            # main runtime path emits at build-time). The data-profile path
-            # used to drop these — InputOp values were never reaching the
-            # profiler, so every {symbol}-style placeholder bound to an
-            # input came back unresolved.
-            resolved_params: list[dict[str, Any]] = []
-            for param in params:
-                if not isinstance(param, dict):
-                    continue
-                node_ref = param.get("node")
-                if isinstance(node_ref, str):
-                    upstream = graph_dict.get(node_ref)
-                    if isinstance(upstream, InputOp):
-                        values = inputs_dict.get(upstream.name)
-                        if values:
-                            resolved_params.append(
-                                {
-                                    "label": param.get("label"),
-                                    "data": {"type": "list", "items": list(values)},
-                                }
-                            )
-                        continue
-                if "data" in param:
-                    resolved_params.append(param)
-            params = resolved_params
+            params = [
+                resolved
+                for param in params
+                if (
+                    resolved := self._resolve_profile_param(
+                        param, graph_dict, inputs_dict
+                    )
+                )
+                is not None
+            ]
             constraints = self._build_data_profile_constraints(
                 spec.get("params") or [], graph_dict
             )

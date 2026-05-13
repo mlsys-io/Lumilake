@@ -864,11 +864,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 for item in items
             ]
             flat_outputs[output_op_id] = outputs
-            # Worker payloads include ``metadata.prompt`` for free-text
-            # generations but skip it for structural-output / image ops.
-            # Drop the chat-history entry rather than failing the job
-            # when it's absent — callers treat ``chat_histories`` as
-            # informational.
             output_prompts: list[list[dict[str, str]]] = []
             for item, text in zip(items, outputs):
                 try:

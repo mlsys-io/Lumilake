@@ -1,9 +1,4 @@
-"""Worker / hardware schemas inherited from the FlowMesh SDK.
-
-FlowMesh owns the worker wire format; re-exporting the SDK types keeps
-the lumilake server automatically aligned with whatever the worker
-serializes — no parallel hierarchy to drift.
-"""
+"""Worker / hardware schemas — re-exported from the FlowMesh SDK."""
 
 from flowmesh.models.workers import (
     CPUInfo,
