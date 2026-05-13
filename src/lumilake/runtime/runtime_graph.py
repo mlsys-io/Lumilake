@@ -299,6 +299,7 @@ class RuntimeGraphBuilder:
                     retrieval_op_id,
                     retrieval_op,
                     graph_dict,
+                    inputs_dict,
                 )
                 if runtime_op is None:
                     continue
@@ -894,11 +895,32 @@ class RuntimeGraphBuilder:
             dependencies=dependencies if dependencies else None,
         )
 
+    @staticmethod
+    def _resolve_profile_param(
+        param: Any,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+    ) -> dict[str, Any] | None:
+        try:
+            upstream = graph_dict[param["node"]]
+        except (KeyError, TypeError):
+            return param if isinstance(param, dict) and "data" in param else None
+        if not isinstance(upstream, InputOp):
+            return param if isinstance(param, dict) and "data" in param else None
+        values = inputs_dict.get(upstream.name) or []
+        if not values:
+            return None
+        return {
+            "label": param.get("label"),
+            "data": {"type": "list", "items": list(values)},
+        }
+
     def _build_data_profile_node_from_data_retrieval_op(
         self,
         op_id: str,
         op: DataRetrievalOp,
         graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
     ) -> RuntimeOp | None:
         spec = op.data_spec or {}
         spec_type = spec.get("type")
@@ -914,10 +936,15 @@ class RuntimeGraphBuilder:
         if not isinstance(params, list):
             raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
         if spec_type == "sql":
-            # DataProfile should not depend on upstream runtime node outputs;
-            # keep only literal/list params.
             params = [
-                param for param in params if isinstance(param, dict) and "data" in param
+                resolved
+                for param in params
+                if (
+                    resolved := self._resolve_profile_param(
+                        param, graph_dict, inputs_dict
+                    )
+                )
+                is not None
             ]
             constraints = self._build_data_profile_constraints(
                 spec.get("params") or [], graph_dict

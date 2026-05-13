@@ -864,11 +864,19 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 for item in items
             ]
             flat_outputs[output_op_id] = outputs
-            prompts[output_op_id] = [
-                item["metadata"]["prompt"]
-                + [{"role": Roles.ASSISTANT.value, "content": text}]
-                for item, text in zip(items, outputs)
-            ]
+            output_prompts: list[list[dict[str, str]]] = []
+            for item, text in zip(items, outputs):
+                try:
+                    prompt = item["metadata"]["prompt"]
+                except (KeyError, TypeError):
+                    continue
+                if not isinstance(prompt, list):
+                    continue
+                output_prompts.append(
+                    prompt + [{"role": Roles.ASSISTANT.value, "content": text}]
+                )
+            if output_prompts:
+                prompts[output_op_id] = output_prompts
 
         self.logger.info(f"Aggregated {len(flat_outputs)} output results.")
         return {
