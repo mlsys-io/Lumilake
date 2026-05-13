@@ -102,30 +102,3 @@ class ExecutionTask:
     worker_id: str | Sequence[str]
     dependencies: Sequence[str]
     epoch: int
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionPlan:
-    """Result of the optimizer. Contains worker descriptions, task ordering,
-    and query plan selections."""
-
-    workers: dict[str, Worker]
-    tasks: Sequence[ExecutionTask]
-    query_plans: Mapping[tuple[str, str], Sequence[QueryPlanChoice]] = field(
-        default_factory=dict
-    )
-    selected_query_plans: Mapping[tuple[str, str], QueryPlanChoice] = field(
-        default_factory=dict
-    )
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-class GraphValidationError(RuntimeError):
-    """Raised when the YAML template is malformed."""
-
-
-def build_dependency_list(edges: Sequence[Edge]) -> dict[str, list[str]]:
-    deps: dict[str, list[str]] = {}
-    for edge in edges:
-        deps.setdefault(edge.target, []).append(edge.source)
-    return deps

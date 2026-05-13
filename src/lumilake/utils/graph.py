@@ -45,49 +45,6 @@ def reversed_topological_sort[T](
     return topological_sort(reversed_graph, secondary_key)
 
 
-def detect_sccs[T](graph: dict[T, set[T]]) -> list[list[T]]:
-    """Detects SCCs in a directed graph using Tarjan's algorithm"""
-    index: int = 0
-    stack: list[T] = []
-    indices: dict[T, int] = {}
-    lowlink: dict[T, int] = {}
-    on_stack = set()
-    sccs = []
-
-    def dfs(node: T) -> None:
-        nonlocal index
-        indices[node] = index
-        lowlink[node] = index
-        index += 1
-        stack.append(node)
-        on_stack.add(node)
-
-        neighbors = graph.get(node)
-        if neighbors is not None:
-            for neighbor in neighbors:
-                if neighbor not in indices:
-                    dfs(neighbor)
-                    lowlink[node] = min(lowlink[node], lowlink[neighbor])
-                elif neighbor in on_stack:
-                    lowlink[node] = min(lowlink[node], indices[neighbor])
-
-        if lowlink[node] == indices[node]:
-            scc = []
-            while True:
-                w = stack.pop()
-                on_stack.remove(w)
-                scc.append(w)
-                if w == node:
-                    break
-            sccs.append(scc)
-
-    for node in graph:
-        if node not in indices:
-            dfs(node)
-
-    return sccs
-
-
 def detect_wccs[T](graph: dict[T, set[T]]) -> list[list[T]]:
     """Detect weakly connected components (WCCs) in a directed graph"""
     # Convert directed graph to undirected
@@ -119,12 +76,3 @@ def detect_wccs[T](graph: dict[T, set[T]]) -> list[list[T]]:
                             stack.append(neighbor)
             wccs.append(wcc)
     return wccs
-
-
-def calculate_node_depths[T](graph: dict[T, set[T]]) -> dict[T, int]:
-    """Calculates the depth of each node in a directed acyclic graph (DAG)"""
-    depth = {node: 0 for node in graph}
-    for node in topological_sort(graph):
-        for neighbor in graph.get(node, []):
-            depth[neighbor] = max(depth[neighbor], depth[node] + 1)
-    return depth

@@ -1,6 +1,5 @@
 import asyncio
-import itertools
-from collections.abc import AsyncGenerator, Coroutine, Iterable, Sequence
+from collections.abc import Coroutine, Iterable, Sequence
 from threading import Thread
 from typing import Any, TypeVar, cast
 
@@ -16,16 +15,6 @@ def unique_id() -> str:
 
 def identity[T](x: T) -> T:
     return x
-
-
-def iter_batch[T](iterable: Iterable[T], batch_size: int) -> Iterable[list[T]]:
-    """Yield batches of items from an iterable."""
-    it = iter(iterable)
-    while True:
-        batch = list(itertools.islice(it, batch_size))
-        if not batch:
-            break
-        yield batch
 
 
 def partition[T](lst: list[T], n: int) -> Iterable[list[T]]:
@@ -46,15 +35,6 @@ def check_and_cast_list[T, V](t: type[T], lst: Sequence[V]) -> list[T]:
     if not isinstance(item, t):
         raise ValueError(f"Expected a list of {t}, got a list of {type(item)}")
     return cast(list[T], lst)
-
-
-async def execute_unordered[T](
-    tasks: Iterable[asyncio.Task[T]],
-) -> AsyncGenerator[set[asyncio.Task[T]], None]:
-    pending = set(tasks)
-    while pending:
-        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-        yield done
 
 
 class _AsyncRunner:
@@ -91,10 +71,6 @@ def async_runner() -> _AsyncRunner:
     if _async_runner is None:
         _async_runner = _AsyncRunner()
     return _async_runner
-
-
-def run_coroutine_blocking[T](coro: Coroutine[Any, Any, T]) -> T:
-    return async_runner().run(coro)
 
 
 def stop_async_runner() -> None:

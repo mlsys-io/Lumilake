@@ -1,30 +1,6 @@
 import heapq
 from collections.abc import Mapping, Sequence
 
-from .models import GraphSpec, Node, Worker, build_dependency_list
-
-
-def default_worker_filter(node: Node, worker: Worker) -> bool:
-    """Basic compatibility: LLM nodes -> GPU, DB/HTTP/noop -> CPU."""
-    if node.engine == "vllm":
-        return worker.kind == "gpu"
-    if node.engine in ("db", "http") or node.type == "db_query":
-        return worker.kind == "cpu"
-    return worker.kind == "cpu"
-
-
-def filtered_dependencies(
-    graph: GraphSpec,
-    schedulable: Sequence[str],
-    dependencies: Mapping[str, Sequence[str]] | None = None,
-) -> dict[str, tuple[str, ...]]:
-    raw = dependencies or build_dependency_list(graph.edges)
-    sched_set = set(schedulable)
-    return {
-        node_id: tuple(dep for dep in raw.get(node_id, []) if dep in sched_set)
-        for node_id in schedulable
-    }
-
 
 def topological_order(
     dependencies: Mapping[str, Sequence[str]],
