@@ -4,12 +4,12 @@ from typing import Any, cast
 
 import pytest
 
-from lumilake.data_profile_models import DataProfileCostEstimate
-from lumilake.graphs.graph import CompiledGraph
-from lumilake.runtime.request import WorkflowSliceMeta
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
-from lumilake.utils import data_profile_offload
+from lumilake_server.data_profile_models import DataProfileCostEstimate
+from lumilake_server.graphs.graph import CompiledGraph
+from lumilake_server.runtime.request import WorkflowSliceMeta
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils import data_profile_offload
 
 
 class _DummyGraph:

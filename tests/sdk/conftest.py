@@ -1,11 +1,10 @@
-"""Shared fixtures for the ``lumilake.sdk`` test suite."""
+"""Shared fixtures for the ``lumilake`` test suite."""
 
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
-
-from lumilake.sdk import (
+from lumilake import (
     AsyncLumilakeClient,
     BaseAsyncClient,
     BaseClient,

@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from lumilake.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 
 
 @pytest.mark.asyncio

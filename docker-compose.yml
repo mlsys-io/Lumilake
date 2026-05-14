@@ -12,8 +12,7 @@ x-logging-verbose: &verbose-logging
 
 services:
   server:
-    build: .
-    image: lumilake:${LUMILAKE_IMAGE_TAG:-latest}
+    image: ${LUMILAKE_REGISTRY:-ghcr.io/mlsys-io}/lumilake_server:${LUMILAKE_IMAGE_TAG:-latest}
     container_name: lumilake-server
     profiles: ["server"]
     network_mode: host

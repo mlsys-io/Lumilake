@@ -10,13 +10,12 @@ import os
 from pathlib import Path
 
 import pytest
-
 from lumilake import envs
-from lumilake.cli.commands import deploy as deploy_cmd
-from lumilake.deploy import doctor as doctor_mod
-from lumilake.deploy import flowmesh as fm
-from lumilake.deploy import setup as setup_mod
-from lumilake.deploy.env import read_env_value
+from lumilake_cli.commands import deploy as deploy_cmd
+from lumilake_deploy import doctor as doctor_mod
+from lumilake_deploy import flowmesh as fm
+from lumilake_deploy import setup as setup_mod
+from lumilake_deploy.env import read_env_value
 
 
 def test_read_env_value_handles_quoted_and_unquoted() -> None:

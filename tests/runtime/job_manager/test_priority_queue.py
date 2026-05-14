@@ -4,12 +4,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from support.runtime_graphs import build_dummy_runtime_graph
 
-from lumilake.runtime.job_manager.base import Job
-from lumilake.runtime.job_manager.priority_queue import PriorityJobManager
-from lumilake.runtime.optimizer.base import BaseOptimizer
-from lumilake.runtime.protocol import LumilakeRequestConfig, Priority
-from lumilake.runtime.request import WorkflowSliceMeta
-from lumilake.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.job_manager.base import Job
+from lumilake_server.runtime.job_manager.priority_queue import PriorityJobManager
+from lumilake_server.runtime.optimizer.base import BaseOptimizer
+from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
+from lumilake_server.runtime.request import WorkflowSliceMeta
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 
 def _slice_meta(graph_name: str) -> WorkflowSliceMeta:
@@ -158,7 +158,7 @@ async def test_starvation_override_allows_low_priority_progress() -> None:
 
     selected_priorities: list[Priority] = []
     with patch(
-        "lumilake.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
         side_effect=_prefer_high,
     ):
         for round_idx in range(3):
@@ -222,7 +222,7 @@ async def test_starved_ids_are_pinned_for_affinity_selection() -> None:
         return [next(iter(runtime_graphs))]
 
     with patch(
-        "lumilake.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
         side_effect=_capture_pins,
     ):
         batch = await manager.select_batch(1)
@@ -286,7 +286,7 @@ async def test_multi_tenant_case_07_priority_with_starvation_progression() -> No
 
     picked_priorities: list[Priority] = []
     with patch(
-        "lumilake.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
         side_effect=_prefer_higher_priority,
     ):
         while await manager.has_work():
@@ -357,7 +357,7 @@ async def test_multi_tenant_case_08_two_jobs_can_share_one_batch() -> None:
         return [next(iter(runtime_graphs))]
 
     with patch(
-        "lumilake.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
         side_effect=_prefer_single_id,
     ):
         batch = await manager.select_batch(2)

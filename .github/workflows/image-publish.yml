@@ -1,0 +1,107 @@
+name: Image Publish
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: mlsys-io/lumilake_server
+
+jobs:
+  build-and-push:
+    name: Build multi-arch image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@5306bad0baa6b616b9934712d4b9bc20069df9bf  # v3.6.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435  # v3.11.1
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1  # v3.5.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -eu
+          short_sha="${SHA::7}"
+          tags=("${REGISTRY}/${IMAGE_NAME}:${short_sha}")
+          if [[ "${EVENT_NAME}" == "push" ]]; then
+            if [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == v* ]]; then
+              semver="${REF_NAME#v}"
+              tags+=("${REGISTRY}/${IMAGE_NAME}:${semver}")
+              tags+=("${REGISTRY}/${IMAGE_NAME}:latest")
+            elif [[ "${REF_NAME}" == "main" ]]; then
+              tags+=("${REGISTRY}/${IMAGE_NAME}:dev")
+            fi
+          fi
+          # Comma-join for build-push-action
+          ( IFS=,; echo "tags=${tags[*]}" ) >> "$GITHUB_OUTPUT"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "0.11.8"
+
+      - name: Sync server requirements from uv.lock
+        run: uv run --frozen scripts/dev/sync_requirements.py --write
+
+      - name: Verify lockfile sync was a no-op
+        run: |
+          if ! git diff --quiet src/lumilake_server/requirements.txt; then
+            echo "src/lumilake_server/requirements.txt drifted from uv.lock." >&2
+            echo "Run: uv run scripts/dev/sync_requirements.py --write" >&2
+            git --no-pager diff src/lumilake_server/requirements.txt
+            exit 1
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0  # v6.17.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+          build-args: |
+            BUILD_VERSION=${{ github.ref_name }}
+            BUILD_REF=${{ github.sha }}
+            BUILD_CREATED=${{ github.event.repository.updated_at }}

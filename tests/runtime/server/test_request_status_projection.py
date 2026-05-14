@@ -3,10 +3,10 @@ from typing import Any, cast
 import pytest
 from support.runtime_server import FakeHandler, RecordingRuntimeManager
 
-from lumilake.runtime.protocol import LumilakeRequestConfig
-from lumilake.runtime.request import RequestHandler
-from lumilake.runtime.server import RequestState
-from lumilake.schemas.progress import JobProgress
+from lumilake_server.runtime.protocol import LumilakeRequestConfig
+from lumilake_server.runtime.request import RequestHandler
+from lumilake_server.runtime.server import RequestState
+from lumilake_server.schemas.progress import JobProgress
 
 
 @pytest.mark.asyncio

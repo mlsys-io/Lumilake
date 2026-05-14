@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 from starlette.datastructures import QueryParams
 
-from lumilake.utils.misc import filter_models_by_queries
+from lumilake_server.utils.misc import filter_models_by_queries
 
 
 class Item(BaseModel):

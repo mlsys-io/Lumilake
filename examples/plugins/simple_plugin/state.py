@@ -1,5 +1,4 @@
 from lumid_hooks import PrincipalContext
-
 from lumilake_hook import UsageRow
 
 TOKENS: dict[str, PrincipalContext] = {

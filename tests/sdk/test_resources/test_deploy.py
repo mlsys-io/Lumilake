@@ -8,9 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-from lumilake.deploy.errors import DeployError as _CLIDeployError
-from lumilake.sdk import CONTAINER_NAMES, AsyncDeploy, Deploy, DeployError
+from lumilake import CONTAINER_NAMES, AsyncDeploy, Deploy, DeployError
+from lumilake_deploy.errors import DeployError as _CLIDeployError
 
 
 @pytest.fixture
@@ -24,7 +23,7 @@ def async_deploy(tmp_path: Path) -> AsyncDeploy:
 
 
 def test_sync_up_invokes_run_setup(deploy: Deploy, tmp_path: Path) -> None:
-    with patch("lumilake.sdk.resources.deploy.setup_mod.run_setup") as run_setup:
+    with patch("lumilake.resources.deploy.setup_mod.run_setup") as run_setup:
         deploy.up()
     run_setup.assert_called_once()
     root, opts = run_setup.call_args.args
@@ -34,27 +33,25 @@ def test_sync_up_invokes_run_setup(deploy: Deploy, tmp_path: Path) -> None:
 
 
 def test_sync_down_calls_run_stop(deploy: Deploy, tmp_path: Path) -> None:
-    with patch("lumilake.sdk.resources.deploy.stop_mod.run_stop") as run_stop:
+    with patch("lumilake.resources.deploy.stop_mod.run_stop") as run_stop:
         deploy.down()
     run_stop.assert_called_once_with(tmp_path, purge=False, wipe_archive=False)
 
 
 def test_sync_down_with_wipe_archive(deploy: Deploy, tmp_path: Path) -> None:
-    with patch("lumilake.sdk.resources.deploy.stop_mod.run_stop") as run_stop:
+    with patch("lumilake.resources.deploy.stop_mod.run_stop") as run_stop:
         deploy.down(wipe_archive=True)
     run_stop.assert_called_once_with(tmp_path, purge=False, wipe_archive=True)
 
 
 def test_sync_clean_calls_run_stop_purge(deploy: Deploy, tmp_path: Path) -> None:
-    with patch("lumilake.sdk.resources.deploy.stop_mod.run_stop") as run_stop:
+    with patch("lumilake.resources.deploy.stop_mod.run_stop") as run_stop:
         deploy.clean()
     run_stop.assert_called_once_with(tmp_path, purge=True)
 
 
 def test_sync_restart_single_service(deploy: Deploy) -> None:
-    with patch(
-        "lumilake.sdk.resources.deploy.docker_client.container_restart"
-    ) as restart:
+    with patch("lumilake.resources.deploy.docker_client.container_restart") as restart:
         deploy.restart(service="server")
     restart.assert_called_once_with("lumilake-server")
 
@@ -66,8 +63,8 @@ def test_sync_restart_unknown_service_raises(deploy: Deploy) -> None:
 
 def test_sync_restart_full_stack(deploy: Deploy, tmp_path: Path) -> None:
     with (
-        patch("lumilake.sdk.resources.deploy.stop_mod.run_stop") as run_stop,
-        patch("lumilake.sdk.resources.deploy.setup_mod.run_setup") as run_setup,
+        patch("lumilake.resources.deploy.stop_mod.run_stop") as run_stop,
+        patch("lumilake.resources.deploy.setup_mod.run_setup") as run_setup,
     ):
         deploy.restart()
     run_stop.assert_called_once_with(tmp_path, purge=False)
@@ -79,8 +76,8 @@ def test_sync_restart_full_stack(deploy: Deploy, tmp_path: Path) -> None:
 
 def test_sync_reset(deploy: Deploy, tmp_path: Path) -> None:
     with (
-        patch("lumilake.sdk.resources.deploy.stop_mod.run_stop") as run_stop,
-        patch("lumilake.sdk.resources.deploy.setup_mod.run_setup") as run_setup,
+        patch("lumilake.resources.deploy.stop_mod.run_stop") as run_stop,
+        patch("lumilake.resources.deploy.setup_mod.run_setup") as run_setup,
     ):
         deploy.reset()
     run_stop.assert_called_once_with(tmp_path, purge=True)
@@ -90,7 +87,7 @@ def test_sync_reset(deploy: Deploy, tmp_path: Path) -> None:
 
 def test_sync_logs(deploy: Deploy) -> None:
     with patch(
-        "lumilake.sdk.resources.deploy.docker_client.container_logs_tail",
+        "lumilake.resources.deploy.docker_client.container_logs_tail",
         return_value="line1\nline2\n",
     ) as tail:
         out = deploy.logs(service="server", tail=10)
@@ -126,7 +123,7 @@ def test_sync_init_force_overwrites(deploy: Deploy, tmp_path: Path) -> None:
 def test_cli_deploy_error_translates_to_sdk_error(deploy: Deploy) -> None:
     """CLI-side DeployError surfaces to the caller as the SDK's DeployError."""
     with patch(
-        "lumilake.sdk.resources.deploy.setup_mod.run_setup",
+        "lumilake.resources.deploy.setup_mod.run_setup",
         side_effect=_CLIDeployError("port in use"),
     ):
         with pytest.raises(DeployError, match="port in use"):
@@ -134,7 +131,7 @@ def test_cli_deploy_error_translates_to_sdk_error(deploy: Deploy) -> None:
 
 
 def test_update_flowmesh(deploy: Deploy, tmp_path: Path) -> None:
-    with patch("lumilake.sdk.resources.deploy.update_fm_mod.run_update") as run_update:
+    with patch("lumilake.resources.deploy.update_fm_mod.run_update") as run_update:
         deploy.update_flowmesh()
     run_update.assert_called_once_with(tmp_path)
 
@@ -148,7 +145,7 @@ def test_methods_raise_clear_error_when_backend_missing(deploy: Deploy) -> None:
     """Without the ``deploy`` extra installed, lifecycle methods raise
     DeployError with an install hint. ``init`` is exempt — it only
     touches the local filesystem."""
-    with patch("lumilake.sdk.resources.deploy._BACKEND_AVAILABLE", False):
+    with patch("lumilake.resources.deploy._BACKEND_AVAILABLE", False):
         with pytest.raises(DeployError, match=r"lumilake\[deploy\]"):
             deploy.up()
         with pytest.raises(DeployError, match=r"lumilake\[deploy\]"):
@@ -160,21 +157,21 @@ def test_methods_raise_clear_error_when_backend_missing(deploy: Deploy) -> None:
 def test_init_works_without_backend_extra(deploy: Deploy, tmp_path: Path) -> None:
     """``init`` is filesystem-only and must work without the deploy extra."""
     (tmp_path / ".env.example").write_text("ok\n")
-    with patch("lumilake.sdk.resources.deploy._BACKEND_AVAILABLE", False):
+    with patch("lumilake.resources.deploy._BACKEND_AVAILABLE", False):
         deploy.init()
     assert (tmp_path / ".env").read_text() == "ok\n"
 
 
 @pytest.mark.asyncio
 async def test_async_up(async_deploy: AsyncDeploy, tmp_path: Path) -> None:
-    with patch("lumilake.sdk.resources.deploy.setup_mod.run_setup") as run_setup:
+    with patch("lumilake.resources.deploy.setup_mod.run_setup") as run_setup:
         await async_deploy.up()
     run_setup.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_async_down(async_deploy: AsyncDeploy, tmp_path: Path) -> None:
-    with patch("lumilake.sdk.resources.deploy.stop_mod.run_stop") as run_stop:
+    with patch("lumilake.resources.deploy.stop_mod.run_stop") as run_stop:
         await async_deploy.down(wipe_archive=True)
     run_stop.assert_called_once_with(tmp_path, purge=False, wipe_archive=True)
 
@@ -182,7 +179,7 @@ async def test_async_down(async_deploy: AsyncDeploy, tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_async_logs(async_deploy: AsyncDeploy) -> None:
     with patch(
-        "lumilake.sdk.resources.deploy.docker_client.container_logs_tail",
+        "lumilake.resources.deploy.docker_client.container_logs_tail",
         return_value="line1\n",
     ):
         out = await async_deploy.logs(service="server", tail=5)
@@ -192,7 +189,7 @@ async def test_async_logs(async_deploy: AsyncDeploy) -> None:
 @pytest.mark.asyncio
 async def test_async_failure_translates_error(async_deploy: AsyncDeploy) -> None:
     with patch(
-        "lumilake.sdk.resources.deploy.setup_mod.run_setup",
+        "lumilake.resources.deploy.setup_mod.run_setup",
         side_effect=_CLIDeployError("port in use"),
     ):
         with pytest.raises(DeployError, match="port in use"):

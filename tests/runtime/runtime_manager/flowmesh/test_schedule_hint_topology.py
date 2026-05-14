@@ -1,4 +1,4 @@
-from lumilake.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 
 
 def test_build_flat_schedule_hint_from_worker_assignment() -> None:

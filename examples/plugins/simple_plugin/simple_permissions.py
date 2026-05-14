@@ -2,7 +2,6 @@ import logging
 
 from fastapi import HTTPException
 from lumid_hooks import PrincipalContext, ResourceRef
-
 from lumilake_hook import ResourceKind
 
 from . import state

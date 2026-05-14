@@ -2,13 +2,13 @@ import json
 from pathlib import Path
 
 import pytest
+from lumilake import envs
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
 
-from lumilake import envs
-from lumilake.graphs import Graph
-from lumilake.ops import DataRetrievalOp, LLMChatOp
-from lumilake.runtime.server import LumilakeServer
-from lumilake.server.parser.n8n import parse_n8n_payload
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import DataRetrievalOp, LLMChatOp
+from lumilake_server.parser.n8n import parse_n8n_payload
+from lumilake_server.runtime.server import LumilakeServer
 
 
 @pytest.fixture(autouse=True)

@@ -2,9 +2,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lumilake.runtime.job_manager import create_job_manager
-from lumilake.runtime.job_manager.priority_queue import PriorityJobManager
-from lumilake.runtime.optimizer.base import BaseOptimizer
+from lumilake_server.runtime.job_manager import create_job_manager
+from lumilake_server.runtime.job_manager.priority_queue import PriorityJobManager
+from lumilake_server.runtime.optimizer.base import BaseOptimizer
 
 
 def test_create_job_manager_selects_priority_manager() -> None:

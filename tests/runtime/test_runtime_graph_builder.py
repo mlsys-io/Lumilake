@@ -1,6 +1,6 @@
-from lumilake.common import GenerationConfig
-from lumilake.graphs import Graph
-from lumilake.ops import (
+from lumilake_server.common import GenerationConfig
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import (
     DataRetrievalOp,
     LLMChatOp,
     LLMVisionOp,
@@ -8,8 +8,8 @@ from lumilake.ops import (
     as_output,
     input_placeholder,
 )
-from lumilake.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake.server.parser.n8n import parse_n8n_payload
+from lumilake_server.parser.n8n import parse_n8n_payload
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
 def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:

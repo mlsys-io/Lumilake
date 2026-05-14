@@ -3,9 +3,9 @@ from typing import Any, cast
 
 import pytest
 
-from lumilake.runtime.optimizer.base import Schedule
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.optimizer.base import Schedule
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 @pytest.mark.asyncio

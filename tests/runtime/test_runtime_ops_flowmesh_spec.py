@@ -1,4 +1,4 @@
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _build_runtime_op(task_type: str) -> RuntimeOp:

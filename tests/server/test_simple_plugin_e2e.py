@@ -7,19 +7,19 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from lumid_hooks import PrincipalContext, ResourceRef
+from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 
-import lumilake.utils.job_storage as job_storage_module
+import lumilake_server.utils.job_storage as job_storage_module
 from examples.plugins import simple_plugin
 from examples.plugins.simple_plugin import state as simple_plugin_state
-from lumilake.runtime.optimizer import create_optimizer
-from lumilake.runtime.protocol import LumilakeResponse
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
-from lumilake.server import hooks
-from lumilake.server.routes import jobs as job_routes_module
-from lumilake.server.routes import trace as trace_routes
-from lumilake.utils.job_storage import InMemoryJobStorage
-from lumilake_hook import ResourceAction, ResourceKind, UsageRow
+from lumilake_server import hooks
+from lumilake_server.routes import jobs as job_routes_module
+from lumilake_server.routes import trace as trace_routes
+from lumilake_server.runtime.optimizer import create_optimizer
+from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _DEFAULT_TOKENS = {
     token: principal.model_copy(deep=True)

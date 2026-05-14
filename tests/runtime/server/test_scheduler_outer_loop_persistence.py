@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-
 from lumilake import envs
 
 
@@ -31,7 +30,7 @@ async def test_scheduler_loop_continues_after_cycle_exception(
     async def _fake_sleep(seconds: float) -> None:
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("lumilake.runtime.server.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("lumilake_server.runtime.server.asyncio.sleep", _fake_sleep)
 
     await server._scheduler_loop()
 

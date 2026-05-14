@@ -1,11 +1,11 @@
 import textwrap
 
 import pytest
-
 from lumilake import envs
-from lumilake.graphs import Graph
-from lumilake.ops import InputOp, LLMChatOp, MessageOp, OutputOp
-from lumilake.server.parser import parse_yaml_payload
+
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import InputOp, LLMChatOp, MessageOp, OutputOp
+from lumilake_server.parser import parse_yaml_payload
 
 
 def _ensure_envs() -> None:

@@ -1,9 +1,9 @@
-from lumilake.runtime.data_profile_utils import (
+from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
     data_profile_key_for_node_query,
     normalize_table_name,
 )
-from lumilake.runtime.optimizer.halo import HaloOptimizer
+from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 
 
 def test_normalize_table_name_strips_quotes_and_whitespace() -> None:

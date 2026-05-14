@@ -1,0 +1,34 @@
+[project]
+name = "lumilake-hook"
+version = "0.1.0"
+description = "Lumilake hook bindings"
+readme = "README.md"
+requires-python = "<3.13,>=3.12"
+license = "Apache-2.0"
+license-files = ["../../LICENSE"]
+authors = [
+    {name = "Lumilake contributors"},
+]
+dependencies = [
+    "lumid-hooks==0.1.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/mlsys-io/lumilake_OSS"
+Repository = "https://github.com/mlsys-io/lumilake_OSS"
+
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
