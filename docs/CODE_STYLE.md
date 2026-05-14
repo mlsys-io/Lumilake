@@ -46,7 +46,7 @@ This guide collects rules agents and contributors should apply before editing so
 
 - Prefer the Lumilake CLI, SDK, and deploy helpers over raw HTTP or direct Docker commands.
 - `docker compose up/down` remains subprocess-based because the Docker Python SDK has no compose equivalent.
-- One-shot container operations should go through the Docker SDK wrapper already used by `src/lumilake/deploy/`.
+- One-shot container operations should go through the Docker SDK wrapper already used by `packages/deploy/src/lumilake_deploy/`.
 - After runtime dependency changes, update `pyproject.toml` and refresh `uv.lock`.
 - Job records, runtime artifacts, and FlowMesh intermediate outputs are stored through the archive layer. Do not introduce local result directories for runtime data.
 - Cancelling a job must cancel the underlying runtime request as well.

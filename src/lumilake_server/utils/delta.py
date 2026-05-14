@@ -9,7 +9,7 @@ Delta Lake (backed by Parquet + a transaction log) gives us:
 
 Importing this module requires ``deltalake`` and ``pyarrow``; both ship
 in the ``delta`` and ``test`` dependency groups. Callers are expected to
-install those before pulling in ``lumilake.utils.delta``.
+install those before pulling in ``lumilake_server.utils.delta``.
 
 All functions accept either local paths (``./foo``, ``file:///tmp/foo``)
 or S3-style URIs (``s3://bucket/key``). S3 credentials/endpoints are

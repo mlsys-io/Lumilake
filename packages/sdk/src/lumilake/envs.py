@@ -5,7 +5,7 @@ Module-level reads are defensive: every variable has a default, no
 check. ``from lumilake import envs`` succeeds in any environment, even
 one without any ``LUMILAKE_*`` set.
 
-Server startup (``lumilake.server.main.lifespan``) calls
+Server startup (``lumilake_server.main.lifespan``) calls
 :func:`load_env_file_or_raise` (recovers the loud-fail-on-missing-.env
 behavior) and :func:`validate` (enforces required vars and value
 ranges). SDK / CLI / deploy consumers don't import or call those.

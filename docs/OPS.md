@@ -1,6 +1,6 @@
 # Ops Reference
 
-Lumilake workflows are DAGs of operation classes registered under `lumilake.ops`. YAML `op:` values and native graph `_op` values use these class names.
+Lumilake workflows are DAGs of operation classes registered under `lumilake_server.ops`. YAML `op:` values and native graph `_op` values use these class names. The op registry lives inside the Lumilake server image; YAML and native workflow submitters reach it through the HTTP / SDK surface, not by importing the module directly.
 
 | Op | Purpose |
 |----|---------|

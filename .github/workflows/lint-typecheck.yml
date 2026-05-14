@@ -26,10 +26,12 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
+          version: "0.11.8"
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        # --all-extras: mypy needs every workspace wheel for cross-imports.
+        run: uv sync --frozen --all-extras --all-groups
 
       - name: Run pre-commit hooks
         run: uv run pre-commit run --all-files --show-diff-on-failure

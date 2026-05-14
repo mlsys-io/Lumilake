@@ -13,24 +13,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install the dependency closure first for layer caching. The server
-# image installs the published lumilake-sdk interface wheel (which
-# carries the shared envs.py + log.py) plus a flat pin file derived
-# from uv.lock (scripts/dev/sync_requirements.py).
+# Install deps first for layer caching. requirements.txt is generated
+# from uv.lock by scripts/dev/sync_requirements.py.
+COPY LICENSE ./LICENSE
 COPY packages/sdk ./packages/sdk
+COPY packages/hook ./packages/hook
 COPY src/lumilake_server/requirements.txt ./requirements.txt
-RUN pip install ./packages/sdk \
+RUN pip install ./packages/sdk ./packages/hook \
  && pip install -r requirements.txt
 
 # Image-only server code. Not published to PyPI.
 COPY src/lumilake_server ./lumilake_server
 
+# uid/gid 10001 keeps the in-container user out of the host UID range.
+RUN groupadd --gid 10001 lumilake \
+ && useradd --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin lumilake \
+ && chown -R lumilake:lumilake /app
+
 ENV PYTHONPATH=/app
+USER lumilake
 
 EXPOSE 9000
 
@@ -41,5 +47,6 @@ LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.created="${BUILD_CREATED}" \
       org.opencontainers.image.revision="${BUILD_REF}"
 
-# Shell form so ${VAR} interpolation happens at container start.
-CMD python -m lumilake_server.main --host 0.0.0.0 --port "${LUMILAKE_SERVER_PORT:-9000}"
+# tini as PID 1 reaps zombies and forwards SIGTERM to uvicorn.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["python", "-m", "lumilake_server.main"]

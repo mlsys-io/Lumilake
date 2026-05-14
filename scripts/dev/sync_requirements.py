@@ -52,15 +52,20 @@ def _direct_deps(groups: list[str]) -> dict[str, str]:
                     f"Group {group!r} contains an include or non-string entry. "
                     "Use leaf runtime groups when generating requirements."
                 )
-            m = _PKG_RE.match(spec.strip())
+            # Strip PEP 508 env marker; uv export already resolved versions.
+            head = spec.split(";", 1)[0].strip()
+            m = _PKG_RE.match(head)
             if not m:
-                continue
+                raise SystemExit(
+                    f"Group {group!r} contains an unparsable dependency spec: "
+                    f"{spec!r}. Update _PKG_RE in sync_requirements.py."
+                )
             name = m.group(1).lower().replace("_", "-")
-            marker = m.group(2) or ""
-            if marker and len(marker) > len(deps.get(name, "")):
-                deps[name] = marker
+            extras = m.group(2) or ""
+            if extras and len(extras) > len(deps.get(name, "")):
+                deps[name] = extras
             else:
-                deps.setdefault(name, marker)
+                deps.setdefault(name, extras)
     return deps
 
 
@@ -104,12 +109,12 @@ def _filter_direct(pins: list[str], keep: dict[str, str]) -> list[str]:
         name = _line_pkg(pin)
         if name not in keep:
             continue
-        marker = keep[name]
-        if not marker:
+        extras = keep[name]
+        if not extras:
             out.append(pin)
             continue
         head, sep, tail = pin.partition("==")
-        out.append(f"{head.strip()}{marker}{sep}{tail.strip()}" if sep else pin)
+        out.append(f"{head.strip()}{extras}{sep}{tail.strip()}" if sep else pin)
     return sorted(out, key=str.lower)
 
 

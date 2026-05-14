@@ -1,9 +1,7 @@
 """Lumilake CLI entrypoint.
 
-Installs a typer-aware handler on the ``lumilake`` logger root at startup
-so library log records emitted by ``lumilake.deploy`` (and elsewhere)
-render with the same colour palette the CLI uses for its own ``info`` /
-``success`` / ``warning`` / ``error`` output.
+Installs a typer-aware handler on the shared ``Lumilake`` logger root so
+records from every workspace package render with the CLI colour palette.
 """
 
 import logging
@@ -36,6 +34,9 @@ def _install_handler() -> None:
     root = get_default_logger()
     if any(isinstance(h, _TyperHandler) for h in root.handlers):
         return
+    # Drop get_default_logger's StreamHandler so records aren't doubled.
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
     handler = _TyperHandler()
     handler.setFormatter(ColorFormatter())
     root.addHandler(handler)

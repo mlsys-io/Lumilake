@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from .shell import info, run
+from .errors import DeployError
+from .shell import info, require_commands, run
 
 FM_PACKAGES = (
     "flowmesh-sdk",
@@ -14,6 +15,12 @@ FM_PACKAGES = (
 
 def run_update(project_root: Path) -> None:
     """Lock then sync so FlowMesh dependencies pick up released updates."""
+    if not (project_root / "pyproject.toml").is_file():
+        raise DeployError(
+            f"{project_root}/pyproject.toml not found. "
+            "`update-flowmesh` only runs from a Lumilake workspace checkout."
+        )
+    require_commands(["uv"])
     info("Fetching latest FlowMesh packages...")
     lock_cmd = ["uv", "lock"]
     for pkg in FM_PACKAGES:

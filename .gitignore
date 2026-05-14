@@ -127,9 +127,15 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .env.flowmesh
 .flowmesh/
 .venv
+
+# setuptools/uv-build artifact when building workspace packages
+# (root LICENSE is auto-copied to packages/LICENSE during sdist build)
+/packages/LICENSE
 env/
 venv/
 ENV/

@@ -245,7 +245,7 @@ class LumilakeServer:
             logger=self.logger,
         )
         # FlowmeshRuntimeManager reads orchestrator URL + token from envs directly
-        # via lumilake.runtime.flowmesh_client; no need to pass them here.
+        # via lumilake_server.runtime.flowmesh_client; no need to pass them here.
         self.runtime_manager: FlowmeshRuntimeManager = create_runtime_manager(
             logger=self.logger,
         )

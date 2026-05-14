@@ -12,7 +12,9 @@ x-logging-verbose: &verbose-logging
 
 services:
   server:
-    image: ${LUMILAKE_REGISTRY:-ghcr.io/mlsys-io}/lumilake_server:${LUMILAKE_IMAGE_TAG:-latest}
+    image: ${LUMILAKE_REGISTRY:-ghcr.io/mlsys-io}/lumilake_server:${LUMILAKE_IMAGE_TAG:-dev}
+    # Re-resolves rolling :dev/:latest tags; no-op for immutable :vX.Y.Z.
+    pull_policy: always
     container_name: lumilake-server
     profiles: ["server"]
     network_mode: host
@@ -25,5 +27,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+      # Cover envs.validate() + DB pool init before unhealthy.
+      start_period: 40s
     restart: unless-stopped
     logging: *verbose-logging

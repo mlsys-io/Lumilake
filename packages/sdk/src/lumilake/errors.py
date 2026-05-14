@@ -27,7 +27,7 @@ class DeployError(LumilakeError):
     """Raised when a deploy lifecycle call fails.
 
     ``action`` is the deploy verb (``up``, ``down``, ``logs``, …).
-    ``exit_code`` is ``1`` when the underlying ``lumilake.deploy`` backend
+    ``exit_code`` is ``1`` when the underlying ``lumilake_deploy`` backend
     raises (translated at the resource boundary) and ``2`` for caller-side
     issues (missing ``[deploy]`` extra, unknown service name).
     ``stderr`` carries the backend message; preserved for diagnostics even

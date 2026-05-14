@@ -63,22 +63,21 @@ jobs:
           set -eu
           short_sha="${SHA::7}"
           tags=("${REGISTRY}/${IMAGE_NAME}:${short_sha}")
+          # :latest is owned by release-images.yml (gated on env approval).
           if [[ "${EVENT_NAME}" == "push" ]]; then
             if [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == v* ]]; then
-              semver="${REF_NAME#v}"
-              tags+=("${REGISTRY}/${IMAGE_NAME}:${semver}")
-              tags+=("${REGISTRY}/${IMAGE_NAME}:latest")
+              tags+=("${REGISTRY}/${IMAGE_NAME}:${REF_NAME}")
             elif [[ "${REF_NAME}" == "main" ]]; then
               tags+=("${REGISTRY}/${IMAGE_NAME}:dev")
             fi
           fi
-          # Comma-join for build-push-action
           ( IFS=,; echo "tags=${tags[*]}" ) >> "$GITHUB_OUTPUT"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: "0.11.8"
+          python-version: "3.12"
 
       - name: Sync server requirements from uv.lock
         run: uv run --frozen scripts/dev/sync_requirements.py --write
@@ -93,6 +92,7 @@ jobs:
           fi
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@1dc73863535b631f98b2378be8619f83b136f4a0  # v6.17.0
         with:
           context: .
@@ -105,3 +105,16 @@ jobs:
             BUILD_VERSION=${{ github.ref_name }}
             BUILD_REF=${{ github.sha }}
             BUILD_CREATED=${{ github.event.repository.updated_at }}
+
+      - name: Smoke-test pushed image
+        if: github.event_name != 'pull_request'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          short_sha="${SHA:0:7}"
+          image="${REGISTRY}/${IMAGE_NAME}:${short_sha}"
+          # Plain imports only — routes/jobs.py module-load init needs S3/DB.
+          docker pull "$image"
+          docker run --rm --entrypoint /usr/bin/tini "$image" -- \
+            python -c "import lumilake, lumilake_hook, lumilake_server; print('image-smoke-ok')"

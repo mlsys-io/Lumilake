@@ -27,27 +27,34 @@ pip install "lumilake[cli]"
 From a source checkout:
 
 ```bash
-uv sync --group lint --group test --extra cli
+uv sync --all-packages --all-extras --all-groups
 ```
 
-The package is split into extras so lightweight imports stay small:
+The PyPI `lumilake` distribution is a code-free metapackage; install one of the extras below to get a working set. The server runtime is published as a Docker image only and is intentionally not on PyPI.
 
 | Extra | Includes |
 |-------|----------|
-| `server` | FastAPI server, runtime, HALO scheduler, FlowMesh and lumid.data clients |
-| `deploy` | Local Docker/FlowMesh deployment helpers |
-| `cli` | `lumilake` command line interface |
-| `sdk` | Python SDK HTTP clients |
+| `sdk` | Python SDK HTTP clients (`lumilake-sdk` → module `lumilake`) |
+| `cli` | `lumilake` command line interface plus deploy lifecycle (`lumilake-cli` + `lumilake-deploy`) |
+| `deploy` | Local Docker / FlowMesh deployment helpers (`lumilake-deploy`) |
+| `hook` | Resource-kind helpers for shared hook integrations (`lumilake-hook`) |
+| `all` | Everything above. |
 
 ## Quick Start
 
+The server runs as the published Docker image. `lumilake deploy` reads its env files from `--project-dir` (or the current working directory). Either point at a deployment directory with `-C` / `--project-dir`, or `cd` to it first.
+
 ```bash
-uv run lumilake deploy init --flowmesh
-$EDITOR .env
-uv run lumilake deploy up
+mkdir -p ~/lumilake-deploy
+lumilake deploy -C ~/lumilake-deploy init --flowmesh   # ~/lumilake-deploy/.env + .env.flowmesh
+$EDITOR ~/lumilake-deploy/.env                          # fill in DATABASE_URL / S3 / model keys
+lumilake deploy -C ~/lumilake-deploy pull               # fetch ghcr.io/mlsys-io/lumilake_server:<tag>
+lumilake deploy -C ~/lumilake-deploy up                 # bring the stack up via docker compose
 ```
 
-The server listens on `http://127.0.0.1:9000` by default. Open `/docs` for the API browser.
+`LUMILAKE_DEPLOY_DIR=~/lumilake-deploy` is an equivalent override. The deployment directory only needs to hold your `.env` files (and any local state docker compose creates) — the compose file and server image are resolved from the installed `lumilake-deploy` package and GHCR. The server listens on `http://127.0.0.1:9000` by default — open `/docs` for the API browser.
+
+Note: a real workflow run also requires running PostgreSQL and S3-compatible storage (or `LUMID_DATA_URL` set to forward through lumid.data). See `docs/ENV.md` for the env contract.
 
 Submit and inspect a workflow:
 
@@ -69,29 +76,31 @@ Job records and runtime artifacts are written under `S3_ARCHIVE_PREFIX`. In lumi
 
 ## Deployment
 
-Generate `.env` from the checked-in template:
+Examples below assume you're set up with `LUMILAKE_DEPLOY_DIR=~/lumilake-deploy` (or pass `-C ~/lumilake-deploy` explicitly). Workspace-checkout users can prefix the commands with `uv run`; PyPI-install users invoke `lumilake` directly.
+
+Generate `.env` from the bundled template:
 
 ```bash
-uv run lumilake deploy init
+lumilake deploy init
 ```
 
 Generate both Lumilake and bundled FlowMesh env files:
 
 ```bash
-uv run lumilake deploy init --flowmesh
+lumilake deploy init --flowmesh
 ```
 
 Common deployment commands:
 
 ```bash
-uv run lumilake deploy doctor
-uv run lumilake deploy build
-uv run lumilake deploy up
-uv run lumilake deploy status
-uv run lumilake deploy logs server --tail 200
-uv run lumilake deploy restart server
-uv run lumilake deploy down
-uv run lumilake deploy clean
+lumilake deploy doctor
+lumilake deploy pull         # or `build` to compile from source
+lumilake deploy up
+lumilake deploy status
+lumilake deploy logs server --tail 200
+lumilake deploy restart server
+lumilake deploy down
+lumilake deploy clean
 ```
 
 Use `deploy down` to stop services while keeping data volumes. Use `deploy clean` or `deploy reset` only when you want to remove local stack state.
@@ -99,7 +108,7 @@ Use `deploy down` to stop services while keeping data volumes. Use `deploy clean
 ## Python SDK
 
 ```python
-from lumilake.sdk import LumilakeClient
+from lumilake import LumilakeClient
 
 with LumilakeClient(base_url="http://127.0.0.1:9000") as client:
     print(client.health())
@@ -142,16 +151,18 @@ A minimal in-memory plugin is available under `examples/plugins/simple_plugin/`.
 
 ```text
 .
-├── src/lumilake/              # server, runtime, CLI, SDK, deploy helpers
-├── src/lumilake_hook/         # Lumilake resource-kind helpers for hooks
+├── src/lumilake_server/       # server runtime — image-only, not on PyPI
+├── packages/sdk/              # `lumilake-sdk` → module `lumilake` (Client, envs, log)
+├── packages/cli/              # `lumilake-cli` → `lumilake_cli` (Typer entry point)
+├── packages/deploy/           # `lumilake-deploy` — packaged compose + .env.example assets
+├── packages/hook/             # `lumilake-hook` → `lumilake_hook` (resource-kind helpers)
 ├── examples/                  # workflow templates and sample plugins
 ├── tests/                     # pytest suite
 ├── scripts/                   # CI and developer helpers
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example
+├── Dockerfile                 # builds ghcr.io/mlsys-io/lumilake_server
+├── .env.example -> packages/deploy/.../assets/.env.example   # symlink for editors
 ├── uv.lock
-└── pyproject.toml
+└── pyproject.toml             # metapackage (`lumilake`) with [sdk]/[cli]/[deploy]/[hook]/[all] extras
 ```
 
 ## Development

@@ -23,7 +23,7 @@ uv sync --group lint --group test --extra sdk --extra deploy
 ## Clients
 
 ```python
-from lumilake.sdk import LumilakeClient
+from lumilake import LumilakeClient
 
 with LumilakeClient.from_config() as client:
     client.health()
@@ -31,7 +31,7 @@ with LumilakeClient.from_config() as client:
 ```
 
 ```python
-from lumilake.sdk import AsyncLumilakeClient
+from lumilake import AsyncLumilakeClient
 
 async with AsyncLumilakeClient.from_config() as client:
     await client.health()
@@ -56,4 +56,4 @@ Job preview, progress, result, input, artifact, and watch helpers are available 
 
 Without the `deploy` extra, deploy methods except `init` raise `DeployError` with an install hint. Server API resources work without the deploy extra.
 
-Deploy methods call `lumilake.deploy` directly. Async deploy methods dispatch the same Python calls through `asyncio.to_thread` so Docker and FlowMesh setup work does not block the event loop.
+Deploy methods call `lumilake_deploy` directly. Async deploy methods dispatch the same Python calls through `asyncio.to_thread` so Docker and FlowMesh setup work does not block the event loop.

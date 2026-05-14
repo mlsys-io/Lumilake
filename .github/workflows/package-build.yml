@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -25,8 +23,6 @@ jobs:
   package-build:
     name: Build and smoke-test packages
     runs-on: self-hosted
-    outputs:
-      is-release: ${{ steps.is_release.outputs.value }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
@@ -37,9 +33,10 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: "0.11.8"
+          python-version: "3.12"
 
       - name: Install build environment
-        run: uv sync --all-packages --all-extras --frozen
+        run: uv sync --all-packages --all-extras --all-groups --frozen
 
       - name: Build distributions
         run: uv build --all-packages --out-dir dist
@@ -47,43 +44,5 @@ jobs:
       - name: Verify distributions
         run: uv run scripts/ci/check_package_build.py --dist dist
 
-      - name: Mark release flag
-        id: is_release
-        env:
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [[ "${REF_TYPE}" == "tag" && "${REF_NAME}" == v* ]]; then
-            echo "value=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Upload distributions
-        if: steps.is_release.outputs.value == 'true'
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
-        with:
-          name: dist
-          path: dist
-
-  publish-pypi:
-    name: Publish to PyPI
-    needs: package-build
-    if: needs.package-build.outputs.is-release == 'true'
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/lumilake
-    permissions:
-      id-token: write
-    steps:
-      - name: Download distributions
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
-        with:
-          name: dist
-          path: dist
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@db8f07d3871a0a180efa06b95d467625c19d5d5f  # v1.13.0
-        with:
-          packages-dir: dist
+      - name: Check distribution metadata
+        run: uvx twine==6.2.0 check dist/*

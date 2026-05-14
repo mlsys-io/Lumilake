@@ -1,26 +1,19 @@
 """Local lumilake-stack lifecycle.
 
-Optional surface — backed by ``lumilake.deploy``, gated on the ``deploy``
-extra. ``pip install 'lumilake[sdk,deploy]'`` (or
-``uv sync --extra sdk --extra deploy``) pulls in the deploy machinery
-(docker SDK, psycopg, flowmesh-*); without that, the resource
-still attaches to the client but every method raises ``DeployError``
-with an install hint on first call. Server-API resources work without
+Backed by ``lumilake_deploy``, gated on the ``deploy`` extra. Without
+``pip install 'lumilake[sdk,deploy]'`` (or
+``uv sync --extra sdk --extra deploy``) every method raises
+``DeployError`` with an install hint. Server-API resources work without
 the extra.
 
-Sync (``Deploy``) calls into ``lumilake.deploy`` directly. Async
-(``AsyncDeploy``) dispatches the same calls through ``asyncio.to_thread``
-so the event loop stays responsive across the Docker / FlowMesh work.
-The deploy library's ``DeployError`` is translated to the SDK's
-``DeployError`` at the boundary.
-
-Always invokes the lumilake deploy machinery; never falls back to raw
-``docker compose``.
+``AsyncDeploy`` dispatches each call through ``asyncio.to_thread`` so
+the event loop stays responsive across Docker / FlowMesh work; the
+backend ``DeployError`` is translated at the boundary.
 """
 
 import asyncio
 import logging
-import shutil
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -28,44 +21,37 @@ from lumilake.errors import DeployError
 
 logger = logging.getLogger(__name__)
 
-# Service name → container the operation actually targets. Public so callers
-# can introspect what `restart()` / `logs()` accept.
-CONTAINER_NAMES: dict[str, str] = {
-    "server": "lumilake-server",
-    "flowmesh": "flowmesh_node_server",
-    "flowmesh-redis": "flowmesh_node_redis_control",
-    "flowmesh-redis-telemetry": "flowmesh_node_redis_telemetry",
-}
+# Gate on the optional backend's presence so real ImportError from
+# inside lumilake_deploy still bubbles up loudly instead of being
+# misreported as "install the deploy extra".
+_BACKEND_AVAILABLE = find_spec("lumilake_deploy") is not None
 
-
-# Lazy import of the deploy backend. Importing ``lumilake.deploy`` pulls in
-# docker / psycopg / flowmesh-*, which is too heavy for callers that
-# only want the HTTP resources. The import is gated; failure is captured and
-# re-raised at first deploy-method invocation.
-try:
+if _BACKEND_AVAILABLE:
+    from lumilake_deploy import containers as _containers
     from lumilake_deploy import docker_client
     from lumilake_deploy import setup as setup_mod
     from lumilake_deploy import stop as stop_mod
     from lumilake_deploy import update_flowmesh as update_fm_mod
-    from lumilake_deploy.env import ENV_FILE_NAME, ENV_TEMPLATE_NAME
     from lumilake_deploy.errors import DeployError as _BackendDeployError
     from lumilake_deploy.setup import SetupOptions
 
-    _BACKEND_AVAILABLE = True
-    _BACKEND_IMPORT_ERROR: ImportError | None = None
-except ImportError as _exc:  # pragma: no cover — exercised in the missing-extra test
-    _BACKEND_AVAILABLE = False
-    _BACKEND_IMPORT_ERROR = _exc
+    SERVICE_NAMES: tuple[str, ...] = _containers.SERVICE_NAMES
+else:
+    _containers = None  # type: ignore[assignment]
     docker_client = None  # type: ignore[assignment]
     setup_mod = None  # type: ignore[assignment]
     stop_mod = None  # type: ignore[assignment]
     update_fm_mod = None  # type: ignore[assignment]
     _BackendDeployError = Exception  # type: ignore[misc, assignment]
     SetupOptions = None  # type: ignore[assignment, misc]
-    # Bundled file-system constants for backend-free ``init``. These match
-    # lumilake_deploy.env when the deploy extra is installed.
-    ENV_FILE_NAME = ".env"
-    ENV_TEMPLATE_NAME = ".env.example"
+    SERVICE_NAMES = (
+        "server",
+        "flowmesh",
+        "flowmesh-redis",
+        "flowmesh-redis-telemetry",
+    )
+
+ENV_FILE_NAME = ".env"
 
 
 def _require_backend(action: str) -> None:
@@ -77,21 +63,21 @@ def _require_backend(action: str) -> None:
                 "lumilake[deploy] is not installed. Install with "
                 "`pip install 'lumilake[sdk,deploy]'` (or "
                 "`uv sync --extra sdk --extra deploy`) to enable deploy "
-                f"lifecycle methods. Original ImportError: "
-                f"{_BACKEND_IMPORT_ERROR}"
+                "lifecycle methods."
             ),
         )
 
 
-def _container_for(service: str) -> str:
-    container = CONTAINER_NAMES.get(service)
+def _container_for(deploy_dir: Path, service: str) -> str:
+    _require_backend("restart")
+    names = _containers.container_names(deploy_dir)
+    container = names.get(service)
     if container is None:
         raise DeployError(
             "restart",
             exit_code=2,
             stderr=(
-                f"unknown service {service!r}. "
-                f"Choose from: {', '.join(CONTAINER_NAMES)}"
+                f"unknown service {service!r}. " f"Choose from: {', '.join(names)}"
             ),
         )
     return container
@@ -114,29 +100,24 @@ class _DeployBase:
         self._repo_root = Path(repo_root)
 
     def _do_init(self, force: bool) -> None:
-        # ``init`` only touches the local filesystem and works without the
-        # backend extra installed.
-        template = self._repo_root / ENV_TEMPLATE_NAME
+        _require_backend("init")
+        from lumilake_deploy.assets import env_example_path
+
+        template = env_example_path()
         target = self._repo_root / ENV_FILE_NAME
-        if not template.is_file():
-            raise DeployError(
-                "init",
-                exit_code=2,
-                stderr=f"template not found: {template}",
-            )
         if target.exists() and not force:
             raise DeployError(
                 "init",
                 exit_code=2,
                 stderr=(f"{target} already exists. Pass force=True to overwrite."),
             )
-        shutil.copy2(template, target)
-        logger.info("init: wrote %s from %s", target, template.name)
+        target.write_text(template.read_text())
+        logger.info("init: wrote %s from packaged %s", target, template.name)
 
 
 class Deploy(_DeployBase):
     """Sync local lumilake-stack lifecycle. Methods block until the
-    corresponding ``lumilake.deploy`` function returns. Requires the
+    corresponding ``lumilake_deploy`` function returns. Requires the
     ``deploy`` extra (``pip install 'lumilake[sdk,deploy]'``); otherwise
     every method except ``init`` raises ``DeployError`` with an install
     hint on first call.
@@ -177,7 +158,8 @@ class Deploy(_DeployBase):
     def restart(self, service: str | None = None) -> None:
         _require_backend("restart")
         if service is not None:
-            _wrap("restart", docker_client.container_restart, _container_for(service))
+            container = _container_for(self._repo_root, service)
+            _wrap("restart", docker_client.container_restart, container)
             logger.info("deploy restart %s: ok", service)
             return
         _wrap("restart", stop_mod.run_stop, self._repo_root, purge=False)
@@ -211,21 +193,21 @@ class Deploy(_DeployBase):
         """Return the last ``tail`` lines from ``service``'s container.
 
         ``since`` is a ``datetime`` (or ``None``); the CLI command
-        ``lumilake.cli.commands.deploy._parse_since`` converts ``"10m"``
+        ``lumilake_cli.commands.deploy._parse_since`` converts ``"10m"``
         style strings to a datetime when callers want CLI-style values.
         """
         _require_backend("logs")
         return _wrap(
             "logs",
             docker_client.container_logs_tail,
-            _container_for(service),
+            _container_for(self._repo_root, service),
             tail=tail,
             since=since,
             timestamps=timestamps,
         )
 
     def init(self, *, force: bool = False) -> None:
-        """Create ``.env`` from the bundled template. Backend-free."""
+        """Create ``.env`` from the packaged ``lumilake_deploy`` template."""
         self._do_init(force)
 
     def update_flowmesh(self) -> None:
@@ -236,7 +218,7 @@ class Deploy(_DeployBase):
 
 class AsyncDeploy(_DeployBase):
     """Async local lumilake-stack lifecycle. Each method awaits the same
-    ``lumilake.deploy`` work the sync class performs, dispatched through
+    ``lumilake_deploy`` work the sync class performs, dispatched through
     ``asyncio.to_thread`` so the event loop stays responsive. Same
     ``deploy``-extra requirement as ``Deploy``.
     """

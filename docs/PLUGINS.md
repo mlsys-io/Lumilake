@@ -27,6 +27,8 @@ See `examples/plugins/simple_plugin/`.
 
 ## Enabling Plugins
 
+Plugins are loaded inside the running server process (the Lumilake server image). The optimizer-registration and shared-hook surfaces — `lumilake_hook`, `lumilake_server.runtime.optimizer.*`, `lumilake_server.runtime.runtime_graph.*` — are reachable only from inside the image; they are intentionally not part of any published PyPI wheel. Develop plugins against a checked-out repository or against a custom Docker image that layers your plugin code on top of `ghcr.io/mlsys-io/lumilake_server`.
+
 Point `PYTHONPATH` at the plugin package and set `LUMILAKE_PLUGINS`:
 
 ```bash

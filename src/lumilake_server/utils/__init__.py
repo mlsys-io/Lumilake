@@ -1,4 +1,4 @@
-"""``lumilake.utils`` namespace.
+"""``lumilake_server.utils`` namespace.
 
 Submodules are imported explicitly (e.g. ``from lumilake_server.utils.utils import
 unique_id``) so that touching one submodule (such as ``parsing``, which

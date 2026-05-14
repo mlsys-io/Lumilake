@@ -3,6 +3,6 @@
 Server-API resources (info, jobs, workers, traces) talk HTTP to the
 lumilake server.
 
-``Deploy`` / ``AsyncDeploy`` call ``lumilake.deploy`` directly; async
+``Deploy`` / ``AsyncDeploy`` call ``lumilake_deploy`` directly; async
 dispatches through ``asyncio.to_thread`` so the event loop stays responsive.
 """

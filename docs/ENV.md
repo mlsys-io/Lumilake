@@ -3,16 +3,18 @@
 Lumilake reads configuration from `.env` for local deployment and from process environment variables for direct server runs. Generate the template with:
 
 ```bash
-uv run lumilake deploy init
+lumilake deploy -C <deploy-dir> init
 ```
+
+`-C / --project-dir` (or `LUMILAKE_DEPLOY_DIR`) selects the directory the env files are written to and later read from. Workspace-checkout users may prefix every command with `uv run`; from a PyPI install (`pip install 'lumilake[cli]'`) invoke `lumilake` directly.
 
 To also generate a bundled FlowMesh stack env file:
 
 ```bash
-uv run lumilake deploy init --flowmesh
+lumilake deploy -C <deploy-dir> init --flowmesh
 ```
 
-Run `uv run lumilake deploy doctor` after editing `.env`.
+Run `lumilake deploy -C <deploy-dir> doctor` after editing `.env`.
 
 ## Required Keys
 
@@ -22,7 +24,8 @@ Run `uv run lumilake deploy doctor` after editing `.env`.
 | `LUMILAKE_SERVER_PORT` | Port the FastAPI server binds to. |
 | `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` | FlowMesh server URL used for workflow dispatch. |
 | `S3_ARCHIVE_PREFIX` | `bucket/prefix` where job records and runtime artifacts are archived. |
-| `LUMILAKE_IMAGE_TAG` | Docker image tag used by local deployment. |
+| `LUMILAKE_IMAGE_TAG` | Docker image tag used by local deployment. Defaults to `dev` (the rolling main-built image). Pin to a `vX.Y.Z` semver tag for production. |
+| `LUMILAKE_REGISTRY` | Container registry the deploy CLI pulls the server image from. Defaults to `ghcr.io/mlsys-io`. **Trust-bearing**: setting this points `lumilake deploy pull` at a different host, so only override it to a registry you control. |
 
 Direct data-plane mode also requires:
 

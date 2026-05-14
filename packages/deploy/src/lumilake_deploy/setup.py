@@ -9,16 +9,22 @@ from dotenv import load_dotenv
 from lumilake import envs
 
 from . import flowmesh as fm_mod
+from .assets import compose_path
 from .docker_client import image_exists, image_pull
 from .env import ENV_FILE_NAME, FLOWMESH_ENV_FILE_NAME
 from .errors import DeployError
 from .shell import check_docker, info, require_commands, run, wait_healthy
 
 SERVER_IMAGE_NAME = "lumilake_server"
+# Mirrors ``LUMILAKE_IMAGE_TAG`` default in ``.env.example`` and compose.
+DEFAULT_IMAGE_TAG = "dev"
+
+
+def resolve_image_tag() -> str:
+    return envs.LUMILAKE_IMAGE_TAG or DEFAULT_IMAGE_TAG
 
 
 def server_image_ref(image_tag: str) -> str:
-    """Fully-qualified server image reference from ``envs``."""
     registry = (envs.LUMILAKE_REGISTRY or "ghcr.io/mlsys-io").rstrip("/")
     return f"{registry}/{SERVER_IMAGE_NAME}:{image_tag}"
 
@@ -62,7 +68,18 @@ def _reset_stack(project_root: Path) -> None:
 
     info("Resetting: stopping the lumilake server container...")
     run(
-        ["docker", "compose", "--profile", "server", "down", "-v"],
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_path()),
+            "--project-directory",
+            str(project_root),
+            "--profile",
+            "server",
+            "down",
+            "-v",
+        ],
         cwd=project_root,
         check=False,
     )
@@ -71,6 +88,12 @@ def _reset_stack(project_root: Path) -> None:
 def build_server_image(project_root: Path, image_tag: str) -> None:
     image = server_image_ref(image_tag)
     info(f"Building lumilake server image ({image})...")
+    if not (project_root / "Dockerfile").is_file():
+        raise DeployError(
+            f"`lumilake deploy build` requires a Lumilake source checkout "
+            f"(no Dockerfile at {project_root}). Run `lumilake deploy pull` "
+            "to fetch the published image instead."
+        )
     cmd = ["docker", "build", "-t", image, "."]
     run(cmd, cwd=project_root, env={"DOCKER_BUILDKIT": "1"})
 
@@ -90,13 +113,22 @@ def _start_server(
     host = envs.LUMILAKE_SERVER_HOST or "0.0.0.0"
     port = str(envs.LUMILAKE_SERVER_PORT or 9000)
     if not background:
+        # Foreground requires a workspace checkout (lumilake_server is image-only).
+        if not (project_root / "pyproject.toml").is_file():
+            raise DeployError(
+                "Foreground deploy requires a Lumilake workspace checkout "
+                f"(no pyproject.toml at {project_root}). Use the published "
+                "Docker image instead: `lumilake deploy pull` + "
+                "`lumilake deploy up`."
+            )
         os.execvp(
             "uv",
             [
                 "uv",
                 "run",
                 "python",
-                "scripts/serve.py",
+                "-m",
+                "lumilake_server.main",
                 "--host",
                 host,
                 "--port",
@@ -111,7 +143,20 @@ def _start_server(
             "`lumilake deploy build` (to build from source) before `up`."
         )
     run(
-        ["docker", "compose", "--profile", "server", "up", "-d", "--wait", "server"],
+        [
+            "docker",
+            "compose",
+            "-f",
+            str(compose_path()),
+            "--project-directory",
+            str(project_root),
+            "--profile",
+            "server",
+            "up",
+            "-d",
+            "--wait",
+            "server",
+        ],
         cwd=project_root,
     )
     wait_healthy("lumilake-server")
@@ -138,7 +183,7 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
     the bundled FlowMesh stack. It does not provision Postgres, S3-compatible
     storage, credentials, or sample data.
     """
-    require_commands(["docker", "uv"])
+    require_commands(["docker"])
     check_docker()
 
     env_file = project_root / ENV_FILE_NAME
@@ -149,10 +194,8 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
         )
     load_project_env(project_root)
 
-    run(["uv", "sync", "--quiet", "--extra", "cli"], cwd=project_root)
-
     info(f"Using env file: {env_file}")
-    image_tag = envs.LUMILAKE_IMAGE_TAG or "latest"
+    image_tag = resolve_image_tag()
     info(f"Image tag: {image_tag}")
 
     layout = _resolve_infra_layout(project_root)
@@ -175,7 +218,7 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
         info("")
         info("To start manually:")
         info(
-            "  uv run python scripts/serve.py "
+            "  uv run python -m lumilake_server.main "
             f"--host {envs.LUMILAKE_SERVER_HOST or '0.0.0.0'} "
             f"--port {envs.LUMILAKE_SERVER_PORT or 9000}"
         )

@@ -32,8 +32,9 @@ origins = ["*"]
 
 def parse_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--host")
-    parser.add_argument("--port", type=int)
+    # nosec B104: envs.validate() at import requires HOST/PORT.
+    parser.add_argument("--host", default=envs.LUMILAKE_SERVER_HOST)  # nosec B104
+    parser.add_argument("--port", type=int, default=envs.LUMILAKE_SERVER_PORT)
     return parser.parse_args()
 
 

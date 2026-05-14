@@ -98,7 +98,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     def fm(self):
         """Return the shared ``AsyncFlowMesh`` client.
 
-        Proxied through :func:`lumilake.runtime.flowmesh_client.get_async_client`
+        Proxied through :func:`lumilake_server.runtime.flowmesh_client.get_async_client`
         so existing call sites (``self.fm.tasks.retrieve(...)``) stay unchanged.
         """
         return get_async_client()

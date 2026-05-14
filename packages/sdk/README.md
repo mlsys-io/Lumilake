@@ -10,7 +10,7 @@ Server-API + filesystem `init` (small surface; httpx only):
 pip install 'lumilake[sdk]'
 ```
 
-Add deploy lifecycle (`client.deploy.up/down/...`). Pulls in `[deploy]` (Docker SDK, psycopg, FlowMesh stack helpers); `client.deploy.*` calls into `lumilake.deploy` directly:
+Add deploy lifecycle (`client.deploy.up/down/...`). Pulls in `[deploy]` (Docker SDK, psycopg, FlowMesh stack helpers); `client.deploy.*` calls into `lumilake_deploy` directly:
 
 ```bash
 pip install 'lumilake[sdk,deploy]'
@@ -63,29 +63,10 @@ Both clients accept `base_url=` directly, or pull it from `~/.lumilake/config.to
 | `lumilake worker {list,get}` | `client.workers.<verb>(...)` | `await client.workers.<verb>(...)` |
 | `lumilake trace {list,get}` | `client.traces.<verb>(...)` | `await client.traces.<verb>(...)` |
 
-## Layout
-
-```
-src/lumilake/sdk/
-├── __init__.py                         # exports LumilakeClient, AsyncLumilakeClient
-├── client.py                           # LumilakeClient (sync)
-├── async_client.py                     # AsyncLumilakeClient
-├── _base_client.py                     # BaseClient + BaseAsyncClient (shared)
-├── config.py                           # LumilakeConfig — TOML round-trip
-├── errors.py                           # LumilakeError + NotFound/Http/DeployError
-└── resources/                          # one module per CLI command group
-    ├── _base.py                        # SyncResource + AsyncResource
-    ├── info.py                         # Info + AsyncInfo
-    ├── deploy.py                       # Deploy + AsyncDeploy
-    ├── jobs.py                         # Jobs + AsyncJobs
-    ├── workers.py                      # Workers + AsyncWorkers
-    └── traces.py                       # Traces + AsyncTraces
-```
-
 ## Design notes
 
 - **Sync + async parity.** One sync class, one async class, and each SDK resource exposes both. Shared base classes (`BaseClient` / `BaseAsyncClient`) handle version-prefix, envelope unwrapping, and error-to-exception mapping. Async resources `await` the same code paths.
-- **Two transport modes.** Server-API resources speak HTTP (`httpx.Client` / `httpx.AsyncClient`). Deploy lifecycle calls `lumilake.deploy` directly; async dispatches the same Python calls through `asyncio.to_thread` so the event loop stays responsive across Docker and FlowMesh setup work.
+- **Two transport modes.** Server-API resources speak HTTP (`httpx.Client` / `httpx.AsyncClient`). Deploy lifecycle calls `lumilake_deploy` directly; async dispatches the same Python calls through `asyncio.to_thread` so the event loop stays responsive across Docker and FlowMesh setup work.
 - **Config shared with the CLI.** `from_config()` reads the same `~/.lumilake/config.toml` the CLI writes via `lumilake login`.
-- **Never raw `docker compose up`.** Deploy resource always uses the `lumilake.deploy` machinery — the project rule applies inside the SDK too.
+- **Never raw `docker compose up`.** Deploy resource always uses the `lumilake_deploy` machinery — the project rule applies inside the SDK too.
 - **Context-manager support.** `with LumilakeClient(...) as client:` (sync) and `async with AsyncLumilakeClient(...) as client:` close the underlying httpx client cleanly.

@@ -4,6 +4,8 @@ from pathlib import Path
 
 from . import docker_client
 from . import flowmesh as fm_impl
+from .assets import compose_path
+from .containers import flowmesh_state_volumes
 from .env import FLOWMESH_ENV_FILE_NAME
 from .errors import DeployError
 from .shell import info, run
@@ -15,19 +17,13 @@ COMPOSE_PROFILES = (
     "server",
 )
 
-# Volumes that accumulate state / runtime state across deploy
-# cycles and cause duplicate-key / stale-retry errors on ``deploy up``
-# when a prior run was killed mid-flight. ``--wipe-archive`` removes
-# these without touching the staged corpus or research-records tables,
-# which live in ``lumilake-minio-data``.
-STATE_VOLUMES = (
-    # Compute postgres state.
-    "lumilake-postgres-data",
-    # FlowMesh runtime state (jobs + task queue).
-    "flowmesh-node_postgres_data",
-    "flowmesh-node_redis_control_data",
-    "flowmesh-node_redis_telemetry_data",
-)
+
+def _state_volumes(project_root: Path) -> tuple[str, ...]:
+    """Volumes that ``--wipe-archive`` removes — local compute postgres
+    plus the FlowMesh runtime state derived from the operator's
+    ``.env.flowmesh`` slug. Touches no corpus / research-records data
+    (those live under ``lumilake-minio-data``)."""
+    return ("lumilake-postgres-data", *flowmesh_state_volumes(project_root))
 
 
 def _stop_flowmesh_stack(project_root: Path, *, purge: bool) -> None:
@@ -44,7 +40,7 @@ def _stop_flowmesh_stack(project_root: Path, *, purge: bool) -> None:
 def _remove_state_volumes(project_root: Path) -> None:
     """Remove the volumes holding state postgres and FlowMesh runtime
     state. Skip volumes that don't exist."""
-    for vol in STATE_VOLUMES:
+    for vol in _state_volumes(project_root):
         # Compose prefixes volumes with the project name; try both.
         for candidate in (vol, f"{project_root.name}_{vol}"):
             if not docker_client.volume_exists(candidate):
@@ -84,7 +80,14 @@ def run_stop(
 
     _stop_flowmesh_stack(project_root, purge=purge)
 
-    cmd: list[str] = ["docker", "compose"]
+    cmd: list[str] = [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_path()),
+        "--project-directory",
+        str(project_root),
+    ]
     for prof in COMPOSE_PROFILES:
         cmd.extend(["--profile", prof])
     cmd.append("down")
@@ -95,7 +98,7 @@ def run_stop(
     run(cmd, cwd=project_root, check=False)
 
     if wipe_archive and not purge:
-        info("Wiping state state volumes (corpus + records preserved)...")
+        info("Wiping state volumes (corpus + records preserved)...")
         _remove_state_volumes(project_root)
 
     info("All services stopped.")

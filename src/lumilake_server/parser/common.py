@@ -7,7 +7,7 @@ regardless of process or interpreter. The suffix is a deterministic
 :func:`hash`).
 
 Anything that is specific to the n8n wire format lives in
-:mod:`lumilake.server.parser.n8n` — this module stays neutral.
+:mod:`lumilake_server.parser.n8n` — this module stays neutral.
 """
 
 import hashlib
@@ -17,8 +17,8 @@ import re
 def make_id(scope: str, prefix: str, name: str) -> str:
     """Derive a stable op id from ``(scope, prefix, name)``.
 
-    Called by both :mod:`lumilake.server.parser.n8n` and
-    :mod:`lumilake.server.parser.yaml_parser`. The slug components ensure
+    Called by both :mod:`lumilake_server.parser.n8n` and
+    :mod:`lumilake_server.parser.yaml_parser`. The slug components ensure
     the id stays readable; the digest suffix disambiguates
     ``(scope, name)`` pairs that slugify to the same string.
 

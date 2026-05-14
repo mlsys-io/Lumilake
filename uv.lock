@@ -1065,6 +1065,7 @@ all = [
 ]
 cli = [
     { name = "lumilake-cli" },
+    { name = "lumilake-deploy" },
 ]
 deploy = [
     { name = "lumilake-deploy" },
@@ -1132,6 +1133,7 @@ requires-dist = [
     { name = "lumilake-cli", marker = "extra == 'all'", editable = "packages/cli" },
     { name = "lumilake-cli", marker = "extra == 'cli'", editable = "packages/cli" },
     { name = "lumilake-deploy", marker = "extra == 'all'", editable = "packages/deploy" },
+    { name = "lumilake-deploy", marker = "extra == 'cli'", editable = "packages/deploy" },
     { name = "lumilake-deploy", marker = "extra == 'deploy'", editable = "packages/deploy" },
     { name = "lumilake-hook", marker = "extra == 'all'", editable = "packages/hook" },
     { name = "lumilake-hook", marker = "extra == 'hook'", editable = "packages/hook" },
@@ -1196,17 +1198,26 @@ name = "lumilake-cli"
 version = "0.1.0"
 source = { editable = "packages/cli" }
 dependencies = [
-    { name = "lumilake-deploy" },
+    { name = "flowmesh-sdk" },
     { name = "lumilake-sdk" },
+    { name = "requests" },
     { name = "typer" },
+]
+
+[package.optional-dependencies]
+deploy = [
+    { name = "lumilake-deploy" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "lumilake-deploy", editable = "packages/deploy" },
+    { name = "flowmesh-sdk", specifier = "==0.1.1" },
+    { name = "lumilake-deploy", marker = "extra == 'deploy'", editable = "packages/deploy" },
     { name = "lumilake-sdk", editable = "packages/sdk" },
+    { name = "requests", specifier = ">=2.32.3" },
     { name = "typer", specifier = ">=0.12.5" },
 ]
+provides-extras = ["deploy"]
 
 [[package]]
 name = "lumilake-deploy"

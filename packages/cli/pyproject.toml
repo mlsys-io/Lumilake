@@ -5,13 +5,15 @@ description = "Lumilake command-line interface"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
 license = "Apache-2.0"
-license-files = ["../../LICENSE"]
+license-files = ["LICENSE"]
 authors = [
     {name = "Lumilake contributors"},
 ]
 dependencies = [
     "lumilake-sdk==0.1.0",
-    "lumilake-deploy==0.1.0",
+    # Renders ``lumilake trace`` ProfileSummary payloads.
+    "flowmesh-sdk==0.1.1",
+    "requests>=2.32.3",
     "typer>=0.12.5",
 ]
 classifiers = [
@@ -21,6 +23,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
 ]
+
+[project.optional-dependencies]
+# Thin ``pip install lumilake-cli`` (no extra) skips Docker/FlowMesh.
+deploy = ["lumilake-deploy==0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/mlsys-io/lumilake_OSS"

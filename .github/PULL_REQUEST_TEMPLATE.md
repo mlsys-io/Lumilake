@@ -19,8 +19,8 @@ Scope (optional): deploy, server, cli, runtime, docker, ...
 
 <!-- List modified files or groups of files with a brief explanation. -->
 <!--
-- `src/lumilake/cli/commands/deploy.py` — added `--since` flag to `deploy logs`
-- `src/lumilake/deploy/docker_client.py` — thread `since` through to docker-py
+- `packages/cli/src/lumilake_cli/commands/deploy.py` — added `--since` flag to `deploy logs`
+- `packages/deploy/src/lumilake_deploy/docker_client.py` — thread `since` through to docker-py
 - `tests/cli/test_deploy_impl.py` — cover the new flag
 -->
 

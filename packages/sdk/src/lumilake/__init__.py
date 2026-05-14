@@ -20,7 +20,7 @@ from lumilake.errors import (
     LumilakeError,
     NotFoundError,
 )
-from lumilake.resources.deploy import CONTAINER_NAMES, AsyncDeploy, Deploy
+from lumilake.resources.deploy import SERVICE_NAMES, AsyncDeploy, Deploy
 from lumilake.resources.info import AsyncInfo, Info
 from lumilake.resources.jobs import AsyncJobs, Jobs
 from lumilake.resources.traces import AsyncTraces, Traces
@@ -32,8 +32,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 __all__ = [
-    "CONTAINER_NAMES",
     "DEFAULT_CONFIG_PATH",
+    "SERVICE_NAMES",
     "AsyncDeploy",
     "AsyncInfo",
     "AsyncJobs",

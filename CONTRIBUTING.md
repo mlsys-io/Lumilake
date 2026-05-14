@@ -12,8 +12,10 @@ Thanks for your interest in contributing. We welcome bug fixes, new features, do
 
 ### Setup
 
+Use the same install command CI uses so mypy/pytest can resolve the full workspace:
+
 ```bash
-uv sync --group lint --group test --extra cli
+uv sync --all-packages --all-extras --all-groups
 ```
 
 Typical dependency groups / extras:
@@ -21,14 +23,12 @@ Typical dependency groups / extras:
 | Group or extra | Purpose |
 |----------------|---------|
 | `--extra cli` | Installs the `lumilake` command |
+| `--extra sdk` | Installs the Python SDK clients |
+| `--extra deploy` | Installs Docker / FlowMesh deploy helpers |
+| `--extra hook` | Installs the `lumilake_hook` resource-kind helpers |
 | `--group lint` | `black`, `isort`, `ruff`, `mypy`, `codespell` (pinned to CI versions) |
 | `--group test` | `pytest`, `pytest-asyncio`, `pytest-timeout` |
-
-For full development across all deps:
-
-```bash
-uv sync --all-groups --all-extras
-```
+| `--group server-runtime` | Server image runtime deps — needed for mypy to type-check `src/lumilake_server` |
 
 ### Install Pre-commit Hooks
 
@@ -104,29 +104,39 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 | `lint-typecheck` | PR / main push | `pre-commit run --all-files` |
 | `unit-tests` | PR / main push | `pytest tests/ --ignore=tests/server` |
 | `env-examples` | PR / main push | Validates `.env.example` against the deploy-time env contract |
-| `package-build` | PR / main push | Builds wheel/sdist and smoke-tests the package |
+| `package-build` | PR / main push | Builds wheels/sdists and smoke-tests the metapackage + four interface wheels |
+| `image-publish` | PR / main / tag push | Builds the multi-arch server image; pushes `:sha`/`:dev`/`:vX.Y.Z` to GHCR (not `:latest`) |
+| `release` | GitHub release published | Rebuilds + verifies wheels, publishes to PyPI via OIDC after `pypi` environment approval |
+| `release-images` | GitHub release published | Verifies the pre-pushed server image and retags it as `:latest` after `ghcr` environment approval |
 | `security` | PR / main push | Runs workflow audit, secret scan, Bandit, and dependency audit |
 | `check-signoff` | PR | Every non-merge commit must carry `Signed-off-by:` |
 | `check-pr-title` | PR | Validates the PR title format |
 
+See [`docs/RELEASE.md`](docs/RELEASE.md) for the full release runbook, including PyPI Trusted Publisher setup, GHCR visibility setup, and rollback options.
+
 ## Running Locally
 
+`lumilake deploy` reads `.env` (and optionally `.env.flowmesh`) from `--project-dir` (`-C <path>`) or the current working directory. From a workspace checkout, `uv run lumilake deploy ...` works; from a PyPI install just use `lumilake deploy ...` directly. Either way, point the CLI at a deployment directory that holds your env files.
+
 ```bash
-# First deploy
-uv run lumilake deploy init          # copies .env.example -> .env
-# edit .env to taste
-uv run lumilake deploy up
+mkdir -p ~/lumilake-deploy
+
+# First deploy (uv run from the workspace, or plain lumilake from PyPI)
+uv run lumilake deploy -C ~/lumilake-deploy init       # writes ~/lumilake-deploy/.env
+$EDITOR ~/lumilake-deploy/.env
+uv run lumilake deploy -C ~/lumilake-deploy pull       # fetch the published server image
+uv run lumilake deploy -C ~/lumilake-deploy up
 
 # Iterate
-uv run lumilake deploy restart server
-uv run lumilake deploy logs server --tail 200
+uv run lumilake deploy -C ~/lumilake-deploy restart server
+uv run lumilake deploy -C ~/lumilake-deploy logs server --tail 200
 
 # Tear down
-uv run lumilake deploy down          # keeps data volumes
-uv run lumilake deploy reset         # drops everything
+uv run lumilake deploy -C ~/lumilake-deploy down       # keeps data volumes
+uv run lumilake deploy -C ~/lumilake-deploy reset      # drops everything
 ```
 
-The server is at http://127.0.0.1:9000; API docs at `/docs`.
+`LUMILAKE_DEPLOY_DIR=~/lumilake-deploy` lets you drop the `-C` flag on every call. The server is at http://127.0.0.1:9000; API docs at `/docs`.
 
 ## Code of Conduct
 

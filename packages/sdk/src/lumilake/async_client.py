@@ -1,7 +1,7 @@
 """AsyncLumilakeClient — asynchronous SDK entry point.
 
 Composes every async resource — HTTP-backed ones over ``httpx.AsyncClient``,
-``deploy`` over ``asyncio.to_thread`` calls into ``lumilake.deploy``. Same
+``deploy`` over ``asyncio.to_thread`` calls into ``lumilake_deploy``. Same
 construction options as ``LumilakeClient`` (explicit args, env, or
 ``.from_config()``).
 """

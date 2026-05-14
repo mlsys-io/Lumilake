@@ -2,22 +2,20 @@
 
 import datetime as dt
 import re
-import shutil
 import sys
 from pathlib import Path
 
 import typer
 from flowmesh_cli_stack.stack import stack_env_example
-from lumilake import envs
 from lumilake_deploy import docker_client
-from lumilake_deploy import flowmesh as fm_mod
 from lumilake_deploy import setup as setup_mod
 from lumilake_deploy import stop as stop_mod
 from lumilake_deploy import update_flowmesh as update_fm_mod
+from lumilake_deploy.assets import env_example_path
+from lumilake_deploy.containers import SERVICE_NAMES, container_names
 from lumilake_deploy.doctor import DoctorFinding, run_doctor
 from lumilake_deploy.env import (
     ENV_FILE_NAME,
-    ENV_TEMPLATE_NAME,
     FLOWMESH_ENV_FILE_NAME,
     patch_env_value,
 )
@@ -31,24 +29,37 @@ from lumilake_deploy.setup import (
 from ..core import logging
 from ..core.typer import get_typer
 
-app = get_typer(help="Deploy and manage the Lumilake stack.")
-
-
-def _find_project_root() -> Path:
-    """Walk up from cwd looking for the env template."""
-    candidate = Path.cwd()
-    for _ in range(10):
-        if (candidate / ENV_TEMPLATE_NAME).is_file():
-            return candidate
-        parent = candidate.parent
-        if parent == candidate:
-            break
-        candidate = parent
-    logging.error(
-        f"Cannot find project root (no {ENV_TEMPLATE_NAME}). "
-        "Run from the project directory."
+app = get_typer(
+    help=(
+        "Deploy and manage the Lumilake stack. Reads .env (and optionally "
+        ".env.flowmesh) from --project-dir (or the current working "
+        "directory). The packaged compose file and server image are "
+        "resolved from the installed lumilake-deploy package."
     )
-    raise typer.Exit(code=1)
+)
+
+
+@app.callback()
+def _deploy_callback(
+    ctx: typer.Context,
+    project_dir: Path = typer.Option(
+        None,
+        "--project-dir",
+        "-C",
+        envvar="LUMILAKE_DEPLOY_DIR",
+        help=(
+            "Directory holding .env / .env.flowmesh and where compose "
+            "stores runtime state. Defaults to the current working directory."
+        ),
+    ),
+) -> None:
+    ctx.obj = project_dir.resolve() if project_dir else Path.cwd()
+
+
+def _project_dir(ctx: typer.Context) -> Path:
+    if isinstance(ctx.obj, Path):
+        return ctx.obj
+    return Path.cwd()
 
 
 def _run_setup(
@@ -128,6 +139,7 @@ def _cross_populate_runtime(env_path: Path, fm_env_path: Path) -> None:
 
 @app.command("init")
 def init(
+    ctx: typer.Context,
     flowmesh: bool = typer.Option(
         False,
         "--flowmesh",
@@ -140,17 +152,14 @@ def init(
         help="Overwrite existing env files without prompting.",
     ),
 ) -> None:
-    """Initialize ``.env`` from ``.env.example``."""
-    root = _find_project_root()
-    template = root / ENV_TEMPLATE_NAME
+    """Initialize ``.env`` from the bundled ``.env.example`` template."""
+    root = _project_dir(ctx)
+    template = env_example_path()
     target = root / ENV_FILE_NAME
-    if not template.is_file():
-        logging.error(f"Template not found: {template}")
-        raise typer.Exit(code=1)
     wrote_env = False
     if _confirm_overwrite(target, force=force):
-        shutil.copy2(template, target)
-        logging.success(f"Wrote {target} from {template.name}.")
+        target.write_text(template.read_text())
+        logging.success(f"Wrote {target} from packaged {template.name}.")
         wrote_env = True
 
     if flowmesh:
@@ -176,6 +185,7 @@ def init(
 
 @app.command()
 def doctor(
+    ctx: typer.Context,
     flowmesh: bool = typer.Option(
         False,
         "--flowmesh",
@@ -183,7 +193,7 @@ def doctor(
     ),
 ) -> None:
     """Validate ``.env`` (and optionally ``.env.flowmesh``)."""
-    root = _find_project_root()
+    root = _project_dir(ctx)
 
     def _emit(finding: DoctorFinding) -> None:
         if finding.level == "error":
@@ -205,11 +215,11 @@ def doctor(
 
 
 @app.command()
-def build() -> None:
+def build(ctx: typer.Context) -> None:
     """Build the lumilake server Docker image from source."""
-    root = _find_project_root()
+    root = _project_dir(ctx)
     setup_mod.load_project_env(root)
-    image_tag = envs.LUMILAKE_IMAGE_TAG or "latest"
+    image_tag = setup_mod.resolve_image_tag()
     try:
         build_server_image(root, image_tag)
     except DeployError as exc:
@@ -218,11 +228,11 @@ def build() -> None:
 
 
 @app.command()
-def pull() -> None:
+def pull(ctx: typer.Context) -> None:
     """Pull the published lumilake server image from the registry."""
-    root = _find_project_root()
+    root = _project_dir(ctx)
     setup_mod.load_project_env(root)
-    image_tag = envs.LUMILAKE_IMAGE_TAG or "latest"
+    image_tag = setup_mod.resolve_image_tag()
     try:
         pull_server_image(image_tag)
     except DeployError as exc:
@@ -231,17 +241,18 @@ def pull() -> None:
 
 
 @app.command()
-def up() -> None:
+def up(ctx: typer.Context) -> None:
     """Start the full Lumilake stack (Docker-backed).
 
     The server image must already be present locally — run
     ``lumilake deploy pull`` or ``lumilake deploy build`` first.
     """
-    _run_setup(_find_project_root(), background=True)
+    _run_setup(_project_dir(ctx), background=True)
 
 
 @app.command()
 def down(
+    ctx: typer.Context,
     wipe_archive: bool = typer.Option(
         False,
         "--wipe-archive",
@@ -258,7 +269,7 @@ def down(
     """Stop all services (keep data)."""
     try:
         stop_mod.run_stop(
-            _find_project_root(),
+            _project_dir(ctx),
             purge=False,
             wipe_archive=wipe_archive,
         )
@@ -268,40 +279,20 @@ def down(
 
 
 @app.command()
-def clean() -> None:
+def clean(ctx: typer.Context) -> None:
     """Stop all services and delete volumes."""
     try:
-        stop_mod.run_stop(_find_project_root(), purge=True)
+        stop_mod.run_stop(_project_dir(ctx), purge=True)
     except DeployError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1) from exc
 
 
-SERVICE_NAMES = (
-    "server",
-    "flowmesh",
-    "flowmesh-redis",
-    "flowmesh-redis-telemetry",
-)
-
-
-def _container_names() -> dict[str, str]:
-    """Resolve service-name → container-name, slugging FlowMesh from the env."""
-    env_fm = _find_project_root() / FLOWMESH_ENV_FILE_NAME
-    slug = fm_mod.stack_slug(env_fm) if env_fm.is_file() else "flowmesh_node"
-    return {
-        "server": "lumilake-server",
-        "flowmesh": f"{slug}_server",
-        "flowmesh-redis": f"{slug}_redis_control",
-        "flowmesh-redis-telemetry": f"{slug}_redis_telemetry",
-    }
-
-
 @app.command()
-def status() -> None:
+def status(ctx: typer.Context) -> None:
     """Show the running state of every Lumilake stack container."""
     rows: list[tuple[str, str, str, str]] = []
-    for service, container in _container_names().items():
+    for service, container in container_names(_project_dir(ctx)).items():
         state = docker_client.container_status(container)
         health = (
             docker_client.container_health_status(container)
@@ -322,6 +313,7 @@ def status() -> None:
 
 @app.command()
 def restart(
+    ctx: typer.Context,
     service: str | None = typer.Argument(
         None,
         help=(
@@ -337,8 +329,9 @@ def restart(
     (rebuilds images if code changed). With ``service``: restarts just
     that container in place.
     """
+    root = _project_dir(ctx)
     if service is not None:
-        container = _container_names().get(service)
+        container = container_names(root).get(service)
         if container is None:
             logging.error(
                 f"Unknown service '{service}'. "
@@ -352,7 +345,6 @@ def restart(
             raise typer.Exit(code=1) from exc
         return
 
-    root = _find_project_root()
     try:
         stop_mod.run_stop(root, purge=False)
     except DeployError as exc:
@@ -362,9 +354,9 @@ def restart(
 
 
 @app.command()
-def reset() -> None:
+def reset(ctx: typer.Context) -> None:
     """Clean reset (stop + purge + up; deletes all data)."""
-    root = _find_project_root()
+    root = _project_dir(ctx)
     try:
         stop_mod.run_stop(root, purge=True)
     except DeployError as exc:
@@ -403,6 +395,7 @@ def _parse_since(value: str | None) -> dt.datetime | None:
 
 @app.command()
 def logs(
+    ctx: typer.Context,
     service: str = typer.Argument(
         "server",
         help=f"Service name: {', '.join(SERVICE_NAMES)}",
@@ -430,7 +423,7 @@ def logs(
     Follows by default; use ``-n`` to show the last N lines and exit.
     ``--since`` filters to entries newer than the given relative duration.
     """
-    container = _container_names().get(service)
+    container = container_names(_project_dir(ctx)).get(service)
     if container is None:
         logging.error(
             f"Unknown service '{service}'. Choose from: {', '.join(SERVICE_NAMES)}"
@@ -460,10 +453,10 @@ def logs(
 
 
 @app.command("update-flowmesh")
-def update_flowmesh_cmd() -> None:
+def update_flowmesh_cmd(ctx: typer.Context) -> None:
     """Re-lock and install the latest FlowMesh packages."""
     try:
-        update_fm_mod.run_update(_find_project_root())
+        update_fm_mod.run_update(_project_dir(ctx))
     except DeployError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1) from exc

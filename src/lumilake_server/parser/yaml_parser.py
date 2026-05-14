@@ -3,8 +3,8 @@
 The YAML format is a declarative alternative to the Python DSL. Each
 list entry under ``ops:`` maps directly to a registered Lumilake op
 (``DataOp``, ``LLMChatOp``, ``FormatOp``, ...). The resulting dict has
-the same shape :func:`lumilake.server.parser.n8n.parse_n8n_payload`
-produces, which :meth:`lumilake.graphs.Graph.from_json` then consumes.
+the same shape :func:`lumilake_server.parser.n8n.parse_n8n_payload`
+produces, which :meth:`lumilake_server.graphs.Graph.from_json` then consumes.
 
 ```yaml
 name: example_workflow            # optional top-level name

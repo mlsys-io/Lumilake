@@ -5,7 +5,7 @@ description = "Lumilake deploy orchestration"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
 license = "Apache-2.0"
-license-files = ["../../LICENSE"]
+license-files = ["LICENSE"]
 authors = [
     {name = "Lumilake contributors"},
 ]
@@ -37,3 +37,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"lumilake_deploy.assets" = ["*", ".env.example"]
