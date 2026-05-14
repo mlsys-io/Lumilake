@@ -3,13 +3,19 @@
 Install the CLI extra or use `uv run` from a source checkout:
 
 ```bash
-pip install "lumilake[cli]"
+pip install "lumilake[cli]"     # full CLI + deploy lifecycle
 lumilake --help
 ```
 
 ```bash
 uv run lumilake --help
 ```
+
+`pip install lumilake-cli` (no extra) installs a thin CLI that omits the
+deploy lifecycle — useful for users that only need `lumilake login` /
+`job` / `worker` / `trace`. Running `lumilake deploy` from a thin install
+prints an install hint pointing back at `lumilake[cli]` or
+`lumilake-cli[deploy]`.
 
 ## Configuration
 
@@ -23,12 +29,24 @@ uv run lumilake --help
 
 ## Deploy
 
+Every `lumilake deploy` command reads `.env` (and optionally `.env.flowmesh`) from `--project-dir` (`-C <path>`) or, when not given, the current working directory. `LUMILAKE_DEPLOY_DIR` is an equivalent override.
+
+```bash
+mkdir -p ~/lumilake-deploy
+lumilake deploy -C ~/lumilake-deploy init   # writes ~/lumilake-deploy/.env
+# or:
+LUMILAKE_DEPLOY_DIR=~/lumilake-deploy lumilake deploy init
+```
+
+The compose file and image are resolved from the installed `lumilake-deploy` package and GHCR; the deployment directory only needs to hold your `.env` files (and any local state docker compose creates).
+
 | Command | Purpose |
 |---------|---------|
 | `lumilake deploy init [--flowmesh]` | Create `.env`; optionally create `.env.flowmesh`. |
 | `lumilake deploy doctor [--flowmesh]` | Validate deployment env files. |
-| `lumilake deploy build` | Build the Lumilake server Docker image. |
-| `lumilake deploy up` | Start the local stack. |
+| `lumilake deploy build` | Build the Lumilake server Docker image from source. |
+| `lumilake deploy pull` | Pull the published server image from the registry (`$LUMILAKE_REGISTRY`). |
+| `lumilake deploy up` | Start the local stack (image must already be present — run `pull` or `build` first). |
 | `lumilake deploy down [--wipe-archive]` | Stop the stack while keeping data volumes. |
 | `lumilake deploy clean` | Stop the stack and delete volumes. |
 | `lumilake deploy reset` | Clean reset, then start the stack again. |

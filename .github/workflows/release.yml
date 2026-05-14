@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, for example v0.1.0.
+        required: true
+        type: string
+      publish_target:
+        description: Package index to publish to.
+        required: true
+        type: choice
+        default: testpypi
+        options:
+          - testpypi
+          - pypi
+      package_pattern:
+        description: >
+          Comma-separated globs of dist filenames to publish (default '*' =
+          all distributions). Used to stagger initial PyPI Trusted Publisher
+          onboarding when the pending-publisher quota is below the package
+          count. Patterns are split on commas, so individual patterns cannot
+          contain a literal comma.
+        required: false
+        type: string
+        default: '*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  PUBLISH_TARGET: ${{ github.event_name == 'release' && 'pypi' || inputs.publish_target }}
+  PACKAGE_PATTERN: ${{ github.event_name == 'release' && '*' || inputs.package_pattern }}
+
+jobs:
+  build:
+    name: Build and verify distributions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::tag $RELEASE_TAG is not reachable from origin/main"
+            exit 1
+          fi
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "0.11.8"
+          python-version: "3.12"
+
+      - name: Install build environment
+        run: uv sync --all-packages --all-extras --all-groups --frozen
+
+      - name: Validate release versions
+        run: uv run scripts/ci/check_release_version.py --tag "$RELEASE_TAG"
+
+      - name: Confirm bump_version is idempotent
+        # Loud-fails if any version literal was forgotten in the prep PR.
+        run: |
+          version="${RELEASE_TAG#v}"
+          uv run scripts/dev/bump_version.py "$version" --check
+
+      - name: Build distributions
+        run: uv build --all-packages --out-dir dist
+
+      - name: Check distribution metadata
+        run: uvx twine==6.2.0 check dist/*
+
+      - name: Verify distributions
+        run: uv run scripts/ci/check_package_build.py --dist dist
+
+      - name: Filter distributions
+        if: env.PACKAGE_PATTERN != '*'
+        run: |
+          uv run scripts/ci/filter_distributions.py \
+            --dist dist \
+            --pattern "$PACKAGE_PATTERN"
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        with:
+          name: lumilake-dist-${{ env.RELEASE_TAG }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish distributions
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'release' && 'pypi' || inputs.publish_target }}
+    permissions:
+      contents: read
+      id-token: write  # OIDC for PyPI Trusted Publishing
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        with:
+          name: lumilake-dist-${{ env.RELEASE_TAG }}
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: env.PUBLISH_TARGET == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@db8f07d3871a0a180efa06b95d467625c19d5d5f  # v1.13.0
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: env.PUBLISH_TARGET == 'pypi'
+        uses: pypa/gh-action-pypi-publish@db8f07d3871a0a180efa06b95d467625c19d5d5f  # v1.13.0
+        with:
+          packages-dir: dist/

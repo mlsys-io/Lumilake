@@ -5,8 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
-
-from lumilake.sdk import AsyncLumilakeClient, LumilakeClient, LumilakeConfig
+from lumilake import AsyncLumilakeClient, LumilakeClient, LumilakeConfig
 
 
 def test_sync_client_has_all_resources(client: LumilakeClient) -> None:

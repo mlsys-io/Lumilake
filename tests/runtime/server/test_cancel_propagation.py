@@ -3,7 +3,7 @@ from typing import Any, cast
 import pytest
 from support.runtime_server import RecordingRuntimeManager
 
-from lumilake.runtime.server import ExecutionBatchContext
+from lumilake_server.runtime.server import ExecutionBatchContext
 
 
 @pytest.mark.asyncio

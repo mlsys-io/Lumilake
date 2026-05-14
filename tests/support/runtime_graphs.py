@@ -1,5 +1,5 @@
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def build_dummy_runtime_graph(

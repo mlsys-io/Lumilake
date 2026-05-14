@@ -8,8 +8,8 @@ edges to preserve ordering, but the returned list must only contain
 real node ids.
 """
 
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _make_op(node_id: str, dependencies: tuple[str, ...] = ()) -> RuntimeOp:

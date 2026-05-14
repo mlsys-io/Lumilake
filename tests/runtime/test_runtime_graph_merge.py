@@ -1,5 +1,5 @@
-from lumilake.runtime.runtime_graph import RuntimeGraph, merge_runtime_graphs
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, merge_runtime_graphs
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _op(node_id: str) -> RuntimeOp:

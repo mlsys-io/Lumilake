@@ -1,6 +1,6 @@
 import textwrap
 
-from lumilake.ops import LambdaOp
+from lumilake_server.ops import LambdaOp
 
 
 def _make_quote_fn(payload: object):

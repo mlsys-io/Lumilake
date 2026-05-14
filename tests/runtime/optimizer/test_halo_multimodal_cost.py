@@ -1,12 +1,12 @@
 import pytest
 
-from lumilake.runtime.optimizer.multimodal_cost import (
+from lumilake_server.runtime.optimizer.multimodal_cost import (
     MultimodalCostCoefficients,
     NodeCostType,
     classify_multimodal_node,
     compute_gpu_exec_cost,
 )
-from lumilake.runtime.optimizer.schedule.models import Node
+from lumilake_server.runtime.optimizer.schedule.models import Node
 
 
 def test_multimodal_node_type_classification() -> None:

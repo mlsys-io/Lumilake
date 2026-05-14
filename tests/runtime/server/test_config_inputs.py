@@ -1,6 +1,6 @@
 import pytest
 
-from lumilake.runtime.server import LumilakeServerConfig
+from lumilake_server.runtime.server import LumilakeServerConfig
 
 
 def test_server_config_rejects_removed_worker_group_size_alias() -> None:

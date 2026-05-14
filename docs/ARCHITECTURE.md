@@ -41,15 +41,14 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 
 ## Main Packages
 
-| Package | Role |
-|---------|------|
-| `lumilake.server` | FastAPI application and route wiring. |
-| `lumilake.runtime` | Graph compilation, optimizer loop, job manager, and FlowMesh runtime manager. |
-| `lumilake.ops` | Logical operators used by native and YAML workflows. |
-| `lumilake.deploy` | Local Docker/FlowMesh deployment helpers. |
-| `lumilake.cli` | Typer-based command line interface. |
-| `lumilake.sdk` | Sync and async Python clients. |
-| `lumilake_hook` | Lumilake resource-kind helpers for shared hook integrations. |
+| Distribution | Module(s) | Role |
+|--------------|-----------|------|
+| (image only) | `lumilake_server` | FastAPI application, routes, runtime graph, ops, optimizer, job manager, FlowMesh manager. Ships in `ghcr.io/mlsys-io/lumilake_server`; never published to PyPI. |
+| `lumilake-sdk` | `lumilake` | Sync and async clients, shared `envs` / `log`. |
+| `lumilake-cli` | `lumilake_cli` | Typer-based command line interface. |
+| `lumilake-deploy` | `lumilake_deploy` | Local Docker / FlowMesh deployment helpers. |
+| `lumilake-hook` | `lumilake_hook` | Lumilake resource-kind helpers for shared hook integrations. |
+| `lumilake` | (no code) | Metapackage providing the `[sdk]` / `[cli]` / `[deploy]` / `[hook]` / `[all]` extras. |
 
 ## Runtime Flow
 

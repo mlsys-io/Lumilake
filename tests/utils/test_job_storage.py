@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import pytest
 from pydantic import ValidationError
 
-from lumilake.utils.job_storage import InMemoryJobStorage
+from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
 @dataclass

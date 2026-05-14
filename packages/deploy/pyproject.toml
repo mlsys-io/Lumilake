@@ -1,0 +1,42 @@
+[project]
+name = "lumilake-deploy"
+version = "0.1.0"
+description = "Lumilake deploy orchestration"
+readme = "README.md"
+requires-python = "<3.13,>=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Lumilake contributors"},
+]
+dependencies = [
+    "lumilake-sdk==0.1.0",
+    "docker>=7.1.0",
+    "pyyaml>=6.0",
+    "flowmesh-sdk-stack==0.1.1",
+    "flowmesh-cli==0.1.1",
+    "flowmesh-cli-stack==0.1.1",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/mlsys-io/lumilake_OSS"
+Repository = "https://github.com/mlsys-io/lumilake_OSS"
+
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"lumilake_deploy.assets" = ["*", ".env.example"]

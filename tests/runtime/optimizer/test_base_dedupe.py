@@ -1,6 +1,6 @@
-from lumilake.runtime.optimizer.halo import HaloOptimizer
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.optimizer.halo import HaloOptimizer
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _build_scoped_graph(scope: str) -> RuntimeGraph:

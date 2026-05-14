@@ -4,7 +4,7 @@ import argparse
 import re
 from pathlib import Path
 
-from lumilake.deploy import doctor
+from lumilake_deploy import doctor
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENV_EXAMPLE = REPO_ROOT / ".env.example"

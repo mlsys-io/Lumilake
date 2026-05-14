@@ -8,9 +8,9 @@ here treats input-driven placeholders as ``file_count = 1`` — the
 minimum the op is guaranteed to fetch per invocation.
 """
 
-from lumilake.runtime.data_profile_utils import _derive_s3_profile_for_graph
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.data_profile_utils import _derive_s3_profile_for_graph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _s3_node(
@@ -106,7 +106,7 @@ class TestInputDrivenProfile:
     def test_sql_driven_placeholder_still_uses_sql_estimated_rows(self) -> None:
         """Regression guard: SQL placeholders still honor the SQL
         projection path (previous behavior must not be broken)."""
-        from lumilake.data_profile_models import (
+        from lumilake_server.data_profile_models import (
             DataProfileCostEstimate,
             DataProfileResultRow,
         )

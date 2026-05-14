@@ -25,9 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Typing :: Typed",
 ]
-dependencies = [
-    "python-dotenv>=1.0.0",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/mlsys-io/lumilake_OSS"
@@ -35,43 +33,42 @@ Repository = "https://github.com/mlsys-io/lumilake_OSS"
 Issues = "https://github.com/mlsys-io/lumilake_OSS/issues"
 
 [project.optional-dependencies]
-server = [
-    "fastapi[standard]>=0.115.6",
-    "openai>=1.58.1",
-    "requests>=2.32.3",
-    "urllib3>=2.7.0",
-    "aiohttp>=3.11.11",
-    "shortuuid>=1.0.13",
-    "pandas>=2.2.3",
-    "minio>=7.2.8",
-    "networkx[default]>=3.4.2",
-    "matplotlib>=3.10.1",
-    "dill>=0.4.0",
-    "psycopg[binary]>=3.2.0",
-    "psycopg-pool>=3.2.0",
-    "rich>=13.6.0",
-    "lumid-hooks==0.1.0",
-    "flowmesh-sdk==0.1.1",
-    "lumid-data-sdk==0.1.0",
-]
-deploy = [
-    "lumilake[server]",
-    "docker>=7.1.0",
-    "pyyaml>=6.0",
-    "flowmesh-sdk-stack==0.1.1",
-    "flowmesh-cli==0.1.1",
-    "flowmesh-cli-stack==0.1.1",
-]
-cli = [
-    "typer>=0.12.5",
-    "lumilake[deploy]",
-]
-sdk = [
-    "httpx>=0.27.0",
+sdk = ["lumilake-sdk==0.1.0"]
+# Full CLI; pin lumilake-cli alone for the thin variant.
+cli = ["lumilake-cli==0.1.0", "lumilake-deploy==0.1.0"]
+deploy = ["lumilake-deploy==0.1.0"]
+hook = ["lumilake-hook==0.1.0"]
+all = [
+    "lumilake-sdk==0.1.0",
+    "lumilake-cli==0.1.0",
+    "lumilake-deploy==0.1.0",
+    "lumilake-hook==0.1.0",
 ]
 
-[project.scripts]
-lumilake = "lumilake.cli.cli:main"
+[build-system]
+requires = ["setuptools>=82.0.1", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Metapackage carries no code. The dist-info-only wheel is intentional.
+packages = []
+
+[tool.uv.workspace]
+members = [
+    "packages/sdk",
+    "packages/cli",
+    "packages/deploy",
+    "packages/hook",
+]
+
+[tool.uv.sources]
+lumilake-sdk = { workspace = true }
+lumilake-cli = { workspace = true }
+lumilake-deploy = { workspace = true }
+lumilake-hook = { workspace = true }
+
+[tool.uv]
+default-groups = []
 
 [dependency-groups]
 lint = [
@@ -102,9 +99,28 @@ test = [
     "respx>=0.21.0",
     {include-group = "delta"},
 ]
-
-[tool.uv]
-default-groups = []
+# Runtime deps for src/lumilake_server/. Not a project extra — copied
+# into the Docker image via `sync_requirements.py --write` so the image
+# install pins through uv.lock.
+server-runtime = [
+    "fastapi[standard]>=0.115.6",
+    "openai>=1.58.1",
+    "requests>=2.32.3",
+    "urllib3>=2.7.0",
+    "aiohttp>=3.11.11",
+    "shortuuid>=1.0.13",
+    "pandas>=2.2.3",
+    "minio>=7.2.8",
+    "networkx[default]>=3.4.2",
+    "matplotlib>=3.10.1",
+    "dill>=0.4.0",
+    "psycopg[binary]>=3.2.0",
+    "psycopg-pool>=3.2.0",
+    "rich>=13.6.0",
+    "lumid-hooks==0.1.0",
+    "flowmesh-sdk==0.1.1",
+    "lumid-data-sdk==0.1.0",
+]
 
 [tool.isort]
 profile = "black"
@@ -124,7 +140,15 @@ force-exclude = "\\.venv"
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
-files = ["src/lumilake", "scripts", "tests"]
+files = [
+    "packages/sdk/src",
+    "packages/cli/src",
+    "packages/deploy/src",
+    "packages/hook/src",
+    "src/lumilake_server",
+    "scripts",
+    "tests",
+]
 
 [tool.bandit]
 skips = [
@@ -159,7 +183,4 @@ reportPrivateImportUsage = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[build-system]
-requires = ["setuptools>=82.0.1", "wheel"]
-build-backend = "setuptools.build_meta"
+pythonpath = ["src"]

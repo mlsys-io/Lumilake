@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from lumilake import envs
 from support.runtime_server import (
     ArtifactRuntimeManager,
     RecordingRuntimeManager,
@@ -11,10 +12,9 @@ from support.runtime_server import (
     make_workflow,
 )
 
-from lumilake import envs
-from lumilake.runtime.job_manager.base import BatchSelection
-from lumilake.runtime.optimizer.base import Schedule
-from lumilake.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.job_manager.base import BatchSelection
+from lumilake_server.runtime.optimizer.base import Schedule
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 
 @pytest.mark.asyncio
@@ -447,7 +447,7 @@ async def test_process_batch_uses_server_data_profile_collection(
         return expected_profile
 
     monkeypatch.setattr(
-        "lumilake.runtime.server.collect_data_profile",
+        "lumilake_server.runtime.server.collect_data_profile",
         _fake_collect_data_profile,
     )
 
@@ -628,7 +628,7 @@ async def test_generate_schedule_subprocess_timeout_terminates_and_kills(
             return fake_process
 
     monkeypatch.setattr(
-        "lumilake.runtime.server.mp.get_context",
+        "lumilake_server.runtime.server.mp.get_context",
         lambda mode: FakeContext(),
     )
     monkeypatch.setattr(

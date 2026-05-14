@@ -3,13 +3,13 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-
 from lumilake import envs
-from lumilake.graphs import Graph
-from lumilake.ops import OutputOp
-from lumilake.server.parser import n8n as n8n_mod
-from lumilake.server.parser import parse_n8n_payload
-from lumilake.server.parser.n8n import N8N_CHAT_TRIGGER
+
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import OutputOp
+from lumilake_server.parser import n8n as n8n_mod
+from lumilake_server.parser import parse_n8n_payload
+from lumilake_server.parser.n8n import N8N_CHAT_TRIGGER
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "examples" / "templates" / "n8n"
 

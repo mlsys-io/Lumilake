@@ -7,6 +7,15 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "lumilake",
+    "lumilake-cli",
+    "lumilake-deploy",
+    "lumilake-hook",
+    "lumilake-sdk",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -1046,81 +1055,26 @@ wheels = [
 name = "lumilake"
 version = "0.1.0"
 source = { editable = "." }
-dependencies = [
-    { name = "python-dotenv" },
-]
 
 [package.optional-dependencies]
+all = [
+    { name = "lumilake-cli" },
+    { name = "lumilake-deploy" },
+    { name = "lumilake-hook" },
+    { name = "lumilake-sdk" },
+]
 cli = [
-    { name = "aiohttp" },
-    { name = "dill" },
-    { name = "docker" },
-    { name = "fastapi", extra = ["standard"] },
-    { name = "flowmesh-cli" },
-    { name = "flowmesh-cli-stack" },
-    { name = "flowmesh-sdk" },
-    { name = "flowmesh-sdk-stack" },
-    { name = "lumid-data-sdk" },
-    { name = "lumid-hooks" },
-    { name = "matplotlib" },
-    { name = "minio" },
-    { name = "networkx", extra = ["default"] },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "psycopg-pool" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "shortuuid" },
-    { name = "typer" },
-    { name = "urllib3" },
+    { name = "lumilake-cli" },
+    { name = "lumilake-deploy" },
 ]
 deploy = [
-    { name = "aiohttp" },
-    { name = "dill" },
-    { name = "docker" },
-    { name = "fastapi", extra = ["standard"] },
-    { name = "flowmesh-cli" },
-    { name = "flowmesh-cli-stack" },
-    { name = "flowmesh-sdk" },
-    { name = "flowmesh-sdk-stack" },
-    { name = "lumid-data-sdk" },
-    { name = "lumid-hooks" },
-    { name = "matplotlib" },
-    { name = "minio" },
-    { name = "networkx", extra = ["default"] },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "psycopg-pool" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "shortuuid" },
-    { name = "urllib3" },
+    { name = "lumilake-deploy" },
+]
+hook = [
+    { name = "lumilake-hook" },
 ]
 sdk = [
-    { name = "httpx" },
-]
-server = [
-    { name = "aiohttp" },
-    { name = "dill" },
-    { name = "fastapi", extra = ["standard"] },
-    { name = "flowmesh-sdk" },
-    { name = "lumid-data-sdk" },
-    { name = "lumid-hooks" },
-    { name = "matplotlib" },
-    { name = "minio" },
-    { name = "networkx", extra = ["default"] },
-    { name = "openai" },
-    { name = "pandas" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "psycopg-pool" },
-    { name = "requests" },
-    { name = "rich" },
-    { name = "shortuuid" },
-    { name = "urllib3" },
+    { name = "lumilake-sdk" },
 ]
 
 [package.dev-dependencies]
@@ -1145,6 +1099,25 @@ lint = [
     { name = "types-pyyaml" },
     { name = "types-requests" },
 ]
+server-runtime = [
+    { name = "aiohttp" },
+    { name = "dill" },
+    { name = "fastapi", extra = ["standard"] },
+    { name = "flowmesh-sdk" },
+    { name = "lumid-data-sdk" },
+    { name = "lumid-hooks" },
+    { name = "matplotlib" },
+    { name = "minio" },
+    { name = "networkx", extra = ["default"] },
+    { name = "openai" },
+    { name = "pandas" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg-pool" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "shortuuid" },
+    { name = "urllib3" },
+]
 test = [
     { name = "deltalake" },
     { name = "polars" },
@@ -1157,35 +1130,17 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", marker = "extra == 'server'", specifier = ">=3.11.11" },
-    { name = "dill", marker = "extra == 'server'", specifier = ">=0.4.0" },
-    { name = "docker", marker = "extra == 'deploy'", specifier = ">=7.1.0" },
-    { name = "fastapi", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.115.6" },
-    { name = "flowmesh-cli", marker = "extra == 'deploy'", specifier = "==0.1.1" },
-    { name = "flowmesh-cli-stack", marker = "extra == 'deploy'", specifier = "==0.1.1" },
-    { name = "flowmesh-sdk", marker = "extra == 'server'", specifier = "==0.1.1" },
-    { name = "flowmesh-sdk-stack", marker = "extra == 'deploy'", specifier = "==0.1.1" },
-    { name = "httpx", marker = "extra == 'sdk'", specifier = ">=0.27.0" },
-    { name = "lumid-data-sdk", marker = "extra == 'server'", specifier = "==0.1.0" },
-    { name = "lumid-hooks", marker = "extra == 'server'", specifier = "==0.1.0" },
-    { name = "lumilake", extras = ["deploy"], marker = "extra == 'cli'" },
-    { name = "lumilake", extras = ["server"], marker = "extra == 'deploy'" },
-    { name = "matplotlib", marker = "extra == 'server'", specifier = ">=3.10.1" },
-    { name = "minio", marker = "extra == 'server'", specifier = ">=7.2.8" },
-    { name = "networkx", extras = ["default"], marker = "extra == 'server'", specifier = ">=3.4.2" },
-    { name = "openai", marker = "extra == 'server'", specifier = ">=1.58.1" },
-    { name = "pandas", marker = "extra == 'server'", specifier = ">=2.2.3" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'server'", specifier = ">=3.2.0" },
-    { name = "psycopg-pool", marker = "extra == 'server'", specifier = ">=3.2.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "pyyaml", marker = "extra == 'deploy'", specifier = ">=6.0" },
-    { name = "requests", marker = "extra == 'server'", specifier = ">=2.32.3" },
-    { name = "rich", marker = "extra == 'server'", specifier = ">=13.6.0" },
-    { name = "shortuuid", marker = "extra == 'server'", specifier = ">=1.0.13" },
-    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.12.5" },
-    { name = "urllib3", marker = "extra == 'server'", specifier = ">=2.7.0" },
+    { name = "lumilake-cli", marker = "extra == 'all'", editable = "packages/cli" },
+    { name = "lumilake-cli", marker = "extra == 'cli'", editable = "packages/cli" },
+    { name = "lumilake-deploy", marker = "extra == 'all'", editable = "packages/deploy" },
+    { name = "lumilake-deploy", marker = "extra == 'cli'", editable = "packages/deploy" },
+    { name = "lumilake-deploy", marker = "extra == 'deploy'", editable = "packages/deploy" },
+    { name = "lumilake-hook", marker = "extra == 'all'", editable = "packages/hook" },
+    { name = "lumilake-hook", marker = "extra == 'hook'", editable = "packages/hook" },
+    { name = "lumilake-sdk", marker = "extra == 'all'", editable = "packages/sdk" },
+    { name = "lumilake-sdk", marker = "extra == 'sdk'", editable = "packages/sdk" },
 ]
-provides-extras = ["server", "deploy", "cli", "sdk"]
+provides-extras = ["sdk", "cli", "deploy", "hook", "all"]
 
 [package.metadata.requires-dev]
 delta = [
@@ -1209,6 +1164,25 @@ lint = [
     { name = "types-pyyaml", specifier = "==6.0.12.20260408" },
     { name = "types-requests", specifier = "==2.33.0.20260503" },
 ]
+server-runtime = [
+    { name = "aiohttp", specifier = ">=3.11.11" },
+    { name = "dill", specifier = ">=0.4.0" },
+    { name = "fastapi", extras = ["standard"], specifier = ">=0.115.6" },
+    { name = "flowmesh-sdk", specifier = "==0.1.1" },
+    { name = "lumid-data-sdk", specifier = "==0.1.0" },
+    { name = "lumid-hooks", specifier = "==0.1.0" },
+    { name = "matplotlib", specifier = ">=3.10.1" },
+    { name = "minio", specifier = ">=7.2.8" },
+    { name = "networkx", extras = ["default"], specifier = ">=3.4.2" },
+    { name = "openai", specifier = ">=1.58.1" },
+    { name = "pandas", specifier = ">=2.2.3" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
+    { name = "psycopg-pool", specifier = ">=3.2.0" },
+    { name = "requests", specifier = ">=2.32.3" },
+    { name = "rich", specifier = ">=13.6.0" },
+    { name = "shortuuid", specifier = ">=1.0.13" },
+    { name = "urllib3", specifier = ">=2.7.0" },
+]
 test = [
     { name = "deltalake", specifier = ">=0.22.0,<2.0.0" },
     { name = "polars", specifier = ">=1.0.0,<2.0.0" },
@@ -1217,6 +1191,81 @@ test = [
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-timeout", specifier = ">=2.4.0,<3.0.0" },
     { name = "respx", specifier = ">=0.21.0" },
+]
+
+[[package]]
+name = "lumilake-cli"
+version = "0.1.0"
+source = { editable = "packages/cli" }
+dependencies = [
+    { name = "flowmesh-sdk" },
+    { name = "lumilake-sdk" },
+    { name = "requests" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+deploy = [
+    { name = "lumilake-deploy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "flowmesh-sdk", specifier = "==0.1.1" },
+    { name = "lumilake-deploy", marker = "extra == 'deploy'", editable = "packages/deploy" },
+    { name = "lumilake-sdk", editable = "packages/sdk" },
+    { name = "requests", specifier = ">=2.32.3" },
+    { name = "typer", specifier = ">=0.12.5" },
+]
+provides-extras = ["deploy"]
+
+[[package]]
+name = "lumilake-deploy"
+version = "0.1.0"
+source = { editable = "packages/deploy" }
+dependencies = [
+    { name = "docker" },
+    { name = "flowmesh-cli" },
+    { name = "flowmesh-cli-stack" },
+    { name = "flowmesh-sdk-stack" },
+    { name = "lumilake-sdk" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "docker", specifier = ">=7.1.0" },
+    { name = "flowmesh-cli", specifier = "==0.1.1" },
+    { name = "flowmesh-cli-stack", specifier = "==0.1.1" },
+    { name = "flowmesh-sdk-stack", specifier = "==0.1.1" },
+    { name = "lumilake-sdk", editable = "packages/sdk" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
+
+[[package]]
+name = "lumilake-hook"
+version = "0.1.0"
+source = { editable = "packages/hook" }
+dependencies = [
+    { name = "lumid-hooks" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "lumid-hooks", specifier = "==0.1.0" }]
+
+[[package]]
+name = "lumilake-sdk"
+version = "0.1.0"
+source = { editable = "packages/sdk" }
+dependencies = [
+    { name = "httpx" },
+    { name = "python-dotenv" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
 
 [[package]]

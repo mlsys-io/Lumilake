@@ -6,14 +6,18 @@ from typing import Any, cast
 
 from support.runtime_graphs import build_dummy_runtime_graph
 
-from lumilake.runtime.job_manager.base import BatchSelection, WorkflowItem
-from lumilake.runtime.optimizer.base import Schedule
-from lumilake.runtime.protocol import LumilakeRequestConfig
-from lumilake.runtime.request import RequestHandler
-from lumilake.runtime.runtime_ops import RuntimeOp
-from lumilake.runtime.server import LumilakeServer, LumilakeServerConfig, RequestState
-from lumilake.schemas.progress import JobProgress
-from lumilake.utils.job_storage import get_job_storage
+from lumilake_server.runtime.job_manager.base import BatchSelection, WorkflowItem
+from lumilake_server.runtime.optimizer.base import Schedule
+from lumilake_server.runtime.protocol import LumilakeRequestConfig
+from lumilake_server.runtime.request import RequestHandler
+from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.server import (
+    LumilakeServer,
+    LumilakeServerConfig,
+    RequestState,
+)
+from lumilake_server.schemas.progress import JobProgress
+from lumilake_server.utils.job_storage import get_job_storage
 
 
 class FakeHandler:

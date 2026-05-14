@@ -1,7 +1,7 @@
 import pytest
 
-from lumilake.runtime.runtime_manager import create_runtime_manager
-from lumilake.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import create_runtime_manager
+from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 
 
 @pytest.mark.parametrize("runtime_manager_type", ["default", "flowmesh"])

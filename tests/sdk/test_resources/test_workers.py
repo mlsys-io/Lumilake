@@ -3,8 +3,7 @@
 import httpx
 import pytest
 import respx
-
-from lumilake.sdk import AsyncWorkers, BaseAsyncClient, BaseClient, Workers
+from lumilake import AsyncWorkers, BaseAsyncClient, BaseClient, Workers
 
 
 @pytest.fixture

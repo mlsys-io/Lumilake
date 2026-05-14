@@ -10,7 +10,7 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
-from lumilake.utils.delta import list_delta_versions, read_delta, write_delta
+from lumilake_server.utils.delta import list_delta_versions, read_delta, write_delta
 
 
 @pytest.fixture

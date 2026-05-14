@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from typing import Any
 
-from lumilake.schemas.io import S3Location
-from lumilake.utils import io_locations
+from lumilake_server.schemas.io import S3Location
+from lumilake_server.utils import io_locations
 
 
 class _FakeS3Error(Exception):

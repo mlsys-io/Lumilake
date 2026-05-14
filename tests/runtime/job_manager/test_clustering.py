@@ -1,8 +1,8 @@
-from lumilake.runtime.job_manager.cluster_algo.clustering import (
+from lumilake_server.runtime.job_manager.cluster_algo.clustering import (
     select_affinity_batch_ids,
 )
-from lumilake.runtime.runtime_graph import RuntimeGraph
-from lumilake.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _graph(workflow_id: str, *, model: str, system_prompt: str) -> RuntimeGraph:

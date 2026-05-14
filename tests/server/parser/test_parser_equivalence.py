@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from lumilake import envs
-from lumilake.server.parser import parse_n8n_payload, parse_yaml_payload
-from lumilake.server.parser.n8n import N8N_CHAT_TRIGGER
+
+from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
+from lumilake_server.parser.n8n import N8N_CHAT_TRIGGER
 
 TEMPLATE_ROOT = Path(__file__).resolve().parents[3] / "examples" / "templates"
 N8N_DIR = TEMPLATE_ROOT / "n8n"

@@ -8,26 +8,23 @@ pure-Python bits: ``.env`` helpers, setup layout, and FlowMesh teardown.
 import importlib
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
-
 from lumilake import envs
-from lumilake.cli.commands import deploy as deploy_cmd
-from lumilake.deploy import doctor as doctor_mod
-from lumilake.deploy import flowmesh as fm
-from lumilake.deploy import setup as setup_mod
-from lumilake.deploy.env import read_env_value
+from lumilake_cli.commands import deploy as deploy_cmd
+from lumilake_deploy import doctor as doctor_mod
+from lumilake_deploy import flowmesh as fm
+from lumilake_deploy import setup as setup_mod
+from lumilake_deploy.env import read_env_value
 
 
-def test_read_env_value_handles_quoted_and_unquoted() -> None:
-    path = Path(__file__).parent / "_env_fixture"
+def test_read_env_value_handles_quoted_and_unquoted(tmp_path: Path) -> None:
+    path = tmp_path / "env_fixture"
     path.write_text('KEY_Q="value-q"\nKEY_U=value-u\n# COMMENT\n')
-    try:
-        assert read_env_value(path, "KEY_Q") == "value-q"
-        assert read_env_value(path, "KEY_U") == "value-u"
-        assert read_env_value(path, "MISSING") == ""
-    finally:
-        path.unlink()
+    assert read_env_value(path, "KEY_Q") == "value-q"
+    assert read_env_value(path, "KEY_U") == "value-u"
+    assert read_env_value(path, "MISSING") == ""
 
 
 def test_load_project_env_refreshes_env_registry(tmp_path: Path) -> None:
@@ -56,6 +53,34 @@ def test_load_project_env_refreshes_env_registry(tmp_path: Path) -> None:
             else:
                 os.environ[key] = value
         importlib.reload(envs)
+
+
+def test_server_image_ref_uses_default_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(setup_mod.envs, "LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
+    assert (
+        setup_mod.server_image_ref("0.2.0") == "ghcr.io/mlsys-io/lumilake_server:0.2.0"
+    )
+
+
+def test_server_image_ref_honors_registry_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(setup_mod.envs, "LUMILAKE_REGISTRY", "my.private.io/foo/")
+    assert setup_mod.server_image_ref("dev") == "my.private.io/foo/lumilake_server:dev"
+
+
+def test_pull_server_image_invokes_image_pull(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(setup_mod.envs, "LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
+    monkeypatch.setattr(setup_mod, "image_pull", lambda tag: calls.append(tag))
+
+    setup_mod.pull_server_image("latest")
+
+    assert calls == ["ghcr.io/mlsys-io/lumilake_server:latest"]
 
 
 def test_resolve_infra_layout_uses_flowmesh_env_file(tmp_path: Path) -> None:
@@ -91,20 +116,39 @@ def test_doctor_rejects_malformed_s3_url(tmp_path: Path) -> None:
     assert "S3_URL must include a bucket or bucket/prefix path" in report.errors
 
 
+def _fake_ctx(project_dir: Path) -> Any:
+    """Stand-in for the ``typer.Context`` that the callback populates."""
+
+    class _Ctx:
+        obj = project_dir
+
+    return _Ctx()
+
+
 def test_cli_init_declined_overwrite_does_not_patch_existing_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / ".env.example").write_text('LUMILAKE_IMAGE_TAG="latest"\n')
     target = tmp_path / ".env"
     original = 'LUMILAKE_IMAGE_TAG="old"\n'
     target.write_text(original)
 
-    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(deploy_cmd.typer, "confirm", lambda *_a, **_kw: False)
 
-    deploy_cmd.init(flowmesh=False, force=False)
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)
 
     assert target.read_text() == original
+
+
+def test_cli_init_uses_packaged_template(tmp_path: Path) -> None:
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=True)
+    written = (tmp_path / ".env").read_text()
+    assert "LUMILAKE_IMAGE_TAG" in written
+
+
+def test_cli_init_honors_project_dir_argument(tmp_path: Path) -> None:
+    """``--project-dir`` (passed via ctx.obj) routes init into the chosen dir."""
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)
+    assert (tmp_path / ".env").is_file()
 
 
 def test_reset_preserves_flowmesh_env_file(
@@ -129,7 +173,11 @@ def test_reset_preserves_flowmesh_env_file(
 
     assert stack_clean_calls == [env_file]
     assert env_file.is_file()
-    assert run_calls == [["docker", "compose", "--profile", "server", "down", "-v"]]
+    assert len(run_calls) == 1
+    cmd = run_calls[0]
+    assert cmd[:2] == ["docker", "compose"]
+    assert cmd[-4:] == ["--profile", "server", "down", "-v"]
+    assert "-f" in cmd and "--project-directory" in cmd
 
 
 def test_stack_down_proceeds_when_flowmesh_server_unreachable(

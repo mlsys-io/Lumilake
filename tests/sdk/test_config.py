@@ -3,8 +3,7 @@
 from pathlib import Path
 
 import pytest
-
-from lumilake.sdk import LumilakeConfig
+from lumilake import LumilakeConfig
 
 
 def test_save_and_load_round_trip(tmp_path: Path) -> None:
