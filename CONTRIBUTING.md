@@ -105,7 +105,7 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 | `unit-tests` | PR / main push | `pytest tests/ --ignore=tests/server` |
 | `env-examples` | PR / main push | Validates `.env.example` against the deploy-time env contract |
 | `package-build` | PR / main push | Builds wheels/sdists and smoke-tests the metapackage + four interface wheels |
-| `image-publish` | PR / main / tag push | Builds the multi-arch server image; pushes `:sha`/`:dev`/`:vX.Y.Z` to GHCR (not `:latest`) |
+| `image-publish` | PR / main / tag push | Builds PR images without publishing; pushes multi-arch `:sha`/`:dev`/`:vX.Y.Z` images to GHCR (not `:latest`) |
 | `release` | GitHub release published | Rebuilds + verifies wheels, publishes to PyPI via OIDC after `pypi` environment approval |
 | `release-images` | GitHub release published | Verifies the pre-pushed server image and retags it as `:latest` after `ghcr` environment approval |
 | `security` | PR / main push | Runs workflow audit, secret scan, Bandit, and dependency audit |
