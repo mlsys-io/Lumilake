@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write  # docker/login-action + build-push-action push to GHCR
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
@@ -78,6 +78,8 @@ jobs:
         with:
           version: "0.11.8"
           python-version: "3.12"
+          # No uv cache restore in a publishing workflow (cache-poisoning).
+          enable-cache: false
 
       - name: Sync server requirements from uv.lock
         run: uv run --frozen scripts/dev/sync_requirements.py --write
