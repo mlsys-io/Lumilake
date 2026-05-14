@@ -169,7 +169,10 @@ def stack_up(env_file: str | Path) -> None:
             _error(e)
         raise RuntimeError("Fix port conflicts in .env.flowmesh and retry.")
 
-    args = ["up", "-d", "--wait"]
+    # ``--profile root`` is required so compose activates redis_control +
+    # redis_telemetry; the bundled FlowMesh compose puts them under
+    # ``profiles: [root]`` and without this flag they get silently skipped.
+    args = ["--profile", "root", "up", "-d", "--wait"]
 
     _info("Starting FlowMesh stack...")
     result = _stack.run(
@@ -184,7 +187,9 @@ def destroy_all_workers(env_file: str | Path) -> None:
     """Destroy every FlowMesh-managed worker via the SDK."""
     env = parse_env_file(Path(env_file))
     base_url = f"http://localhost:{env['SERVER_HTTP_PORT']}"
-    token = env["SERVER_TOKEN"]
+    # Bundled .env.flowmesh template ships no SERVER_TOKEN; default to
+    # empty (the unauthed local stack accepts an empty token).
+    token = env.get("SERVER_TOKEN", "")
     _info("Destroying FlowMesh workers...")
     with NodeClient(base_url=base_url, token=token) as client:
         client.destroy_all_workers(ignore_unreachable=True)
@@ -197,7 +202,11 @@ def stack_down(env_file: str | Path) -> None:
     env_path = Path(env_file).resolve()
     destroy_all_workers(env_path)
     _info("Stopping FlowMesh stack...")
-    _stack.run(["down"], env_file=env_path, env=_slug_env(env_path))
+    # ``--profile root`` so compose sees redis_control + redis_telemetry
+    # and tears them down too; without it they orphan and block re-up.
+    _stack.run(
+        ["--profile", "root", "down"], env_file=env_path, env=_slug_env(env_path)
+    )
 
 
 def stack_clean(env_file: str | Path) -> None:
@@ -206,7 +215,11 @@ def stack_clean(env_file: str | Path) -> None:
         return
     env_path = Path(env_file).resolve()
     _info("Cleaning FlowMesh stack (removing volumes)...")
-    _stack.run(["down", "-v"], env_file=env_path, env=_slug_env(env_path))
+    _stack.run(
+        ["--profile", "root", "down", "-v"],
+        env_file=env_path,
+        env=_slug_env(env_path),
+    )
 
 
 # Aliases used by ``stop.py`` — keep the older verb-first names readable.
@@ -281,7 +294,7 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
     """Create FlowMesh workers via SDK."""
     env = parse_env_file(Path(env_file))
     base_url = f"http://localhost:{env['SERVER_HTTP_PORT']}"
-    token = env["SERVER_TOKEN"]
+    token = env.get("SERVER_TOKEN", "")
 
     with NodeClient(base_url=base_url, token=token) as client:
         if cpu_count > 0:

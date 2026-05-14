@@ -773,6 +773,29 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 )
                 break
 
+            # Fail fast: any task failure terminates the workflow. Waiting
+            # for output-node terminality alone leaves the user staring at
+            # a "running" job for the full poll timeout when an upstream
+            # task has already crashed the downstream chain.
+            failed_tasks = [
+                tid
+                for tid, status in self._execution_task_status[batch_key].items()
+                if status == "FAILED"
+            ]
+            if failed_tasks:
+                self.logger.error(
+                    "Fast-failing request %s: %d task(s) reported FAILED at"
+                    " elapsed=%.1fs (first: %s)",
+                    request_info.request_id,
+                    len(failed_tasks),
+                    elapsed,
+                    failed_tasks[0],
+                )
+                raise RuntimeError(
+                    f"Task {failed_tasks[0]} failed; aborting workflow"
+                    f" ({len(failed_tasks)} task(s) failed in total)"
+                )
+
             await asyncio.sleep(poll_interval)
 
         # Check timeout

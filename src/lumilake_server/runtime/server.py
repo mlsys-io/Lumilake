@@ -841,9 +841,16 @@ class LumilakeServer:
 
     @staticmethod
     def _request_workflow_parent_id(workflow: Any) -> str:
+        # Each input slice gets its own parent id so multi-input
+        # submissions (``Stock=["NVDA","AAPL","TSLA"]`` with batch-size 1)
+        # dispatch as N independent workflow executions instead of being
+        # coalesced back into a single graph carrying the full list. The
+        # worker's SQL template substitution only handles scalar values;
+        # a coalesced list-of-3 produces ``WHERE symbol = '["NVDA",...]'``.
         return (
             f"request::{workflow.request_id}::"
             f"{workflow.public_graph_name}::{workflow.template_hash}"
+            f"::slice_{workflow.slice_index}"
         )
 
     @classmethod

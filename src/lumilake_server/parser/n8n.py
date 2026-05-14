@@ -951,11 +951,10 @@ def _make_postgres_retrieval_op(
                 inputs=inputs,
             )
         )
-        if not envs.LUMID_DATA_URL and not envs.DATABASE_URL:
+        if not envs.DATABASE_URL:
             raise ValueError(
-                f"n8n data-retrieval node '{node_name}' missing connection_strings "
-                "(set DATABASE_URL for direct mode or LUMID_DATA_URL to forward "
-                "through lumid.data)"
+                f"n8n data-retrieval node '{node_name}' missing connection_string "
+                "(set DATABASE_URL)"
             )
         dep_inputs = [
             param["node"]
@@ -969,7 +968,7 @@ def _make_postgres_retrieval_op(
             "_inputs": list(dict.fromkeys(extra_inputs + dep_inputs + main_inputs)),
             "data_spec": {
                 "type": "sql",
-                "connection_string": envs.LUMID_DATA_URL or envs.DATABASE_URL,
+                "connection_string": envs.DATABASE_URL,
                 "template": sql_template,
                 "params": sql_params,
             },
@@ -1008,11 +1007,10 @@ def _make_postgres_retrieval_op(
         inputs=inputs,
     )
 
-    if not envs.LUMID_DATA_URL and not envs.DATABASE_URL:
+    if not envs.DATABASE_URL:
         raise ValueError(
-            f"n8n data-retrieval node '{node_name}' missing connection_strings "
-            "(set DATABASE_URL for direct mode or LUMID_DATA_URL to forward "
-            "through lumid.data)"
+            f"n8n data-retrieval node '{node_name}' missing connection_string "
+            "(set DATABASE_URL)"
         )
 
     dep_inputs = [
@@ -1029,7 +1027,7 @@ def _make_postgres_retrieval_op(
         ),
         "data_spec": {
             "type": "sql",
-            "connection_string": envs.LUMID_DATA_URL or envs.DATABASE_URL,
+            "connection_string": envs.DATABASE_URL,
             "template": sql_template,
             "params": sql_params,
             "table": full_table,
@@ -1068,11 +1066,10 @@ def _make_s3_retrieval_op(
         op_ids=op_ids,
         inputs=inputs,
     )
-    if not envs.LUMID_DATA_URL and not envs.S3_URL:
+    if not envs.S3_URL:
         raise ValueError(
             f"n8n s3 node '{node_name}' missing S3 connection string "
-            "(set S3_URL for direct mode or LUMID_DATA_URL to forward "
-            "through lumid.data)"
+            "(set S3_URL)"
         )
     _BINARY_EXTENSIONS = (
         ".png",
@@ -1095,7 +1092,7 @@ def _make_s3_retrieval_op(
     )
     data_spec: dict[str, Any] = {
         "type": "s3",
-        "connection_string": envs.LUMID_DATA_URL or envs.S3_URL,
+        "connection_string": envs.S3_URL,
         "template": s3_template,
         "params": s3_params,
         "encoding": encoding,
@@ -1146,11 +1143,10 @@ def _make_lake_retrieval_op(
         op_ids=op_ids,
         inputs=inputs,
     )
-    if not envs.LUMID_DATA_URL and not envs.S3_URL:
+    if not envs.S3_URL:
         raise ValueError(
             f"n8n lake retrieval node '{node_name}' missing S3 connection string "
-            "(set S3_URL for direct mode or LUMID_DATA_URL to forward "
-            "through lumid.data)"
+            "(set S3_URL)"
         )
     _BINARY_EXTENSIONS = (
         ".png",
@@ -1173,7 +1169,7 @@ def _make_lake_retrieval_op(
     )
     data_spec: dict[str, Any] = {
         "type": "s3",
-        "connection_string": envs.LUMID_DATA_URL or envs.S3_URL,
+        "connection_string": envs.S3_URL,
         "template": s3_template,
         "params": s3_params,
         "encoding": encoding,

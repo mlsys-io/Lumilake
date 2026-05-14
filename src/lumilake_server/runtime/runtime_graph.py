@@ -66,6 +66,48 @@ def make_node_prefix(name: str) -> str:
     return f"{safe}_{digest}"
 
 
+def _inline_single_value_list_params(
+    template: str,
+    params: list[Any],
+) -> tuple[str, list[Any]]:
+    """Render single-element list params directly into the SQL/S3 template.
+
+    The FlowMesh worker substitutes ``data: {type: list, items: [...]}``
+    by JSON-stringifying the whole list, so a one-element ``items:
+    ["NVDA"]`` lands in SQL as ``'["NVDA"]'``. Each slice of a sliced
+    multi-input submission carries a one-element list per InputOp param,
+    so inlining here turns those into scalar values the worker handles.
+    Multi-element items (single-slice multi-input runs) are left alone so
+    the runtime-manager's shard-rewrite still has the shape it needs.
+    """
+    rendered = template
+    remaining: list[Any] = []
+    for param in params:
+        if not isinstance(param, dict):
+            remaining.append(param)
+            continue
+        label = param.get("label")
+        data = param.get("data")
+        if (
+            not isinstance(label, str)
+            or not isinstance(data, dict)
+            or data.get("type") != "list"
+        ):
+            remaining.append(param)
+            continue
+        items = data.get("items")
+        if not isinstance(items, list) or len(items) != 1:
+            remaining.append(param)
+            continue
+        placeholder = "{" + label + "}"
+        if placeholder not in rendered:
+            remaining.append(param)
+            continue
+        value = str(items[0]).replace("'", "''")
+        rendered = rendered.replace(placeholder, value)
+    return rendered, remaining
+
+
 @dataclass
 class RuntimeGraph:
     nodes: dict[str, RuntimeOp]
@@ -851,6 +893,11 @@ class RuntimeGraphBuilder:
                     seen.add(node)
                     dependencies.append(node)
             resolved_params.append(param)
+
+        if spec_type in {"sql", "s3"}:
+            template, resolved_params = _inline_single_value_list_params(
+                template, resolved_params
+            )
 
         data_spec: dict[str, Any] = {
             "type": spec_type,

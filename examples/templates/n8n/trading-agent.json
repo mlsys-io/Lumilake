@@ -6,18 +6,37 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chatTrigger",
       "position": [
-        -1168,
-        0
+        -720,
+        -80
       ],
       "name": "Stock",
-      "id": "47b772d5-45e8-4cee-b473-208a6c2bd838",
+      "id": "1756b8a7-e34b-4f88-a74a-60688ec2e6bd",
       "typeVersion": 1.4,
-      "webhookId": "df9f1e71-5f24-4e56-8b99-939fe8d84877"
+      "webhookId": "trading-agent-stock"
+    },
+    {
+      "parameters": {
+        "model": "Qwen/Qwen3-8B",
+        "options": {
+          "maxTokens": 768,
+          "temperature": 0.4,
+          "topK": 1,
+          "topP": 1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+      "position": [
+        -416,
+        224
+      ],
+      "name": "Qwen Text Model",
+      "id": "30cf2c87-c7ec-4366-8f00-79582c6fae2d",
+      "typeVersion": 1
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Generate one start_date for symbol {{ $('Stock') }}. This start_date is the inclusive lower-bound date used by Market, Insider, and News SQL queries. Return only a practical YYYY-MM-DD date for lookback filtering.",
+        "text": "=Pick a single lookback start_date for {{ $('Stock') }} that yields ~24 months of trailing data. Return YYYY-MM-DD.",
         "messages": {
           "messageValues": [
             {
@@ -29,598 +48,70 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        -1008,
-        0
-      ],
-      "name": "SQL Date Planner",
-      "id": "fd744f55-1e81-4aa4-ab8c-babda42fb754",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"structural-outputs\": [\n    {\n      \"name\": \"start_date\",\n      \"type\": \"datetime\",\n      \"min\": \"2024-01-01\",\n      \"max\": \"2025-12-31\"\n    }\n  ]\n}"
-    },
-    {
-      "parameters": {
-        "model": "google/gemma-3-27b-it",
-        "options": {
-          "maxTokens": 1024,
-          "temperature": 0.7,
-          "topK": 1,
-          "topP": 1
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
-      "position": [
-        -1008,
-        336
-      ],
-      "name": "Data Retrieval LLM",
-      "id": "c05fede4-ce45-48c1-8d4b-983076a1f6b6",
-      "typeVersion": 1
-    },
-    {
-      "parameters": {
-        "model": "llava-hf/llava-1.5-7b-hf",
-        "options": {
-          "maxTokens": 512,
-          "temperature": 0.1,
-          "topK": 1,
-          "topP": 1
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
-      "position": [
-        -448,
-        336
-      ],
-      "name": "News VLM",
-      "id": "b7030780-e026-4639-9b79-22dbeb73415b",
-      "typeVersion": 1
-    },
-    {
-      "parameters": {
-        "model": "google/gemma-3-27b-it",
-        "options": {
-          "maxTokens": 1024,
-          "temperature": 0.7,
-          "topK": 1,
-          "topP": 1
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
-      "position": [
-        -176,
-        336
-      ],
-      "name": "Analyst LLM",
-      "id": "c33cf58f-2980-45cd-9594-dd821f0c73eb",
-      "typeVersion": 1
-    },
-    {
-      "parameters": {
-        "model": "google/gemma-3-27b-it",
-        "options": {
-          "maxTokens": 1024,
-          "temperature": 0.7,
-          "topK": 1,
-          "topP": 1
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
-      "position": [
-        448,
-        336
-      ],
-      "name": "Researcher LLM",
-      "id": "25f4d903-610a-405b-8bd2-57591ed5371a",
-      "typeVersion": 1
-    },
-    {
-      "parameters": {
-        "model": "google/gemma-3-27b-it",
-        "options": {
-          "maxTokens": 1024,
-          "temperature": 0.7,
-          "topK": 1,
-          "topP": 1
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
-      "position": [
-        1808,
-        336
-      ],
-      "name": "Risk LLM",
-      "id": "d5a85f90-1b47-4a91-b2e8-c379404d2ebf",
-      "typeVersion": 1
-    },
-    {
-      "parameters": {
-        "model": "google/gemma-3-27b-it",
-        "options": {
-          "maxTokens": 1024,
-          "temperature": 0.7,
-          "topK": 1,
-          "topP": 1
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
-      "position": [
-        1248,
-        336
-      ],
-      "name": "Manager LLM",
-      "id": "2c34d55c-ccd5-4c2c-8cf8-1ca9ffc75cd1",
-      "typeVersion": 1
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Fundamentals analysis for {{ $('Stock') }}.\n\nUse the integrated SQL evidence below.\n\n```table\nsymbol: {{ $('Fundamentals Query').item.symbol }}\nreport_date: {{ $('Fundamentals Query').item.report_date }}\nperiod: {{ $('Fundamentals Query').item.period }}\nrevenue: {{ $('Fundamentals Query').item.revenue }}\nnet_income: {{ $('Fundamentals Query').item.netIncome }}\noperating_cash_flow: {{ $('Fundamentals Query').item.operatingCashFlow }}\nfree_cash_flow: {{ $('Fundamentals Query').item.freeCashFlow }}\ncurrent_ratio: {{ $('Fundamentals Query').item.current_ratio }}\ndebt_to_equity: {{ $('Fundamentals Query').item.debt_to_equity }}\ngross_margin: {{ $('Fundamentals Query').item.gross_margin }}\noperating_margin: {{ $('Fundamentals Query').item.operating_margin }}\nnet_margin: {{ $('Fundamentals Query').item.net_margin }}\ninsider_month: {{ $('Insider Query').item.month_start }}\ninsider_sentiment_net_change: {{ $('Insider Query').item.sentiment_net_change }}\ninsider_avg_mspr: {{ $('Insider Query').item.sentiment_avg_mspr }}\ninsider_tx_count: {{ $('Insider Query').item.tx_count }}\ninsider_tx_net_notional: {{ $('Insider Query').item.tx_net_notional }}\ninsider_buy_count: {{ $('Insider Query').item.buy_count }}\ninsider_sell_count: {{ $('Insider Query').item.sell_count }}\n```\n\nReturn a structured report with sections: Summary, Financial Strength, Profitability, Risks, Open Questions.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        -176,
-        -160
-      ],
-      "name": "Fundamentals Report",
-      "id": "c8238f4a-b2df-4116-b322-1faf7d2b561f",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Market analysis for {{ $('Stock') }}.\n\nUse the integrated market SQL evidence below.\n\n```table\nsymbol: {{ $('Market Query').item.symbol }}\ntime_bucket: {{ $('Market Query').item.time_bucket }}\nopen: {{ $('Market Query').item.bucket_open }}\nclose: {{ $('Market Query').item.bucket_close }}\nhigh: {{ $('Market Query').item.bucket_high }}\nlow: {{ $('Market Query').item.bucket_low }}\nvolume: {{ $('Market Query').item.bucket_volume }}\nbucket_return: {{ $('Market Query').item.bucket_return }}\nweek52_high: {{ $('Market Query').item.week52_high }}\nweek52_low: {{ $('Market Query').item.week52_low }}\nytd_return_pct: {{ $('Market Query').item.ytd_return_pct }}\nquarter_return_pct: {{ $('Market Query').item.quarter_return_pct }}\nfive_day_return_pct: {{ $('Market Query').item.five_day_return_pct }}\nbeta: {{ $('Market Query').item.beta }}\npe_ttm: {{ $('Market Query').item.pe_ttm }}\npb_quarterly: {{ $('Market Query').item.pb_quarterly }}\n```\n\nAnalyze price action, momentum, volatility, and technical signals. Call out notable moves and potential catalysts.\n\nReturn a structured report with sections: Summary, Key Signals, Risks, Open Questions.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        -176,
-        0
-      ],
-      "name": "Market Report",
-      "id": "9a33ff8e-647a-4929-bd3e-75e41c630be1",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Given the following per-article summaries, generate an aggregated news summary for {{ $('Stock') }}.\n\n```table\ntitle: {{ $('News Query').item.title }}\npublishedDate: {{ $('News Query').item.publishedDate }}\ncategory: {{ $('News Query').item.category }}\nsummary: {{ $('News Per-row Summary').item.output }}\n```\n\nReturn a structured report with sections: Summary, Key Developments, Impact, Open Questions.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        -176,
-        160
-      ],
-      "name": "News Report",
-      "id": "da10a1f5-1af3-4584-8a75-891701d81e83",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=You are to analyze the {{ $('Stock') }} stock. The resources available are as follows:\n\n**Company fundamentals report:**\n{{ $('Fundamentals Report') }}\n\n**Market research report:**\n{{ $('Market Report') }}\n\n**News report:**\n{{ $('News Report') }}\n\nUse this information to deliver a compelling argument, refute the opponent's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investment decisions.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.\n\nKey points to focus on:\n- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.\n- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.\n- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.\n- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.\n- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        144,
-        -96
-      ],
-      "name": "Bull Researcher R1",
-      "id": "e99c90a0-3adc-42e6-8fcc-a17c4ddd371b",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=You are to analyze the {{ $('Stock') }} stock. The resources available are as follows:\n\n**Company fundamentals report:**\n{{ $('Fundamentals Report') }}\n\n**Market research report:**\n{{ $('Market Report') }}\n\n**News report:**\n{{ $('News Report') }}\n\nUse this information to deliver a compelling argument, refute the opponent's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investment decisions.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.\n\nKey points to focus on:\n- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.\n- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.\n- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.\n- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.\n- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        144,
-        80
-      ],
-      "name": "Bear Researcher R1",
-      "id": "ebda6101-6ccf-42e2-af11-6f4e64bbe734",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Here are the last round arguments:\n\nBull Researcher:\n{{ $('Bull Researcher R1') }}\n\nBear Researcher:\n{{ $('Bear Researcher R1') }}\n\nPlease refute the opponent's claims and continue/assert your argument.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.\n\nKey points to focus on:\n- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.\n- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.\n- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.\n- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.\n- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        448,
-        -96
-      ],
-      "name": "Bull Researcher R2",
-      "id": "fd6bb0c1-34e9-41b3-b814-54067639fe8d",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Here are the last round arguments:\n\nBull Researcher:\n{{ $('Bull Researcher R1') }}\n\nBear Researcher:\n{{ $('Bear Researcher R1') }}\n\nPlease refute the opponent's claims and continue/assert your argument.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.\n\nKey points to focus on:\n- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.\n- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.\n- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.\n- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.\n- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        448,
-        80
-      ],
-      "name": "Bear Researcher R2",
-      "id": "92bf3b4f-12a0-47e5-9729-032be976ded4",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Here are the last round arguments:\n\nBull Researcher:\n{{ $('Bull Researcher R2') }}\n\nBear Researcher:\n{{ $('Bear Researcher R2') }}\n\nPlease refute the opponent's claims and continue/assert your argument.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.\n\nKey points to focus on:\n- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.\n- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.\n- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.\n- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.\n- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        768,
-        -96
-      ],
-      "name": "Bull Researcher R3",
-      "id": "3347dc2c-9a77-445d-bca4-69b1ba30c813",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Here are the last round arguments:\n\nBull Researcher:\n{{ $('Bull Researcher R2') }}\n\nBear Researcher:\n{{ $('Bear Researcher R2') }}\n\nPlease refute the opponent's claims and continue/assert your argument.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.\n\nKey points to focus on:\n- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.\n- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.\n- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.\n- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.\n- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        768,
-        80
-      ],
-      "name": "Bear Researcher R3",
-      "id": "122e6376-13f2-4668-9251-243eebff30f6",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "language": "pythonNative",
-        "pythonCode": "bull_r1, bear_r1, bull_r2, bear_r2, bull_r3, bear_r3 = args\nrounds = [(bull_r1, bear_r1), (bull_r2, bear_r2), (bull_r3, bear_r3)]\nlines = []\nfor idx, (bull, bear) in enumerate(rounds, start=1):\n    lines.append(f\"\\n## Round {idx}\")\n    if bull:\n        lines.append(f\"**Bull Researcher:** {bull}\")\n    if bear:\n        lines.append(f\"**Bear Researcher:** {bear}\")\nreturn \"\\n\".join(lines)"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1072,
-        0
-      ],
-      "id": "fa30390b-5868-4f2c-ba7d-353251e5d159",
-      "name": "Debate History",
-      "notes": "{\n  \"inputs\": [\n    \"Bull Researcher R1\",\n    \"Bear Researcher R1\",\n    \"Bull Researcher R2\",\n    \"Bear Researcher R2\",\n    \"Bull Researcher R3\",\n    \"Bear Researcher R3\"\n  ]\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=You are to analyze the {{ $('Stock') }} stock. Here are the arguments from both sides:\n\n{{ $('Debate History') }}",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "As the portfolio manager and debate facilitator, your role is to critically evaluate this round of debate and make a definitive decision: align with the bear analyst, the bull analyst, or choose Hold only if it is strongly justified based on the arguments presented.\n\nSummarize the key points from both sides concisely, focusing on the most compelling evidence or reasoning. Your recommendation—Buy, Sell, or Hold—must be clear and actionable. Avoid defaulting to Hold simply because both sides have valid points; commit to a stance grounded in the debate's strongest arguments.\n\nAdditionally, develop a detailed investment plan for the trader. This should include:\n\nYour Recommendation: A decisive stance supported by the most convincing arguments.\nRationale: An explanation of why these arguments lead to your conclusion.\nStrategic Actions: Concrete steps for implementing the recommendation.\nPresent your analysis conversationally, as if speaking naturally, without special formatting."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        1248,
-        0
-      ],
-      "name": "Research Manager",
-      "id": "526eaa47-c6eb-4608-8a4f-ae02c3b28e42",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Risk map input for {{ $('Stock') }}.\n\nTrader decision to assess:\n{{ $('Trader Decision') }}\n\nFundamentals report:\n{{ $('Fundamentals Report') }}\n\nMarket report:\n{{ $('Market Report') }}\n\nNews report:\n{{ $('News Report') }}\n\nProduce the aggressive-risk perspective only. Focus on upside asymmetry, catalysts, and why taking risk could be rewarded. Do not debate other analysts.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "As the Aggressive Risk Analyst, produce a concise risk memo focused on upside: (1) upside thesis, (2) high-conviction catalysts, (3) risk budget and position-sizing idea, (4) invalidation triggers. Ground everything in the provided reports."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        1808,
-        -160
-      ],
-      "name": "Risky Analyst",
-      "id": "d3b78c1e-9476-4a63-acb4-d2b88c34eb1c",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Risk map input for {{ $('Stock') }}.\n\nTrader decision to assess:\n{{ $('Trader Decision') }}\n\nFundamentals report:\n{{ $('Fundamentals Report') }}\n\nMarket report:\n{{ $('Market Report') }}\n\nNews report:\n{{ $('News Report') }}\n\nProduce the conservative-risk perspective only. Focus on downside, drawdown control, and failure modes. Do not debate other analysts.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "As the Conservative Risk Analyst, produce a concise risk memo focused on protection: (1) downside thesis, (2) key tail/operational risks, (3) guardrails and stop conditions, (4) hedging or de-risking actions. Ground everything in the provided reports."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        1808,
-        0
-      ],
-      "name": "Safe Analyst",
-      "id": "57bdba02-de93-489d-9518-d198a2c329fd",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Risk map input for {{ $('Stock') }}.\n\nTrader decision to assess:\n{{ $('Trader Decision') }}\n\nFundamentals report:\n{{ $('Fundamentals Report') }}\n\nMarket report:\n{{ $('Market Report') }}\n\nNews report:\n{{ $('News Report') }}\n\nProduce the balanced-risk perspective only. Focus on base-case probability, scenario weighting, and expected-value trade-offs. Do not debate other analysts.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "As the Neutral Risk Analyst, produce a concise risk memo focused on balance: (1) base-case view with probability, (2) key bull/bear scenario weights, (3) expected-value assessment, (4) conditions for buy/sell/hold transition. Ground everything in the provided reports."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        1808,
-        160
-      ],
-      "name": "Neutral Analyst",
-      "id": "c452df82-1e8e-422e-96f6-a520a7afd096",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=You are to analyze the {{ $('Stock') }} stock using three independent risk memos.\n\nAggressive-risk memo:\n{{ $('Risky Analyst') }}\n\nConservative-risk memo:\n{{ $('Safe Analyst') }}\n\nNeutral-risk memo:\n{{ $('Neutral Analyst') }}\n\nSynthesize these map outputs into one final risk recommendation for the trader. Focus on actionable adjustments and decision quality.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "As the Risk Aggregation Judge, merge the three analyst memos into one decision support note. Deliver: (1) Buy/Sell/Hold recommendation, (2) top supporting evidence, (3) top risks and mitigations, (4) explicit edits to the trader's plan (size, entry/exit, safeguards). Be decisive and avoid defaulting to Hold unless strongly justified."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        2112,
-        0
-      ],
-      "name": "Risk Judge",
-      "id": "8e77458e-34b1-4e4c-860a-f2a56bb069af",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Make a trading decision for {{ $('Stock') }}.\n\nInvestment plan: {{ $('Research Manager') }}\n\nReturn: Action (Buy/Sell/Hold), Size, Entry/Exit, Rationale.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a careful financial analyst. Be specific, cite the data provided, and clearly separate facts from assumptions."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        1520,
-        0
-      ],
-      "name": "Trader Decision",
-      "id": "f61be6be-e6dd-48e9-bc3c-1a24c6926476",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=You are to analyze the {{ $('Stock') }} stock. Review both the trader's decision and the risk-judged recommendation.\n\nTrader Decision:\n{{ $('Trader Decision') }}\n\nRisk-Judged Recommendation:\n{{ $('Risk Judge') }}\n\nBased on these inputs, provide a clear and decisive final recommendation: Buy, Sell, or Hold. Your decision must be well-justified and actionable. Always conclude your response with 'FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**' to confirm your recommendation.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are a Fund Manager. Your primary responsibility is to synthesize the analyses and recommendations from your team of specialized trader agents and their risk analysts.\n\nYou will be provided with final recommendations (Buy, Sell, or Hold) and detailed reasoning from the Risk Analysts, who have reviewed the outputs of the specialized trader agents.\n\nYour task is to critically evaluate the provided information to formulate a single, decisive, and final investment recommendation. Your decision should be the result of a comprehensive and holistic review, weighing the potentially conflicting viewpoints to determine the most prudent course of action. Your final output must be a clear Buy, Sell, or Hold decision, supported by a detailed reasoning that explains how you reconciled the different analytical perspectives to arrive at your conclusion."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        2400,
-        0
-      ],
-      "name": "Fund Manager Final",
-      "id": "baab5e48-ef4e-4316-a3e0-926494573925",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"is-output\": true,\n  \"output-field\": \"final_recommendation\"\n}"
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "WITH profile AS (\n  SELECT\n    symbol,\n    \"companyName\",\n    sector,\n    industry,\n    exchange,\n    country,\n    currency,\n    \"marketCap\",\n    price,\n    beta,\n    \"averageVolume\",\n    volume,\n    \"changePercentage\",\n    \"isActivelyTrading\",\n    \"ipoDate\",\n    \"fullTimeEmployees\",\n    website\n  FROM demo.company_profile\n  WHERE symbol = '{{ $('Stock') }}'\n  LIMIT 1\n),\npeer_rollup AS (\n  SELECT\n    p.symbol,\n    STRING_AGG(p.peer, ', ' ORDER BY p.peer) AS peers\n  FROM (\n    SELECT symbol, peer\n    FROM demo.company_peer\n    WHERE symbol = '{{ $('Stock') }}'\n    ORDER BY peer\n    LIMIT 10\n  ) p\n  GROUP BY p.symbol\n),\nrecent_income AS (\n  SELECT\n    symbol,\n    date::date AS report_date,\n    period,\n    \"fiscalYear\",\n    revenue,\n    \"grossProfit\",\n    \"operatingIncome\",\n    \"netIncome\",\n    ebitda,\n    eps,\n    \"costOfRevenue\",\n    \"researchAndDevelopmentExpenses\",\n    \"sellingGeneralAndAdministrativeExpenses\"\n  FROM demo.financial_income_statement\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY date::date DESC, period\n  LIMIT 12\n),\nrecent_balance AS (\n  SELECT\n    symbol,\n    date::date AS report_date,\n    period,\n    \"totalAssets\",\n    \"totalLiabilities\",\n    \"totalCurrentAssets\",\n    \"totalCurrentLiabilities\",\n    \"cashAndCashEquivalents\",\n    inventory,\n    \"accountsReceivables\",\n    \"totalDebt\",\n    \"longTermDebt\",\n    \"totalStockholdersEquity\"\n  FROM demo.financial_balance_sheet\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY date::date DESC, period\n  LIMIT 12\n),\nrecent_cashflow AS (\n  SELECT\n    symbol,\n    date::date AS report_date,\n    period,\n    \"operatingCashFlow\",\n    \"freeCashFlow\",\n    \"capitalExpenditure\",\n    \"netCashProvidedByOperatingActivities\",\n    \"netCashProvidedByInvestingActivities\",\n    \"netCashProvidedByFinancingActivities\",\n    \"commonStockRepurchased\",\n    \"commonDividendsPaid\",\n    \"stockBasedCompensation\"\n  FROM demo.financial_cash_flow\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY date::date DESC, period\n  LIMIT 12\n)\nSELECT\n  ri.symbol,\n  ri.report_date,\n  ri.period,\n  ri.\"fiscalYear\",\n  pr.\"companyName\",\n  pr.sector,\n  pr.industry,\n  pr.exchange,\n  pr.country,\n  pr.currency,\n  pr.\"marketCap\",\n  pr.price,\n  pr.beta,\n  pr.\"averageVolume\",\n  pr.volume,\n  pr.\"changePercentage\",\n  pr.\"isActivelyTrading\",\n  pr.\"ipoDate\",\n  pr.\"fullTimeEmployees\",\n  pr.website,\n  pe.peers,\n  ri.revenue,\n  ri.\"costOfRevenue\",\n  ri.\"grossProfit\",\n  ri.\"operatingIncome\",\n  ri.\"netIncome\",\n  ri.ebitda,\n  ri.eps,\n  ri.\"researchAndDevelopmentExpenses\",\n  ri.\"sellingGeneralAndAdministrativeExpenses\",\n  rb.\"totalAssets\",\n  rb.\"totalLiabilities\",\n  rb.\"totalCurrentAssets\",\n  rb.\"totalCurrentLiabilities\",\n  rb.\"cashAndCashEquivalents\",\n  rb.inventory,\n  rb.\"accountsReceivables\",\n  rb.\"totalDebt\",\n  rb.\"longTermDebt\",\n  rb.\"totalStockholdersEquity\",\n  rc.\"operatingCashFlow\",\n  rc.\"freeCashFlow\",\n  rc.\"capitalExpenditure\",\n  rc.\"netCashProvidedByOperatingActivities\",\n  rc.\"netCashProvidedByInvestingActivities\",\n  rc.\"netCashProvidedByFinancingActivities\",\n  rc.\"commonStockRepurchased\",\n  rc.\"commonDividendsPaid\",\n  rc.\"stockBasedCompensation\",\n  (rb.\"totalCurrentAssets\" / NULLIF(rb.\"totalCurrentLiabilities\", 0)) AS current_ratio,\n  (rb.\"totalDebt\" / NULLIF(rb.\"totalStockholdersEquity\", 0)) AS debt_to_equity,\n  (ri.\"grossProfit\" / NULLIF(ri.revenue, 0)) AS gross_margin,\n  (ri.\"operatingIncome\" / NULLIF(ri.revenue, 0)) AS operating_margin,\n  (ri.\"netIncome\" / NULLIF(ri.revenue, 0)) AS net_margin,\n  (rc.\"freeCashFlow\" / NULLIF(rc.\"operatingCashFlow\", 0)) AS fcf_conversion\nFROM recent_income ri\nLEFT JOIN recent_balance rb\n  ON rb.symbol = ri.symbol\n AND rb.report_date = ri.report_date\n AND rb.period = ri.period\nLEFT JOIN recent_cashflow rc\n  ON rc.symbol = ri.symbol\n AND rc.report_date = ri.report_date\n AND rc.period = ri.period\nLEFT JOIN peer_rollup pe\n  ON pe.symbol = ri.symbol\nCROSS JOIN profile pr\nORDER BY ri.report_date DESC, ri.period\nLIMIT 10;",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [
-        -528,
-        -288
-      ],
-      "id": "d777dd07-ac6f-40fe-8316-c016e68cbb4b",
-      "name": "Fundamentals Query"
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "WITH sentiment AS (\n  SELECT\n    symbol,\n    make_date(year::int, month::int, 1) AS month_start,\n    SUM(change)::bigint AS sentiment_net_change,\n    AVG(mspr) AS sentiment_avg_mspr,\n    COUNT(*) AS sentiment_samples\n  FROM demo.insider_sentiment\n  WHERE symbol = '{{ $('Stock') }}'\n    AND make_date(year::int, month::int, 1) >= ('{{ $('SQL Date Planner').item.start_date }}'::date - interval '24 months')\n  GROUP BY symbol, make_date(year::int, month::int, 1)\n),\ntx AS (\n  SELECT\n    symbol,\n    date_trunc('month', \"transactionDate\"::date)::date AS month_start,\n    COUNT(*) AS tx_count,\n    SUM(COALESCE(change, 0)) AS tx_net_shares,\n    SUM(ABS(COALESCE(change, 0) * COALESCE(\"transactionPrice\", 0))) AS tx_abs_notional,\n    SUM(COALESCE(change, 0) * COALESCE(\"transactionPrice\", 0)) AS tx_net_notional,\n    COUNT(*) FILTER (WHERE \"transactionCode\" = 'S') AS sell_count,\n    COUNT(*) FILTER (WHERE \"transactionCode\" = 'P') AS buy_count\n  FROM demo.insider_transactions\n  WHERE symbol = '{{ $('Stock') }}'\n    AND \"transactionDate\"::date >= ('{{ $('SQL Date Planner').item.start_date }}'::date - interval '24 months')\n  GROUP BY symbol, date_trunc('month', \"transactionDate\"::date)::date\n),\njoined AS (\n  SELECT\n    COALESCE(s.symbol, t.symbol) AS symbol,\n    COALESCE(s.month_start, t.month_start) AS month_start,\n    s.sentiment_net_change,\n    s.sentiment_avg_mspr,\n    s.sentiment_samples,\n    t.tx_count,\n    t.tx_net_shares,\n    t.tx_abs_notional,\n    t.tx_net_notional,\n    t.buy_count,\n    t.sell_count\n  FROM sentiment s\n  FULL OUTER JOIN tx t\n    ON s.symbol = t.symbol\n   AND s.month_start = t.month_start\n)\nSELECT\n  *,\n  AVG(sentiment_avg_mspr) OVER (\n    ORDER BY month_start\n    ROWS BETWEEN 2 PRECEDING AND CURRENT ROW\n  ) AS sentiment_mspr_3m_avg,\n  SUM(COALESCE(tx_net_notional, 0)) OVER (\n    ORDER BY month_start\n    ROWS BETWEEN 2 PRECEDING AND CURRENT ROW\n  ) AS tx_net_notional_3m\nFROM joined\nORDER BY month_start DESC\nLIMIT 10;",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
-      "position": [
-        -528,
+        -400,
         -144
       ],
-      "id": "41b3f245-cca0-471f-acb8-4cd4eb8039b2",
-      "name": "Insider Query"
+      "name": "SQL Date Planner",
+      "id": "7a13927a-0956-46a0-8abc-b4e6d1ed89b5",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"structural-outputs\": [{\"name\": \"start_date\", \"type\": \"datetime\", \"min\": \"2023-01-01\", \"max\": \"2025-12-31\"}],\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH bars AS (\n  SELECT\n    symbol,\n    timestamp,\n    open,\n    high,\n    low,\n    close,\n    volume\n  FROM demo.market_bars\n  WHERE symbol = '{{ $('Stock') }}'\n    AND timestamp >= '{{ $('SQL Date Planner').item.start_date }}'::timestamp\n  ORDER BY timestamp DESC\n  LIMIT 3000\n),\nhourly AS (\n  SELECT\n    symbol,\n    date_trunc('hour', timestamp) AS time_bucket,\n    (ARRAY_AGG(open ORDER BY timestamp ASC))[1] AS bucket_open,\n    (ARRAY_AGG(close ORDER BY timestamp DESC))[1] AS bucket_close,\n    MAX(high) AS bucket_high,\n    MIN(low) AS bucket_low,\n    SUM(volume) AS bucket_volume\n  FROM bars\n  GROUP BY symbol, date_trunc('hour', timestamp)\n),\nranked AS (\n  SELECT\n    *,\n    LAG(bucket_close) OVER (ORDER BY time_bucket) AS prev_close\n  FROM hourly\n),\nmetrics AS (\n  SELECT\n    symbol,\n    metric::jsonb AS m\n  FROM demo.market_metrics\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY version DESC\n  LIMIT 1\n)\nSELECT\n  r.symbol,\n  r.time_bucket,\n  r.bucket_open,\n  r.bucket_close,\n  r.bucket_high,\n  r.bucket_low,\n  r.bucket_volume,\n  CASE\n    WHEN r.prev_close IS NULL OR r.prev_close = 0 THEN NULL\n    ELSE (r.bucket_close / r.prev_close) - 1\n  END AS bucket_return,\n  mx.m ->> '52WeekHigh' AS week52_high,\n  mx.m ->> '52WeekHighDate' AS week52_high_date,\n  mx.m ->> '52WeekLow' AS week52_low,\n  mx.m ->> '52WeekLowDate' AS week52_low_date,\n  mx.m ->> 'yearToDatePriceReturnDaily' AS ytd_return_pct,\n  mx.m ->> '13WeekPriceReturnDaily' AS quarter_return_pct,\n  mx.m ->> '5DayPriceReturnDaily' AS five_day_return_pct,\n  mx.m ->> 'beta' AS beta,\n  mx.m ->> 'marketCapitalization' AS market_cap_m,\n  mx.m ->> 'peTTM' AS pe_ttm,\n  mx.m ->> 'pbQuarterly' AS pb_quarterly,\n  mx.m ->> 'revenueGrowthTTMYoy' AS revenue_growth_ttm_yoy_pct,\n  mx.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm_yoy_pct,\n  mx.m ->> 'operatingMarginTTM' AS operating_margin_ttm_pct,\n  mx.m ->> 'netProfitMarginTTM' AS net_profit_margin_ttm_pct\nFROM ranked r\nLEFT JOIN metrics mx\n  ON mx.symbol = r.symbol\nORDER BY r.time_bucket DESC\nLIMIT 10;",
+        "query": "WITH profile AS (\n  SELECT symbol, \"companyName\", sector, industry, \"marketCap\", beta\n  FROM demo.instrument_profile\n  WHERE symbol = '{{ $('Stock') }}'\n  LIMIT 1\n),\nincome_recent AS (\n  SELECT\n    symbol,\n    AVG(revenue) AS avg_revenue,\n    AVG(\"netIncome\") AS avg_net_income,\n    AVG(eps) AS avg_eps,\n    MAX(date::date)::text AS latest_report\n  FROM demo.financial_income_statement\n  WHERE symbol = '{{ $('Stock') }}'\n    AND date::date >= '{{ $('SQL Date Planner').item.start_date }}'::date\n  GROUP BY symbol\n)\nSELECT\n  p.symbol,\n  p.\"companyName\" AS company_name,\n  p.sector,\n  p.industry,\n  p.\"marketCap\" AS market_cap,\n  p.beta,\n  COALESCE(i.avg_revenue, 0) AS avg_revenue,\n  COALESCE(i.avg_net_income, 0) AS avg_net_income,\n  COALESCE(i.avg_eps, 0) AS avg_eps,\n  i.latest_report\nFROM profile p\nLEFT JOIN income_recent i ON i.symbol = p.symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        -528,
-        0
+        -80,
+        -240
       ],
-      "id": "35c8ad17-a47b-4842-afaa-a5ad2446b093",
-      "name": "Market Query"
+      "id": "19778ee1-7ab5-4909-aa3c-08caf0b0379f",
+      "name": "Fundamentals Query",
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH scoped_news AS (\n  SELECT\n    symbol,\n    id,\n    title,\n    \"publishedDate\",\n    publisher,\n    source,\n    category,\n    path,\n    LEFT(COALESCE(summary, text, headline), 1200) AS synopsis\n  FROM demo.news_metadata\n  WHERE symbol = '{{ $('Stock') }}'\n    AND \"publishedDate\" IS NOT NULL\n    AND path IS NOT NULL\n    AND path <> ''\n),\nranked AS (\n  SELECT\n    *,\n    ROW_NUMBER() OVER (\n      PARTITION BY COALESCE(NULLIF(category, ''), 'uncategorized')\n      ORDER BY \"publishedDate\"::timestamp DESC, id\n    ) AS category_rank,\n    ROW_NUMBER() OVER (\n      ORDER BY \"publishedDate\"::timestamp DESC, id\n    ) AS recency_rank\n  FROM scoped_news\n)\nSELECT\n  symbol,\n  id,\n  title,\n  \"publishedDate\",\n  publisher,\n  source,\n  category,\n  path,\n  synopsis,\n  synopsis AS summary,\n  recency_rank,\n  category_rank\nFROM ranked\nWHERE category_rank <= 10\nORDER BY \"publishedDate\"::timestamp DESC, id\nLIMIT 10;",
+        "query": "WITH bars_recent AS (\n  SELECT\n    symbol,\n    MAX(high) AS recent_high,\n    MIN(low) AS recent_low,\n    AVG(close) AS recent_close_avg,\n    SUM(volume) AS total_volume,\n    MAX(timestamp)::text AS latest_ts\n  FROM demo.ohlc_10m\n  WHERE symbol = '{{ $('Stock') }}'\n    AND timestamp >= '{{ $('SQL Date Planner').item.start_date }}'::timestamp\n  GROUP BY symbol\n),\nmetrics AS (\n  SELECT symbol, metric::jsonb AS m\n  FROM demo.market_metrics\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY version DESC\n  LIMIT 1\n)\nSELECT\n  b.symbol,\n  b.latest_ts,\n  b.recent_high,\n  b.recent_low,\n  b.recent_close_avg,\n  b.total_volume,\n  m.m ->> '52WeekHigh'     AS week52_high,\n  m.m ->> '52WeekLow'      AS week52_low,\n  m.m ->> 'beta'           AS beta,\n  m.m ->> 'peTTM'          AS pe_ttm,\n  m.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm\nFROM bars_recent b\nLEFT JOIN metrics m ON m.symbol = b.symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        -720,
-        160
+        -80,
+        -80
       ],
-      "id": "1b0b017f-34a1-4c2a-b2a3-76119a44477a",
-      "name": "News Query"
+      "id": "a66e29b8-6adc-44c0-b70b-9de07a5579da",
+      "name": "Market Query",
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
-        "resource": "folder",
-        "operation": "getAll",
-        "bucketName": "example-data/news/images",
-        "limit": null,
-        "options": {
-          "folderKey": "=${{ $('News Query').item.id }}.png"
-        }
+        "operation": "executeQuery",
+        "query": "SELECT\n  symbol,\n  STRING_AGG(title, ' | ' ORDER BY \"publishedDate\" DESC) AS headlines,\n  STRING_AGG(\n    LEFT(COALESCE(summary, text, ''), 200),\n    ' || ' ORDER BY \"publishedDate\" DESC\n  ) AS synopses,\n  COUNT(*) AS news_count\nFROM (\n  SELECT *\n  FROM demo.news_metadata\n  WHERE symbol = '{{ $('Stock') }}'\n    AND id IS NOT NULL\n  ORDER BY \"publishedDate\" DESC\n  LIMIT 5\n) recent\nGROUP BY symbol;",
+        "options": {}
       },
-      "type": "n8n-nodes-base.s3",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
       "position": [
-        -576,
-        160
+        -80,
+        80
       ],
-      "id": "46b2f328-1897-41d7-9048-bd49962199ea",
-      "name": "News Artifact Query"
+      "id": "fba657c0-6a21-4add-a129-0a79799dc6b3",
+      "name": "News Query",
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Summarize the following retrieved news item in two concise sentences focused on investment impact for {{ $('Stock') }}.\nTitle: {{ $('News Query').item.title }}\nPublished: {{ $('News Query').item.publishedDate }}\nCategory: {{ $('News Query').item.category }}\nSynopsis: {{ $('News Query').item.synopsis }}\nArtifact: {{ $('News Artifact Query') }}",
+        "text": "=Argue the BUY case for {{ $('Stock') }}. Cite specific figures from the data below.\n\n```table\ncompany_name: {{ $('Fundamentals Query').item.company_name }}\navg_revenue: {{ $('Fundamentals Query').item.avg_revenue }}\navg_net_income: {{ $('Fundamentals Query').item.avg_net_income }}\navg_eps: {{ $('Fundamentals Query').item.avg_eps }}\nrecent_close_avg: {{ $('Market Query').item.recent_close_avg }}\nweek52_high: {{ $('Market Query').item.week52_high }}\nweek52_low: {{ $('Market Query').item.week52_low }}\npe_ttm: {{ $('Market Query').item.pe_ttm }}\nheadlines: {{ $('News Query').item.headlines }}\n```\n\nReturn thesis (paragraph), confidence (0-1), catalysts (comma-separated).",
         "messages": {
           "messageValues": [
             {
-              "message": "You are a concise data summarization assistant."
+              "message": "You are the bull analyst. Argue the BUY case using the data aggregated below. Cite specific figures. Address obvious bear counters preemptively."
             }
           ]
         },
@@ -628,13 +119,151 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        -448,
-        160
+        144,
+        -176
       ],
-      "name": "News Per-row Summary",
-      "id": "cf490bb0-37a5-4d9a-932a-7009d42eda2c",
+      "name": "Bull Researcher",
+      "id": "49571947-9555-47ad-8aa7-8069b765099d",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"image-understanding\",\n  \"image-input\": \"{{ $('News Artifact Query') }}\"\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Argue the SELL case for {{ $('Stock') }}. Cite specific figures from the data below.\n\n```table\ncompany_name: {{ $('Fundamentals Query').item.company_name }}\navg_revenue: {{ $('Fundamentals Query').item.avg_revenue }}\navg_net_income: {{ $('Fundamentals Query').item.avg_net_income }}\navg_eps: {{ $('Fundamentals Query').item.avg_eps }}\nrecent_close_avg: {{ $('Market Query').item.recent_close_avg }}\nweek52_high: {{ $('Market Query').item.week52_high }}\nweek52_low: {{ $('Market Query').item.week52_low }}\npe_ttm: {{ $('Market Query').item.pe_ttm }}\nheadlines: {{ $('News Query').item.headlines }}\n```\n\nReturn thesis (paragraph), confidence (0-1), risks (comma-separated).",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the bear analyst. Argue the SELL case using the data aggregated below. Cite specific figures. Address obvious bull counters preemptively."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        144,
+        16
+      ],
+      "name": "Bear Researcher",
+      "id": "a2c8a82b-4751-4655-b635-d0c3cb8ac1c0",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Refine the BUY case for {{ $('Stock') }}. Rebut the bear's strongest points and reinforce the thesis.\n\n```table\nbull_thesis: {{ $('Bull Researcher').item.thesis }}\nbull_catalysts: {{ $('Bull Researcher').item.catalysts }}\nbear_thesis: {{ $('Bear Researcher').item.thesis }}\nbear_risks: {{ $('Bear Researcher').item.risks }}\n```\n\nReturn thesis (paragraph), confidence (0-1), catalysts (comma-separated).",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the bull analyst answering the bear in round 2. Sharpen your case."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        416,
+        -176
+      ],
+      "name": "Bull Rebuttal",
+      "id": "1e1012b1-7890-4108-998c-6e5c11f0b925",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Refine the SELL case for {{ $('Stock') }}. Rebut the bull's strongest points and reinforce the risks.\n\n```table\nbull_thesis: {{ $('Bull Researcher').item.thesis }}\nbull_catalysts: {{ $('Bull Researcher').item.catalysts }}\nbear_thesis: {{ $('Bear Researcher').item.thesis }}\nbear_risks: {{ $('Bear Researcher').item.risks }}\n```\n\nReturn thesis (paragraph), confidence (0-1), risks (comma-separated).",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the bear analyst answering the bull in round 2. Sharpen your case."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        416,
+        16
+      ],
+      "name": "Bear Rebuttal",
+      "id": "49da1491-351a-4915-b80a-0540fad05a45",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Enumerate the discrete risks raised by the bull and bear cases for {{ $('Stock') }}.\n\n```table\nbull_thesis: {{ $('Bull Rebuttal').item.thesis }}\nbull_catalysts: {{ $('Bull Rebuttal').item.catalysts }}\nbear_thesis: {{ $('Bear Rebuttal').item.thesis }}\nbear_risks: {{ $('Bear Rebuttal').item.risks }}\n```\n\nReturn risks (comma-separated list) and severity (low|medium|high).",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the risk identifier. List concrete, distinct risks; do not synthesize yet."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        720,
+        -80
+      ],
+      "name": "Risk Identifier",
+      "id": "2f7cf953-9e9c-4cce-9532-8c3590a512f3",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Weigh the round-2 bull/bear cases and the identified risks for {{ $('Stock') }} below.\n\n```table\nbull_thesis: {{ $('Bull Rebuttal').item.thesis }}\nbull_confidence: {{ $('Bull Rebuttal').item.confidence }}\nbear_thesis: {{ $('Bear Rebuttal').item.thesis }}\nbear_confidence: {{ $('Bear Rebuttal').item.confidence }}\nrisks: {{ $('Risk Identifier').item.risks }}\nseverity: {{ $('Risk Identifier').item.severity }}\n```\n\nReturn balanced_view (paragraph), expected_value (number; positive = lean BUY, negative = lean SELL), guardrails (comma-separated stop/hedge conditions).",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the head of risk. Weigh the round-2 bull/bear cases and the identified risks."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        1024,
+        -80
+      ],
+      "name": "Risk Synthesis",
+      "id": "f24c1264-c865-4160-a125-95fcde61ccfc",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Read the head-of-risk synthesis for {{ $('Stock') }} below.\n\n```table\nbalanced_view: {{ $('Risk Synthesis').item.balanced_view }}\nexpected_value: {{ $('Risk Synthesis').item.expected_value }}\nguardrails: {{ $('Risk Synthesis').item.guardrails }}\n```\n\nOutput verdict (BUY|SELL|HOLD) and a rationale of at most two sentences.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are the fund manager. Output the decisive call. Do not default to HOLD unless strongly justified by the synthesis."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        1312,
+        -80
+      ],
+      "name": "Fund Manager Verdict",
+      "id": "88760a6c-cc8e-4fe8-9a93-1c0ddaaf150b",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": true\n}"
     }
   ],
   "connections": {
@@ -645,20 +274,9 @@
             "node": "SQL Date Planner",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "SQL Date Planner": {
-      "main": [
-        [
-          {
-            "node": "Fundamentals Query",
-            "type": "main",
-            "index": 0
           },
           {
-            "node": "Insider Query",
+            "node": "Fundamentals Query",
             "type": "main",
             "index": 0
           },
@@ -675,417 +293,62 @@
         ]
       ]
     },
-    "Data Retrieval LLM": {
+    "Qwen Text Model": {
       "ai_languageModel": [
         [
           {
             "node": "SQL Date Planner",
             "type": "ai_languageModel",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "News VLM": {
-      "ai_languageModel": [
-        [
+          },
           {
-            "node": "News Per-row Summary",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Analyst LLM": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "Fundamentals Report",
+            "node": "Bull Researcher",
             "type": "ai_languageModel",
             "index": 0
           },
           {
-            "node": "Market Report",
+            "node": "Bear Researcher",
             "type": "ai_languageModel",
             "index": 0
           },
           {
-            "node": "News Report",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Researcher LLM": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "Bull Researcher R1",
+            "node": "Bull Rebuttal",
             "type": "ai_languageModel",
             "index": 0
           },
           {
-            "node": "Bear Researcher R1",
+            "node": "Bear Rebuttal",
             "type": "ai_languageModel",
             "index": 0
           },
           {
-            "node": "Bull Researcher R2",
+            "node": "Risk Identifier",
             "type": "ai_languageModel",
             "index": 0
           },
           {
-            "node": "Bear Researcher R2",
+            "node": "Risk Synthesis",
             "type": "ai_languageModel",
             "index": 0
           },
           {
-            "node": "Bull Researcher R3",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Bear Researcher R3",
+            "node": "Fund Manager Verdict",
             "type": "ai_languageModel",
             "index": 0
           }
         ]
       ]
     },
-    "Risk LLM": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "Risky Analyst",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Safe Analyst",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Neutral Analyst",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Manager LLM": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "Research Manager",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Risk Judge",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Trader Decision",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Fund Manager Final",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Fundamentals Report": {
+    "SQL Date Planner": {
       "main": [
         [
           {
-            "node": "Bull Researcher R1",
+            "node": "Fundamentals Query",
             "type": "main",
             "index": 0
           },
           {
-            "node": "Bear Researcher R1",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Risky Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Neutral Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Safe Analyst",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Market Report": {
-      "main": [
-        [
-          {
-            "node": "Bull Researcher R1",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Bear Researcher R1",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Risky Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Safe Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Neutral Analyst",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "News Report": {
-      "main": [
-        [
-          {
-            "node": "Bull Researcher R1",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Bear Researcher R1",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Risky Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Neutral Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Safe Analyst",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Bull Researcher R1": {
-      "main": [
-        [
-          {
-            "node": "Bear Researcher R2",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Debate History",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Bull Researcher R2",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Bear Researcher R1": {
-      "main": [
-        [
-          {
-            "node": "Bull Researcher R2",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Debate History",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Bear Researcher R2",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Bull Researcher R2": {
-      "main": [
-        [
-          {
-            "node": "Bear Researcher R3",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Debate History",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Bull Researcher R3",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Bear Researcher R2": {
-      "main": [
-        [
-          {
-            "node": "Bull Researcher R3",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Debate History",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Bear Researcher R3",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Bull Researcher R3": {
-      "main": [
-        [
-          {
-            "node": "Debate History",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Bear Researcher R3": {
-      "main": [
-        [
-          {
-            "node": "Debate History",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Debate History": {
-      "main": [
-        [
-          {
-            "node": "Research Manager",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Research Manager": {
-      "main": [
-        [
-          {
-            "node": "Trader Decision",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Risky Analyst": {
-      "main": [
-        [
-          {
-            "node": "Risk Judge",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Safe Analyst": {
-      "main": [
-        [
-          {
-            "node": "Risk Judge",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Neutral Analyst": {
-      "main": [
-        [
-          {
-            "node": "Risk Judge",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Risk Judge": {
-      "main": [
-        [
-          {
-            "node": "Fund Manager Final",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Trader Decision": {
-      "main": [
-        [
-          {
-            "node": "Risky Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Safe Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Neutral Analyst",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Fund Manager Final",
+            "node": "Market Query",
             "type": "main",
             "index": 0
           }
@@ -1096,18 +359,12 @@
       "main": [
         [
           {
-            "node": "Fundamentals Report",
+            "node": "Bull Researcher",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Insider Query": {
-      "main": [
-        [
+          },
           {
-            "node": "Fundamentals Report",
+            "node": "Bear Researcher",
             "type": "main",
             "index": 0
           }
@@ -1118,7 +375,12 @@
       "main": [
         [
           {
-            "node": "Market Report",
+            "node": "Bull Researcher",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bear Researcher",
             "type": "main",
             "index": 0
           }
@@ -1129,39 +391,98 @@
       "main": [
         [
           {
-            "node": "News Artifact Query",
+            "node": "Bull Researcher",
             "type": "main",
             "index": 0
           },
           {
-            "node": "News Per-row Summary",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "News Report",
+            "node": "Bear Researcher",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "News Artifact Query": {
+    "Bull Researcher": {
       "main": [
         [
           {
-            "node": "News Per-row Summary",
+            "node": "Bull Rebuttal",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bear Rebuttal",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "News Per-row Summary": {
+    "Bear Researcher": {
       "main": [
         [
           {
-            "node": "News Report",
+            "node": "Bull Rebuttal",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Bear Rebuttal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bull Rebuttal": {
+      "main": [
+        [
+          {
+            "node": "Risk Identifier",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Risk Synthesis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bear Rebuttal": {
+      "main": [
+        [
+          {
+            "node": "Risk Identifier",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Risk Synthesis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Identifier": {
+      "main": [
+        [
+          {
+            "node": "Risk Synthesis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Synthesis": {
+      "main": [
+        [
+          {
+            "node": "Fund Manager Verdict",
             "type": "main",
             "index": 0
           }
@@ -1170,5 +491,8 @@
     }
   },
   "pinData": {},
-  "meta": {}
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1b7cf574963deef35232265ab637f8b8cdf243544298f8b5a8b4c95543112b92"
+  }
 }
