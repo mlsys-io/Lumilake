@@ -17,10 +17,7 @@ LogLevel = int | str
 
 _default_logger: Logger | None = None
 
-# Request-scoped trace id; set by the server middleware (and any other entry
-# point that wants its log lines tagged) and read by ``TraceIdFilter`` below.
-# Defaults to an empty string so log lines outside a request still format
-# cleanly.
+# Request-scoped trace id read by ``TraceIdFilter`` and ``JsonFormatter``.
 trace_id_var: ContextVar[str] = ContextVar("lumilake_trace_id", default="")
 
 
@@ -34,13 +31,6 @@ def set_trace_id(trace_id: str | None) -> Any:
 
 
 class TraceIdFilter(logging.Filter):
-    """Inject the current ``trace_id`` context var into every ``LogRecord``.
-
-    Attached at the handler level. ``record.trace_id`` is always set (empty
-    string when no trace is active) so format strings and structured
-    formatters can reference it unconditionally.
-    """
-
     def filter(self, record: logging.LogRecord) -> bool:
         record.trace_id = trace_id_var.get()
         return True
@@ -75,15 +65,7 @@ class ColorFormatter(logging.Formatter):
 
 
 class JsonFormatter(logging.Formatter):
-    """Structured JSON formatter for the server container.
-
-    Emits one JSON object per record with stable top-level keys
-    (``time``, ``level``, ``logger``, ``message``, ``trace_id``) and
-    flattens any extra fields the caller passed via ``extra={...}``. Used
-    when ``LUMILAKE_LOG_JSON=1`` (set by the server entrypoint) so log
-    aggregators can index records out of the box. Pytest / local dev use
-    ``ColorFormatter`` so output stays human-readable.
-    """
+    """Structured JSON formatter with stable top-level keys plus ``extra`` fields."""
 
     _RESERVED: frozenset[str] = frozenset(
         {
@@ -110,20 +92,20 @@ class JsonFormatter(logging.Formatter):
             "message",
             "asctime",
             "taskName",
+            "trace_id",
         }
     )
 
     def format(self, record: logging.LogRecord) -> str:
-        trace_id = getattr(record, "trace_id", "") or ""
         payload: dict[str, Any] = {
             "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
-            "trace_id": trace_id,
+            "trace_id": trace_id_var.get(),
         }
         for key, value in record.__dict__.items():
-            if key in self._RESERVED or key == "trace_id":
+            if key in self._RESERVED:
                 continue
             try:
                 json.dumps(value)
@@ -138,12 +120,6 @@ class JsonFormatter(logging.Formatter):
 
 
 def _use_json_logging() -> bool:
-    """``LUMILAKE_LOG_JSON=1`` opts the default logger into JSON output.
-
-    Set by the server container entrypoint; unset (or ``0``/``false``) for
-    pytest and local dev so existing tests / interactive logs stay
-    human-readable.
-    """
     raw = os.environ.get("LUMILAKE_LOG_JSON", "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 

@@ -10,15 +10,7 @@ REQUEST_ID_HEADER = "X-Request-ID"
 
 
 class TraceIdMiddleware(BaseHTTPMiddleware):
-    """Resolve a request-scoped trace id and bind it to the logging context.
-
-    The id comes from the inbound ``X-Request-ID`` header when present, or a
-    freshly minted ``req-<uid>`` token otherwise. It is stored on
-    ``request.state.trace_id`` for handlers and on the ``trace_id_var``
-    ``ContextVar`` so every log record under the request carries it through
-    ``lumilake.log.TraceIdFilter``. The same value is echoed back in the
-    ``X-Request-ID`` response header.
-    """
+    """Bind a per-request trace id to the log context and echo it on the response."""
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         incoming = request.headers.get(REQUEST_ID_HEADER, "").strip()

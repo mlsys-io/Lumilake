@@ -387,6 +387,17 @@ class JobInputsResponse(BaseModel):
     data: JobInputsPayload = Field(description="Inputs payload.")
 
 
+class EmptyInputsErrorDetail(BaseModel):
+    message: str
+    parsed_input_names: list[str]
+
+
+class JobAlreadyFinishedDetail(BaseModel):
+    message: str
+    status: str
+    job_id: str
+
+
 def _format_validation_errors(exc: ValidationError) -> str:
     """Collapse Pydantic validation errors into a readable message."""
     parts: list[str] = []
@@ -435,21 +446,6 @@ def _validate_inputs_shape(data: Any) -> None:
                         f"inputs['{key}'][{idx}]: expected a string, "
                         f"got {type(item).__name__} ({item!r})"
                     )
-
-
-def _parsed_input_names(data: Any) -> list[str]:
-    """Return the input names the caller actually sent for this entry.
-
-    Used in empty-inputs rejection messages so the caller can spot a
-    malformed ``--input`` flag (e.g. a typo dropping ``inputs`` to ``input``,
-    or every value resolving to ``[]``).
-    """
-    if not isinstance(data, dict):
-        return []
-    inputs = data.get("inputs")
-    if not isinstance(inputs, dict):
-        return []
-    return [str(name) for name in inputs]
 
 
 class JobSubmitItem(BaseModel):
@@ -1150,9 +1146,6 @@ async def _run_job(
     compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
 ) -> None:
-    # Bind the background task's log records to this job's trace id; the
-    # submit endpoint's request-scope trace id is not the right key once
-    # we've returned to the caller.
     trace_id_var.set(job_id)
     server = LumilakeServer.get_started_instance()
 
@@ -1484,13 +1477,12 @@ async def preview_job(
             )
 
         if not inputs:
-            parsed_names = sorted(entry.inputs.keys())
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "message": (f"inputs or input_locations required for index {idx}"),
-                    "parsed_input_names": parsed_names,
-                },
+                detail=EmptyInputsErrorDetail(
+                    message=f"inputs or input_locations required for index {idx}",
+                    parsed_input_names=sorted(entry.inputs.keys()),
+                ).model_dump(),
             )
 
         try:
@@ -1749,13 +1741,12 @@ async def submit_job(
                 hook_logger=hook_logger,
             )
         if not inputs:
-            parsed_names = sorted(entry.inputs.keys())
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "message": (f"inputs or input_locations required for index {idx}"),
-                    "parsed_input_names": parsed_names,
-                },
+                detail=EmptyInputsErrorDetail(
+                    message=f"inputs or input_locations required for index {idx}",
+                    parsed_input_names=sorted(entry.inputs.keys()),
+                ).model_dump(),
             )
 
         try:
@@ -1992,11 +1983,11 @@ async def cancel_job(
         if record.status in {"completed", "failed", "cancelled"}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "message": "job already finished",
-                    "status": record.status,
-                    "job_id": job_id,
-                },
+                detail=JobAlreadyFinishedDetail(
+                    message="job already finished",
+                    status=record.status,
+                    job_id=job_id,
+                ).model_dump(),
             )
         record.status = "cancelled"
         if not record.error:
