@@ -47,5 +47,21 @@ jobs:
           ENVEOF
           sed -i 's/^[[:space:]]*//' .env
 
-      - name: Run tests
-        run: uv run pytest tests/ --ignore=tests/server -v
+      - name: Run tests with coverage
+        run: |
+          uv run pytest tests/ -v \
+            --cov=lumilake \
+            --cov=lumilake_cli \
+            --cov=lumilake_deploy \
+            --cov=lumilake_hook \
+            --cov=lumilake_server \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4  # v5.0.0
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn

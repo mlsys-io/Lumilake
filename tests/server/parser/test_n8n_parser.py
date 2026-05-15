@@ -49,6 +49,8 @@ def test_parse_n8n_templates(template_path: Path):
         envs.DATABASE_URL = "sqlite://"
     if envs.S3_URL is None:
         envs.S3_URL = "s3://dummy"
+    if not envs.LUMID_DATA_URL:
+        envs.LUMID_DATA_URL = "http://lumid-data"
 
     workflow = _load_template(template_path)
     inputs = _build_inputs(workflow)
