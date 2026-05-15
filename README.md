@@ -76,7 +76,9 @@ lumilake job result <job_id>
 ```
 
 Edit `config.model` at the bottom of the YAML to match a model your
-FlowMesh workers actually serve.
+FlowMesh workers actually serve. If the job stays in `running`, run
+`lumilake worker list` to see which models are available and edit
+`config.model` accordingly.
 
 ### Real workflows
 

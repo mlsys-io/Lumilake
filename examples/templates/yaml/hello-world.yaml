@@ -13,6 +13,9 @@ name: hello-world
 #   - A FlowMesh worker that can serve the model named in ``config.model``
 #     below. Swap ``Qwen/Qwen3-8B`` for whatever your stack actually has.
 #
+# If the job stays in ``running``, run ``lumilake worker list`` to see
+# which models are available and edit the ``config.model`` field below.
+#
 # Submit:
 #   lumilake job submit examples/templates/yaml/hello-world.yaml \
 #       --format yaml --input 'Name=world' --output-prefix demo/hello-world

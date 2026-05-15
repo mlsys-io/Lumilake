@@ -45,7 +45,7 @@ Both clients accept `base_url=` directly or load the server URL with `.from_conf
 The SDK and CLI share a small TOML file that records the server URL:
 
 ```
-~/.config/lumilake/config.toml
+~/.lumilake/config.toml
 ```
 
 Schema:
@@ -56,13 +56,12 @@ base_url = "http://127.0.0.1:9000"
 
 ### What writes it
 
-`lumilake deploy up` writes the file using the host/port resolved from
-`.env` (`LUMILAKE_SERVER_HOST` / `LUMILAKE_SERVER_PORT`). A successful
-`deploy up` is therefore enough to make `LumilakeClient.from_config()`
-and every `lumilake <cmd>` invocation work — no separate login step.
+`lumilake login <url>` writes the file with the supplied base URL. Run
+it once after `lumilake deploy up` to make `LumilakeClient.from_config()`
+and every `lumilake <cmd>` invocation pick up the server URL.
 
-> The `deploy up` config write and the removal of `lumilake login` are
-> landing under a separate PR.
+> A separate PR will move the config write into `lumilake deploy up`
+> so the login step is no longer required.
 
 ### How `from_config()` resolves
 
@@ -71,11 +70,17 @@ base URL in this priority order:
 
 1. `base_url=` argument passed to the constructor.
 2. `LUMILAKE_BASE_URL` environment variable.
-3. `~/.config/lumilake/config.toml`.
+3. `~/.lumilake/config.toml`.
 
-If none of the three yields a URL, the call raises `RuntimeError` and
-points the operator at `lumilake deploy up`. `from_config(path=...)`
-accepts a custom path for tests or non-default installs.
+If none of the three yields a URL, the call raises `RuntimeError` with
+the message:
+
+```
+no base_url provided and no saved config. Pass base_url= explicitly, set LUMILAKE_BASE_URL, or run `lumilake login`.
+```
+
+`from_config(path=...)` accepts a custom path for tests or non-default
+installs.
 
 The CLI uses the same resolution order through `client_from_config()`,
 so the two surfaces always agree on the server URL.

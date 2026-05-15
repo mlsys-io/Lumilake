@@ -56,7 +56,8 @@ simple_plugin/
 ├── simple_registrar.py
 ├── simple_submission.py
 ├── simple_usage.py
-└── simple_optimizer.py  # optimizer registration helper
+├── simple_optimizer.py  # optimizer registration helper
+└── state.py             # shared in-memory state for the demo hooks
 ```
 
 `__init__.py` returns the bundle:
