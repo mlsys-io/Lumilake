@@ -120,11 +120,11 @@ def _confirm_overwrite(target: Path, *, force: bool, new_content: str) -> bool:
     Shows a preview (or diff vs an existing file) before prompting on
     overwrite. Brand-new writes pass through without prompting.
     """
-    if not target.exists() or force:
-        if target.exists():
-            _preview_write(target, new_content)
+    if force:
         return True
     _preview_write(target, new_content)
+    if not target.exists():
+        return True
     if typer.confirm(f"{target} already exists. Overwrite?", default=False):
         return True
     logging.info(f"Keeping existing {target}.")

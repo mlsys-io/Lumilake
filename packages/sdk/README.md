@@ -48,7 +48,7 @@ async with AsyncLumilakeClient.from_config() as client:
     await client.deploy.up()
 ```
 
-Both clients accept `base_url=` directly, or pull it from `~/.lumilake/config.toml` via `.from_config()`. Resolution order: explicit arg > `LUMILAKE_BASE_URL` env > saved config.
+Constructing either client without `.from_config()` resolves the server URL in this order: explicit `base_url=`, `LUMILAKE_BASE_URL`, then `~/.lumilake/config.toml`. `.from_config(path=...)` reads a specific TOML file directly.
 
 ## CLI and SDK surfaces
 

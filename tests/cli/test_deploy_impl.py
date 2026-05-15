@@ -202,6 +202,26 @@ def test_cli_init_uses_packaged_template(tmp_path: Path) -> None:
     assert "LUMILAKE_IMAGE_TAG" in written
 
 
+def test_cli_init_previews_new_env_without_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+
+    def _preview(t: Path, content: str) -> None:
+        events.append(f"preview:{t.name}")
+
+    def _confirm(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("new env files should not prompt")
+
+    monkeypatch.setattr(deploy_cmd, "_preview_write", _preview)
+    monkeypatch.setattr(deploy_cmd.typer, "confirm", _confirm)
+
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)
+
+    assert events == ["preview:.env"]
+    assert (tmp_path / ".env").is_file()
+
+
 def test_cli_init_previews_before_overwrite_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

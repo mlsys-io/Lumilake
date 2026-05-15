@@ -3,6 +3,7 @@
 Holds the server ``base_url`` written by ``lumilake deploy up``.
 """
 
+import json
 import logging
 import tomllib
 from dataclasses import dataclass
@@ -35,6 +36,6 @@ class LumilakeConfig:
     def save(self, path: Path | str | None = None) -> None:
         target = Path(path) if path else DEFAULT_CONFIG_PATH
         target.parent.mkdir(parents=True, exist_ok=True)
-        body = f'base_url = "{self.base_url}"\n'
+        body = f"base_url = {json.dumps(self.base_url)}\n"
         target.write_text(body, encoding="utf-8")
         logger.info("saved lumilake config to %s", target)
