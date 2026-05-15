@@ -61,12 +61,16 @@ Note: a real workflow run also requires running PostgreSQL and S3-compatible sto
 The repo ships a `hello-world.yaml` template — `FormatOp` →
 `LambdaOp` → `LLMChatOp` — that is the smallest copy-paste starting
 point for a Lumilake YAML workflow. Submit it once the stack is up and
-`S3_URL` points at reachable S3-compatible storage. For a local-only
-trial, start the bundled data plane first:
+`S3_URL` points at reachable S3-compatible storage. From a source
+checkout, start the bundled data plane first:
 
 ```bash
 docker compose -f scripts/dev/compose.data-plane.yml up -d
 ```
+
+PyPI installs do not include `scripts/dev/`; use your own reachable S3
+endpoint, or download the repo's data-plane compose file alongside the
+workflow template before running the local-only example.
 
 ```bash
 # From a source checkout:

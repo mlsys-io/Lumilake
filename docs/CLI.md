@@ -40,6 +40,12 @@ LUMILAKE_DEPLOY_DIR=~/lumilake-deploy lumilake deploy init
 
 The compose file and image are resolved from the installed `lumilake-deploy` package and GHCR; the deployment directory only needs to hold your `.env` files (and any local state docker compose creates).
 
+If another FlowMesh stack is already running on the host, resolve port
+collisions before `deploy up`. Common co-tenant defaults are FlowMesh
+HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
+`6380`; the bundled stack reads the override keys documented in
+`docs/ENV.md` from `.env.flowmesh`.
+
 | Command | Purpose |
 |---------|---------|
 | `lumilake deploy init [--flowmesh]` | Create `.env`; optionally create `.env.flowmesh`. |

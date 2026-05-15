@@ -56,12 +56,12 @@ base_url = "http://127.0.0.1:9000"
 
 ### What writes it
 
-`lumilake login <url>` writes the file with the supplied base URL. Run
-it once after `lumilake deploy up` to make `LumilakeClient.from_config()`
-and every `lumilake <cmd>` invocation pick up the server URL.
-
-> A separate PR will move the config write into `lumilake deploy up`
-> so the login step is no longer required.
+`lumilake login <url>` writes the file with the supplied base URL. On
+builds where `lumilake deploy up` also writes the local stack URL, it
+updates the same file. If the file is missing after bringing up a stack,
+run `lumilake login http://127.0.0.1:9000` once so
+`LumilakeClient.from_config()` and every `lumilake <cmd>` invocation can
+find the server.
 
 ### How `from_config()` resolves
 

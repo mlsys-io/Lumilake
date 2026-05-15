@@ -123,9 +123,19 @@ Picked up by the bundled FlowMesh deploy helpers.
 
 | Key | Purpose |
 |-----|---------|
+| `SERVER_HTTP_PORT` | FlowMesh HTTP API port in `.env.flowmesh`. Keep `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` in `.env` and `FLOWMESH_BASE_URL` in `.env.flowmesh` aligned with this port. |
+| `SERVER_GRPC_PORT` | FlowMesh gRPC port in `.env.flowmesh`. Change it when a co-tenant FlowMesh stack already owns `50051`. |
+| `REDIS_CONTROL_PORT` | FlowMesh control Redis port in `.env.flowmesh`. Change it when another stack already owns `6379`. |
+| `REDIS_TELEMETRY_PORT` | FlowMesh telemetry Redis port in `.env.flowmesh`. Change it when another stack already owns `6380`. |
+| `FLOWMESH_BASE_URL` | FlowMesh HTTP base URL consumed by FlowMesh workers; should point at `SERVER_HTTP_PORT`. |
 | `REDIS_TLS_DIR` | Directory holding Redis TLS certs. Empty disables TLS bind-mounts. |
 | `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs. Empty disables TLS. |
 | `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override. |
+
+`lumilake deploy init --flowmesh` writes `.env.flowmesh`. On hosts that
+also run another FlowMesh stack, check the common defaults before
+`deploy up`: HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis
+telemetry `6380`.
 
 ## SDK / CLI Client
 
