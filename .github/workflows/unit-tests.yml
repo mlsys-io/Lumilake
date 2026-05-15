@@ -65,3 +65,14 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: warn
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo "### Coverage"
+            echo
+            echo '```'
+            uv run coverage report
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
