@@ -56,6 +56,43 @@ lumilake deploy -C ~/lumilake-deploy up                 # bring the stack up via
 
 Note: a real workflow run also requires running PostgreSQL and S3-compatible storage; agent-style retrievals (`DataRetrievalOp` with `type: agent`) additionally require `LUMID_DATA_URL`. See `docs/ENV.md` for the env contract. If you don't have your own data plane, the repo ships a bundled Postgres + MinIO at `scripts/dev/compose.data-plane.yml` — see `docs/E2E_DEMO.md` for the full three-step demo flow (data plane → load demo data → run a workflow).
 
+### Hello world
+
+The repo ships a `hello-world.yaml` template — `FormatOp` →
+`LambdaOp` → `LLMChatOp` — that is the smallest copy-paste starting
+point for a Lumilake YAML workflow. Submit it once the stack is up and
+`S3_URL` points at reachable S3-compatible storage. From a source
+checkout, start the bundled data plane first:
+
+```bash
+docker compose -f scripts/dev/compose.data-plane.yml up -d
+```
+
+PyPI installs do not include `scripts/dev/`; use your own reachable S3
+endpoint, or download the repo's data-plane compose file alongside the
+workflow template before running the local-only example.
+
+```bash
+# From a source checkout:
+uv run lumilake job submit examples/templates/yaml/hello-world.yaml \
+    --format yaml --input 'Name=world' --output-prefix demo/hello-world
+
+# From a PyPI install (download the template alongside lumilake):
+curl -O https://raw.githubusercontent.com/mlsys-io/lumilake_OSS/main/examples/templates/yaml/hello-world.yaml
+lumilake job submit hello-world.yaml \
+    --format yaml --input 'Name=world' --output-prefix demo/hello-world
+lumilake job watch <job_id>
+lumilake job result <job_id>
+```
+
+The template uses `Qwen/Qwen3-8B`, which is the bundled text-demo model.
+You do not need to pre-populate or inspect `cached_models` before the
+first run; it can be empty until after a worker serves a job. Only edit
+`config.model` if your FlowMesh stack is configured for a different
+model or the job fails with a missing-model / worker-placement error.
+
+### Real workflows
+
 Submit and inspect a workflow. From a source checkout the example
 workflow file is at `examples/templates/yaml/trading-agent.yaml`;
 PyPI installs do not ship the templates, so pass an absolute path to a
@@ -103,6 +140,14 @@ Generate both Lumilake and bundled FlowMesh env files:
 lumilake deploy init --flowmesh
 ```
 
+If another FlowMesh stack is already running on the same host, check
+ports before `deploy up`. Common co-tenant FlowMesh defaults are HTTP
+`8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry `6380`.
+The bundled stack reads `SERVER_HTTP_PORT`, `SERVER_GRPC_PORT`,
+`REDIS_CONTROL_PORT`, and `REDIS_TELEMETRY_PORT` from `.env.flowmesh`;
+change them to free ports and keep `LUMILAKE_RUNTIME_ORCHESTRATOR_URL`
+in `.env` aligned with `SERVER_HTTP_PORT`.
+
 Common deployment commands:
 
 ```bash
@@ -116,7 +161,7 @@ lumilake deploy down
 lumilake deploy clean
 ```
 
-Use `deploy down` to stop services while keeping data volumes. Use `deploy clean` or `deploy reset` only when you want to remove local stack state.
+Use `deploy down` to stop services while keeping data volumes (non-destructive). Use `deploy clean` or `deploy reset` only when you want to remove local stack state; both delete every Lumilake-managed volume, and `reset` prompts for confirmation by default (`--yes` skips the prompt).
 
 ## Python SDK
 

@@ -34,6 +34,7 @@ Compute data plane (required for every direct SQL/S3 op):
 | `DATABASE_URL` | PostgreSQL connection string used by every SQL `DataRetrievalOp`. |
 | `S3_URL` | S3-compatible endpoint and credentials used by every S3 `DataRetrievalOp` and the archive (`S3_ARCHIVE_PREFIX`). |
 | `S3_USER_DATA_PREFIX` | `bucket/prefix` for user data objects (used by data-profile listing). |
+| `S3_CERT_FILE` | Path to an S3 TLS cert bundle. Optional; the bundled compose mounts the file when set. |
 
 ## Lumid.data routing
 
@@ -45,17 +46,105 @@ Agent-retrieval keys:
 |-----|---------|
 | `LUMID_DATA_URL` | Base URL for lumid.data's `/agent/v1` endpoint. Required when a workflow contains agent retrievals. |
 | `LUMID_DATA_TOKEN` | Bearer token sent to lumid.data. |
-| `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid.data calls. |
+| `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid.data calls. Defaults to `30`. |
+
+## Server and Logging
+
+| Key | Purpose |
+|-----|---------|
+| `LUMILAKE_LOG_LEVEL` | Server log level. Defaults to `INFO`. |
+| `LUMILAKE_SKIP_DOTENV_CHECK` | Set to `1` when the server's env is injected directly (Docker) so startup does not require a `.env` file. |
+| `LUMILAKE_RUNTIME_TOKEN` | Bearer token sent with FlowMesh runtime requests. Empty by default. |
+| `LUMILAKE_RUNTIME_MANAGER_TYPE` | Runtime dispatch backend. `default` or `flowmesh`. |
+| `LUMILAKE_JOB_MANAGER_TYPE` | Job manager implementation. Currently only `priority`. |
+| `LUMILAKE_HTTP_TIMEOUT_SECONDS` | Outbound HTTP timeout for server-side calls. Defaults to `300`. |
 
 ## Scheduler and Runtime Tuning
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_OPTIMIZER_TYPE` | Optimizer implementation. Defaults to HALO. |
+| `LUMILAKE_OPTIMIZER_TYPE` | Optimizer implementation. Defaults to `halo`. |
 | `LUMILAKE_OPTIMIZER_BATCH_SIZE` | Maximum batch size used by the optimizer loop. |
 | `LUMILAKE_BATCH_ACCUMULATION_SECONDS` | Wait window before forming the first optimization batch. |
 | `LUMILAKE_STARVATION_LIMIT` | Starvation threshold; `0` means immediate override. |
 | `LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS` | Timeout for optimizer subprocess execution. |
-| `LUMILAKE_FLOWMESH_OUTPUT_DESTINATION` | FlowMesh result delivery mode. |
+| `LUMILAKE_QUEUE_QUANTUM_HIGH` | High-priority queue quantum. Defaults to `20`. |
+| `LUMILAKE_QUEUE_QUANTUM_MEDIUM` | Medium-priority queue quantum. Defaults to `10`. |
+| `LUMILAKE_QUEUE_QUANTUM_LOW` | Low-priority queue quantum. Defaults to `5`. |
+| `LUMILAKE_POLL_TIMEOUT_SECONDS` | Overall timeout for runtime polling. Defaults to `inf`. |
+| `LUMILAKE_POLL_INTERVAL_SECONDS` | Interval between runtime status polls. Defaults to `5`. |
+| `LUMILAKE_FLOWMESH_OUTPUT_DESTINATION` | FlowMesh result delivery mode. `local` (default) or `http`. |
 
-See `.env.example` for the full template and defaults.
+## Worker Groups
+
+| Key | Purpose |
+|-----|---------|
+| `LUMILAKE_CPU_WORKER_GROUP_SIZE` | Number of CPU workers FlowMesh provisions. |
+| `LUMILAKE_GPU_WORKER_GROUP_SIZE` | Number of GPU workers FlowMesh provisions. At least one of CPU / GPU size must be `> 0`. |
+| `LUMILAKE_GPU_DEVICES` | GPU device ids Lumilake assigns to FlowMesh workers (one per device). Specific index (`0`), comma-separated subset (`0,2`), or `all` to cover every `nvidia-smi` device. Leave blank to skip GPU worker creation. |
+
+## Plugins
+
+| Key | Purpose |
+|-----|---------|
+| `LUMILAKE_PLUGINS` | Comma-separated list of plugin module names the server imports at startup. See `docs/PLUGINS.md`. |
+
+## Data Profiling
+
+| Key | Purpose |
+|-----|---------|
+| `LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES` | Number of test queries per data profile. Defaults to `1`. |
+| `LUMILAKE_S3_PROFILE_COST_PER_FILE` | Cost-model coefficient (per file) for S3 profile estimates. |
+| `LUMILAKE_S3_PROFILE_COST_PER_MIB` | Cost-model coefficient (per MiB) for S3 profile estimates. |
+| `LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS` | Comma-separated planner variants used for local data profiles. Defaults to `default,prefer_index,prefer_seq,prefer_nestloop`. |
+
+## vLLM Backend
+
+| Key | Purpose |
+|-----|---------|
+| `LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS` | vLLM `max_num_batched_tokens`. Defaults to `2048`. |
+| `LUMILAKE_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE` | vLLM CUDA-graph capture size. Defaults to `64`. |
+| `LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION` | vLLM GPU memory utilization fraction. Defaults to `0.9`. |
+
+## Hardware Requirements
+
+Used by FlowMesh worker placement.
+
+| Key | Purpose |
+|-----|---------|
+| `HARDWARE_CPU_REQUIREMENT` | CPU cores per worker. Defaults to `8`. |
+| `HARDWARE_MEMORY_REQUIREMENT` | Memory per worker. Defaults to `16Gi`. |
+| `HARDWARE_GPU_REQUIREMENT` | GPUs per worker. Defaults to `1`. |
+| `HARDWARE_GPU_MEMORY_REQUIREMENT` | GPU memory per worker. Defaults to `8Gi`. |
+
+## FlowMesh TLS and Worker Config
+
+Picked up by the bundled FlowMesh deploy helpers.
+
+| Key | Purpose |
+|-----|---------|
+| `SERVER_HTTP_PORT` | FlowMesh HTTP API port in `.env.flowmesh`. Keep `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` in `.env` and `FLOWMESH_BASE_URL` in `.env.flowmesh` aligned with this port. |
+| `SERVER_GRPC_PORT` | FlowMesh gRPC port in `.env.flowmesh`. Change it when a co-tenant FlowMesh stack already owns `50051`. |
+| `REDIS_CONTROL_PORT` | FlowMesh control Redis port in `.env.flowmesh`. Change it when another stack already owns `6379`. |
+| `REDIS_TELEMETRY_PORT` | FlowMesh telemetry Redis port in `.env.flowmesh`. Change it when another stack already owns `6380`. |
+| `FLOWMESH_BASE_URL` | FlowMesh HTTP base URL consumed by FlowMesh workers; should point at `SERVER_HTTP_PORT`. |
+| `REDIS_TLS_DIR` | Directory holding Redis TLS certs. Empty disables TLS bind-mounts. |
+| `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs. Empty disables TLS. |
+| `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override. |
+
+`lumilake deploy init --flowmesh` writes `.env.flowmesh`. On hosts that
+also run another FlowMesh stack, check the common defaults before
+`deploy up`: HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis
+telemetry `6380`.
+
+## SDK / CLI Client
+
+Consumed by the SDK and deploy CLI helpers.
+
+| Key | Purpose |
+|-----|---------|
+| `LUMILAKE_BASE_URL` | SDK override for the saved server URL (see `docs/SDK.md` for the resolution order). |
+| `LUMILAKE_TIMEOUT` | SDK HTTP timeout override in seconds. Values `<= 0` are ignored. |
+| `LUMILAKE_DEPLOY_DIR` | Default `--project-dir` for `lumilake deploy`. |
+
+See `.env.example` for the deploy-time template and defaults.

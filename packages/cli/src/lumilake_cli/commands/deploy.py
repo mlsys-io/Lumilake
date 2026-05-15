@@ -266,7 +266,15 @@ def down(
         ),
     ),
 ) -> None:
-    """Stop all services (keep data)."""
+    """Stop the stack but keep data volumes.
+
+    Safe to run between sessions: the archive bucket (job records, run
+    artifacts) and the compute postgres/minio volumes survive, so
+    ``deploy up`` resumes against the same state. ``--wipe-archive`` also
+    removes the compute Postgres and FlowMesh runtime-state volumes, while
+    preserving MinIO corpus data. Use ``deploy reset`` (destructive) to
+    wipe every volume instead.
+    """
     try:
         stop_mod.run_stop(
             _project_dir(ctx),
@@ -354,8 +362,28 @@ def restart(
 
 
 @app.command()
-def reset(ctx: typer.Context) -> None:
-    """Clean reset (stop + purge + up; deletes all data)."""
+def reset(
+    ctx: typer.Context,
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the destructive-action confirmation prompt.",
+    ),
+) -> None:
+    """Wipe the archive and every volume, then start the stack fresh.
+
+    Destructive: removes the compute postgres / minio volumes (job
+    records, run artifacts, demo data) and the FlowMesh runtime state.
+    Use ``deploy down`` if you want to stop the stack but keep its data.
+    """
+    if not yes and not typer.confirm(
+        "deploy reset deletes every Lumilake volume (archive + compute "
+        "data). Continue?",
+        default=False,
+    ):
+        logging.info("Aborted.")
+        raise typer.Exit(code=0)
     root = _project_dir(ctx)
     try:
         stop_mod.run_stop(root, purge=True)

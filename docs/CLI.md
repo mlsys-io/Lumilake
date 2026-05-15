@@ -40,6 +40,12 @@ LUMILAKE_DEPLOY_DIR=~/lumilake-deploy lumilake deploy init
 
 The compose file and image are resolved from the installed `lumilake-deploy` package and GHCR; the deployment directory only needs to hold your `.env` files (and any local state docker compose creates).
 
+If another FlowMesh stack is already running on the host, resolve port
+collisions before `deploy up`. Common co-tenant defaults are FlowMesh
+HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
+`6380`; the bundled stack reads the override keys documented in
+`docs/ENV.md` from `.env.flowmesh`.
+
 | Command | Purpose |
 |---------|---------|
 | `lumilake deploy init [--flowmesh]` | Create `.env`; optionally create `.env.flowmesh`. |
@@ -47,13 +53,23 @@ The compose file and image are resolved from the installed `lumilake-deploy` pac
 | `lumilake deploy build` | Build the Lumilake server Docker image from source. |
 | `lumilake deploy pull` | Pull the published server image from the registry (`$LUMILAKE_REGISTRY`). |
 | `lumilake deploy up` | Start the local stack (image must already be present — run `pull` or `build` first). |
-| `lumilake deploy down [--wipe-archive]` | Stop the stack while keeping data volumes. |
-| `lumilake deploy clean` | Stop the stack and delete volumes. |
-| `lumilake deploy reset` | Clean reset, then start the stack again. |
+| `lumilake deploy down [--wipe-archive]` | Stop the stack but keep data volumes. Non-destructive. |
+| `lumilake deploy clean` | Stop the stack and delete volumes. Destructive. |
+| `lumilake deploy reset [--yes]` | Wipe every volume, then start the stack again. Destructive. |
 | `lumilake deploy status` | Show known stack container state. |
 | `lumilake deploy restart [service]` | Restart one service or the full stack. |
 | `lumilake deploy logs [service]` | Stream or tail service logs. |
 | `lumilake deploy update-flowmesh` | Re-lock and install the latest FlowMesh packages. |
+
+### `deploy down` vs `deploy reset`
+
+| Command | Stops services | Removes data volumes |
+|---------|----------------|----------------------|
+| `lumilake deploy down` | yes | no — archive (job records, run artifacts), compute Postgres, and MinIO corpus data survive, so `deploy up` resumes against the same state. `--wipe-archive` additionally wipes compute Postgres and FlowMesh runtime-state volumes while preserving MinIO corpus data. |
+| `lumilake deploy clean` | yes | yes (every Lumilake-managed volume) |
+| `lumilake deploy reset` | yes | yes (every Lumilake-managed volume), then re-runs `deploy up`. Prompts for confirmation; pass `--yes` to skip the prompt in scripts. |
+
+Use `deploy down` between sessions. Reach for `clean` / `reset` only when you intentionally want to drop the local stack state.
 
 ## Jobs
 

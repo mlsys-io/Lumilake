@@ -1,0 +1,63 @@
+name: hello-world
+
+# Smallest Lumilake YAML workflow: format a greeting, then ask the
+# configured LLM to acknowledge it. Designed as a copy-paste starting
+# point — every op is essential, no DB / S3 retrievals, no agent mode.
+#
+# Inputs:  Name (one greeting per slice)
+# Output:  reply (LLM response text)
+#
+# Runtime requirements:
+#   - A standard ``lumilake deploy up`` (server + a reachable FlowMesh
+#     orchestrator at ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL``).
+#   - Reachable S3-compatible storage from ``S3_URL``. For local trials,
+#     start the bundled data plane with:
+#       docker compose -f scripts/dev/compose.data-plane.yml up -d
+#   - A FlowMesh worker that can serve the model named in ``config.model``.
+#     ``Qwen/Qwen3-8B`` is the bundled text-demo model.
+#
+# ``cached_models`` can be empty until after a worker serves a job. Do
+# not treat an empty pre-run cache as a setup failure; change
+# ``config.model`` only if your stack is configured for a different model
+# or the job reports a missing-model / worker-placement error.
+#
+# Submit:
+#   lumilake job submit examples/templates/yaml/hello-world.yaml \
+#       --format yaml --input 'Name=world' --output-prefix demo/hello-world
+
+inputs:
+  Name: ["world"]
+
+ops:
+  - id: "Greeting"
+    op: FormatOp
+    inputs: [Name]
+    template: "Hello, {name}!"
+    format_kwargs:
+      name: Name
+
+  - id: "Shout"
+    op: LambdaOp
+    inputs: ["Greeting"]
+    fn_name: shout
+    code: |
+      def shout(inputs: tuple[str, ...]) -> str:
+          (greeting,) = inputs
+          return greeting.upper()
+
+  - id: "Reply"
+    op: LLMChatOp
+    inputs: ["Shout"]
+    messages:
+      - role: system
+        content: "You are a friendly greeter. Reply in one short sentence."
+      - role: user
+        content: "Shout"
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 64
+      temperature: 0.2
+
+outputs:
+  - name: reply
+    ref: "Reply"

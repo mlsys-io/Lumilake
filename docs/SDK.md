@@ -38,7 +38,53 @@ async with AsyncLumilakeClient.from_config() as client:
     await client.jobs.list()
 ```
 
-Both clients accept `base_url=` directly or load the server URL with `.from_config()`. Resolution order is explicit argument, `LUMILAKE_BASE_URL`, then `~/.lumilake/config.toml`.
+Both clients accept `base_url=` directly or load the server URL with `.from_config()`. See [Configuration](#configuration) for resolution order.
+
+## Configuration
+
+The SDK and CLI share a small TOML file that records the server URL:
+
+```
+~/.lumilake/config.toml
+```
+
+Schema:
+
+```toml
+base_url = "http://127.0.0.1:9000"
+```
+
+### What writes it
+
+`lumilake login <url>` writes the file with the supplied base URL. On
+builds where `lumilake deploy up` also writes the local stack URL, it
+updates the same file. If the file is missing after bringing up a stack,
+run `lumilake login http://127.0.0.1:9000` once so
+`LumilakeClient.from_config()` and every `lumilake <cmd>` invocation can
+find the server.
+
+### How `from_config()` resolves
+
+`LumilakeClient.from_config()` (and the async equivalent) resolves the
+base URL in this priority order:
+
+1. `base_url=` argument passed to the constructor.
+2. `LUMILAKE_BASE_URL` environment variable.
+3. `~/.lumilake/config.toml`.
+
+If none of the three yields a URL, the call raises `RuntimeError` with
+the message:
+
+```
+no base_url provided and no saved config. Pass base_url= explicitly, set LUMILAKE_BASE_URL, or run `lumilake login`.
+```
+
+`from_config(path=...)` accepts a custom path for tests or non-default
+installs.
+
+The CLI currently reads the saved `~/.lumilake/config.toml`; run
+`lumilake login <url>` or update that file for CLI calls.
+`LUMILAKE_BASE_URL` is an SDK override.
 
 ## Resources
 
