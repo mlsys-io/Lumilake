@@ -4,8 +4,8 @@ Composes every server-API resource (HTTP) plus the ``deploy`` resource
 (subprocess) and exposes them as attributes (``client.jobs``,
 ``client.workers``, ``client.deploy``, …). Construct with an explicit
 ``base_url``, ``LUMILAKE_BASE_URL`` env var, or
-``LumilakeClient.from_config()`` to read the file ``lumilake login``
-writes.
+``LumilakeClient.from_config()`` to read the file ``lumilake deploy
+up`` writes.
 """
 
 import logging
@@ -36,7 +36,7 @@ class LumilakeClient(BaseClient):
             client.deploy.up()
 
     Or pull the URL from ``~/.lumilake/config.toml`` (written by
-    ``lumilake login``)::
+    ``lumilake deploy up``)::
 
         client = LumilakeClient.from_config()
     """

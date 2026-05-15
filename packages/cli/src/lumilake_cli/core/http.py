@@ -3,19 +3,19 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import requests
-import typer
 from lumilake import envs
 
-from . import logging
-from .config import DEFAULT_CONFIG_PATH, LumilakeConfig, load_config
+from .config import DEFAULT_CONFIG_PATH, load_config
 
 API_VERSION_PREFIX = "/api/v1"
 
 DEFAULT_TIMEOUT: float = 300.0
 """Default request timeout in seconds."""
+
+DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:9000"
 
 
 def _resolve_timeout() -> float:
@@ -100,27 +100,33 @@ class HttpClient:
         return response
 
 
-def _require_config(path: Path = DEFAULT_CONFIG_PATH) -> LumilakeConfig:
-    """Load config or exit with a clear message directing the user to login."""
+def _resolve_base_url(
+    config_path: Path = DEFAULT_CONFIG_PATH,
+) -> tuple[str, str]:
+    """Pick a server URL with a clear precedence order.
 
-    def _error(msg: str) -> NoReturn:
-        logging.error(msg)
-        raise typer.Exit(code=1)
+    Returns ``(base_url, source)`` where ``source`` is one of ``"env"``,
+    ``"config"``, or ``"default"``. Resolution order:
 
+    1. ``LUMILAKE_BASE_URL`` environment variable.
+    2. ``~/.lumilake/config.toml`` written by ``lumilake deploy up``.
+    3. ``http://127.0.0.1:9000`` (the local deploy default).
+    """
+    env_url = envs.get_lumilake_base_url()
+    if env_url:
+        return env_url, "env"
     try:
-        config = load_config(path)
+        cfg = load_config(config_path)
     except FileNotFoundError:
-        _error("Not logged in. Run `lumilake login <url>` first.")
-    except ValueError as exc:
-        _error(f"Invalid config file: {exc}. Please re-login.")
+        return DEFAULT_LOCAL_BASE_URL, "default"
+    except ValueError:
+        return DEFAULT_LOCAL_BASE_URL, "default"
+    if cfg.base_url:
+        return cfg.base_url, "config"
+    return DEFAULT_LOCAL_BASE_URL, "default"
 
-    if not config.base_url:
-        _error("Missing base_url in config. Please re-login.")
-    return config
 
-
-def client_from_config(config: LumilakeConfig | None = None) -> HttpClient:
-    """Build an HttpClient from saved config. Exits if not logged in."""
-    if config is None:
-        config = _require_config()
-    return HttpClient(base_url=config.base_url)
+def client_from_config() -> HttpClient:
+    """Build an HttpClient from the resolved base URL."""
+    base_url, _ = _resolve_base_url()
+    return HttpClient(base_url=base_url)

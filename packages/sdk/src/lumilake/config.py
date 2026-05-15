@@ -1,6 +1,6 @@
 """Saved connection state at ``~/.lumilake/config.toml``.
 
-Reads the same TOML schema ``lumilake login`` writes (``base_url``).
+Holds the server ``base_url`` written by ``lumilake deploy up``.
 """
 
 import logging
@@ -26,7 +26,7 @@ class LumilakeConfig:
         if not target.exists():
             raise FileNotFoundError(
                 f"lumilake config not found at {target}. Run "
-                f"`lumilake login <url>` to create it."
+                f"`lumilake deploy up` to create it, or set LUMILAKE_BASE_URL."
             )
         with open(target, "rb") as f:
             data = tomllib.load(f)
