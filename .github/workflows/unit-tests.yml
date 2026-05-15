@@ -73,6 +73,10 @@ jobs:
             echo "### Coverage"
             echo
             echo '```'
-            uv run coverage report
+            if [ -f .coverage ]; then
+              uv run coverage report -m || true
+            else
+              echo "No coverage data file was produced."
+            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
