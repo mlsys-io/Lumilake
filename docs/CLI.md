@@ -107,4 +107,4 @@ Run `uv run lumilake job submit --help` for format, input, and output flags.
 
 ## `--json` flag
 
-Every query subcommand on `lumilake job`, `lumilake worker`, and `lumilake trace` accepts `--json`. The current default output for these commands is already the server's JSON envelope; `--json` is a documented contract for scripts that want a stable parse target. On `lumilake trace get`, `--json` is a shortcut for `--format json` (the default for that command is the rich summary table).
+Most query commands (`lumilake job list/info/progress/result/inputs`, `lumilake worker list/get`, `lumilake trace list`) emit the server's JSON envelope by default, so scripts can parse them directly. `lumilake trace get` defaults to a human-readable summary table; pass `--json` (a shortcut for `--format json`) for parse-friendly output.

@@ -25,16 +25,12 @@ OutputFormat = typer.Option(
     help="Output format: summary | json | mermaid",
 )
 
-_JSON_OPTION_HELP = (
-    "Emit the server's JSON envelope verbatim — the stable parse "
-    "target for scripts. Shortcut for ``--format json`` on ``get``."
-)
+_JSON_OPTION_HELP = "Shortcut for ``--format json``."
 
 
 @app.command("list")
 def list_traces(
     limit: int = typer.Option(50, "--limit", "-n", help="Max traces to return (1-200)"),
-    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """List execution traces."""
     client = client_from_config()

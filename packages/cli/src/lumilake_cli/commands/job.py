@@ -15,12 +15,6 @@ from ..core.typer import get_typer
 app = get_typer(help="Submit, monitor, and manage optimization jobs.")
 
 
-_JSON_OPTION_HELP = (
-    "Emit the server's JSON envelope verbatim — currently the default "
-    "and the stable parse target for scripts."
-)
-
-
 def _unwrap(response_json: dict[str, Any]) -> dict[str, Any]:
     """Unwrap the ``{"ok": ..., "data": {...}}`` envelope used by all API responses.
 
@@ -243,7 +237,6 @@ def list_jobs(
     include_all: bool = typer.Option(
         False, "--all", help="Include all users' jobs (requires admin scope)"
     ),
-    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """List submitted jobs."""
     client = client_from_config()
@@ -265,7 +258,6 @@ def list_jobs(
 @app.command("info")
 def job_info(
     job_id: str = typer.Argument(..., help="Job identifier"),
-    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """Retrieve the current status and metadata for a job."""
     client = client_from_config()
@@ -280,7 +272,6 @@ def job_info(
 @app.command()
 def progress(
     job_id: str = typer.Argument(..., help="Job identifier"),
-    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """Get detailed progress information for a job."""
     client = client_from_config()
@@ -295,7 +286,6 @@ def progress(
 @app.command()
 def result(
     job_id: str = typer.Argument(..., help="Job identifier"),
-    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """Retrieve the result of a completed job."""
     client = client_from_config()
@@ -310,7 +300,6 @@ def result(
 @app.command()
 def inputs(
     job_id: str = typer.Argument(..., help="Job identifier"),
-    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """Retrieve the inputs of a submitted job."""
     client = client_from_config()
