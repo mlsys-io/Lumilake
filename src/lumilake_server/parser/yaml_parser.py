@@ -154,12 +154,40 @@ def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
     }
 
 
+class YamlParseError(ValueError):
+    """``ValueError`` subclass that preserves PyYAML's source location.
+
+    ``MarkedYAMLError`` (PyYAML's error superclass for parse-time failures)
+    carries a ``problem_mark`` with one-based ``line`` / ``column`` indices
+    pointing at the offending token. We expose both as structured fields so
+    callers (HTTP routes, the CLI) can surface them in error responses
+    without re-parsing the YAML error message.
+    """
+
+    def __init__(self, message: str, *, line: int | None, column: int | None) -> None:
+        super().__init__(message)
+        self.line = line
+        self.column = column
+
+
 def _coerce_to_dict(payload: dict | str) -> dict[str, Any]:
     if isinstance(payload, str):
         try:
             loaded = yaml.safe_load(payload)
+        except yaml.MarkedYAMLError as exc:
+            mark = exc.problem_mark
+            if mark is not None:
+                line = mark.line + 1
+                column = mark.column + 1
+                message = f"Invalid YAML at line {line}, column {column}: {exc}"
+                raise YamlParseError(message, line=line, column=column) from exc
+            raise YamlParseError(
+                f"Invalid YAML: {exc}", line=None, column=None
+            ) from exc
         except yaml.YAMLError as exc:
-            raise ValueError(f"Invalid YAML: {exc}") from exc
+            raise YamlParseError(
+                f"Invalid YAML: {exc}", line=None, column=None
+            ) from exc
         if not isinstance(loaded, dict):
             raise ValueError("YAML workflow must be a mapping at the top level")
         return loaded

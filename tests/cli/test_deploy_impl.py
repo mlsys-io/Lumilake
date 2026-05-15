@@ -111,9 +111,66 @@ def test_doctor_rejects_malformed_s3_url(tmp_path: Path) -> None:
 
     report = doctor_mod.run_env_checks(env_file)
 
-    assert "S3_URL must use the s3:// scheme" in report.errors
-    assert "S3_URL must include access key and secret" in report.errors
-    assert "S3_URL must include a bucket or bucket/prefix path" in report.errors
+    assert any("S3_URL must use the s3:// scheme" in msg for msg in report.errors)
+    assert any(
+        "S3_URL must include access key and secret" in msg for msg in report.errors
+    )
+    assert any(
+        "S3_URL must include a bucket or bucket/prefix path" in msg
+        for msg in report.errors
+    )
+    # Every error row names the env var that would fix it.
+    for msg in report.errors:
+        assert "fix:" in msg, msg
+        assert "S3_URL" in msg, msg
+
+
+def test_doctor_required_env_failures_name_the_env_var(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("")  # empty file: every required var is missing
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    for var in (
+        "LUMILAKE_SERVER_HOST",
+        "LUMILAKE_SERVER_PORT",
+        "LUMILAKE_RUNTIME_ORCHESTRATOR_URL",
+        "S3_ARCHIVE_PREFIX",
+        "LUMILAKE_IMAGE_TAG",
+    ):
+        matched = [msg for msg in report.errors if var in msg and "fix:" in msg]
+        assert matched, f"{var} should produce an actionable error: {report.errors}"
+
+
+def test_doctor_direct_mode_errors_include_lumid_alternative(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'LUMILAKE_SERVER_HOST="0.0.0.0"',
+                'LUMILAKE_SERVER_PORT="9000"',
+                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
+                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
+                'LUMILAKE_IMAGE_TAG="latest"',
+                "",
+            ]
+        )
+    )
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    for var in ("DATABASE_URL", "S3_URL", "S3_USER_DATA_PREFIX"):
+        matched = [
+            msg
+            for msg in report.errors
+            if var in msg and "fix:" in msg and "LUMID_DATA_URL" in msg
+        ]
+        assert matched, f"{var} should name LUMID_DATA_URL alternative: {report.errors}"
+
+
+def test_doctor_missing_env_file_message_is_actionable(tmp_path: Path) -> None:
+    report = doctor_mod.run_env_checks(tmp_path / ".env")
+    assert any("lumilake deploy init" in msg for msg in report.errors)
 
 
 def _fake_ctx(project_dir: Path) -> Any:

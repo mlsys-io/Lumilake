@@ -1,5 +1,6 @@
 import inspect
 import logging
+import os
 from argparse import ArgumentParser, Namespace
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from types import ModuleType
@@ -15,6 +16,7 @@ from lumilake.log import init_child_logger
 from psycopg_pool import AsyncConnectionPool
 
 from lumilake_server.hooks import HookBindings, register
+from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs, trace, workers
 from lumilake_server.runtime.server import LumilakeServer, LumilakeServerConfig
 
@@ -160,6 +162,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
             content={"detail": "Database error"},
         )
 
+    app.add_middleware(TraceIdMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -205,6 +208,11 @@ app = build_app()
 
 
 def run_api_server() -> None:
+    # The server container always wants structured JSON logs; flip the
+    # default here so log aggregators in the deploy stack ingest records
+    # without per-deployment config. Local dev (``pytest``, ``python -m``)
+    # leaves the variable unset and gets the human-readable formatter.
+    os.environ.setdefault("LUMILAKE_LOG_JSON", "1")
     args = parse_args()
     server_config = LumilakeServerConfig(host=args.host, port=args.port)
     uvicorn.run(

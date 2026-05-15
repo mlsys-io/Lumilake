@@ -135,13 +135,30 @@ def submit(
         None, "--batch-size", help="Input batch size"
     ),
     input_values: list[str] | None = typer.Option(
-        None, "--input", help="Input as Name=v1,v2,v3 (repeatable for different names)"
+        None,
+        "--input",
+        help=(
+            "Input as Name=val1,val2,val3 (comma-separated; whitespace around "
+            "values is trimmed). Repeat for different names: "
+            "`--input query=NVDA,TSLA --input year=2024`. A single value "
+            "still uses the same syntax: `--input query=NVDA`."
+        ),
     ),
     input_files: list[str] | None = typer.Option(
-        None, "--input-file", help="Input from file as Name=path.txt (repeatable)"
+        None,
+        "--input-file",
+        help=(
+            "Input from file as Name=path.txt; one value per non-empty line. "
+            "Repeatable: `--input-file tickers=tickers.txt`."
+        ),
     ),
     input_json: Path | None = typer.Option(
-        None, "--input-json", help="JSON file with full inputs object"
+        None,
+        "--input-json",
+        help=(
+            "JSON file with the full inputs object, e.g. "
+            '`{"query": ["NVDA", "TSLA"], "year": ["2024"]}`.'
+        ),
     ),
 ) -> None:
     """Submit a workflow for optimization and execution."""
