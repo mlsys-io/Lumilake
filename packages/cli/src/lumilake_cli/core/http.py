@@ -100,7 +100,7 @@ class HttpClient:
         return response
 
 
-def _resolve_base_url(
+def resolve_base_url(
     config_path: Path = DEFAULT_CONFIG_PATH,
 ) -> tuple[str, str]:
     """Pick a server URL with a clear precedence order.
@@ -128,5 +128,5 @@ def _resolve_base_url(
 
 def client_from_config() -> HttpClient:
     """Build an HttpClient from the resolved base URL."""
-    base_url, _ = _resolve_base_url()
+    base_url, _ = resolve_base_url()
     return HttpClient(base_url=base_url)

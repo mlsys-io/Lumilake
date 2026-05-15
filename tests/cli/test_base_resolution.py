@@ -16,7 +16,7 @@ def test_resolve_falls_back_to_local_default(
 ) -> None:
     _clear_env_var(monkeypatch)
     missing = tmp_path / "missing.toml"
-    base, source = http._resolve_base_url(missing)
+    base, source = http.resolve_base_url(missing)
     assert base == http.DEFAULT_LOCAL_BASE_URL
     assert source == "default"
 
@@ -27,7 +27,7 @@ def test_resolve_reads_saved_config(
     _clear_env_var(monkeypatch)
     path = tmp_path / "config.toml"
     save_config(LumilakeConfig(base_url="http://stored:9000"), path=path)
-    base, source = http._resolve_base_url(path)
+    base, source = http.resolve_base_url(path)
     assert base == "http://stored:9000"
     assert source == "config"
 
@@ -38,7 +38,7 @@ def test_resolve_prefers_env_over_config(
     monkeypatch.setenv("LUMILAKE_BASE_URL", "http://env:9000")
     path = tmp_path / "config.toml"
     save_config(LumilakeConfig(base_url="http://stored:9000"), path=path)
-    base, source = http._resolve_base_url(path)
+    base, source = http.resolve_base_url(path)
     assert base == "http://env:9000"
     assert source == "env"
 
@@ -49,7 +49,7 @@ def test_resolve_recovers_from_corrupt_config(
     _clear_env_var(monkeypatch)
     path = tmp_path / "config.toml"
     path.write_text("not = valid toml = at all\n")
-    base, source = http._resolve_base_url(path)
+    base, source = http.resolve_base_url(path)
     assert base == http.DEFAULT_LOCAL_BASE_URL
     assert source == "default"
 
@@ -77,6 +77,6 @@ def test_resolve_empty_env_falls_through_to_config(
     monkeypatch.setenv("LUMILAKE_BASE_URL", "")
     path = tmp_path / "config.toml"
     save_config(LumilakeConfig(base_url="http://stored:9000"), path=path)
-    base, source = http._resolve_base_url(path)
+    base, source = http.resolve_base_url(path)
     assert base == "http://stored:9000"
     assert source == "config"

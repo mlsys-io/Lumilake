@@ -5,7 +5,7 @@ import typer
 
 from ..core import logging
 from ..core.config import DEFAULT_CONFIG_PATH
-from ..core.http import HttpError, _resolve_base_url, client_from_config
+from ..core.http import HttpError, client_from_config, resolve_base_url
 from ..core.typer import get_typer
 
 app = get_typer()
@@ -18,7 +18,7 @@ def config(
     ),
 ) -> None:
     """Show the resolved Lumilake CLI configuration."""
-    base_url, source = _resolve_base_url(config_path)
+    base_url, source = resolve_base_url(config_path)
     payload = {"base_url": base_url, "source": source, "config_path": str(config_path)}
     logging.log(json.dumps(payload, indent=2))
 
