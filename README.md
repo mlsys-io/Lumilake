@@ -60,7 +60,13 @@ Note: a real workflow run also requires running PostgreSQL and S3-compatible sto
 
 The repo ships a `hello-world.yaml` template — `FormatOp` →
 `LambdaOp` → `LLMChatOp` — that is the smallest copy-paste starting
-point for a Lumilake YAML workflow. Submit it once the stack is up:
+point for a Lumilake YAML workflow. Submit it once the stack is up and
+`S3_URL` points at reachable S3-compatible storage. For a local-only
+trial, start the bundled data plane first:
+
+```bash
+docker compose -f scripts/dev/compose.data-plane.yml up -d
+```
 
 ```bash
 # From a source checkout:
@@ -75,10 +81,11 @@ lumilake job watch <job_id>
 lumilake job result <job_id>
 ```
 
-Edit `config.model` at the bottom of the YAML to match a model your
-FlowMesh workers actually serve. If the job stays in `running`, run
-`lumilake worker list` to see which models are available and edit
-`config.model` accordingly.
+The template uses `Qwen/Qwen3-8B`, which is the bundled text-demo model.
+You do not need to pre-populate or inspect `cached_models` before the
+first run; it can be empty until after a worker serves a job. Only edit
+`config.model` if your FlowMesh stack is configured for a different
+model or the job fails with a missing-model / worker-placement error.
 
 ### Real workflows
 
@@ -128,6 +135,14 @@ Generate both Lumilake and bundled FlowMesh env files:
 ```bash
 lumilake deploy init --flowmesh
 ```
+
+If another FlowMesh stack is already running on the same host, check
+ports before `deploy up`. Common co-tenant FlowMesh defaults are HTTP
+`8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry `6380`.
+The bundled stack reads `SERVER_HTTP_PORT`, `SERVER_GRPC_PORT`,
+`REDIS_CONTROL_PORT`, and `REDIS_TELEMETRY_PORT` from `.env.flowmesh`;
+change them to free ports and keep `LUMILAKE_RUNTIME_ORCHESTRATOR_URL`
+in `.env` aligned with `SERVER_HTTP_PORT`.
 
 Common deployment commands:
 

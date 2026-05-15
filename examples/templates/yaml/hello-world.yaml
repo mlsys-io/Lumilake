@@ -10,11 +10,16 @@ name: hello-world
 # Runtime requirements:
 #   - A standard ``lumilake deploy up`` (server + a reachable FlowMesh
 #     orchestrator at ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL``).
-#   - A FlowMesh worker that can serve the model named in ``config.model``
-#     below. Swap ``Qwen/Qwen3-8B`` for whatever your stack actually has.
+#   - Reachable S3-compatible storage from ``S3_URL``. For local trials,
+#     start the bundled data plane with:
+#       docker compose -f scripts/dev/compose.data-plane.yml up -d
+#   - A FlowMesh worker that can serve the model named in ``config.model``.
+#     ``Qwen/Qwen3-8B`` is the bundled text-demo model.
 #
-# If the job stays in ``running``, run ``lumilake worker list`` to see
-# which models are available and edit the ``config.model`` field below.
+# ``cached_models`` can be empty until after a worker serves a job. Do
+# not treat an empty pre-run cache as a setup failure; change
+# ``config.model`` only if your stack is configured for a different model
+# or the job reports a missing-model / worker-placement error.
 #
 # Submit:
 #   lumilake job submit examples/templates/yaml/hello-world.yaml \
