@@ -53,8 +53,7 @@ This guide collects rules agents and contributors should apply before editing so
 
 ## Tests
 
-- Default unit validation is `uv run pytest tests/ --ignore=tests/server`.
-- `tests/server` exercises live-server behavior and is reserved for pre-release validation.
+- Default unit validation is `uv run pytest tests/`. CI also collects coverage via `pytest-cov` against the SDK, CLI, deploy, hook, and server packages.
 - When changing runtime behavior, add or update a focused test in the same PR.
 - Do not ignore failing checks. A red test on `main` is a CI gap to close, not a reason to skip validation.
 

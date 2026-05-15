@@ -63,8 +63,17 @@ uv run pre-commit run --all-files
 ## Testing
 
 ```bash
-uv run pytest tests/ --ignore=tests/server  # Default unit suite
+uv run pytest tests/                         # Full unit + parser/hook suite
 uv run pytest tests/cli/                     # CLI-only
+```
+
+Coverage matches CI when run with `--cov`:
+
+```bash
+uv run pytest tests/ \
+  --cov=lumilake --cov=lumilake_cli --cov=lumilake_deploy \
+  --cov=lumilake_hook --cov=lumilake_server \
+  --cov-report=term-missing
 ```
 
 ## Dependency Management
@@ -94,7 +103,7 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 - **Title format** (enforced by CI): `type(scope): description`. Allowed types: `feat, fix, refactor, chore, test, perf, build, ci, docs`. Scope is optional. Prefix with `[BREAKING]` for breaking changes.
 - Keep PRs focused. Split unrelated changes into separate PRs.
 - Fill in the PR template's Purpose / Changes / Design / Test Plan sections.
-- Run `uv run pre-commit run --all-files` and `uv run pytest tests/ --ignore=tests/server` locally before opening the PR.
+- Run `uv run pre-commit run --all-files` and `uv run pytest tests/` locally before opening the PR.
 - If you changed a dependency, update `uv.lock`.
 
 ## CI Workflows
@@ -102,7 +111,7 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `lint-typecheck` | PR / main push | `pre-commit run --all-files` |
-| `unit-tests` | PR / main push | `pytest tests/ --ignore=tests/server` |
+| `unit-tests` | PR / main push | `pytest tests/` with `pytest-cov` |
 | `env-examples` | PR / main push | Validates `.env.example` against the deploy-time env contract |
 | `package-build` | PR / main push | Builds wheels/sdists and smoke-tests the metapackage + four interface wheels |
 | `image-publish` | PR / main / tag push | Builds PR images without publishing; pushes multi-arch `:sha`/`:dev`/`:vX.Y.Z` images to GHCR (not `:latest`) |

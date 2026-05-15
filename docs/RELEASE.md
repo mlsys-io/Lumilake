@@ -71,7 +71,7 @@ the production publish job.
 
    ```bash
    uv run pre-commit run --all-files
-   uv run pytest tests/ --ignore=tests/server
+   uv run pytest tests/
    ```
 
 7. Open and merge a release prep PR with the version bump, `uv.lock`, and any
