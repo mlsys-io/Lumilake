@@ -106,7 +106,7 @@ _stack = DockerComposeStack(
 )
 
 
-def _env_ports(env_file: str | Path) -> dict[str, int]:
+def env_ports(env_file: str | Path) -> dict[str, int]:
     """Extract configured ports from env file for collision checking."""
     env = parse_env_file(Path(env_file))
     return {
@@ -163,7 +163,7 @@ def stack_up(env_file: str | Path) -> None:
     _make_workdir()
     env_path = Path(env_file).resolve()
 
-    errors = check_ports(_env_ports(env_file))
+    errors = check_ports(env_ports(env_file))
     if errors:
         for e in errors:
             _error(e)
@@ -308,7 +308,7 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
         if not device_ids:
             _info(
                 "No GPUs detected; skipping GPU worker creation. "
-                "Set CUDA_VISIBLE_DEVICES to a comma-separated list "
+                "Set LUMILAKE_GPU_DEVICES to a comma-separated list "
                 "of indices to force-create."
             )
         else:
@@ -326,7 +326,7 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
 
 
 def _resolve_gpu_device_ids(gpu_devices: str) -> list[str]:
-    """Resolve a CUDA_VISIBLE_DEVICES-style string into explicit device ids."""
+    """Resolve a LUMILAKE_GPU_DEVICES-style string into explicit device ids."""
     normalized = gpu_devices.strip()
     if normalized and normalized.lower() != "all":
         return [tok.strip() for tok in normalized.split(",") if tok.strip()]

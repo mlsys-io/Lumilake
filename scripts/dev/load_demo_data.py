@@ -7,14 +7,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import urllib.request
 from pathlib import Path
 from typing import Any
 
-THIS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(THIS_DIR))
-
-from _demo_data_common import (  # noqa: E402
+import urllib3
+from lumilake_deploy._demo_data import (
     find_default_env_file,
     human_bytes,
     info,
@@ -72,8 +69,16 @@ def gh_download(tag: str, asset: str, dest: Path) -> None:
     url = f"https://github.com/{REPO}/releases/download/{tag}/{asset}"
     info(f"       gh not found; downloading via https from {url}")
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url) as resp, open(tmp, "wb") as f:
-        shutil.copyfileobj(resp, f)
+    http = urllib3.PoolManager()
+    resp = http.request("GET", url, preload_content=False, redirect=True)
+    try:
+        if resp.status >= 400:
+            raise SystemExit(f"download failed: HTTP {resp.status} for {url}")
+        with open(tmp, "wb") as f:
+            for chunk in resp.stream(64 * 1024):
+                f.write(chunk)
+    finally:
+        resp.release_conn()
     tmp.replace(dest)
 
 

@@ -10,10 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-THIS_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(THIS_DIR))
-
-from _demo_data_common import (  # noqa: E402
+from lumilake_deploy._demo_data import (
     find_default_env_file,
     human_bytes,
     info,

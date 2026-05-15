@@ -52,10 +52,12 @@ params:
 
 ## Examples
 
-Runnable examples live in `examples/templates/`:
+Runnable examples live in `examples/templates/`. Each is shipped as a
+YAML + n8n pair; see `docs/E2E_DEMO.md` for the full reproduction
+recipe (data plane, demo dataset, deploy).
 
-- `examples/templates/yaml/agent-retrieval-mini.yaml`
-- `examples/templates/yaml/image-generation.yaml`
-- `examples/templates/n8n/image-generation.json`
+- `examples/templates/yaml/trading-agent.yaml` + `examples/templates/n8n/trading-agent.json`
+- `examples/templates/yaml/agent-retrieval.yaml` + `examples/templates/n8n/agent-retrieval.json`
+- `examples/templates/yaml/image-generation.yaml` + `examples/templates/n8n/image-generation.json`
 
-Use `uv run lumilake job preview examples/templates/yaml/agent-retrieval-mini.yaml --format yaml --input Stock=AAPL` to validate and inspect a YAML schedule without dispatching runtime work.
+Use `lumilake job preview examples/templates/yaml/trading-agent.yaml --format yaml --input Stock=NVDA` to validate and inspect a YAML schedule without dispatching runtime work.

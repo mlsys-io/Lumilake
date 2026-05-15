@@ -32,12 +32,23 @@ image-generation pair also reads HTML files from
 - `pg_dump` / `pg_restore` (PostgreSQL 16+) on `PATH` — used by the
   demo-data scripts.
 - Disk: ~1 GB free in `~/.cache/lumilake-demo` for the bundle.
-- A model provider key for the LLM ops (`OPENAI_API_KEY` or equivalent).
 - For agent-retrieval only: a running lumid.data instance and
   `LUMID_DATA_URL` set.
 
+The bundled demo workflows use locally-served open-weight models
+(`Qwen/Qwen3-8B` for text, `llava-hf/llava-1.5-7b-hf` for vision,
+`Tongyi-MAI/Z-Image-Turbo` for image gen) — no `OPENAI_API_KEY` is
+required. Set one only if you author workflows that call hosted
+providers.
+
 The `mc` MinIO client is **not** required; the bundled scripts use the
 `minio` Python library that ships with `lumilake-sdk`.
+
+> **Working directory.** Step 1 and Step 2 commands use repo-relative
+> paths (`scripts/dev/...`). Run them from a Lumilake source checkout
+> root, or pass absolute paths. Step 3 commands use `lumilake deploy
+> -C <dir>` and `lumilake job submit <abs-path>` so they work from any
+> CWD once `lumilake` is installed.
 
 ---
 
@@ -100,10 +111,19 @@ defaults if you've overridden them.
 `lumilake_demo` schema, and uploads `news/{html,images}` into
 `s3://<bucket>/example-data/news/`.
 
-It reads database / S3 credentials from a `.env` file (auto-detected by
-walking up from the current directory). If you ran `lumilake deploy
-init` in step 3 first, the defaults already point at step 1's data
-plane.
+It reads database / S3 credentials from a `.env` file (auto-detected
+by walking up from the current directory). If you haven't run
+`lumilake deploy init` yet — which writes a `.env` — pass the data-plane
+URLs explicitly:
+
+```bash
+uv run python scripts/dev/load_demo_data.py \
+  --database-url postgresql://lumilake:lumilake_password@127.0.0.1:15432/lumilake \
+  --s3-url s3://lumilake:lumilake_password@127.0.0.1:19100/lumilake-demo
+```
+
+Once `lumilake deploy init` has written a `.env`, the no-flag form
+auto-detects everything:
 
 ```bash
 uv run python scripts/dev/load_demo_data.py
@@ -169,20 +189,30 @@ from a source checkout via `uv run lumilake ...`.
 
 ```bash
 mkdir -p ~/lumilake-deploy
-lumilake deploy -C ~/lumilake-deploy init     # writes .env from the bundled template
+lumilake deploy -C ~/lumilake-deploy init --flowmesh     # writes .env + .env.flowmesh
 ```
+
+`--flowmesh` is required for the bundled FlowMesh stack: without it
+`lumilake deploy up` only starts the lumilake-server container and
+every job submission fails with `FlowMeshConnectionError` because no
+workers are reachable.
 
 The shipped `.env.example` is **pre-pointed at step 1's data plane**
 (`postgresql://lumilake:lumilake_password@127.0.0.1:15432/lumilake`,
 `s3://lumilake:lumilake_password@127.0.0.1:19100/lumilake-demo`). Open
 `~/lumilake-deploy/.env` only if you need to:
 
-- Set a model provider key (`OPENAI_API_KEY`, etc.).
+- Set a model provider key (`OPENAI_API_KEY`, etc.) — only if you
+  author workflows that call hosted providers; the bundled demos run
+  on local open-weight models.
 - Point at your own Postgres / S3 (override `DATABASE_URL`, `S3_URL`,
   `S3_USER_DATA_PREFIX`).
 - Enable agent retrievals (`LUMID_DATA_URL=http://127.0.0.1:9102`).
-- Override `CUDA_VISIBLE_DEVICES` if the default `"all"` (one worker
-  per `nvidia-smi`-detected GPU) is too aggressive.
+- Set `LUMILAKE_GPU_DEVICES` to one or more free GPU indices on your
+  host (default is empty — no GPU workers). On a shared host, pick an
+  index that other stacks are not using rather than `"all"`. This is
+  distinct from `CUDA_VISIBLE_DEVICES` in `.env.flowmesh`, which only
+  scopes what the FlowMesh server container sees.
 
 Then bring up the stack:
 
@@ -201,7 +231,7 @@ WORKFLOW_DIR=/path/to/lumilake_OSS/examples/templates
 
 lumilake job submit "$WORKFLOW_DIR/yaml/trading-agent.yaml" \
   --format yaml \
-  --input 'Stock=NVDA,AAPL' \
+  --input 'Stock=NVDA,AAPL,MSFT' \
   --output-prefix demo/trading-agent
 
 # Watch progress.
@@ -215,10 +245,9 @@ The other workflow pairs follow the same shape — swap the YAML path
 (or JSON path + `--format n8n`).
 
 **Image-generation note.** Requires a GPU-equipped FlowMesh worker.
-`lumilake deploy up` reads `CUDA_VISIBLE_DEVICES` from `.env`: the
-shipped default `"all"` spawns one worker per `nvidia-smi`-detected
-GPU; set it to a comma-separated subset (`"0,1"`) for partial use, or
-blank to skip GPU worker creation.
+`lumilake deploy up` reads `LUMILAKE_GPU_DEVICES` from `.env`: the
+shipped default is blank (no GPU workers). Set it to a free GPU index
+on your host (e.g. `"0"`) or a comma-separated subset for partial use.
 
 **Agent-retrieval note.** Requires `LUMID_DATA_URL` set in your `.env`;
 the agent retrievals route through lumid.data's `/agent/v1` endpoint.
@@ -281,5 +310,13 @@ halves are loaded as a unit and versioned together.
   that at least one CPU worker is registered; image-generation also
   needs a GPU worker.
 - **`unresolved placeholder` on `{symbol}`** — empty input list. Pass
-  `--input 'Stock=NVDA,AAPL'` (the YAML's `inputs: Stock: []` is a
+  `--input 'Stock=NVDA,AAPL,MSFT'` (the YAML's `inputs: Stock: []` is a
   template slot, not a default value).
+- **Port collision at `lumilake deploy up`** — the deploy CLI runs a
+  pre-flight check and prints the conflicting port and its role. Free
+  the port on the host (e.g. tear down a competing stack), or pick a
+  free value for `LUMILAKE_SERVER_PORT` in `.env` (server) and
+  `SERVER_HTTP_PORT` / `SERVER_GRPC_PORT` / `REDIS_CONTROL_PORT` /
+  `REDIS_TELEMETRY_PORT` in `.env.flowmesh` (orchestrator). If you
+  change `SERVER_HTTP_PORT`, update `LUMILAKE_RUNTIME_ORCHESTRATOR_URL`
+  in `.env` and `FLOWMESH_BASE_URL` in `.env.flowmesh` to match.

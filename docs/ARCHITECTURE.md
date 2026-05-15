@@ -35,7 +35,8 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
           v
 +-------------------+
 | Archive + results |
-| S3 or lumid.data  |
+| S3 (S3_ARCHIVE_   |
+|     PREFIX)       |
 +-------------------+
 ```
 
@@ -61,4 +62,9 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 
 ## Storage Model
 
-Lumilake separates compute data from job archive data. Direct mode reads and writes compute data through configured PostgreSQL and S3-compatible services. lumid.data mode forwards SQL and storage operations to lumid.data instead. Job records and runtime artifacts use `S3_ARCHIVE_PREFIX` in both modes, with lumid.data handling the storage calls when configured.
+Lumilake separates compute data from job archive data.
+
+- **SQL `DataRetrievalOp`** connects directly to `DATABASE_URL`.
+- **S3 `DataRetrievalOp`** connects directly to `S3_URL`.
+- **Agent `DataRetrievalOp`** (`type: agent`) routes through lumid.data's `/agent/v1` endpoint and therefore requires `LUMID_DATA_URL`.
+- **Archive** (job records, runtime artifacts) is always written under `S3_ARCHIVE_PREFIX` using the same `S3_URL` connection.

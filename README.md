@@ -56,14 +56,28 @@ lumilake deploy -C ~/lumilake-deploy up                 # bring the stack up via
 
 Note: a real workflow run also requires running PostgreSQL and S3-compatible storage; agent-style retrievals (`DataRetrievalOp` with `type: agent`) additionally require `LUMID_DATA_URL`. See `docs/ENV.md` for the env contract. If you don't have your own data plane, the repo ships a bundled Postgres + MinIO at `scripts/dev/compose.data-plane.yml` — see `docs/E2E_DEMO.md` for the full three-step demo flow (data plane → load demo data → run a workflow).
 
-Submit and inspect a workflow:
+Submit and inspect a workflow. From a source checkout the example
+workflow file is at `examples/templates/yaml/trading-agent.yaml`;
+PyPI installs do not ship the templates, so pass an absolute path to a
+workflow file you have locally:
 
 ```bash
+# From a source checkout:
 uv run lumilake login http://127.0.0.1:9000
-uv run lumilake job submit examples/templates/yaml/trading-agent.yaml --format yaml --input 'Stock=NVDA,AAPL' --output-prefix demo/trading-agent
-uv run lumilake job list
-uv run lumilake job watch <job_id>
+uv run lumilake job submit examples/templates/yaml/trading-agent.yaml \
+    --format yaml --input 'Stock=NVDA,AAPL,MSFT' --output-prefix demo/trading-agent
+
+# From a PyPI install (lumilake on PATH; supply your own workflow file):
+lumilake login http://127.0.0.1:9000
+lumilake job submit /path/to/your/workflow.yaml \
+    --format yaml --input 'Stock=NVDA,AAPL,MSFT' --output-prefix demo/trading-agent
+
+lumilake job list
+lumilake job watch <job_id>
 ```
+
+See `docs/E2E_DEMO.md` for a full reproduction using the bundled demo
+workflows and dataset.
 
 ## Data Access
 
