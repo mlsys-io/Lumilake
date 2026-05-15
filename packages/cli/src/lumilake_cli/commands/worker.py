@@ -9,8 +9,20 @@ from ..core.typer import get_typer
 app = get_typer(help="Query runtime workers.")
 
 
+_JSON_OPTION_HELP = (
+    "Emit the server's JSON envelope verbatim — currently the default "
+    "and the stable parse target for scripts."
+)
+
+
+def _emit_json(payload: object) -> None:
+    logging.log(json.dumps(payload, indent=2))
+
+
 @app.command("list")
-def list_workers() -> None:
+def list_workers(
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
+) -> None:
     """List all available workers."""
     client = client_from_config()
     try:
@@ -18,12 +30,13 @@ def list_workers() -> None:
     except HttpError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1)
-    logging.log(json.dumps(response.json(), indent=2))
+    _emit_json(response.json())
 
 
 @app.command("get")
 def get_worker(
     worker_id: str = typer.Argument(..., help="Worker identifier"),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """Get details for a specific worker."""
     client = client_from_config()
@@ -32,4 +45,4 @@ def get_worker(
     except HttpError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1)
-    logging.log(json.dumps(response.json(), indent=2))
+    _emit_json(response.json())

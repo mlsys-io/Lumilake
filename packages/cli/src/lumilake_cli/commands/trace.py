@@ -25,10 +25,16 @@ OutputFormat = typer.Option(
     help="Output format: summary | json | mermaid",
 )
 
+_JSON_OPTION_HELP = (
+    "Emit the server's JSON envelope verbatim — the stable parse "
+    "target for scripts. Shortcut for ``--format json`` on ``get``."
+)
+
 
 @app.command("list")
 def list_traces(
     limit: int = typer.Option(50, "--limit", "-n", help="Max traces to return (1-200)"),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """List execution traces."""
     client = client_from_config()
@@ -46,14 +52,18 @@ def list_traces(
 def get_trace(
     exec_id: str = typer.Argument(..., help="Execution trace identifier"),
     output_format: str = OutputFormat,
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPTION_HELP),
 ) -> None:
     """Retrieve and render a specific execution trace.
 
     Default ``summary`` shows the FlowMesh ``ProfileSummary`` as
     headline metrics + hardware / network / critical-path tables.
     ``json`` returns the raw payload; ``mermaid`` prints the lineage
-    graph in Mermaid syntax.
+    graph in Mermaid syntax. ``--json`` is a shortcut for
+    ``--format json``.
     """
+    if json_output:
+        output_format = "json"
     client = client_from_config()
     try:
         response = client.get(f"/trace/{exec_id}", version_prefix=True)
