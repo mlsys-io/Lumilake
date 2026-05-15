@@ -59,7 +59,7 @@ The compose file and image are resolved from the installed `lumilake-deploy` pac
 
 | Command | Stops services | Removes data volumes |
 |---------|----------------|----------------------|
-| `lumilake deploy down` | yes | no — archive (job records, run artifacts) and compute volumes survive, so `deploy up` resumes against the same state. `--wipe-archive` additionally wipes the FlowMesh runtime state. |
+| `lumilake deploy down` | yes | no — archive (job records, run artifacts), compute Postgres, and MinIO corpus data survive, so `deploy up` resumes against the same state. `--wipe-archive` additionally wipes compute Postgres and FlowMesh runtime-state volumes while preserving MinIO corpus data. |
 | `lumilake deploy clean` | yes | yes (every Lumilake-managed volume) |
 | `lumilake deploy reset` | yes | yes (every Lumilake-managed volume), then re-runs `deploy up`. Prompts for confirmation; pass `--yes` to skip the prompt in scripts. |
 

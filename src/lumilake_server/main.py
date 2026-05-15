@@ -80,8 +80,8 @@ async def _load_plugins(stack: AsyncExitStack, logger: logging.Logger) -> None:
     for plugin_name in envs.LUMILAKE_PLUGINS:
         try:
             module = _import_plugin(plugin_name)
-        except Exception as exc:
-            logger.error("Plugin %r failed to import; skipping: %s", plugin_name, exc)
+        except Exception:
+            logger.exception("Plugin %r failed to import; skipping.", plugin_name)
             continue
         install = module.__dict__.get("install")
         if install is None:
@@ -89,11 +89,9 @@ async def _load_plugins(stack: AsyncExitStack, logger: logging.Logger) -> None:
             continue
         try:
             bindings = await _resolve_plugin_bindings(plugin_name, install, stack)
-        except Exception as exc:
-            logger.error(
-                "Plugin %r install() failed validation; skipping: %s",
-                plugin_name,
-                exc,
+        except Exception:
+            logger.exception(
+                "Plugin %r install() failed validation; skipping.", plugin_name
             )
             continue
         register(bindings)

@@ -82,8 +82,9 @@ no base_url provided and no saved config. Pass base_url= explicitly, set LUMILAK
 `from_config(path=...)` accepts a custom path for tests or non-default
 installs.
 
-The CLI uses the same resolution order through `client_from_config()`,
-so the two surfaces always agree on the server URL.
+The CLI currently reads the saved `~/.lumilake/config.toml`; run
+`lumilake login <url>` or update that file for CLI calls.
+`LUMILAKE_BASE_URL` is an SDK override.
 
 ## Resources
 

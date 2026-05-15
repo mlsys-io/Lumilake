@@ -270,8 +270,10 @@ def down(
 
     Safe to run between sessions: the archive bucket (job records, run
     artifacts) and the compute postgres/minio volumes survive, so
-    ``deploy up`` resumes against the same state. Use
-    ``deploy reset`` (destructive) to wipe every volume instead.
+    ``deploy up`` resumes against the same state. ``--wipe-archive`` also
+    removes the compute Postgres and FlowMesh runtime-state volumes, while
+    preserving MinIO corpus data. Use ``deploy reset`` (destructive) to
+    wipe every volume instead.
     """
     try:
         stop_mod.run_stop(

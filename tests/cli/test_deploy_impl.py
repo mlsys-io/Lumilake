@@ -180,6 +180,57 @@ def test_reset_preserves_flowmesh_env_file(
     assert "-f" in cmd and "--project-directory" in cmd
 
 
+def test_cli_reset_aborts_when_confirmation_declined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop_calls: list[Path] = []
+    setup_calls: list[Path] = []
+
+    monkeypatch.setattr(deploy_cmd.typer, "confirm", lambda *_a, **_kw: False)
+    monkeypatch.setattr(
+        deploy_cmd.stop_mod,
+        "run_stop",
+        lambda root, **_kw: stop_calls.append(root),
+    )
+    monkeypatch.setattr(
+        deploy_cmd,
+        "_run_setup",
+        lambda root, **_kw: setup_calls.append(root),
+    )
+
+    with pytest.raises(deploy_cmd.typer.Exit) as exc_info:
+        deploy_cmd.reset(_fake_ctx(tmp_path), yes=False)
+
+    assert exc_info.value.exit_code == 0
+    assert stop_calls == []
+    assert setup_calls == []
+
+
+def test_cli_reset_yes_bypasses_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stop_calls: list[tuple[Path, bool]] = []
+    setup_calls: list[tuple[Path, bool]] = []
+
+    def _confirm(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("confirm should not be called with --yes")
+
+    def _run_stop(root: Path, *, purge: bool = False, **_kwargs: object) -> None:
+        stop_calls.append((root, purge))
+
+    def _run_setup(root: Path, *, reset: bool = False, **_kwargs: object) -> None:
+        setup_calls.append((root, reset))
+
+    monkeypatch.setattr(deploy_cmd.typer, "confirm", _confirm)
+    monkeypatch.setattr(deploy_cmd.stop_mod, "run_stop", _run_stop)
+    monkeypatch.setattr(deploy_cmd, "_run_setup", _run_setup)
+
+    deploy_cmd.reset(_fake_ctx(tmp_path), yes=True)
+
+    assert stop_calls == [(tmp_path, True)]
+    assert setup_calls == [(tmp_path, True)]
+
+
 def test_stack_down_proceeds_when_flowmesh_server_unreachable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

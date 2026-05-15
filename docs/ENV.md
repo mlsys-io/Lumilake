@@ -129,12 +129,12 @@ Picked up by the bundled FlowMesh deploy helpers.
 
 ## SDK / CLI Client
 
-Consumed by the SDK and CLI when talking to a running server.
+Consumed by the SDK and deploy CLI helpers.
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_BASE_URL` | Override for the saved server URL (see `docs/SDK.md` for the resolution order). |
-| `LUMILAKE_TIMEOUT` | Override for the SDK/CLI HTTP timeout in seconds. Values `<= 0` are ignored. |
+| `LUMILAKE_BASE_URL` | SDK override for the saved server URL (see `docs/SDK.md` for the resolution order). |
+| `LUMILAKE_TIMEOUT` | SDK HTTP timeout override in seconds. Values `<= 0` are ignored. |
 | `LUMILAKE_DEPLOY_DIR` | Default `--project-dir` for `lumilake deploy`. |
 
 See `.env.example` for the deploy-time template and defaults.
