@@ -21,9 +21,6 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response
-from lumid_data.sdk import AsyncClient as LumidDataAsyncClient
-from lumid_data.sdk import Client as LumidDataClient
-from lumid_data.sdk import ClientError as LumidDataClientError
 from lumid_hooks import PrincipalContext
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger
@@ -802,7 +799,7 @@ def _coerce_output_values(graph_outputs: Any) -> list[str]:
 
 
 def _write_output_value_set(
-    client: LumidDataClient | Minio,
+    client: Minio,
     bucket: str,
     key_prefix: str,
     is_folder: bool,
@@ -812,35 +809,27 @@ def _write_output_value_set(
 
     ``is_folder=True`` writes one ``item-000001.txt`` per value under the
     prefix; ``False`` concatenates values into a single object at the key.
-    Routes through the lumid.data SDK when forwarding, otherwise direct
-    to MinIO; both surfaces are sync.
     """
     if is_folder:
         for idx, value in enumerate(values, start=1):
             object_name = f"{key_prefix.rstrip('/')}/item-{idx:06d}.txt"
             data = str(value).encode("utf-8")
-            if isinstance(client, LumidDataClient):
-                client.storage_put(bucket, object_name, data, "text/plain")
-            else:
-                client.put_object(
-                    bucket_name=bucket,
-                    object_name=object_name,
-                    data=BytesIO(data),
-                    length=len(data),
-                    content_type="text/plain",
-                )
+            client.put_object(
+                bucket_name=bucket,
+                object_name=object_name,
+                data=BytesIO(data),
+                length=len(data),
+                content_type="text/plain",
+            )
         return
     payload = "\n".join(values).encode("utf-8")
-    if isinstance(client, LumidDataClient):
-        client.storage_put(bucket, key_prefix, payload, "text/plain")
-    else:
-        client.put_object(
-            bucket_name=bucket,
-            object_name=key_prefix,
-            data=BytesIO(payload),
-            length=len(payload),
-            content_type="text/plain",
-        )
+    client.put_object(
+        bucket_name=bucket,
+        object_name=key_prefix,
+        data=BytesIO(payload),
+        length=len(payload),
+        content_type="text/plain",
+    )
 
 
 async def _dump_output_locations(
@@ -868,45 +857,26 @@ async def _dump_output_locations(
                 sql.Identifier(table),
                 sql.Identifier(column),
             )
-            if envs.LUMID_DATA_URL:
-                rendered = insert_stmt.as_string(None)
-                lumid_data = LumidDataAsyncClient(
-                    base_url=envs.LUMID_DATA_URL,
-                    token=envs.LUMID_DATA_TOKEN,
-                    timeout_sec=envs.LUMID_DATA_TIMEOUT_SECONDS,
+            if compute_pool is None:
+                raise RuntimeError(
+                    "DATABASE_URL is not configured; cannot dump DB outputs"
                 )
-                for value in values:
-                    await lumid_data.sql(rendered, [value])
-            else:
-                if compute_pool is None:
-                    raise RuntimeError(
-                        "DATABASE_URL is not configured; cannot dump DB outputs"
-                    )
-                async with compute_pool.connection() as conn:
-                    async with conn.cursor() as cur:
-                        for value in values:
-                            await cur.execute(insert_stmt, (value,))
+            async with compute_pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    for value in values:
+                        await cur.execute(insert_stmt, (value,))
             continue
         assert isinstance(location, S3Location)
         normalized = normalize_s3_literal(location.prefix)
         bucket, key_prefix = _resolve_output_s3_to_physical(normalized)
         is_folder = normalized.endswith("/")
-        # The transport client is sync; offload so the event loop doesn't
+        # The Minio client is sync; offload so the event loop doesn't
         # block on large output writes during job-finalize.
-        client: LumidDataClient | Minio
-        if envs.LUMID_DATA_URL:
-            client = LumidDataClient(
-                base_url=envs.LUMID_DATA_URL,
-                token=envs.LUMID_DATA_TOKEN,
-                timeout_sec=envs.LUMID_DATA_TIMEOUT_SECONDS,
-            )
-        else:
-            if s3_client is None:
-                s3_client = _compute_minio_client()
-            client = s3_client
+        if s3_client is None:
+            s3_client = _compute_minio_client()
         await asyncio.to_thread(
             _write_output_value_set,
-            client,
+            s3_client,
             bucket,
             key_prefix,
             is_folder,
@@ -939,24 +909,15 @@ async def _validate_db_location_live(
         "SELECT 1 FROM information_schema.columns "
         "WHERE table_schema = %s AND table_name = %s AND column_name = %s"
     )
-    if envs.LUMID_DATA_URL:
-        lumid_data = LumidDataAsyncClient(
-            base_url=envs.LUMID_DATA_URL,
-            token=envs.LUMID_DATA_TOKEN,
-            timeout_sec=envs.LUMID_DATA_TIMEOUT_SECONDS,
+    if compute_pool is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="DATABASE_URL is not configured",
         )
-        result = await lumid_data.sql(column_exists_sql, [schema, table, column])
-        found = bool(result.rows)
-    else:
-        if compute_pool is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="DATABASE_URL is not configured",
-            )
-        async with compute_pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(column_exists_sql, (schema, table, column))
-                found = await cur.fetchone() is not None
+    async with compute_pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(column_exists_sql, (schema, table, column))
+            found = await cur.fetchone() is not None
     if not found:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -997,19 +958,13 @@ def _resolve_logical_s3_to_physical(logical: str) -> tuple[str, str]:
 
 
 def _resolve_output_s3_to_physical(logical: str) -> tuple[str, str]:
-    """Resolve output locations to compute S3 or the lumid.data archive prefix."""
-    if envs.S3_URL:
-        return _resolve_logical_s3_to_physical(logical)
-    if not (envs.LUMID_DATA_URL and envs.S3_ARCHIVE_PREFIX):
+    """Resolve output locations to compute S3."""
+    if not envs.S3_URL:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="S3_URL or S3_ARCHIVE_PREFIX is not configured",
+            detail="S3_URL is not configured",
         )
-    bucket, base_prefix = split_bucket_prefix(envs.S3_ARCHIVE_PREFIX)
-    rel = logical.lstrip("/")
-    if base_prefix:
-        return bucket, f"{base_prefix}/{rel}" if rel else base_prefix
-    return bucket, rel
+    return _resolve_logical_s3_to_physical(logical)
 
 
 def _validate_s3_location_live(location: S3Location, *, must_exist: bool) -> S3Location:
@@ -1017,25 +972,6 @@ def _validate_s3_location_live(location: S3Location, *, must_exist: bool) -> S3L
     if not must_exist:
         return location.model_copy(update={"prefix": normalized})
     bucket, key_prefix = _resolve_logical_s3_to_physical(normalized)
-    if envs.LUMID_DATA_URL:
-        lumid_data = LumidDataClient(
-            base_url=envs.LUMID_DATA_URL,
-            token=envs.LUMID_DATA_TOKEN,
-            timeout_sec=envs.LUMID_DATA_TIMEOUT_SECONDS,
-        )
-        try:
-            items = lumid_data.storage_list(bucket, prefix=key_prefix, limit=1)
-        except LumidDataClientError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"s3 prefix {normalized} not accessible: {exc}",
-            ) from exc
-        if not items:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"s3 prefix {normalized} missing on compute S3",
-            )
-        return location.model_copy(update={"prefix": normalized})
     client = _compute_minio_client()
     try:
         objs = client.list_objects(bucket, prefix=key_prefix, recursive=False)
@@ -1087,29 +1023,6 @@ async def _resolve_s3_input_values(
         )
     normalized = normalize_s3_literal(literal)
     bucket, key_prefix = _resolve_logical_s3_to_physical(normalized)
-
-    if envs.LUMID_DATA_URL:
-        lumid_data = LumidDataClient(
-            base_url=envs.LUMID_DATA_URL,
-            token=envs.LUMID_DATA_TOKEN,
-            timeout_sec=envs.LUMID_DATA_TIMEOUT_SECONDS,
-        )
-        try:
-            items = await asyncio.to_thread(
-                lumid_data.storage_list, bucket, prefix=key_prefix
-            )
-        except LumidDataClientError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"s3 resolve failed for input {input_name!r}: {exc}",
-            ) from exc
-        urls = [f"s3://{bucket}/{item.key}" for item in items if item.key]
-        if not urls:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"s3 resolve returned no files for input {input_name!r}",
-            )
-        return urls
 
     client = _compute_minio_client()
 

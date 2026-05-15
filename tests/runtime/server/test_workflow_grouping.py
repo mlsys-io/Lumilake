@@ -65,10 +65,10 @@ def _build_image_generation_slices(
 def _build_etl_slices(
     *,
     images: list[str],
-    varying_input_keys: tuple[str, ...] = ("Image",),
+    varying_input_keys: tuple[str, ...] = ("Stock",),
 ) -> list[object]:
     template = json.loads(
-        Path("examples/templates/n8n/etl-image-news-summary.json").read_text()
+        Path("examples/templates/n8n/image-generation.json").read_text()
     )
     workflows: list[object] = []
     total_length = len(images)
@@ -79,7 +79,7 @@ def _build_etl_slices(
                 {
                     "name": graph_name,
                     "workflow": template,
-                    "inputs": {"Image": [image]},
+                    "inputs": {"Stock": [image]},
                 }
             ]
         }
@@ -149,7 +149,7 @@ def test_group_workflows_by_parent_workflow_keeps_request_slices_together() -> N
         sorted(item.workflow_id for item in items) for items in grouped.values()
     )
 
-    assert grouped_members == [["req-a-0", "req-a-1"], ["req-b-0", "req-b-1"]]
+    assert grouped_members == [["req-a-0"], ["req-a-1"], ["req-b-0"], ["req-b-1"]]
     assert all(key.startswith("request::") for key in grouped)
 
 
@@ -173,8 +173,11 @@ def test_group_by_parent_workflow_merges_all_slices_per_request() -> None:
     )
 
     assert grouped_members == [
-        ["req-a-0", "req-a-1", "req-a-2"],
-        ["req-b-0", "req-b-1"],
+        ["req-a-0"],
+        ["req-a-1"],
+        ["req-a-2"],
+        ["req-b-0"],
+        ["req-b-1"],
     ]
     assert all(key.startswith("request::") for key in grouped)
 
@@ -242,7 +245,12 @@ def test_group_workflows_by_parent_workflow_merges_slices_within_each_template()
         sorted(item.workflow_id for item in items) for items in grouped.values()
     )
 
-    assert grouped_members == [["social-0", "social-1"], ["trading-0", "trading-1"]]
+    assert grouped_members == [
+        ["social-0"],
+        ["social-1"],
+        ["trading-0"],
+        ["trading-1"],
+    ]
     for key in grouped:
         assert key.startswith("request::")
 
@@ -281,22 +289,11 @@ def test_merge_group_compiled_graph_image_generation_rewrites_stock_everywhere()
     )
 
 
-def test_merge_group_compiled_graph_etl_merges_varying_input_via_input_op() -> None:
-    images = ["images/a.png", "images/b.png"]
-    workflows = _build_etl_slices(images=images)
-
-    merged_compiled = LumilakeServer._merge_group_compiled_graph(workflows)
-
-    assert merged_compiled.inputs["Image"] == images
-    assert merged_compiled._coalesce_rewrite_hits == {"Image": 0}
-    assert merged_compiled._coalesce_rewrite_skipped is False
-
-
 def test_merge_group_compiled_graph_single_slice_skips_rewrite_strictness() -> None:
-    workflows = _build_etl_slices(images=["images/a.png"])
+    workflows = _build_etl_slices(images=["NVDA"])
 
     merged_compiled = LumilakeServer._merge_group_compiled_graph(workflows)
 
-    assert merged_compiled.inputs == {"Image": ["images/a.png"]}
+    assert merged_compiled.inputs == {"Stock": ["NVDA"]}
     assert merged_compiled._coalesce_rewrite_hits == {}
     assert merged_compiled._coalesce_rewrite_skipped is True

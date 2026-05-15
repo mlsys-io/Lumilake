@@ -6,19 +6,19 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chatTrigger",
       "position": [
-        -1584,
-        0
+        -384,
+        -32
       ],
       "name": "Stock",
-      "id": "465bade4-cb18-4607-9aa0-f3630adb50f4",
+      "id": "172307de-a55d-433e-afba-87588bdc0bfd",
       "typeVersion": 1.4,
-      "webhookId": "workflow-news-report-render"
+      "webhookId": "workflow-image-generation"
     },
     {
       "parameters": {
-        "model": "google/gemma-3-27b-it",
+        "model": "Qwen/Qwen3-8B",
         "options": {
-          "maxTokens": 512,
+          "maxTokens": 768,
           "temperature": 0.4,
           "topK": 1,
           "topP": 1
@@ -26,30 +26,11 @@
       },
       "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
       "position": [
-        -1104,
-        336
+        96,
+        304
       ],
-      "name": "Summary LLM",
-      "id": "1e117472-c730-452c-bb2f-287042b068d4",
-      "typeVersion": 1
-    },
-    {
-      "parameters": {
-        "model": "google/gemma-3-27b-it",
-        "options": {
-          "maxTokens": 512,
-          "temperature": 0.3,
-          "topK": 1,
-          "topP": 1
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
-      "position": [
-        -560,
-        336
-      ],
-      "name": "Planner LLM",
-      "id": "233f4f0c-6116-4e68-86d3-2a806c631a29",
+      "name": "Text LLM",
+      "id": "34012434-2bf1-4ca6-9342-85a8d8aead3a",
       "typeVersion": 1
     },
     {
@@ -64,16 +45,16 @@
       },
       "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
       "position": [
-        240,
-        336
+        1200,
+        320
       ],
-      "name": "Critic VLM",
-      "id": "7c5cfc8a-91b3-44a9-ab87-897739cca243",
+      "name": "Vision LLM",
+      "id": "4571d831-7da8-412e-8e13-ffbefd987337",
       "typeVersion": 1
     },
     {
       "parameters": {
-        "model": "stabilityai/stable-diffusion-3.5-large",
+        "model": "Tongyi-MAI/Z-Image-Turbo",
         "options": {
           "maxTokens": 256,
           "temperature": 0.7,
@@ -83,26 +64,26 @@
       },
       "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
       "position": [
-        592,
-        336
+        1792,
+        304
       ],
-      "name": "Image Generation Model",
-      "id": "fac36a9e-abc2-43c1-a9f5-2d8d9a79b2ba",
+      "name": "Image Model",
+      "id": "806723eb-720e-4edb-85e0-4ef906c3da1b",
       "typeVersion": 1
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH scoped_news AS (\n  SELECT\n    symbol,\n    id,\n    title,\n    \"publishedDate\",\n    publisher,\n    source,\n    category,\n    path,\n    COALESCE(summary, text, headline) AS synopsis\n  FROM demo.news_metadata\n  WHERE symbol = '{{ $('Stock') }}'\n    AND \"publishedDate\" IS NOT NULL\n    AND path IS NOT NULL\n    AND path <> ''\n),\nranked AS (\n  SELECT\n    *,\n    ROW_NUMBER() OVER (\n      PARTITION BY COALESCE(NULLIF(category, ''), 'uncategorized')\n      ORDER BY \"publishedDate\"::timestamp DESC, id\n    ) AS category_rank,\n    ROW_NUMBER() OVER (\n      ORDER BY \"publishedDate\"::timestamp DESC, id\n    ) AS recency_rank\n  FROM scoped_news\n)\nSELECT\n  symbol,\n  id,\n  title,\n  \"publishedDate\",\n  publisher,\n  source,\n  category,\n  path,\n  synopsis,\n  synopsis AS summary,\n  recency_rank,\n  category_rank\nFROM ranked\nWHERE category_rank <= 10\nORDER BY \"publishedDate\"::timestamp DESC, id\nLIMIT 10;",
+        "query": "SELECT\n  symbol,\n  id,\n  title,\n  \"publishedDate\" AS published,\n  COALESCE(category, 'general') AS category,\n  LEFT(COALESCE(summary, text, ''), 300) AS synopsis,\n  path\nFROM lumilake_demo.news_metadata\nWHERE symbol = '{{ $('Stock') }}'\n  AND id IS NOT NULL\n  AND path IS NOT NULL\n  AND path <> ''\nORDER BY \"publishedDate\" DESC\nLIMIT 5;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.6,
       "position": [
-        -1440,
-        0
+        -240,
+        -32
       ],
-      "id": "3cb668d8-fc84-4118-98f0-5f3c639adb61",
+      "id": "5554610a-43aa-46b8-b873-a11bdac5a3e8",
       "name": "News Retrieval - SQL"
     },
     {
@@ -117,16 +98,16 @@
       "type": "n8n-nodes-base.s3",
       "typeVersion": 1,
       "position": [
-        -1264,
-        0
+        -64,
+        -32
       ],
-      "id": "c840438f-5456-43e8-9256-ea5d0d52bc67",
+      "id": "8909341c-c522-48c8-9dab-3119463273c9",
       "name": "News Retrieval - S3"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Summarize one retrieved article for {{ $('News Retrieval - SQL').item.symbol }} in 3 compact bullets.\nTitle: {{ $('News Retrieval - SQL').item.title }}\nPublished: {{ $('News Retrieval - SQL').item.publishedDate }}\nCategory: {{ $('News Retrieval - SQL').item.category }}\nMetadata summary: {{ $('News Retrieval - SQL').item.summary }}\nArtifact: {{ $('News Retrieval - S3') }}",
+        "text": "=Summarize one article for {{ $('News Retrieval - SQL').item.symbol }} in 3 compact bullets.\nTitle: {{ $('News Retrieval - SQL').item.title }}\nPublished: {{ $('News Retrieval - SQL').item.published }}\nCategory: {{ $('News Retrieval - SQL').item.category }}\nSynopsis: {{ $('News Retrieval - SQL').item.synopsis }}\nArtifact (truncated): {{ $('News Retrieval - S3') }}",
         "messages": {
           "messageValues": [
             {
@@ -138,18 +119,18 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        -1104,
-        0
+        96,
+        -32
       ],
       "name": "News Row Summary",
-      "id": "250a01d7-eb36-417d-bbbd-5261f63a4411",
+      "id": "477abab8-0a48-4d8b-8cef-80df6d5ba37a",
       "typeVersion": 1.9,
       "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"rowwise\",\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Create one concise investment-focused digest for {{ $('Stock') }} from articles in 2025-01-01 to 2025-03-31.\n\n```table\ntitle: {{ $('News Retrieval - SQL').item.title }}\npublishedDate: {{ $('News Retrieval - SQL').item.publishedDate }}\ncategory: {{ $('News Retrieval - SQL').item.category }}\nsummary: {{ $('News Row Summary').item.output }}\n```\n\nReturn sections: Key Signals, Risks, and Visual Priorities.",
+        "text": "=Build a concise investment-focused digest for {{ $('Stock') }} from the per-article summaries.\n\n```table\nsummary: {{ $('News Row Summary').item.output }}\n```\n\nReturn sections: Key Signals, Risks, and Visual Priorities.",
         "messages": {
           "messageValues": [
             {
@@ -161,22 +142,22 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        -832,
-        0
+        368,
+        -32
       ],
       "name": "News Digest",
-      "id": "b0d17ac6-e3cf-4b8a-b70c-636f002733d4",
+      "id": "c70ac86c-226f-41cc-8621-523f39db4d49",
       "typeVersion": 1.9,
       "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Branch A (map/debate): create a data-first diffusion prompt from the digest.\n\nDigest:\n{{ $('News Digest') }}\n\nGoal: maximize factual anchoring, chart-like structure, and decision-useful signals.\n\nReturn exactly:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets\n- Debate Claim: 2 bullets on why this approach is stronger than a narrative-first layout",
+        "text": "=Compose a diffusion prompt for an investment infographic about {{ $('Stock') }} based on the digest below.\n\nDigest:\n{{ $('News Digest') }}\n\nReturn exactly:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets",
         "messages": {
           "messageValues": [
             {
-              "message": "You are Prompt Mapper A. Argue for data density, factual grounding, and explicit information hierarchy."
+              "message": "You build diffusion prompts that balance factual anchoring and visual clarity."
             }
           ]
         },
@@ -184,57 +165,11 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        -560,
-        -96
-      ],
-      "name": "Render Prompt A",
-      "id": "ba3c7483-8d6c-41a8-bd56-0a210b8fc4b2",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"is-output\": false\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Branch B (map/debate): create a narrative-first diffusion prompt from the digest.\n\nDigest:\n{{ $('News Digest') }}\n\nGoal: maximize story flow, readability, and thematic coherence while keeping factual anchors.\n\nReturn exactly:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets\n- Debate Claim: 2 bullets on why this approach is stronger than a data-first layout",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are Prompt Mapper B. Argue for narrative clarity, scene composition, and visual storytelling with factual fidelity."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        -560,
-        96
-      ],
-      "name": "Render Prompt B",
-      "id": "23cabd5e-a12e-49d5-b769-7744cee8fd72",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"is-output\": false\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Map-reduce (text only): merge two debated prompt branches into one base render prompt.\n\nDigest:\n{{ $('News Digest') }}\n\nBranch A:\n{{ $('Render Prompt A') }}\n\nBranch B:\n{{ $('Render Prompt B') }}\n\nReturn only one merged prompt package:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets\n\nRules:\n- Keep the strongest parts of both branches\n- Resolve conflicts explicitly\n- Preserve financial infographic constraints",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are Prompt Reducer 1. Synthesize both branches into one high-quality base diffusion prompt."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        -288,
-        0
+        640,
+        -32
       ],
       "name": "Render Prompt",
-      "id": "a1c97450-6b5c-4e06-99a7-0130745f9404",
+      "id": "21ff0e38-c482-4d39-ad81-187a78a52fc9",
       "typeVersion": 1.9,
       "notes": "{\n  \"op-type\": \"text-generation\",\n  \"is-output\": false\n}"
     },
@@ -249,22 +184,22 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        -32,
-        0
+        912,
+        -32
       ],
       "name": "Render Image",
-      "id": "a4e6d0c8-903d-4c2a-87dc-cffe0ffabad4",
+      "id": "a5a1c252-847a-4b61-b10a-8c1e78d0c141",
       "typeVersion": 1.9,
       "notes": "{\n  \"op-type\": \"image-generation\",\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Evaluate this rendered infographic for factual alignment against the digest.\n\nDigest:\n{{ $('News Digest') }}\n\nPrompt:\n{{ $('Render Prompt') }}\n\nReturn: alignment score (1-10), 3 issues, 3 concrete prompt fixes.",
+        "text": "=Evaluate this rendered infographic.\n\nDigest:\n{{ $('News Digest') }}\n\nPrompt:\n{{ $('Render Prompt') }}\n\nReturn: alignment score (1-10), design score (1-10), 3 issues, 3 concrete prompt fixes.",
         "messages": {
           "messageValues": [
             {
-              "message": "You are Critic A. Focus on factual faithfulness and signal emphasis."
+              "message": "You are a visual critic. Score factual alignment and design quality, then list concrete fixes."
             }
           ]
         },
@@ -272,22 +207,22 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        240,
-        -176
+        1200,
+        -32
       ],
-      "name": "Critic A",
-      "id": "23faf1a0-7411-4077-b4f7-5f035c5f65e7",
+      "name": "Critic",
+      "id": "9feaee6e-8562-4bbe-af93-2550a52148a9",
       "typeVersion": 1.9,
       "notes": "{\n  \"op-type\": \"image-understanding\",\n  \"is-output\": false,\n  \"image-input\": \"{{ $('Render Image') }}\"\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Evaluate this rendered infographic for composition and readability quality.\n\nDigest:\n{{ $('News Digest') }}\n\nPrompt:\n{{ $('Render Prompt') }}\n\nReturn: design score (1-10), 3 issues, 3 concrete prompt fixes.",
+        "text": "=Refine the diffusion prompt for {{ $('Stock') }} using the critic feedback below.\n\nDigest:\n{{ $('News Digest') }}\n\nOriginal Prompt:\n{{ $('Render Prompt') }}\n\nCritic:\n{{ $('Critic') }}\n\nReturn only the refined diffusion prompt text.",
         "messages": {
           "messageValues": [
             {
-              "message": "You are Critic B. Focus on layout, readability, and visual hierarchy."
+              "message": "You apply concrete critic feedback to improve the diffusion prompt."
             }
           ]
         },
@@ -295,110 +230,18 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        240,
-        0
+        1488,
+        -32
       ],
-      "name": "Critic B",
-      "id": "e83c5bfa-979b-4aa5-b6b3-3207dbde2b79",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"image-understanding\",\n  \"is-output\": false,\n  \"image-input\": \"{{ $('Render Image') }}\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Evaluate this rendered infographic for narrative coherence and information density.\n\nDigest:\n{{ $('News Digest') }}\n\nPrompt:\n{{ $('Render Prompt') }}\n\nReturn: coherence score (1-10), 3 issues, 3 concrete prompt fixes.",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are Critic C. Focus on story flow and information prioritization."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        240,
-        176
-      ],
-      "name": "Critic C",
-      "id": "d355f17d-ce96-4eae-b536-0334927523b8",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"image-understanding\",\n  \"is-output\": false,\n  \"image-input\": \"{{ $('Render Image') }}\"\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Branch A judge (map/debate, text only): refine the base prompt using critic feedback with a fidelity-first stance.\n\nDigest:\n{{ $('News Digest') }}\n\nBase Prompt:\n{{ $('Render Prompt') }}\n\nCritic A:\n{{ $('Critic A') }}\n\nCritic B:\n{{ $('Critic B') }}\n\nCritic C:\n{{ $('Critic C') }}\n\nReturn exactly:\n- Candidate Prompt: ...\n- Negative Prompt: ...\n- Debate Claim: 2 bullets on why this candidate should win over a design-first candidate",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are Judge Mapper A. Prioritize factual alignment and signal preservation over stylistic flourish."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        528,
-        -96
-      ],
-      "name": "Prompt Judge A",
-      "id": "11f9db0e-809f-49b2-9b62-3bdb7792728b",
+      "name": "Refined Prompt",
+      "id": "598b5a8a-6170-431c-a391-abb52126026f",
       "typeVersion": 1.9,
       "notes": "{\n  \"op-type\": \"text-generation\",\n  \"is-output\": false\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Branch B judge (map/debate, text only): refine the base prompt using critic feedback with a design-first stance.\n\nDigest:\n{{ $('News Digest') }}\n\nBase Prompt:\n{{ $('Render Prompt') }}\n\nCritic A:\n{{ $('Critic A') }}\n\nCritic B:\n{{ $('Critic B') }}\n\nCritic C:\n{{ $('Critic C') }}\n\nReturn exactly:\n- Candidate Prompt: ...\n- Negative Prompt: ...\n- Debate Claim: 2 bullets on why this candidate should win over a fidelity-first candidate",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are Judge Mapper B. Prioritize readability, composition, and narrative coherence while maintaining core facts."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        528,
-        96
-      ],
-      "name": "Prompt Judge B",
-      "id": "55bf82b0-6f3b-4ce6-8c1d-cf7ae6d03643",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"is-output\": false\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "=Map-reduce (text only): choose and merge the best elements from both judge branches into a final diffusion prompt.\n\nDigest:\n{{ $('News Digest') }}\n\nBase Prompt:\n{{ $('Render Prompt') }}\n\nJudge Branch A:\n{{ $('Prompt Judge A') }}\n\nJudge Branch B:\n{{ $('Prompt Judge B') }}\n\nReturn only the final diffusion prompt text.\n\nRules:\n- Balance factual fidelity and visual clarity\n- Apply critic fixes that materially improve output quality\n- Remove redundant or conflicting instructions",
-        "messages": {
-          "messageValues": [
-            {
-              "message": "You are Prompt Reducer 2. Produce the final generation prompt by reducing debated judge branches."
-            }
-          ]
-        },
-        "batching": {}
-      },
-      "type": "@n8n/n8n-nodes-langchain.chainLlm",
-      "position": [
-        784,
-        0
-      ],
-      "name": "Prompt Judge",
-      "id": "db6baf7b-b86e-4003-8f20-5d79f11db426",
-      "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"is-output\": false\n}"
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "={{ $('Prompt Judge') }}",
+        "text": "={{ $('Refined Prompt') }}",
         "messages": {
           "messageValues": []
         },
@@ -406,11 +249,11 @@
       },
       "type": "@n8n/n8n-nodes-langchain.chainLlm",
       "position": [
-        1056,
-        0
+        1792,
+        -32
       ],
       "name": "Final Image",
-      "id": "ba162bae-6114-407b-961b-335ef0021535",
+      "id": "4ec120c8-d581-40ca-b96a-c2ebfac2f258",
       "typeVersion": 1.9,
       "notes": "{\n  \"op-type\": \"image-generation\",\n  \"is-output\": true,\n  \"output-field\": \"final_image\"\n}"
     }
@@ -427,7 +270,7 @@
         ]
       ]
     },
-    "Summary LLM": {
+    "Text LLM": {
       "ai_languageModel": [
         [
           {
@@ -439,22 +282,6 @@
             "node": "News Digest",
             "type": "ai_languageModel",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Planner LLM": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "Render Prompt A",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Render Prompt B",
-            "type": "ai_languageModel",
-            "index": 0
           },
           {
             "node": "Render Prompt",
@@ -462,45 +289,25 @@
             "index": 0
           },
           {
-            "node": "Prompt Judge A",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Prompt Judge B",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Prompt Judge",
+            "node": "Refined Prompt",
             "type": "ai_languageModel",
             "index": 0
           }
         ]
       ]
     },
-    "Critic VLM": {
+    "Vision LLM": {
       "ai_languageModel": [
         [
           {
-            "node": "Critic A",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Critic B",
-            "type": "ai_languageModel",
-            "index": 0
-          },
-          {
-            "node": "Critic C",
+            "node": "Critic",
             "type": "ai_languageModel",
             "index": 0
           }
         ]
       ]
     },
-    "Image Generation Model": {
+    "Image Model": {
       "ai_languageModel": [
         [
           {
@@ -553,33 +360,6 @@
       "main": [
         [
           {
-            "node": "Render Prompt A",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Render Prompt B",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Render Prompt A": {
-      "main": [
-        [
-          {
-            "node": "Render Prompt",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Render Prompt B": {
-      "main": [
-        [
-          {
             "node": "Render Prompt",
             "type": "main",
             "index": 0
@@ -602,94 +382,25 @@
       "main": [
         [
           {
-            "node": "Critic A",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Critic B",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Critic C",
+            "node": "Critic",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Critic A": {
+    "Critic": {
       "main": [
         [
           {
-            "node": "Prompt Judge A",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Prompt Judge B",
+            "node": "Refined Prompt",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Critic B": {
-      "main": [
-        [
-          {
-            "node": "Prompt Judge A",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Prompt Judge B",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Critic C": {
-      "main": [
-        [
-          {
-            "node": "Prompt Judge A",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Prompt Judge B",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prompt Judge A": {
-      "main": [
-        [
-          {
-            "node": "Prompt Judge",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prompt Judge B": {
-      "main": [
-        [
-          {
-            "node": "Prompt Judge",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prompt Judge": {
+    "Refined Prompt": {
       "main": [
         [
           {

@@ -66,6 +66,39 @@ def make_node_prefix(name: str) -> str:
     return f"{safe}_{digest}"
 
 
+def _inline_single_value_list_params(
+    template: str,
+    params: list[Any],
+) -> tuple[str, list[Any]]:
+    """Render single-element list params directly into the SQL/S3 template."""
+    rendered = template
+    remaining: list[Any] = []
+    for param in params:
+        if not isinstance(param, dict):
+            remaining.append(param)
+            continue
+        label = param.get("label")
+        data = param.get("data")
+        if (
+            not isinstance(label, str)
+            or not isinstance(data, dict)
+            or data.get("type") != "list"
+        ):
+            remaining.append(param)
+            continue
+        items = data.get("items")
+        if not isinstance(items, list) or len(items) != 1:
+            remaining.append(param)
+            continue
+        placeholder = "{" + label + "}"
+        if placeholder not in rendered:
+            remaining.append(param)
+            continue
+        value = str(items[0]).replace("'", "''")
+        rendered = rendered.replace(placeholder, value)
+    return rendered, remaining
+
+
 @dataclass
 class RuntimeGraph:
     nodes: dict[str, RuntimeOp]
@@ -482,7 +515,7 @@ class RuntimeGraphBuilder:
         }
         if enable_mm_embeds:
             cfg["enable_mm_embeds"] = True
-            cfg["limit_mm_per_prompt"] = {"images": 1}
+            cfg["limit_mm_per_prompt"] = {"image": 1}
         return cfg
 
     def _build_output_spec(
@@ -705,15 +738,18 @@ class RuntimeGraphBuilder:
             return embedding_data_spec, batch_column, []
 
         if isinstance(image_source_op, ImageGenerationOp):
+            resolved_path = (
+                "items.image" if llm_op.image_path == "images" else llm_op.image_path
+            )
             embedding_data_spec = {
                 "type": "list",
                 "node": image_source_id,
-                "path": llm_op.image_path,
+                "path": resolved_path,
             }
             batch_column = {
                 "label": f"{image_source_id}_batch",
                 "node": image_source_id,
-                "path": llm_op.image_path,
+                "path": resolved_path,
             }
             return embedding_data_spec, batch_column, [image_source_id]
 
@@ -851,6 +887,11 @@ class RuntimeGraphBuilder:
                     seen.add(node)
                     dependencies.append(node)
             resolved_params.append(param)
+
+        if spec_type in {"sql", "s3"}:
+            template, resolved_params = _inline_single_value_list_params(
+                template, resolved_params
+            )
 
         data_spec: dict[str, Any] = {
             "type": spec_type,
@@ -997,6 +1038,60 @@ class RuntimeGraphBuilder:
         dsl_to_runtime: dict[str, list[str]] | None = None,
         runtime_nodes: dict[str, RuntimeOp] | None = None,
     ) -> RuntimeOp:
+        if isinstance(llm_op, ImageGenerationOp):
+            visited_node_ids.add(llm_op_id)
+            visited_node_ids.add(llm_op.content.id)
+            inference_spec = self._build_inference_spec_from_config(llm_op.config)
+            inference_spec.update(
+                {
+                    "num_inference_steps": 8,
+                    "guidance_scale": 1.0,
+                    "height": 1024,
+                    "width": 1024,
+                }
+            )
+            content_op = llm_op.content
+            if (
+                isinstance(content_op, FormatOp)
+                and content_op.template == "{ref0}"
+                and len(content_op.inputs) == 1
+            ):
+                visited_node_ids.add(content_op.id)
+                content_op = content_op.inputs[0]
+            if isinstance(content_op, InputOp):
+                items = inputs_dict.get(content_op.name)
+                if items is None:
+                    raise ValueError(
+                        f"ImageGenerationOp '{llm_op_id}' content references"
+                        f" InputOp {content_op.name!r} with no values supplied."
+                    )
+                content_data_spec: dict[str, Any] = {
+                    "type": "list",
+                    "items": list(items),
+                }
+                content_dependencies: list[str] = []
+            else:
+                content_data_spec = {
+                    "type": "list",
+                    "node": content_op.id,
+                    "path": "items.output",
+                }
+                content_dependencies = [content_op.id]
+            return self._create_runtime_op(
+                name=llm_op_id,
+                task_type="omni_text2image",
+                data_spec=content_data_spec,
+                model_spec=self._build_model_spec(llm_op.config, "omni"),
+                inference_spec=inference_spec,
+                backend="omni",
+                model=llm_op.config.model,
+                dependencies=content_dependencies or None,
+                output_spec=self._build_output_spec(
+                    _default_output_destination(),
+                    ["results.json", "images/"],
+                ),
+            )
+
         upstream_llm_ids, template_spec = self._infer_structural_messages(
             llm_op_id,
             graph_dict,
@@ -1006,10 +1101,7 @@ class RuntimeGraphBuilder:
             runtime_nodes=runtime_nodes,
         )
 
-        if isinstance(llm_op, ImageGenerationOp):
-            task_type = "diffusion"
-            backend = "diffusers"
-        elif task_type_override == "data_profile":
+        if task_type_override == "data_profile":
             task_type = "data_profiling"
             backend = "data_profiling"
         else:
@@ -1021,19 +1113,6 @@ class RuntimeGraphBuilder:
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
-
-        if task_type == "diffusion":
-            inference_spec.update(
-                {
-                    "num_inference_steps": 30,
-                    "guidance_scale": 7.5,
-                    "height": 768,
-                    "width": 768,
-                }
-            )
-            output_spec = self._build_output_spec(
-                {"type": "http", "timeoutSec": 1800}, ["results.json", "images/"]
-            )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             columns: list[dict[str, Any]] = []

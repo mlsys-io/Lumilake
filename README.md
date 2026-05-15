@@ -13,7 +13,7 @@ Lumilake is a data analytics engine for agentic workflows. It accepts workflow s
 - HALO scheduling for multi-step AI and data workflows.
 - A FastAPI server for job submission, status, cancellation, results, workers, and traces.
 - A CLI and Python SDK for local deployment and server API access.
-- Data access through either lumid.data forwarding or direct PostgreSQL and S3-compatible storage.
+- Data access through direct PostgreSQL and S3-compatible storage; agent-style retrievals additionally route through lumid.data when `LUMID_DATA_URL` is set.
 - Shared hook integration through `lumid-hooks`, plus Lumilake-owned optimizer plugins.
 
 ## Install
@@ -54,25 +54,38 @@ lumilake deploy -C ~/lumilake-deploy up                 # bring the stack up via
 
 `LUMILAKE_DEPLOY_DIR=~/lumilake-deploy` is an equivalent override. The deployment directory only needs to hold your `.env` files (and any local state docker compose creates) — the compose file and server image are resolved from the installed `lumilake-deploy` package and GHCR. The server listens on `http://127.0.0.1:9000` by default — open `/docs` for the API browser.
 
-Note: a real workflow run also requires running PostgreSQL and S3-compatible storage (or `LUMID_DATA_URL` set to forward through lumid.data). See `docs/ENV.md` for the env contract.
+Note: a real workflow run also requires running PostgreSQL and S3-compatible storage; agent-style retrievals (`DataRetrievalOp` with `type: agent`) additionally require `LUMID_DATA_URL`. See `docs/ENV.md` for the env contract. If you don't have your own data plane, the repo ships a bundled Postgres + MinIO at `scripts/dev/compose.data-plane.yml` — see `docs/E2E_DEMO.md` for the full three-step demo flow (data plane → load demo data → run a workflow).
 
-Submit and inspect a workflow:
+Submit and inspect a workflow. From a source checkout the example
+workflow file is at `examples/templates/yaml/trading-agent.yaml`;
+PyPI installs do not ship the templates, so pass an absolute path to a
+workflow file you have locally:
 
 ```bash
+# From a source checkout:
 uv run lumilake login http://127.0.0.1:9000
-uv run lumilake job submit examples/templates/yaml/image-generation.yaml --format yaml --input Stock=AAPL --output-prefix demo/image-generation
-uv run lumilake job list
-uv run lumilake job watch <job_id>
+uv run lumilake job submit examples/templates/yaml/trading-agent.yaml \
+    --format yaml --input 'Stock=NVDA,AAPL,MSFT' --output-prefix demo/trading-agent
+
+# From a PyPI install (lumilake on PATH; supply your own workflow file):
+lumilake login http://127.0.0.1:9000
+lumilake job submit /path/to/your/workflow.yaml \
+    --format yaml --input 'Stock=NVDA,AAPL,MSFT' --output-prefix demo/trading-agent
+
+lumilake job list
+lumilake job watch <job_id>
 ```
+
+See `docs/E2E_DEMO.md` for a full reproduction using the bundled demo
+workflows and dataset.
 
 ## Data Access
 
-Lumilake supports two data-plane modes:
+- **SQL retrievals** connect directly to `DATABASE_URL`.
+- **S3 retrievals** connect directly to `S3_URL`.
+- **Agent retrievals** (`DataRetrievalOp` with `type: agent`) require `LUMID_DATA_URL` and route through lumid.data's `/agent/v1` endpoint.
 
-- **lumid.data mode**: set `LUMID_DATA_URL`; Lumilake forwards SQL and storage operations to lumid.data.
-- **Direct mode**: set `DATABASE_URL`, `S3_URL`, and `S3_USER_DATA_PREFIX` to use existing PostgreSQL and S3-compatible services directly.
-
-Job records and runtime artifacts are written under `S3_ARCHIVE_PREFIX`. In lumid.data mode, the archive operations are also forwarded through lumid.data.
+Job records and runtime artifacts are written under `S3_ARCHIVE_PREFIX` using the same `S3_URL` connection.
 
 ## Deployment
 

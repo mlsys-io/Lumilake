@@ -59,35 +59,41 @@ LUMILAKE_JOB_MANAGER_TYPE: str = os.environ.get(
 LUMILAKE_RUNTIME_MANAGER_TYPE: str = os.environ.get(
     "LUMILAKE_RUNTIME_MANAGER_TYPE", "default"
 ).lower()
+# ``or "<default>"`` so an empty env value (KEY="" in .env) falls through
+# to the default. ``os.environ.get(k, default)`` only uses ``default``
+# when the key is *unset*; an empty-string value bypasses it and the
+# subsequent ``int()`` / ``float()`` would crash.
 LUMILAKE_OPTIMIZER_BATCH_SIZE: int = int(
-    os.environ.get("LUMILAKE_OPTIMIZER_BATCH_SIZE", "10")
+    os.environ.get("LUMILAKE_OPTIMIZER_BATCH_SIZE") or "10"
 )
 LUMILAKE_QUEUE_QUANTUM_HIGH: int = int(
-    os.environ.get("LUMILAKE_QUEUE_QUANTUM_HIGH", "20")
+    os.environ.get("LUMILAKE_QUEUE_QUANTUM_HIGH") or "20"
 )
 LUMILAKE_QUEUE_QUANTUM_MEDIUM: int = int(
-    os.environ.get("LUMILAKE_QUEUE_QUANTUM_MEDIUM", "10")
+    os.environ.get("LUMILAKE_QUEUE_QUANTUM_MEDIUM") or "10"
 )
-LUMILAKE_QUEUE_QUANTUM_LOW: int = int(os.environ.get("LUMILAKE_QUEUE_QUANTUM_LOW", "5"))
-LUMILAKE_STARVATION_LIMIT: int = int(os.environ.get("LUMILAKE_STARVATION_LIMIT", "3"))
+LUMILAKE_QUEUE_QUANTUM_LOW: int = int(
+    os.environ.get("LUMILAKE_QUEUE_QUANTUM_LOW") or "5"
+)
+LUMILAKE_STARVATION_LIMIT: int = int(os.environ.get("LUMILAKE_STARVATION_LIMIT") or "3")
 LUMILAKE_BATCH_ACCUMULATION_SECONDS: float = float(
-    os.environ.get("LUMILAKE_BATCH_ACCUMULATION_SECONDS", "0")
+    os.environ.get("LUMILAKE_BATCH_ACCUMULATION_SECONDS") or "0"
 )
 LUMILAKE_CPU_WORKER_GROUP_SIZE: int = int(
-    os.environ.get("LUMILAKE_CPU_WORKER_GROUP_SIZE", "0")
+    os.environ.get("LUMILAKE_CPU_WORKER_GROUP_SIZE") or "0"
 )
 LUMILAKE_GPU_WORKER_GROUP_SIZE: int = int(
-    os.environ.get("LUMILAKE_GPU_WORKER_GROUP_SIZE", "0")
+    os.environ.get("LUMILAKE_GPU_WORKER_GROUP_SIZE") or "0"
 )
 
 LUMILAKE_POLL_TIMEOUT_SECONDS: float = float(
-    os.environ.get("LUMILAKE_POLL_TIMEOUT_SECONDS", "inf")
+    os.environ.get("LUMILAKE_POLL_TIMEOUT_SECONDS") or "inf"
 )
 LUMILAKE_POLL_INTERVAL_SECONDS: float = float(
-    os.environ.get("LUMILAKE_POLL_INTERVAL_SECONDS", "5")
+    os.environ.get("LUMILAKE_POLL_INTERVAL_SECONDS") or "5"
 )
 LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS: float = float(
-    os.environ.get("LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", "60")
+    os.environ.get("LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS") or "60"
 )
 
 # Optional data-plane forwarding via lumid.data. When ``LUMID_DATA_URL``
@@ -96,12 +102,15 @@ LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS: float = float(
 # stays the default when the URL is empty.
 LUMID_DATA_URL: str = os.environ.get("LUMID_DATA_URL", "").strip()
 LUMID_DATA_TOKEN: str | None = os.environ.get("LUMID_DATA_TOKEN") or None
+# ``or "<default>"`` covers the LUMID_DATA_TIMEOUT_SECONDS="" case —
+# ``os.environ.get(k, default)`` returns "" if the key is set to empty,
+# bypassing the default and crashing ``float("")``.
 LUMID_DATA_TIMEOUT_SECONDS: float = float(
-    os.environ.get("LUMID_DATA_TIMEOUT_SECONDS", "30")
+    os.environ.get("LUMID_DATA_TIMEOUT_SECONDS") or "30"
 )
 
 LUMILAKE_HTTP_TIMEOUT_SECONDS: float = float(
-    os.environ.get("LUMILAKE_HTTP_TIMEOUT_SECONDS", "300")
+    os.environ.get("LUMILAKE_HTTP_TIMEOUT_SECONDS") or "300"
 )
 LUMILAKE_PLUGINS: tuple[str, ...] = tuple(
     plugin

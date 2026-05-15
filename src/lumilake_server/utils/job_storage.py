@@ -6,8 +6,6 @@ from dataclasses import asdict
 from io import BytesIO
 from typing import Any, Literal, Protocol
 
-from lumid_data.sdk import Client as LumidDataClient
-from lumid_data.sdk import ClientError as LumidDataClientError
 from lumilake import envs
 from minio import Minio
 from minio.error import S3Error
@@ -72,30 +70,6 @@ class _MinioBackend:
             resp.close()
             resp.release_conn()
         return body, stat.content_type or "application/octet-stream"
-
-
-class _LumidDataBackend:
-    def __init__(
-        self, client: LumidDataClient, bucket: str, logger: logging.Logger
-    ) -> None:
-        self._client = client
-        self._bucket = bucket
-        self._logger = logger
-
-    def ensure_bucket(self) -> None:
-        return
-
-    def put(self, key: str, body: bytes, content_type: str) -> None:
-        self._client.storage_put(self._bucket, key, body, content_type)
-
-    def get(self, key: str) -> tuple[bytes, str]:
-        try:
-            body = self._client.storage_get(self._bucket, key)
-        except LumidDataClientError as exc:
-            if " 404)" in str(exc) or " 404 " in str(exc):
-                raise ArchiveNotFound(key) from exc
-            raise
-        return body, "application/octet-stream"
 
 
 def _normalize_payload(value: Any) -> Any:
@@ -294,12 +268,7 @@ class InMemoryJobStorage(JobStorage):
 
 
 class PersistentJobStorage(JobStorage):
-    """Archive backed by S3 (direct) or lumid.data (data plane).
-
-    When ``LUMID_DATA_URL`` is set we route every put/get through
-    lumid.data's storage surface and skip ``S3_URL`` entirely.
-    Otherwise we use a Minio client derived from ``S3_URL``.
-    """
+    """Archive backed by direct S3 (Minio client over ``S3_URL``)."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -310,13 +279,6 @@ class PersistentJobStorage(JobStorage):
         self.backend.ensure_bucket()
 
     def _build_backend(self) -> _ArchiveBackend:
-        if envs.LUMID_DATA_URL:
-            client = LumidDataClient(
-                base_url=envs.LUMID_DATA_URL,
-                token=envs.LUMID_DATA_TOKEN,
-                timeout_sec=envs.LUMID_DATA_TIMEOUT_SECONDS,
-            )
-            return _LumidDataBackend(client, self.bucket, self.logger)
         endpoint = envs.S3_ENDPOINT
         access_key = envs.S3_ACCESS_KEY
         connection_value = envs.S3_CONNECTION_VALUE

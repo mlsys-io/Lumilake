@@ -9,6 +9,8 @@ import asyncio
 import copy
 import heapq
 import json
+import mimetypes
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -773,6 +775,29 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 )
                 break
 
+            # Fail fast: any task failure terminates the workflow. Waiting
+            # for output-node terminality alone leaves the user staring at
+            # a "running" job for the full poll timeout when an upstream
+            # task has already crashed the downstream chain.
+            failed_tasks = [
+                tid
+                for tid, status in self._execution_task_status[batch_key].items()
+                if status == "FAILED"
+            ]
+            if failed_tasks:
+                self.logger.error(
+                    "Fast-failing request %s: %d task(s) reported FAILED at"
+                    " elapsed=%.1fs (first: %s)",
+                    request_info.request_id,
+                    len(failed_tasks),
+                    elapsed,
+                    failed_tasks[0],
+                )
+                raise RuntimeError(
+                    f"Task {failed_tasks[0]} failed; aborting workflow"
+                    f" ({len(failed_tasks)} task(s) failed in total)"
+                )
+
             await asyncio.sleep(poll_interval)
 
         # Check timeout
@@ -800,16 +825,15 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
             results_json = await self.fm.results.retrieve(output_task_id)
             items = results_json.get("items")
+            if not isinstance(items, list) or not items:
+                raise RuntimeError(f"output {output_op_id} produced no items")
 
-            if images := results_json.get("images"):
-                assert (
-                    items is None
-                ), "Expected either items or images in output, not both"
+            if any(isinstance(it.get("image"), dict) for it in items):
                 job_storage = get_job_storage()
                 prefix = envs.S3_ARCHIVE_PREFIX
                 if not prefix:
                     raise RuntimeError(
-                        "S3_ARCHIVE_PREFIX is required for S3 artifact outputs"
+                        "S3_ARCHIVE_PREFIX is required for image outputs"
                     )
                 prefix = prefix.strip("/")
                 bucket, _, key_prefix = prefix.partition("/")
@@ -819,44 +843,43 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     if key_prefix
                     else f"{request_info.request_id}/artifacts"
                 )
-                new_items = []
-                for image_spec in images:
-                    if url := image_spec.get("url"):
+                archived: list[dict[str, Any]] = []
+                for it in items:
+                    image_ref = it["image"]
+                    path = image_ref.get("path")
+                    if not path:
+                        raise RuntimeError(f"item missing image.path: {it}")
+                    raw_name = image_ref.get("filename") or Path(path).name
+                    filename = f"{output_op_id}-{Path(raw_name).name}"
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                            tmp_path = Path(tmp.name)
                         try:
-                            raw_name = image_spec["filename"]
-                            filename = f"{output_op_id}-{Path(raw_name).name}"
-                            # Download artifact via the SDK's httpx client
-                            download_resp = await self.fm._http.get(url)
-                            download_resp.raise_for_status()
-                            data = download_resp.content
-                            content_type = download_resp.headers.get(
-                                "Content-Type", "application/octet-stream"
+                            await self.fm.results.download_file(
+                                output_task_id, f"artifacts/{path}", tmp_path
                             )
-                            job_storage.save_artifact(
-                                request_info.request_id,
-                                filename,
-                                data,
-                                content_type,
-                            )
-                            s3_path = f"s3://{bucket}/{base_key}/{filename}"
-                            new_items.append(
-                                {
-                                    "output": s3_path,
-                                }
-                            )
-                        except Exception as e:
-                            self.logger.warning(
-                                f"Failed to download artifact {url}: {e}"
-                            )
-                            new_items.append({"output": "", "error": str(e)})
-                    else:
-                        new_items.append(image_spec)
-                items = new_items
-
-            if items is None:
-                raise RuntimeError(
-                    f"output {output_op_id} produced neither items nor images"
-                )
+                            data = tmp_path.read_bytes()
+                        finally:
+                            tmp_path.unlink(missing_ok=True)
+                        content_type = (
+                            mimetypes.guess_type(filename)[0]
+                            or "application/octet-stream"
+                        )
+                        job_storage.save_artifact(
+                            request_info.request_id,
+                            filename,
+                            data,
+                            content_type,
+                        )
+                        archived.append(
+                            {"output": f"s3://{bucket}/{base_key}/{filename}"}
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to archive artifact for {output_op_id}: {e}"
+                        )
+                        archived.append({"output": "", "error": str(e)})
+                items = archived
             # structural_outputs returns parsed JSON; re-serialize so callers
             # always see a string.
             outputs: list[str] = [

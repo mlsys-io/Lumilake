@@ -51,6 +51,25 @@ def load_project_env(project_root: Path) -> None:
         importlib.reload(envs)
 
 
+def _check_port_collisions(project_root: Path, layout: "_InfraLayout") -> None:
+    """Pre-flight: surface any host-port conflicts before docker compose starts."""
+    ports: dict[str, int] = {
+        "lumilake-server": int(envs.LUMILAKE_SERVER_PORT or 9000),
+    }
+    if layout.deploy_fm:
+        env_fm = project_root / FLOWMESH_ENV_FILE_NAME
+        if env_fm.is_file():
+            ports.update(fm_mod.env_ports(env_fm))
+    errors = fm_mod.check_ports(ports)
+    if errors:
+        for err in errors:
+            info(err)
+        raise DeployError(
+            "Port collision detected. Free the listed ports (or change them "
+            "in .env / .env.flowmesh) and retry."
+        )
+
+
 def _resolve_infra_layout(project_root: Path) -> _InfraLayout:
     """Decide which sibling infra to bring up alongside the server."""
     return _InfraLayout(deploy_fm=(project_root / FLOWMESH_ENV_FILE_NAME).is_file())
@@ -203,6 +222,8 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
     if options.reset:
         _reset_stack(project_root)
 
+    _check_port_collisions(project_root, layout)
+
     if layout.deploy_fm:
         env_fm = project_root / FLOWMESH_ENV_FILE_NAME
         fm_mod.stack_pull(env_fm)
@@ -210,7 +231,7 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
         if not fm_mod.wait_healthy(env_fm, timeout=120):
             raise DeployError("FlowMesh stack did not become healthy.")
         cpu_count = int(envs.LUMILAKE_CPU_WORKER_GROUP_SIZE or 0)
-        gpu_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        gpu_devices = os.environ.get("LUMILAKE_GPU_DEVICES", "")
         fm_mod.create_workers(env_fm, cpu_count=cpu_count, gpu_devices=gpu_devices)
 
     if options.no_server:

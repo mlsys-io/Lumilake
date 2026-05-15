@@ -33,8 +33,9 @@ def _stop_flowmesh_stack(project_root: Path, *, purge: bool) -> None:
     info("Stopping FlowMesh stack...")
     fm_impl.stop_stack(env_file=env_file)
     if purge:
+        # Drop containers + volumes, but keep .env.flowmesh so a subsequent
+        # ``deploy up`` doesn't need a fresh ``deploy init --flowmesh``.
         fm_impl.clean_stack(env_file=env_file)
-        env_file.unlink(missing_ok=True)
 
 
 def _remove_state_volumes(project_root: Path) -> None:

@@ -106,7 +106,7 @@ _stack = DockerComposeStack(
 )
 
 
-def _env_ports(env_file: str | Path) -> dict[str, int]:
+def env_ports(env_file: str | Path) -> dict[str, int]:
     """Extract configured ports from env file for collision checking."""
     env = parse_env_file(Path(env_file))
     return {
@@ -163,13 +163,16 @@ def stack_up(env_file: str | Path) -> None:
     _make_workdir()
     env_path = Path(env_file).resolve()
 
-    errors = check_ports(_env_ports(env_file))
+    errors = check_ports(env_ports(env_file))
     if errors:
         for e in errors:
             _error(e)
         raise RuntimeError("Fix port conflicts in .env.flowmesh and retry.")
 
-    args = ["up", "-d", "--wait"]
+    # ``--profile root`` is required so compose activates redis_control +
+    # redis_telemetry; the bundled FlowMesh compose puts them under
+    # ``profiles: [root]`` and without this flag they get silently skipped.
+    args = ["--profile", "root", "up", "-d", "--wait"]
 
     _info("Starting FlowMesh stack...")
     result = _stack.run(
@@ -184,7 +187,9 @@ def destroy_all_workers(env_file: str | Path) -> None:
     """Destroy every FlowMesh-managed worker via the SDK."""
     env = parse_env_file(Path(env_file))
     base_url = f"http://localhost:{env['SERVER_HTTP_PORT']}"
-    token = env["SERVER_TOKEN"]
+    # Bundled .env.flowmesh template ships no SERVER_TOKEN; default to
+    # empty (the unauthed local stack accepts an empty token).
+    token = env.get("SERVER_TOKEN", "")
     _info("Destroying FlowMesh workers...")
     with NodeClient(base_url=base_url, token=token) as client:
         client.destroy_all_workers(ignore_unreachable=True)
@@ -197,7 +202,11 @@ def stack_down(env_file: str | Path) -> None:
     env_path = Path(env_file).resolve()
     destroy_all_workers(env_path)
     _info("Stopping FlowMesh stack...")
-    _stack.run(["down"], env_file=env_path, env=_slug_env(env_path))
+    # ``--profile root`` so compose sees redis_control + redis_telemetry
+    # and tears them down too; without it they orphan and block re-up.
+    _stack.run(
+        ["--profile", "root", "down"], env_file=env_path, env=_slug_env(env_path)
+    )
 
 
 def stack_clean(env_file: str | Path) -> None:
@@ -206,7 +215,11 @@ def stack_clean(env_file: str | Path) -> None:
         return
     env_path = Path(env_file).resolve()
     _info("Cleaning FlowMesh stack (removing volumes)...")
-    _stack.run(["down", "-v"], env_file=env_path, env=_slug_env(env_path))
+    _stack.run(
+        ["--profile", "root", "down", "-v"],
+        env_file=env_path,
+        env=_slug_env(env_path),
+    )
 
 
 # Aliases used by ``stop.py`` — keep the older verb-first names readable.
@@ -281,7 +294,7 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
     """Create FlowMesh workers via SDK."""
     env = parse_env_file(Path(env_file))
     base_url = f"http://localhost:{env['SERVER_HTTP_PORT']}"
-    token = env["SERVER_TOKEN"]
+    token = env.get("SERVER_TOKEN", "")
 
     with NodeClient(base_url=base_url, token=token) as client:
         if cpu_count > 0:
@@ -291,9 +304,41 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
             for label, resp in created:
                 _info(f"Created {label}: {resp['name']}")
 
-        if gpu_devices:
+        device_ids = _resolve_gpu_device_ids(gpu_devices)
+        if not device_ids:
+            _info(
+                "No GPUs detected; skipping GPU worker creation. "
+                "Set LUMILAKE_GPU_DEVICES to a comma-separated list "
+                "of indices to force-create."
+            )
+        else:
             _pull_worker_image(env_file, "gpu")
-            _info(f"Creating GPU worker(s) for devices: {gpu_devices}...")
-            created = sdk_create_workers(client, kind="gpu", targets=gpu_devices)
+            targets = ",".join(device_ids)
+            _info(f"Creating {len(device_ids)} GPU worker(s): {targets}...")
+            created = sdk_create_workers(
+                client,
+                kind="gpu",
+                count=len(device_ids),
+                targets=targets,
+            )
             for label, resp in created:
                 _info(f"Created {label}: {resp['name']}")
+
+
+def _resolve_gpu_device_ids(gpu_devices: str) -> list[str]:
+    """Resolve a LUMILAKE_GPU_DEVICES-style string into explicit device ids."""
+    normalized = gpu_devices.strip()
+    if normalized and normalized.lower() != "all":
+        return [tok.strip() for tok in normalized.split(",") if tok.strip()]
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
