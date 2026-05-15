@@ -1,4 +1,5 @@
 import inspect
+import logging
 from argparse import ArgumentParser, Namespace
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from types import ModuleType
@@ -50,28 +51,64 @@ def _import_plugin(plugin_name: str) -> ModuleType:
     return module
 
 
-async def _load_plugins(stack: AsyncExitStack) -> None:
+async def _resolve_plugin_bindings(
+    plugin_name: str,
+    install: object,
+    stack: AsyncExitStack,
+) -> HookBindings:
+    if not callable(install):
+        raise TypeError(f"{plugin_name}.install must be callable")
+    installed = install()
+    if isinstance(installed, AbstractAsyncContextManager):
+        bindings = await stack.enter_async_context(installed)
+    elif inspect.isawaitable(installed):
+        bindings = await installed
+    else:
+        bindings = installed
+    if not isinstance(bindings, HookBindings):
+        raise TypeError(
+            f"{plugin_name}.install() must return HookBindings, got "
+            f"{type(bindings).__name__}"
+        )
+    return bindings
+
+
+async def _load_plugins(
+    stack: AsyncExitStack, logger: logging.Logger | None = None
+) -> None:
+    """Import every configured plugin, call ``install()``, and register the
+    returned ``HookBindings``.
+
+    A plugin that imports, defines ``install()``, but returns something
+    other than ``HookBindings`` (or whose ``install()`` raises) is logged
+    and skipped — one bad plugin does not take down the server.
+    """
+    plugin_logger = logger or logging.getLogger("lumilake_server.plugins")
     for plugin_name in envs.LUMILAKE_PLUGINS:
-        module = _import_plugin(plugin_name)
         try:
-            install = module.__dict__["install"]
-        except KeyError as exc:
-            raise TypeError(f"{plugin_name} must define install()") from exc
-        if not callable(install):
-            raise TypeError(f"{plugin_name}.install must be callable")
-        installed = install()
-        if isinstance(installed, AbstractAsyncContextManager):
-            bindings = await stack.enter_async_context(installed)
-        elif inspect.isawaitable(installed):
-            bindings = await installed
-        else:
-            bindings = installed
-        if not isinstance(bindings, HookBindings):
-            raise TypeError(
-                f"{plugin_name}.install() must return HookBindings, got "
-                f"{type(bindings).__name__}"
+            module = _import_plugin(plugin_name)
+        except Exception as exc:
+            plugin_logger.error(
+                "Plugin %r failed to import; skipping: %s", plugin_name, exc
             )
+            continue
+        install = module.__dict__.get("install")
+        if install is None:
+            plugin_logger.error(
+                "Plugin %r does not define install(); skipping.", plugin_name
+            )
+            continue
+        try:
+            bindings = await _resolve_plugin_bindings(plugin_name, install, stack)
+        except Exception as exc:
+            plugin_logger.error(
+                "Plugin %r install() failed validation; skipping: %s",
+                plugin_name,
+                exc,
+            )
+            continue
         register(bindings)
+        plugin_logger.info("Plugin %r registered.", plugin_name)
 
 
 def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
@@ -83,7 +120,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
         compute_pool: AsyncConnectionPool | None = None
 
         async with AsyncExitStack() as plugin_stack:
-            await _load_plugins(plugin_stack)
+            await _load_plugins(plugin_stack, logger=logger)
 
             if envs.DATABASE_URL:
                 compute_pool = AsyncConnectionPool(

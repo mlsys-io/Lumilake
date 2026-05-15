@@ -56,6 +56,30 @@ lumilake deploy -C ~/lumilake-deploy up                 # bring the stack up via
 
 Note: a real workflow run also requires running PostgreSQL and S3-compatible storage; agent-style retrievals (`DataRetrievalOp` with `type: agent`) additionally require `LUMID_DATA_URL`. See `docs/ENV.md` for the env contract. If you don't have your own data plane, the repo ships a bundled Postgres + MinIO at `scripts/dev/compose.data-plane.yml` — see `docs/E2E_DEMO.md` for the full three-step demo flow (data plane → load demo data → run a workflow).
 
+### Hello world
+
+The repo ships a `hello-world.yaml` template — `FormatOp` →
+`LambdaOp` → `LLMChatOp` — that is the smallest copy-paste starting
+point for a Lumilake YAML workflow. Submit it once the stack is up:
+
+```bash
+# From a source checkout:
+uv run lumilake job submit examples/templates/yaml/hello-world.yaml \
+    --format yaml --input 'Name=world' --output-prefix demo/hello-world
+
+# From a PyPI install (download the template alongside lumilake):
+curl -O https://raw.githubusercontent.com/mlsys-io/lumilake_OSS/main/examples/templates/yaml/hello-world.yaml
+lumilake job submit hello-world.yaml \
+    --format yaml --input 'Name=world' --output-prefix demo/hello-world
+lumilake job watch <job_id>
+lumilake job result <job_id>
+```
+
+Edit `config.model` at the bottom of the YAML to match a model your
+FlowMesh workers actually serve.
+
+### Real workflows
+
 Submit and inspect a workflow. From a source checkout the example
 workflow file is at `examples/templates/yaml/trading-agent.yaml`;
 PyPI installs do not ship the templates, so pass an absolute path to a
@@ -116,7 +140,7 @@ lumilake deploy down
 lumilake deploy clean
 ```
 
-Use `deploy down` to stop services while keeping data volumes. Use `deploy clean` or `deploy reset` only when you want to remove local stack state.
+Use `deploy down` to stop services while keeping data volumes (non-destructive). Use `deploy clean` or `deploy reset` only when you want to remove local stack state; both delete every Lumilake-managed volume, and `reset` prompts for confirmation by default (`--yes` skips the prompt).
 
 ## Python SDK
 

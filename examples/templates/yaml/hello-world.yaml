@@ -1,0 +1,55 @@
+name: hello-world
+
+# Smallest Lumilake YAML workflow: format a greeting, then ask the
+# configured LLM to acknowledge it. Designed as a copy-paste starting
+# point — every op is essential, no DB / S3 retrievals, no agent mode.
+#
+# Inputs:  Name (one greeting per slice)
+# Output:  reply (LLM response text)
+#
+# Runtime requirements:
+#   - A standard ``lumilake deploy up`` (server + a reachable FlowMesh
+#     orchestrator at ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL``).
+#   - A FlowMesh worker that can serve the model named in ``config.model``
+#     below. Swap ``Qwen/Qwen3-8B`` for whatever your stack actually has.
+#
+# Submit:
+#   lumilake job submit examples/templates/yaml/hello-world.yaml \
+#       --format yaml --input 'Name=world' --output-prefix demo/hello-world
+
+inputs:
+  Name: ["world"]
+
+ops:
+  - id: "Greeting"
+    op: FormatOp
+    inputs: [Name]
+    template: "Hello, {name}!"
+    format_kwargs:
+      name: Name
+
+  - id: "Shout"
+    op: LambdaOp
+    inputs: ["Greeting"]
+    fn_name: shout
+    code: |
+      def shout(inputs: tuple[str, ...]) -> str:
+          (greeting,) = inputs
+          return greeting.upper()
+
+  - id: "Reply"
+    op: LLMChatOp
+    inputs: ["Shout"]
+    messages:
+      - role: system
+        content: "You are a friendly greeter. Reply in one short sentence."
+      - role: user
+        content: "Shout"
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 64
+      temperature: 0.2
+
+outputs:
+  - name: reply
+    ref: "Reply"

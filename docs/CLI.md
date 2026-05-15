@@ -47,13 +47,23 @@ The compose file and image are resolved from the installed `lumilake-deploy` pac
 | `lumilake deploy build` | Build the Lumilake server Docker image from source. |
 | `lumilake deploy pull` | Pull the published server image from the registry (`$LUMILAKE_REGISTRY`). |
 | `lumilake deploy up` | Start the local stack (image must already be present — run `pull` or `build` first). |
-| `lumilake deploy down [--wipe-archive]` | Stop the stack while keeping data volumes. |
-| `lumilake deploy clean` | Stop the stack and delete volumes. |
-| `lumilake deploy reset` | Clean reset, then start the stack again. |
+| `lumilake deploy down [--wipe-archive]` | Stop the stack but keep data volumes. Non-destructive. |
+| `lumilake deploy clean` | Stop the stack and delete volumes. Destructive. |
+| `lumilake deploy reset [--yes]` | Wipe every volume, then start the stack again. Destructive. |
 | `lumilake deploy status` | Show known stack container state. |
 | `lumilake deploy restart [service]` | Restart one service or the full stack. |
 | `lumilake deploy logs [service]` | Stream or tail service logs. |
 | `lumilake deploy update-flowmesh` | Re-lock and install the latest FlowMesh packages. |
+
+### `deploy down` vs `deploy reset`
+
+| Command | Stops services | Removes data volumes |
+|---------|----------------|----------------------|
+| `lumilake deploy down` | yes | no — archive (job records, run artifacts) and compute volumes survive, so `deploy up` resumes against the same state. `--wipe-archive` additionally wipes the FlowMesh runtime state. |
+| `lumilake deploy clean` | yes | yes (every Lumilake-managed volume) |
+| `lumilake deploy reset` | yes | yes (every Lumilake-managed volume), then re-runs `deploy up`. Prompts for confirmation; pass `--yes` to skip the prompt in scripts. |
+
+Use `deploy down` between sessions. Reach for `clean` / `reset` only when you intentionally want to drop the local stack state.
 
 ## Jobs
 
