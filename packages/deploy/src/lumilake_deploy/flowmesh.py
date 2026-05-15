@@ -304,9 +304,41 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
             for label, resp in created:
                 _info(f"Created {label}: {resp['name']}")
 
-        if gpu_devices:
+        device_ids = _resolve_gpu_device_ids(gpu_devices)
+        if not device_ids:
+            _info(
+                "No GPUs detected; skipping GPU worker creation. "
+                "Set CUDA_VISIBLE_DEVICES to a comma-separated list "
+                "of indices to force-create."
+            )
+        else:
             _pull_worker_image(env_file, "gpu")
-            _info(f"Creating GPU worker(s) for devices: {gpu_devices}...")
-            created = sdk_create_workers(client, kind="gpu", targets=gpu_devices)
+            targets = ",".join(device_ids)
+            _info(f"Creating {len(device_ids)} GPU worker(s): {targets}...")
+            created = sdk_create_workers(
+                client,
+                kind="gpu",
+                count=len(device_ids),
+                targets=targets,
+            )
             for label, resp in created:
                 _info(f"Created {label}: {resp['name']}")
+
+
+def _resolve_gpu_device_ids(gpu_devices: str) -> list[str]:
+    """Resolve a CUDA_VISIBLE_DEVICES-style string into explicit device ids."""
+    normalized = gpu_devices.strip()
+    if normalized and normalized.lower() != "all":
+        return [tok.strip() for tok in normalized.split(",") if tok.strip()]
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]

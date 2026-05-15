@@ -80,9 +80,14 @@ class RuntimeOp:
             "taskType": self.task_type,
             "data": self.data_spec,
         }
-        if self.task_type in {"inference", "diffusion", "embedding"}:
+        if self.task_type in {
+            "inference",
+            "diffusion",
+            "embedding",
+            "omni_text2image",
+        }:
             spec_payload["model"] = self.model_spec
-        if self.task_type in {"inference", "diffusion"}:
+        if self.task_type in {"inference", "diffusion", "omni_text2image"}:
             spec_payload["inference"] = self.inference_spec
         spec: dict[str, Any] = {
             "name": self.node_id,

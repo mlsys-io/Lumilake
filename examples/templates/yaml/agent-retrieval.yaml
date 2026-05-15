@@ -1,0 +1,264 @@
+name: agent-retrieval
+
+# Data-agent equity research workflow. Each ``type: agent`` retrieval
+# delegates the SQL planning to lumid.data /agent/v1 (requires
+# ``LUMID_DATA_URL`` on the server). The agent decides what to query
+# from the listed ``schema_scope`` tables.
+#
+# Inputs:  Stock (single symbol per slice; ``--batch-size 1`` is default)
+# Output:  research_summary
+
+inputs:
+  Stock: []
+
+ops:
+  # ---- Stage 1: SQL date planner -------------------------------------
+
+  - id: "SQL Date Planner"
+    op: LLMChatOp
+    inputs: [Stock]
+    messages:
+      - role: system
+        content: "You are a SQL date planner. Produce exactly one structured field named start_date."
+      - role: user
+        content: "Pick a single lookback start_date that yields ~24 months of trailing data. Return YYYY-MM-DD."
+    structural_outputs:
+      - name: start_date
+        type: datetime
+        min: "2023-01-01"
+        max: "2025-12-31"
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
+      temperature: 0.4
+      top_p: 1
+
+  # ---- Stage 2: 5 data-agent retrievals -------------------------------
+
+  - id: "Profile via Agent"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: agent
+      schema_scope: lumilake_demo.instrument_profile
+      output_format: jsonl
+      max_steps: 10
+      verify: false
+      description: "Pull {ref_stock}'s company name, sector, industry, market cap, beta, and CEO."
+      params:
+        - label: ref_stock
+          node: "Stock"
+
+  - id: "Fundamentals via Agent"
+    op: DataRetrievalOp
+    inputs: [Stock, "SQL Date Planner"]
+    data_spec:
+      type: agent
+      schema_scope: lumilake_demo.financial_income_statement
+      output_format: jsonl
+      max_steps: 10
+      verify: false
+      description: "Show {ref_stock}'s quarterly revenue, net income, and EPS from {ref_start_date} onward, averaged across the period."
+      params:
+        - label: ref_stock
+          node: "Stock"
+        - label: ref_start_date
+          node: "SQL Date Planner"
+          path: items.output.start_date
+
+  - id: "Market via Agent"
+    op: DataRetrievalOp
+    inputs: [Stock, "SQL Date Planner"]
+    data_spec:
+      type: agent
+      schema_scope: lumilake_demo.ohlc_10m,lumilake_demo.market_metrics
+      output_format: jsonl
+      max_steps: 10
+      verify: false
+      description: "For {ref_stock}, summarize price action since {ref_start_date} (recent high/low, average close, total volume) and add 52-week metrics from market_metrics."
+      params:
+        - label: ref_stock
+          node: "Stock"
+        - label: ref_start_date
+          node: "SQL Date Planner"
+          path: items.output.start_date
+
+  - id: "Insider via Agent"
+    op: DataRetrievalOp
+    inputs: [Stock, "SQL Date Planner"]
+    data_spec:
+      type: agent
+      schema_scope: lumilake_demo.insider_sentiment
+      output_format: jsonl
+      max_steps: 10
+      verify: false
+      description: "Insider sentiment for {ref_stock} since {ref_start_date}: net change, average mspr, sample count."
+      params:
+        - label: ref_stock
+          node: "Stock"
+        - label: ref_start_date
+          node: "SQL Date Planner"
+          path: items.output.start_date
+
+  - id: "News via Agent"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: agent
+      schema_scope: lumilake_demo.news_metadata
+      output_format: jsonl
+      max_steps: 10
+      verify: false
+      description: "Five most recent news articles for {ref_stock}: title, published date, category, and one-line synopsis."
+      params:
+        - label: ref_stock
+          node: "Stock"
+
+  # ---- Stage 3: Aspect reports ---------------------------------------
+
+  - id: "Fundamentals Report"
+    op: LLMChatOp
+    inputs: [Stock, "Profile via Agent", "Fundamentals via Agent"]
+    prompt:
+      template: "Write a fundamentals report for {ref0}.\n\n{df}\n\nReturn sections: Summary, Financial Strength, Profitability, Risks."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are a careful financial analyst. Cite the data; separate facts from assumptions."
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: profile
+        node: "Profile via Agent"
+        path: items.table
+      - label: financials
+        node: "Fundamentals via Agent"
+        path: items.table
+    structural_outputs:
+      - name: summary
+        type: string
+      - name: financial_strength
+        type: string
+      - name: profitability
+        type: string
+      - name: risks
+        type: string
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
+      temperature: 0.4
+      top_p: 1
+
+  - id: "Market Report"
+    op: LLMChatOp
+    inputs: [Stock, "Market via Agent", "Insider via Agent"]
+    prompt:
+      template: "Write a market and insider report for {ref0}.\n\n{df}\n\nReturn sections: Summary, Price Action, Insider Signal, Risks."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are a careful financial analyst. Cite the data; separate facts from assumptions."
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: market
+        node: "Market via Agent"
+        path: items.table
+      - label: insider
+        node: "Insider via Agent"
+        path: items.table
+    structural_outputs:
+      - name: summary
+        type: string
+      - name: price_action
+        type: string
+      - name: insider_signal
+        type: string
+      - name: risks
+        type: string
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
+      temperature: 0.4
+      top_p: 1
+
+  - id: "News Brief"
+    op: LLMChatOp
+    inputs: [Stock, "News via Agent"]
+    prompt:
+      template: "Summarize the recent news for {ref0}.\n\n{df}\n\nReturn one paragraph plus a comma-separated list of named entities mentioned."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are a financial news analyst. Identify the investment-relevant signals."
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: news
+        node: "News via Agent"
+        path: items.table
+    structural_outputs:
+      - name: summary
+        type: string
+      - name: entities
+        type: string
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
+      temperature: 0.4
+      top_p: 1
+
+  # ---- Stage 4: Research summary -------------------------------------
+
+  - id: "Research Summary"
+    op: LLMChatOp
+    inputs: [Stock, "Fundamentals Report", "Market Report", "News Brief"]
+    prompt:
+      template: "Combine the per-aspect reports into a research summary for {ref0}.\n\n{df}\n\nReturn fields: headline (one sentence), thesis (paragraph), key_risks (comma-separated), watch_list (comma-separated)."
+      format_kwargs:
+        ref0: Stock
+    messages:
+      - role: system
+        content: "You are head of equity research. Produce a tight, actionable summary."
+      - role: user
+        content: ""
+    aggregate_table:
+      - label: fundamentals_summary
+        node: "Fundamentals Report"
+        path: items.output.summary
+      - label: financial_strength
+        node: "Fundamentals Report"
+        path: items.output.financial_strength
+      - label: market_summary
+        node: "Market Report"
+        path: items.output.summary
+      - label: insider_signal
+        node: "Market Report"
+        path: items.output.insider_signal
+      - label: news_summary
+        node: "News Brief"
+        path: items.output.summary
+      - label: news_entities
+        node: "News Brief"
+        path: items.output.entities
+    structural_outputs:
+      - name: headline
+        type: string
+      - name: thesis
+        type: string
+      - name: key_risks
+        type: string
+      - name: watch_list
+        type: string
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
+      temperature: 0.4
+      top_p: 1
+
+outputs:
+  - name: research_summary
+    ref: "Research Summary"

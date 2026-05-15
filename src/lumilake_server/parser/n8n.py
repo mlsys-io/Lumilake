@@ -14,9 +14,15 @@ from .common import make_id as _make_id
 N8N_CHAIN_TYPE = "@n8n/n8n-nodes-langchain.chainLlm"
 N8N_CHAT_TRIGGER = "@n8n/n8n-nodes-langchain.chatTrigger"
 N8N_MODEL_SPEC = "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference"
+N8N_MODEL_NODE_TYPES = {
+    N8N_MODEL_SPEC,
+    "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+    "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+}
 N8N_CODE_NODE = "n8n-nodes-base.code"
 N8N_POSTGRES_NODE = "n8n-nodes-base.postgres"
 N8N_S3_NODE = "n8n-nodes-base.s3"
+N8N_AGENT_NODE = "@n8n/n8n-nodes-langchain.agent"
 
 
 def extract_chat_trigger_inputs(workflow: dict[str, Any]) -> dict[str, list[str]]:
@@ -105,10 +111,11 @@ def _parse_n8n_workflow(
     allowed_types = {
         N8N_CHAIN_TYPE,
         N8N_CHAT_TRIGGER,
-        N8N_MODEL_SPEC,
         N8N_CODE_NODE,
         N8N_POSTGRES_NODE,
         N8N_S3_NODE,
+        N8N_AGENT_NODE,
+        *N8N_MODEL_NODE_TYPES,
     }
     unsupported = [
         name for name, node in node_map.items() if node.get("type") not in allowed_types
@@ -151,12 +158,16 @@ def _parse_n8n_workflow(
     s3_nodes = {
         name: node for name, node in node_map.items() if node["type"] == N8N_S3_NODE
     }
+    agent_nodes = {
+        name: node for name, node in node_map.items() if node["type"] == N8N_AGENT_NODE
+    }
 
     pending = (
         set(chain_nodes.keys())
         | set(code_nodes.keys())
         | set(postgres_nodes.keys())
         | set(s3_nodes.keys())
+        | set(agent_nodes.keys())
     )
     while pending:
         progress = False
@@ -166,6 +177,7 @@ def _parse_n8n_workflow(
                 or code_nodes.get(node_name)
                 or postgres_nodes.get(node_name)
                 or s3_nodes.get(node_name)
+                or agent_nodes.get(node_name)
             )
             if not node_raw:
                 raise ValueError(f"Unknown node '{node_name}'")
@@ -223,6 +235,18 @@ def _parse_n8n_workflow(
                         op_ids=op_ids,
                         inputs=inputs,
                     )
+                add_op(op)
+                op_ids[node_name] = op["_id"]
+            elif node_name in agent_nodes:
+                op = _make_agent_retrieval_op(
+                    scope=scope,
+                    node_name=node_name,
+                    node=agent_nodes[node_name],
+                    incoming=incoming,
+                    node_map=node_map,
+                    op_ids=op_ids,
+                    inputs=inputs,
+                )
                 add_op(op)
                 op_ids[node_name] = op["_id"]
             else:
@@ -447,6 +471,7 @@ def _resolve_dependencies(
         where = params.get("where", {})
         if isinstance(where, dict):
             deps.extend(_extract_ref_names(where))
+        deps.extend(_extract_ref_names(params.get("query")))
         upstream_main = _find_main_upstream(node_name, incoming, node_map)
         if upstream_main:
             deps.append(upstream_main)
@@ -457,6 +482,14 @@ def _resolve_dependencies(
         options = params.get("options")
         if isinstance(options, dict):
             deps.extend(_extract_ref_names(options.get("folderKey")))
+        for edge in incoming.get(node_name, []):
+            if edge.get("type") == "main" and edge.get("node"):
+                deps.append(edge["node"])
+        return [dep for dep in deps if isinstance(dep, str)]
+    if node.get("type") == N8N_AGENT_NODE:
+        deps = []
+        params = node.get("parameters", {})
+        deps.extend(_extract_ref_names(params.get("text")))
         for edge in incoming.get(node_name, []):
             if edge.get("type") == "main" and edge.get("node"):
                 deps.append(edge["node"])
@@ -1035,6 +1068,113 @@ def _make_postgres_retrieval_op(
     }
 
 
+def _make_agent_retrieval_op(
+    scope: str,
+    node_name: str,
+    node: dict[str, Any],
+    incoming: dict[str, list[dict[str, str]]],
+    node_map: dict[str, dict[str, Any]],
+    op_ids: dict[str, str],
+    inputs: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Translate ``@n8n/n8n-nodes-langchain.agent`` into a data-agent
+    ``DataRetrievalOp``."""
+    params = node.get("parameters", {})
+    text = params.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(
+            f"n8n agent node '{node_name}' missing parameters.text (the"
+            " natural-language retrieval task)."
+        )
+    options = params.get("options") or {}
+    if options and not isinstance(options, dict):
+        raise ValueError(
+            f"n8n agent node '{node_name}' parameters.options must be an" " object."
+        )
+
+    notes = _parse_notes(node.get("notes", ""))
+    schema_scope = notes.get("schema-scope") or notes.get("schema_scope")
+    if not isinstance(schema_scope, str) or not schema_scope.strip():
+        raise ValueError(
+            f"n8n agent node '{node_name}' notes missing 'schema-scope'"
+            " (comma-separated list of demo.* tables the agent may query)."
+        )
+    output_format = notes.get("output-format") or notes.get("output_format")
+    if output_format is None:
+        output_format = "jsonl"
+    if not isinstance(output_format, str):
+        raise ValueError(
+            f"n8n agent node '{node_name}' notes 'output-format' must be a string."
+        )
+
+    raw_max_steps = (
+        notes.get("max-steps")
+        or notes.get("max_steps")
+        or (options.get("maxIterations") if isinstance(options, dict) else None)
+    )
+    max_steps: int | None
+    if raw_max_steps is None:
+        max_steps = None
+    else:
+        try:
+            max_steps = int(raw_max_steps)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"n8n agent node '{node_name}' max_steps must be an integer."
+            ) from exc
+
+    verify_raw = notes.get("verify")
+    verify: bool | None
+    if verify_raw is None:
+        verify = None
+    elif isinstance(verify_raw, bool):
+        verify = verify_raw
+    elif isinstance(verify_raw, str):
+        verify = verify_raw.strip().lower() in {"1", "true", "yes"}
+    else:
+        raise ValueError(f"n8n agent node '{node_name}' notes 'verify' must be a bool.")
+
+    description, agent_params, extra_deps = _build_execute_query_template_and_params(
+        query=text, op_ids=op_ids, inputs=inputs
+    )
+
+    if not envs.LUMID_DATA_URL:
+        raise ValueError(
+            f"n8n agent node '{node_name}' requires LUMID_DATA_URL to be"
+            " configured on the lumilake server."
+        )
+
+    main_inputs = [
+        op_ids[dep]
+        for dep in _main_incoming(node_name, incoming, node_map)
+        if dep in op_ids
+    ]
+    dep_inputs = [
+        param["node"]
+        for param in agent_params
+        if isinstance(param, dict) and isinstance(param.get("node"), str)
+    ]
+
+    data_spec: dict[str, Any] = {
+        "type": "agent",
+        "schema_scope": schema_scope,
+        "output_format": output_format,
+        "verify": bool(verify) if verify is not None else False,
+        "description": description,
+        "params": agent_params,
+    }
+    if max_steps is not None:
+        data_spec["max_steps"] = max_steps
+
+    return {
+        "_id": _make_id(scope, "retrieval", node_name),
+        "_op": "DataRetrievalOp",
+        "_max_iter": None,
+        "_inputs": list(dict.fromkeys(extra_deps + dep_inputs + main_inputs)),
+        "data_spec": data_spec,
+    }
+
+
 def _make_s3_retrieval_op(
     scope: str,
     node_name: str,
@@ -1068,8 +1208,7 @@ def _make_s3_retrieval_op(
     )
     if not envs.S3_URL:
         raise ValueError(
-            f"n8n s3 node '{node_name}' missing S3 connection string "
-            "(set S3_URL)"
+            f"n8n s3 node '{node_name}' missing S3 connection string " "(set S3_URL)"
         )
     _BINARY_EXTENSIONS = (
         ".png",
@@ -1256,6 +1395,14 @@ def _extract_rowwise_columns(
                     "data": {"type": "list", "items": inputs[node_name]},
                 }
             )
+        elif node_type == N8N_AGENT_NODE:
+            columns.append(
+                {
+                    "label": label,
+                    "node": op_ids[node_name],
+                    "path": "items.table",
+                }
+            )
         else:
             runtime_path = _to_runtime_output_path(path) or "items.output"
             columns.append(
@@ -1319,8 +1466,10 @@ def _build_aggregate_prompt_content(
             ref_type = ref_node.get("type") if isinstance(ref_node, dict) else None
             if ref_type == N8N_POSTGRES_NODE:
                 item_path = f"items.table.{_path_to_label(path) or column}"
+            elif ref_type == N8N_AGENT_NODE:
+                item_path = "items.table"
             else:
-                item_path = "items.output"
+                item_path = _to_runtime_output_path(path) or "items.output"
             table_spec.append(
                 {
                     "label": column,
@@ -1871,7 +2020,7 @@ def _to_runtime_output_path(path: str | None) -> str | None:
     normalized = path.strip()
     if not normalized:
         return None
-    if normalized == "item":
+    if normalized in {"item", "item.output"}:
         return "items.output"
     if normalized.startswith("item.json."):
         suffix = normalized[len("item.json.") :]

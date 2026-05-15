@@ -1,10 +1,31 @@
 name: image-generation
 
+# Render an investment-themed infographic from recent news.
+#
+#   1. SQL retrieval — top-5 news rows for the stock
+#   2. S3 retrieval  — per-article HTML
+#   3. Row Summary   — rowwise LLM, one 3-bullet summary per article
+#   4. Digest        — aggregate the summaries into a digest
+#   5. Render Prompt — diffusion prompt
+#   6. Render Image  — first pass
+#   7. Critic VLM    — Qwen3-VL critiques the render
+#   8. Refined Prompt
+#   9. Final Image
+#
+# Models (all non-gated):
+#   text   = Qwen/Qwen3-8B
+#   vision = llava-hf/llava-1.5-7b-hf
+#   image  = Tongyi-MAI/Z-Image-Turbo
+#
+# Inputs:  Stock (one symbol per slice; --batch-size 1 is default)
+# Output:  final_image  (URL of the refined render)
+
 inputs:
   Stock: []
 
 ops:
-  # ---- Stage 1: retrieve per-article metadata and artifacts --------------
+  # ---- Stage 1: SQL + S3 retrieval --------------------------------------
+
   - id: "News Retrieval - SQL"
     op: DataRetrievalOp
     inputs: [Stock]
@@ -12,57 +33,24 @@ ops:
       type: sql
       connection_string: ${DATABASE_URL}
       template: |-
-        WITH scoped_news AS (
-          SELECT
-            symbol,
-            id,
-            title,
-            "publishedDate",
-            publisher,
-            source,
-            category,
-            path,
-            COALESCE(summary, text, headline) AS synopsis
-          FROM demo.news_metadata
-          WHERE symbol = '{ref_input_image_generation_Stock_4414}'
-            AND "publishedDate" IS NOT NULL
-            AND path IS NOT NULL
-            AND path <> ''
-        ),
-        ranked AS (
-          SELECT
-            *,
-            ROW_NUMBER() OVER (
-              PARTITION BY COALESCE(NULLIF(category, ''), 'uncategorized')
-              ORDER BY "publishedDate"::timestamp DESC, id
-            ) AS category_rank,
-            ROW_NUMBER() OVER (
-              ORDER BY "publishedDate"::timestamp DESC, id
-            ) AS recency_rank
-          FROM scoped_news
-        )
         SELECT
           symbol,
           id,
           title,
-          "publishedDate",
-          publisher,
-          source,
-          category,
-          path,
-          synopsis,
-          synopsis AS summary,
-          recency_rank,
-          category_rank
-        FROM ranked
-        WHERE category_rank <= 10
-        ORDER BY "publishedDate"::timestamp DESC, id
-        LIMIT 10;
+          "publishedDate" AS published,
+          COALESCE(category, 'general') AS category,
+          LEFT(COALESCE(summary, text, ''), 300) AS synopsis,
+          path
+        FROM lumilake_demo.news_metadata
+        WHERE symbol = '{symbol}'
+          AND id IS NOT NULL
+          AND path IS NOT NULL
+          AND path <> ''
+        ORDER BY "publishedDate" DESC
+        LIMIT 5;
       params:
-        - label: ref_input_image_generation_Stock_4414
-          data:
-            type: list
-            items: []
+        - label: symbol
+          node: "Stock"
 
   - id: "News Retrieval - S3"
     op: DataRetrievalOp
@@ -77,7 +65,8 @@ ops:
           path: items.table.id
       encoding: utf-8
 
-  # ---- Stage 2: per-row summary (rowwise LLMChat) ------------------------
+  # ---- Stage 2: per-row summary (rowwise LLM) ---------------------------
+
   - id: "News Row Summary"
     op: LLMChatOp
     inputs: ["News Retrieval - SQL", "News Retrieval - S3"]
@@ -85,8 +74,8 @@ ops:
       - role: system
         content: "You are a financial news analyst. Extract concrete facts and likely market impact."
       - role: user
-        content: "Summarize one retrieved article for {symbol} in 3 compact bullets.\nTitle: {title}\nPublished: {publishedDate}\nCategory: {category}\nMetadata summary: {summary}\nArtifact: {News_Retrieval_S3}"
-    rowwise_template: "Summarize one retrieved article for {symbol} in 3 compact bullets.\nTitle: {title}\nPublished: {publishedDate}\nCategory: {category}\nMetadata summary: {summary}\nArtifact: {News_Retrieval_S3}"
+        content: ""
+    rowwise_template: "Summarize one article for {symbol} in 3 compact bullets.\nTitle: {title}\nPublished: {published}\nCategory: {category}\nSynopsis: {synopsis}\nArtifact (truncated): {html}"
     rowwise_columns:
       - label: symbol
         node: "News Retrieval - SQL"
@@ -94,138 +83,94 @@ ops:
       - label: title
         node: "News Retrieval - SQL"
         path: items.table.title
-      - label: publishedDate
+      - label: published
         node: "News Retrieval - SQL"
-        path: items.table.publishedDate
+        path: items.table.published
       - label: category
         node: "News Retrieval - SQL"
         path: items.table.category
-      - label: summary
+      - label: synopsis
         node: "News Retrieval - SQL"
-        path: items.table.summary
-      - label: News_Retrieval_S3
+        path: items.table.synopsis
+      - label: html
         node: "News Retrieval - S3"
         path: items.content
-    system_messages:
-      - "You are a financial news analyst. Extract concrete facts and likely market impact."
     config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
       temperature: 0.4
       top_p: 1
 
-  # ---- Stage 3: aggregate digest (aggregate LLMChat) ---------------------
+  # ---- Stage 3: aggregate digest ----------------------------------------
+
   - id: "News Digest"
     op: LLMChatOp
-    inputs: ["News Retrieval - SQL", "News Row Summary"]
+    inputs: [Stock, "News Row Summary"]
     prompt:
-      template: "Create one concise investment-focused digest for {ref0} from articles in 2025-01-01 to 2025-03-31.\n\n{df}\n\nReturn sections: Key Signals, Risks, and Visual Priorities."
+      template: "Build a concise investment-focused digest for {ref0} from the per-article summaries.\n\n{df}\n\nReturn sections: Key Signals, Risks, and Visual Priorities."
       format_kwargs:
         ref0: Stock
     messages:
       - role: system
         content: "You produce structured market digests for downstream visualization."
       - role: user
-        content: ""  # rewritten by the parser to the implicit FormatOp id
+        content: ""
     aggregate_table:
-      - label: title
-        node: "News Retrieval - SQL"
-        path: items.table.title
-      - label: publishedDate
-        node: "News Retrieval - SQL"
-        path: items.table.publishedDate
-      - label: category
-        node: "News Retrieval - SQL"
-        path: items.table.category
       - label: summary
         node: "News Row Summary"
         path: items.output
     config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
       temperature: 0.4
       top_p: 1
 
-  # ---- Stage 4: debated render-prompt branches ---------------------------
-  - id: "Render Prompt A"
-    op: LLMChatOp
-    inputs: ["News Digest"]
-    prompt:
-      template: "Branch A (map/debate): create a data-first diffusion prompt from the digest.\n\nDigest:\n{ref0}\n\nGoal: maximize factual anchoring, chart-like structure, and decision-useful signals.\n\nReturn exactly:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets\n- Debate Claim: 2 bullets on why this approach is stronger than a narrative-first layout"
-      format_kwargs:
-        ref0: "News Digest"
-    messages:
-      - role: system
-        content: "You are Prompt Mapper A. Argue for data density, factual grounding, and explicit information hierarchy."
-      - role: user
-        content: ""
-    config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
-      temperature: 0.3
-      top_p: 1
-
-  - id: "Render Prompt B"
-    op: LLMChatOp
-    inputs: ["News Digest"]
-    prompt:
-      template: "Branch B (map/debate): create a narrative-first diffusion prompt from the digest.\n\nDigest:\n{ref0}\n\nGoal: maximize story flow, readability, and thematic coherence while keeping factual anchors.\n\nReturn exactly:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets\n- Debate Claim: 2 bullets on why this approach is stronger than a data-first layout"
-      format_kwargs:
-        ref0: "News Digest"
-    messages:
-      - role: system
-        content: "You are Prompt Mapper B. Argue for narrative clarity, scene composition, and visual storytelling with factual fidelity."
-      - role: user
-        content: ""
-    config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
-      temperature: 0.3
-      top_p: 1
+  # ---- Stage 4: build a diffusion prompt --------------------------------
 
   - id: "Render Prompt"
     op: LLMChatOp
-    inputs: ["News Digest", "Render Prompt A", "Render Prompt B"]
+    inputs: [Stock, "News Digest"]
     prompt:
-      template: "Map-reduce (text only): merge two debated prompt branches into one base render prompt.\n\nDigest:\n{ref0}\n\nBranch A:\n{ref1}\n\nBranch B:\n{ref2}\n\nReturn only one merged prompt package:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets\n\nRules:\n- Keep the strongest parts of both branches\n- Resolve conflicts explicitly\n- Preserve financial infographic constraints"
+      template: "Compose a diffusion prompt for an investment infographic about {ref0} based on the digest below.\n\nDigest:\n{ref1}\n\nReturn exactly:\n- Positive Prompt: ...\n- Negative Prompt: ...\n- Must-Include Facts: 4 bullets"
       format_kwargs:
-        ref0: "News Digest"
-        ref1: "Render Prompt A"
-        ref2: "Render Prompt B"
+        ref0: Stock
+        ref1: "News Digest"
     messages:
       - role: system
-        content: "You are Prompt Reducer 1. Synthesize both branches into one high-quality base diffusion prompt."
+        content: "You build diffusion prompts that balance factual anchoring and visual clarity."
       - role: user
         content: ""
     config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
-      temperature: 0.3
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
+      temperature: 0.4
       top_p: 1
 
   # ---- Stage 5: first-pass image render ---------------------------------
+
   - id: "Render Image"
     op: ImageGenerationOp
     inputs: ["Render Prompt"]
     content: "Render Prompt"
     config:
-      model: stabilityai/stable-diffusion-3.5-large
+      model: Tongyi-MAI/Z-Image-Turbo
       max_tokens: 256
       temperature: 0.7
       top_p: 1
 
-  # ---- Stage 6: three critic VLMs over the rendered image ---------------
-  - id: "Critic A"
+  # ---- Stage 6: vision critique -----------------------------------------
+
+  - id: "Critic"
     op: LLMVisionOp
     inputs: ["News Digest", "Render Prompt", "Render Image"]
     image_source: "Render Image"
     image_path: images
     messages:
       - role: system
-        content: "You are Critic A. Focus on factual faithfulness and signal emphasis."
+        content: "You are a visual critic. Score factual alignment and design quality, then list concrete fixes."
       - role: user
-        content: "Evaluate this rendered infographic for factual alignment against the digest.\n\nDigest:\n{News_Digest}\n\nPrompt:\n{Render_Prompt}\n\nReturn: alignment score (1-10), 3 issues, 3 concrete prompt fixes."
-    rowwise_template: "Evaluate this rendered infographic for factual alignment against the digest.\n\nDigest:\n{News_Digest}\n\nPrompt:\n{Render_Prompt}\n\nReturn: alignment score (1-10), 3 issues, 3 concrete prompt fixes."
+        content: ""
+    rowwise_template: "Evaluate this rendered infographic.\n\nDigest:\n{News_Digest}\n\nPrompt:\n{Render_Prompt}\n\nReturn: alignment score (1-10), design score (1-10), 3 issues, 3 concrete prompt fixes."
     rowwise_columns:
       - label: News_Digest
         node: "News Digest"
@@ -234,138 +179,44 @@ ops:
         node: "Render Prompt"
         path: items.output
     system_messages:
-      - "You are Critic A. Focus on factual faithfulness and signal emphasis."
+      - "You are a visual critic. Score factual alignment and design quality, then list concrete fixes."
     config:
       model: llava-hf/llava-1.5-7b-hf
       max_tokens: 384
       temperature: 0.2
       top_p: 1
 
-  - id: "Critic B"
-    op: LLMVisionOp
-    inputs: ["News Digest", "Render Prompt", "Render Image"]
-    image_source: "Render Image"
-    image_path: images
-    messages:
-      - role: system
-        content: "You are Critic B. Focus on layout, readability, and visual hierarchy."
-      - role: user
-        content: "Evaluate this rendered infographic for composition and readability quality.\n\nDigest:\n{News_Digest}\n\nPrompt:\n{Render_Prompt}\n\nReturn: design score (1-10), 3 issues, 3 concrete prompt fixes."
-    rowwise_template: "Evaluate this rendered infographic for composition and readability quality.\n\nDigest:\n{News_Digest}\n\nPrompt:\n{Render_Prompt}\n\nReturn: design score (1-10), 3 issues, 3 concrete prompt fixes."
-    rowwise_columns:
-      - label: News_Digest
-        node: "News Digest"
-        path: items.output
-      - label: Render_Prompt
-        node: "Render Prompt"
-        path: items.output
-    system_messages:
-      - "You are Critic B. Focus on layout, readability, and visual hierarchy."
-    config:
-      model: llava-hf/llava-1.5-7b-hf
-      max_tokens: 384
-      temperature: 0.2
-      top_p: 1
+  # ---- Stage 7: refine the prompt --------------------------------------
 
-  - id: "Critic C"
-    op: LLMVisionOp
-    inputs: ["News Digest", "Render Prompt", "Render Image"]
-    image_source: "Render Image"
-    image_path: images
-    messages:
-      - role: system
-        content: "You are Critic C. Focus on story flow and information prioritization."
-      - role: user
-        content: "Evaluate this rendered infographic for narrative coherence and information density.\n\nDigest:\n{News_Digest}\n\nPrompt:\n{Render_Prompt}\n\nReturn: coherence score (1-10), 3 issues, 3 concrete prompt fixes."
-    rowwise_template: "Evaluate this rendered infographic for narrative coherence and information density.\n\nDigest:\n{News_Digest}\n\nPrompt:\n{Render_Prompt}\n\nReturn: coherence score (1-10), 3 issues, 3 concrete prompt fixes."
-    rowwise_columns:
-      - label: News_Digest
-        node: "News Digest"
-        path: items.output
-      - label: Render_Prompt
-        node: "Render Prompt"
-        path: items.output
-    system_messages:
-      - "You are Critic C. Focus on story flow and information prioritization."
-    config:
-      model: llava-hf/llava-1.5-7b-hf
-      max_tokens: 384
-      temperature: 0.2
-      top_p: 1
-
-  # ---- Stage 7: two judge branches debating which critic feedback to apply
-  - id: "Prompt Judge A"
+  - id: "Refined Prompt"
     op: LLMChatOp
-    inputs: ["News Digest", "Render Prompt", "Critic A", "Critic B", "Critic C"]
+    inputs: [Stock, "News Digest", "Render Prompt", "Critic"]
     prompt:
-      template: "Branch A judge (map/debate, text only): refine the base prompt using critic feedback with a fidelity-first stance.\n\nDigest:\n{ref0}\n\nBase Prompt:\n{ref1}\n\nCritic A:\n{ref2}\n\nCritic B:\n{ref3}\n\nCritic C:\n{ref4}\n\nReturn exactly:\n- Candidate Prompt: ...\n- Negative Prompt: ...\n- Debate Claim: 2 bullets on why this candidate should win over a design-first candidate"
+      template: "Refine the diffusion prompt for {ref0} using the critic feedback below.\n\nDigest:\n{ref1}\n\nOriginal Prompt:\n{ref2}\n\nCritic:\n{ref3}\n\nReturn only the refined diffusion prompt text."
       format_kwargs:
-        ref0: "News Digest"
-        ref1: "Render Prompt"
-        ref2: "Critic A"
-        ref3: "Critic B"
-        ref4: "Critic C"
+        ref0: Stock
+        ref1: "News Digest"
+        ref2: "Render Prompt"
+        ref3: "Critic"
     messages:
       - role: system
-        content: "You are Judge Mapper A. Prioritize factual alignment and signal preservation over stylistic flourish."
+        content: "You apply concrete critic feedback to improve the diffusion prompt."
       - role: user
         content: ""
     config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
-      temperature: 0.3
-      top_p: 1
-
-  - id: "Prompt Judge B"
-    op: LLMChatOp
-    inputs: ["News Digest", "Render Prompt", "Critic A", "Critic B", "Critic C"]
-    prompt:
-      template: "Branch B judge (map/debate, text only): refine the base prompt using critic feedback with a design-first stance.\n\nDigest:\n{ref0}\n\nBase Prompt:\n{ref1}\n\nCritic A:\n{ref2}\n\nCritic B:\n{ref3}\n\nCritic C:\n{ref4}\n\nReturn exactly:\n- Candidate Prompt: ...\n- Negative Prompt: ...\n- Debate Claim: 2 bullets on why this candidate should win over a fidelity-first candidate"
-      format_kwargs:
-        ref0: "News Digest"
-        ref1: "Render Prompt"
-        ref2: "Critic A"
-        ref3: "Critic B"
-        ref4: "Critic C"
-    messages:
-      - role: system
-        content: "You are Judge Mapper B. Prioritize readability, composition, and narrative coherence while maintaining core facts."
-      - role: user
-        content: ""
-    config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
-      temperature: 0.3
-      top_p: 1
-
-  - id: "Prompt Judge"
-    op: LLMChatOp
-    inputs: ["News Digest", "Render Prompt", "Prompt Judge A", "Prompt Judge B"]
-    prompt:
-      template: "Map-reduce (text only): choose and merge the best elements from both judge branches into a final diffusion prompt.\n\nDigest:\n{ref0}\n\nBase Prompt:\n{ref1}\n\nJudge Branch A:\n{ref2}\n\nJudge Branch B:\n{ref3}\n\nReturn only the final diffusion prompt text.\n\nRules:\n- Balance factual fidelity and visual clarity\n- Apply critic fixes that materially improve output quality\n- Remove redundant or conflicting instructions"
-      format_kwargs:
-        ref0: "News Digest"
-        ref1: "Render Prompt"
-        ref2: "Prompt Judge A"
-        ref3: "Prompt Judge B"
-    messages:
-      - role: system
-        content: "You are Prompt Reducer 2. Produce the final generation prompt by reducing debated judge branches."
-      - role: user
-        content: ""
-    config:
-      model: google/gemma-3-27b-it
-      max_tokens: 512
-      temperature: 0.3
+      model: Qwen/Qwen3-8B
+      max_tokens: 768
+      temperature: 0.4
       top_p: 1
 
   # ---- Stage 8: final image render --------------------------------------
+
   - id: "Final Image"
     op: ImageGenerationOp
-    inputs: ["Prompt Judge"]
-    content: "Prompt Judge"
+    inputs: ["Refined Prompt"]
+    content: "Refined Prompt"
     config:
-      model: stabilityai/stable-diffusion-3.5-large
+      model: Tongyi-MAI/Z-Image-Turbo
       max_tokens: 256
       temperature: 0.7
       top_p: 1

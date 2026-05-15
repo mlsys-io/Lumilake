@@ -36,7 +36,7 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Pick a single lookback start_date for {{ $('Stock') }} that yields ~24 months of trailing data. Return YYYY-MM-DD.",
+        "text": "=Pick a single lookback start_date that yields ~24 months of trailing data. Return YYYY-MM-DD.",
         "messages": {
           "messageValues": [
             {
@@ -59,7 +59,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH profile AS (\n  SELECT symbol, \"companyName\", sector, industry, \"marketCap\", beta\n  FROM demo.instrument_profile\n  WHERE symbol = '{{ $('Stock') }}'\n  LIMIT 1\n),\nincome_recent AS (\n  SELECT\n    symbol,\n    AVG(revenue) AS avg_revenue,\n    AVG(\"netIncome\") AS avg_net_income,\n    AVG(eps) AS avg_eps,\n    MAX(date::date)::text AS latest_report\n  FROM demo.financial_income_statement\n  WHERE symbol = '{{ $('Stock') }}'\n    AND date::date >= '{{ $('SQL Date Planner').item.start_date }}'::date\n  GROUP BY symbol\n)\nSELECT\n  p.symbol,\n  p.\"companyName\" AS company_name,\n  p.sector,\n  p.industry,\n  p.\"marketCap\" AS market_cap,\n  p.beta,\n  COALESCE(i.avg_revenue, 0) AS avg_revenue,\n  COALESCE(i.avg_net_income, 0) AS avg_net_income,\n  COALESCE(i.avg_eps, 0) AS avg_eps,\n  i.latest_report\nFROM profile p\nLEFT JOIN income_recent i ON i.symbol = p.symbol;",
+        "query": "WITH profile AS (\n  SELECT symbol, \"companyName\", sector, industry, \"marketCap\", beta\n  FROM lumilake_demo.instrument_profile\n  WHERE symbol = '{{ $('Stock') }}'\n  LIMIT 1\n),\nincome_recent AS (\n  SELECT\n    symbol,\n    AVG(revenue) AS avg_revenue,\n    AVG(\"netIncome\") AS avg_net_income,\n    AVG(eps) AS avg_eps,\n    MAX(date::date)::text AS latest_report\n  FROM lumilake_demo.financial_income_statement\n  WHERE symbol = '{{ $('Stock') }}'\n    AND date::date >= '{{ $('SQL Date Planner').item.start_date }}'::date\n  GROUP BY symbol\n)\nSELECT\n  p.symbol,\n  p.\"companyName\" AS company_name,\n  p.sector,\n  p.industry,\n  p.\"marketCap\" AS market_cap,\n  p.beta,\n  COALESCE(i.avg_revenue, 0) AS avg_revenue,\n  COALESCE(i.avg_net_income, 0) AS avg_net_income,\n  COALESCE(i.avg_eps, 0) AS avg_eps,\n  i.latest_report\nFROM profile p\nLEFT JOIN income_recent i ON i.symbol = p.symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
@@ -75,7 +75,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH bars_recent AS (\n  SELECT\n    symbol,\n    MAX(high) AS recent_high,\n    MIN(low) AS recent_low,\n    AVG(close) AS recent_close_avg,\n    SUM(volume) AS total_volume,\n    MAX(timestamp)::text AS latest_ts\n  FROM demo.ohlc_10m\n  WHERE symbol = '{{ $('Stock') }}'\n    AND timestamp >= '{{ $('SQL Date Planner').item.start_date }}'::timestamp\n  GROUP BY symbol\n),\nmetrics AS (\n  SELECT symbol, metric::jsonb AS m\n  FROM demo.market_metrics\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY version DESC\n  LIMIT 1\n)\nSELECT\n  b.symbol,\n  b.latest_ts,\n  b.recent_high,\n  b.recent_low,\n  b.recent_close_avg,\n  b.total_volume,\n  m.m ->> '52WeekHigh'     AS week52_high,\n  m.m ->> '52WeekLow'      AS week52_low,\n  m.m ->> 'beta'           AS beta,\n  m.m ->> 'peTTM'          AS pe_ttm,\n  m.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm\nFROM bars_recent b\nLEFT JOIN metrics m ON m.symbol = b.symbol;",
+        "query": "WITH bars_recent AS (\n  SELECT\n    symbol,\n    MAX(high) AS recent_high,\n    MIN(low) AS recent_low,\n    AVG(close) AS recent_close_avg,\n    SUM(volume) AS total_volume,\n    MAX(timestamp)::text AS latest_ts\n  FROM lumilake_demo.ohlc_10m\n  WHERE symbol = '{{ $('Stock') }}'\n    AND timestamp >= '{{ $('SQL Date Planner').item.start_date }}'::timestamp\n  GROUP BY symbol\n),\nmetrics AS (\n  SELECT symbol, metric::jsonb AS m\n  FROM lumilake_demo.market_metrics\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY version DESC\n  LIMIT 1\n)\nSELECT\n  b.symbol,\n  b.latest_ts,\n  b.recent_high,\n  b.recent_low,\n  b.recent_close_avg,\n  b.total_volume,\n  m.m ->> '52WeekHigh'     AS week52_high,\n  m.m ->> '52WeekLow'      AS week52_low,\n  m.m ->> 'beta'           AS beta,\n  m.m ->> 'peTTM'          AS pe_ttm,\n  m.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm\nFROM bars_recent b\nLEFT JOIN metrics m ON m.symbol = b.symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
@@ -91,7 +91,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT\n  symbol,\n  STRING_AGG(title, ' | ' ORDER BY \"publishedDate\" DESC) AS headlines,\n  STRING_AGG(\n    LEFT(COALESCE(summary, text, ''), 200),\n    ' || ' ORDER BY \"publishedDate\" DESC\n  ) AS synopses,\n  COUNT(*) AS news_count\nFROM (\n  SELECT *\n  FROM demo.news_metadata\n  WHERE symbol = '{{ $('Stock') }}'\n    AND id IS NOT NULL\n  ORDER BY \"publishedDate\" DESC\n  LIMIT 5\n) recent\nGROUP BY symbol;",
+        "query": "SELECT\n  symbol,\n  STRING_AGG(title, ' | ' ORDER BY \"publishedDate\" DESC) AS headlines,\n  STRING_AGG(\n    LEFT(COALESCE(summary, text, ''), 200),\n    ' || ' ORDER BY \"publishedDate\" DESC\n  ) AS synopses,\n  COUNT(*) AS news_count\nFROM (\n  SELECT *\n  FROM lumilake_demo.news_metadata\n  WHERE symbol = '{{ $('Stock') }}'\n    AND id IS NOT NULL\n  ORDER BY \"publishedDate\" DESC\n  LIMIT 5\n) recent\nGROUP BY symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
@@ -107,7 +107,7 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Argue the BUY case for {{ $('Stock') }}. Cite specific figures from the data below.\n\n```table\ncompany_name: {{ $('Fundamentals Query').item.company_name }}\navg_revenue: {{ $('Fundamentals Query').item.avg_revenue }}\navg_net_income: {{ $('Fundamentals Query').item.avg_net_income }}\navg_eps: {{ $('Fundamentals Query').item.avg_eps }}\nrecent_close_avg: {{ $('Market Query').item.recent_close_avg }}\nweek52_high: {{ $('Market Query').item.week52_high }}\nweek52_low: {{ $('Market Query').item.week52_low }}\npe_ttm: {{ $('Market Query').item.pe_ttm }}\nheadlines: {{ $('News Query').item.headlines }}\n```\n\nReturn thesis (paragraph), confidence (0-1), catalysts (comma-separated).",
+        "text": "=Argue the BUY case for {{ $('Stock') }}. Cite the figures below.\n\n```table\ncompany_name: {{ $('Fundamentals Query').item.company_name }}\navg_revenue: {{ $('Fundamentals Query').item.avg_revenue }}\navg_net_income: {{ $('Fundamentals Query').item.avg_net_income }}\navg_eps: {{ $('Fundamentals Query').item.avg_eps }}\nrecent_close_avg: {{ $('Market Query').item.recent_close_avg }}\nweek52_high: {{ $('Market Query').item.week52_high }}\nweek52_low: {{ $('Market Query').item.week52_low }}\npe_ttm: {{ $('Market Query').item.pe_ttm }}\nheadlines: {{ $('News Query').item.headlines }}\n```\n\nReturn thesis (paragraph), confidence (0-1), catalysts (comma-separated).",
         "messages": {
           "messageValues": [
             {
@@ -125,12 +125,12 @@
       "name": "Bull Researcher",
       "id": "49571947-9555-47ad-8aa7-8069b765099d",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"thesis\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"confidence\",\n      \"type\": \"number\",\n      \"min\": 0,\n      \"max\": 1\n    },\n    {\n      \"name\": \"catalysts\",\n      \"type\": \"string\"\n    }\n  ]\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Argue the SELL case for {{ $('Stock') }}. Cite specific figures from the data below.\n\n```table\ncompany_name: {{ $('Fundamentals Query').item.company_name }}\navg_revenue: {{ $('Fundamentals Query').item.avg_revenue }}\navg_net_income: {{ $('Fundamentals Query').item.avg_net_income }}\navg_eps: {{ $('Fundamentals Query').item.avg_eps }}\nrecent_close_avg: {{ $('Market Query').item.recent_close_avg }}\nweek52_high: {{ $('Market Query').item.week52_high }}\nweek52_low: {{ $('Market Query').item.week52_low }}\npe_ttm: {{ $('Market Query').item.pe_ttm }}\nheadlines: {{ $('News Query').item.headlines }}\n```\n\nReturn thesis (paragraph), confidence (0-1), risks (comma-separated).",
+        "text": "=Argue the SELL case for {{ $('Stock') }}. Cite the figures below.\n\n```table\ncompany_name: {{ $('Fundamentals Query').item.company_name }}\navg_revenue: {{ $('Fundamentals Query').item.avg_revenue }}\navg_net_income: {{ $('Fundamentals Query').item.avg_net_income }}\navg_eps: {{ $('Fundamentals Query').item.avg_eps }}\nrecent_close_avg: {{ $('Market Query').item.recent_close_avg }}\nweek52_high: {{ $('Market Query').item.week52_high }}\nweek52_low: {{ $('Market Query').item.week52_low }}\npe_ttm: {{ $('Market Query').item.pe_ttm }}\nheadlines: {{ $('News Query').item.headlines }}\n```\n\nReturn thesis (paragraph), confidence (0-1), risks (comma-separated).",
         "messages": {
           "messageValues": [
             {
@@ -148,7 +148,7 @@
       "name": "Bear Researcher",
       "id": "a2c8a82b-4751-4655-b635-d0c3cb8ac1c0",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"thesis\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"confidence\",\n      \"type\": \"number\",\n      \"min\": 0,\n      \"max\": 1\n    },\n    {\n      \"name\": \"risks\",\n      \"type\": \"string\"\n    }\n  ]\n}"
     },
     {
       "parameters": {
@@ -171,7 +171,7 @@
       "name": "Bull Rebuttal",
       "id": "1e1012b1-7890-4108-998c-6e5c11f0b925",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"thesis\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"confidence\",\n      \"type\": \"number\",\n      \"min\": 0,\n      \"max\": 1\n    },\n    {\n      \"name\": \"catalysts\",\n      \"type\": \"string\"\n    }\n  ]\n}"
     },
     {
       "parameters": {
@@ -194,7 +194,7 @@
       "name": "Bear Rebuttal",
       "id": "49da1491-351a-4915-b80a-0540fad05a45",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"thesis\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"confidence\",\n      \"type\": \"number\",\n      \"min\": 0,\n      \"max\": 1\n    },\n    {\n      \"name\": \"risks\",\n      \"type\": \"string\"\n    }\n  ]\n}"
     },
     {
       "parameters": {
@@ -217,7 +217,7 @@
       "name": "Risk Identifier",
       "id": "2f7cf953-9e9c-4cce-9532-8c3590a512f3",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"risks\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"severity\",\n      \"type\": \"string\",\n      \"enum\": [\n        \"low\",\n        \"medium\",\n        \"high\"\n      ]\n    }\n  ]\n}"
     },
     {
       "parameters": {
@@ -240,12 +240,12 @@
       "name": "Risk Synthesis",
       "id": "f24c1264-c865-4160-a125-95fcde61ccfc",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"balanced_view\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"expected_value\",\n      \"type\": \"number\"\n    },\n    {\n      \"name\": \"guardrails\",\n      \"type\": \"string\"\n    }\n  ]\n}"
     },
     {
       "parameters": {
         "promptType": "define",
-        "text": "=Read the head-of-risk synthesis for {{ $('Stock') }} below.\n\n```table\nbalanced_view: {{ $('Risk Synthesis').item.balanced_view }}\nexpected_value: {{ $('Risk Synthesis').item.expected_value }}\nguardrails: {{ $('Risk Synthesis').item.guardrails }}\n```\n\nOutput verdict (BUY|SELL|HOLD) and a rationale of at most two sentences.",
+        "text": "=You are the fund manager. Read the head-of-risk synthesis for {{ $('Stock') }} below.\n\n```table\nbalanced_view: {{ $('Risk Synthesis').item.balanced_view }}\nexpected_value: {{ $('Risk Synthesis').item.expected_value }}\nguardrails: {{ $('Risk Synthesis').item.guardrails }}\n```\n\nOutput verdict (BUY|SELL|HOLD) and a rationale of at most two sentences.",
         "messages": {
           "messageValues": [
             {
@@ -263,7 +263,7 @@
       "name": "Fund Manager Verdict",
       "id": "88760a6c-cc8e-4fe8-9a93-1c0ddaaf150b",
       "typeVersion": 1.9,
-      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": true\n}"
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": true,\n  \"output-field\": \"final_recommendation\",\n  \"structural-outputs\": [\n    {\n      \"name\": \"verdict\",\n      \"type\": \"string\",\n      \"enum\": [\n        \"BUY\",\n        \"SELL\",\n        \"HOLD\"\n      ]\n    },\n    {\n      \"name\": \"rationale\",\n      \"type\": \"string\"\n    }\n  ]\n}"
     }
   ],
   "connections": {

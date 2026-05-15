@@ -11,11 +11,11 @@ name: trading-agent
 # Output:  final_recommendation = {verdict: BUY|SELL|HOLD, rationale}
 #
 # Schema setup (one-shot; produced via scripts/dev/load_demo_data.sh):
-#   demo.instrument_profile          (company / sector / market cap / beta)
-#   demo.financial_income_statement  (quarterly revenue / net income / eps)
-#   demo.ohlc_10m                    (10-minute candles)
-#   demo.market_metrics              (52w high/low, peTTM, etc.)
-#   demo.news_metadata               (news article ids + summary)
+#   lumilake_demo.instrument_profile          (company / sector / market cap / beta)
+#   lumilake_demo.financial_income_statement  (quarterly revenue / net income / eps)
+#   lumilake_demo.ohlc_10m                    (10-minute candles)
+#   lumilake_demo.market_metrics              (52w high/low, peTTM, etc.)
+#   lumilake_demo.news_metadata               (news article ids + summary)
 # News PNGs live at s3://<bucket>/example-data/news/images/{news_metadata.id}.png.
 
 inputs:
@@ -39,8 +39,8 @@ ops:
         max: "2025-12-31"
     config:
       model: Qwen/Qwen3-8B
-      max_tokens: 256
-      temperature: 0.3
+      max_tokens: 768
+      temperature: 0.4
       top_p: 1
 
   # ---- Stage 2: SQL retrievals ---------------------------------------
@@ -54,7 +54,7 @@ ops:
       template: |-
         WITH profile AS (
           SELECT symbol, "companyName", sector, industry, "marketCap", beta
-          FROM demo.instrument_profile
+          FROM lumilake_demo.instrument_profile
           WHERE symbol = '{symbol}'
           LIMIT 1
         ),
@@ -65,7 +65,7 @@ ops:
             AVG("netIncome") AS avg_net_income,
             AVG(eps) AS avg_eps,
             MAX(date::date)::text AS latest_report
-          FROM demo.financial_income_statement
+          FROM lumilake_demo.financial_income_statement
           WHERE symbol = '{symbol}'
             AND date::date >= '{start_date}'::date
           GROUP BY symbol
@@ -101,18 +101,18 @@ ops:
           SELECT
             symbol,
             MAX(high) AS recent_high,
-            MIN(low)  AS recent_low,
+            MIN(low) AS recent_low,
             AVG(close) AS recent_close_avg,
             SUM(volume) AS total_volume,
             MAX(timestamp)::text AS latest_ts
-          FROM demo.ohlc_10m
+          FROM lumilake_demo.ohlc_10m
           WHERE symbol = '{symbol}'
             AND timestamp >= '{start_date}'::timestamp
           GROUP BY symbol
         ),
         metrics AS (
           SELECT symbol, metric::jsonb AS m
-          FROM demo.market_metrics
+          FROM lumilake_demo.market_metrics
           WHERE symbol = '{symbol}'
           ORDER BY version DESC
           LIMIT 1
@@ -155,7 +155,7 @@ ops:
           COUNT(*) AS news_count
         FROM (
           SELECT *
-          FROM demo.news_metadata
+          FROM lumilake_demo.news_metadata
           WHERE symbol = '{symbol}'
             AND id IS NOT NULL
           ORDER BY "publishedDate" DESC
@@ -179,11 +179,7 @@ ops:
         ref0: Stock
     messages:
       - role: system
-        content: |-
-          You are the bull analyst. Argue the BUY case using the data
-          aggregated below. Cite specific figures. Address obvious bear
-          counters preemptively. Return three fields: thesis (paragraph),
-          confidence (0-1), catalysts (comma-separated).
+        content: "You are the bull analyst. Argue the BUY case using the data aggregated below. Cite specific figures. Address obvious bear counters preemptively."
       - role: user
         content: ""
     aggregate_table:
@@ -226,7 +222,7 @@ ops:
     config:
       model: Qwen/Qwen3-8B
       max_tokens: 768
-      temperature: 0.6
+      temperature: 0.4
       top_p: 1
 
   - id: "Bear Researcher"
@@ -238,11 +234,7 @@ ops:
         ref0: Stock
     messages:
       - role: system
-        content: |-
-          You are the bear analyst. Argue the SELL case using the data
-          aggregated below. Cite specific figures. Address obvious bull
-          counters preemptively. Return three fields: thesis (paragraph),
-          confidence (0-1), risks (comma-separated).
+        content: "You are the bear analyst. Argue the SELL case using the data aggregated below. Cite specific figures. Address obvious bull counters preemptively."
       - role: user
         content: ""
     aggregate_table:
@@ -285,7 +277,7 @@ ops:
     config:
       model: Qwen/Qwen3-8B
       max_tokens: 768
-      temperature: 0.6
+      temperature: 0.4
       top_p: 1
 
   # ---- Stage 5: Round 2 — rebuttal on each other's case --------------
@@ -327,7 +319,7 @@ ops:
     config:
       model: Qwen/Qwen3-8B
       max_tokens: 768
-      temperature: 0.6
+      temperature: 0.4
       top_p: 1
 
   - id: "Bear Rebuttal"
@@ -367,7 +359,7 @@ ops:
     config:
       model: Qwen/Qwen3-8B
       max_tokens: 768
-      temperature: 0.6
+      temperature: 0.4
       top_p: 1
 
   # ---- Stage 6: Risk identification + synthesis ----------------------
@@ -405,8 +397,8 @@ ops:
         enum: ["low", "medium", "high"]
     config:
       model: Qwen/Qwen3-8B
-      max_tokens: 512
-      temperature: 0.2
+      max_tokens: 768
+      temperature: 0.4
       top_p: 1
 
   - id: "Risk Synthesis"
@@ -437,12 +429,7 @@ ops:
         path: items.output.severity
     messages:
       - role: system
-        content: |-
-          You are the head of risk. Weigh the round-2 bull/bear cases and
-          the identified risks. Return three fields: balanced_view
-          (paragraph), expected_value (number, positive = lean BUY,
-          negative = lean SELL), guardrails (comma-separated stop/hedge
-          conditions).
+        content: "You are the head of risk. Weigh the round-2 bull/bear cases and the identified risks."
       - role: user
         content: ""
     structural_outputs:
@@ -454,8 +441,8 @@ ops:
         type: string
     config:
       model: Qwen/Qwen3-8B
-      max_tokens: 512
-      temperature: 0.3
+      max_tokens: 768
+      temperature: 0.4
       top_p: 1
 
   - id: "Fund Manager Verdict"
@@ -477,9 +464,7 @@ ops:
         path: items.output.guardrails
     messages:
       - role: system
-        content: |-
-          You are the fund manager. Output the decisive call. Do not
-          default to HOLD unless strongly justified by the synthesis.
+        content: "You are the fund manager. Output the decisive call. Do not default to HOLD unless strongly justified by the synthesis."
       - role: user
         content: ""
     structural_outputs:
@@ -490,8 +475,8 @@ ops:
         type: string
     config:
       model: Qwen/Qwen3-8B
-      max_tokens: 256
-      temperature: 0.1
+      max_tokens: 768
+      temperature: 0.4
       top_p: 1
 
 outputs:

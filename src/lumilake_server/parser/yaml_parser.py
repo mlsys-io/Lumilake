@@ -679,6 +679,16 @@ def _emit_llm_like_op(
         op_dict["rowwise_columns"] = resolved_rowwise
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
+    elif "rowwise_template" in entry.fields and isinstance(inline_messages, list):
+        sys_msgs = [
+            m["content"]
+            for m in inline_messages
+            if isinstance(m, dict)
+            and m.get("role") == "system"
+            and isinstance(m.get("content"), str)
+        ]
+        if sys_msgs:
+            op_dict["system_messages"] = sys_msgs
 
     # For LLMChatOp, n8n adds aggregate/rowwise node refs into `_inputs`.
     # LLMVisionOp keeps `_inputs` as [msg_op] only (those refs flow via

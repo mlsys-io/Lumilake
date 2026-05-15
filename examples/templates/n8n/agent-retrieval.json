@@ -1,0 +1,479 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "position": [
+        -736,
+        192
+      ],
+      "name": "Stock",
+      "id": "10c29a29-ba90-450b-b5e6-57c3bd53fa57",
+      "typeVersion": 1.4,
+      "webhookId": "agent-retrieval-stock"
+    },
+    {
+      "parameters": {
+        "model": "Qwen/Qwen3-8B",
+        "options": {
+          "maxTokens": 768,
+          "temperature": 0.4,
+          "topK": 1,
+          "topP": 1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+      "position": [
+        -560,
+        544
+      ],
+      "name": "Qwen Text Model",
+      "id": "56b1e19a-2697-4457-92e2-cfacc4070b1a",
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Pick a single lookback start_date that yields ~24 months of trailing data. Return YYYY-MM-DD.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a SQL date planner. Produce exactly one structured field named start_date."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        -560,
+        192
+      ],
+      "name": "SQL Date Planner",
+      "id": "519971e3-a853-4c21-a31c-27eb79d682cc",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"structural-outputs\": [{\"name\": \"start_date\", \"type\": \"datetime\", \"min\": \"2023-01-01\", \"max\": \"2025-12-31\"}],\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Pull {{ $('Stock') }}'s company name, sector, industry, market cap, beta, and CEO.",
+        "options": {
+          "systemMessage": "You are a SQL-writing data agent. Inspect the listed schema, plan a single SELECT, and return the result rows as JSONL.",
+          "maxIterations": 10
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        -272,
+        -160
+      ],
+      "name": "Profile via Agent",
+      "id": "66767621-109f-45a9-b8a8-c665a3324966",
+      "typeVersion": 1.7,
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"retrieval-type\": \"agent\",\n  \"schema-scope\": \"lumilake_demo.instrument_profile\",\n  \"output-format\": \"jsonl\",\n  \"verify\": false,\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Show {{ $('Stock') }}'s quarterly revenue, net income, and EPS from {{ $('SQL Date Planner').item.start_date }} onward, averaged across the period.",
+        "options": {
+          "systemMessage": "You are a SQL-writing data agent. Inspect the listed schema, plan a single SELECT, and return the result rows as JSONL.",
+          "maxIterations": 10
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        -272,
+        16
+      ],
+      "name": "Fundamentals via Agent",
+      "id": "00f064f7-dfd4-493f-8d7d-4d6151374013",
+      "typeVersion": 1.7,
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"retrieval-type\": \"agent\",\n  \"schema-scope\": \"lumilake_demo.financial_income_statement\",\n  \"output-format\": \"jsonl\",\n  \"verify\": false,\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=For {{ $('Stock') }}, summarize price action since {{ $('SQL Date Planner').item.start_date }} (recent high/low, average close, total volume) and add 52-week metrics from market_metrics.",
+        "options": {
+          "systemMessage": "You are a SQL-writing data agent. Inspect the listed schema, plan a single SELECT, and return the result rows as JSONL.",
+          "maxIterations": 10
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        -272,
+        192
+      ],
+      "name": "Market via Agent",
+      "id": "2004ffb4-bcac-4722-a019-96a85655fd28",
+      "typeVersion": 1.7,
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"retrieval-type\": \"agent\",\n  \"schema-scope\": \"lumilake_demo.ohlc_10m,lumilake_demo.market_metrics\",\n  \"output-format\": \"jsonl\",\n  \"verify\": false,\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Insider sentiment for {{ $('Stock') }} since {{ $('SQL Date Planner').item.start_date }}: net change, average mspr, sample count.",
+        "options": {
+          "systemMessage": "You are a SQL-writing data agent. Inspect the listed schema, plan a single SELECT, and return the result rows as JSONL.",
+          "maxIterations": 10
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        -272,
+        352
+      ],
+      "name": "Insider via Agent",
+      "id": "43c11182-bdce-4349-a589-2aa5feff80fe",
+      "typeVersion": 1.7,
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"retrieval-type\": \"agent\",\n  \"schema-scope\": \"lumilake_demo.insider_sentiment\",\n  \"output-format\": \"jsonl\",\n  \"verify\": false,\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Five most recent news articles for {{ $('Stock') }}: title, published date, category, and one-line synopsis.",
+        "options": {
+          "systemMessage": "You are a SQL-writing data agent. Inspect the listed schema, plan a single SELECT, and return the result rows as JSONL.",
+          "maxIterations": 10
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        -272,
+        512
+      ],
+      "name": "News via Agent",
+      "id": "3bfcc1f6-a3bf-49e7-b0a7-05e9018490ce",
+      "typeVersion": 1.7,
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"retrieval-type\": \"agent\",\n  \"schema-scope\": \"lumilake_demo.news_metadata\",\n  \"output-format\": \"jsonl\",\n  \"verify\": false,\n  \"is-output\": false\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Write a fundamentals report for {{ $('Stock') }}.\n\n```table\nprofile: {{ $('Profile via Agent').item.output }}\nfinancials: {{ $('Fundamentals via Agent').item.output }}\n```\n\nReturn sections: Summary, Financial Strength, Profitability, Risks.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a careful financial analyst. Cite the data; separate facts from assumptions."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        32,
+        -64
+      ],
+      "name": "Fundamentals Report",
+      "id": "fae69702-e323-4abc-8702-819c09621aa7",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"summary\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"financial_strength\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"profitability\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"risks\",\n      \"type\": \"string\"\n    }\n  ]\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Write a market and insider report for {{ $('Stock') }}.\n\n```table\nmarket: {{ $('Market via Agent').item.output }}\ninsider: {{ $('Insider via Agent').item.output }}\n```\n\nReturn sections: Summary, Price Action, Insider Signal, Risks.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a careful financial analyst. Cite the data; separate facts from assumptions."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        32,
+        272
+      ],
+      "name": "Market Report",
+      "id": "317ad9a8-1605-46bc-9027-7a5ff78e7c12",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"summary\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"price_action\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"insider_signal\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"risks\",\n      \"type\": \"string\"\n    }\n  ]\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Summarize the recent news for {{ $('Stock') }}.\n\n```table\nnews: {{ $('News via Agent').item.output }}\n```\n\nReturn one paragraph plus a comma-separated list of named entities mentioned.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a financial news analyst. Identify the investment-relevant signals."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        32,
+        512
+      ],
+      "name": "News Brief",
+      "id": "61782027-bcfb-4bc4-95aa-74b2756bfd00",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": false,\n  \"structural-outputs\": [\n    {\n      \"name\": \"summary\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"entities\",\n      \"type\": \"string\"\n    }\n  ]\n}"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Combine the per-aspect reports into a research summary for {{ $('Stock') }}.\n\n```table\nfundamentals_summary: {{ $('Fundamentals Report').item.summary }}\nfinancial_strength: {{ $('Fundamentals Report').item.financial_strength }}\nmarket_summary: {{ $('Market Report').item.summary }}\ninsider_signal: {{ $('Market Report').item.insider_signal }}\nnews_summary: {{ $('News Brief').item.summary }}\nnews_entities: {{ $('News Brief').item.entities }}\n```\n\nReturn fields: headline (one sentence), thesis (paragraph), key_risks (comma-separated), watch_list (comma-separated).",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are head of equity research. Produce a tight, actionable summary."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "position": [
+        352,
+        208
+      ],
+      "name": "Research Summary",
+      "id": "7d5e9031-f1c6-4eb4-95f2-1cad717d10eb",
+      "typeVersion": 1.9,
+      "notes": "{\n  \"op-type\": \"text-generation\",\n  \"mode\": \"aggregate\",\n  \"is-output\": true,\n  \"output-field\": \"research_summary\",\n  \"structural-outputs\": [\n    {\n      \"name\": \"headline\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"thesis\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"key_risks\",\n      \"type\": \"string\"\n    },\n    {\n      \"name\": \"watch_list\",\n      \"type\": \"string\"\n    }\n  ]\n}"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-5-20250929",
+          "cachedResultName": "Claude Sonnet 4.5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        -416,
+        576
+      ],
+      "id": "e4fc1e85-688b-4f2d-a6d0-5e47b524f978",
+      "name": "Anthropic Chat Model"
+    }
+  ],
+  "connections": {
+    "Stock": {
+      "main": [
+        [
+          {
+            "node": "SQL Date Planner",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Profile via Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fundamentals via Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Market via Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insider via Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "News via Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qwen Text Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SQL Date Planner",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Fundamentals Report",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Market Report",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "News Brief",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Research Summary",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SQL Date Planner": {
+      "main": [
+        [
+          {
+            "node": "Fundamentals via Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Market via Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Insider via Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Profile via Agent": {
+      "main": [
+        [
+          {
+            "node": "Fundamentals Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fundamentals via Agent": {
+      "main": [
+        [
+          {
+            "node": "Fundamentals Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Market via Agent": {
+      "main": [
+        [
+          {
+            "node": "Market Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insider via Agent": {
+      "main": [
+        [
+          {
+            "node": "Market Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "News via Agent": {
+      "main": [
+        [
+          {
+            "node": "News Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fundamentals Report": {
+      "main": [
+        [
+          {
+            "node": "Research Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Market Report": {
+      "main": [
+        [
+          {
+            "node": "Research Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "News Brief": {
+      "main": [
+        [
+          {
+            "node": "Research Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "News via Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Profile via Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Fundamentals via Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Market via Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Insider via Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "1b7cf574963deef35232265ab637f8b8cdf243544298f8b5a8b4c95543112b92"
+  }
+}

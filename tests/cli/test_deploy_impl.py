@@ -226,4 +226,4 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
     fm.stack_down(env_file)
 
     assert destroy_kwargs == {"ignore_unreachable": True}
-    assert compose_calls == [["down"]]
+    assert compose_calls == [["--profile", "root", "down"]]

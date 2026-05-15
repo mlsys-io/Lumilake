@@ -904,7 +904,12 @@ class HaloOptimizer(BaseOptimizer):
 
     @staticmethod
     def _is_gpu_backend(backend: str) -> bool:
-        return str(backend).strip().lower() in {"vllm", "transformers", "diffusers"}
+        return str(backend).strip().lower() in {
+            "vllm",
+            "transformers",
+            "diffusers",
+            "omni",
+        }
 
     def _map_engine(self, backend: str, task_type: str) -> str:
         normalized_backend = str(backend).strip().lower()
@@ -922,7 +927,7 @@ class HaloOptimizer(BaseOptimizer):
             )
         raise ValueError(
             "Halo optimizer only supports backends in "
-            "{'vllm','transformers','diffusers','data_retrieval','http'}. "
+            "{'vllm','transformers','diffusers','omni','data_retrieval','http'}. "
             f"Got backend={backend!r} task_type={normalized_task_type!r}"
         )
 

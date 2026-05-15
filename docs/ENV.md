@@ -27,24 +27,23 @@ Run `lumilake deploy -C <deploy-dir> doctor` after editing `.env`.
 | `LUMILAKE_IMAGE_TAG` | Docker image tag used by local deployment. Defaults to `dev` (the rolling main-built image). Pin to a `vX.Y.Z` semver tag for production. |
 | `LUMILAKE_REGISTRY` | Container registry the deploy CLI pulls the server image from. Defaults to `ghcr.io/mlsys-io`. **Trust-bearing**: setting this points `lumilake deploy pull` at a different host, so only override it to a registry you control. |
 
-Direct data-plane mode also requires:
+Compute data plane (required for every direct SQL/S3 op):
 
 | Key | Purpose |
 |-----|---------|
-| `DATABASE_URL` | PostgreSQL connection string for SQL/data operations. |
-| `S3_URL` | S3-compatible endpoint and credentials. |
-| `S3_USER_DATA_PREFIX` | Prefix for user data objects. |
+| `DATABASE_URL` | PostgreSQL connection string used by every SQL `DataRetrievalOp`. |
+| `S3_URL` | S3-compatible endpoint and credentials used by every S3 `DataRetrievalOp` and the archive (`S3_ARCHIVE_PREFIX`). |
+| `S3_USER_DATA_PREFIX` | `bucket/prefix` for user data objects (used by data-profile listing). |
 
-## Data-Plane Modes
+## Lumid.data routing
 
-Set `LUMID_DATA_URL` to route SQL and storage operations through lumid.data. In that mode, Lumilake does not need direct `DATABASE_URL`, `S3_URL`, or `S3_USER_DATA_PREFIX` values.
+Only `DataRetrievalOp` with `type: agent` routes through lumid.data — SQL and S3 retrievals always go direct against `DATABASE_URL` / `S3_URL` regardless of `LUMID_DATA_URL`.
 
-Leave `LUMID_DATA_URL` empty to use direct PostgreSQL and S3-compatible services.
-
-Optional lumid.data keys:
+Agent-retrieval keys:
 
 | Key | Purpose |
 |-----|---------|
+| `LUMID_DATA_URL` | Base URL for lumid.data's `/agent/v1` endpoint. Required when a workflow contains agent retrievals. |
 | `LUMID_DATA_TOKEN` | Bearer token sent to lumid.data. |
 | `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid.data calls. |
 
