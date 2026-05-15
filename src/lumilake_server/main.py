@@ -3,6 +3,7 @@ import logging
 from argparse import ArgumentParser, Namespace
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from types import ModuleType
+from typing import Any
 
 import psycopg
 import uvicorn
@@ -53,7 +54,7 @@ def _import_plugin(plugin_name: str) -> ModuleType:
 
 async def _resolve_plugin_bindings(
     plugin_name: str,
-    install: object,
+    install: Any,
     stack: AsyncExitStack,
 ) -> HookBindings:
     if not callable(install):
@@ -73,42 +74,30 @@ async def _resolve_plugin_bindings(
     return bindings
 
 
-async def _load_plugins(
-    stack: AsyncExitStack, logger: logging.Logger | None = None
-) -> None:
-    """Import every configured plugin, call ``install()``, and register the
-    returned ``HookBindings``.
-
-    A plugin that imports, defines ``install()``, but returns something
-    other than ``HookBindings`` (or whose ``install()`` raises) is logged
-    and skipped — one bad plugin does not take down the server.
-    """
-    plugin_logger = logger or logging.getLogger("lumilake_server.plugins")
+async def _load_plugins(stack: AsyncExitStack, logger: logging.Logger) -> None:
+    """One bad plugin does not take down the server: import, validation, and
+    ``install()`` failures are logged and skipped."""
     for plugin_name in envs.LUMILAKE_PLUGINS:
         try:
             module = _import_plugin(plugin_name)
         except Exception as exc:
-            plugin_logger.error(
-                "Plugin %r failed to import; skipping: %s", plugin_name, exc
-            )
+            logger.error("Plugin %r failed to import; skipping: %s", plugin_name, exc)
             continue
         install = module.__dict__.get("install")
         if install is None:
-            plugin_logger.error(
-                "Plugin %r does not define install(); skipping.", plugin_name
-            )
+            logger.error("Plugin %r does not define install(); skipping.", plugin_name)
             continue
         try:
             bindings = await _resolve_plugin_bindings(plugin_name, install, stack)
         except Exception as exc:
-            plugin_logger.error(
+            logger.error(
                 "Plugin %r install() failed validation; skipping: %s",
                 plugin_name,
                 exc,
             )
             continue
         register(bindings)
-        plugin_logger.info("Plugin %r registered.", plugin_name)
+        logger.info("Plugin %r registered.", plugin_name)
 
 
 def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
