@@ -246,6 +246,51 @@ def test_list_all_stops_with_no_cursor(jobs: Jobs, base_url: str) -> None:
         assert results == [{"id": "a"}]
 
 
+def test_list_all_raises_on_replayed_cursor(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "b"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="replayed cursor"):
+            list(jobs.list_all(page_size=1))
+
+
+def test_watch_propagates_non_http_progress_error(
+    jobs: Jobs, base_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("non-http boom")
+
+    monkeypatch.setattr(jobs, "progress", _boom)
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"id": "j-1", "status": "pending"}}
+            )
+        )
+        with pytest.raises(ValueError, match="non-http boom"):
+            list(jobs.watch("j-1", poll_interval=0.0, timeout=2.0))
+
+
 def test_get_respects_per_call_timeout(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
         route = mocked.get("/api/v1/jobs/j-1").mock(
@@ -325,6 +370,60 @@ async def test_async_watch(async_jobs: AsyncJobs, base_url: str) -> None:
         async for snap in async_jobs.watch("j-1", poll_interval=0.0, timeout=2.0):
             snapshots.append(snap)
         assert [s["status"] for s in snapshots] == ["completed"]
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_list_all_raises_on_replayed_cursor(
+    async_jobs: AsyncJobs, base_url: str
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "b"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="replayed cursor"):
+            collected: list[dict[str, object]] = []
+            async for item in async_jobs.list_all(page_size=1):
+                collected.append(item)
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_watch_propagates_non_http_progress_error(
+    async_jobs: AsyncJobs, base_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _boom(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("non-http boom")
+
+    monkeypatch.setattr(async_jobs, "progress", _boom)
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"id": "j-1", "status": "pending"}}
+            )
+        )
+        with pytest.raises(ValueError, match="non-http boom"):
+            async for _ in async_jobs.watch("j-1", poll_interval=0.0, timeout=2.0):
+                pass
         await async_jobs._client.close()
 
 

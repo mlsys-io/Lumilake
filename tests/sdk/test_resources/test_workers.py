@@ -77,6 +77,67 @@ def test_list_all_traverses_cursor(workers: Workers, base_url: str) -> None:
         assert [r["id"] for r in results] == ["w-0", "w-1", "w-2"]
 
 
+def test_list_all_raises_on_replayed_cursor(workers: Workers, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/workers").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "w-0"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "w-1"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="replayed cursor"):
+            list(workers.list_all(page_size=1))
+
+
+@pytest.mark.asyncio
+async def test_async_list_all_raises_on_replayed_cursor(
+    async_workers: AsyncWorkers, base_url: str
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/workers").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "w-0"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "w-1"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="replayed cursor"):
+            async for _ in async_workers.list_all(page_size=1):
+                pass
+        await async_workers._client.close()
+
+
 @pytest.mark.asyncio
 async def test_async_list_all(async_workers: AsyncWorkers, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:

@@ -72,6 +72,7 @@ class Traces(SyncResource):
     ) -> Iterator[dict[str, Any]]:
         """Iterate through every trace, traversing pagination cursors."""
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
             payload = unwrap(
                 self._client.get(
@@ -84,6 +85,11 @@ class Traces(SyncResource):
             cursor = _next_cursor(payload)
             if not cursor:
                 return
+            if cursor in seen_cursors:
+                raise RuntimeError(
+                    f"server replayed cursor {cursor!r}; aborting pagination"
+                )
+            seen_cursors.add(cursor)
 
     def get(self, trace_id: str, *, timeout: float | None = None) -> dict[str, Any]:
         return unwrap(
@@ -114,6 +120,7 @@ class AsyncTraces(AsyncResource):
         timeout: float | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
             response = await self._client.get(
                 "/traces",
@@ -126,6 +133,11 @@ class AsyncTraces(AsyncResource):
             cursor = _next_cursor(payload)
             if not cursor:
                 return
+            if cursor in seen_cursors:
+                raise RuntimeError(
+                    f"server replayed cursor {cursor!r}; aborting pagination"
+                )
+            seen_cursors.add(cursor)
 
     async def get(
         self, trace_id: str, *, timeout: float | None = None

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from lumilake._base_client import unwrap
+from lumilake.errors import HttpError
 from lumilake.resources._base import AsyncResource, SyncResource
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ class Jobs(SyncResource):
         when the server stops returning a ``next_cursor``.
         """
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
             payload = unwrap(
                 self._client.get(
@@ -141,6 +143,11 @@ class Jobs(SyncResource):
             cursor = _next_cursor(payload)
             if not cursor:
                 return
+            if cursor in seen_cursors:
+                raise RuntimeError(
+                    f"server replayed cursor {cursor!r}; aborting pagination"
+                )
+            seen_cursors.add(cursor)
 
     def get(self, job_id: str, *, timeout: float | None = None) -> dict[str, Any]:
         return unwrap(self._client.get(f"/jobs/{job_id}", **_request_kwargs(timeout)))
@@ -238,7 +245,7 @@ class Jobs(SyncResource):
                 prog = self.progress(job_id, timeout=request_timeout).get(
                     "progress", {}
                 )
-            except Exception:  # noqa: BLE001 -- progress is best-effort here
+            except HttpError:
                 prog = {}
             status = job.get("status", "")
             yield {"status": status, "job": job, "progress": prog}
@@ -308,6 +315,7 @@ class AsyncJobs(AsyncResource):
         timeout: float | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
             response = await self._client.get(
                 "/jobs",
@@ -320,6 +328,11 @@ class AsyncJobs(AsyncResource):
             cursor = _next_cursor(payload)
             if not cursor:
                 return
+            if cursor in seen_cursors:
+                raise RuntimeError(
+                    f"server replayed cursor {cursor!r}; aborting pagination"
+                )
+            seen_cursors.add(cursor)
 
     async def get(self, job_id: str, *, timeout: float | None = None) -> dict[str, Any]:
         response = await self._client.get(f"/jobs/{job_id}", **_request_kwargs(timeout))
@@ -419,7 +432,7 @@ class AsyncJobs(AsyncResource):
             try:
                 prog_payload = await self.progress(job_id, timeout=request_timeout)
                 prog = prog_payload.get("progress", {})
-            except Exception:  # noqa: BLE001 -- progress is best-effort here
+            except HttpError:
                 prog = {}
             status = job.get("status", "")
             yield {"status": status, "job": job, "progress": prog}

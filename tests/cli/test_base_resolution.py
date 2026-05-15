@@ -1,6 +1,5 @@
 """Base URL resolution for CLI commands (after the login removal)."""
 
-import os
 from pathlib import Path
 
 import pytest
@@ -69,4 +68,15 @@ def test_no_login_command_present() -> None:
             names.add(callback.__name__)
     assert "login" not in names
     assert "logout" not in names
-    os.environ.pop("LUMILAKE_NEVER_LOGIN", None)
+
+
+def test_resolve_empty_env_falls_through_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty ``LUMILAKE_BASE_URL`` must not mask the saved config value."""
+    monkeypatch.setenv("LUMILAKE_BASE_URL", "")
+    path = tmp_path / "config.toml"
+    save_config(LumilakeConfig(base_url="http://stored:9000"), path=path)
+    base, source = http._resolve_base_url(path)
+    assert base == "http://stored:9000"
+    assert source == "config"

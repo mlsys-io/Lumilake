@@ -76,6 +76,7 @@ class Workers(SyncResource):
     ) -> Iterator[dict[str, Any]]:
         """Iterate through every worker, traversing pagination cursors."""
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
             payload = unwrap(
                 self._client.get(
@@ -88,6 +89,11 @@ class Workers(SyncResource):
             cursor = _next_cursor(payload)
             if not cursor:
                 return
+            if cursor in seen_cursors:
+                raise RuntimeError(
+                    f"server replayed cursor {cursor!r}; aborting pagination"
+                )
+            seen_cursors.add(cursor)
 
     def get(self, worker_id: str, *, timeout: float | None = None) -> dict[str, Any]:
         return unwrap(
@@ -119,6 +125,7 @@ class AsyncWorkers(AsyncResource):
         timeout: float | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         while True:
             response = await self._client.get(
                 "/workers",
@@ -131,6 +138,11 @@ class AsyncWorkers(AsyncResource):
             cursor = _next_cursor(payload)
             if not cursor:
                 return
+            if cursor in seen_cursors:
+                raise RuntimeError(
+                    f"server replayed cursor {cursor!r}; aborting pagination"
+                )
+            seen_cursors.add(cursor)
 
     async def get(
         self, worker_id: str, *, timeout: float | None = None
