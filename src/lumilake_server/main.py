@@ -12,7 +12,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from lumilake import envs
-from lumilake.log import init_child_logger
+from lumilake.log import configure_default_logger, init_child_logger
 from psycopg_pool import AsyncConnectionPool
 
 from lumilake_server.hooks import HookBindings, register
@@ -213,6 +213,7 @@ def run_api_server() -> None:
     # without per-deployment config. Local dev (``pytest``, ``python -m``)
     # leaves the variable unset and gets the human-readable formatter.
     os.environ.setdefault("LUMILAKE_LOG_JSON", "1")
+    configure_default_logger(json_logging=True)
     args = parse_args()
     server_config = LumilakeServerConfig(host=args.host, port=args.port)
     uvicorn.run(

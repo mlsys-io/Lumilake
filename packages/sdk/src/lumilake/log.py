@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any
 
 from lumilake import envs
@@ -21,7 +21,7 @@ _default_logger: Logger | None = None
 trace_id_var: ContextVar[str] = ContextVar("lumilake_trace_id", default="")
 
 
-def set_trace_id(trace_id: str | None) -> Any:
+def set_trace_id(trace_id: str | None) -> Token[str]:
     """Set the current trace id; returns the token to restore later.
 
     Pass ``None`` to clear. Use with ``trace_id_var.reset(token)`` in a
@@ -107,10 +107,6 @@ class JsonFormatter(logging.Formatter):
         for key, value in record.__dict__.items():
             if key in self._RESERVED:
                 continue
-            try:
-                json.dumps(value)
-            except (TypeError, ValueError):
-                value = repr(value)
             payload[key] = value
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
@@ -148,6 +144,16 @@ def get_default_logger() -> Logger:
     logger.propagate = False
 
     _default_logger = logger
+    return logger
+
+
+def configure_default_logger(*, json_logging: bool | None = None) -> Logger:
+    """Reconfigure the shared logger formatter after env defaults are known."""
+    logger = get_default_logger()
+    use_json = _use_json_logging() if json_logging is None else json_logging
+    formatter: logging.Formatter = JsonFormatter() if use_json else ColorFormatter()
+    for handler in logger.handlers:
+        handler.setFormatter(formatter)
     return logger
 
 

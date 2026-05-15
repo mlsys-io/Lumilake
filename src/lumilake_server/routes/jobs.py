@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.responses import Response
 from lumid_hooks import PrincipalContext
 from lumilake import envs
-from lumilake.log import Logger, init_child_logger, trace_id_var
+from lumilake.log import Logger, init_child_logger, set_trace_id
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from minio import Minio
 from minio.error import S3Error
@@ -1096,7 +1096,10 @@ async def _resolve_input_values(
     if not values:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"input {input_name!r} resolved to an empty value list",
+            detail=EmptyInputsErrorDetail(
+                message=f"input {input_name!r} resolved to an empty value list",
+                parsed_input_names=[input_name],
+            ).model_dump(),
         )
     return values
 
@@ -1145,8 +1148,9 @@ async def _run_job(
     priority: Priority,
     compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
+    trace_id: str,
 ) -> None:
-    trace_id_var.set(job_id)
+    set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
 
     async with jobs_lock:
@@ -1476,15 +1480,6 @@ async def preview_job(
                 hook_logger=hook_logger,
             )
 
-        if not inputs:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=EmptyInputsErrorDetail(
-                    message=f"inputs or input_locations required for index {idx}",
-                    parsed_input_names=sorted(entry.inputs.keys()),
-                ).model_dump(),
-            )
-
         try:
             _input_shape(inputs)
         except ValueError as exc:
@@ -1740,15 +1735,6 @@ async def submit_job(
                 principal=principal,
                 hook_logger=hook_logger,
             )
-        if not inputs:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=EmptyInputsErrorDetail(
-                    message=f"inputs or input_locations required for index {idx}",
-                    parsed_input_names=sorted(entry.inputs.keys()),
-                ).model_dump(),
-            )
-
         try:
             total_length, varying_input_keys = _input_shape(inputs)
         except ValueError as exc:
@@ -1849,6 +1835,7 @@ async def submit_job(
             priority,
             compute_pool,
             principal,
+            str(getattr(request.state, "trace_id", job_id)),
         )
     )
     return {"ok": True, "data": {"job_id": job_id, "status": record.status}}

@@ -1,4 +1,4 @@
-"""Verify ``lumilake jobs submit --help`` documents the ``--input`` syntax."""
+"""Verify ``lumilake job submit --help`` documents the ``--input`` syntax."""
 
 import re
 

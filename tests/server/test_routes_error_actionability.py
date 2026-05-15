@@ -404,7 +404,7 @@ async def test_empty_inputs_after_resolution_echoes_input_name(
     monkeypatch.setattr(job_routes_module, "_validate_location", _noop_validate)
     monkeypatch.setattr(job_routes_module, "_require_location_permission", _noop_perm)
 
-    async def _resolve_empty(
+    async def _resolve_empty_raw(
         *,
         input_name: str,
         raw: Any,
@@ -412,14 +412,11 @@ async def test_empty_inputs_after_resolution_echoes_input_name(
         principal: Any,
         hook_logger: Any,
     ) -> list[str]:
-        from fastapi import HTTPException
+        return []
 
-        raise HTTPException(
-            status_code=422,
-            detail=f"input {input_name!r} resolved to an empty value list",
-        )
-
-    monkeypatch.setattr(job_routes_module, "_resolve_input_values", _resolve_empty)
+    monkeypatch.setattr(
+        job_routes_module, "_resolve_input_values_raw", _resolve_empty_raw
+    )
 
     body = _submit_body()
     body["data"][0]["inputs"] = {"my_input": ["any"]}
@@ -431,7 +428,10 @@ async def test_empty_inputs_after_resolution_echoes_input_name(
             headers={"Authorization": "Bearer token"},
         )
     assert resp.status_code == 422
-    assert "my_input" in resp.json()["detail"]
+    assert resp.json()["detail"] == {
+        "message": "input 'my_input' resolved to an empty value list",
+        "parsed_input_names": ["my_input"],
+    }
 
 
 @pytest.fixture
