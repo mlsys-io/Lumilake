@@ -87,7 +87,6 @@ def _run_setup(
 
 
 def _preview_write(target: Path, new_content: str) -> None:
-    """Show a preview of what would be written before confirming."""
     if target.exists():
         old = target.read_text().splitlines(keepends=True)
         new = new_content.splitlines(keepends=True)
@@ -119,8 +118,7 @@ def _confirm_overwrite(target: Path, *, force: bool, new_content: str) -> bool:
     """Return True when the target may be written, False to skip.
 
     Shows a preview (or diff vs an existing file) before prompting on
-    overwrite. Brand-new writes pass through without prompting to keep
-    parity with the prior ``init`` behavior.
+    overwrite. Brand-new writes pass through without prompting.
     """
     if not target.exists() or force:
         if target.exists():

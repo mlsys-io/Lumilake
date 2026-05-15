@@ -50,12 +50,6 @@ def _preview_headers(workflow_format: str) -> dict[str, str]:
 
 
 def _request_kwargs(timeout: float | None) -> dict[str, Any]:
-    """Build per-call kwargs for the underlying httpx request.
-
-    Returns ``{}`` when ``timeout`` is ``None`` so the transport uses
-    its configured default. When set, passes the value through as an
-    httpx-compatible per-request ``timeout``.
-    """
     if timeout is None:
         return {}
     return {"timeout": timeout}
@@ -123,12 +117,7 @@ class Jobs(SyncResource):
         page_size: int | None = None,
         timeout: float | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """Iterate through every job, traversing pagination cursors.
-
-        Yields one job dict at a time. ``page_size`` is forwarded as the
-        underlying ``limit`` and bounds each request; the iterator stops
-        when the server stops returning a ``next_cursor``.
-        """
+        """Aborts if the server replays a cursor, to avoid infinite loops."""
         cursor: str | None = None
         seen_cursors: set[str] = set()
         while True:
@@ -159,13 +148,11 @@ class Jobs(SyncResource):
         )
 
     def result(self, job_id: str, *, timeout: float | None = None) -> dict[str, Any]:
-        """Fetch the final result of a completed job."""
         return unwrap(
             self._client.get(f"/jobs/{job_id}/result", **_request_kwargs(timeout))
         )
 
     def inputs(self, job_id: str, *, timeout: float | None = None) -> dict[str, Any]:
-        """Fetch the resolved inputs of a submitted job."""
         return unwrap(
             self._client.get(f"/jobs/{job_id}/inputs", **_request_kwargs(timeout))
         )
@@ -232,12 +219,7 @@ class Jobs(SyncResource):
         timeout: float = 600.0,
         request_timeout: float | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """Poll a job until it reaches a terminal state, yielding every status snapshot.
-
-        Each yielded dict carries the current ``status``, ``job``, and
-        ``progress`` fields. The iterator stops once a terminal state is
-        observed (yielding the terminal snapshot first).
-        """
+        """Yields ``{"status", "job", "progress"}`` snapshots until terminal."""
         deadline = time.monotonic() + timeout
         while True:
             job = self.get(job_id, timeout=request_timeout)
