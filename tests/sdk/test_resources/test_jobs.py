@@ -1,5 +1,7 @@
 """Tests for Jobs (sync) + AsyncJobs."""
 
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
@@ -126,4 +128,216 @@ async def test_async_wait_terminal(async_jobs: AsyncJobs, base_url: str) -> None
         )
         result = await async_jobs.wait("j", poll_interval=0.0, timeout=2.0)
         assert result["status"] == "completed"
+        await async_jobs._client.close()
+
+
+# ---- Parity helpers ----
+
+
+def test_preview_posts_with_format_header(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.post("/api/v1/jobs/preview").mock(
+            return_value=httpx.Response(200, json={"data": {"request_id": "p-1"}})
+        )
+        result = jobs.preview({"data": []}, workflow_format="yaml")
+        assert result == {"request_id": "p-1"}
+        assert route.called
+        assert route.calls.last.request.headers["Workflow-Format"] == "yaml"
+
+
+def test_progress(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(
+                200,
+                json={"data": {"job_id": "j-1", "progress": {"completed": 2}}},
+            )
+        )
+        assert jobs.progress("j-1") == {
+            "job_id": "j-1",
+            "progress": {"completed": 2},
+        }
+
+
+def test_result(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/result").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "result": {"ok": True}}}
+            )
+        )
+        result = jobs.result("j-1")
+        assert result["result"] == {"ok": True}
+
+
+def test_inputs(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/inputs").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "inputs": {"Stock": ["NVDA"]}}}
+            )
+        )
+        assert jobs.inputs("j-1")["inputs"] == {"Stock": ["NVDA"]}
+
+
+def test_artifact_streams_to_disk(jobs: Jobs, base_url: str, tmp_path: Path) -> None:
+    target = tmp_path / "out" / "result.bin"
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.get("/api/v1/jobs/j-1/artifact").mock(
+            return_value=httpx.Response(200, content=b"binary-payload")
+        )
+        path = jobs.artifact("j-1", path="s3://bucket/foo", output=target)
+        assert path == target
+        assert target.read_bytes() == b"binary-payload"
+        assert "path=s3" in str(route.calls.last.request.url)
+
+
+def test_watch_yields_snapshots_until_terminal(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            side_effect=[
+                httpx.Response(200, json={"data": {"id": "j-1", "status": "pending"}}),
+                httpx.Response(
+                    200, json={"data": {"id": "j-1", "status": "completed"}}
+                ),
+            ]
+        )
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "progress": {"step": 1}}}
+            )
+        )
+
+        snapshots = list(jobs.watch("j-1", poll_interval=0.0, timeout=2.0))
+
+    assert [s["status"] for s in snapshots] == ["pending", "completed"]
+    assert snapshots[-1]["progress"] == {"step": 1}
+
+
+def test_list_all_traverses_cursor(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}, {"id": "b"}],
+                            "next_cursor": "abc",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={"data": {"items": [{"id": "c"}], "next_cursor": None}},
+                ),
+            ]
+        )
+        results = list(jobs.list_all(page_size=2))
+        assert [r["id"] for r in results] == ["a", "b", "c"]
+
+
+def test_list_all_stops_with_no_cursor(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            return_value=httpx.Response(200, json={"data": {"items": [{"id": "a"}]}})
+        )
+        results = list(jobs.list_all())
+        assert results == [{"id": "a"}]
+
+
+def test_get_respects_per_call_timeout(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.get("/api/v1/jobs/j-1").mock(
+            return_value=httpx.Response(200, json={"data": {"id": "j-1"}})
+        )
+        assert jobs.get("j-1", timeout=42.0) == {"id": "j-1"}
+        assert route.called
+
+
+# ---- Async parity ----
+
+
+@pytest.mark.asyncio
+async def test_async_preview(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.post("/api/v1/jobs/preview").mock(
+            return_value=httpx.Response(200, json={"data": {"request_id": "p-2"}})
+        )
+        result = await async_jobs.preview({"data": []}, workflow_format="native")
+        assert result == {"request_id": "p-2"}
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_progress(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "progress": {"k": 1}}}
+            )
+        )
+        result = await async_jobs.progress("j-1")
+        assert result["progress"] == {"k": 1}
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_list_all(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}],
+                            "next_cursor": "next",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200, json={"data": {"items": [{"id": "b"}], "next_cursor": None}}
+                ),
+            ]
+        )
+        collected: list[dict[str, str]] = []
+        async for item in async_jobs.list_all():
+            collected.append(item)
+        assert [c["id"] for c in collected] == ["a", "b"]
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_watch(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            side_effect=[
+                httpx.Response(
+                    200, json={"data": {"id": "j-1", "status": "completed"}}
+                ),
+            ]
+        )
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(200, json={"data": {"progress": {"x": 1}}})
+        )
+        snapshots: list[dict[str, object]] = []
+        async for snap in async_jobs.watch("j-1", poll_interval=0.0, timeout=2.0):
+            snapshots.append(snap)
+        assert [s["status"] for s in snapshots] == ["completed"]
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_artifact(
+    async_jobs: AsyncJobs, base_url: str, tmp_path: Path
+) -> None:
+    target = tmp_path / "out.bin"
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/artifact").mock(
+            return_value=httpx.Response(200, content=b"abc")
+        )
+        path = await async_jobs.artifact("j-1", path="s3://x", output=target)
+        assert path == target
+        assert target.read_bytes() == b"abc"
         await async_jobs._client.close()
