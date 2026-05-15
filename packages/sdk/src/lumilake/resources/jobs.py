@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from lumilake._base_client import unwrap
+from lumilake._base_client import _raise_for_status, unwrap
 from lumilake.errors import HttpError
 from lumilake.resources._base import AsyncResource, SyncResource
 
@@ -45,8 +45,8 @@ def _list_params(
     return params
 
 
-def _preview_headers(workflow_format: str) -> dict[str, str]:
-    return {"Workflow-Format": workflow_format}
+def _workflow_headers(workflow_format: str | None) -> Mapping[str, str] | None:
+    return {"Workflow-Format": workflow_format} if workflow_format else None
 
 
 def _request_kwargs(timeout: float | None) -> dict[str, Any]:
@@ -63,14 +63,11 @@ class Jobs(SyncResource):
         workflow_format: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        headers: Mapping[str, str] | None = (
-            {"Workflow-Format": workflow_format} if workflow_format else None
-        )
         return unwrap(
             self._client.post(
                 "/jobs",
                 json_body=payload,
-                headers=headers,
+                headers=_workflow_headers(workflow_format),
                 **_request_kwargs(timeout),
             )
         )
@@ -79,7 +76,7 @@ class Jobs(SyncResource):
         self,
         payload: dict[str, Any],
         *,
-        workflow_format: str = "n8n",
+        workflow_format: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Schedule a workflow without dispatching runtime work."""
@@ -87,7 +84,7 @@ class Jobs(SyncResource):
             self._client.post(
                 "/jobs/preview",
                 json_body=payload,
-                headers=_preview_headers(workflow_format),
+                headers=_workflow_headers(workflow_format),
                 **_request_kwargs(timeout),
             )
         )
@@ -177,7 +174,9 @@ class Jobs(SyncResource):
             headers={"Accept": "application/octet-stream"},
             **_request_kwargs(timeout),
         ) as response:
-            response.raise_for_status()
+            if response.status_code >= 400:
+                response.read()
+            _raise_for_status(response, url)
             with target.open("wb") as fh:
                 for chunk in response.iter_bytes(chunk_size=chunk_size):
                     if chunk:
@@ -248,13 +247,10 @@ class AsyncJobs(AsyncResource):
         workflow_format: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        headers: Mapping[str, str] | None = (
-            {"Workflow-Format": workflow_format} if workflow_format else None
-        )
         response = await self._client.post(
             "/jobs",
             json_body=payload,
-            headers=headers,
+            headers=_workflow_headers(workflow_format),
             **_request_kwargs(timeout),
         )
         return unwrap(response)
@@ -263,13 +259,13 @@ class AsyncJobs(AsyncResource):
         self,
         payload: dict[str, Any],
         *,
-        workflow_format: str = "n8n",
+        workflow_format: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         response = await self._client.post(
             "/jobs/preview",
             json_body=payload,
-            headers=_preview_headers(workflow_format),
+            headers=_workflow_headers(workflow_format),
             **_request_kwargs(timeout),
         )
         return unwrap(response)
@@ -363,7 +359,9 @@ class AsyncJobs(AsyncResource):
             headers={"Accept": "application/octet-stream"},
             **_request_kwargs(timeout),
         ) as response:
-            response.raise_for_status()
+            if response.status_code >= 400:
+                await response.aread()
+            _raise_for_status(response, url)
             with target.open("wb") as fh:
                 async for chunk in response.aiter_bytes(chunk_size=chunk_size):
                     if chunk:

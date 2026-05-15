@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from lumilake_cli.core import http
-from lumilake_cli.core.config import LumilakeConfig, save_config
+from lumilake_cli.core.config import LumilakeConfig, load_config, save_config
 
 
 def _clear_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,3 +80,10 @@ def test_resolve_empty_env_falls_through_to_config(
     base, source = http.resolve_base_url(path)
     assert base == "http://stored:9000"
     assert source == "config"
+
+
+def test_save_config_escapes_toml_string_values(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(LumilakeConfig(base_url='http://host/"quoted"'), path=path)
+
+    assert load_config(path).base_url == 'http://host/"quoted"'

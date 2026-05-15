@@ -297,6 +297,9 @@ def _write_cli_config(root: Path, config_path: Path | None = None) -> None:
         existing = load_config(config_path)
     except (FileNotFoundError, ValueError):
         existing = None
+    if existing is not None and existing.base_url == base_url:
+        logging.info(f"CLI config already points at {base_url}.")
+        return
     if existing is not None and existing.base_url != base_url:
         logging.info(f"Updating {config_path}: {existing.base_url} -> {base_url}")
     try:

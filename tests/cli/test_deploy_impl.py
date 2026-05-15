@@ -292,6 +292,27 @@ def test_cli_up_warns_on_config_change(
     assert any("http://127.0.0.1:9000 -> http://127.0.0.1:9001" in m for m in messages)
 
 
+def test_cli_up_leaves_matching_config_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_cmd, "_run_setup", lambda *a, **kw: None)
+    monkeypatch.setattr(deploy_cmd.setup_mod, "load_project_env", lambda _r: None)
+    monkeypatch.setattr(deploy_cmd.envs, "LUMILAKE_SERVER_PORT", 9000)
+
+    config_path = tmp_path / "config.toml"
+    original = 'base_url = "http://127.0.0.1:9000"\n'
+    config_path.write_text(original)
+    monkeypatch.setattr(deploy_cmd, "DEFAULT_CONFIG_PATH", config_path)
+
+    messages: list[str] = []
+    monkeypatch.setattr(deploy_cmd.logging, "info", lambda m: messages.append(m))
+
+    deploy_cmd.up(_fake_ctx(tmp_path))
+
+    assert config_path.read_text() == original
+    assert messages == ["CLI config already points at http://127.0.0.1:9000."]
+
+
 def test_cli_init_honors_project_dir_argument(tmp_path: Path) -> None:
     """``--project-dir`` (passed via ctx.obj) routes init into the chosen dir."""
     deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)

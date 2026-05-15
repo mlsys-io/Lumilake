@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 from lumilake import AsyncJobs, BaseAsyncClient, BaseClient, Jobs
+from lumilake.errors import NotFoundError
 
 
 @pytest.fixture
@@ -145,6 +146,15 @@ def test_preview_posts_with_format_header(jobs: Jobs, base_url: str) -> None:
         assert route.calls.last.request.headers["Workflow-Format"] == "yaml"
 
 
+def test_preview_omits_format_header_by_default(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.post("/api/v1/jobs/preview").mock(
+            return_value=httpx.Response(200, json={"data": {"request_id": "p-1"}})
+        )
+        jobs.preview({"data": []})
+        assert "Workflow-Format" not in route.calls.last.request.headers
+
+
 def test_progress(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
         mocked.get("/api/v1/jobs/j-1/progress").mock(
@@ -190,6 +200,17 @@ def test_artifact_streams_to_disk(jobs: Jobs, base_url: str, tmp_path: Path) -> 
         assert path == target
         assert target.read_bytes() == b"binary-payload"
         assert "path=s3" in str(route.calls.last.request.url)
+
+
+def test_artifact_maps_404_to_sdk_error(
+    jobs: Jobs, base_url: str, tmp_path: Path
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/missing/artifact").mock(
+            return_value=httpx.Response(404, text="not found")
+        )
+        with pytest.raises(NotFoundError):
+            jobs.artifact("missing", path="s3://bucket/foo", output=tmp_path / "out")
 
 
 def test_watch_yields_snapshots_until_terminal(jobs: Jobs, base_url: str) -> None:
@@ -439,4 +460,19 @@ async def test_async_artifact(
         path = await async_jobs.artifact("j-1", path="s3://x", output=target)
         assert path == target
         assert target.read_bytes() == b"abc"
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_artifact_maps_404_to_sdk_error(
+    async_jobs: AsyncJobs, base_url: str, tmp_path: Path
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/missing/artifact").mock(
+            return_value=httpx.Response(404, text="not found")
+        )
+        with pytest.raises(NotFoundError):
+            await async_jobs.artifact(
+                "missing", path="s3://bucket/foo", output=tmp_path / "out"
+            )
         await async_jobs._client.close()
