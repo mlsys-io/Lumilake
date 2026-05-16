@@ -16,7 +16,7 @@ class _DummyGraph:
     pass
 
 
-def test_build_request_data_profile_tasks_preserves_slice_specific_sql_nodes(
+def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
     monkeypatch,
 ) -> None:
     request_id = "req-1"
@@ -51,6 +51,35 @@ def test_build_request_data_profile_tasks_preserves_slice_specific_sql_nodes(
             {"q": ["B"], "k": ["fixed"]},
         ),
     }
+
+    merged_inputs_seen: list[dict[str, list[str]]] = []
+
+    def _stub_merge(workflows):
+        for item in workflows:
+            assert item.request_id == request_id
+            assert item.public_graph_name == "g"
+            assert item.template_hash == "template-hash"
+            assert item.varying_input_keys == ("q",)
+            assert item.slice_length == 1
+            assert item.total_length == 2
+            assert isinstance(item.dsl_graph, CompiledGraph)
+        merged_inputs: dict[str, list[str]] = {"q": [], "k": []}
+        for item in workflows:
+            merged_inputs["q"].extend(item.dsl_graph.inputs["q"])
+        merged_inputs["k"] = list(workflows[0].dsl_graph.inputs["k"])
+        merged_inputs_seen.append(merged_inputs)
+        compiled = CompiledGraph(cast(Any, dummy_graph), merged_inputs)
+        compiled._coalesce_rewrite_hits = {}
+        compiled._coalesce_rewrite_skipped = False
+        return compiled
+
+    from lumilake_server.runtime import server as server_module
+
+    monkeypatch.setattr(
+        server_module.LumilakeServer,
+        "_merge_group_compiled_graph",
+        staticmethod(_stub_merge),
+    )
 
     build_calls: list[tuple[str, list[str]]] = []
 
@@ -94,24 +123,17 @@ def test_build_request_data_profile_tasks_preserves_slice_specific_sql_nodes(
         graphs=graphs,
         workflow_slices=workflow_slices,
     )
-    assert len(tasks) == 2
-    tasks_by_key = {t.task_key: t for t in tasks}
-    assert set(tasks_by_key) == {
-        "request::req-1::g::template-hash::slice_0",
-        "request::req-1::g::template-hash::slice_1",
-    }
-    assert build_calls == [("g__slice_1", ["A"]), ("g__slice_2", ["B"])]
-    task0 = tasks_by_key["request::req-1::g::template-hash::slice_0"]
-    task1 = tasks_by_key["request::req-1::g::template-hash::slice_1"]
-    assert task0.payload.node_order == ["g__slice_1__db_node"]
-    assert task1.payload.node_order == ["g__slice_2__db_node"]
+    assert len(tasks) == 1
+    task = tasks[0]
+    expected_key = "request::req-1::g::template-hash"
+    assert task.task_key == expected_key
+    assert merged_inputs_seen == [{"q": ["A", "B"], "k": ["fixed"]}]
+    assert build_calls == [(expected_key, ["A", "B"])]
+    expected_node_id = f"{expected_key}__db_node"
+    assert task.payload.node_order == [expected_node_id]
     assert (
-        task0.payload.nodes["g__slice_1__db_node"].raw_node_id
-        == "g__slice_1__raw_db_node"
-    )
-    assert (
-        task1.payload.nodes["g__slice_2__db_node"].raw_node_id
-        == "g__slice_2__raw_db_node"
+        task.payload.nodes[expected_node_id].raw_node_id
+        == f"{expected_key}__raw_db_node"
     )
 
 

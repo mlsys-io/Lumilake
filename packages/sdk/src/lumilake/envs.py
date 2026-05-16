@@ -174,9 +174,8 @@ def _parse_s3_url(
 
 S3_URL: str | None = os.getenv("S3_URL") or None
 
-S3_ENDPOINT, S3_ACCESS_KEY, S3_CONNECTION_VALUE, _ = _parse_s3_url(S3_URL)
+S3_ENDPOINT, S3_ACCESS_KEY, S3_CONNECTION_VALUE, S3_URL_PREFIX = _parse_s3_url(S3_URL)
 S3_CERT_FILE: str | None = os.getenv("S3_CERT_FILE")
-S3_USER_DATA_PREFIX: str | None = os.getenv("S3_USER_DATA_PREFIX")
 
 S3_ARCHIVE_PREFIX: str | None = os.getenv("S3_ARCHIVE_PREFIX")
 

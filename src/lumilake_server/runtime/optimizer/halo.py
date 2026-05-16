@@ -680,9 +680,9 @@ class HaloOptimizer(BaseOptimizer):
         db_ratio = context.db_nodes / max(1.0, float(context.total_nodes))
         switch_extra = max(0.0, context.switch_pressure - 1.0)
         model_init_sec_per_b = self._clamp(
-            0.75 * model_scale * (1.0 + 0.35 * switch_extra) * gpu_scale,
-            0.35,
-            2.0,
+            2.5 * model_scale * (1.0 + 0.35 * switch_extra) * gpu_scale,
+            1.5,
+            5.0,
         )
         llm_base_sec_per_b = self._clamp(0.25 * model_scale * gpu_scale, 0.10, 0.80)
         llm_input_sec = self._clamp(0.15 * (1.0 + 0.08 * query_extra), 0.10, 0.35)
@@ -1000,12 +1000,9 @@ class HaloOptimizer(BaseOptimizer):
         if node.engine != "vllm":
             return 0.0
         node_model = node.model or ""
-        size_b = self._model_size_b(node)
-        if last_model is None:
-            return (self._model_init_sec_per_b * size_b) / 2.0
         if last_model == node_model:
             return 0.0
-        return self._model_init_sec_per_b * size_b
+        return self._model_init_sec_per_b * self._model_size_b(node)
 
     @staticmethod
     def _llm_cache_bonus(

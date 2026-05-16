@@ -70,7 +70,6 @@ _ALWAYS_REQUIRED: tuple[str, ...] = (
 _DIRECT_MODE_REQUIRED: tuple[str, ...] = (
     "DATABASE_URL",
     "S3_URL",
-    "S3_USER_DATA_PREFIX",
 )
 
 _OPTIONAL_KEYS: tuple[str, ...] = (

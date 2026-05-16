@@ -42,7 +42,6 @@ jobs:
           LUMILAKE_RUNTIME_TOKEN=""
           DATABASE_URL=""
           S3_URL=""
-          S3_USER_DATA_PREFIX=""
           S3_ARCHIVE_PREFIX="test-bucket/archive"
           ENVEOF
           sed -i 's/^[[:space:]]*//' .env

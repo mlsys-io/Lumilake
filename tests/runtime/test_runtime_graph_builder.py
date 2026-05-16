@@ -37,6 +37,42 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     assert llm.id in runtime_graph.nodes
 
 
+def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
+    stock = input_placeholder("Stock")
+    planner = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "sql",
+            "connection_string": "postgresql://example",
+            "template": "SELECT * FROM t WHERE query = :query",
+            "params": [
+                {
+                    "label": "query",
+                    "node": planner.id,
+                    "path": "items.output",
+                }
+            ],
+        },
+        inputs=[planner],
+    )
+    report = LLMChatOp(
+        [OpMessage(role="user", content=retrieval)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", report)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    order_index = {node_id: idx for idx, node_id in enumerate(runtime_graph.node_order)}
+    assert runtime_graph.node_order == runtime_graph.topological_order()
+    assert order_index[planner.id] < order_index[retrieval.id]
+    assert order_index[retrieval.id] < order_index[report.id]
+
+
 def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(

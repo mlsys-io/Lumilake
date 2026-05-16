@@ -98,9 +98,9 @@ docker compose -f scripts/dev/compose.data-plane.yml down -v
 ```
 
 **Skip this step entirely** if you have your own Postgres and S3 — just
-set `DATABASE_URL`, `S3_URL`, and `S3_USER_DATA_PREFIX` in your `.env`
-to your own endpoints. Nothing in step 2 or 3 reads the bundled
-defaults if you've overridden them.
+set `DATABASE_URL` and `S3_URL` in your `.env` to your own endpoints.
+Nothing in step 2 or 3 reads the bundled defaults if you've overridden
+them.
 
 ---
 
@@ -205,8 +205,7 @@ The shipped `.env.example` is **pre-pointed at step 1's data plane**
 - Set a model provider key (`OPENAI_API_KEY`, etc.) — only if you
   author workflows that call hosted providers; the bundled demos run
   on local open-weight models.
-- Point at your own Postgres / S3 (override `DATABASE_URL`, `S3_URL`,
-  `S3_USER_DATA_PREFIX`).
+- Point at your own Postgres / S3 (override `DATABASE_URL`, `S3_URL`).
 - Enable agent retrievals (`LUMID_DATA_URL=http://127.0.0.1:9102`).
 - Set `LUMILAKE_GPU_DEVICES` to one or more free GPU indices on your
   host (default is empty — no GPU workers). On a shared host, pick an

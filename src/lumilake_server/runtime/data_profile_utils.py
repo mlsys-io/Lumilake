@@ -492,13 +492,14 @@ def dump_data_profile_yaml(
 def _compute_minio_listing() -> tuple[dict[str, int | None], list[str]]:
     """Return ``(file_sizes, folder_paths)`` for the compute MinIO data area.
 
-    ``file_sizes`` maps relative paths under ``S3_USER_DATA_PREFIX`` to byte size;
-    ``folder_paths`` is the set of folder prefixes implied.
+    Scans the bucket + key prefix encoded in ``S3_URL``'s path. ``file_sizes``
+    maps relative paths under that prefix to byte size; ``folder_paths`` is
+    the set of folder prefixes implied.
     """
     endpoint = envs.S3_ENDPOINT
     access_key = envs.S3_ACCESS_KEY
     connection_value = envs.S3_CONNECTION_VALUE
-    data_prefix_raw = envs.S3_USER_DATA_PREFIX
+    data_prefix_raw = envs.S3_URL_PREFIX
     if not (endpoint and access_key and connection_value and data_prefix_raw):
         return {}, []
     client: Minio = create_minio_client(

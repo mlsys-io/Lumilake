@@ -149,7 +149,7 @@ def test_group_workflows_by_parent_workflow_keeps_request_slices_together() -> N
         sorted(item.workflow_id for item in items) for items in grouped.values()
     )
 
-    assert grouped_members == [["req-a-0"], ["req-a-1"], ["req-b-0"], ["req-b-1"]]
+    assert grouped_members == [["req-a-0", "req-a-1"], ["req-b-0", "req-b-1"]]
     assert all(key.startswith("request::") for key in grouped)
 
 
@@ -173,11 +173,8 @@ def test_group_by_parent_workflow_merges_all_slices_per_request() -> None:
     )
 
     assert grouped_members == [
-        ["req-a-0"],
-        ["req-a-1"],
-        ["req-a-2"],
-        ["req-b-0"],
-        ["req-b-1"],
+        ["req-a-0", "req-a-1", "req-a-2"],
+        ["req-b-0", "req-b-1"],
     ]
     assert all(key.startswith("request::") for key in grouped)
 
@@ -246,10 +243,8 @@ def test_group_workflows_by_parent_workflow_merges_slices_within_each_template()
     )
 
     assert grouped_members == [
-        ["social-0"],
-        ["social-1"],
-        ["trading-0"],
-        ["trading-1"],
+        ["social-0", "social-1"],
+        ["trading-0", "trading-1"],
     ]
     for key in grouped:
         assert key.startswith("request::")

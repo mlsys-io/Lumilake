@@ -1,6 +1,8 @@
 import asyncio
 import copy
 import hashlib
+import importlib
+import inspect
 import json
 import math
 import multiprocessing as mp
@@ -8,7 +10,7 @@ import queue
 import time
 import traceback
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -111,6 +113,46 @@ class SchedulePreview:
     schedule: Schedule
 
 
+_subprocess_logger = init_child_logger("OptimizerSubprocess")
+
+
+async def _resolve_subprocess_install(install: Any) -> None:
+    installed = install()
+    if isinstance(installed, AbstractAsyncContextManager):
+        await installed.__aenter__()
+    elif inspect.isawaitable(installed):
+        await installed
+
+
+def _install_plugins_sync() -> None:
+    """Run each plugin's ``install()`` so optimizer types registered by
+    plugins are visible inside the spawned subprocess. Supports sync,
+    awaitable, and async-context-manager install shapes; ``__aexit__``
+    is not invoked so synchronous registrations persist for the
+    subprocess lifetime. Plugins that depend on a long-lived event loop
+    or that register optimizer types via ``register(bindings)`` rather
+    than as a side effect of ``install()`` are not supported in the
+    subprocess."""
+    for plugin_name in envs.LUMILAKE_PLUGINS:
+        try:
+            module = importlib.import_module(plugin_name)
+        except Exception as exc:
+            _subprocess_logger.error("plugin %r import failed: %s", plugin_name, exc)
+            continue
+        install = module.__dict__.get("install")
+        if not callable(install):
+            _subprocess_logger.warning(
+                "plugin %r has no install(); skipping", plugin_name
+            )
+            continue
+        try:
+            asyncio.run(_resolve_subprocess_install(install))
+        except Exception as exc:
+            _subprocess_logger.error("plugin %r install() failed: %s", plugin_name, exc)
+        else:
+            _subprocess_logger.info("plugin %r registered", plugin_name)
+
+
 def _optimizer_subprocess_entry(
     optimizer_type: str,
     runtime_graph: Any,
@@ -120,6 +162,7 @@ def _optimizer_subprocess_entry(
     result_queue: Any,
 ) -> None:
     try:
+        _install_plugins_sync()
         optimizer = create_optimizer(optimizer_type=optimizer_type)
         schedule = optimizer.generate_schedule(
             runtime_graph,
@@ -841,16 +884,9 @@ class LumilakeServer:
 
     @staticmethod
     def _request_workflow_parent_id(workflow: Any) -> str:
-        # Each input slice gets its own parent id so multi-input
-        # submissions (``Stock=["NVDA","AAPL","TSLA"]`` with batch-size 1)
-        # dispatch as N independent workflow executions instead of being
-        # coalesced back into a single graph carrying the full list. The
-        # worker's SQL template substitution only handles scalar values;
-        # a coalesced list-of-3 produces ``WHERE symbol = '["NVDA",...]'``.
         return (
             f"request::{workflow.request_id}::"
             f"{workflow.public_graph_name}::{workflow.template_hash}"
-            f"::slice_{workflow.slice_index}"
         )
 
     @classmethod
