@@ -18,7 +18,7 @@ def _items(data: Any) -> list[dict[str, Any]]:
 
 def _next_cursor(data: Any) -> str | None:
     if isinstance(data, dict):
-        cursor = data.get("next_cursor") or data.get("cursor")
+        cursor = data.get("next_cursor")
         if isinstance(cursor, str) and cursor:
             return cursor
     return None
