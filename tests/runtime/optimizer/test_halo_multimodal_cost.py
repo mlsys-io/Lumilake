@@ -1,5 +1,6 @@
 import pytest
 
+from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.multimodal_cost import (
     MultimodalCostCoefficients,
     NodeCostType,
@@ -122,6 +123,42 @@ def test_diffusion_cost_scales_with_resolution() -> None:
         coeffs=coeffs,
     )
     assert high_res == pytest.approx(base * 4.0)
+
+
+def test_model_init_cost_pins_switch_penalty() -> None:
+    optimizer = HaloOptimizer()
+    init_sec_per_b = optimizer._model_init_sec_per_b
+
+    model_a = "google/gemma-3-27b-it"
+    model_b = "llava-hf/llava-1.5-7b"
+    size_a = 27.0
+    size_b = 7.0
+
+    def node(node_id: str, model: str) -> Node:
+        return Node(id=node_id, type="inference", engine="vllm", model=model, raw={})
+
+    a1, a2, a3, a4 = (node(f"a{i}", model_a) for i in range(4))
+    b1, b2 = node("b1", model_b), node("b2", model_b)
+
+    seq_ab = [a1, a2, b1, b2, a3, a4]
+    total_ab = 0.0
+    last: str | None = None
+    for n in seq_ab:
+        total_ab += optimizer._model_init_cost(n, last)
+        last = n.model
+    expected_ab = init_sec_per_b * (size_a + size_b + size_a)
+
+    seq_b_then_a = [a1, b1, a2, a3, a4, b2]
+    total_b_then_a = 0.0
+    last = None
+    for n in seq_b_then_a:
+        total_b_then_a += optimizer._model_init_cost(n, last)
+        last = n.model
+    expected_b_then_a = init_sec_per_b * (size_a + size_b + size_a + size_b)
+
+    assert total_ab == pytest.approx(expected_ab)
+    assert total_b_then_a == pytest.approx(expected_b_then_a)
+    assert total_ab < total_b_then_a
 
 
 def test_invalid_diffusion_config_raises() -> None:
