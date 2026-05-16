@@ -1,7 +1,12 @@
 """Optimizer implementations for Lumilake.
 
-Ships ``halo`` — the HALO cost-aware scheduler that uses a DP solver
-over the runtime graph plus a multimodal cost model.
+Ships two optimizers:
+
+- ``halo`` — cost-aware DP scheduler over the runtime graph with a
+  multimodal cost model.
+- ``topological-sort`` — naive baseline that pins every GPU node to
+  the first GPU worker and every CPU node to the first CPU worker, in
+  topological order. Used for measurement comparisons against HALO.
 
 Select at runtime via ``LUMILAKE_OPTIMIZER_TYPE``.
 """
@@ -10,9 +15,11 @@ from lumilake import envs
 
 from .base import BaseOptimizer
 from .halo import HaloOptimizer
+from .topological_sort import TopologicalSortOptimizer
 
 OPTIMIZER_TYPES: dict[str, type[BaseOptimizer]] = {
     "halo": HaloOptimizer,
+    "topological-sort": TopologicalSortOptimizer,
 }
 
 
@@ -41,6 +48,7 @@ def create_optimizer(optimizer_type: str | None = None, **kwargs) -> BaseOptimiz
 __all__ = [
     "BaseOptimizer",
     "HaloOptimizer",
+    "TopologicalSortOptimizer",
     "OPTIMIZER_TYPES",
     "create_optimizer",
 ]

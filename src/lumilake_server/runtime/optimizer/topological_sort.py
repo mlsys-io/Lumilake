@@ -1,17 +1,20 @@
-"""Dummy topological-sort optimizer for baseline comparison."""
+"""Topological-sort baseline optimizer.
+
+Assigns every GPU-backend node to the first GPU worker and every CPU
+node to the first CPU worker, in topological order. Serves as the
+naive baseline against which cost-aware optimizers (HALO, HALO+Helium)
+are measured.
+"""
 
 from typing import Any
 
-from lumilake_hook import BaseBindings
-
-from lumilake_server.runtime.optimizer import OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 _GPU_BACKENDS = {"vllm", "transformers", "diffusers", "omni"}
 
 
-class DummyTopoOptimizer(BaseOptimizer):
+class TopologicalSortOptimizer(BaseOptimizer):
     def generate_schedule(
         self,
         graph: RuntimeGraph,
@@ -41,8 +44,3 @@ class DummyTopoOptimizer(BaseOptimizer):
             else:
                 assignment[cpu_workers[0]].append(node_id)
         return Schedule(worker_assignment=assignment)
-
-
-def install() -> BaseBindings:
-    OPTIMIZER_TYPES["dummy"] = DummyTopoOptimizer
-    return BaseBindings()
