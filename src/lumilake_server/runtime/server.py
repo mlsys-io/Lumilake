@@ -2,6 +2,7 @@ import asyncio
 import copy
 import hashlib
 import importlib
+import inspect
 import json
 import math
 import multiprocessing as mp
@@ -9,7 +10,7 @@ import queue
 import time
 import traceback
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -115,9 +116,23 @@ class SchedulePreview:
 _subprocess_logger = init_child_logger("OptimizerSubprocess")
 
 
+async def _resolve_subprocess_install(install: Any) -> None:
+    installed = install()
+    if isinstance(installed, AbstractAsyncContextManager):
+        await installed.__aenter__()
+    elif inspect.isawaitable(installed):
+        await installed
+
+
 def _install_plugins_sync() -> None:
-    """Run each plugin's ``install()`` synchronously so optimizer types
-    registered by plugins are visible inside the spawned subprocess."""
+    """Run each plugin's ``install()`` so optimizer types registered by
+    plugins are visible inside the spawned subprocess. Supports sync,
+    awaitable, and async-context-manager install shapes; ``__aexit__``
+    is not invoked so synchronous registrations persist for the
+    subprocess lifetime. Plugins that depend on a long-lived event loop
+    or that register optimizer types via ``register(bindings)`` rather
+    than as a side effect of ``install()`` are not supported in the
+    subprocess."""
     for plugin_name in envs.LUMILAKE_PLUGINS:
         try:
             module = importlib.import_module(plugin_name)
@@ -131,7 +146,7 @@ def _install_plugins_sync() -> None:
             )
             continue
         try:
-            install()
+            asyncio.run(_resolve_subprocess_install(install))
         except Exception as exc:
             _subprocess_logger.error("plugin %r install() failed: %s", plugin_name, exc)
         else:
