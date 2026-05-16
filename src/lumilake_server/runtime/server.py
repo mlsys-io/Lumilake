@@ -111,6 +111,39 @@ class SchedulePreview:
     schedule: Schedule
 
 
+def _install_plugins_sync() -> None:
+    """Run each plugin's ``install()`` synchronously so optimizer types
+    registered by plugins are visible inside the spawned subprocess."""
+    import importlib
+    import sys
+
+    for plugin_name in envs.LUMILAKE_PLUGINS:
+        try:
+            module = importlib.import_module(plugin_name)
+        except Exception as exc:
+            print(
+                f"[optimizer-subprocess] plugin {plugin_name!r} import failed: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        install = module.__dict__.get("install")
+        if not callable(install):
+            print(
+                f"[optimizer-subprocess] plugin {plugin_name!r} has no install();"
+                " skipping",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            install()
+        except Exception as exc:
+            print(
+                f"[optimizer-subprocess] plugin {plugin_name!r} install() failed:"
+                f" {exc}",
+                file=sys.stderr,
+            )
+
+
 def _optimizer_subprocess_entry(
     optimizer_type: str,
     runtime_graph: Any,
@@ -120,6 +153,7 @@ def _optimizer_subprocess_entry(
     result_queue: Any,
 ) -> None:
     try:
+        _install_plugins_sync()
         optimizer = create_optimizer(optimizer_type=optimizer_type)
         schedule = optimizer.generate_schedule(
             runtime_graph,
