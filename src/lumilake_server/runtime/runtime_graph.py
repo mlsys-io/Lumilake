@@ -178,7 +178,18 @@ class RuntimeGraph:
                 if dep not in graph:
                     graph[dep] = set()
                 graph[dep].add(node_id)
-        return [node_id for node_id in topological_sort(graph) if node_id in self.nodes]
+        order_index = {node_id: idx for idx, node_id in enumerate(self.node_order)}
+        return [
+            node_id
+            for node_id in topological_sort(
+                graph,
+                secondary_key=lambda node_id: order_index.get(
+                    node_id,
+                    len(order_index),
+                ),
+            )
+            if node_id in self.nodes
+        ]
 
     def with_node_prefix(self, prefix: str, separator: str = "__") -> Self:
         if not prefix:
@@ -406,6 +417,7 @@ class RuntimeGraphBuilder:
             output_node_map=output_node_map,
             dsl_to_runtime=dsl_to_runtime,
         )
+        runtime_graph.node_order = runtime_graph.topological_order()
         if node_prefix:
             runtime_graph = runtime_graph.with_node_prefix(
                 make_node_prefix(node_prefix)
