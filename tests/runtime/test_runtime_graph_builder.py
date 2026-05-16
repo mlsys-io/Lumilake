@@ -67,9 +67,7 @@ def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
 
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    order_index = {
-        node_id: idx for idx, node_id in enumerate(runtime_graph.node_order)
-    }
+    order_index = {node_id: idx for idx, node_id in enumerate(runtime_graph.node_order)}
     assert runtime_graph.node_order == runtime_graph.topological_order()
     assert order_index[planner.id] < order_index[retrieval.id]
     assert order_index[retrieval.id] < order_index[report.id]

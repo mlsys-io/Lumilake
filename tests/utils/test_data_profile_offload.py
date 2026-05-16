@@ -16,7 +16,7 @@ class _DummyGraph:
     pass
 
 
-def test_build_request_data_profile_tasks_preserves_slice_specific_sql_nodes(
+def test_build_request_data_profile_tasks_groups_slice_sql_nodes_under_one_task(
     monkeypatch,
 ) -> None:
     request_id = "req-1"
@@ -94,23 +94,17 @@ def test_build_request_data_profile_tasks_preserves_slice_specific_sql_nodes(
         graphs=graphs,
         workflow_slices=workflow_slices,
     )
-    assert len(tasks) == 2
-    tasks_by_key = {t.task_key: t for t in tasks}
-    assert set(tasks_by_key) == {
-        "request::req-1::g::template-hash::slice_0",
-        "request::req-1::g::template-hash::slice_1",
-    }
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task.task_key == "request::req-1::g::template-hash"
     assert build_calls == [("g__slice_1", ["A"]), ("g__slice_2", ["B"])]
-    task0 = tasks_by_key["request::req-1::g::template-hash::slice_0"]
-    task1 = tasks_by_key["request::req-1::g::template-hash::slice_1"]
-    assert task0.payload.node_order == ["g__slice_1__db_node"]
-    assert task1.payload.node_order == ["g__slice_2__db_node"]
+    assert task.payload.node_order == ["g__slice_1__db_node", "g__slice_2__db_node"]
     assert (
-        task0.payload.nodes["g__slice_1__db_node"].raw_node_id
+        task.payload.nodes["g__slice_1__db_node"].raw_node_id
         == "g__slice_1__raw_db_node"
     )
     assert (
-        task1.payload.nodes["g__slice_2__db_node"].raw_node_id
+        task.payload.nodes["g__slice_2__db_node"].raw_node_id
         == "g__slice_2__raw_db_node"
     )
 
