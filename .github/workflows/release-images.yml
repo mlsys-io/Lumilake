@@ -31,7 +31,7 @@ env:
 jobs:
   verify:
     name: Verify published image
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       is_release_tag: ${{ steps.check.outputs.is_release_tag }}
     steps:
@@ -85,7 +85,7 @@ jobs:
     name: Retag image as :latest
     needs: verify
     if: needs.verify.outputs.is_release_tag == 'true'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     environment: ghcr
     permissions:
       contents: write  # gh release edit appends the digest table to the Release body
