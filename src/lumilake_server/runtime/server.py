@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import hashlib
+import importlib
 import json
 import math
 import multiprocessing as mp
@@ -111,37 +112,30 @@ class SchedulePreview:
     schedule: Schedule
 
 
+_subprocess_logger = init_child_logger("OptimizerSubprocess")
+
+
 def _install_plugins_sync() -> None:
     """Run each plugin's ``install()`` synchronously so optimizer types
     registered by plugins are visible inside the spawned subprocess."""
-    import importlib
-    import sys
-
     for plugin_name in envs.LUMILAKE_PLUGINS:
         try:
             module = importlib.import_module(plugin_name)
         except Exception as exc:
-            print(
-                f"[optimizer-subprocess] plugin {plugin_name!r} import failed: {exc}",
-                file=sys.stderr,
-            )
+            _subprocess_logger.error("plugin %r import failed: %s", plugin_name, exc)
             continue
         install = module.__dict__.get("install")
         if not callable(install):
-            print(
-                f"[optimizer-subprocess] plugin {plugin_name!r} has no install();"
-                " skipping",
-                file=sys.stderr,
+            _subprocess_logger.warning(
+                "plugin %r has no install(); skipping", plugin_name
             )
             continue
         try:
             install()
         except Exception as exc:
-            print(
-                f"[optimizer-subprocess] plugin {plugin_name!r} install() failed:"
-                f" {exc}",
-                file=sys.stderr,
-            )
+            _subprocess_logger.error("plugin %r install() failed: %s", plugin_name, exc)
+        else:
+            _subprocess_logger.info("plugin %r registered", plugin_name)
 
 
 def _optimizer_subprocess_entry(
@@ -875,16 +869,9 @@ class LumilakeServer:
 
     @staticmethod
     def _request_workflow_parent_id(workflow: Any) -> str:
-        # Each input slice gets its own parent id so multi-input
-        # submissions (``Stock=["NVDA","AAPL","TSLA"]`` with batch-size 1)
-        # dispatch as N independent workflow executions instead of being
-        # coalesced back into a single graph carrying the full list. The
-        # worker's SQL template substitution only handles scalar values;
-        # a coalesced list-of-3 produces ``WHERE symbol = '["NVDA",...]'``.
         return (
             f"request::{workflow.request_id}::"
             f"{workflow.public_graph_name}::{workflow.template_hash}"
-            f"::slice_{workflow.slice_index}"
         )
 
     @classmethod

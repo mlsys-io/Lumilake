@@ -77,7 +77,7 @@ def build_request_data_profile_tasks(
             continue
         task_key = (
             f"request::{request_id}::{slice_meta.public_graph_name}::"
-            f"{slice_meta.template_hash}::slice_{slice_meta.slice_index}"
+            f"{slice_meta.template_hash}"
         )
         grouped.setdefault(task_key, []).append((graph_name, slice_meta, compiled))
 
