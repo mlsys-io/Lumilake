@@ -103,7 +103,6 @@ def test_doctor_rejects_malformed_s3_url(tmp_path: Path) -> None:
                 'LUMILAKE_IMAGE_TAG="latest"',
                 'DATABASE_URL="postgresql://postgres:pw@db.example.com/postgres"',
                 'S3_URL="http://s3.example.com:9000"',
-                'S3_USER_DATA_PREFIX="lumilake-user-data/users"',
                 "",
             ]
         )
@@ -159,7 +158,7 @@ def test_doctor_direct_mode_errors_include_lumid_alternative(tmp_path: Path) -> 
 
     report = doctor_mod.run_env_checks(env_file)
 
-    for var in ("DATABASE_URL", "S3_URL", "S3_USER_DATA_PREFIX"):
+    for var in ("DATABASE_URL", "S3_URL"):
         matched = [
             msg
             for msg in report.errors

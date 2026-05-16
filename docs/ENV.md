@@ -32,8 +32,7 @@ Compute data plane (required for every direct SQL/S3 op):
 | Key | Purpose |
 |-----|---------|
 | `DATABASE_URL` | PostgreSQL connection string used by every SQL `DataRetrievalOp`. |
-| `S3_URL` | S3-compatible endpoint and credentials used by every S3 `DataRetrievalOp` and the archive (`S3_ARCHIVE_PREFIX`). |
-| `S3_USER_DATA_PREFIX` | `bucket/prefix` for user data objects (used by data-profile listing). |
+| `S3_URL` | S3-compatible endpoint and credentials used by every S3 `DataRetrievalOp` and the archive (`S3_ARCHIVE_PREFIX`). Its path (`bucket/prefix`) is also the scan root for data-profile listing. |
 | `S3_CERT_FILE` | Path to an S3 TLS cert bundle. Optional; the bundled compose mounts the file when set. |
 
 ## Lumid.data routing
