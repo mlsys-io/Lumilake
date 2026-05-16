@@ -1,6 +1,7 @@
 import random
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from string import Formatter
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,26 @@ if TYPE_CHECKING:
     from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 RuntimeGraphBuilder = None
+
+
+@dataclass(slots=True)
+class _MergeGroupWorkflow:
+    """Fields read by ``LumilakeServer._merge_group_compiled_graph`` and its
+    helpers. Lets ``build_request_data_profile_tasks`` synthesize merge
+    inputs from ``(graph, slice_meta)`` entries without pulling in the full
+    ``RequestWorkflow`` type."""
+
+    request_id: str
+    public_graph_name: str
+    template_hash: str
+    slice_index: int
+    slice_start: int
+    slice_length: int
+    total_length: int
+    workflow_id: str
+    varying_input_keys: tuple[str, ...]
+    dsl_graph: CompiledGraph
+
 
 _SQL_TABLE_PATTERN = re.compile(
     r"(?:from|join)\s+([^\s,;]+)",
@@ -88,7 +109,7 @@ def build_request_data_profile_tasks(
         )
 
         RuntimeGraphBuilder = _Builder
-    from lumilake_server.runtime.runtime_graph import merge_runtime_graphs
+    from lumilake_server.runtime.server import LumilakeServer
 
     runtime_builder = RuntimeGraphBuilder()
     tasks: list[DataProfileTaskSpec] = []
@@ -98,18 +119,27 @@ def build_request_data_profile_tasks(
             key=lambda item: (item[1].slice_index, item[1].slice_start),
         )
         first_meta = ordered[0][1]
-        runtime_graphs_by_name = {
-            item_graph_name: runtime_builder.build(
-                item_compiled,
-                task_type_override="data_profile",
-                node_prefix=item_graph_name,
+        merge_inputs = [
+            _MergeGroupWorkflow(
+                request_id=request_id,
+                public_graph_name=meta.public_graph_name,
+                template_hash=meta.template_hash,
+                slice_index=meta.slice_index,
+                slice_start=meta.slice_start,
+                slice_length=meta.slice_length,
+                total_length=meta.total_length,
+                workflow_id=graph_name,
+                varying_input_keys=meta.varying_input_keys,
+                dsl_graph=compiled,
             )
-            for item_graph_name, _item_slice_meta, item_compiled in ordered
-        }
-        if len(runtime_graphs_by_name) == 1:
-            runtime_graph = next(iter(runtime_graphs_by_name.values()))
-        else:
-            runtime_graph, _ = merge_runtime_graphs(runtime_graphs_by_name)
+            for graph_name, meta, compiled in ordered
+        ]
+        merged_compiled = LumilakeServer._merge_group_compiled_graph(merge_inputs)
+        runtime_graph = runtime_builder.build(
+            merged_compiled,
+            task_type_override="data_profile",
+            node_prefix=task_key,
+        )
         runtime_to_raw = _runtime_to_raw_node_map(runtime_graph)
 
         node_order: list[str] = []
