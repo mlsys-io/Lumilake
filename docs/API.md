@@ -49,3 +49,13 @@ Most API responses use an envelope:
 ```
 
 Errors use normal HTTP status codes with a JSON error body. The Python SDK unwraps successful envelopes and raises typed exceptions for HTTP failures.
+
+### Error Status Codes
+
+- `400 Bad Request` — malformed request syntax (the JSON or YAML body could not be parsed).
+- `404 Not Found` — the resource is missing.
+- `409 Conflict` — the resource is in a state that cannot satisfy the request; the cancel endpoint includes the job's terminal `status` (`completed` / `failed` / `cancelled`) in `detail`.
+- `422 Unprocessable Entity` — the payload was syntactically valid but failed validation (schema, header value, batch-size, input shape, unresolved location, duplicate graph name, graph compilation, ...).
+- `5xx` — server-side faults (DB unavailable, runtime backend error).
+
+The `X-Request-ID` response header echoes the request trace id (either the inbound `X-Request-ID` header or a freshly minted `req-<uid>` token); the same id is attached to every server log record produced under that request.

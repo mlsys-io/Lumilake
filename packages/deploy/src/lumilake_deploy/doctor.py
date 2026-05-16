@@ -130,20 +130,26 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 def _check_required(values: dict[str, str], report: DoctorReport) -> None:
     for key in _ALWAYS_REQUIRED:
         if not values.get(key):
-            report.error(f"{key} is required but missing or empty")
+            report.error(
+                f"{key} is required but missing or empty (fix: set {key}=... in .env)"
+            )
     if not values.get("LUMID_DATA_URL"):
         for key in _DIRECT_MODE_REQUIRED:
             if not values.get(key):
                 report.error(
                     f"{key} is required in direct mode "
-                    "(set ``LUMID_DATA_URL`` to route through lumid.data instead)"
+                    f"(fix: set {key}=... in .env, or set LUMID_DATA_URL to "
+                    "route through lumid.data instead)"
                 )
 
 
 def _check_unknown(values: dict[str, str], report: DoctorReport) -> None:
     for key in values:
         if key not in _KNOWN_KEYS:
-            report.warning(f"{key} is unknown — typo, or stale schema?")
+            report.warning(
+                f"{key} is unknown — typo, or stale schema? "
+                f"(fix: remove {key} from .env, or correct the spelling)"
+            )
 
 
 def _check_data_plane(values: dict[str, str], report: DoctorReport) -> None:
@@ -162,13 +168,25 @@ def _check_s3_url(values: dict[str, str], report: DoctorReport) -> None:
         return
     parsed = urlparse(raw_url)
     if parsed.scheme != "s3":
-        report.error("S3_URL must use the s3:// scheme")
+        report.error(
+            "S3_URL must use the s3:// scheme "
+            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+        )
     if not parsed.hostname:
-        report.error("S3_URL must include an endpoint host")
+        report.error(
+            "S3_URL must include an endpoint host "
+            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+        )
     if not parsed.username or not parsed.password:
-        report.error("S3_URL must include access key and secret")
+        report.error(
+            "S3_URL must include access key and secret "
+            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+        )
     if not parsed.path.lstrip("/"):
-        report.error("S3_URL must include a bucket or bucket/prefix path")
+        report.error(
+            "S3_URL must include a bucket or bucket/prefix path "
+            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+        )
 
 
 def run_env_checks(
@@ -179,8 +197,9 @@ def run_env_checks(
     report = DoctorReport(callback=callback)
     if not env_path.is_file():
         report.error(
-            f"{env_path} not found. Run ``lumilake deploy init`` to "
-            "create one from ``.env.example``."
+            f"{env_path} not found "
+            "(fix: run ``lumilake deploy init`` to create one from "
+            "``.env.example``)"
         )
         return report
     values = _parse_env_file(env_path)
@@ -212,7 +231,7 @@ def run_doctor(
             )
         else:
             report.error(
-                f"{flowmesh_env_path} not found. Run "
-                "``lumilake deploy init --flowmesh`` to create one."
+                f"{flowmesh_env_path} not found "
+                "(fix: run ``lumilake deploy init --flowmesh`` to create one)"
             )
     return report

@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.responses import Response
 from lumid_hooks import PrincipalContext
 from lumilake import envs
-from lumilake.log import Logger, init_child_logger
+from lumilake.log import Logger, init_child_logger, set_trace_id
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from minio import Minio
 from minio.error import S3Error
@@ -140,6 +140,21 @@ def _decode_workflow_body(raw: str, workflow_format: str, idx: int) -> Any:
     if workflow_format == "yaml":
         try:
             return yaml.safe_load(raw)
+        except yaml.MarkedYAMLError as exc:
+            mark = exc.problem_mark
+            if mark is not None:
+                line = mark.line + 1
+                column = mark.column + 1
+                detail = (
+                    f"Invalid workflow YAML for index {idx} at "
+                    f"line {line}, column {column}: {exc}"
+                )
+            else:
+                detail = f"Invalid workflow YAML for index {idx}: {exc}"
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            ) from exc
         except yaml.YAMLError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -191,13 +206,13 @@ def _dispatch_workflow_to_graph_specs(
             parsed_graphs = parse_n8n_payload(payload)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
         overlap = set(parsed_graphs).intersection(graph_specs)
         if overlap:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"duplicate graph names after parsing: {sorted(overlap)}",
             )
         graph_specs.update(parsed_graphs)
@@ -205,7 +220,7 @@ def _dispatch_workflow_to_graph_specs(
     if workflow_format == "yaml":
         if not isinstance(workflow_payload, dict):
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=(
                     f"YAML workflow at index {idx} must be a mapping at the top level"
                 ),
@@ -220,13 +235,13 @@ def _dispatch_workflow_to_graph_specs(
             parsed_graphs = parse_yaml_payload(yaml_dict)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
         overlap = set(parsed_graphs).intersection(graph_specs)
         if overlap:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"duplicate graph names after parsing: {sorted(overlap)}",
             )
         graph_specs.update(parsed_graphs)
@@ -234,7 +249,7 @@ def _dispatch_workflow_to_graph_specs(
     # native
     if not isinstance(workflow_payload, dict):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"workflow payload at index {idx} must be an object",
         )
     graph_payload = (
@@ -370,6 +385,17 @@ class JobInputsPayload(BaseModel):
 class JobInputsResponse(BaseModel):
     ok: bool = Field(description="Whether the request succeeded.")
     data: JobInputsPayload = Field(description="Inputs payload.")
+
+
+class EmptyInputsErrorDetail(BaseModel):
+    message: str
+    parsed_input_names: list[str]
+
+
+class JobAlreadyFinishedDetail(BaseModel):
+    message: str
+    status: str
+    job_id: str
 
 
 def _format_validation_errors(exc: ValidationError) -> str:
@@ -704,7 +730,7 @@ def _normalize_artifact_path(path: str) -> str:
     cleaned = path.strip()
     if not cleaned:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="artifact path is required",
         )
     return cleaned
@@ -902,7 +928,7 @@ async def _validate_db_location_live(
     column = location.column.strip()
     if not column:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="column is required",
         )
     column_exists_sql = (
@@ -920,7 +946,7 @@ async def _validate_db_location_live(
             found = await cur.fetchone() is not None
     if not found:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"column {column} not found on {schema}.{table} (compute DB)",
         )
     return DBLocation(type="db", table=f"{schema}.{table}", column=column)
@@ -978,12 +1004,12 @@ def _validate_s3_location_live(location: S3Location, *, must_exist: bool) -> S3L
         first = next(iter(objs), None)
     except S3Error as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"s3 prefix {normalized} not accessible: {exc}",
         ) from exc
     if first is None:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"s3 prefix {normalized} missing on compute S3",
         )
     return location.model_copy(update={"prefix": normalized})
@@ -1018,7 +1044,7 @@ async def _resolve_s3_input_values(
     literal = location.prefix.strip()
     if not literal:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"s3 input {input_name!r} prefix is required",
         )
     normalized = normalize_s3_literal(literal)
@@ -1041,12 +1067,12 @@ async def _resolve_s3_input_values(
         urls = await asyncio.to_thread(_list)
     except S3Error as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"s3 resolve failed for input {input_name!r}: {exc}",
         ) from exc
     if not urls:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"s3 resolve returned no files for input {input_name!r}",
         )
     return urls
@@ -1069,8 +1095,11 @@ async def _resolve_input_values(
     )
     if not values:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"input {input_name!r} resolved to an empty value list",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=EmptyInputsErrorDetail(
+                message=f"input {input_name!r} resolved to an empty value list",
+                parsed_input_names=[input_name],
+            ).model_dump(),
         )
     return values
 
@@ -1106,7 +1135,7 @@ async def _resolve_input_values_raw(
             location=location,
         )
     raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail=f"unsupported input location type for {input_name!r}",
     )
 
@@ -1119,7 +1148,9 @@ async def _run_job(
     priority: Priority,
     compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
+    trace_id: str,
 ) -> None:
+    set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
 
     async with jobs_lock:
@@ -1406,7 +1437,7 @@ async def preview_job(
     workflow_format = workflow_format.lower()
     if workflow_format not in {"native", "n8n", "yaml"}:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Workflow-Format must be 'native', 'n8n', or 'yaml'",
         )
 
@@ -1414,13 +1445,13 @@ async def preview_job(
         preview_request = JobPreviewRequest.model_validate(json_body)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=_format_validation_errors(exc),
         ) from exc
     entries = preview_request.data
     if not entries:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="data must contain at least one entry",
         )
 
@@ -1434,7 +1465,7 @@ async def preview_job(
         name = entry.name or f"graph_{idx}"
         if name in seen_public_names:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"duplicate workflow name: {name}",
             )
         seen_public_names.add(name)
@@ -1449,24 +1480,18 @@ async def preview_job(
                 hook_logger=hook_logger,
             )
 
-        if not inputs:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"inputs or input_locations required for index {idx}",
-            )
-
         try:
             _input_shape(inputs)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
 
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="input_batch_size must be a positive integer",
             )
         # Preview uses only the first batch per entry — enough to generate
@@ -1476,7 +1501,7 @@ async def preview_job(
             input_batches = _chunk_inputs(inputs, effective_batch_size)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
 
@@ -1484,7 +1509,7 @@ async def preview_job(
         graph_name = name
         if graph_name in graph_specs:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"duplicate internal graph name: {graph_name}",
             )
         _dispatch_workflow_to_graph_specs(
@@ -1501,7 +1526,7 @@ async def preview_job(
         graphs = server.parse_query(graph_specs)
     except (ValueError, KeyError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
     try:
@@ -1655,7 +1680,7 @@ async def submit_job(
     workflow_format = workflow_format.lower()
     if workflow_format not in {"native", "n8n", "yaml"}:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Workflow-Format must be 'native', 'n8n', or 'yaml'",
         )
 
@@ -1663,14 +1688,14 @@ async def submit_job(
         submit_request = JobSubmitRequest.model_validate(json_body)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=_format_validation_errors(exc),
         ) from exc
     entries = submit_request.data
     priority = submit_request.priority
     if not entries:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="data must contain at least one entry",
         )
     job_id = f"req-{unique_id()}"
@@ -1685,7 +1710,7 @@ async def submit_job(
         name = entry.name or f"graph_{idx}"
         if name in seen_public_names:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"duplicate workflow name: {name}",
             )
         seen_public_names.add(name)
@@ -1710,24 +1735,18 @@ async def submit_job(
                 principal=principal,
                 hook_logger=hook_logger,
             )
-        if not inputs:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"inputs or input_locations required for index {idx}",
-            )
-
         try:
             total_length, varying_input_keys = _input_shape(inputs)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
 
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="input_batch_size must be a positive integer",
             )
         effective_batch_size = input_batch_size or 1
@@ -1735,7 +1754,7 @@ async def submit_job(
             input_batches = _chunk_inputs(inputs, effective_batch_size)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
 
@@ -1750,7 +1769,7 @@ async def submit_job(
             )
             if graph_name in graph_specs:
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"duplicate internal graph name: {graph_name}",
                 )
             slice_length, _ = _input_shape(batch_inputs)
@@ -1816,6 +1835,7 @@ async def submit_job(
             priority,
             compute_pool,
             principal,
+            str(getattr(request.state, "trace_id", job_id)),
         )
     )
     return {"ok": True, "data": {"job_id": job_id, "status": record.status}}
@@ -1849,7 +1869,7 @@ async def list_jobs(
     invalid = sorted(status for status in statuses if status not in allowed)
     if invalid:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"invalid status filters: {', '.join(invalid)}",
         )
 
@@ -1950,7 +1970,11 @@ async def cancel_job(
         if record.status in {"completed", "failed", "cancelled"}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="job already finished",
+                detail=JobAlreadyFinishedDetail(
+                    message="job already finished",
+                    status=record.status,
+                    job_id=job_id,
+                ).model_dump(),
             )
         record.status = "cancelled"
         if not record.error:
@@ -2170,7 +2194,7 @@ async def get_job_artifact(
     filename = _artifact_name_from_uri(requested_path)
     if not filename:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="artifact path is invalid",
         )
     await require_permission(
