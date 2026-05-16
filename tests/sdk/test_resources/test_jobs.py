@@ -1,9 +1,12 @@
 """Tests for Jobs (sync) + AsyncJobs."""
 
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
 from lumilake import AsyncJobs, BaseAsyncClient, BaseClient, Jobs
+from lumilake.errors import NotFoundError
 
 
 @pytest.fixture
@@ -126,4 +129,350 @@ async def test_async_wait_terminal(async_jobs: AsyncJobs, base_url: str) -> None
         )
         result = await async_jobs.wait("j", poll_interval=0.0, timeout=2.0)
         assert result["status"] == "completed"
+        await async_jobs._client.close()
+
+
+# ---- Parity helpers ----
+
+
+def test_preview_posts_with_format_header(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.post("/api/v1/jobs/preview").mock(
+            return_value=httpx.Response(200, json={"data": {"request_id": "p-1"}})
+        )
+        result = jobs.preview({"data": []}, workflow_format="yaml")
+        assert result == {"request_id": "p-1"}
+        assert route.called
+        assert route.calls.last.request.headers["Workflow-Format"] == "yaml"
+
+
+def test_preview_omits_format_header_by_default(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.post("/api/v1/jobs/preview").mock(
+            return_value=httpx.Response(200, json={"data": {"request_id": "p-1"}})
+        )
+        jobs.preview({"data": []})
+        assert "Workflow-Format" not in route.calls.last.request.headers
+
+
+def test_progress(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(
+                200,
+                json={"data": {"job_id": "j-1", "progress": {"completed": 2}}},
+            )
+        )
+        assert jobs.progress("j-1") == {
+            "job_id": "j-1",
+            "progress": {"completed": 2},
+        }
+
+
+def test_result(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/result").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "result": {"ok": True}}}
+            )
+        )
+        result = jobs.result("j-1")
+        assert result["result"] == {"ok": True}
+
+
+def test_inputs(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/inputs").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "inputs": {"Stock": ["NVDA"]}}}
+            )
+        )
+        assert jobs.inputs("j-1")["inputs"] == {"Stock": ["NVDA"]}
+
+
+def test_artifact_streams_to_disk(jobs: Jobs, base_url: str, tmp_path: Path) -> None:
+    target = tmp_path / "out" / "result.bin"
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.get("/api/v1/jobs/j-1/artifact").mock(
+            return_value=httpx.Response(200, content=b"binary-payload")
+        )
+        path = jobs.artifact("j-1", path="s3://bucket/foo", output=target)
+        assert path == target
+        assert target.read_bytes() == b"binary-payload"
+        assert "path=s3" in str(route.calls.last.request.url)
+
+
+def test_artifact_maps_404_to_sdk_error(
+    jobs: Jobs, base_url: str, tmp_path: Path
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/missing/artifact").mock(
+            return_value=httpx.Response(404, text="not found")
+        )
+        with pytest.raises(NotFoundError):
+            jobs.artifact("missing", path="s3://bucket/foo", output=tmp_path / "out")
+
+
+def test_watch_yields_snapshots_until_terminal(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            side_effect=[
+                httpx.Response(200, json={"data": {"id": "j-1", "status": "pending"}}),
+                httpx.Response(
+                    200, json={"data": {"id": "j-1", "status": "completed"}}
+                ),
+            ]
+        )
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "progress": {"step": 1}}}
+            )
+        )
+
+        snapshots = list(jobs.watch("j-1", poll_interval=0.0, timeout=2.0))
+
+    assert [s["status"] for s in snapshots] == ["pending", "completed"]
+    assert snapshots[-1]["progress"] == {"step": 1}
+
+
+def test_list_all_traverses_cursor(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}, {"id": "b"}],
+                            "next_cursor": "abc",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={"data": {"items": [{"id": "c"}], "next_cursor": None}},
+                ),
+            ]
+        )
+        results = list(jobs.list_all(page_size=2))
+        assert [r["id"] for r in results] == ["a", "b", "c"]
+
+
+def test_list_all_stops_with_no_cursor(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            return_value=httpx.Response(200, json={"data": {"items": [{"id": "a"}]}})
+        )
+        results = list(jobs.list_all())
+        assert results == [{"id": "a"}]
+
+
+def test_list_all_raises_on_replayed_cursor(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "b"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="replayed cursor"):
+            list(jobs.list_all(page_size=1))
+
+
+def test_watch_propagates_non_http_progress_error(
+    jobs: Jobs, base_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("non-http boom")
+
+    monkeypatch.setattr(jobs, "progress", _boom)
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"id": "j-1", "status": "pending"}}
+            )
+        )
+        with pytest.raises(ValueError, match="non-http boom"):
+            list(jobs.watch("j-1", poll_interval=0.0, timeout=2.0))
+
+
+def test_get_respects_per_call_timeout(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.get("/api/v1/jobs/j-1").mock(
+            return_value=httpx.Response(200, json={"data": {"id": "j-1"}})
+        )
+        assert jobs.get("j-1", timeout=42.0) == {"id": "j-1"}
+        assert route.called
+
+
+# ---- Async parity ----
+
+
+@pytest.mark.asyncio
+async def test_async_preview(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.post("/api/v1/jobs/preview").mock(
+            return_value=httpx.Response(200, json={"data": {"request_id": "p-2"}})
+        )
+        result = await async_jobs.preview({"data": []}, workflow_format="native")
+        assert result == {"request_id": "p-2"}
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_progress(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"job_id": "j-1", "progress": {"k": 1}}}
+            )
+        )
+        result = await async_jobs.progress("j-1")
+        assert result["progress"] == {"k": 1}
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_list_all(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}],
+                            "next_cursor": "next",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200, json={"data": {"items": [{"id": "b"}], "next_cursor": None}}
+                ),
+            ]
+        )
+        collected: list[dict[str, str]] = []
+        async for item in async_jobs.list_all():
+            collected.append(item)
+        assert [c["id"] for c in collected] == ["a", "b"]
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_watch(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            side_effect=[
+                httpx.Response(
+                    200, json={"data": {"id": "j-1", "status": "completed"}}
+                ),
+            ]
+        )
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(200, json={"data": {"progress": {"x": 1}}})
+        )
+        snapshots: list[dict[str, object]] = []
+        async for snap in async_jobs.watch("j-1", poll_interval=0.0, timeout=2.0):
+            snapshots.append(snap)
+        assert [s["status"] for s in snapshots] == ["completed"]
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_list_all_raises_on_replayed_cursor(
+    async_jobs: AsyncJobs, base_url: str
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs").mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "a"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "items": [{"id": "b"}],
+                            "next_cursor": "stuck",
+                        }
+                    },
+                ),
+            ]
+        )
+        with pytest.raises(RuntimeError, match="replayed cursor"):
+            collected: list[dict[str, object]] = []
+            async for item in async_jobs.list_all(page_size=1):
+                collected.append(item)
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_watch_propagates_non_http_progress_error(
+    async_jobs: AsyncJobs, base_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _boom(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("non-http boom")
+
+    monkeypatch.setattr(async_jobs, "progress", _boom)
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1").mock(
+            return_value=httpx.Response(
+                200, json={"data": {"id": "j-1", "status": "pending"}}
+            )
+        )
+        with pytest.raises(ValueError, match="non-http boom"):
+            async for _ in async_jobs.watch("j-1", poll_interval=0.0, timeout=2.0):
+                pass
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_artifact(
+    async_jobs: AsyncJobs, base_url: str, tmp_path: Path
+) -> None:
+    target = tmp_path / "out.bin"
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/artifact").mock(
+            return_value=httpx.Response(200, content=b"abc")
+        )
+        path = await async_jobs.artifact("j-1", path="s3://x", output=target)
+        assert path == target
+        assert target.read_bytes() == b"abc"
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_artifact_maps_404_to_sdk_error(
+    async_jobs: AsyncJobs, base_url: str, tmp_path: Path
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/missing/artifact").mock(
+            return_value=httpx.Response(404, text="not found")
+        )
+        with pytest.raises(NotFoundError):
+            await async_jobs.artifact(
+                "missing", path="s3://bucket/foo", output=tmp_path / "out"
+            )
         await async_jobs._client.close()

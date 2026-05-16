@@ -202,6 +202,137 @@ def test_cli_init_uses_packaged_template(tmp_path: Path) -> None:
     assert "LUMILAKE_IMAGE_TAG" in written
 
 
+def test_cli_init_previews_new_env_without_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+
+    def _preview(t: Path, content: str) -> None:
+        events.append(f"preview:{t.name}")
+
+    def _confirm(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("new env files should not prompt")
+
+    monkeypatch.setattr(deploy_cmd, "_preview_write", _preview)
+    monkeypatch.setattr(deploy_cmd.typer, "confirm", _confirm)
+
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)
+
+    assert events == ["preview:.env"]
+    assert (tmp_path / ".env").is_file()
+
+
+def test_cli_init_previews_before_overwrite_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``init`` shows the preview before asking to overwrite an existing file."""
+    target = tmp_path / ".env"
+    target.write_text('LUMILAKE_IMAGE_TAG="existing"\n')
+
+    events: list[str] = []
+
+    def _preview(t: Path, content: str) -> None:
+        events.append(f"preview:{t.name}")
+
+    def _confirm(prompt: str, default: bool = False) -> bool:
+        events.append(f"confirm:{prompt}")
+        return True
+
+    monkeypatch.setattr(deploy_cmd, "_preview_write", _preview)
+    monkeypatch.setattr(deploy_cmd.typer, "confirm", _confirm)
+
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)
+
+    preview_idx = next(i for i, e in enumerate(events) if e.startswith("preview:"))
+    confirm_idx = next(i for i, e in enumerate(events) if e.startswith("confirm:"))
+    assert preview_idx < confirm_idx
+
+
+def test_cli_init_existing_file_shows_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / ".env"
+    target.write_text('LUMILAKE_IMAGE_TAG="local-only"\n')
+
+    captured: list[str] = []
+
+    def _info(message: str) -> None:
+        captured.append(message)
+
+    monkeypatch.setattr(deploy_cmd.logging, "info", _info)
+    monkeypatch.setattr(deploy_cmd.typer, "confirm", lambda *_a, **_kw: False)
+
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)
+
+    assert any("Diff vs existing" in line for line in captured)
+
+
+def test_cli_up_writes_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    setup_calls: list[Path] = []
+
+    def _run_setup(
+        root: Path,
+        *,
+        background: bool = True,
+        reset: bool = False,
+        no_server: bool = False,
+    ) -> None:
+        setup_calls.append(root)
+
+    monkeypatch.setattr(deploy_cmd, "_run_setup", _run_setup)
+    monkeypatch.setattr(deploy_cmd.setup_mod, "load_project_env", lambda _r: None)
+    monkeypatch.setattr(deploy_cmd.envs, "LUMILAKE_SERVER_PORT", 12345)
+
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(deploy_cmd, "DEFAULT_CONFIG_PATH", config_path)
+
+    deploy_cmd.up(_fake_ctx(tmp_path))
+
+    assert setup_calls == [tmp_path]
+    assert config_path.is_file()
+    assert 'base_url = "http://127.0.0.1:12345"' in config_path.read_text()
+
+
+def test_cli_up_warns_on_config_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_cmd, "_run_setup", lambda *a, **kw: None)
+    monkeypatch.setattr(deploy_cmd.setup_mod, "load_project_env", lambda _r: None)
+    monkeypatch.setattr(deploy_cmd.envs, "LUMILAKE_SERVER_PORT", 9001)
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('base_url = "http://127.0.0.1:9000"\n')
+    monkeypatch.setattr(deploy_cmd, "DEFAULT_CONFIG_PATH", config_path)
+
+    messages: list[str] = []
+    monkeypatch.setattr(deploy_cmd.logging, "info", lambda m: messages.append(m))
+
+    deploy_cmd.up(_fake_ctx(tmp_path))
+
+    assert any("http://127.0.0.1:9000 -> http://127.0.0.1:9001" in m for m in messages)
+
+
+def test_cli_up_leaves_matching_config_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(deploy_cmd, "_run_setup", lambda *a, **kw: None)
+    monkeypatch.setattr(deploy_cmd.setup_mod, "load_project_env", lambda _r: None)
+    monkeypatch.setattr(deploy_cmd.envs, "LUMILAKE_SERVER_PORT", 9000)
+
+    config_path = tmp_path / "config.toml"
+    original = 'base_url = "http://127.0.0.1:9000"\n'
+    config_path.write_text(original)
+    monkeypatch.setattr(deploy_cmd, "DEFAULT_CONFIG_PATH", config_path)
+
+    messages: list[str] = []
+    monkeypatch.setattr(deploy_cmd.logging, "info", lambda m: messages.append(m))
+
+    deploy_cmd.up(_fake_ctx(tmp_path))
+
+    assert config_path.read_text() == original
+    assert messages == ["CLI config already points at http://127.0.0.1:9000."]
+
+
 def test_cli_init_honors_project_dir_argument(tmp_path: Path) -> None:
     """``--project-dir`` (passed via ctx.obj) routes init into the chosen dir."""
     deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=False, force=False)

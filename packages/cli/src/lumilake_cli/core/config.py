@@ -1,5 +1,6 @@
 """Configuration handling for the Lumilake CLI."""
 
+import json
 import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -34,5 +35,5 @@ def save_config(config: LumilakeConfig, path: Path = DEFAULT_CONFIG_PATH) -> Non
     """Persist config to disk, creating the directory if needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = config.to_mapping()
-    lines = [f'{key} = "{value}"' for key, value in data.items()]
+    lines = [f"{key} = {json.dumps(value)}" for key, value in data.items()]
     path.write_text("\n".join(lines) + ("\n" if lines else ""))

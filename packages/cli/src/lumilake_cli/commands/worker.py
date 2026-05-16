@@ -9,6 +9,10 @@ from ..core.typer import get_typer
 app = get_typer(help="Query runtime workers.")
 
 
+def _emit_json(payload: object) -> None:
+    logging.log(json.dumps(payload, indent=2))
+
+
 @app.command("list")
 def list_workers() -> None:
     """List all available workers."""
@@ -18,7 +22,7 @@ def list_workers() -> None:
     except HttpError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1)
-    logging.log(json.dumps(response.json(), indent=2))
+    _emit_json(response.json())
 
 
 @app.command("get")
@@ -32,4 +36,4 @@ def get_worker(
     except HttpError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1)
-    logging.log(json.dumps(response.json(), indent=2))
+    _emit_json(response.json())

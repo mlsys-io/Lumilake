@@ -35,7 +35,9 @@ def resolve_config(
     ``LUMILAKE_BASE_URL`` env > saved ``~/.lumilake/config.toml``.
 
     Raises ``RuntimeError`` if no base_url can be determined and no saved
-    config exists — the caller should run ``lumilake login`` first.
+    config exists. The CLI's ``lumilake deploy up`` writes the saved
+    config for local stacks; remote / hosted users should pass
+    ``base_url=`` or set ``LUMILAKE_BASE_URL``.
     """
     url = base_url or envs.get_lumilake_base_url()
     if not url:
@@ -44,7 +46,7 @@ def resolve_config(
         except FileNotFoundError as exc:
             raise RuntimeError(
                 "no base_url provided and no saved config. Pass base_url= "
-                "explicitly, set LUMILAKE_BASE_URL, or run `lumilake login`."
+                "explicitly, set LUMILAKE_BASE_URL, or run `lumilake deploy up`."
             ) from exc
         url = cfg.base_url
     return url
@@ -109,8 +111,12 @@ class BaseClient:
         params: Mapping[str, Any] | None = None,
         json_body: Any = None,
         headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         url = _url(self.base_url, path, version_prefix=version_prefix)
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
         try:
             response = self._http.request(
                 method,
@@ -118,6 +124,7 @@ class BaseClient:
                 params=dict(params) if params else None,
                 json=json_body,
                 headers=_headers(headers),
+                **extra,
             )
         except httpx.HTTPError as exc:
             raise HttpError(0, f"network: {exc}", url=url) from exc
@@ -170,8 +177,12 @@ class BaseAsyncClient:
         params: Mapping[str, Any] | None = None,
         json_body: Any = None,
         headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         url = _url(self.base_url, path, version_prefix=version_prefix)
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
         try:
             response = await self._http.request(
                 method,
@@ -179,6 +190,7 @@ class BaseAsyncClient:
                 params=dict(params) if params else None,
                 json=json_body,
                 headers=_headers(headers),
+                **extra,
             )
         except httpx.HTTPError as exc:
             raise HttpError(0, f"network: {exc}", url=url) from exc

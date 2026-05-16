@@ -1,12 +1,14 @@
 """Deploy commands: init, doctor, up, down, clean, restart, reset, logs."""
 
 import datetime as dt
+import difflib
 import re
 import sys
 from pathlib import Path
 
 import typer
 from flowmesh_cli_stack.stack import stack_env_example
+from lumilake import envs
 from lumilake_deploy import docker_client
 from lumilake_deploy import setup as setup_mod
 from lumilake_deploy import stop as stop_mod
@@ -27,6 +29,7 @@ from lumilake_deploy.setup import (
 )
 
 from ..core import logging
+from ..core.config import DEFAULT_CONFIG_PATH, LumilakeConfig, load_config, save_config
 from ..core.typer import get_typer
 
 app = get_typer(
@@ -83,9 +86,44 @@ def _run_setup(
         raise typer.Exit(code=1) from exc
 
 
-def _confirm_overwrite(target: Path, *, force: bool) -> bool:
-    """Return True when the target may be written, False to skip."""
-    if not target.exists() or force:
+def _preview_write(target: Path, new_content: str) -> None:
+    if target.exists():
+        old = target.read_text().splitlines(keepends=True)
+        new = new_content.splitlines(keepends=True)
+        diff = "".join(
+            difflib.unified_diff(
+                old,
+                new,
+                fromfile=f"a/{target.name}",
+                tofile=f"b/{target.name}",
+                n=3,
+            )
+        )
+        if diff:
+            logging.info(f"Diff vs existing {target}:")
+            for line in diff.splitlines():
+                logging.info(line)
+        else:
+            logging.info(f"{target} already matches the bundled template.")
+        return
+    logging.info(f"Preview of {target} (first 20 lines):")
+    for line in new_content.splitlines()[:20]:
+        logging.info(line)
+    remaining = max(0, len(new_content.splitlines()) - 20)
+    if remaining:
+        logging.info(f"... and {remaining} more line(s).")
+
+
+def _confirm_overwrite(target: Path, *, force: bool, new_content: str) -> bool:
+    """Return True when the target may be written, False to skip.
+
+    Shows a preview (or diff vs an existing file) before prompting on
+    overwrite. Brand-new writes pass through without prompting.
+    """
+    if force:
+        return True
+    _preview_write(target, new_content)
+    if not target.exists():
         return True
     if typer.confirm(f"{target} already exists. Overwrite?", default=False):
         return True
@@ -156,21 +194,23 @@ def init(
     root = _project_dir(ctx)
     template = env_example_path()
     target = root / ENV_FILE_NAME
+    template_text = template.read_text()
     wrote_env = False
-    if _confirm_overwrite(target, force=force):
-        target.write_text(template.read_text())
+    if _confirm_overwrite(target, force=force, new_content=template_text):
+        target.write_text(template_text)
         logging.success(f"Wrote {target} from packaged {template.name}.")
         wrote_env = True
 
     if flowmesh:
         fm_target = root / FLOWMESH_ENV_FILE_NAME
+        example = stack_env_example()
+        if not example.exists():
+            logging.error(f"FlowMesh env example not found: {example}")
+            raise typer.Exit(code=1)
+        fm_template_text = example.read_text()
         wrote_flowmesh_env = False
-        if _confirm_overwrite(fm_target, force=force):
-            example = stack_env_example()
-            if not example.exists():
-                logging.error(f"FlowMesh env example not found: {example}")
-                raise typer.Exit(code=1)
-            fm_target.write_text(example.read_text())
+        if _confirm_overwrite(fm_target, force=force, new_content=fm_template_text):
+            fm_target.write_text(fm_template_text)
             logging.success(f"Wrote {fm_target} from {example.name}.")
             _patch_flowmesh_env(fm_target)
             wrote_flowmesh_env = True
@@ -240,6 +280,36 @@ def pull(ctx: typer.Context) -> None:
         raise typer.Exit(code=1) from exc
 
 
+def _write_cli_config(root: Path, config_path: Path | None = None) -> None:
+    """Persist the local server URL so subsequent CLI / SDK calls find it.
+
+    Reads the deployment's ``.env`` to compute the host port the server
+    is listening on, then writes ``base_url`` to ``config_path``. If a
+    config already exists with a different ``base_url``, we log a hint
+    and overwrite. Errors are non-fatal — the stack is already running.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    setup_mod.load_project_env(root)
+    port = envs.LUMILAKE_SERVER_PORT or 9000
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        existing = load_config(config_path)
+    except (FileNotFoundError, ValueError):
+        existing = None
+    if existing is not None and existing.base_url == base_url:
+        logging.info(f"CLI config already points at {base_url}.")
+        return
+    if existing is not None and existing.base_url != base_url:
+        logging.info(f"Updating {config_path}: {existing.base_url} -> {base_url}")
+    try:
+        save_config(LumilakeConfig(base_url=base_url), path=config_path)
+    except OSError as exc:
+        logging.warning(f"Could not save CLI config to {config_path}: {exc}")
+        return
+    logging.info(f"Saved CLI config to {config_path} (base_url={base_url}).")
+
+
 @app.command()
 def up(ctx: typer.Context) -> None:
     """Start the full Lumilake stack (Docker-backed).
@@ -247,7 +317,9 @@ def up(ctx: typer.Context) -> None:
     The server image must already be present locally — run
     ``lumilake deploy pull`` or ``lumilake deploy build`` first.
     """
-    _run_setup(_project_dir(ctx), background=True)
+    root = _project_dir(ctx)
+    _run_setup(root, background=True)
+    _write_cli_config(root)
 
 
 @app.command()

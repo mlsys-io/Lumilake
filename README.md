@@ -100,18 +100,20 @@ workflow file you have locally:
 
 ```bash
 # From a source checkout:
-uv run lumilake login http://127.0.0.1:9000
 uv run lumilake job submit examples/templates/yaml/trading-agent.yaml \
     --format yaml --input 'Stock=NVDA,AAPL,MSFT' --output-prefix demo/trading-agent
 
 # From a PyPI install (lumilake on PATH; supply your own workflow file):
-lumilake login http://127.0.0.1:9000
 lumilake job submit /path/to/your/workflow.yaml \
     --format yaml --input 'Stock=NVDA,AAPL,MSFT' --output-prefix demo/trading-agent
 
 lumilake job list
 lumilake job watch <job_id>
 ```
+
+`lumilake deploy up` writes `~/.lumilake/config.toml` so subsequent
+calls find the local server automatically. For remote / hosted servers,
+set `LUMILAKE_BASE_URL` instead.
 
 See `docs/E2E_DEMO.md` for a full reproduction using the bundled demo
 workflows and dataset.

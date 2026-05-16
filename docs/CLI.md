@@ -12,20 +12,26 @@ uv run lumilake --help
 ```
 
 `pip install lumilake-cli` (no extra) installs a thin CLI that omits the
-deploy lifecycle — useful for users that only need `lumilake login` /
-`job` / `worker` / `trace`. Running `lumilake deploy` from a thin install
-prints an install hint pointing back at `lumilake[cli]` or
-`lumilake-cli[deploy]`.
+deploy lifecycle — useful for users that only need
+`job` / `worker` / `trace` against a remote server. Running
+`lumilake deploy` from a thin install prints an install hint pointing
+back at `lumilake[cli]` or `lumilake-cli[deploy]`.
 
 ## Configuration
 
+The CLI resolves the target server URL in this order:
+
+1. `LUMILAKE_BASE_URL` environment variable.
+2. `~/.lumilake/config.toml` (written by `lumilake deploy up`).
+3. `http://127.0.0.1:9000` (the local deploy default).
+
 | Command | Purpose |
 |---------|---------|
-| `lumilake login <url>` | Save the server URL to `~/.lumilake/config.toml`. |
-| `lumilake logout` | Remove saved CLI configuration. |
-| `lumilake config` | Show saved CLI configuration. |
+| `lumilake config` | Show the resolved base URL and where it came from. |
 | `lumilake info` | Query server health metadata. |
 | `lumilake health` | Query server health. |
+
+`lumilake deploy up` writes the resolved local server URL to `~/.lumilake/config.toml` after the stack is healthy, so subsequent CLI and SDK calls find it automatically. Remote / hosted users should set `LUMILAKE_BASE_URL` instead.
 
 ## Deploy
 
@@ -38,6 +44,8 @@ lumilake deploy -C ~/lumilake-deploy init   # writes ~/lumilake-deploy/.env
 LUMILAKE_DEPLOY_DIR=~/lumilake-deploy lumilake deploy init
 ```
 
+`init` previews the file (or a unified diff against an existing one) before asking for confirmation; pass `--force` to skip the preview and prompt.
+
 The compose file and image are resolved from the installed `lumilake-deploy` package and GHCR; the deployment directory only needs to hold your `.env` files (and any local state docker compose creates).
 
 If another FlowMesh stack is already running on the host, resolve port
@@ -48,11 +56,11 @@ HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
 
 | Command | Purpose |
 |---------|---------|
-| `lumilake deploy init [--flowmesh]` | Create `.env`; optionally create `.env.flowmesh`. |
+| `lumilake deploy init [--flowmesh] [--force]` | Create `.env` (preview + confirm); optionally also `.env.flowmesh`. |
 | `lumilake deploy doctor [--flowmesh]` | Validate deployment env files. |
 | `lumilake deploy build` | Build the Lumilake server Docker image from source. |
 | `lumilake deploy pull` | Pull the published server image from the registry (`$LUMILAKE_REGISTRY`). |
-| `lumilake deploy up` | Start the local stack (image must already be present — run `pull` or `build` first). |
+| `lumilake deploy up` | Start the local stack and persist `base_url` to `~/.lumilake/config.toml` (image must already be present — run `pull` or `build` first). |
 | `lumilake deploy down [--wipe-archive]` | Stop the stack but keep data volumes. Non-destructive. |
 | `lumilake deploy clean` | Stop the stack and delete volumes. Destructive. |
 | `lumilake deploy reset [--yes]` | Wipe every volume, then start the stack again. Destructive. |
@@ -96,3 +104,7 @@ Run `uv run lumilake job submit --help` for format, input, and output flags.
 | `lumilake worker get <worker_id>` | Show one worker. |
 | `lumilake trace list` | List execution traces. |
 | `lumilake trace get <exec_id>` | Show a trace summary, JSON payload, or Mermaid graph. |
+
+## `--json` flag
+
+Most query commands (`lumilake job list/info/progress/result/inputs`, `lumilake worker list/get`, `lumilake trace list`) emit the server's JSON envelope by default, so scripts can parse them directly. `lumilake trace get` defaults to a human-readable summary table; pass `--json` (a shortcut for `--format json`) for parse-friendly output.
