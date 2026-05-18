@@ -1586,6 +1586,9 @@ async def preview_job(
             "worker_assignment": preview.schedule.worker_assignment,
             "runtime_graph_node_counts": preview.runtime_graph_node_counts,
             "merged_runtime_node_count": preview.merged_runtime_node_count,
+            "selection_seconds": preview.selection_seconds,
+            "clustering_seconds": preview.clustering_seconds,
+            "optimization_seconds": preview.optimization_seconds,
         },
     }
 
