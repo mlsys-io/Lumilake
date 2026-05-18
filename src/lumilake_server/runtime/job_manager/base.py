@@ -36,6 +36,7 @@ class BatchSelection:
     runtime_graphs: dict[str, RuntimeGraph]
     data_profile_graphs: dict[str, RuntimeGraph]
     config: LumilakeRequestConfig
+    clustering_seconds: float = 0.0
 
 
 @dataclass(slots=True)

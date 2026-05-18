@@ -273,6 +273,8 @@ class JobRecord:
     started_at: str | None = None
     finished_at: str | None = None
     optimization_seconds: float | None = None
+    selection_seconds: float | None = None
+    clustering_seconds: float | None = None
     error: str | None = None
     progress: JobProgress = field(default_factory=JobProgress)
     result: LumilakeResponse | None = None
@@ -313,6 +315,20 @@ class JobStatusPayload(BaseModel):
         default=None,
         description="Accumulated optimizer scheduling time in seconds.",
     )
+    selection_seconds: float | None = Field(
+        default=None,
+        description=(
+            "Accumulated job-manager batch-selection time in seconds, excluding"
+            " the clustering substep reported in clustering_seconds."
+        ),
+    )
+    clustering_seconds: float | None = Field(
+        default=None,
+        description=(
+            "Accumulated affinity-clustering time in seconds, attributed to this"
+            " request as its share of the batches it participated in."
+        ),
+    )
     error: str | None = Field(
         default=None,
         description="Error message, if any.",
@@ -331,6 +347,8 @@ class JobListItem(BaseModel):
     started_at: dt.datetime | None = None
     finished_at: dt.datetime | None = None
     optimization_seconds: float | None = None
+    selection_seconds: float | None = None
+    clustering_seconds: float | None = None
     error: str | None = None
 
 
@@ -1223,6 +1241,16 @@ async def _run_job(
             except Exception:
                 logger.exception(
                     "Failed to resolve optimizer timing for job %s",
+                    job_id,
+                )
+            try:
+                record.selection_seconds = server.selection_seconds_for_request(job_id)
+                record.clustering_seconds = server.clustering_seconds_for_request(
+                    job_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to resolve job-manager timing for job %s",
                     job_id,
                 )
             record.finished_at = _now()

@@ -82,6 +82,8 @@ class RequestState:
     processed_runtime_nodes_raw: int = 0
     processed_runtime_nodes_optimized: int = 0
     optimization_seconds: float = 0.0
+    selection_seconds: float = 0.0
+    clustering_seconds: float = 0.0
     batch_node_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     total_input_items: int = 0
     completed_input_items_success: int = 0
@@ -587,6 +589,18 @@ class LumilakeServer:
             return None
         return float(state.optimization_seconds)
 
+    def selection_seconds_for_request(self, request_id: str) -> float | None:
+        state = self._requests.get(request_id)
+        if state is None:
+            return None
+        return float(state.selection_seconds)
+
+    def clustering_seconds_for_request(self, request_id: str) -> float | None:
+        state = self._requests.get(request_id)
+        if state is None:
+            return None
+        return float(state.clustering_seconds)
+
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
         """
@@ -670,11 +684,21 @@ class LumilakeServer:
                 )
                 if workers is None:
                     continue
+                select_start = time.perf_counter()
                 batch = await self.job_manager.select_batch(self.config.batch_size)
+                select_elapsed = time.perf_counter() - select_start
                 if batch is None:
                     async with self._worker_lock:
                         self._busy_workers.difference_update(workers)
                     continue
+                member_request_ids = {item.request_id for item in batch.workflows}
+                clustering_elapsed = batch.clustering_seconds
+                selection_only_elapsed = max(0.0, select_elapsed - clustering_elapsed)
+                self._record_job_manager_time(
+                    member_request_ids=member_request_ids,
+                    selection_seconds=selection_only_elapsed,
+                    clustering_seconds=clustering_elapsed,
+                )
                 self.logger.info(
                     "Dispatching batch (size=%d) to workers %s "
                     "(cpu_group_size=%d gpu_group_size=%d)",
@@ -1572,6 +1596,27 @@ class LumilakeServer:
             if execution_ids:
                 continue
             self._request_execution_ids.pop(request_id, None)
+
+    def _record_job_manager_time(
+        self,
+        *,
+        member_request_ids: set[str],
+        selection_seconds: float,
+        clustering_seconds: float,
+    ) -> None:
+        if not member_request_ids:
+            return
+        if selection_seconds <= 0 and clustering_seconds <= 0:
+            return
+        denom = len(member_request_ids)
+        selection_share = max(0.0, selection_seconds) / denom
+        clustering_share = max(0.0, clustering_seconds) / denom
+        for request_id in member_request_ids:
+            state = self._requests.get(request_id)
+            if state is None:
+                continue
+            state.selection_seconds += selection_share
+            state.clustering_seconds += clustering_share
 
     def _record_optimizer_time(
         self,
