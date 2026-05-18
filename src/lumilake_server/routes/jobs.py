@@ -576,6 +576,21 @@ class JobPreviewPayload(BaseModel):
     merged_runtime_node_count: int = Field(
         description="Merged runtime node count used by optimizer."
     )
+    selection_seconds: float = Field(
+        description=(
+            "Wall-clock seconds spent inside the transient job manager's"
+            " batch-selection path (excluding the clustering substep)."
+        ),
+    )
+    clustering_seconds: float = Field(
+        description=(
+            "Wall-clock seconds spent in affinity clustering during the"
+            " transient batch selection."
+        ),
+    )
+    optimization_seconds: float = Field(
+        description="Wall-clock seconds spent in optimizer.generate_schedule.",
+    )
 
 
 class JobPreviewResponse(BaseModel):
