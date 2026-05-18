@@ -2182,13 +2182,21 @@ class LumilakeServer:
                     member_request_ids,
                 )
 
-            normalized_data_profile_results = await collect_data_profile(
-                request_id=execution_request_id,
-                data_profile_graphs=batch_request_info.data_profile_graphs,
-                data_profile_sources=batch_request_info.data_profile_sources,
-                cancellation_callback=_is_data_profile_cancelled,
-                logger=self.logger,
-            )
+            if envs.LUMILAKE_DISABLE_DATA_PROFILE:
+                self.logger.info(
+                    "Skipping collect_data_profile for batch %s "
+                    "(LUMILAKE_DISABLE_DATA_PROFILE)",
+                    batch_id,
+                )
+                normalized_data_profile_results = {}
+            else:
+                normalized_data_profile_results = await collect_data_profile(
+                    request_id=execution_request_id,
+                    data_profile_graphs=batch_request_info.data_profile_graphs,
+                    data_profile_sources=batch_request_info.data_profile_sources,
+                    cancellation_callback=_is_data_profile_cancelled,
+                    logger=self.logger,
+                )
             profile_uri = self._save_runtime_artifact(
                 batch_request_info,
                 "flowmesh_data_profile_result.yaml",
