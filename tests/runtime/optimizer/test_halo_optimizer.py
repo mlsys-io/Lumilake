@@ -1,5 +1,11 @@
+import contextlib
+
 import pytest
 
+from lumilake_server.data_profile_models import (
+    DataProfileCostEstimate,
+    DataProfileResultRow,
+)
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -152,3 +158,65 @@ def test_model_size_resolution_rejects_missing_model() -> None:
         optimizer._model_size_b(
             Node(id="n1", type="inference", engine="vllm", model=None, raw={})
         )
+
+
+def test_disable_data_profile_drops_supplied_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.envs.LUMILAKE_DISABLE_DATA_PROFILE",
+        True,
+    )
+
+    optimizer = HaloOptimizer()
+    parse_calls: list[object] = []
+    build_calls: list[dict[str, tuple[DataProfileResultRow, ...]]] = []
+    original_build = optimizer._build_data_profile_plan_choices
+
+    def parse_spy(value: object) -> dict[str, tuple[DataProfileResultRow, ...]]:
+        parse_calls.append(value)
+        return {}
+
+    def build_spy(graph, parsed):  # type: ignore[no-untyped-def]
+        build_calls.append(dict(parsed))
+        return original_build(graph, parsed)
+
+    optimizer._parse_data_profile_results = parse_spy  # type: ignore[assignment]
+    optimizer._build_data_profile_plan_choices = build_spy  # type: ignore[assignment]
+
+    supplied = {
+        "data_profile::r1::r1_query": [
+            DataProfileResultRow(
+                node_id="r1",
+                raw_node_id="r1",
+                query_name="r1_query",
+                connection_string="postgres://localhost",
+                table="public.t",
+                cost_estimates=[
+                    DataProfileCostEstimate(
+                        plan_id="pg_estimate",
+                        description="pg projection",
+                        raw_cost=1.0,
+                        estimated_files=1,
+                        total_size_bytes=100,
+                        avg_file_size_bytes=100,
+                        estimated_rows=37,
+                        footprints={},
+                    )
+                ],
+            )
+        ]
+    }
+
+    with contextlib.suppress(RuntimeError):
+        optimizer.generate_schedule(
+            graph=_retrieval_graph(
+                task_type="data_retrieval", backend="data_retrieval"
+            ),
+            worker_names=["cpu-0"],
+            worker_profiles={"cpu-0": {"has_gpu": False}},
+            data_profile_results=supplied,
+        )
+
+    assert parse_calls == []
+    assert build_calls == [{}]

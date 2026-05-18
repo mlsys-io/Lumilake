@@ -131,6 +131,9 @@ LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS: str = os.environ.get(
     "LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS",
     "default,prefer_index,prefer_seq,prefer_nestloop",
 )
+LUMILAKE_DISABLE_DATA_PROFILE: bool = os.environ.get(
+    "LUMILAKE_DISABLE_DATA_PROFILE", ""
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # vLLM runtime defaults
 LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS: int = int(

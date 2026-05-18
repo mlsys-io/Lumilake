@@ -96,6 +96,7 @@ Agent-retrieval keys:
 | `LUMILAKE_S3_PROFILE_COST_PER_FILE` | Cost-model coefficient (per file) for S3 profile estimates. |
 | `LUMILAKE_S3_PROFILE_COST_PER_MIB` | Cost-model coefficient (per MiB) for S3 profile estimates. |
 | `LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS` | Comma-separated planner variants used for local data profiles. Defaults to `default,prefer_index,prefer_seq,prefer_nestloop`. |
+| `LUMILAKE_DISABLE_DATA_PROFILE` | When truthy (`1`/`true`/`yes`/`on`), the HALO optimizer ignores supplied data-profile results and falls back to its static cost model. Defaults to off. |
 
 ## vLLM Backend
 
