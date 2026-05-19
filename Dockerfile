@@ -30,12 +30,14 @@ RUN pip install ./packages/sdk ./packages/hook \
 # Image-only server code. Not published to PyPI.
 COPY src/lumilake_server ./lumilake_server
 
+RUN mkdir -p /app/plugins
+
 # uid/gid 10001 keeps the in-container user out of the host UID range.
 RUN groupadd --gid 10001 lumilake \
  && useradd --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin lumilake \
  && chown -R lumilake:lumilake /app
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/app/plugins
 USER lumilake
 
 EXPOSE 9000
