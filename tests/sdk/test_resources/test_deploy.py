@@ -51,6 +51,25 @@ def test_sync_clean_calls_run_stop_purge(deploy: Deploy, tmp_path: Path) -> None
     run_stop.assert_called_once_with(tmp_path, purge=True)
 
 
+def test_sync_purge_removes_planned_images(deploy: Deploy, tmp_path: Path) -> None:
+    plan = object()
+    result = type("Result", (), {"removed": True})()
+    with (
+        patch(
+            "lumilake.resources.deploy.purge_mod.build_server_image_purge_plan",
+            return_value=plan,
+        ) as build_plan,
+        patch(
+            "lumilake.resources.deploy.purge_mod.run_server_image_purge",
+            return_value=result,
+        ) as run_purge,
+    ):
+        deploy.purge("old", force=True)
+
+    build_plan.assert_called_once_with(tmp_path, "old")
+    run_purge.assert_called_once_with(plan, force=True)
+
+
 def test_sync_restart_single_service(deploy: Deploy) -> None:
     with patch("lumilake.resources.deploy.docker_client.container_restart") as restart:
         deploy.restart(service="server")
@@ -174,6 +193,8 @@ def test_methods_raise_clear_error_when_backend_missing(
             deploy.down()
         with pytest.raises(DeployError, match=r"lumilake\[deploy\]"):
             deploy.clean()
+        with pytest.raises(DeployError, match=r"lumilake\[deploy\]"):
+            deploy.purge("old")
         with pytest.raises(DeployError, match=r"lumilake\[deploy\]"):
             deploy.init()
 

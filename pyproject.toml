@@ -104,23 +104,21 @@ test = [
 # into the Docker image via `sync_requirements.py --write` so the image
 # install pins through uv.lock.
 server-runtime = [
-    "fastapi[standard]>=0.115.6",
-    "openai>=1.58.1",
-    "requests>=2.32.3",
-    "urllib3>=2.7.0",
-    "aiohttp>=3.11.11",
-    "shortuuid>=1.0.13",
-    "pandas>=2.2.3",
-    "minio>=7.2.8",
-    "networkx[default]>=3.4.2",
-    "matplotlib>=3.10.1",
-    "dill>=0.4.0",
-    "psycopg[binary]>=3.2.0",
-    "psycopg-pool>=3.2.0",
-    "rich>=13.6.0",
+    "fastapi==0.136.1",
+    "uvicorn==0.47.0",
+    "httpx==0.28.1",
+    "python-dotenv==1.2.2",
+    "requests==2.34.2",
+    "urllib3==2.7.0",
+    "aiohttp==3.13.5",
+    "shortuuid==1.0.13",
+    "pandas==3.0.3",
+    "minio==7.2.20",
+    "dill==0.4.1",
+    "psycopg[binary]==3.3.4",
+    "psycopg-pool==3.3.1",
     "lumid-hooks==0.1.0",
     "flowmesh-sdk==0.1.1",
-    "lumid-data-sdk==0.1.0",
 ]
 
 [tool.isort]

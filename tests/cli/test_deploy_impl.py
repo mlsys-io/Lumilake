@@ -15,8 +15,10 @@ from lumilake import envs
 from lumilake_cli.commands import deploy as deploy_cmd
 from lumilake_deploy import doctor as doctor_mod
 from lumilake_deploy import flowmesh as fm
+from lumilake_deploy import purge as purge_mod
 from lumilake_deploy import setup as setup_mod
 from lumilake_deploy.env import read_env_value
+from lumilake_deploy.errors import DeployError
 
 
 def test_read_env_value_handles_quoted_and_unquoted(tmp_path: Path) -> None:
@@ -81,6 +83,153 @@ def test_pull_server_image_invokes_image_pull(
     setup_mod.pull_server_image("latest")
 
     assert calls == ["ghcr.io/mlsys-io/lumilake_server:latest"]
+
+
+def test_purge_plan_targets_requested_image_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup_mod.envs, "LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
+    monkeypatch.setattr(purge_mod.docker_client, "image_exists", lambda _image: True)
+
+    plan = purge_mod.build_server_image_purge_plan(tmp_path, "old")
+
+    assert plan.image_ref == "ghcr.io/mlsys-io/lumilake_server:old"
+    assert plan.exists is True
+
+
+def test_purge_plan_reports_missing_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(setup_mod.envs, "LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
+    monkeypatch.setattr(purge_mod.docker_client, "image_exists", lambda _image: False)
+
+    plan = purge_mod.build_server_image_purge_plan(tmp_path, "missing")
+
+    assert plan.image_ref == "ghcr.io/mlsys-io/lumilake_server:missing"
+    assert plan.exists is False
+
+
+def test_cli_purge_dry_run_does_not_remove_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = purge_mod.PurgePlan(
+        image_ref="ghcr.io/mlsys-io/lumilake_server:old",
+        exists=True,
+    )
+    monkeypatch.setattr(
+        deploy_cmd.purge_mod,
+        "build_server_image_purge_plan",
+        lambda *_args, **_kwargs: plan,
+    )
+
+    def _run_purge(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("dry-run must not remove images")
+
+    monkeypatch.setattr(deploy_cmd.purge_mod, "run_server_image_purge", _run_purge)
+
+    deploy_cmd.purge(
+        _fake_ctx(tmp_path),
+        image_tag="old",
+        dry_run=True,
+        force=False,
+    )
+
+
+def test_cli_purge_removes_requested_image_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = purge_mod.PurgePlan(
+        image_ref="ghcr.io/mlsys-io/lumilake_server:old",
+        exists=True,
+    )
+    calls: list[tuple[purge_mod.PurgePlan, bool]] = []
+
+    def _run_purge(
+        purge_plan: purge_mod.PurgePlan, *, force: bool = False
+    ) -> purge_mod.PurgeResult:
+        calls.append((purge_plan, force))
+        return purge_mod.PurgeResult(
+            image_ref="ghcr.io/mlsys-io/lumilake_server:old",
+            removed=True,
+        )
+
+    monkeypatch.setattr(
+        deploy_cmd.purge_mod,
+        "build_server_image_purge_plan",
+        lambda *_args, **_kwargs: plan,
+    )
+    monkeypatch.setattr(deploy_cmd.purge_mod, "run_server_image_purge", _run_purge)
+
+    deploy_cmd.purge(
+        _fake_ctx(tmp_path),
+        image_tag="old",
+        dry_run=False,
+        force=True,
+    )
+
+    assert calls == [(plan, True)]
+
+
+def test_cli_purge_treats_disappeared_image_as_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = purge_mod.PurgePlan(
+        image_ref="ghcr.io/mlsys-io/lumilake_server:old",
+        exists=True,
+    )
+    monkeypatch.setattr(
+        deploy_cmd.purge_mod,
+        "build_server_image_purge_plan",
+        lambda *_args, **_kwargs: plan,
+    )
+    monkeypatch.setattr(
+        deploy_cmd.purge_mod,
+        "run_server_image_purge",
+        lambda *_args, **_kwargs: purge_mod.PurgeResult(
+            image_ref="ghcr.io/mlsys-io/lumilake_server:old",
+            removed=False,
+        ),
+    )
+
+    deploy_cmd.purge(
+        _fake_ctx(tmp_path),
+        image_tag="old",
+        dry_run=False,
+        force=False,
+    )
+
+
+def test_cli_purge_reports_docker_remove_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = purge_mod.PurgePlan(
+        image_ref="ghcr.io/mlsys-io/lumilake_server:old",
+        exists=True,
+    )
+    monkeypatch.setattr(
+        deploy_cmd.purge_mod,
+        "build_server_image_purge_plan",
+        lambda *_args, **_kwargs: plan,
+    )
+
+    def _run_purge(*_args: object, **_kwargs: object) -> purge_mod.PurgeResult:
+        raise DeployError("docker remove failed")
+
+    monkeypatch.setattr(
+        deploy_cmd.purge_mod,
+        "run_server_image_purge",
+        _run_purge,
+    )
+
+    with pytest.raises(deploy_cmd.typer.Exit) as exc_info:
+        deploy_cmd.purge(
+            _fake_ctx(tmp_path),
+            image_tag="old",
+            dry_run=False,
+            force=False,
+        )
+
+    assert exc_info.value.exit_code == 1
 
 
 def test_resolve_infra_layout_uses_flowmesh_env_file(tmp_path: Path) -> None:

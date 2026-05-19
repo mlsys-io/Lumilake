@@ -51,6 +51,7 @@ else:
         "up",
         "down",
         "clean",
+        "purge",
         "reset",
         "status",
         "restart",

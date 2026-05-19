@@ -63,6 +63,7 @@ HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
 | `lumilake deploy up` | Start the local stack and persist `base_url` to `~/.lumilake/config.toml` (image must already be present — run `pull` or `build` first). |
 | `lumilake deploy down [--wipe-archive]` | Stop the stack but keep data volumes. Non-destructive. |
 | `lumilake deploy clean` | Stop the stack and delete volumes. Destructive. |
+| `lumilake deploy purge <image_tag> [--dry-run] [--force]` | Remove one local Lumilake server image tag for the configured registry. |
 | `lumilake deploy reset [--yes]` | Wipe every volume, then start the stack again. Destructive. |
 | `lumilake deploy status` | Show known stack container state. |
 | `lumilake deploy restart [service]` | Restart one service or the full stack. |
@@ -78,6 +79,8 @@ HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
 | `lumilake deploy reset` | yes | yes (every Lumilake-managed volume), then re-runs `deploy up`. Prompts for confirmation; pass `--yes` to skip the prompt in scripts. |
 
 Use `deploy down` between sessions. Reach for `clean` / `reset` only when you intentionally want to drop the local stack state.
+Use `deploy purge <image_tag> --dry-run` to preview image cleanup; it removes
+local server image tags only, not containers or volumes.
 
 ## Jobs
 
