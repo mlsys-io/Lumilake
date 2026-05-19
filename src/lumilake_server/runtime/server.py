@@ -604,7 +604,7 @@ class LumilakeServer:
         state = self._requests.get(request_id)
         if state is None:
             return None
-        return float(state.clustering_seconds)
+        return state.clustering_seconds
 
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
@@ -697,12 +697,13 @@ class LumilakeServer:
                         self._busy_workers.difference_update(workers)
                     continue
                 member_request_ids = {item.request_id for item in batch.workflows}
-                clustering_elapsed = batch.clustering_seconds
-                selection_only_elapsed = max(0.0, select_elapsed - clustering_elapsed)
+                selection_only_elapsed = max(
+                    0.0, select_elapsed - batch.clustering_seconds
+                )
                 self._record_job_manager_time(
                     member_request_ids=member_request_ids,
                     selection_seconds=selection_only_elapsed,
-                    clustering_seconds=clustering_elapsed,
+                    clustering_seconds=batch.clustering_seconds,
                 )
                 self.logger.info(
                     "Dispatching batch (size=%d) to workers %s "
