@@ -30,6 +30,7 @@ from lumilake_server.runtime.data_profile_utils import (
     collect_data_profile,
 )
 from lumilake_server.runtime.job_manager import (
+    DEFAULT_QUANTUMS,
     BaseJobManager,
     BatchSelection,
     Job,
@@ -2717,9 +2718,14 @@ class LumilakeServer:
         workflow_slices = self._build_preview_workflow_slices(graphs)
         resolved_config = config or LumilakeRequestConfig(user_id=resolved_request_id)
 
+        base_quantums = self.config.queue_quantums or DEFAULT_QUANTUMS
+        preview_quantums = {
+            priority: max(default, len(graphs))
+            for priority, default in base_quantums.items()
+        }
         transient_jm = PriorityJobManager(
             optimizer=self.optimizer,
-            quantums=self.config.queue_quantums,
+            quantums=preview_quantums,
             starvation_limit=self.config.starvation_limit,
             logger=self.logger,
         )
@@ -2734,7 +2740,9 @@ class LumilakeServer:
         await transient_jm.enqueue(job)
 
         select_start = time.perf_counter()
-        batch = await transient_jm.select_batch(self.config.batch_size)
+        batch = await transient_jm.select_batch(
+            max(self.config.batch_size, len(graphs))
+        )
         select_elapsed = time.perf_counter() - select_start
 
         if batch is None:
@@ -2780,12 +2788,14 @@ class LumilakeServer:
 
         resolved_data_profile_results = data_profile_results or {}
         optimize_start = time.perf_counter()
-        schedule = self.optimizer.generate_schedule(
-            merged_graph,
-            resolved_workers,
-            resolved_worker_profiles,
-            resolved_data_profile_results,
-        )
+        async with self._optimizer_lock:
+            schedule = await asyncio.to_thread(
+                self.optimizer.generate_schedule,
+                merged_graph,
+                resolved_workers,
+                resolved_worker_profiles,
+                resolved_data_profile_results,
+            )
         optimizer_elapsed = time.perf_counter() - optimize_start
         self._validate_schedule(schedule, resolved_workers, merged_nodes)
 

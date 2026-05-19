@@ -129,6 +129,9 @@ class JobSummary(BaseModel):
     submitted_at: dt.datetime
     started_at: dt.datetime | None = None
     finished_at: dt.datetime | None = None
+    optimization_seconds: float | None = None
+    selection_seconds: float | None = None
+    clustering_seconds: float | None = None
     error: str | None = None
 
     model_config = ConfigDict(extra="forbid")
@@ -143,6 +146,9 @@ def _summary_from_payload(data: dict[str, Any]) -> JobSummary:
         "submitted_at": data["submitted_at"],
         "started_at": data["started_at"] if "started_at" in data else None,
         "finished_at": data["finished_at"] if "finished_at" in data else None,
+        "optimization_seconds": data.get("optimization_seconds"),
+        "selection_seconds": data.get("selection_seconds"),
+        "clustering_seconds": data.get("clustering_seconds"),
         "error": data["error"] if "error" in data else None,
     }
     return JobSummary.model_validate(payload)
