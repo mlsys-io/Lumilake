@@ -199,6 +199,7 @@ class PriorityJobManager(BaseJobManager):
                 item for item in candidates if item.miss_count >= self._starvation_limit
             ]
             item_map = {item.workflow_id: item for item in candidates}
+            clustering_start = time.perf_counter()
             base_batch_ids = select_affinity_batch_ids(
                 {item.workflow_id: item.runtime_graph for item in candidates},
                 {item.workflow_id: item.enqueued_at for item in candidates},
@@ -208,6 +209,7 @@ class PriorityJobManager(BaseJobManager):
                     for item in sorted(starved, key=lambda node: node.enqueued_at)
                 ],
             )
+            clustering_seconds = time.perf_counter() - clustering_start
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Affinity selected ids=%s",
@@ -290,6 +292,7 @@ class PriorityJobManager(BaseJobManager):
             runtime_graphs=runtime_graphs,
             data_profile_graphs=data_profile_graphs,
             config=config,
+            clustering_seconds=clustering_seconds,
         )
 
     def _build_candidate_pool_locked(self) -> list[WorkflowItem]:

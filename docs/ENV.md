@@ -87,6 +87,7 @@ Agent-retrieval keys:
 | Key | Purpose |
 |-----|---------|
 | `LUMILAKE_PLUGINS` | Comma-separated list of plugin module names the server imports at startup. See `docs/PLUGINS.md`. |
+| `LUMILAKE_PLUGIN_DIR` | Host directory bind-mounted to `/app/plugins` (read-only) and added to `PYTHONPATH`. Each `*.py` placed here is importable by the names listed in `LUMILAKE_PLUGINS`. Defaults to `./plugins` relative to the deploy directory. |
 
 ## Data Profiling
 
@@ -96,6 +97,7 @@ Agent-retrieval keys:
 | `LUMILAKE_S3_PROFILE_COST_PER_FILE` | Cost-model coefficient (per file) for S3 profile estimates. |
 | `LUMILAKE_S3_PROFILE_COST_PER_MIB` | Cost-model coefficient (per MiB) for S3 profile estimates. |
 | `LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS` | Comma-separated planner variants used for local data profiles. Defaults to `default,prefer_index,prefer_seq,prefer_nestloop`. |
+| `LUMILAKE_DISABLE_DATA_PROFILE` | When truthy (`1`/`true`/`yes`/`on`), the server skips inline data-profile task build/run, skips `collect_data_profile` at batch dispatch, and the HALO optimizer falls back to its static cost model (any supplied profile results are dropped). Defaults to off. |
 
 ## vLLM Backend
 

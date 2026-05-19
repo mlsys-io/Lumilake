@@ -141,9 +141,19 @@ class HaloOptimizer(BaseOptimizer):
             len(workers_input),
             self._input_query_count,
         )
-        parsed_data_profile_results = self._parse_data_profile_results(
-            data_profile_results
-        )
+        if envs.LUMILAKE_DISABLE_DATA_PROFILE:
+            self.logger.info(
+                "Halo data profile disabled by LUMILAKE_DISABLE_DATA_PROFILE;"
+                " ignoring %d result keys",
+                len(data_profile_results) if data_profile_results else 0,
+            )
+            parsed_data_profile_results: dict[str, tuple[DataProfileResultRow, ...]] = (
+                {}
+            )
+        else:
+            parsed_data_profile_results = self._parse_data_profile_results(
+                data_profile_results
+            )
 
         try:
             dependencies: dict[str, tuple[str, ...]] = {}

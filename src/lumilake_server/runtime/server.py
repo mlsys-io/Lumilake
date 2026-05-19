@@ -30,9 +30,11 @@ from lumilake_server.runtime.data_profile_utils import (
     collect_data_profile,
 )
 from lumilake_server.runtime.job_manager import (
+    DEFAULT_QUANTUMS,
     BaseJobManager,
     BatchSelection,
     Job,
+    PriorityJobManager,
     create_job_manager,
 )
 from lumilake_server.runtime.optimizer import create_optimizer
@@ -82,6 +84,8 @@ class RequestState:
     processed_runtime_nodes_raw: int = 0
     processed_runtime_nodes_optimized: int = 0
     optimization_seconds: float = 0.0
+    selection_seconds: float = 0.0
+    clustering_seconds: float = 0.0
     batch_node_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     total_input_items: int = 0
     completed_input_items_success: int = 0
@@ -111,6 +115,9 @@ class SchedulePreview:
     runtime_graph_node_counts: dict[str, int]
     merged_runtime_node_count: int
     schedule: Schedule
+    selection_seconds: float
+    clustering_seconds: float
+    optimization_seconds: float
 
 
 _subprocess_logger = init_child_logger("OptimizerSubprocess")
@@ -587,6 +594,18 @@ class LumilakeServer:
             return None
         return float(state.optimization_seconds)
 
+    def selection_seconds_for_request(self, request_id: str) -> float | None:
+        state = self._requests.get(request_id)
+        if state is None:
+            return None
+        return float(state.selection_seconds)
+
+    def clustering_seconds_for_request(self, request_id: str) -> float | None:
+        state = self._requests.get(request_id)
+        if state is None:
+            return None
+        return state.clustering_seconds
+
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
         """
@@ -670,11 +689,22 @@ class LumilakeServer:
                 )
                 if workers is None:
                     continue
+                select_start = time.perf_counter()
                 batch = await self.job_manager.select_batch(self.config.batch_size)
+                select_elapsed = time.perf_counter() - select_start
                 if batch is None:
                     async with self._worker_lock:
                         self._busy_workers.difference_update(workers)
                     continue
+                member_request_ids = {item.request_id for item in batch.workflows}
+                selection_only_elapsed = max(
+                    0.0, select_elapsed - batch.clustering_seconds
+                )
+                self._record_job_manager_time(
+                    member_request_ids=member_request_ids,
+                    selection_seconds=selection_only_elapsed,
+                    clustering_seconds=batch.clustering_seconds,
+                )
                 self.logger.info(
                     "Dispatching batch (size=%d) to workers %s "
                     "(cpu_group_size=%d gpu_group_size=%d)",
@@ -1573,6 +1603,27 @@ class LumilakeServer:
                 continue
             self._request_execution_ids.pop(request_id, None)
 
+    def _record_job_manager_time(
+        self,
+        *,
+        member_request_ids: set[str],
+        selection_seconds: float,
+        clustering_seconds: float,
+    ) -> None:
+        if not member_request_ids:
+            return
+        if selection_seconds <= 0 and clustering_seconds <= 0:
+            return
+        denom = len(member_request_ids)
+        selection_share = max(0.0, selection_seconds) / denom
+        clustering_share = max(0.0, clustering_seconds) / denom
+        for request_id in member_request_ids:
+            state = self._requests.get(request_id)
+            if state is None:
+                continue
+            state.selection_seconds += selection_share
+            state.clustering_seconds += clustering_share
+
     def _record_optimizer_time(
         self,
         *,
@@ -2137,13 +2188,21 @@ class LumilakeServer:
                     member_request_ids,
                 )
 
-            normalized_data_profile_results = await collect_data_profile(
-                request_id=execution_request_id,
-                data_profile_graphs=batch_request_info.data_profile_graphs,
-                data_profile_sources=batch_request_info.data_profile_sources,
-                cancellation_callback=_is_data_profile_cancelled,
-                logger=self.logger,
-            )
+            if envs.LUMILAKE_DISABLE_DATA_PROFILE:
+                self.logger.info(
+                    "Skipping collect_data_profile for batch %s "
+                    "(LUMILAKE_DISABLE_DATA_PROFILE)",
+                    batch_id,
+                )
+                normalized_data_profile_results = {}
+            else:
+                normalized_data_profile_results = await collect_data_profile(
+                    request_id=execution_request_id,
+                    data_profile_graphs=batch_request_info.data_profile_graphs,
+                    data_profile_sources=batch_request_info.data_profile_sources,
+                    cancellation_callback=_is_data_profile_cancelled,
+                    logger=self.logger,
+                )
             profile_uri = self._save_runtime_artifact(
                 batch_request_info,
                 "flowmesh_data_profile_result.yaml",
@@ -2638,7 +2697,7 @@ class LumilakeServer:
         selected_workers: list[str] | None = None,
         worker_profiles: dict[str, dict[str, Any]] | None = None,
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
-        use_subprocess: bool = True,
+        config: LumilakeRequestConfig | None = None,
     ) -> SchedulePreview:
         if not graphs:
             raise ValueError("No graphs provided for preview")
@@ -2648,10 +2707,58 @@ class LumilakeServer:
             name: self._runtime_builder.build(graph, node_prefix=name)
             for name, graph in graphs.items()
         }
-        merged_graph, _ = self.optimizer.optimize_graphs(runtime_graphs_by_name)
+        data_profile_graphs_by_name = {
+            name: self._runtime_builder.build(
+                graph, task_type_override="data_profile", node_prefix=name
+            )
+            for name, graph in graphs.items()
+        }
+        if not any(graph.node_count > 0 for graph in runtime_graphs_by_name.values()):
+            raise ValueError("Preview graph has no runtime nodes")
+
+        workflow_slices = self._build_preview_workflow_slices(graphs)
+        resolved_config = config or LumilakeRequestConfig(user_id=resolved_request_id)
+
+        base_quantums = self.config.queue_quantums or DEFAULT_QUANTUMS
+        preview_quantums = {
+            priority: max(default, len(graphs))
+            for priority, default in base_quantums.items()
+        }
+        transient_jm = PriorityJobManager(
+            optimizer=self.optimizer,
+            quantums=preview_quantums,
+            starvation_limit=self.config.starvation_limit,
+            logger=self.logger,
+        )
+        job = Job(
+            request_id=resolved_request_id,
+            runtime_graphs=runtime_graphs_by_name,
+            data_profile_graphs=data_profile_graphs_by_name,
+            dsl_graphs=dict(graphs),
+            workflow_slices=workflow_slices,
+            config=resolved_config,
+        )
+        await transient_jm.enqueue(job)
+
+        select_start = time.perf_counter()
+        batch = await transient_jm.select_batch(
+            max(self.config.batch_size, len(graphs))
+        )
+        select_elapsed = time.perf_counter() - select_start
+
+        if batch is None:
+            clustering_elapsed = 0.0
+            selection_only_elapsed = 0.0
+            batch_runtime_graphs = runtime_graphs_by_name
+        else:
+            clustering_elapsed = batch.clustering_seconds
+            selection_only_elapsed = max(0.0, select_elapsed - clustering_elapsed)
+            batch_runtime_graphs = batch.runtime_graphs
+
+        merged_graph, _ = self.optimizer.optimize_graphs(batch_runtime_graphs)
         merged_nodes = set(merged_graph.nodes)
         if not merged_nodes:
-            raise ValueError("Preview graph has no runtime nodes")
+            raise ValueError("Preview merged graph has no runtime nodes")
 
         if selected_workers is None:
             (
@@ -2681,23 +2788,16 @@ class LumilakeServer:
                     )
 
         resolved_data_profile_results = data_profile_results or {}
-        if use_subprocess:
-            schedule = await self._generate_schedule_in_subprocess(
-                request_id=resolved_request_id,
-                batch_id="preview",
-                runtime_graph=merged_graph,
-                selected_workers=resolved_workers,
-                worker_profiles=resolved_worker_profiles,
-                data_profile_results=resolved_data_profile_results,
-                member_request_ids=None,
-            )
-        else:
-            schedule = self.optimizer.generate_schedule(
+        optimize_start = time.perf_counter()
+        async with self._optimizer_lock:
+            schedule = await asyncio.to_thread(
+                self.optimizer.generate_schedule,
                 merged_graph,
                 resolved_workers,
                 resolved_worker_profiles,
                 resolved_data_profile_results,
             )
+        optimizer_elapsed = time.perf_counter() - optimize_start
         self._validate_schedule(schedule, resolved_workers, merged_nodes)
 
         return SchedulePreview(
@@ -2709,7 +2809,43 @@ class LumilakeServer:
             },
             merged_runtime_node_count=merged_graph.node_count,
             schedule=schedule,
+            selection_seconds=selection_only_elapsed,
+            clustering_seconds=clustering_elapsed,
+            optimization_seconds=optimizer_elapsed,
         )
+
+    def _build_preview_workflow_slices(
+        self, graphs: dict[str, CompiledGraph]
+    ) -> dict[str, WorkflowSliceMeta]:
+        workflow_slices: dict[str, WorkflowSliceMeta] = {}
+        for graph_name, compiled_graph in graphs.items():
+            lengths = [len(values) for values in compiled_graph.inputs.values()]
+            total_length = max(lengths) if lengths else 1
+            varying_input_keys = tuple(
+                sorted(
+                    key
+                    for key, values in compiled_graph.inputs.items()
+                    if len(values) > 1
+                )
+            )
+            template_payload = {"graph": compiled_graph.graph.serialize()}
+            template_hash = hashlib.sha256(
+                json.dumps(
+                    template_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            workflow_slices[graph_name] = WorkflowSliceMeta(
+                public_graph_name=graph_name,
+                slice_index=0,
+                slice_start=0,
+                slice_length=total_length,
+                total_length=total_length,
+                template_hash=template_hash,
+                varying_input_keys=varying_input_keys,
+            )
+        return workflow_slices
 
     async def request(self, request: LumilakeRequest) -> LumilakeResponse:
         try:

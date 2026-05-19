@@ -3,7 +3,7 @@
 from lumilake import envs
 
 from .base import BaseJobManager, BatchSelection, Job, WorkflowItem
-from .priority_queue import PriorityJobManager
+from .priority_queue import DEFAULT_QUANTUMS, PriorityJobManager
 
 JOB_MANAGER_TYPES: dict[str, type[BaseJobManager]] = {
     "priority": PriorityJobManager,
@@ -26,6 +26,7 @@ def create_job_manager(job_manager_type: str | None = None, **kwargs) -> BaseJob
 __all__ = [
     "BaseJobManager",
     "BatchSelection",
+    "DEFAULT_QUANTUMS",
     "Job",
     "create_job_manager",
     "JOB_MANAGER_TYPES",

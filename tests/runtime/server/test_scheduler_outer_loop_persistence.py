@@ -51,9 +51,17 @@ class _TwoBatchThenCancelJobManager:
     async def select_batch(self, batch_size: int) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            return SimpleNamespace(workflows=[{"id": "wf-1"}], name="batch-1")
+            return SimpleNamespace(
+                workflows=[SimpleNamespace(request_id="req-1", id="wf-1")],
+                name="batch-1",
+                clustering_seconds=0.0,
+            )
         if self._select_calls == 2:
-            return SimpleNamespace(workflows=[{"id": "wf-2"}], name="batch-2")
+            return SimpleNamespace(
+                workflows=[SimpleNamespace(request_id="req-2", id="wf-2")],
+                name="batch-2",
+                clustering_seconds=0.0,
+            )
         return None
 
 

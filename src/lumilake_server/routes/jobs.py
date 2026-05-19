@@ -273,6 +273,8 @@ class JobRecord:
     started_at: str | None = None
     finished_at: str | None = None
     optimization_seconds: float | None = None
+    selection_seconds: float | None = None
+    clustering_seconds: float | None = None
     error: str | None = None
     progress: JobProgress = field(default_factory=JobProgress)
     result: LumilakeResponse | None = None
@@ -313,6 +315,20 @@ class JobStatusPayload(BaseModel):
         default=None,
         description="Accumulated optimizer scheduling time in seconds.",
     )
+    selection_seconds: float | None = Field(
+        default=None,
+        description=(
+            "Accumulated job-manager batch-selection time in seconds, excluding"
+            " the clustering substep reported in clustering_seconds."
+        ),
+    )
+    clustering_seconds: float | None = Field(
+        default=None,
+        description=(
+            "Accumulated affinity-clustering time in seconds, attributed to this"
+            " request as its share of the batches it participated in."
+        ),
+    )
     error: str | None = Field(
         default=None,
         description="Error message, if any.",
@@ -331,6 +347,8 @@ class JobListItem(BaseModel):
     started_at: dt.datetime | None = None
     finished_at: dt.datetime | None = None
     optimization_seconds: float | None = None
+    selection_seconds: float | None = None
+    clustering_seconds: float | None = None
     error: str | None = None
 
 
@@ -557,6 +575,21 @@ class JobPreviewPayload(BaseModel):
     )
     merged_runtime_node_count: int = Field(
         description="Merged runtime node count used by optimizer."
+    )
+    selection_seconds: float = Field(
+        description=(
+            "Wall-clock seconds spent inside the transient job manager's"
+            " batch-selection path (excluding the clustering substep)."
+        ),
+    )
+    clustering_seconds: float = Field(
+        description=(
+            "Wall-clock seconds spent in affinity clustering during the"
+            " transient batch selection."
+        ),
+    )
+    optimization_seconds: float = Field(
+        description="Wall-clock seconds spent in optimizer.generate_schedule.",
     )
 
 
@@ -1171,28 +1204,37 @@ async def _run_job(
     try:
         graphs = server.parse_query(graph_specs)
         record.progress.query_parsing.completed = True
-        data_profile_tasks = build_request_data_profile_tasks(
-            request_id=job_id,
-            graphs=graphs,
-            workflow_slices=workflow_slices,
-        )
-        for task in data_profile_tasks:
-            try:
-                result = await asyncio.to_thread(run_data_profile_task, task.payload)
-            except Exception:
-                logger.exception(
-                    "Data profile task %s failed for job %s; continuing",
-                    task.task_key,
-                    job_id,
-                )
-                continue
-            data_profile_registry[task.task_key] = result.model_dump(mode="json")
-        if data_profile_tasks:
+        if envs.LUMILAKE_DISABLE_DATA_PROFILE:
             logger.info(
-                "Ran %d data profile task(s) inline for job %s",
-                len(data_profile_tasks),
+                "Skipping inline data profile build/run for job %s "
+                "(LUMILAKE_DISABLE_DATA_PROFILE)",
                 job_id,
             )
+        else:
+            data_profile_tasks = build_request_data_profile_tasks(
+                request_id=job_id,
+                graphs=graphs,
+                workflow_slices=workflow_slices,
+            )
+            for task in data_profile_tasks:
+                try:
+                    result = await asyncio.to_thread(
+                        run_data_profile_task, task.payload
+                    )
+                except Exception:
+                    logger.exception(
+                        "Data profile task %s failed for job %s; continuing",
+                        task.task_key,
+                        job_id,
+                    )
+                    continue
+                data_profile_registry[task.task_key] = result.model_dump(mode="json")
+            if data_profile_tasks:
+                logger.info(
+                    "Ran %d data profile task(s) inline for job %s",
+                    len(data_profile_tasks),
+                    job_id,
+                )
         response = await server.execute(
             graphs,
             job_id,
@@ -1223,6 +1265,16 @@ async def _run_job(
             except Exception:
                 logger.exception(
                     "Failed to resolve optimizer timing for job %s",
+                    job_id,
+                )
+            try:
+                record.selection_seconds = server.selection_seconds_for_request(job_id)
+                record.clustering_seconds = server.clustering_seconds_for_request(
+                    job_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to resolve job-manager timing for job %s",
                     job_id,
                 )
             record.finished_at = _now()
@@ -1549,6 +1601,9 @@ async def preview_job(
             "worker_assignment": preview.schedule.worker_assignment,
             "runtime_graph_node_counts": preview.runtime_graph_node_counts,
             "merged_runtime_node_count": preview.merged_runtime_node_count,
+            "selection_seconds": preview.selection_seconds,
+            "clustering_seconds": preview.clustering_seconds,
+            "optimization_seconds": preview.optimization_seconds,
         },
     }
 
