@@ -50,6 +50,7 @@ lumilake deploy -C ~/lumilake-deploy init --flowmesh   # ~/lumilake-deploy/.env 
 $EDITOR ~/lumilake-deploy/.env                          # fill in DATABASE_URL / S3 / model keys
 lumilake deploy -C ~/lumilake-deploy pull               # fetch ghcr.io/mlsys-io/lumilake_server:<tag>
 lumilake deploy -C ~/lumilake-deploy up                 # bring the stack up via docker compose
+lumilake deploy -C ~/lumilake-deploy purge dev --dry-run # preview cleanup of one local image tag
 ```
 
 `LUMILAKE_DEPLOY_DIR=~/lumilake-deploy` is an equivalent override. The deployment directory only needs to hold your `.env` files (and any local state docker compose creates) — the compose file and server image are resolved from the installed `lumilake-deploy` package and GHCR. The server listens on `http://127.0.0.1:9000` by default — open `/docs` for the API browser.

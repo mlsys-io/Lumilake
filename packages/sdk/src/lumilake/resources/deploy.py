@@ -29,6 +29,7 @@ _BACKEND_AVAILABLE = find_spec("lumilake_deploy") is not None
 if _BACKEND_AVAILABLE:
     from lumilake_deploy import containers as _containers
     from lumilake_deploy import docker_client
+    from lumilake_deploy import purge as purge_mod
     from lumilake_deploy import setup as setup_mod
     from lumilake_deploy import stop as stop_mod
     from lumilake_deploy import update_flowmesh as update_fm_mod
@@ -39,6 +40,7 @@ if _BACKEND_AVAILABLE:
 else:
     _containers = None  # type: ignore[assignment]
     docker_client = None  # type: ignore[assignment]
+    purge_mod = None  # type: ignore[assignment]
     setup_mod = None  # type: ignore[assignment]
     stop_mod = None  # type: ignore[assignment]
     update_fm_mod = None  # type: ignore[assignment]
@@ -155,6 +157,23 @@ class Deploy(_DeployBase):
         _wrap("clean", stop_mod.run_stop, self._repo_root, purge=True)
         logger.info("deploy clean: ok")
 
+    def purge(self, image_tag: str, *, force: bool = False) -> None:
+        """Remove one local Lumilake server image tag."""
+        _require_backend("purge")
+        plan = _wrap(
+            "purge",
+            purge_mod.build_server_image_purge_plan,
+            self._repo_root,
+            image_tag,
+        )
+        result = _wrap(
+            "purge",
+            purge_mod.run_server_image_purge,
+            plan,
+            force=force,
+        )
+        logger.info("deploy purge %s: removed=%s", image_tag, result.removed)
+
     def restart(self, service: str | None = None) -> None:
         _require_backend("restart")
         if service is not None:
@@ -242,6 +261,13 @@ class AsyncDeploy(_DeployBase):
 
     async def clean(self) -> None:
         await asyncio.to_thread(Deploy(self._repo_root).clean)
+
+    async def purge(self, image_tag: str, *, force: bool = False) -> None:
+        await asyncio.to_thread(
+            Deploy(self._repo_root).purge,
+            image_tag,
+            force=force,
+        )
 
     async def restart(self, service: str | None = None) -> None:
         await asyncio.to_thread(Deploy(self._repo_root).restart, service)

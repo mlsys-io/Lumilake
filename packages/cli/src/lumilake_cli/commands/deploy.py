@@ -1,4 +1,4 @@
-"""Deploy commands: init, doctor, up, down, clean, restart, reset, logs."""
+"""Deploy commands: init, doctor, up, down, clean, purge, restart, reset, logs."""
 
 import datetime as dt
 import difflib
@@ -10,6 +10,7 @@ import typer
 from flowmesh_cli_stack.stack import stack_env_example
 from lumilake import envs
 from lumilake_deploy import docker_client
+from lumilake_deploy import purge as purge_mod
 from lumilake_deploy import setup as setup_mod
 from lumilake_deploy import stop as stop_mod
 from lumilake_deploy import update_flowmesh as update_fm_mod
@@ -366,6 +367,56 @@ def clean(ctx: typer.Context) -> None:
     except DeployError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def purge(
+    ctx: typer.Context,
+    image_tag: str = typer.Argument(
+        ...,
+        help="Lumilake server image tag to purge from local Docker.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="List the image to be purged without deleting it.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Force image removal even if Docker reports dependent containers.",
+    ),
+) -> None:
+    """Purge one Lumilake server image tag from local Docker."""
+    try:
+        plan = purge_mod.build_server_image_purge_plan(
+            _project_dir(ctx),
+            image_tag=image_tag,
+        )
+    except DeployError as exc:
+        logging.error(str(exc))
+        raise typer.Exit(code=1) from exc
+
+    logging.info(f"Purging Lumilake server image with tag '{image_tag}'...")
+    if not plan.exists:
+        logging.warning(f"Image not found: {plan.image_ref}")
+        logging.info("No images to purge.")
+        return
+
+    if dry_run:
+        logging.info("Images to be purged:")
+        logging.info(f"  {plan.image_ref}")
+        return
+
+    try:
+        result = purge_mod.run_server_image_purge(plan, force=force)
+    except DeployError as exc:
+        logging.error(str(exc))
+        raise typer.Exit(code=1) from exc
+    if result.removed:
+        logging.success(f"Removed image: {result.image_ref}")
+        return
+    logging.warning(f"Image already absent: {result.image_ref}")
 
 
 @app.command()

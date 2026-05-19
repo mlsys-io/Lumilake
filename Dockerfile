@@ -20,12 +20,13 @@ WORKDIR /app
 
 # Install deps first for layer caching. requirements.txt is generated
 # from uv.lock by scripts/dev/sync_requirements.py.
+COPY src/lumilake_server/requirements.txt ./requirements.txt
+RUN pip install -r requirements.txt
+
 COPY LICENSE ./LICENSE
 COPY packages/sdk ./packages/sdk
 COPY packages/hook ./packages/hook
-COPY src/lumilake_server/requirements.txt ./requirements.txt
-RUN pip install ./packages/sdk ./packages/hook \
- && pip install -r requirements.txt
+RUN pip install --no-deps ./packages/sdk ./packages/hook
 
 # Image-only server code. Not published to PyPI.
 COPY src/lumilake_server ./lumilake_server

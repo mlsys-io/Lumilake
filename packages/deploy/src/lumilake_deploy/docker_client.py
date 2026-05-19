@@ -56,6 +56,21 @@ def image_pull(tag: str) -> None:
         raise DeployError(f"Failed to pull image {tag}: {exc}") from exc
 
 
+def image_remove(reference: str, *, force: bool = False) -> bool:
+    """Remove a local Docker image tag.
+
+    Returns ``False`` when the tag is already absent. Raises ``DeployError``
+    for Docker API failures such as an image still being used by a container.
+    """
+    try:
+        get_docker_client().images.remove(image=reference, force=force)
+        return True
+    except ImageNotFound:
+        return False
+    except APIError as exc:
+        raise DeployError(f"Failed to remove image {reference}: {exc}") from exc
+
+
 def _find_container(name: str) -> Container | None:
     matches = get_docker_client().containers.list(all=True, filters={"name": name})
     for container in matches:
