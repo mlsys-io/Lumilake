@@ -177,6 +177,7 @@ def _dispatch_workflow_to_graph_specs(
     graph_name: str,
     graph_specs: dict[str, dict[str, Any]],
     idx: int,
+    parser_scope: str | None = None,
 ) -> None:
     """Parse one workflow slice and merge it into ``graph_specs`` in place.
 
@@ -191,6 +192,11 @@ def _dispatch_workflow_to_graph_specs(
       submit it via ``Workflow-Format: n8n``). The endpoint overrides the
       YAML's top-level ``name``/``inputs`` with the per-batch values so
       slicing produces unique graph ids just like the ``n8n`` branch does.
+
+    ``parser_scope`` (optional) overrides the value fed to
+    :func:`lumilake_server.parser.common.make_id`. The submit path uses
+    this to keep DSL ids stable across slices of the same parent
+    workflow, which the multi-batch data-profile path depends on.
     """
     if workflow_format == "n8n":
         payload = {
@@ -199,6 +205,7 @@ def _dispatch_workflow_to_graph_specs(
                     "workflow": workflow_payload,
                     "inputs": batch_inputs,
                     "name": graph_name,
+                    "scope": parser_scope or graph_name,
                 }
             ]
         }
@@ -1004,12 +1011,12 @@ def _compute_minio_client():
 
 def _resolve_logical_s3_to_physical(logical: str) -> tuple[str, str]:
     """Treat ``logical`` as a key path under the configured ``S3_URL`` bucket."""
-    if not envs.S3_URL:
+    if not envs.S3_URL_PREFIX:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="S3_URL is not configured",
+            detail="S3_URL is not configured (no bucket/prefix)",
         )
-    bucket, base_prefix = split_bucket_prefix(envs.S3_URL)
+    bucket, base_prefix = split_bucket_prefix(envs.S3_URL_PREFIX)
     rel = logical.lstrip("/")
     if base_prefix:
         return bucket, f"{base_prefix}/{rel}" if rel else base_prefix
@@ -1217,17 +1224,7 @@ async def _run_job(
                 workflow_slices=workflow_slices,
             )
             for task in data_profile_tasks:
-                try:
-                    result = await asyncio.to_thread(
-                        run_data_profile_task, task.payload
-                    )
-                except Exception:
-                    logger.exception(
-                        "Data profile task %s failed for job %s; continuing",
-                        task.task_key,
-                        job_id,
-                    )
-                    continue
+                result = await asyncio.to_thread(run_data_profile_task, task.payload)
                 data_profile_registry[task.task_key] = result.model_dump(mode="json")
             if data_profile_tasks:
                 logger.info(
@@ -1346,6 +1343,10 @@ async def _run_job(
     finally:
         # ensure latest progress flushed
         _job_storage.save(record)
+        prefix = f"request::{job_id}::"
+        stale_keys = [key for key in data_profile_registry if key.startswith(prefix)]
+        for key in stale_keys:
+            data_profile_registry.pop(key, None)
         if record.status in {"completed", "failed", "cancelled"} and record.finished_at:
             await emit_usage([_usage_row(record, principal)], logger)
 
@@ -1849,6 +1850,7 @@ async def submit_job(
                 graph_name=graph_name,
                 graph_specs=graph_specs,
                 idx=idx,
+                parser_scope=name,
             )
             slice_start += slice_length
 

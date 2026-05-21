@@ -12,6 +12,7 @@ to call :func:`get_async_client` — the helper handles recycling.
 
 import asyncio
 
+import httpx
 from flowmesh import AsyncFlowMesh
 from lumilake import envs
 
@@ -28,9 +29,14 @@ def get_async_client() -> AsyncFlowMesh:
     global _client, _loop_id
     current_loop_id = id(asyncio.get_running_loop())
     if _client is None or _loop_id != current_loop_id:
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(envs.LUMILAKE_HTTP_TIMEOUT_SECONDS),
+            limits=httpx.Limits(keepalive_expiry=0.0),
+        )
         _client = AsyncFlowMesh(
             base_url=envs.RUNTIME_ORCHESTRATOR_URL,
             api_key=envs.RUNTIME_TOKEN,
+            http_client=http_client,
         )
         _loop_id = current_loop_id
     return _client
