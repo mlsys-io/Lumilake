@@ -568,7 +568,7 @@ async def collect_data_profile(
             # task_key. A missing entry here means the profile step failed
             # during parse.
             for source in candidates:
-                if payload := data_profile_registry.pop(source.task_key, None):
+                if payload := data_profile_registry.get(source.task_key):
                     completed_payload = payload
                     selected = source
                     break

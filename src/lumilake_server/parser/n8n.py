@@ -66,7 +66,9 @@ def parse_n8n_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
       "graphs": [
         {
           "workflow": { ... n8n workflow json ... },
-          "inputs": { "stock": ["NVDA"] }
+          "inputs": { "stock": ["NVDA"] },
+          "name": "g0__slice_1",        # routing key; also default scope
+          "scope": "g0"                  # optional; DSL-id scope override
         },
         ...
       ]
@@ -88,7 +90,8 @@ def parse_n8n_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
             raise ValueError(f"graph {idx} inputs must be an object")
 
         graph_name = item.get("name") or f"graph_{idx}"
-        compiled = _parse_n8n_workflow(workflow, inputs, graph_name)
+        scope = item.get("scope") or graph_name
+        compiled = _parse_n8n_workflow(workflow, inputs, scope)
         graph_specs[graph_name] = {
             "graph": compiled.graph,
             "inputs": compiled.inputs,
