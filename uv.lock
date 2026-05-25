@@ -831,7 +831,7 @@ wheels = [
 
 [[package]]
 name = "lumilake"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -971,7 +971,7 @@ test = [
 
 [[package]]
 name = "lumilake-cli"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/cli" }
 dependencies = [
     { name = "flowmesh-sdk" },
@@ -997,7 +997,7 @@ provides-extras = ["deploy"]
 
 [[package]]
 name = "lumilake-deploy"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/deploy" }
 dependencies = [
     { name = "docker" },
@@ -1020,7 +1020,7 @@ requires-dist = [
 
 [[package]]
 name = "lumilake-hook"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/hook" }
 dependencies = [
     { name = "lumid-hooks" },
@@ -1031,7 +1031,7 @@ requires-dist = [{ name = "lumid-hooks", specifier = "==0.1.0" }]
 
 [[package]]
 name = "lumilake-sdk"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/sdk" }
 dependencies = [
     { name = "httpx" },
