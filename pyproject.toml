@@ -1,6 +1,6 @@
 [project]
 name = "lumilake"
-version = "0.1.0"
+version = "0.1.1"
 description = "Data analytics engine for agentic workflows"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
@@ -33,16 +33,16 @@ Repository = "https://github.com/mlsys-io/lumilake_OSS"
 Issues = "https://github.com/mlsys-io/lumilake_OSS/issues"
 
 [project.optional-dependencies]
-sdk = ["lumilake-sdk==0.1.0"]
+sdk = ["lumilake-sdk==0.1.1"]
 # Full CLI; pin lumilake-cli alone for the thin variant.
-cli = ["lumilake-cli==0.1.0", "lumilake-deploy==0.1.0"]
-deploy = ["lumilake-deploy==0.1.0"]
-hook = ["lumilake-hook==0.1.0"]
+cli = ["lumilake-cli==0.1.1", "lumilake-deploy==0.1.1"]
+deploy = ["lumilake-deploy==0.1.1"]
+hook = ["lumilake-hook==0.1.1"]
 all = [
-    "lumilake-sdk==0.1.0",
-    "lumilake-cli==0.1.0",
-    "lumilake-deploy==0.1.0",
-    "lumilake-hook==0.1.0",
+    "lumilake-sdk==0.1.1",
+    "lumilake-cli==0.1.1",
+    "lumilake-deploy==0.1.1",
+    "lumilake-hook==0.1.1",
 ]
 
 [build-system]
