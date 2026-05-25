@@ -15,6 +15,7 @@ from lumilake import envs
 from lumilake.log import configure_default_logger, init_child_logger
 from psycopg_pool import AsyncConnectionPool
 
+from lumilake_server import __version__
 from lumilake_server.hooks import HookBindings, register
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs, trace, workers
@@ -140,7 +141,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
         redoc_url=None,
         title="Lumilake Server",
         description="A data analytics engine built for LLM-based agentic workflows",
-        version="0.1.0",
+        version=__version__,
     )
     app.state.logger = logger
     app.state.compute_db_pool = None
