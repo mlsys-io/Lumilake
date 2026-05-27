@@ -10,7 +10,7 @@ from lumilake_server.hooks.security import (
     require_permission,
     resolve_accessible_ids,
 )
-from lumilake_server.runtime.flowmesh_client import get_async_client
+from lumilake_server.runtime.flowmesh_client import flowmesh_for
 from lumilake_server.schemas.worker import WorkerInfo
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
@@ -84,7 +84,7 @@ async def list_workers(
     )
     list_kwargs, extras = _split_list_params(request)
     try:
-        workers = await get_async_client().workers.list(
+        workers = await flowmesh_for(request).workers.list(
             **list_kwargs,
             query_params=extras or None,
         )
@@ -116,7 +116,7 @@ async def get_worker(
         hook_logger,
     )
     try:
-        worker = await get_async_client().workers.retrieve(worker_id)
+        worker = await flowmesh_for(request).workers.retrieve(worker_id)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (APIError, AuthenticationError) as exc:

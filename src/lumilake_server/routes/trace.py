@@ -21,7 +21,7 @@ from lumilake_server.hooks.security import (
     require_permission,
     resolve_accessible_ids,
 )
-from lumilake_server.runtime.flowmesh_client import get_async_client
+from lumilake_server.runtime.flowmesh_client import flowmesh_for
 from lumilake_server.utils.job_storage import (
     InMemoryJobStorage,
     JobStorage,
@@ -150,10 +150,12 @@ def _finished_at(record: dict[str, Any]) -> dt.datetime | None:
     return None
 
 
-async def _fetch_profile(workflow_id: str) -> tuple[ProfileSummary | None, str | None]:
+async def _fetch_profile(
+    request: Request, workflow_id: str
+) -> tuple[ProfileSummary | None, str | None]:
     """Forward to FlowMesh's analyzer; return ``(payload, error)``."""
     try:
-        return await get_async_client().traces.analyze(workflow_id), None
+        return await flowmesh_for(request).traces.analyze(workflow_id), None
     except Exception as exc:  # noqa: BLE001 — surface remote failures as "error"
         return None, f"trace fetch failed: {exc}"
 
@@ -311,7 +313,7 @@ async def get_execution_trace(
     # Forward whether or not source jobs are completed: FlowMesh records spans
     # as they happen, so a partially-failed run still has a fetchable trace —
     # which is exactly when an operator needs it for debugging.
-    payload, err = await _fetch_profile(trace_id)
+    payload, err = await _fetch_profile(request, trace_id)
     trace_status: TraceStatus = "ok" if payload is not None and err is None else "error"
     return TraceResponse(
         ok=trace_status == "ok",
