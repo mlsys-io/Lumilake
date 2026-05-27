@@ -2,6 +2,7 @@ import datetime as dt
 import json
 import logging
 from abc import abstractmethod
+from collections.abc import Iterable
 from dataclasses import asdict
 from io import BytesIO
 from typing import Any, Literal, Protocol
@@ -118,6 +119,11 @@ class JobStorage:
         page: int,
         page_size: int,
     ) -> tuple[list[dict[str, Any]], int]:
+        raise NotImplementedError
+
+    def iter_summaries(
+        self, statuses: set[str] | None = None
+    ) -> Iterable["JobSummary"]:
         raise NotImplementedError
 
 
@@ -271,6 +277,11 @@ class InMemoryJobStorage(JobStorage):
         end = start + page_size
         page_items = [item.model_dump(mode="json") for item in sorted_items[start:end]]
         return page_items, total
+
+    def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
+        for summary in self._summaries.values():
+            if statuses is None or summary.status in statuses:
+                yield summary
 
 
 class PersistentJobStorage(JobStorage):
@@ -457,6 +468,19 @@ class PersistentJobStorage(JobStorage):
         end = start + page_size
         page_items = [item.model_dump(mode="json") for item in sorted_items[start:end]]
         return page_items, total
+
+    def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
+        index = self._get_json_optional(self._jobs_index_name()) or {}
+        for value in index.values():
+            if not isinstance(value, dict):
+                continue
+            try:
+                summary = JobSummary.model_validate(value)
+            except ValidationError as exc:
+                self.logger.warning("Ignoring invalid job summary entry: %s", exc)
+                continue
+            if statuses is None or summary.status in statuses:
+                yield summary
 
 
 _job_storage: JobStorage | None = None

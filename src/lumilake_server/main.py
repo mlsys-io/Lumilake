@@ -127,6 +127,8 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
 
             app.state.compute_db_pool = compute_pool
 
+            await jobs.recover_in_flight_jobs()
+
             try:
                 with LumilakeServer.serve_instance(config=server_config):
                     yield

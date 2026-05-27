@@ -653,6 +653,49 @@ async def mark_running_jobs_failed(reason: str = "server shutdown") -> None:
         logger.warning("Marked %d jobs failed due to shutdown", len(active))
 
 
+async def recover_in_flight_jobs(
+    reason: str = "server restart during execution",
+) -> int:
+    """Mark jobs left in ``pending``/``running`` in storage as ``failed``.
+
+    The dispatch token a job needs lives only in process memory, so a
+    crashed in-flight job has no path to continue.
+    """
+    affected = 0
+    in_memory: dict[str, JobRecord] = {}
+    async with jobs_lock:
+        in_memory = dict(jobs)
+    for summary in _job_storage.iter_summaries({"pending", "running"}):
+        if summary.job_id in in_memory:
+            continue
+        try:
+            loaded = _job_storage.load(summary.job_id)
+        except KeyError:
+            continue
+        if loaded is None:
+            continue
+        try:
+            record = JobRecord(**loaded)
+        except (ValueError, TypeError):
+            logger.exception(
+                "Failed to reconstruct job %s during startup recovery",
+                summary.job_id,
+            )
+            continue
+        record.status = "failed"
+        if not record.error:
+            record.error = reason
+        record.finished_at = _now()
+        _job_storage.save(record)
+        _release_output_locations(record)
+        affected += 1
+    if affected:
+        logger.warning(
+            "Recovered %d in-flight job(s) as failed (reason=%r)", affected, reason
+        )
+    return affected
+
+
 async def _load_job_record(job_id: str) -> JobRecord | None:
     record: JobRecord | None
     async with jobs_lock:
