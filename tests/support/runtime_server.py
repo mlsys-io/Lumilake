@@ -45,6 +45,7 @@ class RecordingRuntimeManager:
     ) -> None:
         self.cancelled = set() if cancelled is None else set(cancelled)
         self.status_by_request = {} if status_by_request is None else status_by_request
+        self._dispatch_tokens: dict[str, str | None] = {}
         self.cancel_calls: list[str] = []
         self.mark_calls: list[tuple[str, str, str]] = []
         self._result_dir = tempfile.TemporaryDirectory(prefix="lumilake-runtime-test-")
@@ -121,13 +122,13 @@ class RecordingRuntimeManager:
         return request_id in self.cancelled
 
     def set_dispatch_token(self, request_id: str, token: str | None) -> None:
-        return None
+        self._dispatch_tokens[request_id] = token
 
     def get_dispatch_token(self, request_id: str) -> str | None:
-        return None
+        return self._dispatch_tokens.get(request_id)
 
     def clear_dispatch_token(self, request_id: str) -> None:
-        return None
+        self._dispatch_tokens.pop(request_id, None)
 
 
 class ArtifactRuntimeManager(RecordingRuntimeManager):

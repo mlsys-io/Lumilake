@@ -51,8 +51,9 @@ class PriorityJobManager(BaseJobManager):
         }
         # Round-robin order of principal IDs across all priorities. select_batch
         # picks one principal per round so a single FlowMesh dispatch never
-        # spans principals.
+        # spans principals. The set mirrors the deque for O(1) membership.
         self._rr_principal_order: deque[str] = deque()
+        self._rr_principal_members: set[str] = set()
         self._items: dict[str, WorkflowItem] = {}
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
@@ -119,7 +120,8 @@ class PriorityJobManager(BaseJobManager):
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
                 principal_id = item.config.principal_id
-                if principal_id not in self._rr_principal_order:
+                if principal_id not in self._rr_principal_members:
+                    self._rr_principal_members.add(principal_id)
                     self._rr_principal_order.append(principal_id)
             self._not_empty.set()
             self.logger.debug(
@@ -198,6 +200,7 @@ class PriorityJobManager(BaseJobManager):
                 if picked is None:
                     picked = next(iter(present_principals))
                     self._rr_principal_order.append(picked)
+                    self._rr_principal_members.add(picked)
                 anchor_principal = picked
 
             candidates = self._build_candidate_pool_for_principal_locked(
@@ -357,6 +360,7 @@ class PriorityJobManager(BaseJobManager):
                 self._rr_principal_order.rotate(-1)
                 return head
             self._rr_principal_order.popleft()
+            self._rr_principal_members.discard(head)
         return None
 
     def _priority_queue_size(self, priority: Priority) -> int:

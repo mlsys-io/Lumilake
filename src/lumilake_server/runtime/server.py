@@ -1407,10 +1407,21 @@ class LumilakeServer:
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
         )
-        if request_ids:
-            runtime_token_var.set(
-                self.runtime_manager.get_dispatch_token(request_ids[0])
-            )
+        dispatch_token: str | None = None
+        for request_id in request_ids:
+            candidate = self.runtime_manager.get_dispatch_token(request_id)
+            if candidate is None:
+                continue
+            if dispatch_token is None:
+                dispatch_token = candidate
+            elif candidate != dispatch_token:
+                self.logger.warning(
+                    "Batch %s spans request_ids with differing dispatch tokens "
+                    "for the same principal; using the first non-empty token",
+                    batch_id,
+                )
+                break
+        runtime_token_var.set(dispatch_token)
         execution_request_id = f"exec-{unique_id()}"
         self._execution_contexts[execution_request_id] = ExecutionBatchContext(
             execution_request_id=execution_request_id,
