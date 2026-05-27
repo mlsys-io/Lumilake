@@ -51,6 +51,9 @@ LUMILAKE_SERVER_HOST: str = os.environ.get("LUMILAKE_SERVER_HOST", "")
 LUMILAKE_SERVER_PORT: int = int(os.environ.get("LUMILAKE_SERVER_PORT", "0") or "0")
 RUNTIME_ORCHESTRATOR_URL: str = os.environ.get("LUMILAKE_RUNTIME_ORCHESTRATOR_URL", "")
 RUNTIME_TOKEN: str | None = os.environ.get("LUMILAKE_RUNTIME_TOKEN")
+LUMILAKE_REQUIRE_IDENTITY_PROVIDER: bool = os.environ.get(
+    "LUMILAKE_REQUIRE_IDENTITY_PROVIDER", ""
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # Server-tunable, defaulted.
 LUMILAKE_JOB_MANAGER_TYPE: str = os.environ.get(

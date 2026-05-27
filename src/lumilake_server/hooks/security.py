@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 from lumid_hooks import PrincipalContext, ResourceRef
+from lumilake import envs
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 
 from . import (
@@ -30,6 +31,14 @@ async def authenticate_token(
     logger: logging.Logger,
 ) -> PrincipalContext:
     if not IDENTITY_PROVIDERS:
+        if envs.LUMILAKE_REQUIRE_IDENTITY_PROVIDER:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "No IdentityProvider plugins registered; "
+                    "LUMILAKE_REQUIRE_IDENTITY_PROVIDER is set."
+                ),
+            )
         return default_principal()
 
     for provider in IDENTITY_PROVIDERS:
@@ -48,7 +57,23 @@ async def authenticate_request(request: Request) -> PrincipalContext:
     raw_token = (
         auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else ""
     )
-    return await authenticate_token(raw_token, request.app.state.logger)
+    principal = await authenticate_token(raw_token, request.app.state.logger)
+    request.state.runtime_token = raw_token or None
+    return principal
+
+
+def get_runtime_token(request: Request) -> str | None:
+    """Return the bearer captured by :func:`authenticate_request`.
+
+    The same token Lumilake authenticated against is forwarded to FlowMesh on
+    the principal's behalf so dispatch and billing line up on the runtime
+    side. Returns ``None`` when the request arrived without an
+    ``Authorization`` header — the local-deploy path.
+    """
+    token = getattr(request.state, "runtime_token", None)
+    if isinstance(token, str) and token:
+        return token
+    return None
 
 
 async def run_submission_guards(
