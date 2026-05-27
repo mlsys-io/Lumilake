@@ -53,7 +53,6 @@ Agent-retrieval keys:
 |-----|---------|
 | `LUMILAKE_LOG_LEVEL` | Server log level. Defaults to `INFO`. |
 | `LUMILAKE_SKIP_DOTENV_CHECK` | Set to `1` when the server's env is injected directly (Docker) so startup does not require a `.env` file. |
-| `LUMILAKE_RUNTIME_TOKEN` | Bearer token sent with FlowMesh runtime requests. Empty by default. |
 | `LUMILAKE_REQUIRE_IDENTITY_PROVIDER` | When truthy, rejects requests with 503 unless at least one `IdentityProvider` plugin is registered. Recommended for cloud deploys; leave unset locally. |
 | `LUMILAKE_RUNTIME_MANAGER_TYPE` | Runtime dispatch backend. `default` or `flowmesh`. |
 | `LUMILAKE_JOB_MANAGER_TYPE` | Job manager implementation. Currently only `priority`. |

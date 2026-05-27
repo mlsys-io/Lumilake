@@ -1,3 +1,4 @@
+import contextvars
 import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -13,6 +14,12 @@ from . import (
     RESOURCE_REGISTRARS,
     SUBMISSION_GUARDS,
     USAGE_SINKS,
+)
+
+# Child tasks spawned with ``asyncio.create_task`` inherit this var via the
+# context snapshot taken at spawn time.
+runtime_token_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "lumilake_runtime_token", default=None
 )
 
 
@@ -58,7 +65,9 @@ async def authenticate_request(request: Request) -> PrincipalContext:
         auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else ""
     )
     principal = await authenticate_token(raw_token, request.app.state.logger)
-    request.state.runtime_token = raw_token or None
+    token = raw_token or None
+    request.state.runtime_token = token
+    runtime_token_var.set(token)
     return principal
 
 

@@ -24,6 +24,7 @@ from lumilake.log import (
 )
 
 from lumilake_server.graphs import CompiledGraph, Graph
+from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
@@ -206,7 +207,6 @@ class LumilakeServerConfig:
         port: int | None = None,
         is_local: bool = False,
         runtime_url: str | None = None,
-        runtime_token: str | None = None,
         batch_size: int = envs.LUMILAKE_OPTIMIZER_BATCH_SIZE,
         batch_accumulation_seconds: float = envs.LUMILAKE_BATCH_ACCUMULATION_SECONDS,
         cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
@@ -218,8 +218,6 @@ class LumilakeServerConfig:
         """Whether to use a local Lumilake server."""
         self.runtime_url = runtime_url
         """Runtime orchestrator URL for plan submission."""
-        self.runtime_token = runtime_token
-        """Authentication token for runtime orchestrator."""
         self.batch_size = batch_size
         """Number of graphs per batch for workload processing."""
         self.batch_accumulation_seconds = batch_accumulation_seconds
@@ -1409,6 +1407,10 @@ class LumilakeServer:
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
         )
+        if request_ids:
+            runtime_token_var.set(
+                self.runtime_manager.get_dispatch_token(request_ids[0])
+            )
         execution_request_id = f"exec-{unique_id()}"
         self._execution_contexts[execution_request_id] = ExecutionBatchContext(
             execution_request_id=execution_request_id,
@@ -2717,7 +2719,9 @@ class LumilakeServer:
             raise ValueError("Preview graph has no runtime nodes")
 
         workflow_slices = self._build_preview_workflow_slices(graphs)
-        resolved_config = config or LumilakeRequestConfig(user_id=resolved_request_id)
+        resolved_config = config or LumilakeRequestConfig(
+            user_id=resolved_request_id, principal_id=resolved_request_id
+        )
 
         base_quantums = self.config.queue_quantums or DEFAULT_QUANTUMS
         preview_quantums = {

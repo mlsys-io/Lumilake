@@ -7,7 +7,7 @@ from fastapi import Request
 from flowmesh import AsyncFlowMesh
 from lumilake import envs
 
-from lumilake_server.hooks.security import get_runtime_token
+from lumilake_server.hooks.security import get_runtime_token, runtime_token_var
 
 _http_client: httpx.AsyncClient | None = None
 _loop_id: int | None = None
@@ -41,6 +41,6 @@ def flowmesh_for_token(token: str | None) -> AsyncFlowMesh:
     )
 
 
-def get_async_client() -> AsyncFlowMesh:
-    """Build an ``AsyncFlowMesh`` keyed by ``LUMILAKE_RUNTIME_TOKEN``."""
-    return flowmesh_for_token(envs.RUNTIME_TOKEN)
+def flowmesh_for_context() -> AsyncFlowMesh:
+    """Build an ``AsyncFlowMesh`` carrying the current task's runtime token."""
+    return flowmesh_for_token(runtime_token_var.get())

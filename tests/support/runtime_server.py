@@ -120,6 +120,15 @@ class RecordingRuntimeManager:
     async def is_request_cancelled(self, request_id: str) -> bool:
         return request_id in self.cancelled
 
+    def set_dispatch_token(self, request_id: str, token: str | None) -> None:
+        return None
+
+    def get_dispatch_token(self, request_id: str) -> str | None:
+        return None
+
+    def clear_dispatch_token(self, request_id: str) -> None:
+        return None
+
 
 class ArtifactRuntimeManager(RecordingRuntimeManager):
     async def process_request(
@@ -185,7 +194,7 @@ def make_workflow(
         runtime_graph=runtime_graph,
         data_profile_graph=runtime_graph,
         dsl_graph=cast(Any, compiled_graph),
-        config=LumilakeRequestConfig(user_id=request_id),
+        config=LumilakeRequestConfig(user_id=request_id, principal_id=request_id),
         enqueued_at=time.time(),
     )
 
@@ -223,7 +232,7 @@ def make_batch(workflows: list[WorkflowItem]) -> BatchSelection:
         data_profile_graphs={
             item.workflow_id: item.data_profile_graph for item in workflows
         },
-        config=LumilakeRequestConfig(user_id="batch-user"),
+        config=LumilakeRequestConfig(user_id="batch-user", principal_id="batch-user"),
     )
 
 
@@ -233,7 +242,6 @@ def make_server() -> LumilakeServer:
         config=LumilakeServerConfig(
             is_local=True,
             runtime_url="http://localhost:18080",
-            runtime_token="test-token",
             batch_size=4,
             cpu_worker_group_size=1,
             gpu_worker_group_size=0,
@@ -252,7 +260,9 @@ def attach_request_states(
             handlers[workflow.request_id] = handler
             server._requests[workflow.request_id] = RequestState(
                 handler=cast(RequestHandler, handler),
-                config=LumilakeRequestConfig(user_id=workflow.request_id),
+                config=LumilakeRequestConfig(
+                    user_id=workflow.request_id, principal_id=workflow.request_id
+                ),
                 pending_workflows=set(),
                 workflow_lengths={workflow.public_graph_name: 1},
                 pending_runtime_nodes_raw=0,

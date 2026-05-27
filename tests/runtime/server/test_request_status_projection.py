@@ -122,7 +122,7 @@ async def test_get_request_status_runtime_percentage_is_capped(server_factory) -
     server._request_execution_ids["req-a"] = {"exec-1"}
     server._requests["req-a"] = RequestState(
         handler=cast(RequestHandler, FakeHandler()),
-        config=LumilakeRequestConfig(user_id="req-a"),
+        config=LumilakeRequestConfig(user_id="req-a", principal_id="req-a"),
         pending_workflows=set(),
         workflow_lengths={},
         pending_runtime_nodes_raw=0,
@@ -179,7 +179,7 @@ async def test_get_request_status_projects_input_completion(server_factory) -> N
     server._request_execution_ids["req-a"] = {"exec-1"}
     server._requests["req-a"] = RequestState(
         handler=cast(RequestHandler, FakeHandler()),
-        config=LumilakeRequestConfig(user_id="req-a"),
+        config=LumilakeRequestConfig(user_id="req-a", principal_id="req-a"),
         pending_workflows=set(),
         workflow_lengths={"workflow-a": 4, "workflow-b": 6},
         total_input_items=10,

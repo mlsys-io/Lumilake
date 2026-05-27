@@ -10,7 +10,7 @@ from lumilake_server.runtime.server import RequestState
 def _state() -> RequestState:
     return RequestState(
         handler=cast(RequestHandler, FakeHandler()),
-        config=LumilakeRequestConfig(user_id="u"),
+        config=LumilakeRequestConfig(user_id="u", principal_id="u"),
         pending_workflows=set(),
     )
 

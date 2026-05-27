@@ -49,6 +49,10 @@ class PriorityJobManager(BaseJobManager):
         self._rr_user_order: dict[Priority, deque[str]] = {
             priority: deque() for priority in Priority
         }
+        # Round-robin order of principal IDs across all priorities. select_batch
+        # picks one principal per round so a single FlowMesh dispatch never
+        # spans principals.
+        self._rr_principal_order: deque[str] = deque()
         self._items: dict[str, WorkflowItem] = {}
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
@@ -114,6 +118,9 @@ class PriorityJobManager(BaseJobManager):
                     self._rr_user_order[job.config.priority].append(owner_id)
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
+                principal_id = item.config.principal_id
+                if principal_id not in self._rr_principal_order:
+                    self._rr_principal_order.append(principal_id)
             self._not_empty.set()
             self.logger.debug(
                 "Enqueued request=%s priority=%s workflows=%d queue_sizes=%s",
@@ -167,7 +174,35 @@ class PriorityJobManager(BaseJobManager):
             batch_size = 1
 
         async with self._lock:
-            candidates = self._build_candidate_pool_locked()
+            present_principals: set[str] = set()
+            items_by_principal: dict[str, int] = {}
+            starved_global: list[WorkflowItem] = []
+            for priority in Priority:
+                for queue in self._queues[priority].values():
+                    for item in queue:
+                        pid = item.config.principal_id
+                        present_principals.add(pid)
+                        items_by_principal[pid] = items_by_principal.get(pid, 0) + 1
+                        if item.miss_count >= self._starvation_limit:
+                            starved_global.append(item)
+
+            if not present_principals:
+                self._not_empty.clear()
+                return None
+
+            anchor_principal: str
+            if starved_global:
+                anchor_principal = starved_global[0].config.principal_id
+            else:
+                picked = self._pick_principal_round_robin_locked(present_principals)
+                if picked is None:
+                    picked = next(iter(present_principals))
+                    self._rr_principal_order.append(picked)
+                anchor_principal = picked
+
+            candidates = self._build_candidate_pool_for_principal_locked(
+                anchor_principal
+            )
             if not candidates:
                 self._not_empty.clear()
                 return None
@@ -180,12 +215,15 @@ class PriorityJobManager(BaseJobManager):
                 owner_id = self._queue_owner_id(item)
                 candidate_by_user[owner_id] = candidate_by_user.get(owner_id, 0) + 1
             self.logger.debug(
-                "Candidate pool size=%d batch_size=%d quantums=%s "
-                "queue_sizes=%s candidate_by_priority=%s candidate_by_user=%s",
+                "Candidate pool anchor=%s size=%d batch_size=%d quantums=%s "
+                "queue_sizes=%s items_by_principal=%s "
+                "candidate_by_priority=%s candidate_by_user=%s",
+                anchor_principal,
                 len(candidates),
                 batch_size,
                 self._quantums_by_priority(),
                 queue_sizes,
+                items_by_principal,
                 candidate_by_priority,
                 candidate_by_user,
             )
@@ -246,8 +284,8 @@ class PriorityJobManager(BaseJobManager):
                 ]
                 self.logger.debug("Selected batch items=%s", selected_names)
 
-            selected_set = set(selected_ids)
             selected_items = [item_map[workflow_id] for workflow_id in selected_ids]
+            selected_set = set(selected_ids)
 
             # Update miss counters for candidates not selected.
             for item in candidates:
@@ -295,14 +333,31 @@ class PriorityJobManager(BaseJobManager):
             clustering_seconds=clustering_seconds,
         )
 
-    def _build_candidate_pool_locked(self) -> list[WorkflowItem]:
+    def _build_candidate_pool_for_principal_locked(
+        self, principal_id: str
+    ) -> list[WorkflowItem]:
         candidates: list[WorkflowItem] = []
         for priority in Priority:
             quantum = max(0, self._quantums.get(priority, 0))
             if quantum == 0:
                 continue
-            candidates.extend(self._peek_round_robin_locked(priority, quantum))
+            candidates.extend(
+                self._peek_round_robin_for_principal_locked(
+                    priority, quantum, principal_id
+                )
+            )
         return candidates
+
+    def _pick_principal_round_robin_locked(
+        self, present_principals: set[str]
+    ) -> str | None:
+        while self._rr_principal_order:
+            head = self._rr_principal_order[0]
+            if head in present_principals:
+                self._rr_principal_order.rotate(-1)
+                return head
+            self._rr_principal_order.popleft()
+        return None
 
     def _priority_queue_size(self, priority: Priority) -> int:
         return sum(len(queue) for queue in self._queues[priority].values())
@@ -320,8 +375,8 @@ class PriorityJobManager(BaseJobManager):
             user_id for user_id in rr_order if user_id in user_queues
         )
 
-    def _peek_round_robin_locked(
-        self, priority: Priority, limit: int
+    def _peek_round_robin_for_principal_locked(
+        self, priority: Priority, limit: int, principal_id: str
     ) -> list[WorkflowItem]:
         if limit <= 0:
             return []
@@ -331,19 +386,30 @@ class PriorityJobManager(BaseJobManager):
         if not user_queues or not rr_order:
             return []
 
-        ordered_users = list(rr_order)
+        filtered: dict[str, list[WorkflowItem]] = {}
+        for user_id in rr_order:
+            queue = user_queues.get(user_id)
+            if not queue:
+                continue
+            user_items = [
+                item for item in queue if item.config.principal_id == principal_id
+            ]
+            if user_items:
+                filtered[user_id] = user_items
+
+        ordered_users = [user_id for user_id in rr_order if user_id in filtered]
+        if not ordered_users:
+            return []
         local_offsets = {user_id: 0 for user_id in ordered_users}
         candidates: list[WorkflowItem] = []
         while len(candidates) < limit:
             progressed = False
             for user_id in ordered_users:
-                queue = user_queues.get(user_id)
-                if not queue:
-                    continue
+                items = filtered[user_id]
                 idx = local_offsets[user_id]
-                if idx >= len(queue):
+                if idx >= len(items):
                     continue
-                candidates.append(queue[idx])
+                candidates.append(items[idx])
                 local_offsets[user_id] = idx + 1
                 progressed = True
                 if len(candidates) >= limit:
@@ -351,7 +417,6 @@ class PriorityJobManager(BaseJobManager):
             if not progressed:
                 break
 
-        # Rotate start point to avoid head-of-line bias across selections.
         if len(rr_order) > 1:
             rr_order.rotate(-1)
         return candidates

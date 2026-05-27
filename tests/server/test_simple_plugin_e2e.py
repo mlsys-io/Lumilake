@@ -27,11 +27,23 @@ _DEFAULT_TOKENS = {
 }
 
 
+class _NoopRuntimeManager:
+    def set_dispatch_token(self, request_id: str, token: str | None) -> None:
+        return None
+
+    def get_dispatch_token(self, request_id: str) -> str | None:
+        return None
+
+    def clear_dispatch_token(self, request_id: str) -> None:
+        return None
+
+
 class _FakeRuntimeServer:
     is_started = True
 
     def __init__(self) -> None:
         self.cancel_calls: list[str] = []
+        self.runtime_manager = _NoopRuntimeManager()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return graph_specs

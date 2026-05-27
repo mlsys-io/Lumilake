@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_valid
 from lumilake_server.hooks.security import (
     authenticate_request,
     emit_usage,
+    get_runtime_token,
     register_resource,
     require_permission,
     resolve_accessible_ids,
@@ -1188,6 +1189,7 @@ async def _run_job(
     priority: Priority,
     compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
+    runtime_token: str | None,
     trace_id: str,
 ) -> None:
     set_trace_id(trace_id)
@@ -1208,6 +1210,7 @@ async def _run_job(
             await emit_usage([_usage_row(record, principal)], logger)
         return
 
+    server.runtime_manager.set_dispatch_token(job_id, runtime_token)
     try:
         graphs = server.parse_query(graph_specs)
         record.progress.query_parsing.completed = True
@@ -1239,6 +1242,7 @@ async def _run_job(
                 priority=priority,
                 user_id=principal.external_id,
                 org_id=principal.org_id,
+                principal_id=principal.principal_id,
             ),
             workflow_slices=workflow_slices,
         )
@@ -1347,6 +1351,7 @@ async def _run_job(
         stale_keys = [key for key in data_profile_registry if key.startswith(prefix)]
         for key in stale_keys:
             data_profile_registry.pop(key, None)
+        server.runtime_manager.clear_dispatch_token(job_id)
         if record.status in {"completed", "failed", "cancelled"} and record.finished_at:
             await emit_usage([_usage_row(record, principal)], logger)
 
@@ -1892,6 +1897,7 @@ async def submit_job(
             priority,
             compute_pool,
             principal,
+            get_runtime_token(request),
             str(getattr(request.state, "trace_id", job_id)),
         )
     )

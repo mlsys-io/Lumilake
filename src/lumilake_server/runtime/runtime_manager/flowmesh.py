@@ -22,7 +22,7 @@ from flowmesh.exceptions import APIError
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 
-from lumilake_server.runtime.flowmesh_client import get_async_client
+from lumilake_server.runtime.flowmesh_client import flowmesh_for_context
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
@@ -96,14 +96,20 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self._batch_workflow_id: dict[tuple[str, str], str] = {}
         self._cancelled_requests: set[str] = set()
 
+        self._dispatch_tokens: dict[str, str | None] = {}
+
     @property
     def fm(self):
-        """Return the shared ``AsyncFlowMesh`` client.
+        return flowmesh_for_context()
 
-        Proxied through :func:`lumilake_server.runtime.flowmesh_client.get_async_client`
-        so existing call sites (``self.fm.tasks.retrieve(...)``) stay unchanged.
-        """
-        return get_async_client()
+    def set_dispatch_token(self, request_id: str, token: str | None) -> None:
+        self._dispatch_tokens[request_id] = token
+
+    def get_dispatch_token(self, request_id: str) -> str | None:
+        return self._dispatch_tokens.get(request_id)
+
+    def clear_dispatch_token(self, request_id: str) -> None:
+        self._dispatch_tokens.pop(request_id, None)
 
     async def is_request_cancelled(self, request_id: str) -> bool:
         async with self._task_status_lock:
