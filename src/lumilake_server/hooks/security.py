@@ -79,10 +79,8 @@ def get_runtime_token(request: Request) -> str | None:
     side. Returns ``None`` when the request arrived without an
     ``Authorization`` header — the local-deploy path.
     """
-    token = getattr(request.state, "runtime_token", None)
-    if isinstance(token, str) and token:
-        return token
-    return None
+    token = request.state.runtime_token
+    return token if isinstance(token, str) else None
 
 
 async def run_submission_guards(
