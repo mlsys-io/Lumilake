@@ -1,6 +1,7 @@
 """Priority queue-based job manager with starvation avoidance."""
 
 import asyncio
+import hashlib
 import logging
 import time
 from collections import deque
@@ -49,15 +50,26 @@ class PriorityJobManager(BaseJobManager):
         self._rr_user_order: dict[Priority, deque[str]] = {
             priority: deque() for priority in Priority
         }
-        # Round-robin order of principal IDs across all priorities. select_batch
-        # picks one principal per round so a single FlowMesh dispatch never
-        # spans principals. The set mirrors the deque for O(1) membership.
-        self._rr_principal_order: deque[str] = deque()
-        self._rr_principal_members: set[str] = set()
+        # Round-robin order of (principal_id, dispatch_token) partitions across
+        # all priorities. select_batch picks one partition per round so a
+        # single FlowMesh dispatch never spans principals OR tokens (token
+        # rotation makes the same principal show up twice with different
+        # tokens). Set mirrors the deque for O(1) membership.
+        self._rr_partition_order: deque[tuple[str, str | None]] = deque()
+        self._rr_partition_members: set[tuple[str, str | None]] = set()
         self._items: dict[str, WorkflowItem] = {}
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
         self.logger = init_child_logger("JobManager", logger, log_level)
+
+    @staticmethod
+    def _redact_partition(partition: tuple[str, str | None]) -> tuple[str, str]:
+        """Render a partition for logs without leaking the bearer token."""
+        principal_id, token = partition
+        if token is None:
+            return (principal_id, "no-token")
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
+        return (principal_id, f"tok:{digest}")
 
     @staticmethod
     def _format_item(item: WorkflowItem) -> str:
@@ -108,6 +120,7 @@ class PriorityJobManager(BaseJobManager):
                     dsl_graph=dsl_graph,
                     config=job.config,
                     enqueued_at=now,
+                    dispatch_token=job.dispatch_token,
                 )
             )
         async with self._lock:
@@ -119,10 +132,10 @@ class PriorityJobManager(BaseJobManager):
                     self._rr_user_order[job.config.priority].append(owner_id)
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
-                principal_id = item.config.principal_id
-                if principal_id not in self._rr_principal_members:
-                    self._rr_principal_members.add(principal_id)
-                    self._rr_principal_order.append(principal_id)
+                partition = (item.config.principal_id, item.dispatch_token)
+                if partition not in self._rr_partition_members:
+                    self._rr_partition_members.add(partition)
+                    self._rr_partition_order.append(partition)
             self._not_empty.set()
             self.logger.debug(
                 "Enqueued request=%s priority=%s workflows=%d queue_sizes=%s",
@@ -176,41 +189,46 @@ class PriorityJobManager(BaseJobManager):
             batch_size = 1
 
         async with self._lock:
-            present_principals: set[str] = set()
-            items_by_principal: dict[str, int] = {}
+            present_partitions: set[tuple[str, str | None]] = set()
+            items_by_partition: dict[tuple[str, str | None], int] = {}
             starved_global: list[WorkflowItem] = []
             for priority in Priority:
                 for queue in self._queues[priority].values():
                     for item in queue:
-                        pid = item.config.principal_id
-                        present_principals.add(pid)
-                        items_by_principal[pid] = items_by_principal.get(pid, 0) + 1
+                        partition = (item.config.principal_id, item.dispatch_token)
+                        present_partitions.add(partition)
+                        items_by_partition[partition] = (
+                            items_by_partition.get(partition, 0) + 1
+                        )
                         if item.miss_count >= self._starvation_limit:
                             starved_global.append(item)
 
-            if not present_principals:
+            if not present_partitions:
                 self._not_empty.clear()
                 return None
 
-            anchor_principal: str
+            anchor_partition: tuple[str, str | None]
             if starved_global:
-                anchor_principal = starved_global[0].config.principal_id
+                head = starved_global[0]
+                anchor_partition = (head.config.principal_id, head.dispatch_token)
             else:
-                picked = self._pick_principal_round_robin_locked(present_principals)
+                picked = self._pick_partition_round_robin_locked(present_partitions)
                 if picked is None:
-                    # Deque drifted from present_principals; reseed so RR
-                    # rotates across every present principal next round.
-                    for pid in sorted(present_principals):
-                        if pid not in self._rr_principal_members:
-                            self._rr_principal_members.add(pid)
-                            self._rr_principal_order.append(pid)
-                    picked = self._pick_principal_round_robin_locked(
-                        present_principals
-                    ) or next(iter(present_principals))
-                anchor_principal = picked
+                    # Deque drifted from present_partitions; reseed so RR
+                    # rotates across every present partition next round.
+                    for partition in sorted(
+                        present_partitions, key=lambda p: (p[0], p[1] or "")
+                    ):
+                        if partition not in self._rr_partition_members:
+                            self._rr_partition_members.add(partition)
+                            self._rr_partition_order.append(partition)
+                    picked = self._pick_partition_round_robin_locked(
+                        present_partitions
+                    ) or next(iter(present_partitions))
+                anchor_partition = picked
 
-            candidates = self._build_candidate_pool_for_principal_locked(
-                anchor_principal
+            candidates = self._build_candidate_pool_for_partition_locked(
+                anchor_partition
             )
             if not candidates:
                 self._not_empty.clear()
@@ -225,14 +243,17 @@ class PriorityJobManager(BaseJobManager):
                 candidate_by_user[owner_id] = candidate_by_user.get(owner_id, 0) + 1
             self.logger.debug(
                 "Candidate pool anchor=%s size=%d batch_size=%d quantums=%s "
-                "queue_sizes=%s items_by_principal=%s "
+                "queue_sizes=%s items_by_partition=%s "
                 "candidate_by_priority=%s candidate_by_user=%s",
-                anchor_principal,
+                self._redact_partition(anchor_partition),
                 len(candidates),
                 batch_size,
                 self._quantums_by_priority(),
                 queue_sizes,
-                items_by_principal,
+                {
+                    self._redact_partition(partition): count
+                    for partition, count in items_by_partition.items()
+                },
                 candidate_by_priority,
                 candidate_by_user,
             )
@@ -315,20 +336,20 @@ class PriorityJobManager(BaseJobManager):
                     else:
                         del user_queues[user_id]
                 self._prune_empty_user_queues_locked(priority)
-            # Drop principals whose queues drained completely.
-            remaining_principals = {
-                item.config.principal_id
+            # Drop partitions whose queues drained completely.
+            remaining_partitions = {
+                (item.config.principal_id, item.dispatch_token)
                 for priority in Priority
                 for queue in self._queues[priority].values()
                 for item in queue
             }
-            stale_principals = self._rr_principal_members - remaining_principals
-            if stale_principals:
-                self._rr_principal_members -= stale_principals
-                self._rr_principal_order = deque(
-                    pid
-                    for pid in self._rr_principal_order
-                    if pid not in stale_principals
+            stale_partitions = self._rr_partition_members - remaining_partitions
+            if stale_partitions:
+                self._rr_partition_members -= stale_partitions
+                self._rr_partition_order = deque(
+                    partition
+                    for partition in self._rr_partition_order
+                    if partition not in stale_partitions
                 )
             self.logger.debug(
                 "Post-select queue_sizes=%s",
@@ -357,8 +378,8 @@ class PriorityJobManager(BaseJobManager):
             clustering_seconds=clustering_seconds,
         )
 
-    def _build_candidate_pool_for_principal_locked(
-        self, principal_id: str
+    def _build_candidate_pool_for_partition_locked(
+        self, partition: tuple[str, str | None]
     ) -> list[WorkflowItem]:
         candidates: list[WorkflowItem] = []
         for priority in Priority:
@@ -366,22 +387,22 @@ class PriorityJobManager(BaseJobManager):
             if quantum == 0:
                 continue
             candidates.extend(
-                self._peek_round_robin_for_principal_locked(
-                    priority, quantum, principal_id
+                self._peek_round_robin_for_partition_locked(
+                    priority, quantum, partition
                 )
             )
         return candidates
 
-    def _pick_principal_round_robin_locked(
-        self, present_principals: set[str]
-    ) -> str | None:
-        while self._rr_principal_order:
-            head = self._rr_principal_order[0]
-            if head in present_principals:
-                self._rr_principal_order.rotate(-1)
+    def _pick_partition_round_robin_locked(
+        self, present_partitions: set[tuple[str, str | None]]
+    ) -> tuple[str, str | None] | None:
+        while self._rr_partition_order:
+            head = self._rr_partition_order[0]
+            if head in present_partitions:
+                self._rr_partition_order.rotate(-1)
                 return head
-            self._rr_principal_order.popleft()
-            self._rr_principal_members.discard(head)
+            self._rr_partition_order.popleft()
+            self._rr_partition_members.discard(head)
         return None
 
     def _priority_queue_size(self, priority: Priority) -> int:
@@ -400,8 +421,11 @@ class PriorityJobManager(BaseJobManager):
             user_id for user_id in rr_order if user_id in user_queues
         )
 
-    def _peek_round_robin_for_principal_locked(
-        self, priority: Priority, limit: int, principal_id: str
+    def _peek_round_robin_for_partition_locked(
+        self,
+        priority: Priority,
+        limit: int,
+        partition: tuple[str, str | None],
     ) -> list[WorkflowItem]:
         if limit <= 0:
             return []
@@ -411,13 +435,17 @@ class PriorityJobManager(BaseJobManager):
         if not user_queues or not rr_order:
             return []
 
+        principal_id, dispatch_token = partition
         filtered: dict[str, list[WorkflowItem]] = {}
         for user_id in rr_order:
             queue = user_queues.get(user_id)
             if not queue:
                 continue
             user_items = [
-                item for item in queue if item.config.principal_id == principal_id
+                item
+                for item in queue
+                if item.config.principal_id == principal_id
+                and item.dispatch_token == dispatch_token
             ]
             if user_items:
                 filtered[user_id] = user_items

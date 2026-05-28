@@ -27,6 +27,7 @@ class WorkflowItem:
     dsl_graph: CompiledGraph
     config: LumilakeRequestConfig
     enqueued_at: float
+    dispatch_token: str | None = None
     miss_count: int = 0
 
 
@@ -47,6 +48,7 @@ class Job:
     dsl_graphs: dict[str, CompiledGraph]
     workflow_slices: dict[str, WorkflowSliceMeta]
     config: LumilakeRequestConfig
+    dispatch_token: str | None = None
 
 
 class BaseJobManager(ABC):

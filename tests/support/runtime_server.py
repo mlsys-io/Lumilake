@@ -176,6 +176,7 @@ def make_workflow(
     slice_start: int = 0,
     slice_length: int = 1,
     total_length: int = 1,
+    dispatch_token: str | None = None,
 ) -> WorkflowItem:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     compiled_graph = SimpleNamespace(
@@ -200,6 +201,7 @@ def make_workflow(
         dsl_graph=cast(Any, compiled_graph),
         config=LumilakeRequestConfig(user_id=request_id, principal_id=request_id),
         enqueued_at=time.time(),
+        dispatch_token=dispatch_token,
     )
 
 

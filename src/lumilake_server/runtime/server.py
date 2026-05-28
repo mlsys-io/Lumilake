@@ -685,6 +685,7 @@ class LumilakeServer:
             dsl_graphs=request.dsl_graphs,
             workflow_slices=request.workflow_slices,
             config=config,
+            dispatch_token=self.runtime_manager.get_dispatch_token(request.request_id),
         )
         enqueued = await self.job_manager.enqueue(job)
         for item in enqueued:
@@ -1466,20 +1467,16 @@ class LumilakeServer:
                 request_raw_nodes.get(workflow.request_id, 0)
                 + workflow.runtime_graph.node_count
             )
-        dispatch_token: str | None = None
-        for request_id in sorted(active_request_ids):
-            candidate = self.runtime_manager.get_dispatch_token(request_id)
-            if candidate is None:
-                continue
-            if dispatch_token is None:
-                dispatch_token = candidate
-            elif candidate != dispatch_token:
-                self.logger.warning(
-                    "Batch %s spans request_ids with differing dispatch tokens "
-                    "for the same principal; using the first non-empty token",
-                    batch_id,
-                )
-                break
+        # Queue partitions by (principal_id, dispatch_token), so every active
+        # workflow in this batch shares one token.
+        dispatch_token = next(
+            (
+                workflow.dispatch_token
+                for workflow in active_workflows
+                if workflow.dispatch_token is not None
+            ),
+            None,
+        )
         runtime_token_handle = runtime_token_var.set(dispatch_token)
         try:
             self.logger.info(

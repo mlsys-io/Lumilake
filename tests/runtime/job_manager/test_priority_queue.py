@@ -40,6 +40,7 @@ def _build_job(
     user_id: str | None = None,
     priority: Priority | None = None,
     principal_id: str = "p",
+    dispatch_token: str | None = None,
 ) -> Job:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     owner = request_id if user_id is None else user_id
@@ -53,6 +54,7 @@ def _build_job(
         config=LumilakeRequestConfig(
             priority=selected_priority, user_id=owner, principal_id=principal_id
         ),
+        dispatch_token=dispatch_token,
     )
 
 
@@ -159,6 +161,35 @@ async def test_select_batch_partitions_by_principal_id() -> None:
         first.workflows[0].config.principal_id
         != second.workflows[0].config.principal_id
     )
+
+
+@pytest.mark.asyncio
+async def test_select_batch_partitions_same_principal_by_dispatch_token() -> None:
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+
+    await manager.enqueue(
+        _build_job("req-a", "graph-a", principal_id="p-1", dispatch_token="tok-old")
+    )
+    await manager.enqueue(
+        _build_job("req-b", "graph-b", principal_id="p-1", dispatch_token="tok-new")
+    )
+
+    first = await manager.select_batch(2)
+    assert first is not None
+    assert len({item.dispatch_token for item in first.workflows}) == 1
+
+    second = await manager.select_batch(2)
+    assert second is not None
+    assert len({item.dispatch_token for item in second.workflows}) == 1
+
+    assert first.workflows[0].dispatch_token != second.workflows[0].dispatch_token
+    assert {first.workflows[0].dispatch_token, second.workflows[0].dispatch_token} == {
+        "tok-old",
+        "tok-new",
+    }
 
 
 @pytest.mark.asyncio

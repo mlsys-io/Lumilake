@@ -80,66 +80,6 @@ async def test_run_batch_uses_execution_request_id_for_multi_request_batch(
 
 
 @pytest.mark.asyncio
-async def test_run_batch_dispatch_token_picks_first_non_empty(
-    server_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = server_factory()
-    runtime_manager = RecordingRuntimeManager()
-    server.runtime_manager = cast(Any, runtime_manager)
-
-    workflows = [
-        make_workflow(
-            workflow_id="wf-a",
-            request_id="req-a",
-            graph_name="ga",
-            public_graph_name="shared",
-        ),
-        make_workflow(
-            workflow_id="wf-b",
-            request_id="req-b",
-            graph_name="gb",
-            public_graph_name="shared",
-        ),
-    ]
-    attach_request_states(server, workflows)
-    runtime_manager.set_dispatch_token("req-a", "token-rotated")
-    runtime_manager.set_dispatch_token("req-b", "token-fresh")
-    batch = make_batch(workflows)
-    seen_tokens: list[str | None] = []
-    warnings: list[str] = []
-
-    async def _fake_process_batch(
-        selected_batch: BatchSelection,
-        batch_id: str,
-        selected_workers: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
-        *,
-        execution_request_id: str,
-        member_request_ids: set[str],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        seen_tokens.append(runtime_token_var.get())
-        outputs = {
-            item.workflow_id: {"output": [f"value-{item.request_id}"]}
-            for item in selected_batch.workflows
-        }
-        return outputs, {}
-
-    monkeypatch.setattr(server, "_process_batch", _fake_process_batch)
-    original_warning = server.logger.warning
-
-    def _capture_warning(msg: str, *args: Any, **kwargs: Any) -> None:
-        warnings.append(msg % args if args else msg)
-        original_warning(msg, *args, **kwargs)
-
-    monkeypatch.setattr(server.logger, "warning", _capture_warning)
-    await server._run_batch(["worker-1"], batch)
-
-    assert seen_tokens == ["token-rotated"]
-    assert any("differing dispatch tokens" in message for message in warnings)
-
-
-@pytest.mark.asyncio
 async def test_run_batch_dispatch_token_none_when_all_unset(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -245,17 +185,17 @@ async def test_run_batch_dispatch_token_excludes_cancelled_requests(
             request_id="req-a",
             graph_name="ga",
             public_graph_name="shared",
+            dispatch_token="tok-cancelled",
         ),
         make_workflow(
             workflow_id="wf-b",
             request_id="req-b",
             graph_name="gb",
             public_graph_name="shared",
+            dispatch_token="tok-active",
         ),
     ]
     attach_request_states(server, workflows)
-    runtime_manager.set_dispatch_token("req-a", "tok-cancelled")
-    runtime_manager.set_dispatch_token("req-b", "tok-active")
     batch = make_batch(workflows)
     seen_tokens: list[str | None] = []
 
