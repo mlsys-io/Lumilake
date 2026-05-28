@@ -1421,7 +1421,7 @@ class LumilakeServer:
                     batch_id,
                 )
                 break
-        runtime_token_var.set(dispatch_token)
+        runtime_token_handle = runtime_token_var.set(dispatch_token)
         execution_request_id = f"exec-{unique_id()}"
         self._execution_contexts[execution_request_id] = ExecutionBatchContext(
             execution_request_id=execution_request_id,
@@ -1563,6 +1563,7 @@ class LumilakeServer:
                 execution_request_id=execution_request_id,
             )
         finally:
+            runtime_token_var.reset(runtime_token_handle)
             try:
                 for request_id in request_raw_nodes:
                     state = self._requests.get(request_id)

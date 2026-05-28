@@ -44,3 +44,11 @@ def flowmesh_for_token(token: str | None) -> AsyncFlowMesh:
 def flowmesh_for_context() -> AsyncFlowMesh:
     """Build an ``AsyncFlowMesh`` carrying the current task's runtime token."""
     return flowmesh_for_token(runtime_token_var.get())
+
+
+async def close_shared_http_client() -> None:
+    global _http_client, _loop_id
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+        _loop_id = None

@@ -19,6 +19,7 @@ from lumilake_server import __version__
 from lumilake_server.hooks import HookBindings, register
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs, trace, workers
+from lumilake_server.runtime.flowmesh_client import close_shared_http_client
 from lumilake_server.runtime.server import LumilakeServer, LumilakeServerConfig
 
 # Loud-fail before any server side-effect runs: require .env on disk
@@ -136,6 +137,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
                 if compute_pool is not None:
                     await compute_pool.close()
                 app.state.compute_db_pool = None
+                await close_shared_http_client()
 
     app = FastAPI(
         lifespan=lifespan,
