@@ -93,3 +93,12 @@ class BaseRuntimeManager(ABC):
     async def is_request_cancelled(self, request_id: str) -> bool:
         """Return whether a request has been cancelled."""
         return False
+
+    def set_dispatch_token(self, request_id: str, token: str | None) -> None:
+        return None
+
+    def get_dispatch_token(self, request_id: str) -> str | None:
+        return None
+
+    def clear_dispatch_token(self, request_id: str) -> None:
+        return None

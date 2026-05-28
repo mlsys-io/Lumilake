@@ -53,7 +53,9 @@ Agent-retrieval keys:
 |-----|---------|
 | `LUMILAKE_LOG_LEVEL` | Server log level. Defaults to `INFO`. |
 | `LUMILAKE_SKIP_DOTENV_CHECK` | Set to `1` when the server's env is injected directly (Docker) so startup does not require a `.env` file. |
-| `LUMILAKE_RUNTIME_TOKEN` | Bearer token sent with FlowMesh runtime requests. Empty by default. |
+| `LUMILAKE_REQUIRE_IDENTITY_PROVIDER` | When truthy, rejects requests with 503 unless at least one `IdentityProvider` plugin is registered. Recommended for cloud deploys; leave unset locally. |
+| `LUMILAKE_RUNTIME_TOKEN` | Scheduler-internal credential for FlowMesh control-plane reads (worker enumeration, profile fetches). Never used to authorize HTTP request handlers. Leave empty for local; in cloud, set to a token whose FlowMesh principal can read worker metadata. Required when `LUMILAKE_REQUIRE_IDENTITY_PROVIDER` is set. |
+| `LUMILAKE_RECOVER_IN_FLIGHT_JOBS` | Whether server startup marks pending/running jobs as failed. Default `1` (recommended for single-instance deploys). Set to `0` in HA / multi-instance deploys so a starting standby doesn't clobber jobs the active instance is still running. |
 | `LUMILAKE_RUNTIME_MANAGER_TYPE` | Runtime dispatch backend. `default` or `flowmesh`. |
 | `LUMILAKE_JOB_MANAGER_TYPE` | Job manager implementation. Currently only `priority`. |
 | `LUMILAKE_HTTP_TIMEOUT_SECONDS` | Outbound HTTP timeout for server-side calls. Defaults to `300`. |

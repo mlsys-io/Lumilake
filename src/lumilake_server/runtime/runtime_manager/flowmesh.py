@@ -11,6 +11,7 @@ import heapq
 import json
 import mimetypes
 import tempfile
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -22,7 +23,10 @@ from flowmesh.exceptions import APIError
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 
-from lumilake_server.runtime.flowmesh_client import get_async_client
+from lumilake_server.runtime.flowmesh_client import (
+    flowmesh_for_context,
+    flowmesh_for_server,
+)
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
@@ -96,14 +100,26 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self._batch_workflow_id: dict[tuple[str, str], str] = {}
         self._cancelled_requests: set[str] = set()
 
+        # Cross-thread (FastAPI loop set/clear, _AsyncRunner loop get),
+        # so threading lock, not asyncio.
+        self._dispatch_tokens: dict[str, str | None] = {}
+        self._dispatch_tokens_lock = threading.Lock()
+
     @property
     def fm(self):
-        """Return the shared ``AsyncFlowMesh`` client.
+        return flowmesh_for_context()
 
-        Proxied through :func:`lumilake_server.runtime.flowmesh_client.get_async_client`
-        so existing call sites (``self.fm.tasks.retrieve(...)``) stay unchanged.
-        """
-        return get_async_client()
+    def set_dispatch_token(self, request_id: str, token: str | None) -> None:
+        with self._dispatch_tokens_lock:
+            self._dispatch_tokens[request_id] = token
+
+    def get_dispatch_token(self, request_id: str) -> str | None:
+        with self._dispatch_tokens_lock:
+            return self._dispatch_tokens.get(request_id)
+
+    def clear_dispatch_token(self, request_id: str) -> None:
+        with self._dispatch_tokens_lock:
+            self._dispatch_tokens.pop(request_id, None)
 
     async def is_request_cancelled(self, request_id: str) -> bool:
         async with self._task_status_lock:
@@ -448,7 +464,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         list[str]
             List of worker IDs
         """
-        workers = await self.fm.workers.list(status="IDLE")
+        workers = await flowmesh_for_server().workers.list(status="IDLE")
         return [w.id for w in workers]
 
     def count_runtime_nodes(self, graphs: dict[str, RuntimeGraph]) -> int:
@@ -468,7 +484,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         dict[str, Any]
             The worker profile including capabilities and current load.
         """
-        worker = await self.fm.workers.retrieve(worker_id)
+        worker = await flowmesh_for_server().workers.retrieve(worker_id)
         assert worker.id == worker_id
         return worker.hardware.model_dump() if worker.hardware else {}
 
@@ -2185,7 +2201,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 self._batch_workflow_id.pop(key, None)
 
     async def cancel_request(self, request_id: str) -> None:
-        """Cancel all FM workflows submitted for a request."""
+        """Cancel all FM workflows for a request. Uses the scheduler
+        credential so shutdown cancels (no bearer in scope) still authenticate."""
         async with self._task_status_lock:
             self._cancelled_requests.add(request_id)
             workflow_ids = [
@@ -2198,9 +2215,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 "Cancellation requested for %s before workflow submission", request_id
             )
             return
+        fm = flowmesh_for_server()
         for workflow_id in workflow_ids:
             try:
-                await self.fm.workflows.cancel(workflow_id)
+                await fm.workflows.cancel(workflow_id)
                 self.logger.info(f"Successfully cancelled workflow {workflow_id}")
             except APIError as e:
                 self.logger.warning(f"Failed to cancel workflow {workflow_id}: {e}")

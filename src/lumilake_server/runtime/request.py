@@ -52,7 +52,9 @@ class RequestHandler:
         self.dsl_graphs = dsl_graphs
         self.workflow_slices = workflow_slices
         self.config = (
-            LumilakeRequestConfig(user_id=request_id) if config is None else config
+            LumilakeRequestConfig(user_id=request_id, principal_id=request_id)
+            if config is None
+            else config
         )
         self._result_queue: TSQueue[LumilakeResponse] = TSQueue()
 

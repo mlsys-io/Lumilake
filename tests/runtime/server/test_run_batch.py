@@ -12,6 +12,7 @@ from support.runtime_server import (
     make_workflow,
 )
 
+from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -20,6 +21,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 @pytest.mark.asyncio
 async def test_run_batch_uses_execution_request_id_for_multi_request_batch(
     server_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = server_factory()
     runtime_manager = RecordingRuntimeManager()
@@ -60,7 +62,7 @@ async def test_run_batch_uses_execution_request_id_for_multi_request_batch(
         }
         return outputs, {}
 
-    setattr(server, "_process_batch", _fake_process_batch)
+    monkeypatch.setattr(server, "_process_batch", _fake_process_batch)
     await server._run_batch(["worker-1"], batch)
 
     execution_request_id = cast(str, seen["execution_request_id"])
@@ -78,8 +80,48 @@ async def test_run_batch_uses_execution_request_id_for_multi_request_batch(
 
 
 @pytest.mark.asyncio
+async def test_run_batch_dispatch_token_none_when_all_unset(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    runtime_manager = RecordingRuntimeManager()
+    server.runtime_manager = cast(Any, runtime_manager)
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        ),
+    ]
+    attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+    seen_tokens: list[str | None] = []
+
+    async def _fake_process_batch(
+        selected_batch: BatchSelection,
+        batch_id: str,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        *,
+        execution_request_id: str,
+        member_request_ids: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        seen_tokens.append(runtime_token_var.get())
+        return {}, {}
+
+    monkeypatch.setattr(server, "_process_batch", _fake_process_batch)
+    await server._run_batch(["worker-1"], batch)
+
+    assert seen_tokens == [None]
+
+
+@pytest.mark.asyncio
 async def test_run_batch_cancels_subset_and_continues_other_requests(
     server_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = server_factory()
     runtime_manager = RecordingRuntimeManager(cancelled={"req-a"})
@@ -116,7 +158,7 @@ async def test_run_batch_cancels_subset_and_continues_other_requests(
         assert {item.request_id for item in selected_batch.workflows} == {"req-b"}
         return {"wf-b": {"output": ["value-req-b"]}}, {}
 
-    setattr(server, "_process_batch", _fake_process_batch)
+    monkeypatch.setattr(server, "_process_batch", _fake_process_batch)
     await server._run_batch(["worker-1"], batch)
 
     assert seen["member_request_ids"] == {"req-b"}
@@ -130,8 +172,58 @@ async def test_run_batch_cancels_subset_and_continues_other_requests(
 
 
 @pytest.mark.asyncio
+async def test_run_batch_dispatch_token_excludes_cancelled_requests(
+    server_factory,
+) -> None:
+    server = server_factory()
+    runtime_manager = RecordingRuntimeManager(cancelled={"req-a"})
+    server.runtime_manager = cast(Any, runtime_manager)
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+            dispatch_token="tok-cancelled",
+        ),
+        make_workflow(
+            workflow_id="wf-b",
+            request_id="req-b",
+            graph_name="gb",
+            public_graph_name="shared",
+            dispatch_token="tok-active",
+        ),
+    ]
+    attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+    seen_tokens: list[str | None] = []
+
+    async def _fake_process_batch(
+        selected_batch: BatchSelection,
+        batch_id: str,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        *,
+        execution_request_id: str,
+        member_request_ids: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        seen_tokens.append(runtime_token_var.get())
+        return (
+            {item.workflow_id: {"output": ["x"]} for item in selected_batch.workflows},
+            {},
+        )
+
+    setattr(server, "_process_batch", _fake_process_batch)
+    await server._run_batch(["worker-1"], batch)
+
+    assert seen_tokens == ["tok-active"]
+
+
+@pytest.mark.asyncio
 async def test_run_batch_cancels_execution_if_all_member_requests_cancelled(
     server_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = server_factory()
     runtime_manager = RecordingRuntimeManager(cancelled={"req-a", "req-b"})
@@ -159,7 +251,7 @@ async def test_run_batch_cancels_execution_if_all_member_requests_cancelled(
             "_process_batch should not run when all requests are cancelled"
         )
 
-    setattr(server, "_process_batch", _fail_if_called)
+    monkeypatch.setattr(server, "_process_batch", _fail_if_called)
     await server._run_batch(["worker-1"], batch)
 
     assert any(call.startswith("exec-") for call in runtime_manager.cancel_calls)
@@ -174,6 +266,7 @@ async def test_run_batch_cancels_execution_if_all_member_requests_cancelled(
 @pytest.mark.asyncio
 async def test_run_batch_failure_does_not_fetch_task_node_map(
     server_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = server_factory()
 
@@ -200,7 +293,7 @@ async def test_run_batch_failure_does_not_fetch_task_node_map(
     async def _fail_process_batch(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("batch processing failed")
 
-    setattr(server, "_process_batch", _fail_process_batch)
+    monkeypatch.setattr(server, "_process_batch", _fail_process_batch)
     await server._run_batch(["worker-1"], batch)
 
     errors = handlers["req-a"].results[0].error_info
@@ -211,6 +304,7 @@ async def test_run_batch_failure_does_not_fetch_task_node_map(
 @pytest.mark.asyncio
 async def test_run_batch_tracks_success_only_completed_inputs(
     server_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = server_factory()
     runtime_manager = RecordingRuntimeManager()
@@ -245,7 +339,7 @@ async def test_run_batch_tracks_success_only_completed_inputs(
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         return {"wf-a": {"output": ["value-a"]}}, {}
 
-    setattr(server, "_process_batch", _fake_process_batch)
+    monkeypatch.setattr(server, "_process_batch", _fake_process_batch)
     await server._run_batch(["worker-1"], batch)
 
     state = server._requests["req-a"]
@@ -256,6 +350,7 @@ async def test_run_batch_tracks_success_only_completed_inputs(
 @pytest.mark.asyncio
 async def test_process_batch_uses_parent_workflow_grouping_and_relocates_artifacts(
     server_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = server_factory()
     runtime_manager = ArtifactRuntimeManager()
@@ -278,7 +373,7 @@ async def test_process_batch_uses_parent_workflow_grouping_and_relocates_artifac
     handlers = attach_request_states(server, workflows)
     batch = make_batch(workflows)
 
-    setattr(
+    monkeypatch.setattr(
         server,
         "_merge_group_compiled_graph",
         lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
@@ -393,7 +488,7 @@ async def test_process_batch_uses_server_data_profile_collection(
     handlers = attach_request_states(server, workflows)
     batch = make_batch(workflows)
 
-    setattr(
+    monkeypatch.setattr(
         server,
         "_merge_group_compiled_graph",
         lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),

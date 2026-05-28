@@ -39,6 +39,8 @@ def _build_job(
     graph_name: str,
     user_id: str | None = None,
     priority: Priority | None = None,
+    principal_id: str = "p",
+    dispatch_token: str | None = None,
 ) -> Job:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     owner = request_id if user_id is None else user_id
@@ -49,7 +51,10 @@ def _build_job(
         data_profile_graphs={graph_name: runtime_graph},
         dsl_graphs={graph_name: cast(Any, object())},
         workflow_slices={graph_name: _slice_meta(graph_name)},
-        config=LumilakeRequestConfig(priority=selected_priority, user_id=owner),
+        config=LumilakeRequestConfig(
+            priority=selected_priority, user_id=owner, principal_id=principal_id
+        ),
+        dispatch_token=dispatch_token,
     )
 
 
@@ -58,6 +63,7 @@ def _build_multi_graph_job(
     graph_names: list[str],
     user_id: str | None = None,
     priority: Priority | None = None,
+    principal_id: str = "p",
 ) -> Job:
     runtime_graphs = {name: build_dummy_runtime_graph(name) for name in graph_names}
     owner = request_id if user_id is None else user_id
@@ -68,7 +74,9 @@ def _build_multi_graph_job(
         data_profile_graphs=runtime_graphs,
         dsl_graphs={name: cast(Any, object()) for name in graph_names},
         workflow_slices={name: _slice_meta(name) for name in graph_names},
-        config=LumilakeRequestConfig(priority=selected_priority, user_id=owner),
+        config=LumilakeRequestConfig(
+            priority=selected_priority, user_id=owner, principal_id=principal_id
+        ),
     )
 
 
@@ -123,6 +131,110 @@ async def test_select_batch_round_robin_fairness_across_users() -> None:
     assert batch is not None
     assert len(batch.workflows) == 2
     assert {item.config.user_id for item in batch.workflows} == {"user-a", "user-b"}
+
+
+@pytest.mark.asyncio
+async def test_select_batch_partitions_by_principal_id() -> None:
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+
+    await manager.enqueue(_build_job("req-a", "graph-a", principal_id="p-1"))
+    await manager.enqueue(_build_job("req-b", "graph-b", principal_id="p-2"))
+
+    first = await manager.select_batch(2)
+    assert first is not None
+    assert {item.config.principal_id for item in first.workflows} == {
+        first.workflows[0].config.principal_id
+    }
+    selected_in_first = {item.workflow_id for item in first.workflows}
+
+    second = await manager.select_batch(2)
+    assert second is not None
+    selected_in_second = {item.workflow_id for item in second.workflows}
+    assert selected_in_first.isdisjoint(selected_in_second)
+    assert {item.config.principal_id for item in second.workflows} == {
+        second.workflows[0].config.principal_id
+    }
+    assert (
+        first.workflows[0].config.principal_id
+        != second.workflows[0].config.principal_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_select_batch_partitions_same_principal_by_dispatch_token() -> None:
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+
+    await manager.enqueue(
+        _build_job("req-a", "graph-a", principal_id="p-1", dispatch_token="tok-old")
+    )
+    await manager.enqueue(
+        _build_job("req-b", "graph-b", principal_id="p-1", dispatch_token="tok-new")
+    )
+
+    first = await manager.select_batch(2)
+    assert first is not None
+    assert len({item.dispatch_token for item in first.workflows}) == 1
+
+    second = await manager.select_batch(2)
+    assert second is not None
+    assert len({item.dispatch_token for item in second.workflows}) == 1
+
+    assert first.workflows[0].dispatch_token != second.workflows[0].dispatch_token
+    assert {first.workflows[0].dispatch_token, second.workflows[0].dispatch_token} == {
+        "tok-old",
+        "tok-new",
+    }
+
+
+@pytest.mark.asyncio
+async def test_select_batch_fills_to_size_within_anchor_principal() -> None:
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(6),
+    )
+
+    # Three principals, six workflows each.
+    for principal in ("p-1", "p-2", "p-3"):
+        for index in range(6):
+            await manager.enqueue(
+                _build_job(
+                    f"req-{principal}-{index}",
+                    f"g-{principal}-{index}",
+                    principal_id=principal,
+                )
+            )
+
+    batch = await manager.select_batch(4)
+    assert batch is not None
+    assert len(batch.workflows) == 4
+    assert len({item.config.principal_id for item in batch.workflows}) == 1
+
+
+@pytest.mark.asyncio
+async def test_select_batch_round_robins_across_principals() -> None:
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+
+    await manager.enqueue(_build_job("req-a", "graph-a", principal_id="p-1"))
+    await manager.enqueue(_build_job("req-b", "graph-b", principal_id="p-2"))
+    await manager.enqueue(_build_job("req-c", "graph-c", principal_id="p-3"))
+
+    chosen: list[str] = []
+    for _ in range(3):
+        batch = await manager.select_batch(1)
+        assert batch is not None
+        assert len({item.config.principal_id for item in batch.workflows}) == 1
+        chosen.append(batch.workflows[0].config.principal_id)
+
+    assert sorted(chosen) == ["p-1", "p-2", "p-3"]
 
 
 @pytest.mark.asyncio

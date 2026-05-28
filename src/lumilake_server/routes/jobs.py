@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_valid
 from lumilake_server.hooks.security import (
     authenticate_request,
     emit_usage,
+    get_runtime_token,
     register_resource,
     require_permission,
     resolve_accessible_ids,
@@ -652,6 +653,56 @@ async def mark_running_jobs_failed(reason: str = "server shutdown") -> None:
         logger.warning("Marked %d jobs failed due to shutdown", len(active))
 
 
+async def recover_in_flight_jobs(
+    reason: str = "server restart during execution",
+) -> int:
+    """Mark storage-side ``pending``/``running`` jobs as failed; the
+    dispatch token they need only lives in process memory."""
+    affected = 0
+    in_memory: dict[str, JobRecord] = {}
+    async with jobs_lock:
+        in_memory = dict(jobs)
+    for summary in _job_storage.iter_summaries({"pending", "running"}):
+        if summary.job_id in in_memory:
+            continue
+        try:
+            loaded = _job_storage.load(summary.job_id)
+        except Exception:
+            logger.exception(
+                "Failed to load job %s during startup recovery", summary.job_id
+            )
+            continue
+        if loaded is None:
+            continue
+        try:
+            record = JobRecord(**loaded)
+        except (ValueError, TypeError):
+            logger.exception(
+                "Failed to reconstruct job %s during startup recovery",
+                summary.job_id,
+            )
+            continue
+        record.status = "failed"
+        if not record.error:
+            record.error = reason
+        record.finished_at = _now()
+        try:
+            _job_storage.save(record)
+        except Exception:
+            logger.exception(
+                "Failed to persist failed-status for job %s during startup recovery",
+                summary.job_id,
+            )
+            continue
+        _release_output_locations(record)
+        affected += 1
+    if affected:
+        logger.warning(
+            "Recovered %d in-flight job(s) as failed (reason=%r)", affected, reason
+        )
+    return affected
+
+
 async def _load_job_record(job_id: str) -> JobRecord | None:
     record: JobRecord | None
     async with jobs_lock:
@@ -1188,6 +1239,7 @@ async def _run_job(
     priority: Priority,
     compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
+    runtime_token: str | None,
     trace_id: str,
 ) -> None:
     set_trace_id(trace_id)
@@ -1208,6 +1260,7 @@ async def _run_job(
             await emit_usage([_usage_row(record, principal)], logger)
         return
 
+    server.runtime_manager.set_dispatch_token(job_id, runtime_token)
     try:
         graphs = server.parse_query(graph_specs)
         record.progress.query_parsing.completed = True
@@ -1239,6 +1292,7 @@ async def _run_job(
                 priority=priority,
                 user_id=principal.external_id,
                 org_id=principal.org_id,
+                principal_id=principal.principal_id,
             ),
             workflow_slices=workflow_slices,
         )
@@ -1311,10 +1365,6 @@ async def _run_job(
                 )
             except Exception:
                 logger.exception("Failed to register artifact %s", artifact_id)
-        try:
-            server.release_request_workflows(job_id)
-        except Exception:
-            logger.exception("Failed to release runtime trace state for job %s", job_id)
         if do_dump:
             try:
                 result_outputs = record.result.outputs if record.result else {}
@@ -1347,6 +1397,10 @@ async def _run_job(
         stale_keys = [key for key in data_profile_registry if key.startswith(prefix)]
         for key in stale_keys:
             data_profile_registry.pop(key, None)
+        try:
+            server.release_request_workflows(job_id)
+        except Exception:
+            logger.exception("Failed to release runtime trace state for job %s", job_id)
         if record.status in {"completed", "failed", "cancelled"} and record.finished_at:
             await emit_usage([_usage_row(record, principal)], logger)
 
@@ -1883,7 +1937,7 @@ async def submit_job(
         hook_logger,
     )
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_job(
             job_id,
             graph_specs,
@@ -1892,9 +1946,12 @@ async def submit_job(
             priority,
             compute_pool,
             principal,
+            get_runtime_token(request),
             str(getattr(request.state, "trace_id", job_id)),
         )
     )
+    request.app.state.background_tasks.add(task)
+    task.add_done_callback(request.app.state.background_tasks.discard)
     return {"ok": True, "data": {"job_id": job_id, "status": record.status}}
 
 

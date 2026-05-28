@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -27,11 +27,30 @@ _DEFAULT_TOKENS = {
 }
 
 
+class _RecordingRuntimeManager:
+    def __init__(self) -> None:
+        self.dispatch_token_sets: list[tuple[str, str | None]] = []
+        self.dispatch_token_clears: list[str] = []
+
+    def set_dispatch_token(self, request_id: str, token: str | None) -> None:
+        self.dispatch_token_sets.append((request_id, token))
+
+    def get_dispatch_token(self, request_id: str) -> str | None:
+        return None
+
+    def clear_dispatch_token(self, request_id: str) -> None:
+        self.dispatch_token_clears.append(request_id)
+
+    def release_executions(self, execution_ids: set[str]) -> None:
+        return None
+
+
 class _FakeRuntimeServer:
     is_started = True
 
     def __init__(self) -> None:
         self.cancel_calls: list[str] = []
+        self.runtime_manager = _RecordingRuntimeManager()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return graph_specs
@@ -59,7 +78,7 @@ class _FakeRuntimeServer:
         return 0.01
 
     def release_request_workflows(self, job_id: str) -> None:
-        return None
+        self.runtime_manager.clear_dispatch_token(job_id)
 
     async def cancel_request(self, job_id: str) -> None:
         self.cancel_calls.append(job_id)
@@ -146,6 +165,7 @@ def app(job_routes: Any) -> FastAPI:
     app = FastAPI()
     app.state.logger = logging.getLogger("test.simple_plugin_e2e")
     app.state.compute_db_pool = None
+    app.state.background_tasks = set()
     app.include_router(job_routes.router)
     app.include_router(trace_routes.router)
     return app
@@ -387,6 +407,50 @@ async def test_sample_plugin_runs_job_flow_and_records_hook_effects(
     assert sample_plugin.USAGE_LEDGER[-1]["job_id"] == job_id
     assert sample_plugin.USAGE_LEDGER[-1]["status"] == "completed"
     assert create_optimizer("simple").__class__.__name__ == "SimpleRoundRobinOptimizer"
+
+
+@pytest.mark.anyio
+async def test_submit_forwards_bearer_to_runtime_dispatch_token(
+    app: FastAPI,
+    job_routes: Any,
+    sample_plugin: Any,
+) -> None:
+    runtime_manager = cast(
+        _RecordingRuntimeManager,
+        job_routes_module.LumilakeServer.get_started_instance().runtime_manager,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        submit = await client.post(
+            "/jobs",
+            json=_submit_payload(),
+            headers={"Authorization": "Bearer demo-user"},
+        )
+        assert submit.status_code == 200
+        job_id = submit.json()["data"]["job_id"]
+        await _wait_for_completed_job(job_routes, job_id)
+
+    assert (job_id, "demo-user") in runtime_manager.dispatch_token_sets
+    assert job_id in runtime_manager.dispatch_token_clears
+
+
+@pytest.mark.anyio
+async def test_submit_without_bearer_dispatches_with_no_token(
+    app: FastAPI,
+    job_routes: Any,
+) -> None:
+    runtime_manager = cast(
+        _RecordingRuntimeManager,
+        job_routes_module.LumilakeServer.get_started_instance().runtime_manager,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        submit = await client.post("/jobs", json=_submit_payload())
+        assert submit.status_code == 200
+        job_id = submit.json()["data"]["job_id"]
+        await _wait_for_completed_job(job_routes, job_id)
+
+    assert (job_id, None) in runtime_manager.dispatch_token_sets
 
 
 @pytest.mark.anyio

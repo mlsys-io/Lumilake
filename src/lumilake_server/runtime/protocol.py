@@ -23,6 +23,9 @@ class LumilakeRequestConfig(BaseModel):
     """User identifier used for fair scheduling across tenants"""
     org_id: str = Field(default="default", min_length=1)
     """Organization identifier for org-scoped server-side operations"""
+    principal_id: str = Field(min_length=1)
+    """Principal identifier; runtime dispatch partitions by this so a single
+    FlowMesh submission never spans multiple principals."""
 
 
 class LumilakeRequest(BaseModel):

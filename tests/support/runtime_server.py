@@ -45,6 +45,7 @@ class RecordingRuntimeManager:
     ) -> None:
         self.cancelled = set() if cancelled is None else set(cancelled)
         self.status_by_request = {} if status_by_request is None else status_by_request
+        self._dispatch_tokens: dict[str, str | None] = {}
         self.cancel_calls: list[str] = []
         self.mark_calls: list[tuple[str, str, str]] = []
         self._result_dir = tempfile.TemporaryDirectory(prefix="lumilake-runtime-test-")
@@ -120,6 +121,18 @@ class RecordingRuntimeManager:
     async def is_request_cancelled(self, request_id: str) -> bool:
         return request_id in self.cancelled
 
+    def set_dispatch_token(self, request_id: str, token: str | None) -> None:
+        self._dispatch_tokens[request_id] = token
+
+    def get_dispatch_token(self, request_id: str) -> str | None:
+        return self._dispatch_tokens.get(request_id)
+
+    def clear_dispatch_token(self, request_id: str) -> None:
+        self._dispatch_tokens.pop(request_id, None)
+
+    def release_executions(self, execution_ids: set[str]) -> None:
+        return None
+
 
 class ArtifactRuntimeManager(RecordingRuntimeManager):
     async def process_request(
@@ -163,6 +176,7 @@ def make_workflow(
     slice_start: int = 0,
     slice_length: int = 1,
     total_length: int = 1,
+    dispatch_token: str | None = None,
 ) -> WorkflowItem:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     compiled_graph = SimpleNamespace(
@@ -185,8 +199,9 @@ def make_workflow(
         runtime_graph=runtime_graph,
         data_profile_graph=runtime_graph,
         dsl_graph=cast(Any, compiled_graph),
-        config=LumilakeRequestConfig(user_id=request_id),
+        config=LumilakeRequestConfig(user_id=request_id, principal_id=request_id),
         enqueued_at=time.time(),
+        dispatch_token=dispatch_token,
     )
 
 
@@ -223,7 +238,7 @@ def make_batch(workflows: list[WorkflowItem]) -> BatchSelection:
         data_profile_graphs={
             item.workflow_id: item.data_profile_graph for item in workflows
         },
-        config=LumilakeRequestConfig(user_id="batch-user"),
+        config=LumilakeRequestConfig(user_id="batch-user", principal_id="batch-user"),
     )
 
 
@@ -233,7 +248,6 @@ def make_server() -> LumilakeServer:
         config=LumilakeServerConfig(
             is_local=True,
             runtime_url="http://localhost:18080",
-            runtime_token="test-token",
             batch_size=4,
             cpu_worker_group_size=1,
             gpu_worker_group_size=0,
@@ -252,7 +266,9 @@ def attach_request_states(
             handlers[workflow.request_id] = handler
             server._requests[workflow.request_id] = RequestState(
                 handler=cast(RequestHandler, handler),
-                config=LumilakeRequestConfig(user_id=workflow.request_id),
+                config=LumilakeRequestConfig(
+                    user_id=workflow.request_id, principal_id=workflow.request_id
+                ),
                 pending_workflows=set(),
                 workflow_lengths={workflow.public_graph_name: 1},
                 pending_runtime_nodes_raw=0,

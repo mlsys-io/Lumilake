@@ -10,7 +10,7 @@ from lumilake_server.hooks.security import (
     require_permission,
     resolve_accessible_ids,
 )
-from lumilake_server.runtime.flowmesh_client import get_async_client
+from lumilake_server.runtime.flowmesh_client import flowmesh_for
 from lumilake_server.schemas.worker import WorkerInfo
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
@@ -84,12 +84,15 @@ async def list_workers(
     )
     list_kwargs, extras = _split_list_params(request)
     try:
-        workers = await get_async_client().workers.list(
+        workers = await flowmesh_for(request).workers.list(
             **list_kwargs,
             query_params=extras or None,
         )
     except (APIError, AuthenticationError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        request.app.state.logger.exception("FlowMesh workers.list failed")
+        raise HTTPException(
+            status_code=502, detail="upstream worker enumeration failed"
+        ) from exc
     if readable_worker_ids is not None:
         workers = [worker for worker in workers if worker.id in readable_worker_ids]
     return [w.model_dump() for w in workers]
@@ -116,9 +119,12 @@ async def get_worker(
         hook_logger,
     )
     try:
-        worker = await get_async_client().workers.retrieve(worker_id)
+        worker = await flowmesh_for(request).workers.retrieve(worker_id)
     except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="worker not found") from exc
     except (APIError, AuthenticationError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        request.app.state.logger.exception("FlowMesh workers.retrieve failed")
+        raise HTTPException(
+            status_code=502, detail="upstream worker retrieve failed"
+        ) from exc
     return worker.model_dump()

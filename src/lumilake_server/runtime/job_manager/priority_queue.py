@@ -1,6 +1,7 @@
 """Priority queue-based job manager with starvation avoidance."""
 
 import asyncio
+import hashlib
 import logging
 import time
 from collections import deque
@@ -49,10 +50,26 @@ class PriorityJobManager(BaseJobManager):
         self._rr_user_order: dict[Priority, deque[str]] = {
             priority: deque() for priority in Priority
         }
+        # Round-robin order of (principal_id, dispatch_token) partitions across
+        # all priorities. select_batch picks one partition per round so a
+        # single FlowMesh dispatch never spans principals OR tokens (token
+        # rotation makes the same principal show up twice with different
+        # tokens). Set mirrors the deque for O(1) membership.
+        self._rr_partition_order: deque[tuple[str, str | None]] = deque()
+        self._rr_partition_members: set[tuple[str, str | None]] = set()
         self._items: dict[str, WorkflowItem] = {}
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
         self.logger = init_child_logger("JobManager", logger, log_level)
+
+    @staticmethod
+    def _redact_partition(partition: tuple[str, str | None]) -> tuple[str, str]:
+        """Render a partition for logs without leaking the bearer token."""
+        principal_id, token = partition
+        if token is None:
+            return (principal_id, "no-token")
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
+        return (principal_id, f"tok:{digest}")
 
     @staticmethod
     def _format_item(item: WorkflowItem) -> str:
@@ -103,6 +120,7 @@ class PriorityJobManager(BaseJobManager):
                     dsl_graph=dsl_graph,
                     config=job.config,
                     enqueued_at=now,
+                    dispatch_token=job.dispatch_token,
                 )
             )
         async with self._lock:
@@ -114,6 +132,10 @@ class PriorityJobManager(BaseJobManager):
                     self._rr_user_order[job.config.priority].append(owner_id)
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
+                partition = (item.config.principal_id, item.dispatch_token)
+                if partition not in self._rr_partition_members:
+                    self._rr_partition_members.add(partition)
+                    self._rr_partition_order.append(partition)
             self._not_empty.set()
             self.logger.debug(
                 "Enqueued request=%s priority=%s workflows=%d queue_sizes=%s",
@@ -167,7 +189,47 @@ class PriorityJobManager(BaseJobManager):
             batch_size = 1
 
         async with self._lock:
-            candidates = self._build_candidate_pool_locked()
+            present_partitions: set[tuple[str, str | None]] = set()
+            items_by_partition: dict[tuple[str, str | None], int] = {}
+            starved_global: list[WorkflowItem] = []
+            for priority in Priority:
+                for queue in self._queues[priority].values():
+                    for item in queue:
+                        partition = (item.config.principal_id, item.dispatch_token)
+                        present_partitions.add(partition)
+                        items_by_partition[partition] = (
+                            items_by_partition.get(partition, 0) + 1
+                        )
+                        if item.miss_count >= self._starvation_limit:
+                            starved_global.append(item)
+
+            if not present_partitions:
+                self._not_empty.clear()
+                return None
+
+            anchor_partition: tuple[str, str | None]
+            if starved_global:
+                head = starved_global[0]
+                anchor_partition = (head.config.principal_id, head.dispatch_token)
+            else:
+                picked = self._pick_partition_round_robin_locked(present_partitions)
+                if picked is None:
+                    # Deque drifted from present_partitions; reseed so RR
+                    # rotates across every present partition next round.
+                    for partition in sorted(
+                        present_partitions, key=lambda p: (p[0], p[1] or "")
+                    ):
+                        if partition not in self._rr_partition_members:
+                            self._rr_partition_members.add(partition)
+                            self._rr_partition_order.append(partition)
+                    picked = self._pick_partition_round_robin_locked(
+                        present_partitions
+                    ) or next(iter(present_partitions))
+                anchor_partition = picked
+
+            candidates = self._build_candidate_pool_for_partition_locked(
+                anchor_partition
+            )
             if not candidates:
                 self._not_empty.clear()
                 return None
@@ -180,12 +242,18 @@ class PriorityJobManager(BaseJobManager):
                 owner_id = self._queue_owner_id(item)
                 candidate_by_user[owner_id] = candidate_by_user.get(owner_id, 0) + 1
             self.logger.debug(
-                "Candidate pool size=%d batch_size=%d quantums=%s "
-                "queue_sizes=%s candidate_by_priority=%s candidate_by_user=%s",
+                "Candidate pool anchor=%s size=%d batch_size=%d quantums=%s "
+                "queue_sizes=%s items_by_partition=%s "
+                "candidate_by_priority=%s candidate_by_user=%s",
+                self._redact_partition(anchor_partition),
                 len(candidates),
                 batch_size,
                 self._quantums_by_priority(),
                 queue_sizes,
+                {
+                    self._redact_partition(partition): count
+                    for partition, count in items_by_partition.items()
+                },
                 candidate_by_priority,
                 candidate_by_user,
             )
@@ -246,8 +314,8 @@ class PriorityJobManager(BaseJobManager):
                 ]
                 self.logger.debug("Selected batch items=%s", selected_names)
 
-            selected_set = set(selected_ids)
             selected_items = [item_map[workflow_id] for workflow_id in selected_ids]
+            selected_set = set(selected_ids)
 
             # Update miss counters for candidates not selected.
             for item in candidates:
@@ -268,6 +336,21 @@ class PriorityJobManager(BaseJobManager):
                     else:
                         del user_queues[user_id]
                 self._prune_empty_user_queues_locked(priority)
+            # Drop partitions whose queues drained completely.
+            remaining_partitions = {
+                (item.config.principal_id, item.dispatch_token)
+                for priority in Priority
+                for queue in self._queues[priority].values()
+                for item in queue
+            }
+            stale_partitions = self._rr_partition_members - remaining_partitions
+            if stale_partitions:
+                self._rr_partition_members -= stale_partitions
+                self._rr_partition_order = deque(
+                    partition
+                    for partition in self._rr_partition_order
+                    if partition not in stale_partitions
+                )
             self.logger.debug(
                 "Post-select queue_sizes=%s",
                 self._queue_sizes_by_priority(),
@@ -295,14 +378,32 @@ class PriorityJobManager(BaseJobManager):
             clustering_seconds=clustering_seconds,
         )
 
-    def _build_candidate_pool_locked(self) -> list[WorkflowItem]:
+    def _build_candidate_pool_for_partition_locked(
+        self, partition: tuple[str, str | None]
+    ) -> list[WorkflowItem]:
         candidates: list[WorkflowItem] = []
         for priority in Priority:
             quantum = max(0, self._quantums.get(priority, 0))
             if quantum == 0:
                 continue
-            candidates.extend(self._peek_round_robin_locked(priority, quantum))
+            candidates.extend(
+                self._peek_round_robin_for_partition_locked(
+                    priority, quantum, partition
+                )
+            )
         return candidates
+
+    def _pick_partition_round_robin_locked(
+        self, present_partitions: set[tuple[str, str | None]]
+    ) -> tuple[str, str | None] | None:
+        while self._rr_partition_order:
+            head = self._rr_partition_order[0]
+            if head in present_partitions:
+                self._rr_partition_order.rotate(-1)
+                return head
+            self._rr_partition_order.popleft()
+            self._rr_partition_members.discard(head)
+        return None
 
     def _priority_queue_size(self, priority: Priority) -> int:
         return sum(len(queue) for queue in self._queues[priority].values())
@@ -320,8 +421,11 @@ class PriorityJobManager(BaseJobManager):
             user_id for user_id in rr_order if user_id in user_queues
         )
 
-    def _peek_round_robin_locked(
-        self, priority: Priority, limit: int
+    def _peek_round_robin_for_partition_locked(
+        self,
+        priority: Priority,
+        limit: int,
+        partition: tuple[str, str | None],
     ) -> list[WorkflowItem]:
         if limit <= 0:
             return []
@@ -331,19 +435,34 @@ class PriorityJobManager(BaseJobManager):
         if not user_queues or not rr_order:
             return []
 
-        ordered_users = list(rr_order)
+        principal_id, dispatch_token = partition
+        filtered: dict[str, list[WorkflowItem]] = {}
+        for user_id in rr_order:
+            queue = user_queues.get(user_id)
+            if not queue:
+                continue
+            user_items = [
+                item
+                for item in queue
+                if item.config.principal_id == principal_id
+                and item.dispatch_token == dispatch_token
+            ]
+            if user_items:
+                filtered[user_id] = user_items
+
+        ordered_users = [user_id for user_id in rr_order if user_id in filtered]
+        if not ordered_users:
+            return []
         local_offsets = {user_id: 0 for user_id in ordered_users}
         candidates: list[WorkflowItem] = []
         while len(candidates) < limit:
             progressed = False
             for user_id in ordered_users:
-                queue = user_queues.get(user_id)
-                if not queue:
-                    continue
+                items = filtered[user_id]
                 idx = local_offsets[user_id]
-                if idx >= len(queue):
+                if idx >= len(items):
                     continue
-                candidates.append(queue[idx])
+                candidates.append(items[idx])
                 local_offsets[user_id] = idx + 1
                 progressed = True
                 if len(candidates) >= limit:
@@ -351,7 +470,6 @@ class PriorityJobManager(BaseJobManager):
             if not progressed:
                 break
 
-        # Rotate start point to avoid head-of-line bias across selections.
         if len(rr_order) > 1:
             rr_order.rotate(-1)
         return candidates
