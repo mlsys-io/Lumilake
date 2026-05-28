@@ -41,6 +41,9 @@ class _RecordingRuntimeManager:
     def clear_dispatch_token(self, request_id: str) -> None:
         self.dispatch_token_clears.append(request_id)
 
+    def release_executions(self, execution_ids: set[str]) -> None:
+        return None
+
 
 class _FakeRuntimeServer:
     is_started = True
@@ -75,7 +78,7 @@ class _FakeRuntimeServer:
         return 0.01
 
     def release_request_workflows(self, job_id: str) -> None:
-        return None
+        self.runtime_manager.clear_dispatch_token(job_id)
 
     async def cancel_request(self, job_id: str) -> None:
         self.cancel_calls.append(job_id)
@@ -162,6 +165,7 @@ def app(job_routes: Any) -> FastAPI:
     app = FastAPI()
     app.state.logger = logging.getLogger("test.simple_plugin_e2e")
     app.state.compute_db_pool = None
+    app.state.background_tasks = set()
     app.include_router(job_routes.router)
     app.include_router(trace_routes.router)
     return app

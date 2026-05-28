@@ -130,6 +130,9 @@ class RecordingRuntimeManager:
     def clear_dispatch_token(self, request_id: str) -> None:
         self._dispatch_tokens.pop(request_id, None)
 
+    def release_executions(self, execution_ids: set[str]) -> None:
+        return None
+
 
 class ArtifactRuntimeManager(RecordingRuntimeManager):
     async def process_request(

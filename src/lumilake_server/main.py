@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import logging
 import os
@@ -19,7 +20,7 @@ from lumilake_server import __version__
 from lumilake_server.hooks import HookBindings, register
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs, trace, workers
-from lumilake_server.runtime.flowmesh_client import close_shared_http_client
+from lumilake_server.runtime.flowmesh_client import close_current_loop_http_client
 from lumilake_server.runtime.server import LumilakeServer, LumilakeServerConfig
 
 # Loud-fail before any server side-effect runs: require .env on disk
@@ -127,17 +128,54 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
                 )
 
             app.state.compute_db_pool = compute_pool
+            app.state.background_tasks = set()
 
-            await jobs.recover_in_flight_jobs()
+            if envs.LUMILAKE_RECOVER_IN_FLIGHT_JOBS:
+                try:
+                    await jobs.recover_in_flight_jobs()
+                except Exception:
+                    logger.warning(
+                        "In-flight job recovery failed; continuing startup. "
+                        "Jobs stuck in pending/running will remain stuck "
+                        "until cleared manually.",
+                        exc_info=True,
+                    )
+            else:
+                logger.info(
+                    "Skipping in-flight job recovery "
+                    "(LUMILAKE_RECOVER_IN_FLIGHT_JOBS unset/false)"
+                )
 
             try:
                 with LumilakeServer.serve_instance(config=server_config):
                     yield
             finally:
+                background_tasks = list(app.state.background_tasks)
+                for task in background_tasks:
+                    task.cancel()
+                if background_tasks:
+                    results = await asyncio.gather(
+                        *background_tasks, return_exceptions=True
+                    )
+                    for task, result in zip(background_tasks, results, strict=True):
+                        if isinstance(result, BaseException) and not isinstance(
+                            result, asyncio.CancelledError
+                        ):
+                            logger.error(
+                                "Background task %r raised during shutdown: %s",
+                                task,
+                                result,
+                                exc_info=result,
+                            )
                 if compute_pool is not None:
                     await compute_pool.close()
                 app.state.compute_db_pool = None
-                await close_shared_http_client()
+                try:
+                    await close_current_loop_http_client()
+                except Exception:
+                    logger.warning(
+                        "Failed to close FastAPI-loop httpx client", exc_info=True
+                    )
 
     app = FastAPI(
         lifespan=lifespan,

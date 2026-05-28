@@ -89,7 +89,10 @@ async def list_workers(
             query_params=extras or None,
         )
     except (APIError, AuthenticationError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        request.app.state.logger.exception("FlowMesh workers.list failed")
+        raise HTTPException(
+            status_code=502, detail="upstream worker enumeration failed"
+        ) from exc
     if readable_worker_ids is not None:
         workers = [worker for worker in workers if worker.id in readable_worker_ids]
     return [w.model_dump() for w in workers]
@@ -118,7 +121,10 @@ async def get_worker(
     try:
         worker = await flowmesh_for(request).workers.retrieve(worker_id)
     except NotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="worker not found") from exc
     except (APIError, AuthenticationError) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        request.app.state.logger.exception("FlowMesh workers.retrieve failed")
+        raise HTTPException(
+            status_code=502, detail="upstream worker retrieve failed"
+        ) from exc
     return worker.model_dump()

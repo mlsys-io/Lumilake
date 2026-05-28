@@ -23,6 +23,13 @@ The bearer that `IdentityProvider.resolve` accepts is forwarded to FlowMesh as t
 
 Workflows that share a `PrincipalContext.principal_id` may coalesce into one FlowMesh submission; workflows from different principals always dispatch separately so each carries the originating principal's bearer.
 
+`principal_id` is a **security boundary**. Two requests resolving to the same `principal_id` are treated as one ownership scope — their workflows can be merged into one FlowMesh submission with a single bearer, and FlowMesh attribution falls on that principal. An `IdentityProvider` plugin must therefore guarantee one `principal_id` per ownership scope. Collisions (two distinct users mapped to one id) enable cross-tenant data flow; collisions are the plugin's responsibility to prevent, not Lumilake's.
+
+Lumilake holds two distinct FlowMesh credentials and never crosses them:
+
+- **Per-request bearer.** HTTP routes (`GET /workers`, `GET /trace/{id}`, job submission, cancel) and the runtime dispatch of a user's tasks all carry the user's own bearer to FlowMesh. The user's FlowMesh scope governs what they can do.
+- **`LUMILAKE_RUNTIME_TOKEN`.** Scheduler-internal credential. Only the runtime manager's `get_workers` / `get_worker_profile` reach it, and only to plan dispatch. Never reachable from any HTTP route handler. With `lumid.flowmesh-plugin`'s permission model, this token's FlowMesh principal needs `flowmesh:workers:read`; user PATs need only their task-related scopes.
+
 ## Lumilake-Owned Plugin Surface
 
 Optimizer registration is Lumilake-specific. A plugin may register an optimizer implementation and select it with `LUMILAKE_OPTIMIZER_TYPE`.

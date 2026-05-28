@@ -71,3 +71,29 @@ async def test_missing_bearer_forwards_no_api_key(
         response = await client.get("/workers")
     assert response.status_code == 200
     assert recorder == [None]
+
+
+@pytest.mark.asyncio
+async def test_bearer_parsing_normalizes_case_and_whitespace(
+    app: FastAPI, recorder: list[str | None]
+) -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for header in ("Bearer  abc123", "bearer abc123", "BEARER\tabc123"):
+            recorder.clear()
+            response = await client.get("/workers", headers={"Authorization": header})
+            assert response.status_code == 200, header
+            assert recorder == ["abc123"], header
+
+
+@pytest.mark.asyncio
+async def test_non_bearer_scheme_yields_no_api_key(
+    app: FastAPI, recorder: list[str | None]
+) -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/workers", headers={"Authorization": "Basic dXNlcjpwYXNz"}
+        )
+    assert response.status_code == 200
+    assert recorder == [None]

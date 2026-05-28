@@ -656,11 +656,8 @@ async def mark_running_jobs_failed(reason: str = "server shutdown") -> None:
 async def recover_in_flight_jobs(
     reason: str = "server restart during execution",
 ) -> int:
-    """Mark jobs left in ``pending``/``running`` in storage as ``failed``.
-
-    The dispatch token a job needs lives only in process memory, so a
-    crashed in-flight job has no path to continue.
-    """
+    """Mark storage-side ``pending``/``running`` jobs as failed; the
+    dispatch token they need only lives in process memory."""
     affected = 0
     in_memory: dict[str, JobRecord] = {}
     async with jobs_lock:
@@ -670,7 +667,10 @@ async def recover_in_flight_jobs(
             continue
         try:
             loaded = _job_storage.load(summary.job_id)
-        except KeyError:
+        except Exception:
+            logger.exception(
+                "Failed to load job %s during startup recovery", summary.job_id
+            )
             continue
         if loaded is None:
             continue
@@ -686,7 +686,14 @@ async def recover_in_flight_jobs(
         if not record.error:
             record.error = reason
         record.finished_at = _now()
-        _job_storage.save(record)
+        try:
+            _job_storage.save(record)
+        except Exception:
+            logger.exception(
+                "Failed to persist failed-status for job %s during startup recovery",
+                summary.job_id,
+            )
+            continue
         _release_output_locations(record)
         affected += 1
     if affected:
@@ -1358,10 +1365,6 @@ async def _run_job(
                 )
             except Exception:
                 logger.exception("Failed to register artifact %s", artifact_id)
-        try:
-            server.release_request_workflows(job_id)
-        except Exception:
-            logger.exception("Failed to release runtime trace state for job %s", job_id)
         if do_dump:
             try:
                 result_outputs = record.result.outputs if record.result else {}
@@ -1394,7 +1397,10 @@ async def _run_job(
         stale_keys = [key for key in data_profile_registry if key.startswith(prefix)]
         for key in stale_keys:
             data_profile_registry.pop(key, None)
-        server.runtime_manager.clear_dispatch_token(job_id)
+        try:
+            server.release_request_workflows(job_id)
+        except Exception:
+            logger.exception("Failed to release runtime trace state for job %s", job_id)
         if record.status in {"completed", "failed", "cancelled"} and record.finished_at:
             await emit_usage([_usage_row(record, principal)], logger)
 
@@ -1931,7 +1937,7 @@ async def submit_job(
         hook_logger,
     )
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_job(
             job_id,
             graph_specs,
@@ -1944,6 +1950,8 @@ async def submit_job(
             str(getattr(request.state, "trace_id", job_id)),
         )
     )
+    request.app.state.background_tasks.add(task)
+    task.add_done_callback(request.app.state.background_tasks.discard)
     return {"ok": True, "data": {"job_id": job_id, "status": record.status}}
 
 

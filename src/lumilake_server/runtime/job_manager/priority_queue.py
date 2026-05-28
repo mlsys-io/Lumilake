@@ -198,9 +198,15 @@ class PriorityJobManager(BaseJobManager):
             else:
                 picked = self._pick_principal_round_robin_locked(present_principals)
                 if picked is None:
-                    picked = next(iter(present_principals))
-                    self._rr_principal_order.append(picked)
-                    self._rr_principal_members.add(picked)
+                    # Deque drifted from present_principals; reseed so RR
+                    # rotates across every present principal next round.
+                    for pid in sorted(present_principals):
+                        if pid not in self._rr_principal_members:
+                            self._rr_principal_members.add(pid)
+                            self._rr_principal_order.append(pid)
+                    picked = self._pick_principal_round_robin_locked(
+                        present_principals
+                    ) or next(iter(present_principals))
                 anchor_principal = picked
 
             candidates = self._build_candidate_pool_for_principal_locked(
@@ -309,6 +315,21 @@ class PriorityJobManager(BaseJobManager):
                     else:
                         del user_queues[user_id]
                 self._prune_empty_user_queues_locked(priority)
+            # Drop principals whose queues drained completely.
+            remaining_principals = {
+                item.config.principal_id
+                for priority in Priority
+                for queue in self._queues[priority].values()
+                for item in queue
+            }
+            stale_principals = self._rr_principal_members - remaining_principals
+            if stale_principals:
+                self._rr_principal_members -= stale_principals
+                self._rr_principal_order = deque(
+                    pid
+                    for pid in self._rr_principal_order
+                    if pid not in stale_principals
+                )
             self.logger.debug(
                 "Post-select queue_sizes=%s",
                 self._queue_sizes_by_priority(),

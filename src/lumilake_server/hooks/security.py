@@ -16,8 +16,6 @@ from . import (
     USAGE_SINKS,
 )
 
-# Child tasks spawned with ``asyncio.create_task`` inherit this var via the
-# context snapshot taken at spawn time.
 runtime_token_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "lumilake_runtime_token", default=None
 )
@@ -61,8 +59,9 @@ async def authenticate_token(
 
 async def authenticate_request(request: Request) -> PrincipalContext:
     auth_header = request.headers.get("Authorization", "")
+    parts = auth_header.split(None, 1)
     raw_token = (
-        auth_header.removeprefix("Bearer ") if auth_header.startswith("Bearer ") else ""
+        parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else ""
     )
     principal = await authenticate_token(raw_token, request.app.state.logger)
     token = raw_token or None
@@ -72,13 +71,8 @@ async def authenticate_request(request: Request) -> PrincipalContext:
 
 
 def get_runtime_token(request: Request) -> str | None:
-    """Return the bearer captured by :func:`authenticate_request`.
-
-    The same token Lumilake authenticated against is forwarded to FlowMesh on
-    the principal's behalf so dispatch and billing line up on the runtime
-    side. Returns ``None`` when the request arrived without an
-    ``Authorization`` header — the local-deploy path.
-    """
+    """Return the bearer captured by :func:`authenticate_request`, or
+    ``None`` if the request had no ``Authorization`` header."""
     token = request.state.runtime_token
     return token if isinstance(token, str) else None
 

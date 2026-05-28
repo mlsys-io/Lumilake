@@ -24,17 +24,20 @@ def _tiny_preview_graphs() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_preview_schedule_surfaces_control_plane_timings(server_factory) -> None:
+async def test_preview_schedule_surfaces_control_plane_timings(
+    server_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     server = server_factory()
     graphs = _tiny_preview_graphs()
 
-    worker_profiles = {"gpu-worker": {"has_gpu": True}}
-    preview = await server.preview_schedule(
-        graphs=graphs,
-        selected_workers=["gpu-worker"],
-        worker_profiles=worker_profiles,
-        data_profile_results={},
+    async def _stub_select_workers(_runtime_graph) -> tuple[list[str], dict]:
+        return ["gpu-worker"], {"gpu-worker": {"has_gpu": True}}
+
+    monkeypatch.setattr(
+        server, "_select_preview_workers_and_profiles", _stub_select_workers
     )
+
+    preview = await server.preview_schedule(graphs=graphs, data_profile_results={})
 
     assert preview.selection_seconds is not None
     assert preview.clustering_seconds is not None

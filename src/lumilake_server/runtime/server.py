@@ -30,6 +30,7 @@ from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
     collect_data_profile,
 )
+from lumilake_server.runtime.flowmesh_client import close_current_loop_http_client
 from lumilake_server.runtime.job_manager import (
     DEFAULT_QUANTUMS,
     BaseJobManager,
@@ -373,7 +374,22 @@ class LumilakeServer:
                     exc_info=True,
                 )
 
-            # Continue with existing shutdown logic
+            # Drain cancelled in-flight tasks (and the scheduler) so their
+            # pending httpx requests complete before the shared client is
+            # torn down — otherwise they fail with "client has been closed".
+            pending: list[asyncio.Task] = list(self._inflight_tasks)
+            if self._scheduler_task is not None:
+                pending.append(self._scheduler_task)
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            try:
+                await close_current_loop_http_client()
+            except Exception:
+                self.logger.warning(
+                    "Failed to close runtime-loop httpx client", exc_info=True
+                )
+
             event_loop.loop_task.cancel()
             self.logger.info("Terminating server...")
             await event_loop.stop()
@@ -585,6 +601,7 @@ class LumilakeServer:
         ) | self._request_execution_history_ids.get(request_id, set())
         if execution_ids:
             self.runtime_manager.release_executions(execution_ids)
+        self.runtime_manager.clear_dispatch_token(request_id)
 
     def optimization_seconds_for_request(self, request_id: str) -> float | None:
         state = self._requests.get(request_id)
@@ -1407,21 +1424,6 @@ class LumilakeServer:
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
         )
-        dispatch_token: str | None = None
-        for request_id in request_ids:
-            candidate = self.runtime_manager.get_dispatch_token(request_id)
-            if candidate is None:
-                continue
-            if dispatch_token is None:
-                dispatch_token = candidate
-            elif candidate != dispatch_token:
-                self.logger.warning(
-                    "Batch %s spans request_ids with differing dispatch tokens "
-                    "for the same principal; using the first non-empty token",
-                    batch_id,
-                )
-                break
-        runtime_token_handle = runtime_token_var.set(dispatch_token)
         execution_request_id = f"exec-{unique_id()}"
         self._execution_contexts[execution_request_id] = ExecutionBatchContext(
             execution_request_id=execution_request_id,
@@ -1436,6 +1438,21 @@ class LumilakeServer:
             self._request_execution_history_ids.setdefault(request_id, set()).add(
                 execution_request_id
             )
+        try:
+            await self._run_batch_inner(
+                workers, batch, batch_id, request_ids, execution_request_id
+            )
+        finally:
+            self._cleanup_execution_tracking(execution_request_id, request_ids)
+
+    async def _run_batch_inner(
+        self,
+        workers: list[str],
+        batch: BatchSelection,
+        batch_id: str,
+        request_ids: tuple[str, ...],
+        execution_request_id: str,
+    ) -> None:
         cancelled_requests = await self._collect_cancelled_requests(set(request_ids))
         active_workflows = [
             workflow
@@ -1449,6 +1466,21 @@ class LumilakeServer:
                 request_raw_nodes.get(workflow.request_id, 0)
                 + workflow.runtime_graph.node_count
             )
+        dispatch_token: str | None = None
+        for request_id in sorted(active_request_ids):
+            candidate = self.runtime_manager.get_dispatch_token(request_id)
+            if candidate is None:
+                continue
+            if dispatch_token is None:
+                dispatch_token = candidate
+            elif candidate != dispatch_token:
+                self.logger.warning(
+                    "Batch %s spans request_ids with differing dispatch tokens "
+                    "for the same principal; using the first non-empty token",
+                    batch_id,
+                )
+                break
+        runtime_token_handle = runtime_token_var.set(dispatch_token)
         try:
             self.logger.info(
                 "Starting batch %s on workers %s (workflows=%d requests=%d"
@@ -1564,43 +1596,40 @@ class LumilakeServer:
             )
         finally:
             runtime_token_var.reset(runtime_token_handle)
-            try:
-                for request_id in request_raw_nodes:
-                    state = self._requests.get(request_id)
-                    if state is None:
-                        continue
-                    counts = state.batch_node_counts.pop(batch_id, None)
-                    if counts is None:
-                        continue
-                    raw_nodes = counts.get("raw", 0)
-                    optimized_nodes = counts.get("optimized", 0)
-                    if raw_nodes:
-                        if state.processing_runtime_nodes_raw < raw_nodes:
-                            raise RuntimeError(
-                                "Processing runtime raw underflow for request "
-                                f"{request_id}: processing="
-                                f"{state.processing_runtime_nodes_raw} "
-                                f"batch={raw_nodes}"
-                            )
-                        state.processing_runtime_nodes_raw -= raw_nodes
-                        state.processed_runtime_nodes_raw += raw_nodes
-                    if optimized_nodes:
-                        if state.processing_runtime_nodes_optimized < optimized_nodes:
-                            raise RuntimeError(
-                                "Processing runtime optimized underflow for request "
-                                f"{request_id}: processing="
-                                f"{state.processing_runtime_nodes_optimized} "
-                                f"batch={optimized_nodes}"
-                            )
-                        state.processing_runtime_nodes_optimized -= optimized_nodes
-                        state.processed_runtime_nodes_optimized += optimized_nodes
-                async with self._worker_lock:
-                    self._busy_workers.difference_update(workers)
-                self.job_manager.finalize_workflows(
-                    [workflow.workflow_id for workflow in batch.workflows]
-                )
-            finally:
-                self._cleanup_execution_tracking(execution_request_id, request_ids)
+            for request_id in request_raw_nodes:
+                state = self._requests.get(request_id)
+                if state is None:
+                    continue
+                counts = state.batch_node_counts.pop(batch_id, None)
+                if counts is None:
+                    continue
+                raw_nodes = counts.get("raw", 0)
+                optimized_nodes = counts.get("optimized", 0)
+                if raw_nodes:
+                    if state.processing_runtime_nodes_raw < raw_nodes:
+                        raise RuntimeError(
+                            "Processing runtime raw underflow for request "
+                            f"{request_id}: processing="
+                            f"{state.processing_runtime_nodes_raw} "
+                            f"batch={raw_nodes}"
+                        )
+                    state.processing_runtime_nodes_raw -= raw_nodes
+                    state.processed_runtime_nodes_raw += raw_nodes
+                if optimized_nodes:
+                    if state.processing_runtime_nodes_optimized < optimized_nodes:
+                        raise RuntimeError(
+                            "Processing runtime optimized underflow for request "
+                            f"{request_id}: processing="
+                            f"{state.processing_runtime_nodes_optimized} "
+                            f"batch={optimized_nodes}"
+                        )
+                    state.processing_runtime_nodes_optimized -= optimized_nodes
+                    state.processed_runtime_nodes_optimized += optimized_nodes
+            async with self._worker_lock:
+                self._busy_workers.difference_update(workers)
+            self.job_manager.finalize_workflows(
+                [workflow.workflow_id for workflow in batch.workflows]
+            )
 
     def _cleanup_execution_tracking(
         self,
@@ -2708,8 +2737,6 @@ class LumilakeServer:
         graphs: dict[str, CompiledGraph],
         *,
         request_id: str | None = None,
-        selected_workers: list[str] | None = None,
-        worker_profiles: dict[str, dict[str, Any]] | None = None,
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
         config: LumilakeRequestConfig | None = None,
     ) -> SchedulePreview:
@@ -2776,32 +2803,10 @@ class LumilakeServer:
         if not merged_nodes:
             raise ValueError("Preview merged graph has no runtime nodes")
 
-        if selected_workers is None:
-            (
-                resolved_workers,
-                resolved_worker_profiles,
-            ) = await self._select_preview_workers_and_profiles(merged_graph)
-        else:
-            resolved_workers = [worker for worker in selected_workers if worker]
-            if not resolved_workers:
-                raise ValueError("selected_workers cannot be empty")
-            if worker_profiles is None:
-                resolved_worker_profiles = {
-                    worker: self._normalize_worker_profile(
-                        await self.runtime_manager.get_worker_profile(worker)
-                    )
-                    for worker in resolved_workers
-                }
-            else:
-                resolved_worker_profiles = {}
-                for worker in resolved_workers:
-                    if worker not in worker_profiles:
-                        raise ValueError(
-                            f"Missing worker profile for preview worker '{worker}'"
-                        )
-                    resolved_worker_profiles[worker] = self._normalize_worker_profile(
-                        dict(worker_profiles[worker])
-                    )
+        (
+            resolved_workers,
+            resolved_worker_profiles,
+        ) = await self._select_preview_workers_and_profiles(merged_graph)
 
         resolved_data_profile_results = data_profile_results or {}
         optimize_start = time.perf_counter()

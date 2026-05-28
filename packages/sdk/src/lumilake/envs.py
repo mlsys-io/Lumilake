@@ -50,9 +50,30 @@ LUMILAKE_OPTIMIZER_TYPE: str = os.environ.get("LUMILAKE_OPTIMIZER_TYPE", "halo")
 LUMILAKE_SERVER_HOST: str = os.environ.get("LUMILAKE_SERVER_HOST", "")
 LUMILAKE_SERVER_PORT: int = int(os.environ.get("LUMILAKE_SERVER_PORT", "0") or "0")
 RUNTIME_ORCHESTRATOR_URL: str = os.environ.get("LUMILAKE_RUNTIME_ORCHESTRATOR_URL", "")
+RUNTIME_TOKEN: str | None = os.environ.get("LUMILAKE_RUNTIME_TOKEN") or None
+"""Scheduler-internal FlowMesh credential.
+
+Carries Lumilake's own identity for control-plane reads (worker enumeration,
+profile fetches the scheduler needs to plan dispatch). Never used by HTTP
+route handlers — those forward the per-request bearer.
+"""
 LUMILAKE_REQUIRE_IDENTITY_PROVIDER: bool = os.environ.get(
     "LUMILAKE_REQUIRE_IDENTITY_PROVIDER", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
+LUMILAKE_RECOVER_IN_FLIGHT_JOBS: bool = os.environ.get(
+    "LUMILAKE_RECOVER_IN_FLIGHT_JOBS", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+"""Whether server startup marks pending/running jobs as failed.
+
+Default ``True`` for single-instance deployments (a crash leaves jobs
+stuck in ``running``; failing them forward unblocks operators). Set to
+``0`` in any HA / multi-instance deployment where a starting standby
+must not clobber jobs the active instance is still running.
+
+Default-on semantics: ``KEY=`` (explicit empty) and ``KEY=0`` both
+disable, unlike ``LUMILAKE_REQUIRE_IDENTITY_PROVIDER`` whose default is
+off and whose explicit-empty matches the unset case.
+"""
 
 # Server-tunable, defaulted.
 LUMILAKE_JOB_MANAGER_TYPE: str = os.environ.get(
@@ -253,6 +274,12 @@ def validate() -> None:
     for name, value in required.items():
         if not value:
             raise ValueError(f"{name} is required and must be non-empty")
+    if LUMILAKE_REQUIRE_IDENTITY_PROVIDER and not RUNTIME_TOKEN:
+        raise ValueError(
+            "LUMILAKE_RUNTIME_TOKEN is required when "
+            "LUMILAKE_REQUIRE_IDENTITY_PROVIDER is set; the scheduler needs "
+            "a server-internal FlowMesh credential for control-plane reads."
+        )
     if LUMILAKE_SERVER_PORT <= 0:
         raise ValueError("LUMILAKE_SERVER_PORT must be a positive integer")
 

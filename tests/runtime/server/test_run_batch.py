@@ -232,6 +232,55 @@ async def test_run_batch_cancels_subset_and_continues_other_requests(
 
 
 @pytest.mark.asyncio
+async def test_run_batch_dispatch_token_excludes_cancelled_requests(
+    server_factory,
+) -> None:
+    server = server_factory()
+    runtime_manager = RecordingRuntimeManager(cancelled={"req-a"})
+    server.runtime_manager = cast(Any, runtime_manager)
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        ),
+        make_workflow(
+            workflow_id="wf-b",
+            request_id="req-b",
+            graph_name="gb",
+            public_graph_name="shared",
+        ),
+    ]
+    attach_request_states(server, workflows)
+    runtime_manager.set_dispatch_token("req-a", "tok-cancelled")
+    runtime_manager.set_dispatch_token("req-b", "tok-active")
+    batch = make_batch(workflows)
+    seen_tokens: list[str | None] = []
+
+    async def _fake_process_batch(
+        selected_batch: BatchSelection,
+        batch_id: str,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        *,
+        execution_request_id: str,
+        member_request_ids: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        seen_tokens.append(runtime_token_var.get())
+        return (
+            {item.workflow_id: {"output": ["x"]} for item in selected_batch.workflows},
+            {},
+        )
+
+    setattr(server, "_process_batch", _fake_process_batch)
+    await server._run_batch(["worker-1"], batch)
+
+    assert seen_tokens == ["tok-active"]
+
+
+@pytest.mark.asyncio
 async def test_run_batch_cancels_execution_if_all_member_requests_cancelled(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
