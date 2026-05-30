@@ -1,6 +1,6 @@
 [project]
 name = "lumilake-hook"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lumilake hook bindings"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
