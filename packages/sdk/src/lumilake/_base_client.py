@@ -15,7 +15,12 @@ from typing import Any, Self
 import httpx
 from lumilake import envs
 from lumilake.config import DEFAULT_CONFIG_PATH, LumilakeConfig
-from lumilake.errors import ConfigNotFoundError, HttpError, NotFoundError
+from lumilake.errors import (
+    ConfigInvalidError,
+    ConfigNotFoundError,
+    HttpError,
+    NotFoundError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,10 @@ def resolve_config(
             base_url=DEFAULT_BASE_URL if base_url is None else base_url,
             api_key=api_key,
         )
+    except ConfigInvalidError:
+        if base_url is not None:
+            return LumilakeConfig(base_url=base_url, api_key=api_key)
+        raise
 
     if base_url is not None:
         cfg.base_url = base_url

@@ -123,3 +123,61 @@ def test_resolve_config_partial_kwargs_fill_from_file(tmp_path: Path) -> None:
     cfg = resolve_config(api_key="arg-key", config_path=target)
     assert cfg.base_url == "http://file"
     assert cfg.api_key == "arg-key"
+
+
+def test_resolve_config_ignores_invalid_file_when_base_url_supplied(
+    tmp_path: Path,
+) -> None:
+    """A malformed config must not block resolution when the caller already
+    has base_url via param/env; api_key defaults to None."""
+    target = tmp_path / "config.toml"
+    target.write_text("not = valid = toml\n")
+    cfg = resolve_config(base_url="http://arg", config_path=target)
+    assert cfg.base_url == "http://arg"
+    assert cfg.api_key is None
+
+
+def test_resolve_config_ignores_invalid_file_when_env_supplied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text("not = valid = toml\n")
+    monkeypatch.setenv("LUMILAKE_BASE_URL", "http://env")
+    cfg = resolve_config(config_path=target)
+    assert cfg.base_url == "http://env"
+    assert cfg.api_key is None
+
+
+def test_resolve_config_propagates_invalid_file_when_file_was_only_source(
+    tmp_path: Path,
+) -> None:
+    """If neither param nor env supplies base_url, a malformed file is the
+    sole source — surface the error so the caller knows."""
+    target = tmp_path / "config.toml"
+    target.write_text("not = valid = toml\n")
+    with pytest.raises(ConfigInvalidError):
+        resolve_config(config_path=target)
+
+
+def test_save_does_not_chmod_caller_supplied_parent(tmp_path: Path) -> None:
+    """Saving to a parent the caller explicitly chose must not tighten
+    its permissions. Only the default ~/.lumilake/ dir gets clamped."""
+    original_mode = tmp_path.stat().st_mode & 0o777
+    target = tmp_path / "config.toml"
+    LumilakeConfig(base_url="http://x", api_key="secret").save(target)
+    assert tmp_path.stat().st_mode & 0o777 == original_mode
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_save_clamps_file_to_0600(tmp_path: Path) -> None:
+    target = tmp_path / "config.toml"
+    LumilakeConfig(base_url="http://x", api_key="secret").save(target)
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_save_chmods_newly_created_parent_dir(tmp_path: Path) -> None:
+    """When we create the parent dir ourselves, we get to lock it down."""
+    new_parent = tmp_path / "nested" / "config_dir"
+    target = new_parent / "config.toml"
+    LumilakeConfig(base_url="http://x").save(target)
+    assert new_parent.stat().st_mode & 0o777 == 0o700

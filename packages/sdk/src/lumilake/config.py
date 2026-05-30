@@ -77,8 +77,16 @@ class LumilakeConfig:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     def save(self, path: Path = DEFAULT_CONFIG_PATH) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(path.parent, 0o700)
+        parent = path.parent
+        parent_was_owned = parent == DEFAULT_CONFIG_DIR
+        parent_existed = parent.exists()
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not parent_existed or parent_was_owned:
+            try:
+                os.chmod(parent, 0o700)
+            except OSError as exc:
+                logger.warning("could not chmod config dir %s: %s", parent, exc)
+
         data = self.to_mapping()
         # json.dumps handles TOML-compatible escaping of " and \ in values.
         body = "\n".join(f"{key} = {json.dumps(value)}" for key, value in data.items())
