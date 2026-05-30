@@ -115,8 +115,9 @@ def resolve_base_url(
     reports the source so ``lumilake config`` can show where the value
     came from.
     """
-    if envs.get_lumilake_base_url():
-        return envs.get_lumilake_base_url() or DEFAULT_LOCAL_BASE_URL, "env"
+    env_url = envs.get_lumilake_base_url()
+    if env_url:
+        return env_url, "env"
     try:
         cfg = LumilakeConfig.from_file(config_path)
     except (ConfigNotFoundError, ConfigInvalidError):

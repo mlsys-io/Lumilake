@@ -8,7 +8,6 @@ headers, and error → exception mapping (404 → ``NotFoundError``, 5xx →
 """
 
 import logging
-import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
@@ -38,9 +37,9 @@ def resolve_config(
 ) -> LumilakeConfig:
     """Resolve configuration: params → env → config file → defaults."""
     if base_url is None:
-        base_url = os.getenv("LUMILAKE_BASE_URL", "").strip() or None
+        base_url = envs.get_lumilake_base_url()
     if api_key is None:
-        api_key = os.getenv("LUMILAKE_API_KEY", "").strip() or None
+        api_key = envs.get_lumilake_api_key()
 
     if base_url is not None and api_key is not None:
         return LumilakeConfig(base_url=base_url, api_key=api_key)

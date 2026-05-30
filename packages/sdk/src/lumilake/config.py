@@ -33,8 +33,10 @@ class LumilakeConfig:
             raise ConfigNotFoundError(f"Config file not found at {path}")
         try:
             data = tomllib.loads(path.read_text())
-        except Exception as exc:
-            raise ConfigInvalidError(f"Failed to parse config file {path}: {exc}")
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigInvalidError(
+                f"Failed to parse config file {path}: {exc}"
+            ) from exc
         return cls.from_mapping(data)
 
     @classmethod
@@ -75,9 +77,17 @@ class LumilakeConfig:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     def save(self, path: Path = DEFAULT_CONFIG_PATH) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path.parent, 0o700)
         data = self.to_mapping()
         # json.dumps handles TOML-compatible escaping of " and \ in values.
-        lines = [f"{key} = {json.dumps(value)}" for key, value in data.items()]
-        path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        body = "\n".join(f"{key} = {json.dumps(value)}" for key, value in data.items())
+        if body:
+            body += "\n"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, body.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.chmod(path, 0o600)
         logger.info("saved lumilake config to %s", path)
