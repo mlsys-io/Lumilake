@@ -10,7 +10,7 @@ authors = [
     {name = "Lumilake contributors"},
 ]
 dependencies = [
-    "lumid-hooks==0.1.0",
+    "lumid-hooks>=0.1.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
