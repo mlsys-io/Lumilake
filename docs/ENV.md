@@ -147,6 +147,7 @@ Consumed by the SDK and deploy CLI helpers.
 | Key | Purpose |
 |-----|---------|
 | `LUMILAKE_BASE_URL` | SDK / CLI override for the saved server URL (see `docs/SDK.md` and `docs/CLI.md` for resolution order). |
+| `LUMILAKE_API_KEY` | Bearer token sent as `Authorization: Bearer <key>` by the SDK / CLI. Required when the server runs an `IdentityProvider` plugin with `LUMILAKE_REQUIRE_IDENTITY_PROVIDER=1`. |
 | `LUMILAKE_TIMEOUT` | SDK / CLI HTTP timeout override in seconds. Values `<= 0` are ignored. |
 | `LUMILAKE_DEPLOY_DIR` | Default `--project-dir` for `lumilake deploy`. |
 

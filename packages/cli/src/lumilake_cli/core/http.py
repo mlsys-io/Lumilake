@@ -7,15 +7,17 @@ from typing import Any
 
 import requests
 from lumilake import envs
+from lumilake._base_client import DEFAULT_BASE_URL, resolve_config
+from lumilake.errors import ConfigInvalidError, ConfigNotFoundError
 
-from .config import DEFAULT_CONFIG_PATH, load_config
+from .config import DEFAULT_CONFIG_PATH, LumilakeConfig
 
 API_VERSION_PREFIX = "/api/v1"
 
 DEFAULT_TIMEOUT: float = 300.0
 """Default request timeout in seconds."""
 
-DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:9000"
+DEFAULT_LOCAL_BASE_URL = DEFAULT_BASE_URL
 
 
 def _resolve_timeout() -> float:
@@ -30,10 +32,14 @@ class HttpError(RuntimeError):
 @dataclass
 class HttpClient:
     base_url: str
+    api_key: str | None = None
     timeout: float = field(default_factory=_resolve_timeout)
 
     def _headers(self) -> Mapping[str, str]:
-        return {"Accept": "application/json"}
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def get(
         self, path: str, version_prefix: bool = False, **kwargs: Any
@@ -103,30 +109,23 @@ class HttpClient:
 def resolve_base_url(
     config_path: Path = DEFAULT_CONFIG_PATH,
 ) -> tuple[str, str]:
-    """Pick a server URL with a clear precedence order.
+    """Return ``(base_url, source)`` with source in {"env", "config", "default"}.
 
-    Returns ``(base_url, source)`` where ``source`` is one of ``"env"``,
-    ``"config"``, or ``"default"``. Resolution order:
-
-    1. ``LUMILAKE_BASE_URL`` environment variable.
-    2. ``~/.lumilake/config.toml`` written by ``lumilake deploy up``.
-    3. ``http://127.0.0.1:9000`` (the local deploy default).
+    Env > config file > local default. Mirrors the SDK's precedence but
+    reports the source so ``lumilake config`` can show where the value
+    came from.
     """
     env_url = envs.get_lumilake_base_url()
     if env_url:
         return env_url, "env"
     try:
-        cfg = load_config(config_path)
-    except FileNotFoundError:
+        cfg = LumilakeConfig.from_file(config_path)
+    except (ConfigNotFoundError, ConfigInvalidError):
         return DEFAULT_LOCAL_BASE_URL, "default"
-    except ValueError:
-        return DEFAULT_LOCAL_BASE_URL, "default"
-    if cfg.base_url:
-        return cfg.base_url, "config"
-    return DEFAULT_LOCAL_BASE_URL, "default"
+    return cfg.base_url, "config"
 
 
-def client_from_config() -> HttpClient:
-    """Build an HttpClient from the resolved base URL."""
-    base_url, _ = resolve_base_url()
-    return HttpClient(base_url=base_url)
+def client_from_config(config_path: Path = DEFAULT_CONFIG_PATH) -> HttpClient:
+    """Build an HttpClient by resolving base_url + api_key (env > file > default)."""
+    cfg = resolve_config(config_path=config_path)
+    return HttpClient(base_url=cfg.base_url, api_key=cfg.api_key)

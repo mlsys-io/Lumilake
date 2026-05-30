@@ -252,6 +252,16 @@ def get_lumilake_base_url(environ: Mapping[str, str] | None = None) -> str | Non
     return source.get("LUMILAKE_BASE_URL") or None
 
 
+def get_lumilake_api_key(environ: Mapping[str, str] | None = None) -> str | None:
+    """Bearer presented to the Lumilake server's IdentityProvider plugin."""
+    source = os.environ if environ is None else environ
+    raw = source.get("LUMILAKE_API_KEY")
+    if not raw:
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
 HARDWARE_CPU_REQUIREMENT: int = int(os.environ.get("HARDWARE_CPU_REQUIREMENT", "8"))
 HARDWARE_MEMORY_REQUIREMENT: str = os.environ.get("HARDWARE_MEMORY_REQUIREMENT", "16Gi")
 HARDWARE_GPU_REQUIREMENT: int = int(os.environ.get("HARDWARE_GPU_REQUIREMENT", "1"))

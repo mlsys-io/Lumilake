@@ -62,22 +62,30 @@ or set `LUMILAKE_BASE_URL`.
 
 ### How clients resolve
 
-`LumilakeClient(...)` (and the async equivalent) resolves the base URL
-in this priority order:
-
-1. `base_url=` argument passed to the constructor.
-2. `LUMILAKE_BASE_URL` environment variable.
-3. `~/.lumilake/config.toml`.
-
-If none of the three yields a URL, the call raises `RuntimeError` with
-the message:
-
-```
-no base_url provided and no saved config. Pass base_url= explicitly, set LUMILAKE_BASE_URL, or run `lumilake deploy up`.
-```
-
 `from_config(path=...)` reads a specific config file directly; use it
-for tests or non-default installs.
+for tests or non-default installs. The default constructor resolves
+`base_url` (and `api_key`) through the precedence below.
+
+### Authentication
+
+Both clients accept `api_key=` and resolve it together with `base_url`
+through a single `resolve_config()` call. Precedence:
+
+1. Explicit `base_url=` / `api_key=` constructor args.
+2. `LUMILAKE_BASE_URL` / `LUMILAKE_API_KEY` environment variables.
+3. Saved `~/.lumilake/config.toml` (written by `lumilake init`).
+4. Defaults: `base_url=http://127.0.0.1:9000`, `api_key=None`.
+
+When `api_key` resolves to a value, the SDK sends it as
+`Authorization: Bearer <api_key>` on every request. Deployments running
+with `LUMILAKE_REQUIRE_IDENTITY_PROVIDER=1` reject requests without it.
+
+```python
+from lumilake import LumilakeClient
+
+with LumilakeClient(api_key="lm_pat_live_…") as client:
+    client.jobs.list()
+```
 
 ## Resources
 

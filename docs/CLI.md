@@ -31,7 +31,19 @@ The CLI resolves the target server URL in this order:
 | `lumilake info` | Query server health metadata. |
 | `lumilake health` | Query server health. |
 
-`lumilake deploy up` writes the resolved local server URL to `~/.lumilake/config.toml` after the stack is healthy, so subsequent CLI and SDK calls find it automatically. Remote / hosted users should set `LUMILAKE_BASE_URL` instead.
+`lumilake deploy up` writes the resolved local server URL to `~/.lumilake/config.toml` after the stack is healthy (preserving any saved `api_key`), so subsequent CLI and SDK calls find it automatically. Remote / hosted users should set `LUMILAKE_BASE_URL` instead.
+
+### Authentication
+
+When the server runs an `IdentityProvider` plugin (e.g. `lumid_lumilake_plugin`), the CLI presents a bearer token via `Authorization: Bearer <api_key>`. Three commands manage it:
+
+| Command | Purpose |
+|---------|---------|
+| `lumilake init <url> --api-key <key> [--config <path>] [--force]` | Save `base_url` + `api_key` to `~/.lumilake/config.toml`. Confirms overwrite unless `--force`. |
+| `lumilake deinit [--config <path>]` | Delete the config file. |
+| `lumilake config [--source auto\|file\|env] [--show-api-key]` | Show the resolved config. `api_key` is redacted (first 4 + last 4) unless `--show-api-key`. |
+
+Resolution order matches the SDK: explicit args > `LUMILAKE_BASE_URL` / `LUMILAKE_API_KEY` env > `~/.lumilake/config.toml` > local defaults. The CLI sends no `Authorization` header when `api_key` resolves to nothing — fine for local-mode deploys, rejected by deploys running with `LUMILAKE_REQUIRE_IDENTITY_PROVIDER=1`.
 
 ## Deploy
 

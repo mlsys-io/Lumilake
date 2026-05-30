@@ -23,6 +23,14 @@ class NotFoundError(HttpError):
     """404 — resource missing. Lets callers handle 'doesn't exist' separately."""
 
 
+class ConfigNotFoundError(LumilakeError):
+    """Saved ``~/.lumilake/config.toml`` is missing where one was expected."""
+
+
+class ConfigInvalidError(LumilakeError):
+    """``~/.lumilake/config.toml`` is unparsable or violates the schema."""
+
+
 class DeployError(LumilakeError):
     """Raised when a deploy lifecycle call fails.
 
