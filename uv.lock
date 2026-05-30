@@ -1027,7 +1027,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "lumid-hooks", specifier = "==0.1.0" }]
+requires-dist = [{ name = "lumid-hooks", specifier = ">=0.1.0" }]
 
 [[package]]
 name = "lumilake-sdk"
