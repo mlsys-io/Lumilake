@@ -1,20 +1,21 @@
-"""Base URL resolution for CLI commands (after the login removal)."""
+"""Base URL resolution for CLI commands."""
 
 from pathlib import Path
 
 import pytest
+from lumilake.config import LumilakeConfig
 from lumilake_cli.core import http
-from lumilake_cli.core.config import LumilakeConfig, load_config, save_config
 
 
-def _clear_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clear_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LUMILAKE_BASE_URL", raising=False)
+    monkeypatch.delenv("LUMILAKE_API_KEY", raising=False)
 
 
 def test_resolve_falls_back_to_local_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _clear_env_var(monkeypatch)
+    _clear_env_vars(monkeypatch)
     missing = tmp_path / "missing.toml"
     base, source = http.resolve_base_url(missing)
     assert base == http.DEFAULT_LOCAL_BASE_URL
@@ -24,9 +25,9 @@ def test_resolve_falls_back_to_local_default(
 def test_resolve_reads_saved_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _clear_env_var(monkeypatch)
+    _clear_env_vars(monkeypatch)
     path = tmp_path / "config.toml"
-    save_config(LumilakeConfig(base_url="http://stored:9000"), path=path)
+    LumilakeConfig(base_url="http://stored:9000").save(path)
     base, source = http.resolve_base_url(path)
     assert base == "http://stored:9000"
     assert source == "config"
@@ -37,7 +38,7 @@ def test_resolve_prefers_env_over_config(
 ) -> None:
     monkeypatch.setenv("LUMILAKE_BASE_URL", "http://env:9000")
     path = tmp_path / "config.toml"
-    save_config(LumilakeConfig(base_url="http://stored:9000"), path=path)
+    LumilakeConfig(base_url="http://stored:9000").save(path)
     base, source = http.resolve_base_url(path)
     assert base == "http://env:9000"
     assert source == "env"
@@ -46,7 +47,7 @@ def test_resolve_prefers_env_over_config(
 def test_resolve_recovers_from_corrupt_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _clear_env_var(monkeypatch)
+    _clear_env_vars(monkeypatch)
     path = tmp_path / "config.toml"
     path.write_text("not = valid toml = at all\n")
     base, source = http.resolve_base_url(path)
@@ -54,8 +55,8 @@ def test_resolve_recovers_from_corrupt_config(
     assert source == "default"
 
 
-def test_no_login_command_present() -> None:
-    """The CLI should no longer expose login / logout / refresh commands."""
+def test_no_legacy_auth_commands_present() -> None:
+    """The CLI follows FlowMesh's init/deinit/config naming, not login/logout."""
     from lumilake_cli.commands import base as base_commands
 
     names: set[str] = set()
@@ -68,6 +69,8 @@ def test_no_login_command_present() -> None:
             names.add(callback.__name__)
     assert "login" not in names
     assert "logout" not in names
+    assert "init" in names
+    assert "deinit" in names
 
 
 def test_resolve_empty_env_falls_through_to_config(
@@ -76,7 +79,7 @@ def test_resolve_empty_env_falls_through_to_config(
     """Empty ``LUMILAKE_BASE_URL`` must not mask the saved config value."""
     monkeypatch.setenv("LUMILAKE_BASE_URL", "")
     path = tmp_path / "config.toml"
-    save_config(LumilakeConfig(base_url="http://stored:9000"), path=path)
+    LumilakeConfig(base_url="http://stored:9000").save(path)
     base, source = http.resolve_base_url(path)
     assert base == "http://stored:9000"
     assert source == "config"
@@ -84,6 +87,5 @@ def test_resolve_empty_env_falls_through_to_config(
 
 def test_save_config_escapes_toml_string_values(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
-    save_config(LumilakeConfig(base_url='http://host/"quoted"'), path=path)
-
-    assert load_config(path).base_url == 'http://host/"quoted"'
+    LumilakeConfig(base_url='http://host/"quoted"').save(path)
+    assert LumilakeConfig.from_file(path).base_url == 'http://host/"quoted"'

@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 from flowmesh_cli_stack.stack import stack_env_example
 from lumilake import envs
+from lumilake.errors import ConfigInvalidError, ConfigNotFoundError
 from lumilake_deploy import docker_client
 from lumilake_deploy import purge as purge_mod
 from lumilake_deploy import setup as setup_mod
@@ -30,7 +31,7 @@ from lumilake_deploy.setup import (
 )
 
 from ..core import logging
-from ..core.config import DEFAULT_CONFIG_PATH, LumilakeConfig, load_config, save_config
+from ..core.config import DEFAULT_CONFIG_PATH, LumilakeConfig
 from ..core.typer import get_typer
 
 app = get_typer(
@@ -284,10 +285,7 @@ def pull(ctx: typer.Context) -> None:
 def _write_cli_config(root: Path, config_path: Path | None = None) -> None:
     """Persist the local server URL so subsequent CLI / SDK calls find it.
 
-    Reads the deployment's ``.env`` to compute the host port the server
-    is listening on, then writes ``base_url`` to ``config_path``. If a
-    config already exists with a different ``base_url``, we log a hint
-    and overwrite. Errors are non-fatal — the stack is already running.
+    Preserves any existing ``api_key`` (written by ``lumilake init``).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -295,16 +293,17 @@ def _write_cli_config(root: Path, config_path: Path | None = None) -> None:
     port = envs.LUMILAKE_SERVER_PORT or 9000
     base_url = f"http://127.0.0.1:{port}"
     try:
-        existing = load_config(config_path)
-    except (FileNotFoundError, ValueError):
+        existing = LumilakeConfig.from_file(config_path)
+    except (ConfigNotFoundError, ConfigInvalidError):
         existing = None
     if existing is not None and existing.base_url == base_url:
         logging.info(f"CLI config already points at {base_url}.")
         return
     if existing is not None and existing.base_url != base_url:
         logging.info(f"Updating {config_path}: {existing.base_url} -> {base_url}")
+    api_key = existing.api_key if existing is not None else None
     try:
-        save_config(LumilakeConfig(base_url=base_url), path=config_path)
+        LumilakeConfig(base_url=base_url, api_key=api_key).save(config_path)
     except OSError as exc:
         logging.warning(f"Could not save CLI config to {config_path}: {exc}")
         return

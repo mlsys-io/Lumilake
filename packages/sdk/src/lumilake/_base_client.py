@@ -8,18 +8,21 @@ headers, and error → exception mapping (404 → ``NotFoundError``, 5xx →
 """
 
 import logging
+import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Self
 
 import httpx
 from lumilake import envs
-from lumilake.config import LumilakeConfig
-from lumilake.errors import HttpError, NotFoundError
+from lumilake.config import DEFAULT_CONFIG_PATH, LumilakeConfig
+from lumilake.errors import ConfigNotFoundError, HttpError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
 API_VERSION_PREFIX = "/api/v1"
 DEFAULT_TIMEOUT = 300.0
+DEFAULT_BASE_URL = "http://127.0.0.1:9000"
 
 
 def _resolve_timeout(timeout: float | None) -> float:
@@ -29,31 +32,40 @@ def _resolve_timeout(timeout: float | None) -> float:
 
 
 def resolve_config(
-    base_url: str | None,
-) -> str:
-    """Resolve the base URL in priority order: explicit arg >
-    ``LUMILAKE_BASE_URL`` env > saved ``~/.lumilake/config.toml``.
+    base_url: str | None = None,
+    api_key: str | None = None,
+    config_path: Path | None = DEFAULT_CONFIG_PATH,
+) -> LumilakeConfig:
+    """Resolve configuration: params → env → config file → defaults."""
+    if base_url is None:
+        base_url = os.getenv("LUMILAKE_BASE_URL", "").strip() or None
+    if api_key is None:
+        api_key = os.getenv("LUMILAKE_API_KEY", "").strip() or None
 
-    Raises ``RuntimeError`` if no base_url can be determined and no saved
-    config exists. The CLI's ``lumilake deploy up`` writes the saved
-    config for local stacks; remote / hosted users should pass
-    ``base_url=`` or set ``LUMILAKE_BASE_URL``.
-    """
-    url = base_url or envs.get_lumilake_base_url()
-    if not url:
-        try:
-            cfg = LumilakeConfig.load()
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "no base_url provided and no saved config. Pass base_url= "
-                "explicitly, set LUMILAKE_BASE_URL, or run `lumilake deploy up`."
-            ) from exc
-        url = cfg.base_url
-    return url
+    if base_url is not None and api_key is not None:
+        return LumilakeConfig(base_url=base_url, api_key=api_key)
+
+    try:
+        cfg = LumilakeConfig.from_file(config_path or DEFAULT_CONFIG_PATH)
+    except ConfigNotFoundError:
+        return LumilakeConfig(
+            base_url=DEFAULT_BASE_URL if base_url is None else base_url,
+            api_key=api_key,
+        )
+
+    if base_url is not None:
+        cfg.base_url = base_url
+    if api_key is not None:
+        cfg.api_key = api_key
+    return cfg
 
 
-def _headers(extra: Mapping[str, str] | None) -> dict[str, str]:
+def _headers(
+    extra: Mapping[str, str] | None, *, api_key: str | None = None
+) -> dict[str, str]:
     headers: dict[str, str] = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     if extra:
         headers.update(extra)
     return headers
@@ -91,11 +103,13 @@ class BaseClient:
         self,
         base_url: str,
         *,
+        api_key: str | None = None,
         timeout: float | None = None,
         verify: bool | str = True,
         http_client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url
+        self.api_key = api_key
         self._http = http_client or httpx.Client(
             timeout=_resolve_timeout(timeout),
             verify=verify,
@@ -123,7 +137,7 @@ class BaseClient:
                 url,
                 params=dict(params) if params else None,
                 json=json_body,
-                headers=_headers(headers),
+                headers=_headers(headers, api_key=self.api_key),
                 **extra,
             )
         except httpx.HTTPError as exc:
@@ -157,11 +171,13 @@ class BaseAsyncClient:
         self,
         base_url: str,
         *,
+        api_key: str | None = None,
         timeout: float | None = None,
         verify: bool | str = True,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url
+        self.api_key = api_key
         self._http = http_client or httpx.AsyncClient(
             timeout=_resolve_timeout(timeout),
             verify=verify,
@@ -189,7 +205,7 @@ class BaseAsyncClient:
                 url,
                 params=dict(params) if params else None,
                 json=json_body,
-                headers=_headers(headers),
+                headers=_headers(headers, api_key=self.api_key),
                 **extra,
             )
         except httpx.HTTPError as exc:

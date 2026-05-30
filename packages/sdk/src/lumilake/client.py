@@ -14,7 +14,7 @@ from typing import Any, Self
 
 import httpx
 from lumilake._base_client import BaseClient, resolve_config
-from lumilake.config import LumilakeConfig
+from lumilake.config import DEFAULT_CONFIG_PATH, LumilakeConfig
 from lumilake.resources.deploy import Deploy
 from lumilake.resources.info import Info
 from lumilake.resources.jobs import Jobs
@@ -45,14 +45,16 @@ class LumilakeClient(BaseClient):
         self,
         base_url: str | None = None,
         *,
+        api_key: str | None = None,
         timeout: float | None = None,
         verify: bool | str = True,
         http_client: httpx.Client | None = None,
         repo_root: Path | str | None = None,
     ) -> None:
-        url = resolve_config(base_url)
+        cfg = resolve_config(base_url, api_key)
         super().__init__(
-            base_url=url,
+            base_url=cfg.base_url,
+            api_key=cfg.api_key,
             timeout=timeout,
             verify=verify,
             http_client=http_client,
@@ -70,14 +72,16 @@ class LumilakeClient(BaseClient):
         cls,
         path: Path | str | None = None,
         *,
+        api_key: str | None = None,
         timeout: float | None = None,
         verify: bool | str = True,
         http_client: httpx.Client | None = None,
         repo_root: Path | str | None = None,
     ) -> Self:
-        config = LumilakeConfig.load(path)
+        config = LumilakeConfig.from_file(Path(path) if path else DEFAULT_CONFIG_PATH)
         return cls(
             base_url=config.base_url,
+            api_key=api_key if api_key is not None else config.api_key,
             timeout=timeout,
             verify=verify,
             http_client=http_client,
