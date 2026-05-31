@@ -186,9 +186,7 @@ def test_logs_follow_advances_cursor_then_stops_on_interrupt(
 
     monkeypatch.setattr(job_cmd.time, "sleep", _sleep)
 
-    result = runner.invoke(
-        app, ["logs", "j-1", "t-a", "--follow", "--interval", "0"]
-    )
+    result = runner.invoke(app, ["logs", "j-1", "t-a", "--follow", "--interval", "0"])
     assert result.exit_code == 0, result.stdout
     assert "first" in result.stdout
     assert "second" in result.stdout
@@ -214,13 +212,11 @@ def test_http_client_get_signature_accepts_params() -> None:
     # ``params`` is forwarded via **kwargs to requests; verify the method
     # declares a VAR_KEYWORD parameter so callers can pass ``params=...``.
     var_keyword_params = [
-        p
-        for p in sig.parameters.values()
-        if p.kind is inspect.Parameter.VAR_KEYWORD
+        p for p in sig.parameters.values() if p.kind is inspect.Parameter.VAR_KEYWORD
     ]
-    assert var_keyword_params, (
-        "HttpClient.get must accept **kwargs so that params= can be forwarded"
-    )
+    assert (
+        var_keyword_params
+    ), "HttpClient.get must accept **kwargs so that params= can be forwarded"
 
 
 def test_logs_propagates_http_error(
