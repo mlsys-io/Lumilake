@@ -10,8 +10,11 @@ from typing import Any
 from lumilake._base_client import _raise_for_status, unwrap
 from lumilake.errors import HttpError
 from lumilake.resources._base import AsyncResource, SyncResource
+from lumilake.resources._log_models import LogQueryResponse
 
 logger = logging.getLogger(__name__)
+
+_list = list  # Alias so method names named ``list`` don't shadow the builtin.
 
 TERMINAL_STATES: tuple[str, ...] = ("completed", "failed", "cancelled")
 
@@ -53,6 +56,19 @@ def _request_kwargs(timeout: float | None) -> dict[str, Any]:
     if timeout is None:
         return {}
     return {"timeout": timeout}
+
+
+def _log_params(
+    limit: int,
+    before: str | None,
+    after: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"limit": limit}
+    if before is not None:
+        params["before"] = before
+    if after is not None:
+        params["after"] = after
+    return params
 
 
 class Jobs(SyncResource):
@@ -153,6 +169,39 @@ class Jobs(SyncResource):
         return unwrap(
             self._client.get(f"/jobs/{job_id}/inputs", **_request_kwargs(timeout))
         )
+
+    def list_tasks(
+        self, job_id: str, *, timeout: float | None = None
+    ) -> _list[dict[str, Any]]:
+        """List FlowMesh tasks recorded for a job (one entry per task)."""
+        payload = unwrap(
+            self._client.get(f"/jobs/{job_id}/tasks", **_request_kwargs(timeout))
+        )
+        if isinstance(payload, dict):
+            tasks = payload.get("tasks")
+            if isinstance(tasks, list):
+                return list(tasks)
+        return []
+
+    def get_logs(
+        self,
+        job_id: str,
+        task_id: str,
+        *,
+        limit: int = 200,
+        before: str | None = None,
+        after: str | None = None,
+        timeout: float | None = None,
+    ) -> LogQueryResponse:
+        """Fetch one page of logs for ``task_id`` under ``job_id``."""
+        payload = unwrap(
+            self._client.get(
+                f"/jobs/{job_id}/tasks/{task_id}/logs",
+                params=_log_params(limit, before, after),
+                **_request_kwargs(timeout),
+            )
+        )
+        return LogQueryResponse.model_validate(payload)
 
     def artifact(
         self,
@@ -339,6 +388,38 @@ class AsyncJobs(AsyncResource):
             f"/jobs/{job_id}/inputs", **_request_kwargs(timeout)
         )
         return unwrap(response)
+
+    async def list_tasks(
+        self, job_id: str, *, timeout: float | None = None
+    ) -> _list[dict[str, Any]]:
+        """List FlowMesh tasks recorded for a job (one entry per task)."""
+        response = await self._client.get(
+            f"/jobs/{job_id}/tasks", **_request_kwargs(timeout)
+        )
+        payload = unwrap(response)
+        if isinstance(payload, dict):
+            tasks = payload.get("tasks")
+            if isinstance(tasks, list):
+                return list(tasks)
+        return []
+
+    async def get_logs(
+        self,
+        job_id: str,
+        task_id: str,
+        *,
+        limit: int = 200,
+        before: str | None = None,
+        after: str | None = None,
+        timeout: float | None = None,
+    ) -> LogQueryResponse:
+        """Fetch one page of logs for ``task_id`` under ``job_id``."""
+        response = await self._client.get(
+            f"/jobs/{job_id}/tasks/{task_id}/logs",
+            params=_log_params(limit, before, after),
+            **_request_kwargs(timeout),
+        )
+        return LogQueryResponse.model_validate(unwrap(response))
 
     async def artifact(
         self,

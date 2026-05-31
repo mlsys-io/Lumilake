@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from ..core import logging
 from ..core.http import HttpError, client_from_config
@@ -659,3 +661,149 @@ def preview(
         logging.error(str(exc))
         raise typer.Exit(code=1)
     logging.log(json.dumps(response.json(), indent=2))
+
+
+def _render_tasks_table(job_id: str, tasks: list[dict[str, Any]]) -> Any:
+    table = Table(
+        title=f"Job {job_id} - FlowMesh Tasks",
+        show_header=True,
+        header_style="bold",
+    )
+    table.add_column("Task ID", style="cyan", overflow="fold")
+    table.add_column("Status", style="magenta")
+    table.add_column("Node", overflow="fold")
+    table.add_column("Worker", overflow="fold")
+    table.add_column("Workflow", overflow="fold")
+    for task in tasks:
+        table.add_row(
+            str(task.get("task_id", "")),
+            str(task.get("status", "")),
+            str(task.get("graph_node_name") or task.get("task_type") or ""),
+            str(task.get("assigned_worker") or ""),
+            str(task.get("workflow_id", "")),
+        )
+    return table
+
+
+@app.command("tasks")
+def tasks(
+    job_id: str = typer.Argument(..., help="Job identifier"),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit raw JSON instead of a table"
+    ),
+) -> None:
+    """List FlowMesh tasks recorded for a job."""
+    client = client_from_config()
+    try:
+        response = client.get(f"/jobs/{job_id}/tasks", version_prefix=True)
+    except HttpError as exc:
+        logging.error(str(exc))
+        raise typer.Exit(code=1)
+    payload = _unwrap(response.json())
+    task_list = payload.get("tasks", []) if isinstance(payload, dict) else []
+    if as_json:
+        logging.log(json.dumps(payload, indent=2))
+        return
+    Console().print(_render_tasks_table(job_id, task_list))
+
+
+def _format_log_line(entry: dict[str, Any]) -> str:
+    event = entry.get("event", {}) if isinstance(entry, dict) else {}
+    if not isinstance(event, dict):
+        event = {}
+    ts = event.get("ts") or ""
+    level = event.get("level") or ""
+    stream = event.get("stream") or ""
+    message = event.get("message") or ""
+    head = f"{ts} {level:<5}".strip()
+    if stream:
+        head = f"{head} [{stream}]"
+    return f"{head} {message}".rstrip()
+
+
+def _print_log_entries(entries: list[dict[str, Any]], as_json: bool) -> None:
+    for entry in entries:
+        if as_json:
+            logging.log(json.dumps(entry))
+        else:
+            logging.log(_format_log_line(entry))
+
+
+def _advance_cursor(page: dict[str, Any], entries: list[dict[str, Any]]) -> str | None:
+    advance = page.get("next_cursor") if isinstance(page, dict) else None
+    if isinstance(advance, str) and advance:
+        return advance
+    if entries:
+        tail = entries[-1]
+        if isinstance(tail, dict):
+            cursor = tail.get("cursor")
+            if isinstance(cursor, str) and cursor:
+                return cursor
+    return None
+
+
+@app.command("logs")
+def logs(
+    job_id: str = typer.Argument(..., help="Job identifier"),
+    task_id: str = typer.Argument(..., help="FlowMesh task identifier"),
+    limit: int = typer.Option(200, "--limit", help="Maximum entries per page (1-1000)"),
+    before: str | None = typer.Option(
+        None, "--before", help="Cursor to fetch entries older than this point"
+    ),
+    after: str | None = typer.Option(
+        None, "--after", help="Cursor to fetch entries newer than this point"
+    ),
+    follow: bool = typer.Option(
+        False, "--follow", "-f", help="Long-poll for new entries until interrupted"
+    ),
+    interval: float = typer.Option(
+        1.0, "--interval", "-i", help="Polling interval in seconds when --follow"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit raw JSON for each entry"),
+) -> None:
+    """Fetch logs for a FlowMesh task, optionally long-polling for new entries."""
+    if limit < 1 or limit > 1000:
+        logging.error("--limit must be between 1 and 1000")
+        raise typer.Exit(code=1)
+    client = client_from_config()
+    url = f"/jobs/{job_id}/tasks/{task_id}/logs"
+
+    def _fetch(before_cursor: str | None, after_cursor: str | None) -> dict[str, Any]:
+        params: list[tuple[str, str]] = [("limit", str(limit))]
+        if before_cursor is not None:
+            params.append(("before", before_cursor))
+        if after_cursor is not None:
+            params.append(("after", after_cursor))
+        resp = client.get(url, version_prefix=True, params=params)
+        return _unwrap(resp.json())
+
+    try:
+        payload = _fetch(before, after)
+    except HttpError as exc:
+        logging.error(str(exc))
+        raise typer.Exit(code=1)
+
+    entries = payload.get("entries", []) if isinstance(payload, dict) else []
+    _print_log_entries(entries, as_json)
+
+    if not follow:
+        return
+
+    next_after = _advance_cursor(payload, entries) or after
+
+    try:
+        while True:
+            time.sleep(interval)
+            try:
+                page = _fetch(None, next_after)
+            except HttpError as exc:
+                logging.warning(f"Error fetching logs: {exc}")
+                continue
+            new_entries = page.get("entries", []) if isinstance(page, dict) else []
+            _print_log_entries(new_entries, as_json)
+            advance = _advance_cursor(page, new_entries)
+            if advance is not None:
+                next_after = advance
+    except KeyboardInterrupt:
+        logging.warning("Stopped.")
+        raise typer.Exit(code=0)

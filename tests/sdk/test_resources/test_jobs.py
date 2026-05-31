@@ -5,7 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
-from lumilake import AsyncJobs, BaseAsyncClient, BaseClient, Jobs
+from lumilake import AsyncJobs, BaseAsyncClient, BaseClient, Jobs, LogQueryResponse
 from lumilake.errors import NotFoundError
 
 
@@ -476,3 +476,111 @@ async def test_async_artifact_maps_404_to_sdk_error(
                 "missing", path="s3://bucket/foo", output=tmp_path / "out"
             )
         await async_jobs._client.close()
+
+
+# ---- Tasks + logs ----
+
+
+def test_list_tasks(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/tasks").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "job_id": "j-1",
+                        "tasks": [
+                            {"task_id": "t-a", "status": "SUCCEEDED"},
+                            {"task_id": "t-b", "status": "RUNNING"},
+                        ],
+                    }
+                },
+            )
+        )
+        assert jobs.list_tasks("j-1") == [
+            {"task_id": "t-a", "status": "SUCCEEDED"},
+            {"task_id": "t-b", "status": "RUNNING"},
+        ]
+
+
+def test_list_tasks_empty_when_no_tasks_key(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/tasks").mock(
+            return_value=httpx.Response(200, json={"data": {"job_id": "j-1"}})
+        )
+        assert jobs.list_tasks("j-1") == []
+
+
+def test_get_logs_returns_typed_model(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        route = mocked.get("/api/v1/jobs/j-1/tasks/t-a/logs").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "job_id": "j-1",
+                        "task_id": "t-a",
+                        "entries": [
+                            {
+                                "cursor": "c1",
+                                "event": {
+                                    "ts": "2026-05-31T00:00:00Z",
+                                    "level": "INFO",
+                                    "stream": "stdout",
+                                    "message": "hello",
+                                },
+                            }
+                        ],
+                        "next_cursor": "c1",
+                        "prev_cursor": None,
+                    }
+                },
+            )
+        )
+        result = jobs.get_logs("j-1", "t-a", limit=50, after="c0")
+    assert isinstance(result, LogQueryResponse)
+    assert result.entries[0].event.message == "hello"
+    assert result.next_cursor == "c1"
+    url = str(route.calls.last.request.url)
+    assert "limit=50" in url and "after=c0" in url
+
+
+@pytest.mark.asyncio
+async def test_async_list_tasks(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/tasks").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "job_id": "j-1",
+                        "tasks": [{"task_id": "t-a"}],
+                    }
+                },
+            )
+        )
+        assert await async_jobs.list_tasks("j-1") == [{"task_id": "t-a"}]
+        await async_jobs._client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_get_logs(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/tasks/t-a/logs").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "job_id": "j-1",
+                        "task_id": "t-a",
+                        "entries": [],
+                        "next_cursor": None,
+                        "prev_cursor": None,
+                    }
+                },
+            )
+        )
+        result = await async_jobs.get_logs("j-1", "t-a")
+    assert isinstance(result, LogQueryResponse)
+    assert result.entries == []
+    await async_jobs._client.close()

@@ -93,7 +93,7 @@ with LumilakeClient(api_key="lm_pat_live_…") as client:
 |---------|------|-------|
 | Health | `client.health()` | `await client.health()` |
 | Deploy | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
-| Jobs | `client.jobs.submit / preview / list / list_all / get / progress / result / inputs / artifact / cancel / wait / watch(...)` | same, await |
+| Jobs | `client.jobs.submit / preview / list / list_all / get / progress / result / inputs / artifact / list_tasks / get_logs / cancel / wait / watch(...)` | same, await |
 | Workers | `client.workers.list / list_all / get(...)` | same, await |
 | Traces | `client.traces.list / list_all / get(...)` | same, await |
 
@@ -111,6 +111,10 @@ client.jobs.result(job_id)
 client.jobs.inputs(job_id)
 client.jobs.cancel(job_id)
 client.jobs.artifact(job_id, path="s3://...", output="result.json")
+
+# Per-task FlowMesh logs (mirrors `lumilake job tasks` / `lumilake job logs`).
+tasks = client.jobs.list_tasks(job_id)
+page = client.jobs.get_logs(job_id, tasks[0]["task_id"], limit=200)  # LogQueryResponse
 
 # Block until a terminal state and return the final job record.
 client.jobs.wait(job_id, timeout=900.0)

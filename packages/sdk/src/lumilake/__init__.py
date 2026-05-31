@@ -20,6 +20,7 @@ from lumilake.errors import (
     LumilakeError,
     NotFoundError,
 )
+from lumilake.resources._log_models import LogEntry, LogEvent, LogQueryResponse
 from lumilake.resources.deploy import SERVICE_NAMES, AsyncDeploy, Deploy
 from lumilake.resources.info import AsyncInfo, Info
 from lumilake.resources.jobs import AsyncJobs, Jobs
@@ -47,6 +48,9 @@ __all__ = [
     "HttpError",
     "Info",
     "Jobs",
+    "LogEntry",
+    "LogEvent",
+    "LogQueryResponse",
     "LumilakeClient",
     "LumilakeConfig",
     "LumilakeError",
