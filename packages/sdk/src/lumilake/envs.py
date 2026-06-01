@@ -11,6 +11,8 @@ behavior) and :func:`validate` (enforces required vars and value
 ranges). SDK / CLI / deploy consumers don't import or call those.
 """
 
+import logging
+import math
 import os
 from collections.abc import Mapping
 from typing import overload
@@ -160,6 +162,46 @@ LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS: str = os.environ.get(
 LUMILAKE_DISABLE_DATA_PROFILE: bool = os.environ.get(
     "LUMILAKE_DISABLE_DATA_PROFILE", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
+LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING: bool = os.environ.get(
+    "LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING", ""
+).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _positive_float(name: str, raw: str | None, default: float) -> float:
+    _log = logging.getLogger(__name__)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        _log.warning(
+            "%s: could not parse %r as a float; using default %.1f",
+            name,
+            raw,
+            default,
+        )
+        return default
+    if not math.isfinite(value) or value <= 0:
+        _log.warning(
+            "%s: value %r is not a positive finite number; using default %.1f",
+            name,
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
+LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S: float = _positive_float(
+    "LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S",
+    os.environ.get("LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S"),
+    5.0,
+)
+LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S: float = _positive_float(
+    "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S",
+    os.environ.get("LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S"),
+    10.0,
+)
 
 # vLLM runtime defaults
 LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS: int = int(

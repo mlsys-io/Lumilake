@@ -50,6 +50,17 @@ params:
     path: items.table.id
 ```
 
+For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns.
+
+Live sampling is **off by default**. The recommended path is to set `sample_value` on the upstream `data_spec` — that supplies a representative value at build time with zero live execution. To explicitly opt in to bounded live queries, set `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING=1`. To skip data profiling entirely, set `LUMILAKE_DISABLE_DATA_PROFILE=1`.
+
+When live sampling is enabled, preflight executes a bounded `LIMIT N` query against the upstream's connection, subject to a TCP connect timeout (`LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S`, default `5 s`) and a Postgres `statement_timeout` (`LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S`, default `10 s`). The lockdown enforces:
+
+- **Static SELECT-only check**: multi-statement scripts and non-SELECT top-level statements (including inside CTEs) are rejected before any query reaches the database.
+- **`READ ONLY` transaction**: writable CTEs and direct DML/DDL are rejected at the Postgres level.
+
+Note: these controls do not prevent side-effecting functions inside `SELECT` — `dblink_exec(...)`, `pg_advisory_lock(N)`, or user-defined volatile functions can still execute with database-level effects. That is why opt-in is required when the connected database has such functions defined.
+
 ## Examples
 
 Runnable examples live in `examples/templates/`. Each is shipped as a

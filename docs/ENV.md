@@ -101,6 +101,9 @@ Agent-retrieval keys:
 | `LUMILAKE_S3_PROFILE_COST_PER_MIB` | Cost-model coefficient (per MiB) for S3 profile estimates. |
 | `LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS` | Comma-separated planner variants used for local data profiles. Defaults to `default,prefer_index,prefer_seq,prefer_nestloop`. |
 | `LUMILAKE_DISABLE_DATA_PROFILE` | When truthy (`1`/`true`/`yes`/`on`), the server skips inline data-profile task build/run, skips `collect_data_profile` at batch dispatch, and the HALO optimizer falls back to its static cost model (any supplied profile results are dropped). Defaults to off. |
+| `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING` | When truthy (`1`/`true`/`yes`/`on`), preflight may issue a bounded `LIMIT N` query against an upstream's connection when no `sample_value` is set. Off by default — set `sample_value` on the upstream `data_spec` for zero live-execution surface, or set this var to `1` only when you control the connected database and trust that it has no side-effecting functions in scope. |
+| `LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S` | TCP connect timeout in seconds for live SQL sample connections. Defaults to `5.0`. Must be a positive float; non-positive or unparsable values fall back to the default. |
+| `LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S` | Postgres `statement_timeout` applied to each live sample query, in seconds. Defaults to `10.0`. Must be a positive float; non-positive or unparsable values fall back to the default. |
 
 ## vLLM Backend
 
