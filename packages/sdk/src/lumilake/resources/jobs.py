@@ -1,6 +1,7 @@
 """Optimization jobs backed by the server's ``/api/v1/jobs`` routes."""
 
 import asyncio
+import json
 import logging
 import tarfile
 import time
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from lumilake._base_client import _raise_for_status, unwrap
-from lumilake.errors import HttpError
+from lumilake.errors import HttpError, LogStreamError
 from lumilake.resources._base import AsyncResource, SyncResource
 from lumilake.resources._log_models import JobWorkflowInfo, LogEntry, LogQueryResponse
 
@@ -244,10 +245,25 @@ class Jobs(SyncResource):
                 buffer += chunk
                 while "\n\n" in buffer:
                     block, buffer = buffer.split("\n\n", 1)
+                    current_event: str | None = None
                     for line in block.splitlines():
-                        if line.startswith("data:"):
+                        if line.startswith("event:"):
+                            current_event = line[len("event:") :].strip()
+                        elif line.startswith("data:"):
                             data = line[len("data:") :].strip()
                             if data:
+                                if current_event == "error":
+                                    try:
+                                        payload = json.loads(data)
+                                        raise LogStreamError(
+                                            code=payload.get("code", "APIError"),
+                                            message=payload.get("message", ""),
+                                        )
+                                    except (ValueError, KeyError):
+                                        raise LogStreamError(
+                                            code="APIError",
+                                            message="Upstream stream error.",
+                                        )
                                 yield LogEntry.model_validate_json(data)
 
     def download_logs(
@@ -558,10 +574,25 @@ class AsyncJobs(AsyncResource):
                 buffer += chunk
                 while "\n\n" in buffer:
                     block, buffer = buffer.split("\n\n", 1)
+                    current_event: str | None = None
                     for line in block.splitlines():
-                        if line.startswith("data:"):
+                        if line.startswith("event:"):
+                            current_event = line[len("event:") :].strip()
+                        elif line.startswith("data:"):
                             data = line[len("data:") :].strip()
                             if data:
+                                if current_event == "error":
+                                    try:
+                                        payload = json.loads(data)
+                                        raise LogStreamError(
+                                            code=payload.get("code", "APIError"),
+                                            message=payload.get("message", ""),
+                                        )
+                                    except (ValueError, KeyError):
+                                        raise LogStreamError(
+                                            code="APIError",
+                                            message="Upstream stream error.",
+                                        )
                                 yield LogEntry.model_validate_json(data)
 
     async def download_logs(

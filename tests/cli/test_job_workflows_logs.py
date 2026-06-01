@@ -296,6 +296,43 @@ def test_logs_download_empty_tar_prints_no_logs_message(
     assert "No logs downloaded for workflow wf-1" in result.output
 
 
+def test_logs_stream_sse_error_frame_exits_1(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An SSE error event frame must cause the stream command to exit with code 1."""
+    error_frame = json.dumps(
+        {
+            "kind": "stream_error",
+            "code": "NotFoundError",
+            "message": "FlowMesh log stream ended (not found or expired).",
+        }
+    )
+    sse_body = f"event: error\ndata: {error_frame}\n\n"
+
+    class _FakeResp:
+        status_code = 200
+
+        def __enter__(self) -> "_FakeResp":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def iter_content(
+            self, chunk_size: Any = None, decode_unicode: bool = False
+        ) -> list[str]:
+            return [sse_body]
+
+    monkeypatch.setattr(job_cmd, "client_from_config", lambda: _StubClient([{}]))
+    monkeypatch.setattr(
+        _requests_mod, "get", lambda *a, **kw: _FakeResp(), raising=True
+    )
+
+    result = runner.invoke(app, ["logs", "stream", "j-1", "wf-1"])
+    assert result.exit_code == 1
+    assert "NotFoundError" in result.output or "not found or expired" in result.output
+
+
 def test_http_client_get_signature_accepts_params() -> None:
     sig = inspect.signature(HttpClient.get)
     var_keyword_params = [

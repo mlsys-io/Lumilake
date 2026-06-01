@@ -67,16 +67,27 @@ class _FakeWorkflow:
         self.workflow_id = workflow_id
         self.status = status
         self.submitted_at = "2026-05-31T00:00:00Z"
-        self.task_ids = ["t-1", "t-2", "t-3", "t-4", "t-5"]
-        self.completed_tasks = ["t-1", "t-2", "t-3", "t-4"]
-        self.failed_tasks = ["t-5"]
+        self.task_ids = [
+            "tsk-00000001",
+            "tsk-00000002",
+            "tsk-00000003",
+            "tsk-00000004",
+            "tsk-00000005",
+        ]
+        self.completed_tasks = [
+            "tsk-00000001",
+            "tsk-00000002",
+            "tsk-00000003",
+            "tsk-00000004",
+        ]
+        self.failed_tasks = ["tsk-00000005"]
 
 
 class _FakeLogEvent:
     def __init__(self, message: str) -> None:
         self.ts = "2026-05-31T00:00:00Z"
         self.workflow_id = "wf-1"
-        self.task_id = "t-a"
+        self.task_id = "tsk-0000000a"
         self.worker_id = "w-1"
         self.node_id = None
         self.level = "INFO"
@@ -122,10 +133,12 @@ class _FakeWorkflows:
         workflows: dict[str, _FakeWorkflow],
         logs_result: _FakeLogQueryResponse,
         stream_entries: list[_FakeLogEntry] | None = None,
+        stream_error: Exception | None = None,
     ) -> None:
         self._workflows = workflows
         self._logs_result = logs_result
         self._stream_entries = stream_entries or []
+        self._stream_error = stream_error
         self.retrieve_calls: list[str] = []
         self.log_calls: list[tuple[str, int, str | None, str | None]] = []
         self.stream_calls: list[tuple[str, str | None]] = []
@@ -152,6 +165,8 @@ class _FakeWorkflows:
         self.stream_calls.append((workflow_id, cursor))
         for entry in self._stream_entries:
             yield entry
+        if self._stream_error is not None:
+            raise self._stream_error
 
 
 class _FakeHttpxResponse:
@@ -435,10 +450,10 @@ async def test_download_logs_returns_tar_with_task_files(
         workflows={"wf-1": _FakeWorkflow("wf-1")},
         logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
     )
-    fake_workflows._workflows["wf-1"].task_ids = ["t-1", "t-2"]
+    fake_workflows._workflows["wf-1"].task_ids = ["tsk-00000001", "tsk-00000002"]
     fake_fm = _FakeFlowMesh(
         workflows=fake_workflows,
-        task_log_bytes={"t-1": content_t1, "t-2": content_t2},
+        task_log_bytes={"tsk-00000001": content_t1, "tsk-00000002": content_t2},
     )
     monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
 
@@ -455,9 +470,9 @@ async def test_download_logs_returns_tar_with_task_files(
     buf = io.BytesIO(resp.content)
     with tarfile.open(fileobj=buf, mode="r") as tf:
         names = tf.getnames()
-        assert sorted(names) == ["t-1-logs.jsonl", "t-2-logs.jsonl"]
-        assert tf.extractfile("t-1-logs.jsonl").read() == content_t1  # type: ignore[union-attr]
-        assert tf.extractfile("t-2-logs.jsonl").read() == content_t2  # type: ignore[union-attr]
+        assert sorted(names) == ["tsk-00000001-logs.jsonl", "tsk-00000002-logs.jsonl"]
+        assert tf.extractfile("tsk-00000001-logs.jsonl").read() == content_t1  # type: ignore[union-attr]
+        assert tf.extractfile("tsk-00000002-logs.jsonl").read() == content_t2  # type: ignore[union-attr]
 
 
 @pytest.mark.anyio
@@ -470,10 +485,10 @@ async def test_download_logs_skips_missing_task_archives(
         workflows={"wf-1": _FakeWorkflow("wf-1")},
         logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
     )
-    fake_workflows._workflows["wf-1"].task_ids = ["t-missing", "t-2"]
+    fake_workflows._workflows["wf-1"].task_ids = ["tsk-00000000", "tsk-00000002"]
     fake_fm = _FakeFlowMesh(
         workflows=fake_workflows,
-        task_log_bytes={"t-2": content_t2},
+        task_log_bytes={"tsk-00000002": content_t2},
     )
     monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
 
@@ -487,7 +502,7 @@ async def test_download_logs_skips_missing_task_archives(
     buf = io.BytesIO(resp.content)
     with tarfile.open(fileobj=buf, mode="r") as tf:
         names = tf.getnames()
-        assert names == ["t-2-logs.jsonl"]
+        assert names == ["tsk-00000002-logs.jsonl"]
 
 
 @pytest.mark.anyio
@@ -499,7 +514,7 @@ async def test_download_logs_all_archives_missing_returns_empty_tar(
         workflows={"wf-1": _FakeWorkflow("wf-1")},
         logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
     )
-    fake_workflows._workflows["wf-1"].task_ids = ["t-gone-1", "t-gone-2"]
+    fake_workflows._workflows["wf-1"].task_ids = ["tsk-00000011", "tsk-00000012"]
     fake_fm = _FakeFlowMesh(workflows=fake_workflows, task_log_bytes={})
     monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
 
@@ -546,15 +561,15 @@ async def test_download_logs_api_error_returns_502(
         workflows={"wf-1": _FakeWorkflow("wf-1")},
         logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
     )
-    fake_workflows._workflows["wf-1"].task_ids = ["t-bad"]
+    fake_workflows._workflows["wf-1"].task_ids = ["tsk-badbad01"]
     fake_fm = _FakeFlowMesh(
         workflows=fake_workflows,
         task_log_errors={
-            "t-bad": APIError(
+            "tsk-badbad01": APIError(
                 "upstream failure",
                 status_code=500,
                 method="GET",
-                url="/results/t-bad/logs",
+                url="/results/tsk-badbad01/logs",
             )
         },
     )
@@ -567,6 +582,173 @@ async def test_download_logs_api_error_returns_502(
             headers={"Authorization": "Bearer token"},
         )
     assert resp.status_code == 502
+
+
+@pytest.mark.anyio
+async def test_stream_logs_not_found_error_emits_structured_sse_error(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NotFoundError mid-stream must emit a structured JSON error frame."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": _FakeWorkflow("wf-1")},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+        stream_error=NotFoundError(
+            "workflow wf-1 not found", status_code=404, method="GET", url="/logs/stream"
+        ),
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: _FakeFlowMesh(fake_workflows),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows/wf-1/logs/stream",
+            headers={"Authorization": "Bearer token"},
+        )
+    assert resp.status_code == 200
+    raw = resp.text
+    # Locate the error event block
+    error_data: dict[str, Any] | None = None
+    for block in raw.split("\n\n"):
+        lines = block.splitlines()
+        event_type = next(
+            (ln[len("event:") :].strip() for ln in lines if ln.startswith("event:")),
+            None,
+        )
+        if event_type == "error":
+            data_line = next(
+                (ln[len("data:") :].strip() for ln in lines if ln.startswith("data:")),
+                None,
+            )
+            if data_line:
+                error_data = json.loads(data_line)
+    assert error_data is not None, "no error event frame found in SSE body"
+    assert error_data["kind"] == "stream_error"
+    assert error_data["code"] == "NotFoundError"
+    # message must not contain raw exception repr / internal details
+    assert "not found or expired" in error_data["message"]
+
+
+def test_safe_tar_name_accepts_normal_ids() -> None:
+    """_safe_tar_name accepts standard and uppercase task IDs."""
+    assert job_routes_module._safe_tar_name("tsk-00000abc") == "tsk-00000abc-logs.jsonl"
+    assert (
+        job_routes_module._safe_tar_name("tsk-uppercaseXYZ")
+        == "tsk-uppercaseXYZ-logs.jsonl"
+    )
+
+
+def test_safe_tar_name_escapes_path_separators() -> None:
+    """_safe_tar_name URL-encodes path separators so distinct IDs stay distinct."""
+    slash = job_routes_module._safe_tar_name("tsk-with/slash")
+    assert slash == "tsk-with%2Fslash-logs.jsonl"
+    # Distinct inputs must produce distinct member names (collision-free).
+    underscore = job_routes_module._safe_tar_name("tsk-with_slash")
+    backslash = job_routes_module._safe_tar_name("tsk-with\\slash")
+    assert len({slash, underscore, backslash}) == 3
+
+
+def test_safe_tar_name_preserves_whitespace_so_no_collision() -> None:
+    """IDs differing only by surrounding whitespace must produce distinct names."""
+    bare = job_routes_module._safe_tar_name("tsk-abc")
+    padded = job_routes_module._safe_tar_name(" tsk-abc ")
+    assert bare == "tsk-abc-logs.jsonl"
+    assert padded == "%20tsk-abc%20-logs.jsonl"
+    assert bare != padded
+
+
+def test_safe_tar_name_rejects_degenerate_ids() -> None:
+    """_safe_tar_name raises ValueError for IDs that resolve to parent/current/empty."""
+    with pytest.raises(ValueError):
+        job_routes_module._safe_tar_name("..")
+    with pytest.raises(ValueError):
+        job_routes_module._safe_tar_name(".")
+    with pytest.raises(ValueError):
+        job_routes_module._safe_tar_name("")
+
+
+@pytest.mark.anyio
+async def test_download_logs_invalid_task_id_skipped(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task IDs unsafe for tar members are skipped; valid uppercase IDs appear."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    content_good = b'{"message": "good-task"}\n'
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": _FakeWorkflow("wf-1")},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    # Mix: one path-traversal id (reduces to ".."), one valid id with uppercase chars
+    fake_workflows._workflows["wf-1"].task_ids = [
+        "..",
+        "tsk-upperXYZ",
+    ]
+    fake_fm = _FakeFlowMesh(
+        workflows=fake_workflows,
+        task_log_bytes={"tsk-upperXYZ": content_good},
+    )
+    monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows/wf-1/logs/download",
+            headers={"Authorization": "Bearer token"},
+        )
+    assert resp.status_code == 200
+    buf = io.BytesIO(resp.content)
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        names = tf.getnames()
+    # Unsafe id was skipped; uppercase id is included
+    assert names == ["tsk-upperXYZ-logs.jsonl"]
+    # The fake was never called with the unsafe path
+    called_paths = [path for _, path in fake_fm.raw_calls]
+    assert not any("%2E%2E" in p or ".." in p for p in called_paths)
+
+
+@pytest.mark.anyio
+async def test_download_logs_spool_spills_to_disk(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Archive exceeding LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB must spill spool to disk."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    # Two 1 MiB members — total tar will exceed a 1 MiB spool threshold
+    member_bytes = b"x" * (1024 * 1024)
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": _FakeWorkflow("wf-1")},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    fake_workflows._workflows["wf-1"].task_ids = ["tsk-aa000001", "tsk-aa000002"]
+    fake_fm = _FakeFlowMesh(
+        workflows=fake_workflows,
+        task_log_bytes={
+            "tsk-aa000001": member_bytes,
+            "tsk-aa000002": member_bytes,
+        },
+    )
+    monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
+    # Set spool threshold to 1 MiB so the two-member tar spills to disk
+    monkeypatch.setattr(job_routes_module.envs, "LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB", 1)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows/wf-1/logs/download",
+            headers={"Authorization": "Bearer token"},
+        )
+    assert resp.status_code == 200
+    buf = io.BytesIO(resp.content)
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        names = sorted(tf.getnames())
+    assert names == ["tsk-aa000001-logs.jsonl", "tsk-aa000002-logs.jsonl"]
+    # Verify the content round-trips correctly despite spilling
+    buf.seek(0)
+    with tarfile.open(fileobj=buf, mode="r") as tf:
+        assert tf.extractfile("tsk-aa000001-logs.jsonl").read() == member_bytes  # type: ignore[union-attr]
 
 
 @pytest.fixture

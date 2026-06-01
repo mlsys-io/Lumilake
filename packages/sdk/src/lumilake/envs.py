@@ -135,6 +135,9 @@ LUMID_DATA_TIMEOUT_SECONDS: float = float(
 LUMILAKE_HTTP_TIMEOUT_SECONDS: float = float(
     os.environ.get("LUMILAKE_HTTP_TIMEOUT_SECONDS") or "300"
 )
+LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB: int = int(
+    os.environ.get("LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB") or "16"
+)
 LUMILAKE_PLUGINS: tuple[str, ...] = tuple(
     plugin
     for raw in os.environ.get("LUMILAKE_PLUGINS", "").split(",")

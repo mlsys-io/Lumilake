@@ -17,6 +17,7 @@ from lumilake.config import DEFAULT_CONFIG_PATH, LumilakeConfig
 from lumilake.errors import (
     DeployError,
     HttpError,
+    LogStreamError,
     LumilakeError,
     NotFoundError,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "LogEntry",
     "LogEvent",
     "LogQueryResponse",
+    "LogStreamError",
     "LumilakeClient",
     "LumilakeConfig",
     "LumilakeError",

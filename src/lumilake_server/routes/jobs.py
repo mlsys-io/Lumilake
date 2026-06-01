@@ -7,10 +7,12 @@ import io
 import json
 import re
 import tarfile
+import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
 from io import BytesIO
 from typing import Any, Literal
+from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
 
 import yaml
@@ -622,6 +624,22 @@ _IO_LOCATION_ADAPTER: TypeAdapter[IOLocation] = TypeAdapter(IOLocation)
 
 _DATA_URL_RE = re.compile(r"^data:(image/[^;]+);base64,(.+)$", re.DOTALL)
 _ARTIFACT_PATH_TOKEN = "/artifacts/"
+
+
+def _safe_tar_name(task_id: str) -> str:
+    """Return a collision-free, filesystem-safe tar member name for a task log file.
+
+    Uses URL-quoting on the original task_id so distinct IDs always produce
+    distinct member names (``a/b`` → ``a%2Fb`` ≠ ``a_b``; `` abc `` → ``%20abc%20``
+    ≠ ``abc``). Rejects empty / ``.`` / ``..`` since those resolve to parent or
+    current directory regardless of quoting.
+    """
+    if task_id == "" or task_id == "." or task_id == "..":
+        raise ValueError(f"task_id {task_id!r} produces an unsafe tar member name")
+    safe = urlquote(task_id, safe="-_.")
+    return f"{safe}-logs.jsonl"
+
+
 _IMAGE_EXT = {
     "image/png": "png",
     "image/jpeg": "jpg",
@@ -2635,11 +2653,54 @@ async def stream_job_workflow_logs(
                     ).model_dump()
                 )
                 yield f"data: {data}\n\n"
-        except (NotFoundError, AuthenticationError, APIError) as exc:
+        except NotFoundError:
             request.app.state.logger.exception(
                 "FlowMesh workflows.stream_logs error for workflow %s", workflow_id
             )
-            yield f"event: error\ndata: {exc}\n\n"
+            yield (
+                "event: error\n"
+                + "data: "
+                + json.dumps(
+                    {
+                        "kind": "stream_error",
+                        "code": "NotFoundError",
+                        "message": "FlowMesh log stream ended (not found or expired).",
+                    }
+                )
+                + "\n\n"
+            )
+        except AuthenticationError:
+            request.app.state.logger.exception(
+                "FlowMesh workflows.stream_logs error for workflow %s", workflow_id
+            )
+            yield (
+                "event: error\n"
+                + "data: "
+                + json.dumps(
+                    {
+                        "kind": "stream_error",
+                        "code": "AuthenticationError",
+                        "message": "Upstream authentication failed.",
+                    }
+                )
+                + "\n\n"
+            )
+        except APIError:
+            request.app.state.logger.exception(
+                "FlowMesh workflows.stream_logs error for workflow %s", workflow_id
+            )
+            yield (
+                "event: error\n"
+                + "data: "
+                + json.dumps(
+                    {
+                        "kind": "stream_error",
+                        "code": "APIError",
+                        "message": "Upstream stream error.",
+                    }
+                )
+                + "\n\n"
+            )
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
 
@@ -2667,7 +2728,7 @@ async def download_job_workflow_logs(
     workflow_id: str,
     request: Request,
     principal: PrincipalContext = Depends(authenticate_request),
-) -> StreamingResponse:
+) -> Response:
     """Download per-task archived logs for a FlowMesh workflow as a tar archive.
 
     Ownership check: ``workflow_id`` must be in ``record.trace_ids``.
@@ -2713,63 +2774,65 @@ async def download_job_workflow_logs(
 
     task_ids: list[str] = list(workflow.task_ids)
 
-    async def _fetch_task_log_bytes(task_id: str) -> bytes | None:
+    spool_max_bytes = envs.LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB * 1024 * 1024
+    spool = tempfile.SpooledTemporaryFile(max_size=spool_max_bytes)
+    try:
+        with tarfile.open(fileobj=spool, mode="w") as tf:
+            for task_id in task_ids:
+                try:
+                    member_name = _safe_tar_name(task_id)
+                except ValueError:
+                    request.app.state.logger.warning(
+                        "Skipping task_id unsafe for tar member: %r", task_id
+                    )
+                    continue
+                safe_task_id = urlquote(task_id, safe="")
+                try:
+                    resp = await fm._request_raw("GET", f"/results/{safe_task_id}/logs")
+                except NotFoundError:
+                    continue
+                except AuthenticationError as exc:
+                    request.app.state.logger.exception(
+                        "FlowMesh auth error fetching archived logs for task %s",
+                        task_id,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="upstream authentication failed",
+                    ) from exc
+                except APIError as exc:
+                    request.app.state.logger.exception(
+                        "FlowMesh API error fetching archived logs for task %s",
+                        task_id,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="upstream log archive fetch failed",
+                    ) from exc
+                data = resp.content
+                info = tarfile.TarInfo(name=member_name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+    except BaseException:
+        spool.close()
+        raise
+    spool.seek(0)
+
+    async def _stream_archive() -> AsyncIterator[bytes]:
         try:
-            response = await fm._request_raw("GET", f"/results/{task_id}/logs")
-            return response.content
-        except NotFoundError:
-            return None
-        except AuthenticationError:
-            request.app.state.logger.exception(
-                "FlowMesh auth error fetching archived logs for task %s", task_id
-            )
-            raise
-        except APIError:
-            request.app.state.logger.exception(
-                "FlowMesh API error fetching archived logs for task %s", task_id
-            )
-            raise
-
-    fetched: list[tuple[str, bytes]] = []
-    auth_error: AuthenticationError | None = None
-    api_error: APIError | None = None
-    for task_id in task_ids:
-        try:
-            content = await _fetch_task_log_bytes(task_id)
-        except AuthenticationError as exc:
-            auth_error = exc
-            break
-        except APIError as exc:
-            api_error = exc
-            break
-        if content is not None:
-            fetched.append((task_id, content))
-
-    if auth_error is not None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="upstream authentication failed",
-        )
-    if api_error is not None:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="upstream log archive fetch failed",
-        )
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w") as tf:
-        for task_id, content in fetched:
-            name = f"{task_id}-logs.jsonl"
-            entry_info = tarfile.TarInfo(name=name)
-            entry_info.size = len(content)
-            tf.addfile(entry_info, io.BytesIO(content))
-    archive_bytes = buf.getvalue()
+            chunk_size = 64 * 1024
+            while True:
+                chunk = spool.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            spool.close()
 
     return StreamingResponse(
-        iter([archive_bytes]),
+        _stream_archive(),
         media_type="application/x-tar",
         headers={
             "Content-Disposition": f'attachment; filename="{workflow_id}-logs.tar"',
-            "Content-Length": str(len(archive_bytes)),
         },
     )

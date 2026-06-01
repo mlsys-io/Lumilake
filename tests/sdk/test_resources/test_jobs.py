@@ -17,7 +17,7 @@ from lumilake import (
     LogEntry,
     LogQueryResponse,
 )
-from lumilake.errors import NotFoundError
+from lumilake.errors import LogStreamError, NotFoundError
 
 
 @pytest.fixture
@@ -746,3 +746,32 @@ async def test_async_download_logs_extracts_files(
     assert paths[0].name == "t-a-logs.jsonl"
     assert paths[0].read_bytes() == content
     await async_jobs._client.close()
+
+
+def test_stream_logs_error_frame_raises_log_stream_error(
+    jobs: Jobs, base_url: str
+) -> None:
+    """An SSE error event frame must raise LogStreamError.
+
+    Regression guard: before the fix, model_validate_json raised on non-LogEntry JSON.
+    """
+    error_frame = json.dumps(
+        {
+            "kind": "stream_error",
+            "code": "NotFoundError",
+            "message": "FlowMesh log stream ended (not found or expired).",
+        }
+    )
+    sse = f"event: error\ndata: {error_frame}\n\n"
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/workflows/wf-1/logs/stream").mock(
+            return_value=httpx.Response(
+                200,
+                text=sse,
+                headers={"content-type": "text/event-stream"},
+            )
+        )
+        with pytest.raises(LogStreamError) as exc_info:
+            list(jobs.stream_logs("j-1", "wf-1"))
+    assert exc_info.value.code == "NotFoundError"
+    assert "not found or expired" in exc_info.value.message

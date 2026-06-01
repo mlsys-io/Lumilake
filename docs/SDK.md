@@ -51,7 +51,8 @@ The SDK and CLI share a small TOML file that records the server URL:
 Schema:
 
 ```toml
-base_url = "http://127.0.0.1:9000"
+base_url = "https://lumilake.example.com"
+api_key  = "lm_pat_..."  # optional; falls back to LUMILAKE_API_KEY env or empty
 ```
 
 ### What writes it

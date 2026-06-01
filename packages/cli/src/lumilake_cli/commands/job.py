@@ -740,12 +740,21 @@ def _print_log_entries(entries: list[dict[str, Any]], as_json: bool) -> None:
 def _parse_sse_entries(raw: str) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for block in raw.split("\n\n"):
+        current_event: str | None = None
         for line in block.splitlines():
-            if line.startswith("data:"):
+            if line.startswith("event:"):
+                current_event = line[len("event:") :].strip()
+            elif line.startswith("data:"):
                 data = line[len("data:") :].strip()
                 if data:
                     try:
-                        entries.append(json.loads(data))
+                        parsed = json.loads(data)
+                        if current_event == "error" or (
+                            isinstance(parsed, dict)
+                            and parsed.get("kind") == "stream_error"
+                        ):
+                            parsed["_sse_error"] = True
+                        entries.append(parsed)
                     except json.JSONDecodeError:
                         pass
     return entries
@@ -818,13 +827,26 @@ def logs_stream(
                 logging.error(f"Stream error: {resp.status_code} {resp.text}")
                 raise typer.Exit(code=1)
             buffer = ""
+            stream_error: dict[str, Any] | None = None
             for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
                 if chunk:
                     buffer += chunk
                     while "\n\n" in buffer:
                         block, buffer = buffer.split("\n\n", 1)
                         for entry in _parse_sse_entries(block + "\n\n"):
+                            if entry.get("_sse_error"):
+                                stream_error = entry
+                                break
                             _print_log_entries([entry], False)
+                        if stream_error is not None:
+                            break
+                if stream_error is not None:
+                    break
+            if stream_error is not None:
+                code = stream_error.get("code", "APIError")
+                message = stream_error.get("message", "Upstream stream error.")
+                logging.error(f"log stream error [{code}]: {message}")
+                raise typer.Exit(code=1)
     except KeyboardInterrupt:
         raise typer.Exit(code=0)
 
