@@ -1,10 +1,12 @@
 """Job submission, monitoring, and result retrieval commands."""
 
 import json
+import tarfile
 import time
 from pathlib import Path
 from typing import Any
 
+import requests
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -663,48 +665,54 @@ def preview(
     logging.log(json.dumps(response.json(), indent=2))
 
 
-def _render_tasks_table(job_id: str, tasks: list[dict[str, Any]]) -> Any:
+def _render_workflows_table(job_id: str, workflows: list[dict[str, Any]]) -> Any:
     table = Table(
-        title=f"Job {job_id} - FlowMesh Tasks",
+        title=f"Job {job_id} - FlowMesh Workflows",
         show_header=True,
         header_style="bold",
     )
-    table.add_column("Task ID", style="cyan", overflow="fold")
+    table.add_column("Workflow ID", style="cyan", overflow="fold")
     table.add_column("Status", style="magenta")
-    table.add_column("Node", overflow="fold")
-    table.add_column("Worker", overflow="fold")
-    table.add_column("Workflow", overflow="fold")
-    for task in tasks:
+    table.add_column("Submitted At", overflow="fold")
+    table.add_column("Tasks", justify="right")
+    table.add_column("Succeeded", justify="right")
+    table.add_column("Failed", justify="right")
+    for wf in workflows:
         table.add_row(
-            str(task.get("task_id", "")),
-            str(task.get("status", "")),
-            str(task.get("graph_node_name") or task.get("task_type") or ""),
-            str(task.get("assigned_worker") or ""),
-            str(task.get("workflow_id", "")),
+            str(wf.get("workflow_id", "")),
+            str(wf.get("status", "")),
+            str(wf.get("submitted_at") or ""),
+            str(wf.get("task_count") if wf.get("task_count") is not None else ""),
+            str(
+                wf.get("succeeded_count")
+                if wf.get("succeeded_count") is not None
+                else ""
+            ),
+            str(wf.get("failed_count") if wf.get("failed_count") is not None else ""),
         )
     return table
 
 
-@app.command("tasks")
-def tasks(
+@app.command("workflows")
+def workflows(
     job_id: str = typer.Argument(..., help="Job identifier"),
     as_json: bool = typer.Option(
         False, "--json", help="Emit raw JSON instead of a table"
     ),
 ) -> None:
-    """List FlowMesh tasks recorded for a job."""
+    """List FlowMesh workflows associated with a job."""
     client = client_from_config()
     try:
-        response = client.get(f"/jobs/{job_id}/tasks", version_prefix=True)
+        response = client.get(f"/jobs/{job_id}/workflows", version_prefix=True)
     except HttpError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1)
     payload = _unwrap(response.json())
-    task_list = payload.get("tasks", []) if isinstance(payload, dict) else []
+    workflow_list = payload.get("workflows", []) if isinstance(payload, dict) else []
     if as_json:
         logging.log(json.dumps(payload, indent=2))
         return
-    Console().print(_render_tasks_table(job_id, task_list))
+    Console().print(_render_workflows_table(job_id, workflow_list))
 
 
 def _format_log_line(entry: dict[str, Any]) -> str:
@@ -729,23 +737,27 @@ def _print_log_entries(entries: list[dict[str, Any]], as_json: bool) -> None:
             logging.log(_format_log_line(entry))
 
 
-def _advance_cursor(page: dict[str, Any], entries: list[dict[str, Any]]) -> str | None:
-    advance = page.get("next_cursor") if isinstance(page, dict) else None
-    if isinstance(advance, str) and advance:
-        return advance
-    if entries:
-        tail = entries[-1]
-        if isinstance(tail, dict):
-            cursor = tail.get("cursor")
-            if isinstance(cursor, str) and cursor:
-                return cursor
-    return None
+def _parse_sse_entries(raw: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for block in raw.split("\n\n"):
+        for line in block.splitlines():
+            if line.startswith("data:"):
+                data = line[len("data:") :].strip()
+                if data:
+                    try:
+                        entries.append(json.loads(data))
+                    except json.JSONDecodeError:
+                        pass
+    return entries
 
 
-@app.command("logs")
-def logs(
+logs_app = get_typer(help="Fetch, stream, or download logs for a FlowMesh workflow.")
+
+
+@logs_app.command("show")
+def logs_show(
     job_id: str = typer.Argument(..., help="Job identifier"),
-    task_id: str = typer.Argument(..., help="FlowMesh task identifier"),
+    workflow_id: str = typer.Argument(..., help="FlowMesh workflow identifier"),
     limit: int = typer.Option(200, "--limit", help="Maximum entries per page (1-1000)"),
     before: str | None = typer.Option(
         None, "--before", help="Cursor to fetch entries older than this point"
@@ -753,57 +765,114 @@ def logs(
     after: str | None = typer.Option(
         None, "--after", help="Cursor to fetch entries newer than this point"
     ),
-    follow: bool = typer.Option(
-        False, "--follow", "-f", help="Long-poll for new entries until interrupted"
-    ),
-    interval: float = typer.Option(
-        1.0, "--interval", "-i", help="Polling interval in seconds when --follow"
-    ),
     as_json: bool = typer.Option(False, "--json", help="Emit raw JSON for each entry"),
 ) -> None:
-    """Fetch logs for a FlowMesh task, optionally long-polling for new entries."""
+    """Fetch one page of paginated logs for a FlowMesh workflow."""
     if limit < 1 or limit > 1000:
         logging.error("--limit must be between 1 and 1000")
         raise typer.Exit(code=1)
     client = client_from_config()
-    url = f"/jobs/{job_id}/tasks/{task_id}/logs"
-
-    def _fetch(before_cursor: str | None, after_cursor: str | None) -> dict[str, Any]:
-        params: list[tuple[str, str]] = [("limit", str(limit))]
-        if before_cursor is not None:
-            params.append(("before", before_cursor))
-        if after_cursor is not None:
-            params.append(("after", after_cursor))
-        resp = client.get(url, version_prefix=True, params=params)
-        return _unwrap(resp.json())
-
+    url = f"/jobs/{job_id}/workflows/{workflow_id}/logs"
+    params: list[tuple[str, str]] = [("limit", str(limit))]
+    if before is not None:
+        params.append(("before", before))
+    if after is not None:
+        params.append(("after", after))
     try:
-        payload = _fetch(before, after)
+        resp = client.get(url, version_prefix=True, params=params)
     except HttpError as exc:
         logging.error(str(exc))
         raise typer.Exit(code=1)
-
+    payload = _unwrap(resp.json())
     entries = payload.get("entries", []) if isinstance(payload, dict) else []
     _print_log_entries(entries, as_json)
 
-    if not follow:
-        return
 
-    next_after = _advance_cursor(payload, entries) or after
-
+@logs_app.command("stream")
+def logs_stream(
+    job_id: str = typer.Argument(..., help="Job identifier"),
+    workflow_id: str = typer.Argument(..., help="FlowMesh workflow identifier"),
+    cursor: str | None = typer.Option(
+        None, "--cursor", help="Resume streaming from this cursor position"
+    ),
+) -> None:
+    """Stream live log entries for a FlowMesh workflow via SSE."""
+    client = client_from_config()
+    stream_url = f"/jobs/{job_id}/workflows/{workflow_id}/logs/stream"
+    stream_params: list[tuple[str, str]] = []
+    if cursor is not None:
+        stream_params.append(("cursor", cursor))
     try:
-        while True:
-            time.sleep(interval)
-            try:
-                page = _fetch(None, next_after)
-            except HttpError as exc:
-                logging.warning(f"Error fetching logs: {exc}")
-                continue
-            new_entries = page.get("entries", []) if isinstance(page, dict) else []
-            _print_log_entries(new_entries, as_json)
-            advance = _advance_cursor(page, new_entries)
-            if advance is not None:
-                next_after = advance
+        base = client.base_url.rstrip("/") + "/api/v1"
+        headers = {"Accept": "text/event-stream"}
+        if client.api_key:
+            headers["Authorization"] = f"Bearer {client.api_key}"
+        with requests.get(
+            base + stream_url,
+            headers=headers,
+            params=stream_params or None,
+            stream=True,
+            timeout=client.timeout,
+        ) as resp:
+            if resp.status_code >= 400:
+                logging.error(f"Stream error: {resp.status_code} {resp.text}")
+                raise typer.Exit(code=1)
+            buffer = ""
+            for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
+                if chunk:
+                    buffer += chunk
+                    while "\n\n" in buffer:
+                        block, buffer = buffer.split("\n\n", 1)
+                        for entry in _parse_sse_entries(block + "\n\n"):
+                            _print_log_entries([entry], False)
     except KeyboardInterrupt:
-        logging.warning("Stopped.")
         raise typer.Exit(code=0)
+
+
+@logs_app.command("download")
+def logs_download(
+    job_id: str = typer.Argument(..., help="Job identifier"),
+    workflow_id: str = typer.Argument(..., help="FlowMesh workflow identifier"),
+    output: Path = typer.Option(
+        ..., "--output", "-o", help="Directory to extract logs into"
+    ),
+) -> None:
+    """Download per-task archived logs for a FlowMesh workflow."""
+    output.mkdir(parents=True, exist_ok=True)
+    client = client_from_config()
+    try:
+        client.download(
+            f"/jobs/{job_id}/workflows/{workflow_id}/logs/download",
+            output / f"{workflow_id}-logs.tar",
+            version_prefix=True,
+        )
+    except HttpError as exc:
+        logging.error(str(exc))
+        raise typer.Exit(code=1)
+    except OSError as exc:
+        logging.error(f"Failed to write archive: {exc}")
+        raise typer.Exit(code=1)
+
+    archive_path = output / f"{workflow_id}-logs.tar"
+    extracted: list[Path] = []
+    try:
+        with tarfile.open(archive_path, "r") as tf:
+            members = tf.getmembers()
+            if not members:
+                logging.log(f"No logs downloaded for workflow {workflow_id}.")
+                archive_path.unlink(missing_ok=True)
+                return
+            tf.extractall(output, filter="data")
+            for member in members:
+                extracted.append(output / member.name)
+    except tarfile.TarError as exc:
+        logging.error(f"Failed to extract log archive: {exc}")
+        archive_path.unlink(missing_ok=True)
+        raise typer.Exit(code=1)
+
+    archive_path.unlink(missing_ok=True)
+    for path in extracted:
+        logging.log(str(path))
+
+
+app.add_typer(logs_app, name="logs")

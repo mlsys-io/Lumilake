@@ -1,11 +1,22 @@
 """Tests for Jobs (sync) + AsyncJobs."""
 
+import io
+import json
+import tarfile
 from pathlib import Path
 
 import httpx
 import pytest
 import respx
-from lumilake import AsyncJobs, BaseAsyncClient, BaseClient, Jobs, LogQueryResponse
+from lumilake import (
+    AsyncJobs,
+    BaseAsyncClient,
+    BaseClient,
+    Jobs,
+    JobWorkflowInfo,
+    LogEntry,
+    LogQueryResponse,
+)
 from lumilake.errors import NotFoundError
 
 
@@ -478,48 +489,65 @@ async def test_async_artifact_maps_404_to_sdk_error(
         await async_jobs._client.close()
 
 
-# ---- Tasks + logs ----
+# ---- Workflows + logs ----
 
 
-def test_list_tasks(jobs: Jobs, base_url: str) -> None:
+def test_list_workflows_returns_typed_models(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
-        mocked.get("/api/v1/jobs/j-1/tasks").mock(
+        mocked.get("/api/v1/jobs/j-1/workflows").mock(
             return_value=httpx.Response(
                 200,
                 json={
                     "data": {
                         "job_id": "j-1",
-                        "tasks": [
-                            {"task_id": "t-a", "status": "SUCCEEDED"},
-                            {"task_id": "t-b", "status": "RUNNING"},
+                        "workflows": [
+                            {
+                                "workflow_id": "wf-1",
+                                "status": "COMPLETED",
+                                "submitted_at": "2026-05-31T00:00:00Z",
+                                "task_count": 5,
+                                "succeeded_count": 4,
+                                "failed_count": 1,
+                            },
+                            {
+                                "workflow_id": "wf-2",
+                                "status": "RUNNING",
+                                "submitted_at": None,
+                                "task_count": None,
+                                "succeeded_count": None,
+                                "failed_count": None,
+                            },
                         ],
                     }
                 },
             )
         )
-        assert jobs.list_tasks("j-1") == [
-            {"task_id": "t-a", "status": "SUCCEEDED"},
-            {"task_id": "t-b", "status": "RUNNING"},
-        ]
+        result = jobs.list_workflows("j-1")
+    assert len(result) == 2
+    assert all(isinstance(w, JobWorkflowInfo) for w in result)
+    assert result[0].workflow_id == "wf-1"
+    assert result[0].status == "COMPLETED"
+    assert result[0].task_count == 5
+    assert result[1].workflow_id == "wf-2"
 
 
-def test_list_tasks_empty_when_no_tasks_key(jobs: Jobs, base_url: str) -> None:
+def test_list_workflows_empty_when_no_workflows_key(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
-        mocked.get("/api/v1/jobs/j-1/tasks").mock(
+        mocked.get("/api/v1/jobs/j-1/workflows").mock(
             return_value=httpx.Response(200, json={"data": {"job_id": "j-1"}})
         )
-        assert jobs.list_tasks("j-1") == []
+        assert jobs.list_workflows("j-1") == []
 
 
 def test_get_logs_returns_typed_model(jobs: Jobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
-        route = mocked.get("/api/v1/jobs/j-1/tasks/t-a/logs").mock(
+        route = mocked.get("/api/v1/jobs/j-1/workflows/wf-1/logs").mock(
             return_value=httpx.Response(
                 200,
                 json={
                     "data": {
                         "job_id": "j-1",
-                        "task_id": "t-a",
+                        "workflow_id": "wf-1",
                         "entries": [
                             {
                                 "cursor": "c1",
@@ -537,42 +565,88 @@ def test_get_logs_returns_typed_model(jobs: Jobs, base_url: str) -> None:
                 },
             )
         )
-        result = jobs.get_logs("j-1", "t-a", limit=50, after="c0")
+        result = jobs.get_logs("j-1", "wf-1", limit=50, after="c0")
     assert isinstance(result, LogQueryResponse)
+    assert result.workflow_id == "wf-1"
     assert result.entries[0].event.message == "hello"
     assert result.next_cursor == "c1"
     url = str(route.calls.last.request.url)
     assert "limit=50" in url and "after=c0" in url
 
 
-@pytest.mark.asyncio
-async def test_async_list_tasks(async_jobs: AsyncJobs, base_url: str) -> None:
+def test_stream_logs_yields_entries(jobs: Jobs, base_url: str) -> None:
+    def _event(msg: str) -> dict[str, object]:
+        return {
+            "message": msg,
+            "ts": None,
+            "workflow_id": None,
+            "task_id": None,
+            "worker_id": None,
+            "node_id": None,
+            "level": "INFO",
+            "stream": None,
+            "source": None,
+            "fields": None,
+        }
+
+    entry1 = {"cursor": "c1", "event": _event("one")}
+    entry2 = {"cursor": "c2", "event": _event("two")}
+    sse = f"data: {json.dumps(entry1)}\n\ndata: {json.dumps(entry2)}\n\n"
     with respx.mock(base_url=base_url) as mocked:
-        mocked.get("/api/v1/jobs/j-1/tasks").mock(
+        mocked.get("/api/v1/jobs/j-1/workflows/wf-1/logs/stream").mock(
+            return_value=httpx.Response(
+                200,
+                text=sse,
+                headers={"content-type": "text/event-stream"},
+            )
+        )
+        result = list(jobs.stream_logs("j-1", "wf-1"))
+    assert len(result) == 2
+    assert all(isinstance(e, LogEntry) for e in result)
+    assert result[0].event.message == "one"
+    assert result[1].event.message == "two"
+
+
+@pytest.mark.asyncio
+async def test_async_list_workflows(async_jobs: AsyncJobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/workflows").mock(
             return_value=httpx.Response(
                 200,
                 json={
                     "data": {
                         "job_id": "j-1",
-                        "tasks": [{"task_id": "t-a"}],
+                        "workflows": [
+                            {
+                                "workflow_id": "wf-1",
+                                "status": "COMPLETED",
+                                "submitted_at": None,
+                                "task_count": None,
+                                "succeeded_count": None,
+                                "failed_count": None,
+                            }
+                        ],
                     }
                 },
             )
         )
-        assert await async_jobs.list_tasks("j-1") == [{"task_id": "t-a"}]
-        await async_jobs._client.close()
+        result = await async_jobs.list_workflows("j-1")
+    assert len(result) == 1
+    assert isinstance(result[0], JobWorkflowInfo)
+    assert result[0].workflow_id == "wf-1"
+    await async_jobs._client.close()
 
 
 @pytest.mark.asyncio
 async def test_async_get_logs(async_jobs: AsyncJobs, base_url: str) -> None:
     with respx.mock(base_url=base_url) as mocked:
-        mocked.get("/api/v1/jobs/j-1/tasks/t-a/logs").mock(
+        mocked.get("/api/v1/jobs/j-1/workflows/wf-1/logs").mock(
             return_value=httpx.Response(
                 200,
                 json={
                     "data": {
                         "job_id": "j-1",
-                        "task_id": "t-a",
+                        "workflow_id": "wf-1",
                         "entries": [],
                         "next_cursor": None,
                         "prev_cursor": None,
@@ -580,7 +654,95 @@ async def test_async_get_logs(async_jobs: AsyncJobs, base_url: str) -> None:
                 },
             )
         )
-        result = await async_jobs.get_logs("j-1", "t-a")
+        result = await async_jobs.get_logs("j-1", "wf-1")
     assert isinstance(result, LogQueryResponse)
+    assert result.workflow_id == "wf-1"
     assert result.entries == []
+    await async_jobs._client.close()
+
+
+# ---- download_logs ----
+
+
+def _make_tar_bytes(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, content in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+    return buf.getvalue()
+
+
+def test_download_logs_extracts_files(
+    jobs: Jobs, base_url: str, tmp_path: Path
+) -> None:
+    content_t1 = b'{"message": "log1"}\n'
+    content_t2 = b'{"message": "log2"}\n'
+    tar_bytes = _make_tar_bytes(
+        {"t-1-logs.jsonl": content_t1, "t-2-logs.jsonl": content_t2}
+    )
+    paths: list[Path]
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/workflows/wf-1/logs/download").mock(
+            return_value=httpx.Response(
+                200,
+                content=tar_bytes,
+                headers={"content-type": "application/x-tar"},
+            )
+        )
+        paths = jobs.download_logs("j-1", "wf-1", tmp_path)
+
+    assert sorted(p.name for p in paths) == ["t-1-logs.jsonl", "t-2-logs.jsonl"]
+    assert (tmp_path / "t-1-logs.jsonl").read_bytes() == content_t1
+    assert (tmp_path / "t-2-logs.jsonl").read_bytes() == content_t2
+
+
+def test_download_logs_empty_tar_returns_empty_list(
+    jobs: Jobs, base_url: str, tmp_path: Path
+) -> None:
+    tar_bytes = _make_tar_bytes({})
+    paths: list[Path]
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/workflows/wf-1/logs/download").mock(
+            return_value=httpx.Response(
+                200,
+                content=tar_bytes,
+                headers={"content-type": "application/x-tar"},
+            )
+        )
+        paths = jobs.download_logs("j-1", "wf-1", tmp_path)
+    assert paths == []
+
+
+def test_download_logs_404_raises_not_found(
+    jobs: Jobs, base_url: str, tmp_path: Path
+) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/workflows/wf-missing/logs/download").mock(
+            return_value=httpx.Response(404, text="not found")
+        )
+        with pytest.raises(NotFoundError):
+            jobs.download_logs("j-1", "wf-missing", tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_async_download_logs_extracts_files(
+    async_jobs: AsyncJobs, base_url: str, tmp_path: Path
+) -> None:
+    content = b'{"message": "async-log"}\n'
+    tar_bytes = _make_tar_bytes({"t-a-logs.jsonl": content})
+    paths: list[Path]
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/workflows/wf-1/logs/download").mock(
+            return_value=httpx.Response(
+                200,
+                content=tar_bytes,
+                headers={"content-type": "application/x-tar"},
+            )
+        )
+        paths = await async_jobs.download_logs("j-1", "wf-1", tmp_path)
+    assert len(paths) == 1
+    assert paths[0].name == "t-a-logs.jsonl"
+    assert paths[0].read_bytes() == content
     await async_jobs._client.close()

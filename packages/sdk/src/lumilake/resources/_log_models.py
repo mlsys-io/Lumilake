@@ -1,4 +1,4 @@
-"""Pydantic models for job task log payloads returned by the server."""
+"""Pydantic models for job workflow log payloads returned by the server."""
 
 from typing import Any
 
@@ -28,10 +28,29 @@ class LogEntry(BaseModel):
 
 
 class LogQueryResponse(BaseModel):
-    """A single page of task logs, oldest-first."""
+    """A single page of workflow logs, oldest-first."""
 
     job_id: str
-    task_id: str
+    workflow_id: str
     entries: list[LogEntry] = Field(default_factory=list)
     next_cursor: str | None = None
     prev_cursor: str | None = None
+
+
+class JobWorkflowInfo(BaseModel):
+    """Summary of one FlowMesh workflow associated with a job."""
+
+    workflow_id: str = Field(description="FlowMesh workflow identifier.")
+    status: str = Field(description="FlowMesh workflow status.")
+    submitted_at: str | None = Field(
+        default=None, description="ISO timestamp when the workflow was submitted."
+    )
+    task_count: int | None = Field(
+        default=None, description="Total number of tasks in the workflow."
+    )
+    succeeded_count: int | None = Field(
+        default=None, description="Number of succeeded tasks."
+    )
+    failed_count: int | None = Field(
+        default=None, description="Number of failed tasks."
+    )

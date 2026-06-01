@@ -22,8 +22,10 @@ Versioned API routes live under `/api/v1`.
 | `GET /api/v1/jobs/{job_id}/result` | Fetch the stored result for a completed job. |
 | `GET /api/v1/jobs/{job_id}/inputs` | Fetch the resolved job inputs. |
 | `GET /api/v1/jobs/{job_id}/artifact?path=...` | Download a stored artifact referenced by the job result. |
-| `GET /api/v1/jobs/{job_id}/tasks` | List FlowMesh tasks recorded for the job (one row per task). |
-| `GET /api/v1/jobs/{job_id}/tasks/{task_id}/logs?limit&before&after` | Fetch one page of logs for a job's FlowMesh task. |
+| `GET /api/v1/jobs/{job_id}/workflows` | List FlowMesh workflows associated with the job (one per execution batch). |
+| `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs?limit&before&after` | Fetch one page of logs for a job's FlowMesh workflow. |
+| `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/stream?cursor` | Stream logs for a job's FlowMesh workflow as SSE. |
+| `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/download` | Download per-task archived logs as a tar archive (`application/x-tar`). |
 
 ## Workers
 

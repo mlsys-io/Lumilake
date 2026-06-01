@@ -108,8 +108,10 @@ local server image tags only, not containers or volumes.
 | `lumilake job watch <job_id>` | Watch status until completion or failure. |
 | `lumilake job cancel <job_id>` | Cancel a job. |
 | `lumilake job artifact <job_id> --path <path> --output <file>` | Download a stored job artifact. |
-| `lumilake job tasks <job_id>` | List FlowMesh tasks recorded for the job. |
-| `lumilake job logs <job_id> <task_id> [--limit N] [--before C] [--after C] [--follow]` | Print or long-poll logs for one task. |
+| `lumilake job workflows <job_id>` | List FlowMesh workflows associated with the job. |
+| `lumilake job logs show <job_id> <workflow_id> [--limit N] [--before C] [--after C] [--json]` | Fetch one page of paginated logs for a workflow. |
+| `lumilake job logs stream <job_id> <workflow_id> [--cursor C]` | Stream live log entries for a workflow via SSE until interrupted. |
+| `lumilake job logs download <job_id> <workflow_id> --output <dir>` | Download per-task archived logs as extracted `.jsonl` files. |
 
 Run `uv run lumilake job submit --help` for format, input, and output flags.
 
