@@ -1,4 +1,5 @@
 import hashlib
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -6,9 +7,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
+import psycopg
+import sqlparse
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from pydantic import BaseModel, ConfigDict, Field
+from sqlparse.sql import TokenList
+from sqlparse.tokens import Keyword
 
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.ops import (
@@ -24,6 +29,10 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
+from lumilake_server.utils.data_profile_offload import (
+    _build_sample_data_profile_queries,
+    _type_default_sample,
+)
 from lumilake_server.utils.graph import topological_sort
 
 
@@ -64,6 +73,48 @@ def make_node_prefix(name: str) -> str:
     safe = _sanitize_node_prefix(name)
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
     return f"{safe}_{digest}"
+
+
+def _default_sql_sampler(connection_string: str, query: str) -> list[Any]:
+    rows: list[Any] = []
+    connect_timeout = max(
+        1, int(math.ceil(envs.LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S))
+    )
+    statement_timeout_ms = max(
+        1, int(round(envs.LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S * 1000))
+    )
+    with psycopg.connect(
+        connection_string,
+        connect_timeout=connect_timeout,
+    ) as conn:
+        conn.read_only = True
+        with conn.cursor() as cursor:
+            cursor.execute(f"SET LOCAL statement_timeout = {statement_timeout_ms}")
+            cursor.execute(query)
+            if cursor.description is None:
+                return rows
+            column_names = [desc.name for desc in cursor.description]
+            for record in cursor.fetchall():
+                rows.append(dict(zip(column_names, record)))
+    return rows
+
+
+def _default_s3_sampler(connection_string: str, prefix: str) -> list[str]:
+    # The default sampler intentionally rejects so the caller raises the
+    # sample-value error. Live S3 sampling is opt-in via a test or deploy
+    # override of ``_RuntimeProfileSamplers.s3``.
+    raise NotImplementedError(
+        "S3 upstream sample requires 'sample_value' in the upstream data_spec"
+    )
+
+
+@dataclass
+class _RuntimeProfileSamplerRegistry:
+    sql: Any = field(default=_default_sql_sampler)
+    s3: Any = field(default=_default_s3_sampler)
+
+
+_RuntimeProfileSamplers = _RuntimeProfileSamplerRegistry()
 
 
 def _inline_single_value_list_params(
@@ -948,25 +999,70 @@ class RuntimeGraphBuilder:
             dependencies=dependencies if dependencies else None,
         )
 
-    @staticmethod
     def _resolve_profile_param(
+        self,
+        owner_node_id: str,
         param: Any,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        visited: set[str],
     ) -> dict[str, Any] | None:
-        try:
-            upstream = graph_dict[param["node"]]
-        except (KeyError, TypeError):
-            return param if isinstance(param, dict) and "data" in param else None
-        if not isinstance(upstream, InputOp):
-            return param if isinstance(param, dict) and "data" in param else None
-        values = inputs_dict.get(upstream.name) or []
-        if not values:
+        if not isinstance(param, dict):
             return None
-        return {
-            "label": param.get("label"),
-            "data": {"type": "list", "items": list(values)},
-        }
+        if "data" in param and isinstance(param.get("data"), dict):
+            return param
+        label = param.get("label")
+        node_id = param.get("node")
+        if not isinstance(label, str) or not isinstance(node_id, str):
+            return None
+        upstream = graph_dict.get(node_id)
+        if upstream is None:
+            return None
+        if isinstance(upstream, InputOp):
+            values = inputs_dict.get(upstream.name) or []
+            if not values:
+                return None
+            return {
+                "label": label,
+                "data": {"type": "list", "items": list(values)},
+            }
+        if isinstance(upstream, LLMChatOp):
+            sample = self._sample_value_from_structural_outputs(
+                owner_node_id=owner_node_id,
+                label=label,
+                path=param.get("path"),
+                upstream_id=node_id,
+                upstream_op_kind=type(upstream).__name__,
+                structural_outputs=upstream.structural_outputs,
+            )
+            return {
+                "label": label,
+                "data": {"type": "list", "items": [sample]},
+            }
+        if isinstance(upstream, DataRetrievalOp):
+            sample = self._sample_value_from_upstream_retrieval(
+                owner_node_id=owner_node_id,
+                label=label,
+                path=param.get("path"),
+                upstream_id=node_id,
+                upstream=upstream,
+                graph_dict=graph_dict,
+                inputs_dict=inputs_dict,
+                visited=visited,
+            )
+            return {
+                "label": label,
+                "data": {"type": "list", "items": [sample]},
+            }
+        raise ValueError(
+            "Data profile preflight does not support upstream op kind "
+            f"'{type(upstream).__name__}' for placeholder '{label}' at "
+            f"node '{owner_node_id}'. Supported upstream kinds: InputOp, "
+            "DataRetrievalOp, LLMChatOp with structural_outputs. Add a "
+            "'sample_value' to the upstream data_spec, attach "
+            "'structural_outputs' to the LLM, or set "
+            "LUMILAKE_DISABLE_DATA_PROFILE=1."
+        )
 
     def _build_data_profile_node_from_data_retrieval_op(
         self,
@@ -974,6 +1070,7 @@ class RuntimeGraphBuilder:
         op: DataRetrievalOp,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        visited: set[str] | None = None,
     ) -> RuntimeOp | None:
         spec = op.data_spec or {}
         spec_type = spec.get("type")
@@ -988,22 +1085,24 @@ class RuntimeGraphBuilder:
             )
         if not isinstance(params, list):
             raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
+        resolver_visited: set[str] = set(visited) if visited is not None else set()
+        resolver_visited.add(op_id)
         if spec_type == "sql":
-            params = [
+            resolved_params = [
                 resolved
                 for param in params
                 if (
                     resolved := self._resolve_profile_param(
-                        param, graph_dict, inputs_dict
+                        op_id,
+                        param,
+                        graph_dict,
+                        inputs_dict,
+                        resolver_visited,
                     )
                 )
                 is not None
             ]
-            constraints = self._build_data_profile_constraints(
-                spec.get("params") or [], graph_dict
-            )
-            if not constraints:
-                constraints = self._build_data_profile_constraints(params, graph_dict)
+            constraints = self._build_data_profile_constraints(params, graph_dict)
 
             table = spec.get("table")
             if not isinstance(table, str):
@@ -1012,17 +1111,31 @@ class RuntimeGraphBuilder:
                 "type": "sql",
                 "connection_string": connection_string,
                 "template": template,
-                "params": params,
+                "params": resolved_params,
                 "constraints": constraints,
                 "num_test_queries": envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
                 "table": table,
             }
         else:
+            resolved_params = [
+                resolved
+                for param in params
+                if (
+                    resolved := self._resolve_profile_param(
+                        op_id,
+                        param,
+                        graph_dict,
+                        inputs_dict,
+                        resolver_visited,
+                    )
+                )
+                is not None
+            ]
             data_spec = {
                 "type": "s3",
                 "connection_string": connection_string,
                 "template": template,
-                "params": params,
+                "params": resolved_params,
                 "encoding": spec.get("encoding", "utf-8"),
             }
             cert_data = self._resolve_s3_cert_data(spec)
@@ -1544,6 +1657,384 @@ class RuntimeGraphBuilder:
             raise ValueError(f"Unable to infer SQL table from template: {template}")
         return match.group(1).strip()
 
+    def _sample_value_from_structural_outputs(
+        self,
+        *,
+        owner_node_id: str,
+        label: str,
+        path: Any,
+        upstream_id: str,
+        upstream_op_kind: str,
+        structural_outputs: Any,
+    ) -> Any:
+        _remediation = (
+            "Attach 'structural_outputs' to the LLM op, add a 'sample_value' "
+            "to the upstream data_spec, or set LUMILAKE_DISABLE_DATA_PROFILE=1."
+        )
+
+        if not isinstance(structural_outputs, list) or not structural_outputs:
+            raise ValueError(
+                f"Data profile preflight cannot resolve placeholder '{label}' "
+                f"at node '{owner_node_id}': upstream node '{upstream_id}' "
+                f"({upstream_op_kind}) has no 'structural_outputs'. "
+                f"Path requested: '{path}'. {_remediation}"
+            )
+
+        field_name: str | None = None
+        if isinstance(path, str) and path.startswith("items.output."):
+            field_name = path[len("items.output.") :]
+
+        template_entry: dict[str, Any] | None = None
+        if field_name:
+            template_entry = next(
+                (
+                    item
+                    for item in structural_outputs
+                    if isinstance(item, dict) and item.get("name") == field_name
+                ),
+                None,
+            )
+            if template_entry is None:
+                available = [
+                    item.get("name")
+                    for item in structural_outputs
+                    if isinstance(item, dict) and item.get("name") is not None
+                ]
+                raise ValueError(
+                    f"Data profile preflight cannot resolve placeholder '{label}' "
+                    f"at node '{owner_node_id}': upstream node '{upstream_id}' "
+                    f"({upstream_op_kind}) has 'structural_outputs' but does not "
+                    f"contain a field named '{field_name}' (path: '{path}'). "
+                    f"Available fields: {available}. {_remediation}"
+                )
+        elif len(structural_outputs) == 1 and isinstance(structural_outputs[0], dict):
+            template_entry = structural_outputs[0]
+
+        if template_entry is None:
+            raise ValueError(
+                f"Data profile preflight cannot resolve placeholder '{label}' "
+                f"at node '{owner_node_id}': upstream node '{upstream_id}' "
+                f"({upstream_op_kind}) has 'structural_outputs' but the path "
+                f"'{path}' could not be matched to any field. {_remediation}"
+            )
+
+        candidates = template_entry.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            return candidates[0]
+        min_value = template_entry.get("min")
+        if min_value is not None:
+            return min_value
+        type_name = template_entry.get("type")
+        return _type_default_sample(type_name if isinstance(type_name, str) else None)
+
+    def _sample_value_from_upstream_retrieval(
+        self,
+        *,
+        owner_node_id: str,
+        label: str,
+        path: Any,
+        upstream_id: str,
+        upstream: DataRetrievalOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited: set[str],
+    ) -> Any:
+        if upstream_id in visited:
+            raise ValueError(
+                "Data profile preflight detected a cycle while resolving "
+                f"placeholder '{label}' at node '{owner_node_id}': upstream "
+                f"'{upstream_id}' was already in the resolution stack."
+            )
+        upstream_spec = upstream.data_spec or {}
+        if not isinstance(upstream_spec, dict):
+            raise ValueError(
+                f"DataRetrievalOp '{upstream_id}' has a non-dict data_spec"
+            )
+        sample_value = upstream_spec.get("sample_value")
+        if sample_value is not None:
+            return self._project_sample_value(sample_value, path)
+
+        if not envs.LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING:
+            raise ValueError(
+                f"Data profile preflight cannot sample upstream "
+                f"DataRetrievalOp '{upstream_id}' for placeholder '{label}' at "
+                f"node '{owner_node_id}': live sampling is off by default. "
+                f"Set 'sample_value' on the upstream data_spec to supply a "
+                f"representative value without any live execution, or set "
+                f"LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING=1 to explicitly "
+                f"opt in to bounded live queries. "
+                f"Set LUMILAKE_DISABLE_DATA_PROFILE=1 to skip data profiling "
+                f"entirely."
+            )
+
+        column = self._column_from_path(path)
+        next_visited = visited | {upstream_id}
+        rendered_query = self._render_upstream_sample_query(
+            upstream_id=upstream_id,
+            upstream=upstream,
+            graph_dict=graph_dict,
+            inputs_dict=inputs_dict,
+            visited=next_visited,
+        )
+        upstream_type = upstream_spec.get("type")
+        if upstream_type == "sql":
+            return self._fetch_sql_sample_value(
+                owner_node_id=owner_node_id,
+                label=label,
+                upstream_id=upstream_id,
+                connection_string=upstream_spec.get("connection_string"),
+                query=rendered_query,
+                column=column,
+            )
+        if upstream_type == "s3":
+            return self._fetch_s3_sample_value(
+                owner_node_id=owner_node_id,
+                label=label,
+                upstream_id=upstream_id,
+                connection_string=upstream_spec.get("connection_string"),
+                prefix=rendered_query,
+                column=column,
+                encoding=upstream_spec.get("encoding", "utf-8"),
+            )
+        raise ValueError(
+            "Data profile preflight cannot sample upstream "
+            f"DataRetrievalOp '{upstream_id}' with type "
+            f"{upstream_type!r}. Add a 'sample_value' to its data_spec or "
+            "set LUMILAKE_DISABLE_DATA_PROFILE=1."
+        )
+
+    @staticmethod
+    def _column_from_path(path: Any) -> str | None:
+        if not isinstance(path, str):
+            return None
+        for prefix in ("items.output.", "items.table.", "items."):
+            if path.startswith(prefix):
+                tail = path[len(prefix) :]
+                return tail or None
+        return path or None
+
+    @staticmethod
+    def _project_sample_value(value: Any, path: Any) -> Any:
+        if not isinstance(path, str) or not path:
+            return value
+        column = RuntimeGraphBuilder._column_from_path(path)
+        if column is None:
+            return value
+        if isinstance(value, dict) and column in value:
+            return value[column]
+        return value
+
+    def _render_upstream_sample_query(
+        self,
+        *,
+        upstream_id: str,
+        upstream: DataRetrievalOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited: set[str],
+    ) -> str:
+        upstream_spec = upstream.data_spec or {}
+        template = upstream_spec.get("template")
+        if not isinstance(template, str):
+            raise ValueError(
+                f"Upstream DataRetrievalOp '{upstream_id}' has no template"
+            )
+        params = upstream_spec.get("params") or []
+        if not isinstance(params, list):
+            raise ValueError(
+                f"Upstream DataRetrievalOp '{upstream_id}' params must be a list"
+            )
+        resolved_params = [
+            resolved
+            for param in params
+            if (
+                resolved := self._resolve_profile_param(
+                    upstream_id,
+                    param,
+                    graph_dict,
+                    inputs_dict,
+                    visited,
+                )
+            )
+            is not None
+        ]
+        constraints = self._build_data_profile_constraints(params, graph_dict)
+        queries = _build_sample_data_profile_queries(
+            template=template,
+            params=resolved_params,
+            constraints=constraints,
+            num_samples=envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
+            node_id=upstream_id,
+        )
+        if not queries:
+            raise ValueError(
+                f"Upstream DataRetrievalOp '{upstream_id}' produced no sample query"
+            )
+        upstream_type = upstream_spec.get("type")
+        if upstream_type == "sql":
+            return self._apply_limit_to_sample_sql(
+                queries[0],
+                max(1, int(envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES)),
+            )
+        return queries[0]
+
+    _DISALLOWED_SAMPLE_KEYWORDS: frozenset[str] = frozenset(
+        {
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "MERGE",
+            "TRUNCATE",
+            "CREATE",
+            "DROP",
+            "ALTER",
+            "GRANT",
+            "REVOKE",
+            "CALL",
+            "EXECUTE",
+            "COPY",
+            "VACUUM",
+            "LOCK",
+        }
+    )
+
+    @staticmethod
+    def _assert_sample_query_is_readonly(query: str) -> None:
+        statements = [s for s in sqlparse.parse(query) if s.value.strip()]
+        if len(statements) > 1:
+            raise ValueError(
+                "Data profile preflight rejects multi-statement SQL scripts. "
+                "Add a 'sample_value' to the upstream data_spec to skip the "
+                "live sample query."
+            )
+        if not statements:
+            return
+        parsed = statements[0]
+        if parsed.get_type() != "SELECT":
+            raise ValueError(
+                f"Data profile preflight requires a SELECT-only sample query "
+                f"but the statement type is '{parsed.get_type()}'. Add a "
+                f"'sample_value' to the upstream data_spec to skip the live "
+                f"sample query."
+            )
+        disallowed = RuntimeGraphBuilder._DISALLOWED_SAMPLE_KEYWORDS
+
+        def _walk_tokens(token: Any) -> str | None:
+            if token.ttype in (Keyword, Keyword.DML, Keyword.DDL):
+                upper = token.normalized.upper()
+                if upper in disallowed:
+                    return upper
+            if isinstance(token, TokenList):
+                for child in token.tokens:
+                    found = _walk_tokens(child)
+                    if found is not None:
+                        return found
+            return None
+
+        offender = _walk_tokens(parsed)
+        if offender is not None:
+            raise ValueError(
+                f"Data profile preflight found a disallowed keyword '{offender}' "
+                f"in the sample query (including inside CTEs). Add a "
+                f"'sample_value' to the upstream data_spec to skip the live "
+                f"sample query."
+            )
+
+    @staticmethod
+    def _apply_limit_to_sample_sql(query: str, n: int) -> str:
+        RuntimeGraphBuilder._assert_sample_query_is_readonly(query)
+        if re.search(r"\bFOR\s+(?:UPDATE|SHARE)\b", query, re.IGNORECASE):
+            raise ValueError(
+                "Data profile preflight cannot append LIMIT to a sample SQL "
+                "query that contains a FOR UPDATE / FOR SHARE clause. Add a "
+                "'sample_value' to the upstream data_spec to avoid issuing a "
+                "live sample query."
+            )
+        inner = query.rstrip().rstrip(";")
+        return f"SELECT * FROM ({inner}) AS _lumilake_sample LIMIT {int(n)}"
+
+    def _fetch_sql_sample_value(
+        self,
+        *,
+        owner_node_id: str,
+        label: str,
+        upstream_id: str,
+        connection_string: Any,
+        query: str,
+        column: str | None,
+    ) -> Any:
+        if not isinstance(connection_string, str):
+            raise ValueError(
+                f"Upstream DataRetrievalOp '{upstream_id}' has no "
+                "connection_string for sample query"
+            )
+        sampler = _RuntimeProfileSamplers.sql
+        try:
+            rows = sampler(connection_string, query)
+        except psycopg.errors.QueryCanceled as exc:
+            raise ValueError(
+                "Data profile preflight for upstream "
+                f"'{upstream_id}' at node '{owner_node_id}' was cancelled by "
+                "Postgres statement_timeout. Increase "
+                "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S or add "
+                "'sample_value' to the upstream data_spec."
+            ) from exc
+        except Exception as exc:
+            raise ValueError(
+                "Data profile preflight could not sample upstream "
+                f"'{upstream_id}' for placeholder '{label}' at node "
+                f"'{owner_node_id}': {exc}. Add 'sample_value' to the "
+                "upstream data_spec or set LUMILAKE_DISABLE_DATA_PROFILE=1."
+            ) from exc
+        if not rows:
+            raise ValueError(
+                "Data profile preflight rejected placeholder "
+                f"'{label}' at node '{owner_node_id}': no sample_value "
+                f"and upstream '{upstream_id}' returned 0 rows."
+            )
+        row = rows[0]
+        if isinstance(row, dict):
+            if column is not None and column in row:
+                return row[column]
+            return next(iter(row.values()), "")
+        if isinstance(row, (list, tuple)) and row:
+            return row[0]
+        return row
+
+    def _fetch_s3_sample_value(
+        self,
+        *,
+        owner_node_id: str,
+        label: str,
+        upstream_id: str,
+        connection_string: Any,
+        prefix: str,
+        column: str | None,
+        encoding: Any,
+    ) -> Any:
+        if not isinstance(connection_string, str):
+            raise ValueError(
+                f"Upstream DataRetrievalOp '{upstream_id}' has no "
+                "connection_string for S3 sample"
+            )
+        sampler = _RuntimeProfileSamplers.s3
+        try:
+            keys = sampler(connection_string, prefix)
+        except Exception as exc:
+            raise ValueError(
+                "Data profile preflight could not sample upstream "
+                f"'{upstream_id}' for placeholder '{label}' at node "
+                f"'{owner_node_id}': {exc}. Add 'sample_value' to the "
+                "upstream data_spec or set LUMILAKE_DISABLE_DATA_PROFILE=1."
+            ) from exc
+        if not keys:
+            raise ValueError(
+                "Data profile preflight rejected placeholder "
+                f"'{label}' at node '{owner_node_id}': no sample_value "
+                f"and upstream '{upstream_id}' returned 0 keys."
+            )
+        return keys[0]
+
     def _build_data_profile_constraints(
         self,
         params: list[dict[str, Any]],
@@ -1567,7 +2058,9 @@ class RuntimeGraphBuilder:
                 field_name = path[len("items.output.") :]
 
             op = graph_dict.get(node_id)
-            structural_outputs = getattr(op, "structural_outputs", None)
+            if not isinstance(op, LLMChatOp):
+                continue
+            structural_outputs = op.structural_outputs
             if not isinstance(structural_outputs, list):
                 continue
 

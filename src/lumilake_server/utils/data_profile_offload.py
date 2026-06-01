@@ -323,6 +323,33 @@ def _extract_table_from_sql(template: str) -> str | None:
     return normalized or None
 
 
+_TYPE_DEFAULT_SAMPLES: dict[str, Any] = {
+    "string": "",
+    "str": "",
+    "text": "",
+    "int": 0,
+    "integer": 0,
+    "number": 0,
+    "float": 0,
+    "bool": False,
+    "boolean": False,
+    "datetime": "1970-01-01",
+    "date": "1970-01-01",
+    "timestamp": "1970-01-01",
+    "array": "[]",
+    "list": "[]",
+    "object": "{}",
+    "dict": "{}",
+    "json": "{}",
+}
+
+
+def _type_default_sample(type_name: str | None) -> Any:
+    if not isinstance(type_name, str):
+        return ""
+    return _TYPE_DEFAULT_SAMPLES.get(type_name.lower(), "")
+
+
 def _collect_data_profile_param_candidates(
     params: Any,
     constraints: Any,
@@ -360,8 +387,9 @@ def _collect_data_profile_param_candidates(
                     variants.append(max_value)
                 if not variants and item.get("type") == "bool":
                     variants = [True, False]
-            if variants:
-                result[label] = variants
+            if not variants:
+                variants = [_type_default_sample(item.get("type"))]
+            result[label] = variants
     return result
 
 
@@ -389,7 +417,11 @@ def _build_sample_data_profile_queries(
         if not values:
             raise ValueError(
                 "Data profile SQL template has unresolved placeholder: "
-                f"node='{node_id}' field='{field}' template='{template}'"
+                f"node='{node_id}' param='{field}' template='{template}'. "
+                "The upstream op did not supply a sample value; add "
+                "'sample_value' to the upstream data_spec, attach "
+                "'structural_outputs' to the LLM, or set "
+                "LUMILAKE_DISABLE_DATA_PROFILE=1."
             )
         resolved_candidates[field] = [str(value) for value in values]
 
@@ -410,8 +442,9 @@ def _build_sample_data_profile_queries(
         except KeyError as exc:
             missing = str(exc).strip("'")
             raise ValueError(
-                "Data profile SQL template has unresolved placeholder during render: "
-                f"node='{node_id}' field='{missing}' template='{template}'"
+                "Data profile SQL template has unresolved placeholder "
+                f"during render: node='{node_id}' param='{missing}' "
+                f"template='{template}'"
             ) from exc
 
     if not variable_candidates:

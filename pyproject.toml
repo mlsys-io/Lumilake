@@ -117,6 +117,7 @@ server-runtime = [
     "dill==0.4.1",
     "psycopg[binary]==3.3.4",
     "psycopg-pool==3.3.1",
+    "sqlparse==0.5.4",
     "lumid-hooks==0.1.0",
     "flowmesh-sdk==0.1.1",
 ]

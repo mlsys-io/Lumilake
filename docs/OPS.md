@@ -7,7 +7,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `InputOp` | Generated from workflow-level inputs. |
 | `OutputOp` | Generated from workflow-level outputs. |
 | `DataOp` | Inline static data. |
-| `DataRetrievalOp` | Retrieve data through SQL, S3-compatible storage, or the lumid.data agent mode. |
+| `DataRetrievalOp` | Retrieve data through SQL, S3-compatible storage, or the lumid.data agent mode. Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. |
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
