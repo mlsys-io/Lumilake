@@ -1266,19 +1266,15 @@ class DPSolver:
         return results
 
     def _auto_cpu_batch(self, done_mask: int, gpu_nodes: Sequence[str]) -> list[str]:
-        """Auto-fill the CPU nodes needed for this epoch, ignoring capacity / cost."""
+        """Auto-fill the CPU nodes runnable this epoch, ignoring capacity / cost."""
         if not self._db_node_ids:
             return []
         batch_mask = done_mask
         for node_id in gpu_nodes:
             batch_mask |= 1 << self.node_index[node_id]
 
-        needed = self._cpu_needed_for_gpu(gpu_nodes)
-        needed = self._expand_cpu_parents(needed)
         pending = {
-            nid
-            for nid in self._db_node_ids
-            if not self._is_done(done_mask, nid) and nid in needed
+            nid for nid in self._db_node_ids if not self._is_done(done_mask, nid)
         }
         if not pending:
             return []
