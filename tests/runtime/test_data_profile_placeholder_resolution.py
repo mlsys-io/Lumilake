@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import psycopg.errors
 import pytest
+from lumilake import envs
+from lumilake.envs import _positive_float
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
@@ -26,14 +28,11 @@ from lumilake_server.ops import (
     input_placeholder,
 )
 from lumilake_server.runtime import runtime_graph as rg
+from lumilake_server.runtime.runtime_graph import _default_sql_sampler
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _collect_data_profile_param_candidates,
 )
-
-from lumilake import envs
-from lumilake.envs import _positive_float
-from lumilake_server.runtime.runtime_graph import _default_sql_sampler
 
 
 def _build_profile_node(compiled: Any, op_id: str) -> Any:
