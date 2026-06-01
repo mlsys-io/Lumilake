@@ -59,6 +59,7 @@ Agent-retrieval keys:
 | `LUMILAKE_RUNTIME_MANAGER_TYPE` | Runtime dispatch backend. `default` or `flowmesh`. |
 | `LUMILAKE_JOB_MANAGER_TYPE` | Job manager implementation. Currently only `priority`. |
 | `LUMILAKE_HTTP_TIMEOUT_SECONDS` | Outbound HTTP timeout for server-side calls. Defaults to `300`. |
+| `LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB` | Memory threshold (MiB) for the log-download spool. The tar is built in a `SpooledTemporaryFile`; if the archive exceeds this size the spool spills to disk before the response body is read. Defaults to `16`. |
 
 ## Scheduler and Runtime Tuning
 

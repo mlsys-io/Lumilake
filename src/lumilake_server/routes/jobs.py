@@ -3,11 +3,16 @@ import base64
 import binascii
 import datetime as dt
 import hashlib
+import io
 import json
 import re
+import tarfile
+import tempfile
+from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
 from io import BytesIO
 from typing import Any, Literal
+from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
 
 import yaml
@@ -20,7 +25,8 @@ from fastapi import (
     Request,
     status,
 )
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+from flowmesh.exceptions import APIError, AuthenticationError, NotFoundError
 from lumid_hooks import PrincipalContext
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
@@ -41,6 +47,7 @@ from lumilake_server.hooks.security import (
     run_submission_guards,
 )
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
+from lumilake_server.runtime.flowmesh_client import flowmesh_for
 from lumilake_server.runtime.protocol import (
     LumilakeRequestConfig,
     LumilakeResponse,
@@ -617,6 +624,22 @@ _IO_LOCATION_ADAPTER: TypeAdapter[IOLocation] = TypeAdapter(IOLocation)
 
 _DATA_URL_RE = re.compile(r"^data:(image/[^;]+);base64,(.+)$", re.DOTALL)
 _ARTIFACT_PATH_TOKEN = "/artifacts/"
+
+
+def _safe_tar_name(task_id: str) -> str:
+    """Return a collision-free, filesystem-safe tar member name for a task log file.
+
+    Uses URL-quoting on the original task_id so distinct IDs always produce
+    distinct member names (``a/b`` → ``a%2Fb`` ≠ ``a_b``; `` abc `` → ``%20abc%20``
+    ≠ ``abc``). Rejects empty / ``.`` / ``..`` since those resolve to parent or
+    current directory regardless of quoting.
+    """
+    if task_id == "" or task_id == "." or task_id == "..":
+        raise ValueError(f"task_id {task_id!r} produces an unsafe tar member name")
+    safe = urlquote(task_id, safe="-_.")
+    return f"{safe}-logs.jsonl"
+
+
 _IMAGE_EXT = {
     "image/png": "png",
     "image/jpeg": "jpg",
@@ -2328,3 +2351,488 @@ async def get_job_artifact(
 
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return Response(content=data, media_type=content_type, headers=headers)
+
+
+class JobWorkflowInfo(BaseModel):
+    workflow_id: str = Field(description="FlowMesh workflow identifier.")
+    status: str = Field(description="FlowMesh workflow status.")
+    submitted_at: str | None = Field(
+        default=None, description="ISO timestamp when the workflow was submitted."
+    )
+    task_count: int | None = Field(
+        default=None, description="Total number of tasks in the workflow."
+    )
+    succeeded_count: int | None = Field(
+        default=None, description="Number of succeeded tasks."
+    )
+    failed_count: int | None = Field(
+        default=None, description="Number of failed tasks."
+    )
+
+
+class JobWorkflowsPayload(BaseModel):
+    job_id: str = Field(description="Job identifier.")
+    workflows: list[JobWorkflowInfo] = Field(
+        default_factory=list,
+        description="FlowMesh workflows associated with the job.",
+    )
+
+
+class JobWorkflowsResponse(BaseModel):
+    ok: bool = Field(description="Whether the request succeeded.")
+    data: JobWorkflowsPayload = Field(description="Job workflows payload.")
+
+
+class LogEventPayload(BaseModel):
+    ts: str | None = None
+    workflow_id: str | None = None
+    task_id: str | None = None
+    worker_id: str | None = None
+    node_id: str | None = None
+    level: str | None = None
+    stream: str | None = None
+    source: str | None = None
+    message: str | None = None
+    fields: dict[str, Any] | None = None
+
+
+class LogEntryPayload(BaseModel):
+    cursor: str = Field(description="Opaque pagination cursor for this entry.")
+    event: LogEventPayload = Field(description="Structured log event fields.")
+
+
+class LogQueryPayload(BaseModel):
+    job_id: str = Field(description="Job identifier.")
+    workflow_id: str = Field(description="FlowMesh workflow identifier.")
+    entries: list[LogEntryPayload] = Field(
+        default_factory=list,
+        description="Log entries returned for this page, oldest-first.",
+    )
+    next_cursor: str | None = Field(
+        default=None,
+        description="Cursor to pass as ``after`` to fetch newer entries.",
+    )
+    prev_cursor: str | None = Field(
+        default=None,
+        description="Cursor to pass as ``before`` to fetch older entries.",
+    )
+
+
+class JobWorkflowLogsResponse(BaseModel):
+    ok: bool = Field(description="Whether the request succeeded.")
+    data: LogQueryPayload = Field(description="Workflow log query payload.")
+
+
+def _job_workflow_ids(record: JobRecord) -> list[str]:
+    return [trace_id for trace_id in record.trace_ids if trace_id]
+
+
+@router.get(
+    "/jobs/{job_id}/workflows",
+    summary="List FlowMesh workflows for a job",
+    description=(
+        "List the FlowMesh workflow IDs associated with this job (one per "
+        "execution batch). Calls ``flowmesh.workflows.retrieve`` for each "
+        "workflow id stored on the job record to fetch current status."
+    ),
+    response_description="Job workflows payload.",
+    status_code=status.HTTP_200_OK,
+    response_model=JobWorkflowsResponse,
+    openapi_extra={
+        "responses": {
+            "404": {"description": "Job not found"},
+            "502": {"description": "Upstream FlowMesh enumeration failed"},
+        },
+    },
+)
+async def list_job_workflows(
+    job_id: str,
+    request: Request,
+    principal: PrincipalContext = Depends(authenticate_request),
+) -> dict[str, Any]:
+    """List FlowMesh workflows for a job.
+
+    Upstream error mapping: auth → 401, not found → skipped (per workflow),
+    other API errors → 502.
+    """
+    hook_logger = request.app.state.logger
+    record = await _load_authorized_job_record(
+        job_id,
+        principal,
+        ResourceAction.READ,
+        hook_logger,
+    )
+    workflow_ids = _job_workflow_ids(record)
+    if not workflow_ids:
+        return {"ok": True, "data": {"job_id": job_id, "workflows": []}}
+
+    fm = flowmesh_for(request)
+    collected: list[JobWorkflowInfo] = []
+    for workflow_id in workflow_ids:
+        try:
+            wf = await fm.workflows.retrieve(workflow_id)
+        except NotFoundError:
+            continue
+        except AuthenticationError as exc:
+            request.app.state.logger.exception(
+                "FlowMesh workflows.retrieve auth failed for workflow %s", workflow_id
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="upstream authentication failed",
+            ) from exc
+        except APIError as exc:
+            request.app.state.logger.exception(
+                "FlowMesh workflows.retrieve failed for workflow %s", workflow_id
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="upstream workflow enumeration failed",
+            ) from exc
+        collected.append(
+            JobWorkflowInfo(
+                workflow_id=workflow_id,
+                status=str(wf.status),
+                submitted_at=wf.submitted_at,
+                task_count=len(wf.task_ids),
+                succeeded_count=len(wf.completed_tasks),
+                failed_count=len(wf.failed_tasks),
+            )
+        )
+    return {
+        "ok": True,
+        "data": {
+            "job_id": job_id,
+            "workflows": [w.model_dump() for w in collected],
+        },
+    }
+
+
+@router.get(
+    "/jobs/{job_id}/workflows/{workflow_id}/logs",
+    summary="Query logs for a FlowMesh workflow",
+    description=(
+        "Fetch one page of logs for a FlowMesh workflow associated with the job. "
+        "Cursor pagination: pass ``after`` to fetch newer entries, ``before`` "
+        "to fetch older ones."
+    ),
+    response_description="Workflow log query payload.",
+    status_code=status.HTTP_200_OK,
+    response_model=JobWorkflowLogsResponse,
+    openapi_extra={
+        "responses": {
+            "404": {"description": "Job or workflow not found"},
+            "502": {"description": "Upstream FlowMesh log fetch failed"},
+        },
+    },
+)
+async def get_job_workflow_logs(
+    job_id: str,
+    workflow_id: str,
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=1000),
+    before: str | None = Query(default=None),
+    after: str | None = Query(default=None),
+    principal: PrincipalContext = Depends(authenticate_request),
+) -> dict[str, Any]:
+    """Fetch one page of logs for a FlowMesh workflow.
+
+    Upstream error mapping: auth → 401, not found → 404, other API errors → 502.
+    """
+    hook_logger = request.app.state.logger
+    record = await _load_authorized_job_record(
+        job_id,
+        principal,
+        ResourceAction.READ,
+        hook_logger,
+    )
+    if workflow_id not in set(_job_workflow_ids(record)):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' not found in job '{job_id}'.",
+        )
+    fm = flowmesh_for(request)
+    try:
+        response = await fm.workflows.get_logs(
+            workflow_id,
+            limit=limit,
+            before=before,
+            after=after,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"FlowMesh log stream for workflow '{workflow_id}' not found. "
+                "FlowMesh holds workflow logs as a Redis stream that expires "
+                "LOG_STREAM_TTL_SEC after the workflow closes; the workflow "
+                "may have produced no log events, or the stream has aged out."
+            ),
+        ) from exc
+    except AuthenticationError as exc:
+        request.app.state.logger.exception(
+            "FlowMesh workflows.get_logs auth failed for workflow %s", workflow_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="upstream authentication failed",
+        ) from exc
+    except APIError as exc:
+        request.app.state.logger.exception(
+            "FlowMesh workflows.get_logs failed for workflow %s", workflow_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="upstream workflow log fetch failed",
+        ) from exc
+    entries = [
+        LogEntryPayload(
+            cursor=entry.cursor,
+            event=LogEventPayload.model_validate(entry.event.model_dump()),
+        )
+        for entry in response.entries
+    ]
+    payload = LogQueryPayload(
+        job_id=job_id,
+        workflow_id=workflow_id,
+        entries=entries,
+        next_cursor=response.next_cursor,
+        prev_cursor=response.prev_cursor,
+    )
+    return {"ok": True, "data": payload.model_dump()}
+
+
+@router.get(
+    "/jobs/{job_id}/workflows/{workflow_id}/logs/stream",
+    summary="Stream logs for a FlowMesh workflow",
+    description=(
+        "SSE pass-through for streaming logs from a FlowMesh workflow "
+        "associated with the job. Pass ``cursor`` to resume from a position."
+    ),
+    status_code=status.HTTP_200_OK,
+    openapi_extra={
+        "responses": {
+            "404": {"description": "Job or workflow not found"},
+            "502": {"description": "Upstream FlowMesh stream failed"},
+        },
+    },
+)
+async def stream_job_workflow_logs(
+    job_id: str,
+    workflow_id: str,
+    request: Request,
+    cursor: str | None = Query(default=None),
+    principal: PrincipalContext = Depends(authenticate_request),
+) -> StreamingResponse:
+    """Stream logs for a FlowMesh workflow as SSE.
+
+    Ownership check happens before opening the upstream stream. On upstream
+    error mid-stream an SSE error event is emitted and the stream closes.
+    """
+    hook_logger = request.app.state.logger
+    record = await _load_authorized_job_record(
+        job_id,
+        principal,
+        ResourceAction.READ,
+        hook_logger,
+    )
+    if workflow_id not in set(_job_workflow_ids(record)):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' not found in job '{job_id}'.",
+        )
+    fm = flowmesh_for(request)
+
+    async def _generate() -> AsyncIterator[str]:
+        try:
+            async for entry in fm.workflows.stream_logs(workflow_id, cursor=cursor):
+                data = json.dumps(
+                    LogEntryPayload(
+                        cursor=entry.cursor,
+                        event=LogEventPayload.model_validate(entry.event.model_dump()),
+                    ).model_dump()
+                )
+                yield f"data: {data}\n\n"
+        except NotFoundError:
+            request.app.state.logger.exception(
+                "FlowMesh workflows.stream_logs error for workflow %s", workflow_id
+            )
+            yield (
+                "event: error\n"
+                + "data: "
+                + json.dumps(
+                    {
+                        "kind": "stream_error",
+                        "code": "NotFoundError",
+                        "message": "FlowMesh log stream ended (not found or expired).",
+                    }
+                )
+                + "\n\n"
+            )
+        except AuthenticationError:
+            request.app.state.logger.exception(
+                "FlowMesh workflows.stream_logs error for workflow %s", workflow_id
+            )
+            yield (
+                "event: error\n"
+                + "data: "
+                + json.dumps(
+                    {
+                        "kind": "stream_error",
+                        "code": "AuthenticationError",
+                        "message": "Upstream authentication failed.",
+                    }
+                )
+                + "\n\n"
+            )
+        except APIError:
+            request.app.state.logger.exception(
+                "FlowMesh workflows.stream_logs error for workflow %s", workflow_id
+            )
+            yield (
+                "event: error\n"
+                + "data: "
+                + json.dumps(
+                    {
+                        "kind": "stream_error",
+                        "code": "APIError",
+                        "message": "Upstream stream error.",
+                    }
+                )
+                + "\n\n"
+            )
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@router.get(
+    "/jobs/{job_id}/workflows/{workflow_id}/logs/download",
+    summary="Download per-task archived logs for a FlowMesh workflow",
+    description=(
+        "Download per-task archived log files as a tar archive. "
+        "Each task that has archived logs contributes one ``<task_id>-logs.jsonl`` "
+        "file. Tasks whose archive returns 404 are skipped silently. "
+        "Returns an empty tar if no tasks had archived logs."
+    ),
+    status_code=status.HTTP_200_OK,
+    openapi_extra={
+        "responses": {
+            "404": {"description": "Job or workflow not found"},
+            "401": {"description": "Upstream authentication failed"},
+            "502": {"description": "Upstream FlowMesh archive fetch failed"},
+        },
+    },
+)
+async def download_job_workflow_logs(
+    job_id: str,
+    workflow_id: str,
+    request: Request,
+    principal: PrincipalContext = Depends(authenticate_request),
+) -> Response:
+    """Download per-task archived logs for a FlowMesh workflow as a tar archive.
+
+    Ownership check: ``workflow_id`` must be in ``record.trace_ids``.
+    Per-task 404s are skipped; non-404 upstream errors map to 401/502.
+    Returns an empty tar (zero members) when all task archives are missing.
+    """
+    hook_logger = request.app.state.logger
+    record = await _load_authorized_job_record(
+        job_id,
+        principal,
+        ResourceAction.READ,
+        hook_logger,
+    )
+    if workflow_id not in set(_job_workflow_ids(record)):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' not found in job '{job_id}'.",
+        )
+    fm = flowmesh_for(request)
+    try:
+        workflow = await fm.workflows.retrieve(workflow_id)
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' not found in FlowMesh.",
+        ) from exc
+    except AuthenticationError as exc:
+        request.app.state.logger.exception(
+            "FlowMesh auth failed retrieving workflow %s for log download", workflow_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="upstream authentication failed",
+        ) from exc
+    except APIError as exc:
+        request.app.state.logger.exception(
+            "FlowMesh API error retrieving workflow %s for log download", workflow_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="upstream workflow fetch failed",
+        ) from exc
+
+    task_ids: list[str] = list(workflow.task_ids)
+
+    spool_max_bytes = envs.LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB * 1024 * 1024
+    spool = tempfile.SpooledTemporaryFile(max_size=spool_max_bytes)
+    try:
+        with tarfile.open(fileobj=spool, mode="w") as tf:
+            for task_id in task_ids:
+                try:
+                    member_name = _safe_tar_name(task_id)
+                except ValueError:
+                    request.app.state.logger.warning(
+                        "Skipping task_id unsafe for tar member: %r", task_id
+                    )
+                    continue
+                safe_task_id = urlquote(task_id, safe="")
+                try:
+                    resp = await fm._request_raw("GET", f"/results/{safe_task_id}/logs")
+                except NotFoundError:
+                    continue
+                except AuthenticationError as exc:
+                    request.app.state.logger.exception(
+                        "FlowMesh auth error fetching archived logs for task %s",
+                        task_id,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="upstream authentication failed",
+                    ) from exc
+                except APIError as exc:
+                    request.app.state.logger.exception(
+                        "FlowMesh API error fetching archived logs for task %s",
+                        task_id,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="upstream log archive fetch failed",
+                    ) from exc
+                data = resp.content
+                info = tarfile.TarInfo(name=member_name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+    except BaseException:
+        spool.close()
+        raise
+    spool.seek(0)
+
+    async def _stream_archive() -> AsyncIterator[bytes]:
+        try:
+            chunk_size = 64 * 1024
+            while True:
+                chunk = spool.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            spool.close()
+
+    return StreamingResponse(
+        _stream_archive(),
+        media_type="application/x-tar",
+        headers={
+            "Content-Disposition": f'attachment; filename="{workflow_id}-logs.tar"',
+        },
+    )

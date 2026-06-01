@@ -31,6 +31,19 @@ class ConfigInvalidError(LumilakeError):
     """``~/.lumilake/config.toml`` is unparsable or violates the schema."""
 
 
+class LogStreamError(LumilakeError):
+    """Raised when an SSE log stream terminates with a structured error frame.
+
+    ``code`` is the upstream exception class name (e.g. ``"NotFoundError"``).
+    ``message`` is the sanitized human-readable description from the server.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(f"log stream error [{code}]: {message}")
+
+
 class DeployError(LumilakeError):
     """Raised when a deploy lifecycle call fails.
 

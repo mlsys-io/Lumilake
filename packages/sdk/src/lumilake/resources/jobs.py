@@ -1,17 +1,23 @@
 """Optimization jobs backed by the server's ``/api/v1/jobs`` routes."""
 
 import asyncio
+import json
 import logging
+import tarfile
 import time
 from collections.abc import AsyncIterator, Iterator, Mapping
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from lumilake._base_client import _raise_for_status, unwrap
-from lumilake.errors import HttpError
+from lumilake.errors import HttpError, LogStreamError
 from lumilake.resources._base import AsyncResource, SyncResource
+from lumilake.resources._log_models import JobWorkflowInfo, LogEntry, LogQueryResponse
 
 logger = logging.getLogger(__name__)
+
+_list = list  # Alias so method names named ``list`` don't shadow the builtin.
 
 TERMINAL_STATES: tuple[str, ...] = ("completed", "failed", "cancelled")
 
@@ -53,6 +59,19 @@ def _request_kwargs(timeout: float | None) -> dict[str, Any]:
     if timeout is None:
         return {}
     return {"timeout": timeout}
+
+
+def _log_params(
+    limit: int,
+    before: str | None,
+    after: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"limit": limit}
+    if before is not None:
+        params["before"] = before
+    if after is not None:
+        params["after"] = after
+    return params
 
 
 class Jobs(SyncResource):
@@ -153,6 +172,150 @@ class Jobs(SyncResource):
         return unwrap(
             self._client.get(f"/jobs/{job_id}/inputs", **_request_kwargs(timeout))
         )
+
+    def list_workflows(
+        self, job_id: str, *, timeout: float | None = None
+    ) -> _list[JobWorkflowInfo]:
+        """List FlowMesh workflows associated with a job."""
+        payload = unwrap(
+            self._client.get(f"/jobs/{job_id}/workflows", **_request_kwargs(timeout))
+        )
+        if isinstance(payload, dict):
+            workflows = payload.get("workflows")
+            if isinstance(workflows, list):
+                return [JobWorkflowInfo.model_validate(w) for w in workflows]
+        return []
+
+    def get_logs(
+        self,
+        job_id: str,
+        workflow_id: str,
+        *,
+        limit: int = 200,
+        before: str | None = None,
+        after: str | None = None,
+        timeout: float | None = None,
+    ) -> LogQueryResponse:
+        """Fetch one page of logs for ``workflow_id`` under ``job_id``."""
+        payload = unwrap(
+            self._client.get(
+                f"/jobs/{job_id}/workflows/{workflow_id}/logs",
+                params=_log_params(limit, before, after),
+                **_request_kwargs(timeout),
+            )
+        )
+        return LogQueryResponse.model_validate(payload)
+
+    def stream_logs(
+        self,
+        job_id: str,
+        workflow_id: str,
+        *,
+        cursor: str | None = None,
+        timeout: float | None = None,
+    ) -> Iterator[LogEntry]:
+        """Stream logs for ``workflow_id`` under ``job_id`` via SSE."""
+        url = (
+            f"{self._client.base_url.rstrip('/')}"
+            f"/api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/stream"
+        )
+        params: dict[str, str] = {}
+        if cursor is not None:
+            params["cursor"] = cursor
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
+        with self._client._http.stream(
+            "GET",
+            url,
+            params=params or None,
+            headers={
+                "Accept": "text/event-stream",
+                "Authorization": (
+                    f"Bearer {self._client.api_key}" if self._client.api_key else ""
+                ),
+            },
+            **extra,
+        ) as response:
+            if response.status_code >= 400:
+                response.read()
+            _raise_for_status(response, url)
+            buffer = ""
+            for chunk in response.iter_text():
+                buffer += chunk
+                while "\n\n" in buffer:
+                    block, buffer = buffer.split("\n\n", 1)
+                    current_event: str | None = None
+                    for line in block.splitlines():
+                        if line.startswith("event:"):
+                            current_event = line[len("event:") :].strip()
+                        elif line.startswith("data:"):
+                            data = line[len("data:") :].strip()
+                            if data:
+                                if current_event == "error":
+                                    try:
+                                        payload = json.loads(data)
+                                        raise LogStreamError(
+                                            code=payload.get("code", "APIError"),
+                                            message=payload.get("message", ""),
+                                        )
+                                    except (ValueError, KeyError):
+                                        raise LogStreamError(
+                                            code="APIError",
+                                            message="Upstream stream error.",
+                                        )
+                                yield LogEntry.model_validate_json(data)
+
+    def download_logs(
+        self,
+        job_id: str,
+        workflow_id: str,
+        output_dir: Path,
+        *,
+        chunk_size: int = 256 * 1024,
+        timeout: float | None = None,
+    ) -> _list[Path]:
+        """Download per-task archived logs for ``workflow_id`` under ``job_id``.
+
+        Calls ``GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/download``,
+        streams the tar response, extracts to ``output_dir``, and returns the
+        list of extracted ``.jsonl`` file paths (one per task that had archived
+        logs). Returns an empty list when the workflow had no archived task logs.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        url = (
+            f"{self._client.base_url.rstrip('/')}"
+            f"/api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/download"
+        )
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
+        with self._client._http.stream(
+            "GET",
+            url,
+            headers={
+                "Accept": "application/x-tar",
+                "Authorization": (
+                    f"Bearer {self._client.api_key}" if self._client.api_key else ""
+                ),
+            },
+            **extra,
+        ) as response:
+            if response.status_code >= 400:
+                response.read()
+            _raise_for_status(response, url)
+            buf = BytesIO()
+            for chunk in response.iter_bytes(chunk_size=chunk_size):
+                if chunk:
+                    buf.write(chunk)
+
+        buf.seek(0)
+        extracted: _list[Path] = []
+        with tarfile.open(fileobj=buf, mode="r") as tf:
+            for member in tf.getmembers():
+                tf.extract(member, path=output_dir, filter="data")
+                extracted.append(output_dir / member.name)
+        return extracted
 
     def artifact(
         self,
@@ -339,6 +502,149 @@ class AsyncJobs(AsyncResource):
             f"/jobs/{job_id}/inputs", **_request_kwargs(timeout)
         )
         return unwrap(response)
+
+    async def list_workflows(
+        self, job_id: str, *, timeout: float | None = None
+    ) -> _list[JobWorkflowInfo]:
+        """List FlowMesh workflows associated with a job."""
+        response = await self._client.get(
+            f"/jobs/{job_id}/workflows", **_request_kwargs(timeout)
+        )
+        payload = unwrap(response)
+        if isinstance(payload, dict):
+            workflows = payload.get("workflows")
+            if isinstance(workflows, list):
+                return [JobWorkflowInfo.model_validate(w) for w in workflows]
+        return []
+
+    async def get_logs(
+        self,
+        job_id: str,
+        workflow_id: str,
+        *,
+        limit: int = 200,
+        before: str | None = None,
+        after: str | None = None,
+        timeout: float | None = None,
+    ) -> LogQueryResponse:
+        """Fetch one page of logs for ``workflow_id`` under ``job_id``."""
+        response = await self._client.get(
+            f"/jobs/{job_id}/workflows/{workflow_id}/logs",
+            params=_log_params(limit, before, after),
+            **_request_kwargs(timeout),
+        )
+        return LogQueryResponse.model_validate(unwrap(response))
+
+    async def stream_logs(
+        self,
+        job_id: str,
+        workflow_id: str,
+        *,
+        cursor: str | None = None,
+        timeout: float | None = None,
+    ) -> AsyncIterator[LogEntry]:
+        """Stream logs for ``workflow_id`` under ``job_id`` via SSE."""
+        url = (
+            f"{self._client.base_url.rstrip('/')}"
+            f"/api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/stream"
+        )
+        params: dict[str, str] = {}
+        if cursor is not None:
+            params["cursor"] = cursor
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
+        async with self._client._http.stream(
+            "GET",
+            url,
+            params=params or None,
+            headers={
+                "Accept": "text/event-stream",
+                "Authorization": (
+                    f"Bearer {self._client.api_key}" if self._client.api_key else ""
+                ),
+            },
+            **extra,
+        ) as response:
+            if response.status_code >= 400:
+                await response.aread()
+            _raise_for_status(response, url)
+            buffer = ""
+            async for chunk in response.aiter_text():
+                buffer += chunk
+                while "\n\n" in buffer:
+                    block, buffer = buffer.split("\n\n", 1)
+                    current_event: str | None = None
+                    for line in block.splitlines():
+                        if line.startswith("event:"):
+                            current_event = line[len("event:") :].strip()
+                        elif line.startswith("data:"):
+                            data = line[len("data:") :].strip()
+                            if data:
+                                if current_event == "error":
+                                    try:
+                                        payload = json.loads(data)
+                                        raise LogStreamError(
+                                            code=payload.get("code", "APIError"),
+                                            message=payload.get("message", ""),
+                                        )
+                                    except (ValueError, KeyError):
+                                        raise LogStreamError(
+                                            code="APIError",
+                                            message="Upstream stream error.",
+                                        )
+                                yield LogEntry.model_validate_json(data)
+
+    async def download_logs(
+        self,
+        job_id: str,
+        workflow_id: str,
+        output_dir: Path,
+        *,
+        chunk_size: int = 256 * 1024,
+        timeout: float | None = None,
+    ) -> _list[Path]:
+        """Download per-task archived logs for ``workflow_id`` under ``job_id``.
+
+        Async counterpart to ``Jobs.download_logs``. Calls
+        ``GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/download``,
+        streams the tar response, extracts to ``output_dir``, and returns the
+        list of extracted ``.jsonl`` file paths.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        url = (
+            f"{self._client.base_url.rstrip('/')}"
+            f"/api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/download"
+        )
+        extra: dict[str, Any] = {}
+        if timeout is not None:
+            extra["timeout"] = timeout
+        async with self._client._http.stream(
+            "GET",
+            url,
+            headers={
+                "Accept": "application/x-tar",
+                "Authorization": (
+                    f"Bearer {self._client.api_key}" if self._client.api_key else ""
+                ),
+            },
+            **extra,
+        ) as response:
+            if response.status_code >= 400:
+                await response.aread()
+            _raise_for_status(response, url)
+            buf = BytesIO()
+            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                if chunk:
+                    buf.write(chunk)
+
+        buf.seek(0)
+        extracted: _list[Path] = []
+        with tarfile.open(fileobj=buf, mode="r") as tf:
+            for member in tf.getmembers():
+                tf.extract(member, path=output_dir, filter="data")
+                extracted.append(output_dir / member.name)
+        return extracted
 
     async def artifact(
         self,

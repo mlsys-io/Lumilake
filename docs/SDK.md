@@ -51,7 +51,8 @@ The SDK and CLI share a small TOML file that records the server URL:
 Schema:
 
 ```toml
-base_url = "http://127.0.0.1:9000"
+base_url = "https://lumilake.example.com"
+api_key  = "lm_pat_..."  # optional; falls back to LUMILAKE_API_KEY env or empty
 ```
 
 ### What writes it
@@ -93,7 +94,7 @@ with LumilakeClient(api_key="lm_pat_live_…") as client:
 |---------|------|-------|
 | Health | `client.health()` | `await client.health()` |
 | Deploy | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
-| Jobs | `client.jobs.submit / preview / list / list_all / get / progress / result / inputs / artifact / cancel / wait / watch(...)` | same, await |
+| Jobs | `client.jobs.submit / preview / list / list_all / get / progress / result / inputs / artifact / list_workflows / get_logs / stream_logs / download_logs / cancel / wait / watch(...)` | same, await |
 | Workers | `client.workers.list / list_all / get(...)` | same, await |
 | Traces | `client.traces.list / list_all / get(...)` | same, await |
 
@@ -111,6 +112,13 @@ client.jobs.result(job_id)
 client.jobs.inputs(job_id)
 client.jobs.cancel(job_id)
 client.jobs.artifact(job_id, path="s3://...", output="result.json")
+
+# Per-workflow FlowMesh logs (mirrors `lumilake job logs show/stream/download`).
+workflows = client.jobs.list_workflows(job_id)
+page = client.jobs.get_logs(job_id, workflows[0].workflow_id, limit=200)  # LogQueryResponse
+for entry in client.jobs.stream_logs(job_id, workflows[0].workflow_id):  # Iterator[LogEntry]
+    print(entry.event.message)
+paths = client.jobs.download_logs(job_id, workflows[0].workflow_id, Path("./logs"))  # list[Path]
 
 # Block until a terminal state and return the final job record.
 client.jobs.wait(job_id, timeout=900.0)

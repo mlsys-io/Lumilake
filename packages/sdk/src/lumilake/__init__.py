@@ -17,8 +17,15 @@ from lumilake.config import DEFAULT_CONFIG_PATH, LumilakeConfig
 from lumilake.errors import (
     DeployError,
     HttpError,
+    LogStreamError,
     LumilakeError,
     NotFoundError,
+)
+from lumilake.resources._log_models import (
+    JobWorkflowInfo,
+    LogEntry,
+    LogEvent,
+    LogQueryResponse,
 )
 from lumilake.resources.deploy import SERVICE_NAMES, AsyncDeploy, Deploy
 from lumilake.resources.info import AsyncInfo, Info
@@ -46,7 +53,12 @@ __all__ = [
     "DeployError",
     "HttpError",
     "Info",
+    "JobWorkflowInfo",
     "Jobs",
+    "LogEntry",
+    "LogEvent",
+    "LogQueryResponse",
+    "LogStreamError",
     "LumilakeClient",
     "LumilakeConfig",
     "LumilakeError",
