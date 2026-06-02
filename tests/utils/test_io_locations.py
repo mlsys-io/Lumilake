@@ -146,3 +146,47 @@ def test_write_sharded_index_requires_non_empty_prefix() -> None:
         assert str(exc) == "write_sharded_index requires a non-empty S3 prefix"
     else:  # pragma: no cover
         raise AssertionError("expected write_sharded_index to reject empty prefixes")
+
+
+def test_normalize_s3_uri_derives_bucket_from_data_prefix(monkeypatch: Any) -> None:
+    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "mybucket/data/v1")
+    assert (
+        io_locations._normalize_s3_uri("subdir/file.parquet")
+        == "s3://mybucket/data/v1/subdir/file.parquet"
+    )
+
+
+def test_normalize_s3_uri_passes_through_s3_scheme(monkeypatch: Any) -> None:
+    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "ignored/prefix")
+    assert (
+        io_locations._normalize_s3_uri("s3://other-bucket/path")
+        == "s3://other-bucket/path"
+    )
+
+
+def test_normalize_s3_uri_raises_when_data_prefix_missing(monkeypatch: Any) -> None:
+    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", None)
+    try:
+        io_locations._normalize_s3_uri("subdir/file.parquet")
+    except ValueError as exc:
+        assert "S3_DATA_PREFIX" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError when S3_DATA_PREFIX is unset")
+
+
+def test_normalize_s3_uri_raises_when_prefix_has_no_bucket(monkeypatch: Any) -> None:
+    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "/")
+    try:
+        io_locations._normalize_s3_uri("subdir/file.parquet")
+    except ValueError as exc:
+        assert "bucket" in str(exc).lower()
+    else:  # pragma: no cover
+        raise AssertionError("expected ValueError when prefix has no bucket")
+
+
+def test_normalize_s3_uri_accepts_leading_slash_in_data_prefix(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "/bucket/prefix")
+    result = io_locations._normalize_s3_uri("subdir/file.parquet")
+    assert result == "s3://bucket/prefix/subdir/file.parquet"

@@ -12,6 +12,7 @@ from typing import Any
 
 import urllib3
 from lumilake_deploy._demo_data import (
+    compose_key_prefix,
     find_default_env_file,
     human_bytes,
     info,
@@ -35,6 +36,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--env-file", type=Path)
     p.add_argument("--database-url")
     p.add_argument("--s3-url")
+    p.add_argument("--s3-data-prefix")
     p.add_argument("--s3-cert-file")
     p.add_argument("--tag", default=DEFAULT_TAG)
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
@@ -138,10 +140,11 @@ def main(argv: list[str]) -> int:
         overrides={
             "DATABASE_URL": args.database_url,
             "S3_URL": args.s3_url,
+            "S3_DATA_PREFIX": args.s3_data_prefix,
             "S3_CERT_FILE": args.s3_cert_file,
         },
     )
-    require_env(env, ["DATABASE_URL", "S3_URL"])
+    require_env(env, ["DATABASE_URL", "S3_URL", "S3_DATA_PREFIX"])
 
     cache = args.cache_dir.expanduser().resolve()
     pg_path = cache / PG_ASSET
@@ -156,14 +159,17 @@ def main(argv: list[str]) -> int:
     info(f"[2/3] restoring schema {EMBEDDED_SCHEMA} into DATABASE_URL")
     pg_restore(env["DATABASE_URL"], pg_path, args.drop_schema, args.pg_restore_jobs)
 
-    cfg = parse_s3_url(env["S3_URL"], env.get("S3_CERT_FILE") or None)
+    cfg = parse_s3_url(
+        env["S3_URL"], env["S3_DATA_PREFIX"], env.get("S3_CERT_FILE") or None
+    )
     client = make_minio_client(cfg)
-    info(f"[3/3] uploading news/ -> s3://{cfg.bucket}/{args.s3_prefix.strip('/')}/news")
+    full_key_prefix = compose_key_prefix(cfg.base_prefix, args.s3_prefix)
+    info(f"[3/3] uploading news/ -> s3://{cfg.bucket}/{full_key_prefix}/news")
     with tempfile.TemporaryDirectory(prefix="lumilake-demo-news-") as stage:
         stage_path = Path(stage)
         with tarfile.open(s3_path, "r:gz") as tar:
             tar.extractall(stage_path, filter="data")
-        count = upload_news_tree(client, cfg.bucket, args.s3_prefix, stage_path)
+        count = upload_news_tree(client, cfg.bucket, full_key_prefix, stage_path)
     info(f"       uploaded {count} objects")
 
     info("")

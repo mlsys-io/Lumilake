@@ -986,14 +986,14 @@ def _build_generation_config(
 
 _ENV_PLACEHOLDERS: dict[str, Any] = {
     "${DATABASE_URL}": lambda: envs.DATABASE_URL,
-    "${S3_URL}": lambda: envs.S3_URL,
+    "${S3_URL}": lambda: envs.S3_WORKER_URL,
 }
 
 
 def _expand_env_placeholders(value: str) -> str:
     """Resolve ``${DATABASE_URL}`` / ``${S3_URL}`` sentinel values.
 
-    n8n's parser bakes ``envs.DATABASE_URL`` / ``envs.S3_URL`` into each
+    Parsers bake ``envs.DATABASE_URL`` / ``envs.S3_WORKER_URL`` into each
     ``DataRetrievalOp.data_spec.connection_string`` at parse time. To keep the
     YAML portable across machines (CI, laptops, containers) the same ``envs``
     values are substituted here when a YAML author writes the sentinel as the

@@ -44,9 +44,12 @@ def _normalize_s3_uri(uri: str) -> str:
         return uri
     if not uri:
         raise ValueError("s3 prefix must not be empty")
-    if not envs.S3_URL:
-        raise ValueError("S3_URL is not configured")
-    bucket, base_prefix = _default_bucket_prefix(envs.S3_URL)
+    if not envs.S3_DATA_PREFIX:
+        raise ValueError("S3_DATA_PREFIX is not configured")
+    normalized = envs.S3_DATA_PREFIX.strip("/")
+    bucket, _, base_prefix = normalized.partition("/")
+    if not bucket:
+        raise ValueError("S3_DATA_PREFIX must include a bucket (e.g. bucket/prefix)")
     key = join_prefix(base_prefix, uri)
     return f"s3://{bucket}/{key}"
 
@@ -80,24 +83,6 @@ def _split_bucket_object(uri: str) -> tuple[str, str]:
     if not bucket or not obj:
         raise ValueError("s3 uri must include bucket and object path")
     return bucket, obj
-
-
-def _default_bucket_prefix(conn_uri: str) -> tuple[str, str]:
-    parsed = urlparse(conn_uri)
-    if parsed.scheme != "s3":
-        raise ValueError("S3_URL must start with s3://")
-    has_conn = bool(
-        parsed.username or parsed.password or parsed.port or "@" in parsed.netloc
-    )
-    if has_conn:
-        path = parsed.path.lstrip("/")
-        bucket, _, prefix = path.partition("/")
-    else:
-        bucket = parsed.netloc or ""
-        prefix = parsed.path.lstrip("/")
-    if not bucket:
-        raise ValueError("S3_URL must include bucket")
-    return bucket, prefix
 
 
 def _parse_connection(conn_uri: str) -> S3Connection:

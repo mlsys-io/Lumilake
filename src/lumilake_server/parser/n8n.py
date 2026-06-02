@@ -1209,9 +1209,10 @@ def _make_s3_retrieval_op(
         op_ids=op_ids,
         inputs=inputs,
     )
-    if not envs.S3_URL:
+    if not envs.S3_WORKER_URL:
         raise ValueError(
-            f"n8n s3 node '{node_name}' missing S3 connection string " "(set S3_URL)"
+            f"n8n s3 node '{node_name}' missing S3 connection string "
+            "(set S3_URL and S3_DATA_PREFIX)"
         )
     _BINARY_EXTENSIONS = (
         ".png",
@@ -1234,7 +1235,7 @@ def _make_s3_retrieval_op(
     )
     data_spec: dict[str, Any] = {
         "type": "s3",
-        "connection_string": envs.S3_URL,
+        "connection_string": envs.S3_WORKER_URL,
         "template": s3_template,
         "params": s3_params,
         "encoding": encoding,
@@ -1285,10 +1286,10 @@ def _make_lake_retrieval_op(
         op_ids=op_ids,
         inputs=inputs,
     )
-    if not envs.S3_URL:
+    if not envs.S3_WORKER_URL:
         raise ValueError(
             f"n8n lake retrieval node '{node_name}' missing S3 connection string "
-            "(set S3_URL)"
+            "(set S3_URL and S3_DATA_PREFIX)"
         )
     _BINARY_EXTENSIONS = (
         ".png",
@@ -1311,7 +1312,7 @@ def _make_lake_retrieval_op(
     )
     data_spec: dict[str, Any] = {
         "type": "s3",
-        "connection_string": envs.S3_URL,
+        "connection_string": envs.S3_WORKER_URL,
         "template": s3_template,
         "params": s3_params,
         "encoding": encoding,

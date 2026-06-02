@@ -32,12 +32,13 @@ Compute data plane (required for every direct SQL/S3 op):
 | Key | Purpose |
 |-----|---------|
 | `DATABASE_URL` | PostgreSQL connection string used by every SQL `DataRetrievalOp`. |
-| `S3_URL` | S3-compatible endpoint and credentials used by every S3 `DataRetrievalOp` and the archive (`S3_ARCHIVE_PREFIX`). Its path (`bucket/prefix`) is also the scan root for data-profile listing. |
+| `S3_URL` | S3-compatible endpoint and credentials (connection only, no path) used by every S3 `DataRetrievalOp` and the archive. Example: `s3://access:secret@host:port`. |
+| `S3_DATA_PREFIX` | `bucket/prefix` read root for S3 `DataRetrievalOp` and data-profile listing. Required when `S3_URL` is set; `envs.validate()` and `lumilake deploy doctor` both enforce this. |
 | `S3_CERT_FILE` | Path to an S3 TLS cert bundle. Optional; the bundled compose mounts the file when set. |
 
 ## Lumid.data routing
 
-Only `DataRetrievalOp` with `type: agent` routes through lumid.data — SQL and S3 retrievals always go direct against `DATABASE_URL` / `S3_URL` regardless of `LUMID_DATA_URL`.
+Only `DataRetrievalOp` with `type: agent` routes through lumid.data — SQL and S3 retrievals always go direct against `DATABASE_URL` / `S3_URL` + `S3_DATA_PREFIX` regardless of `LUMID_DATA_URL`.
 
 Agent-retrieval keys:
 
@@ -156,3 +157,7 @@ Consumed by the SDK and deploy CLI helpers.
 | `LUMILAKE_DEPLOY_DIR` | Default `--project-dir` for `lumilake deploy`. |
 
 See `.env.example` for the deploy-time template and defaults.
+
+## Migration: S3_URL path → S3_DATA_PREFIX
+
+Prior versions parsed the data prefix from the path component of `S3_URL` (e.g. `s3://access:secret@host:port/bucket/prefix`). That path component is no longer read; `S3_URL` must now be a connection-only string with no path. Move the prefix to the new `S3_DATA_PREFIX` variable (e.g. `S3_DATA_PREFIX=bucket/prefix`). Server startup raises a `ValueError` if `S3_URL` still carries a path, so the break is loud and caught before the server accepts traffic.

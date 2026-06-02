@@ -64,9 +64,6 @@ _ALWAYS_REQUIRED: tuple[str, ...] = (
     "LUMILAKE_IMAGE_TAG",
 )
 
-# Keys required for direct compute mode (when ``LUMID_DATA_URL`` is empty).
-# When LUMID_DATA_URL is set, lumid.data owns these credentials and the
-# server skips direct connections — the keys become optional.
 _DIRECT_MODE_REQUIRED: tuple[str, ...] = (
     "DATABASE_URL",
     "S3_URL",
@@ -103,6 +100,7 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "LUMILAKE_PLUGINS",
     "LUMILAKE_PLUGIN_DIR",
     "LUMILAKE_SKIP_DOTENV_CHECK",
+    "S3_DATA_PREFIX",
     "S3_CERT_FILE",
     "LUMID_DATA_URL",
     "LUMID_DATA_TOKEN",
@@ -141,14 +139,9 @@ def _check_required(values: dict[str, str], report: DoctorReport) -> None:
             report.error(
                 f"{key} is required but missing or empty (fix: set {key}=... in .env)"
             )
-    if not values.get("LUMID_DATA_URL"):
-        for key in _DIRECT_MODE_REQUIRED:
-            if not values.get(key):
-                report.error(
-                    f"{key} is required in direct mode "
-                    f"(fix: set {key}=... in .env, or set LUMID_DATA_URL to "
-                    "route through lumid.data instead)"
-                )
+    for key in _DIRECT_MODE_REQUIRED:
+        if not values.get(key):
+            report.error(f"{key} is required (fix: set {key}=... in .env)")
 
 
 def _check_unknown(values: dict[str, str], report: DoctorReport) -> None:
@@ -169,8 +162,6 @@ def _check_data_plane(values: dict[str, str], report: DoctorReport) -> None:
 
 
 def _check_s3_url(values: dict[str, str], report: DoctorReport) -> None:
-    if values.get("LUMID_DATA_URL"):
-        return
     raw_url = values.get("S3_URL", "")
     if not raw_url:
         return
@@ -178,22 +169,28 @@ def _check_s3_url(values: dict[str, str], report: DoctorReport) -> None:
     if parsed.scheme != "s3":
         report.error(
             "S3_URL must use the s3:// scheme "
-            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+            "(fix: set S3_URL=s3://access:secret@host:port in .env)"
         )
     if not parsed.hostname:
         report.error(
             "S3_URL must include an endpoint host "
-            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+            "(fix: set S3_URL=s3://access:secret@host:port in .env)"
         )
     if not parsed.username or not parsed.password:
         report.error(
             "S3_URL must include access key and secret "
-            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+            "(fix: set S3_URL=s3://access:secret@host:port in .env)"
         )
-    if not parsed.path.lstrip("/"):
+    if parsed.path.lstrip("/"):
         report.error(
-            "S3_URL must include a bucket or bucket/prefix path "
-            "(fix: set S3_URL=s3://access:secret@host:port/bucket in .env)"
+            "S3_URL must not include a path; set the prefix in S3_DATA_PREFIX "
+            "(fix: set S3_URL=s3://access:secret@host:port, "
+            "S3_DATA_PREFIX=bucket/prefix in .env)"
+        )
+    if not values.get("S3_DATA_PREFIX"):
+        report.error(
+            "S3_DATA_PREFIX is required when S3_URL is set "
+            "(fix: set S3_DATA_PREFIX=bucket/prefix in .env)"
         )
 
 

@@ -18,6 +18,7 @@ YAML_DIR = TEMPLATE_ROOT / "yaml"
 def _ensure_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "DATABASE_URL", "postgres://")
     monkeypatch.setattr(envs, "S3_URL", "s3://dummy")
+    monkeypatch.setattr(envs, "S3_WORKER_URL", "s3://dummy/bucket")
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
 
 

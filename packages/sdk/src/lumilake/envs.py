@@ -225,29 +225,33 @@ DATABASE_URL: str | None = get_database_url()
 
 def _parse_s3_url(
     raw_url: str | None,
-) -> tuple[str | None, str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     if not raw_url:
-        return None, None, None, None
+        return None, None, None
     parsed = urlparse(raw_url)
     if parsed.scheme != "s3" or not parsed.hostname:
-        return None, None, None, None
+        return None, None, None
     endpoint = parsed.hostname
     if parsed.port is not None:
         endpoint = f"{endpoint}:{parsed.port}"
-    prefix = parsed.path.lstrip("/") or None
     return (
         endpoint,
         unquote(parsed.username) if parsed.username else None,
         unquote(parsed.password) if parsed.password else None,
-        prefix,
     )
 
 
 S3_URL: str | None = os.getenv("S3_URL") or None
 
-S3_ENDPOINT, S3_ACCESS_KEY, S3_CONNECTION_VALUE, S3_URL_PREFIX = _parse_s3_url(S3_URL)
+S3_ENDPOINT, S3_ACCESS_KEY, S3_CONNECTION_VALUE = _parse_s3_url(S3_URL)
 S3_CERT_FILE: str | None = os.getenv("S3_CERT_FILE")
 
+S3_DATA_PREFIX: str | None = os.getenv("S3_DATA_PREFIX")
+S3_WORKER_URL: str | None = (
+    f"{S3_URL.rstrip('/')}/{S3_DATA_PREFIX.lstrip('/')}"
+    if S3_URL and S3_DATA_PREFIX
+    else None
+)
 S3_ARCHIVE_PREFIX: str | None = os.getenv("S3_ARCHIVE_PREFIX")
 
 FLOWMESH_OUTPUT_DESTINATION: str = os.environ.get(
@@ -359,3 +363,15 @@ def validate() -> None:
         )
     if LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS <= 0:
         raise ValueError("LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS must be > 0")
+    if S3_URL and urlparse(S3_URL).path.lstrip("/"):
+        raise ValueError(
+            "S3_URL must not carry a path component; move the prefix to "
+            "S3_DATA_PREFIX (e.g. S3_URL=s3://endpoint, "
+            "S3_DATA_PREFIX=my/data/path)"
+        )
+    if S3_URL:
+        if not S3_DATA_PREFIX or not S3_DATA_PREFIX.strip("/"):
+            raise ValueError(
+                "S3_DATA_PREFIX must be a non-empty bucket/prefix when S3_URL is set "
+                "(e.g. S3_DATA_PREFIX=bucket/data)"
+            )

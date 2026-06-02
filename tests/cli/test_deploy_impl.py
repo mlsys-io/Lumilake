@@ -263,14 +263,32 @@ def test_doctor_rejects_malformed_s3_url(tmp_path: Path) -> None:
     assert any(
         "S3_URL must include access key and secret" in msg for msg in report.errors
     )
-    assert any(
-        "S3_URL must include a bucket or bucket/prefix path" in msg
-        for msg in report.errors
-    )
-    # Every error row names the env var that would fix it.
+    # Every error row is actionable.
     for msg in report.errors:
         assert "fix:" in msg, msg
-        assert "S3_URL" in msg, msg
+
+
+def test_doctor_rejects_s3_url_with_path(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'LUMILAKE_SERVER_HOST="0.0.0.0"',
+                'LUMILAKE_SERVER_PORT="9000"',
+                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
+                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
+                'LUMILAKE_IMAGE_TAG="latest"',
+                'DATABASE_URL="postgresql://postgres:pw@db.example.com/postgres"',
+                'S3_URL="s3://access:secret@s3.example.com:9000/bucket/prefix"',
+                "",
+            ]
+        )
+    )
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    assert any("S3_DATA_PREFIX" in msg for msg in report.errors)
+    assert any("must not include a path" in msg for msg in report.errors)
 
 
 def test_doctor_required_env_failures_name_the_env_var(tmp_path: Path) -> None:
@@ -290,7 +308,7 @@ def test_doctor_required_env_failures_name_the_env_var(tmp_path: Path) -> None:
         assert matched, f"{var} should produce an actionable error: {report.errors}"
 
 
-def test_doctor_direct_mode_errors_include_lumid_alternative(tmp_path: Path) -> None:
+def test_doctor_direct_mode_errors_are_actionable(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
@@ -308,17 +326,95 @@ def test_doctor_direct_mode_errors_include_lumid_alternative(tmp_path: Path) -> 
     report = doctor_mod.run_env_checks(env_file)
 
     for var in ("DATABASE_URL", "S3_URL"):
-        matched = [
-            msg
-            for msg in report.errors
-            if var in msg and "fix:" in msg and "LUMID_DATA_URL" in msg
-        ]
-        assert matched, f"{var} should name LUMID_DATA_URL alternative: {report.errors}"
+        matched = [msg for msg in report.errors if var in msg and "fix:" in msg]
+        assert matched, f"{var} should produce an actionable error: {report.errors}"
+        # The message must NOT suggest LUMID_DATA_URL as an alternative —
+        # both vars are always required in direct mode.
+        assert not any(
+            "LUMID_DATA_URL" in msg for msg in matched
+        ), f"{var} error must not mention LUMID_DATA_URL: {matched}"
 
 
 def test_doctor_missing_env_file_message_is_actionable(tmp_path: Path) -> None:
     report = doctor_mod.run_env_checks(tmp_path / ".env")
     assert any("lumilake deploy init" in msg for msg in report.errors)
+
+
+def test_doctor_rejects_s3_url_without_s3_data_prefix(tmp_path: Path) -> None:
+    """doctor errors when S3_URL is set but S3_DATA_PREFIX is absent."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'LUMILAKE_SERVER_HOST="0.0.0.0"',
+                'LUMILAKE_SERVER_PORT="9000"',
+                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
+                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
+                'LUMILAKE_IMAGE_TAG="latest"',
+                'DATABASE_URL="postgresql://postgres:pw@db.example.com/postgres"',
+                'S3_URL="s3://access:secret@s3.example.com:9000"',
+                "",
+            ]
+        )
+    )
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    assert any(
+        "S3_DATA_PREFIX is required when S3_URL is set" in msg for msg in report.errors
+    )
+    assert any("fix:" in msg for msg in report.errors)
+
+
+def test_doctor_requires_database_url_even_with_lumid_data_url(tmp_path: Path) -> None:
+    """doctor still requires DATABASE_URL when LUMID_DATA_URL is set."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'LUMILAKE_SERVER_HOST="0.0.0.0"',
+                'LUMILAKE_SERVER_PORT="9000"',
+                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
+                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
+                'LUMILAKE_IMAGE_TAG="latest"',
+                'LUMID_DATA_URL="http://127.0.0.1:9102"',
+                'S3_URL="s3://access:secret@s3.example.com:9000"',
+                'S3_DATA_PREFIX="lumilake-demo"',
+                "",
+            ]
+        )
+    )
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    assert any(
+        "DATABASE_URL" in msg for msg in report.errors
+    ), "DATABASE_URL must still be required even when LUMID_DATA_URL is set"
+
+
+def test_doctor_requires_s3_url_even_with_lumid_data_url(tmp_path: Path) -> None:
+    """doctor still requires S3_URL when LUMID_DATA_URL is set."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'LUMILAKE_SERVER_HOST="0.0.0.0"',
+                'LUMILAKE_SERVER_PORT="9000"',
+                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
+                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
+                'LUMILAKE_IMAGE_TAG="latest"',
+                'LUMID_DATA_URL="http://127.0.0.1:9102"',
+                'DATABASE_URL="postgresql://postgres:pw@db.example.com/postgres"',
+                "",
+            ]
+        )
+    )
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    assert any(
+        "S3_URL" in msg for msg in report.errors
+    ), "S3_URL must still be required even when LUMID_DATA_URL is set"
 
 
 def _fake_ctx(project_dir: Path) -> Any:

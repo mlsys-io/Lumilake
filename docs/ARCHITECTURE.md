@@ -65,6 +65,6 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 Lumilake separates compute data from job archive data.
 
 - **SQL `DataRetrievalOp`** connects directly to `DATABASE_URL`.
-- **S3 `DataRetrievalOp`** connects directly to `S3_URL`.
+- **S3 `DataRetrievalOp`** uses the `S3_URL` connection (endpoint + credentials) and reads under the `S3_DATA_PREFIX` path. Both are required for S3 reads; the prefixes are orthogonal on the same connection.
 - **Agent `DataRetrievalOp`** (`type: agent`) routes through lumid.data's `/agent/v1` endpoint and therefore requires `LUMID_DATA_URL`.
-- **Archive** (job records, runtime artifacts) is always written under `S3_ARCHIVE_PREFIX` using the same `S3_URL` connection.
+- **Archive** (job records, runtime artifacts) is always written under `S3_ARCHIVE_PREFIX` using the same `S3_URL` connection. `S3_DATA_PREFIX` and `S3_ARCHIVE_PREFIX` are independent — they may point at different buckets or prefixes on the same endpoint.

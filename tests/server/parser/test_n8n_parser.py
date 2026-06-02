@@ -49,6 +49,8 @@ def test_parse_n8n_templates(template_path: Path):
         envs.DATABASE_URL = "sqlite://"
     if envs.S3_URL is None:
         envs.S3_URL = "s3://dummy"
+    if envs.S3_WORKER_URL is None:
+        envs.S3_WORKER_URL = "s3://dummy/bucket"
     if not envs.LUMID_DATA_URL:
         envs.LUMID_DATA_URL = "http://lumid-data"
 
@@ -73,6 +75,8 @@ def test_image_generation_digest_uses_row_summary_aggregate_table() -> None:
         envs.DATABASE_URL = "sqlite://"
     if envs.S3_URL is None:
         envs.S3_URL = "s3://dummy"
+    if envs.S3_WORKER_URL is None:
+        envs.S3_WORKER_URL = "s3://dummy/bucket"
 
     template_path = TEMPLATE_DIR / "image-generation.json"
     workflow = _load_template(template_path)
