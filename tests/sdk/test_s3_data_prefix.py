@@ -78,7 +78,35 @@ def test_s3_url_without_data_prefix_raises_value_error(
     monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
     monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 60.0)
 
-    with pytest.raises(ValueError, match="S3_DATA_PREFIX is required"):
+    with pytest.raises(ValueError, match="S3_DATA_PREFIX must be a non-empty"):
+        envs.validate()
+
+
+def test_s3_slash_only_data_prefix_raises_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate() raises when S3_DATA_PREFIX is all slashes (no real bucket)."""
+    envs = _reload_envs(
+        monkeypatch,
+        {
+            "S3_URL": "s3://access:secret@endpoint:9000",
+            "S3_DATA_PREFIX": "/",
+        },
+    )
+
+    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_TYPE", "halo")
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
+    monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
+    monkeypatch.setattr(envs, "LUMILAKE_JOB_MANAGER_TYPE", "priority")
+    monkeypatch.setattr(envs, "LUMILAKE_RUNTIME_MANAGER_TYPE", "default")
+    monkeypatch.setattr(envs, "LUMILAKE_STARVATION_LIMIT", 3)
+    monkeypatch.setattr(envs, "LUMILAKE_BATCH_ACCUMULATION_SECONDS", 0.0)
+    monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
+    monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
+    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 60.0)
+
+    with pytest.raises(ValueError, match="S3_DATA_PREFIX must be a non-empty"):
         envs.validate()
 
 

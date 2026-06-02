@@ -1,5 +1,6 @@
 """Unit tests for _demo_data helpers: parse_s3_url and compose_key_prefix."""
 
+import pytest
 from lumilake_deploy._demo_data import compose_key_prefix, parse_s3_url
 
 # ---------------------------------------------------------------------------
@@ -26,6 +27,12 @@ def test_parse_s3_url_leading_slash_stripped() -> None:
     cfg = parse_s3_url("s3://access:secret@host:9000", "/mybucket/prefix")
     assert cfg.bucket == "mybucket"
     assert cfg.base_prefix == "prefix"
+
+
+def test_parse_s3_url_raises_when_s3_url_has_path() -> None:
+    """parse_s3_url raises SystemExit when S3_URL includes a path component."""
+    with pytest.raises(SystemExit, match="S3_DATA_PREFIX"):
+        parse_s3_url("s3://k:s@h:p/bucket/prefix", "x")
 
 
 # ---------------------------------------------------------------------------

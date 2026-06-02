@@ -74,6 +74,12 @@ def parse_s3_url(raw: str, data_prefix: str, cert_file: str | None = None) -> S3
             "S3_URL must include credentials and host, e.g. "
             "s3://access:secret@host:port"
         )
+    if parsed.path and parsed.path.strip("/"):
+        raise SystemExit(
+            "S3_URL must not include a path; set the prefix in S3_DATA_PREFIX "
+            "(fix: set S3_URL=s3://access:secret@host:port, "
+            "S3_DATA_PREFIX=bucket/prefix in .env)"
+        )
     bucket, _, base_prefix = data_prefix.lstrip("/").partition("/")
     if not bucket:
         raise SystemExit(

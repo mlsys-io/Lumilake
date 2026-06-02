@@ -369,8 +369,9 @@ def validate() -> None:
             "S3_DATA_PREFIX (e.g. S3_URL=s3://endpoint, "
             "S3_DATA_PREFIX=my/data/path)"
         )
-    if S3_URL and not S3_DATA_PREFIX:
-        raise ValueError(
-            "S3_DATA_PREFIX is required when S3_URL is set "
-            "(e.g. S3_DATA_PREFIX=bucket/data)"
-        )
+    if S3_URL:
+        if not S3_DATA_PREFIX or not S3_DATA_PREFIX.strip("/"):
+            raise ValueError(
+                "S3_DATA_PREFIX must be a non-empty bucket/prefix when S3_URL is set "
+                "(e.g. S3_DATA_PREFIX=bucket/data)"
+            )

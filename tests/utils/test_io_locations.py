@@ -175,10 +175,18 @@ def test_normalize_s3_uri_raises_when_data_prefix_missing(monkeypatch: Any) -> N
 
 
 def test_normalize_s3_uri_raises_when_prefix_has_no_bucket(monkeypatch: Any) -> None:
-    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "/just/path")
+    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "/")
     try:
         io_locations._normalize_s3_uri("subdir/file.parquet")
     except ValueError as exc:
         assert "bucket" in str(exc).lower()
     else:  # pragma: no cover
         raise AssertionError("expected ValueError when prefix has no bucket")
+
+
+def test_normalize_s3_uri_accepts_leading_slash_in_data_prefix(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "/bucket/prefix")
+    result = io_locations._normalize_s3_uri("subdir/file.parquet")
+    assert result == "s3://bucket/prefix/subdir/file.parquet"

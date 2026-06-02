@@ -1084,7 +1084,7 @@ def _compute_minio_client():
 
 
 def _resolve_logical_s3_to_physical(logical: str) -> tuple[str, str]:
-    """Treat ``logical`` as a key path under the configured ``S3_URL`` bucket."""
+    """Resolve ``logical`` as an S3 key under the ``S3_DATA_PREFIX`` bucket/prefix."""
     if not envs.S3_DATA_PREFIX:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

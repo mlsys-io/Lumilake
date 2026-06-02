@@ -46,7 +46,8 @@ def _normalize_s3_uri(uri: str) -> str:
         raise ValueError("s3 prefix must not be empty")
     if not envs.S3_DATA_PREFIX:
         raise ValueError("S3_DATA_PREFIX is not configured")
-    bucket, _, base_prefix = envs.S3_DATA_PREFIX.partition("/")
+    normalized = envs.S3_DATA_PREFIX.strip("/")
+    bucket, _, base_prefix = normalized.partition("/")
     if not bucket:
         raise ValueError("S3_DATA_PREFIX must include a bucket (e.g. bucket/prefix)")
     key = join_prefix(base_prefix, uri)
