@@ -15,6 +15,7 @@ from lumilake_server.runtime.server import LumilakeServer
 def _direct_parser_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "DATABASE_URL", "sqlite://")
     monkeypatch.setattr(envs, "S3_URL", "s3://dummy")
+    monkeypatch.setattr(envs, "S3_WORKER_URL", "s3://dummy/bucket")
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "")
 
 

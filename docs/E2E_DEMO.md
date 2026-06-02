@@ -23,7 +23,7 @@ independent steps**; skip any step you've already done.
 
 All three read from the same `lumilake_demo.*` Postgres schema; the
 image-generation pair also reads HTML files from
-`s3://<bucket>/example-data/news/html/`.
+`s3://<bucket>[/<prefix>]/example-data/news/html/`.
 
 ## Prerequisites
 
@@ -98,9 +98,9 @@ docker compose -f scripts/dev/compose.data-plane.yml down -v
 ```
 
 **Skip this step entirely** if you have your own Postgres and S3 — just
-set `DATABASE_URL` and `S3_URL` in your `.env` to your own endpoints.
-Nothing in step 2 or 3 reads the bundled defaults if you've overridden
-them.
+set `DATABASE_URL`, `S3_URL`, and `S3_DATA_PREFIX` in your `.env` to
+your own endpoints and bucket/prefix. Nothing in step 2 or 3 reads the
+bundled defaults if you've overridden them.
 
 ---
 
@@ -109,7 +109,9 @@ them.
 `scripts/dev/load_demo_data.py` downloads the published bundle from the
 `demo-data-v1` release of `mlsys-io/lumilake_OSS`, restores the
 `lumilake_demo` schema, and uploads `news/{html,images}` into
-`s3://<bucket>/example-data/news/`.
+`s3://<bucket>[/<prefix>]/example-data/news/` (where `<prefix>` is the
+optional sub-path portion of `S3_DATA_PREFIX`, absent for the default
+`lumilake-demo` value).
 
 It reads database / S3 credentials from a `.env` file (auto-detected
 by walking up from the current directory). If you haven't run
@@ -119,7 +121,8 @@ URLs explicitly:
 ```bash
 uv run python scripts/dev/load_demo_data.py \
   --database-url postgresql://lumilake:lumilake_password@127.0.0.1:15432/lumilake \
-  --s3-url s3://lumilake:lumilake_password@127.0.0.1:19100/lumilake-demo
+  --s3-url s3://lumilake:lumilake_password@127.0.0.1:19100 \
+  --s3-data-prefix lumilake-demo
 ```
 
 Once `lumilake deploy init` has written a `.env`, the no-flag form
@@ -135,7 +138,8 @@ Useful flags:
 |---|---|
 | `--env-file PATH`         | Explicit path to `.env` (default: search upward from CWD). |
 | `--database-url URL`      | Override `DATABASE_URL`. |
-| `--s3-url URL`            | Override `S3_URL`. |
+| `--s3-url URL`            | Override `S3_URL` (endpoint only, no path — e.g. `s3://access:secret@host:port`). |
+| `--s3-data-prefix PREFIX` | Override `S3_DATA_PREFIX` (e.g. `lumilake-demo`). |
 | `--s3-cert-file PATH`     | CA bundle for HTTPS S3 endpoints (not needed for the bundled MinIO). |
 | `--tag demo-data-v2`      | Pull a different bundle release. |
 | `--cache-dir PATH`        | Where downloads land (default `~/.cache/lumilake-demo`). |
@@ -153,7 +157,7 @@ After it finishes:
 - Postgres has `lumilake_demo.{ohlc_10m, financial_income_statement,
   market_metrics, news_metadata, insider_sentiment, instrument_profile}`
   populated.
-- S3 has `<bucket>/example-data/news/{html,images}/...` (1,512 objects,
+- S3 has `<bucket>[/<prefix>]/example-data/news/{html,images}/...` (1,512 objects,
   ~682 MiB).
 
 **Skip this step** if your data plane is already seeded with these
@@ -199,13 +203,13 @@ workers are reachable.
 
 The shipped `.env.example` is **pre-pointed at step 1's data plane**
 (`postgresql://lumilake:lumilake_password@127.0.0.1:15432/lumilake`,
-`s3://lumilake:lumilake_password@127.0.0.1:19100/lumilake-demo`). Open
+`s3://lumilake:lumilake_password@127.0.0.1:19100` with `S3_DATA_PREFIX=lumilake-demo`). Open
 `~/lumilake-deploy/.env` only if you need to:
 
 - Set a model provider key (`OPENAI_API_KEY`, etc.) — only if you
   author workflows that call hosted providers; the bundled demos run
   on local open-weight models.
-- Point at your own Postgres / S3 (override `DATABASE_URL`, `S3_URL`).
+- Point at your own Postgres / S3 (override `DATABASE_URL`, `S3_URL`, `S3_DATA_PREFIX`).
 - Enable agent retrievals (`LUMID_DATA_URL=http://127.0.0.1:9102`).
 - Set `LUMILAKE_GPU_DEVICES` to one or more free GPU indices on your
   host (default is empty — no GPU workers). On a shared host, pick an
@@ -251,7 +255,7 @@ on your host (e.g. `"0"`) or a comma-separated subset for partial use.
 **Agent-retrieval note.** Requires `LUMID_DATA_URL` set in your `.env`;
 the agent retrievals route through lumid.data's `/agent/v1` endpoint.
 SQL and S3 retrievals always go direct against `DATABASE_URL` /
-`S3_URL`, regardless of `LUMID_DATA_URL`.
+`S3_URL` + `S3_DATA_PREFIX`, regardless of `LUMID_DATA_URL`.
 
 ---
 
@@ -269,7 +273,7 @@ Oct 2024–May 2025):
 | `lumilake_demo.financial_income_statement` | trading-agent, agent-retrieval | quarterly revenue / net income / eps |
 | `lumilake_demo.market_metrics` | trading-agent, agent-retrieval | 52w high/low, peTTM, etc. |
 
-S3 bundle layout under `s3://<bucket>/example-data/news/`:
+S3 bundle layout under `s3://<bucket>[/<prefix>]/example-data/news/`:
 
 - `html/{id}.html` — full article bodies for image-generation.
 - `images/{id}.png` — featured images.
@@ -299,9 +303,9 @@ halves are loaded as a unit and versioned together.
   loader picked up an `S3_CERT_FILE` from your env that doesn't match
   the bundled MinIO (which is plain HTTP). Either clear `S3_CERT_FILE`
   in `.env` or pass `--env-file` pointing at a minimal file with only
-  `DATABASE_URL` / `S3_URL`.
+  `DATABASE_URL`, `S3_URL`, and `S3_DATA_PREFIX`.
 - **News-related ops fail with `Object not found`** — the S3 upload
-  didn't land under `<bucket>/example-data/news/`. Re-run with
+  didn't land under `<bucket>[/<prefix>]/example-data/news/`. Re-run with
   `--s3-prefix example-data` (the default) and confirm via the MinIO
   console.
 - **`Waiting for worker group` hang** — no FlowMesh worker matches the

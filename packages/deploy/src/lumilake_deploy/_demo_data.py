@@ -14,6 +14,7 @@ class S3Config:
     access_key: str
     secret_key: str
     bucket: str
+    base_prefix: str
     secure: bool
     cert_file: str | None
 
@@ -64,18 +65,21 @@ def require_env(env: dict[str, str], keys: Iterable[str]) -> None:
         )
 
 
-def parse_s3_url(raw: str, cert_file: str | None = None) -> S3Config:
+def parse_s3_url(raw: str, data_prefix: str, cert_file: str | None = None) -> S3Config:
     parsed = urlparse(raw)
     if parsed.scheme != "s3":
         raise SystemExit(f"S3_URL must use s3:// scheme: {raw!r}")
     if not parsed.hostname or not parsed.username or not parsed.password:
         raise SystemExit(
             "S3_URL must include credentials and host, e.g. "
-            "s3://access:secret@host:port/bucket"
+            "s3://access:secret@host:port"
         )
-    bucket = parsed.path.lstrip("/").split("/", 1)[0]
+    bucket, _, base_prefix = data_prefix.lstrip("/").partition("/")
     if not bucket:
-        raise SystemExit("S3_URL must include a bucket in the path")
+        raise SystemExit(
+            "S3_DATA_PREFIX must include a bucket in the path "
+            "(fix: set S3_DATA_PREFIX=bucket/prefix in .env)"
+        )
     endpoint = parsed.hostname
     if parsed.port:
         endpoint = f"{endpoint}:{parsed.port}"
@@ -84,6 +88,7 @@ def parse_s3_url(raw: str, cert_file: str | None = None) -> S3Config:
         access_key=unquote(parsed.username),
         secret_key=unquote(parsed.password),
         bucket=bucket,
+        base_prefix=base_prefix.strip("/"),
         secure=bool(cert_file),
         cert_file=cert_file,
     )
@@ -123,6 +128,14 @@ def find_default_env_file(start: Path | None = None) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def compose_key_prefix(base_prefix: str, s3_prefix: str) -> str:
+    """Return the full S3 key prefix by joining base_prefix and s3_prefix.
+
+    Either segment may be empty; no leading or trailing slash is produced.
+    """
+    return "/".join(seg for seg in (base_prefix, s3_prefix.strip("/")) if seg)
 
 
 def info(msg: str) -> None:

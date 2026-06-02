@@ -592,9 +592,12 @@ class RuntimeGraphBuilder:
         }
 
     def _build_s3_cfg_from_env(self) -> dict[str, Any] | None:
-        if not envs.S3_URL:
+        if not envs.S3_WORKER_URL:
             return None
-        cfg: dict[str, Any] = {"connection_string": envs.S3_URL, "encoding": "utf-8"}
+        cfg: dict[str, Any] = {
+            "connection_string": envs.S3_WORKER_URL,
+            "encoding": "utf-8",
+        }
         cert_data = self._resolve_s3_cert_data({})
         if cert_data is not None:
             cfg["cert_data"] = cert_data
@@ -636,7 +639,9 @@ class RuntimeGraphBuilder:
             return data_spec
         s3_cfg = self._build_s3_cfg_from_env()
         if not s3_cfg:
-            raise ValueError("S3_URL is required for s3:// list inputs")
+            raise ValueError(
+                "S3_URL and S3_DATA_PREFIX are required for s3:// list inputs"
+            )
         updated = dict(data_spec)
         updated["s3_cfg"] = s3_cfg
         return updated
