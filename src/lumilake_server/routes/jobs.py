@@ -48,6 +48,10 @@ from lumilake_server.hooks.security import (
 )
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.runtime.flowmesh_client import flowmesh_for
+from lumilake_server.runtime.optimizer import (
+    OPTIMIZER_PROVIDERS,
+    OPTIMIZER_TYPES,
+)
 from lumilake_server.runtime.protocol import (
     LumilakeRequestConfig,
     LumilakeResponse,
@@ -440,6 +444,26 @@ def _format_validation_errors(exc: ValidationError) -> str:
     return "; ".join(parts)
 
 
+def _validate_optimizer_type(optimizer_type: str) -> None:
+    """Raise HTTPException 422 if *optimizer_type* is unknown at submission time."""
+    if optimizer_type.lower() in OPTIMIZER_TYPES:
+        return
+    for provider in OPTIMIZER_PROVIDERS:
+        if optimizer_type.lower() in {t.lower() for t in provider.list_optimizers()}:
+            return
+    provider_types: list[str] = []
+    for p in OPTIMIZER_PROVIDERS:
+        provider_types.extend(p.list_optimizers())
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"Unknown optimizer type '{optimizer_type}'. "
+            f"Local: {sorted(OPTIMIZER_TYPES)}. "
+            f"Provider-advertised: {sorted(set(provider_types))}."
+        ),
+    )
+
+
 _IO_LOCATION_TYPES = {"db", "s3"}
 
 
@@ -520,6 +544,14 @@ class JobSubmitRequest(BaseModel):
         default=Priority.MEDIUM,
         description="Job scheduling priority: `low`, `medium`, or `high`.",
     )
+    optimizer: str | None = Field(
+        default=None,
+        description=(
+            "Override the server's default ``LUMILAKE_OPTIMIZER_TYPE``. Must be a name"
+            " in ``OPTIMIZER_TYPES`` or advertised by a loaded ``OptimizerProvider``"
+            " (see GET /api/v1/optimizer/list). If omitted, the server default is used."
+        ),
+    )
 
 
 class JobPreviewItem(BaseModel):
@@ -574,6 +606,15 @@ class JobPreviewRequest(BaseModel):
     priority: Priority = Field(
         default=Priority.MEDIUM,
         description="Accepted for payload compatibility; ignored during preview.",
+    )
+    optimizer: str | None = Field(
+        default=None,
+        description=(
+            "Override the server's default ``LUMILAKE_OPTIMIZER_TYPE`` for this"
+            " preview. Must be a name in ``OPTIMIZER_TYPES`` or advertised by a"
+            " loaded ``OptimizerProvider`` (see GET /api/v1/optimizer/list)."
+            " If omitted, the server default is used."
+        ),
     )
 
 
@@ -1264,6 +1305,7 @@ async def _run_job(
     principal: PrincipalContext,
     runtime_token: str | None,
     trace_id: str,
+    optimizer_type: str | None = None,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -1316,6 +1358,7 @@ async def _run_job(
                 user_id=principal.external_id,
                 org_id=principal.org_id,
                 principal_id=principal.principal_id,
+                optimizer_type=optimizer_type,
             ),
             workflow_slices=workflow_slices,
         )
@@ -1531,6 +1574,19 @@ async def _run_job(
                                 "default": "medium",
                                 "description": "Accepted but ignored during preview.",
                             },
+                            "optimizer": {
+                                "type": "string",
+                                "nullable": True,
+                                "default": None,
+                                "description": (
+                                    "Override the server's default"
+                                    " ``LUMILAKE_OPTIMIZER_TYPE`` for this preview."
+                                    " Must be a name in ``OPTIMIZER_TYPES`` or"
+                                    " advertised by a loaded ``OptimizerProvider``"
+                                    " (see GET /api/v1/optimizer/list)."
+                                    " If omitted, the server default is used."
+                                ),
+                            },
                         },
                         "required": ["data"],
                     }
@@ -1578,6 +1634,10 @@ async def preview_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=_format_validation_errors(exc),
         ) from exc
+    optimizer = preview_request.optimizer
+    if optimizer is not None:
+        _validate_optimizer_type(optimizer)
+        optimizer = optimizer.lower()
     entries = preview_request.data
     if not entries:
         raise HTTPException(
@@ -1664,6 +1724,11 @@ async def preview_job(
             graphs=graphs,
             request_id=preview_request_id,
             data_profile_results={},
+            config=LumilakeRequestConfig(
+                user_id=preview_request_id,
+                principal_id=preview_request_id,
+                optimizer_type=optimizer,
+            ),
         )
     except Exception as exc:
         raise HTTPException(
@@ -1777,6 +1842,19 @@ async def preview_job(
                                 "enum": ["low", "medium", "high"],
                                 "default": "medium",
                             },
+                            "optimizer": {
+                                "type": "string",
+                                "nullable": True,
+                                "default": None,
+                                "description": (
+                                    "Override the server's default"
+                                    " ``LUMILAKE_OPTIMIZER_TYPE``."
+                                    " Must be a name in ``OPTIMIZER_TYPES`` or"
+                                    " advertised by a loaded ``OptimizerProvider``"
+                                    " (see GET /api/v1/optimizer/list)."
+                                    " If omitted, the server default is used."
+                                ),
+                            },
                         },
                         "required": ["data"],
                     }
@@ -1826,6 +1904,10 @@ async def submit_job(
         ) from exc
     entries = submit_request.data
     priority = submit_request.priority
+    optimizer = submit_request.optimizer
+    if optimizer is not None:
+        _validate_optimizer_type(optimizer)
+        optimizer = optimizer.lower()
     if not entries:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1971,6 +2053,7 @@ async def submit_job(
             principal,
             get_runtime_token(request),
             str(getattr(request.state, "trace_id", job_id)),
+            optimizer,
         )
     )
     request.app.state.background_tasks.add(task)

@@ -417,6 +417,34 @@ def test_doctor_requires_s3_url_even_with_lumid_data_url(tmp_path: Path) -> None
     ), "S3_URL must still be required even when LUMID_DATA_URL is set"
 
 
+def test_doctor_clean_on_valid_comprehensive_env(tmp_path: Path) -> None:
+    """A fully-populated .env with all known optional vars produces zero warnings."""
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                'LUMILAKE_SERVER_HOST="0.0.0.0"',
+                'LUMILAKE_SERVER_PORT="9000"',
+                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
+                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
+                'LUMILAKE_IMAGE_TAG="latest"',
+                'DATABASE_URL="postgresql://postgres:pw@db.example.com/postgres"',
+                'S3_URL="s3://access:secret@s3.example.com:9000"',
+                'S3_DATA_PREFIX="lumilake-demo"',
+                'LUMILAKE_QUEUE_QUANTUM_HIGH="400"',
+                'LUMILAKE_QUEUE_QUANTUM_MEDIUM="200"',
+                'LUMILAKE_QUEUE_QUANTUM_LOW="100"',
+                "",
+            ]
+        )
+    )
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    assert not report.errors, f"unexpected errors: {report.errors}"
+    assert not report.warnings, f"unexpected warnings: {report.warnings}"
+
+
 def _fake_ctx(project_dir: Path) -> Any:
     """Stand-in for the ``typer.Context`` that the callback populates."""
 

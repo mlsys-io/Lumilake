@@ -1,14 +1,8 @@
 """Environment-variable registry.
 
-Module-level reads are defensive: every variable has a default, no
-``os.environ[X]`` lookups, no value validation, no ``.env``-existence
-check. ``from lumilake import envs`` succeeds in any environment, even
-one without any ``LUMILAKE_*`` set.
-
-Server startup (``lumilake_server.main.lifespan``) calls
-:func:`load_env_file_or_raise` (recovers the loud-fail-on-missing-.env
-behavior) and :func:`validate` (enforces required vars and value
-ranges). SDK / CLI / deploy consumers don't import or call those.
+All module-level reads use safe defaults so ``from lumilake import envs``
+succeeds in any environment. Server startup calls :func:`load_env_file_or_raise`
+and :func:`validate`; SDK / CLI / deploy consumers do not.
 """
 
 import logging
@@ -28,10 +22,9 @@ if _env_path:
 
 
 def load_env_file_or_raise() -> None:
-    """Reproduce the loud-fail-on-missing-.env behavior at the call site.
+    """Raise if no .env exists and LUMILAKE_SKIP_DOTENV_CHECK is unset.
 
-    Server startup invokes this so operators get the clear error message
-    when ``.env`` is absent. SDK / CLI / deploy consumers do not call it.
+    Server startup calls this; SDK / CLI consumers do not.
     """
     if find_dotenv():
         return
@@ -140,6 +133,10 @@ LUMILAKE_HTTP_TIMEOUT_SECONDS: float = float(
 LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB: int = int(
     os.environ.get("LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB") or "16"
 )
+LUMILAKE_REMOTE_OPTIMIZER_URL: str = os.environ.get(
+    "LUMILAKE_REMOTE_OPTIMIZER_URL", ""
+).strip()
+
 LUMILAKE_PLUGINS: tuple[str, ...] = tuple(
     plugin
     for raw in os.environ.get("LUMILAKE_PLUGINS", "").split(",")
@@ -320,10 +317,9 @@ HARDWARE_GPU_MEMORY_REQUIREMENT: str = os.environ.get(
 
 
 def validate() -> None:
-    """Enforce required env vars and valid value ranges. Raises ``ValueError``
-    on the first problem.
+    """Enforce required env vars and valid value ranges.
 
-    Server startup invokes this; SDK / CLI / deploy consumers don't.
+    Raises ``ValueError`` on the first problem.
     """
     required = {
         "LUMILAKE_OPTIMIZER_TYPE": LUMILAKE_OPTIMIZER_TYPE,

@@ -7,6 +7,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from types import ModuleType
 from typing import Any
 
+import lumid_hooks
 import psycopg
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
@@ -17,11 +18,12 @@ from lumilake.log import configure_default_logger, init_child_logger
 from psycopg_pool import AsyncConnectionPool
 
 from lumilake_server import __version__
-from lumilake_server.hooks import HookBindings, register
+from lumilake_server.hooks import register
 from lumilake_server.middleware import TraceIdMiddleware
-from lumilake_server.routes import jobs, trace, workers
+from lumilake_server.routes import jobs, optimizer, trace, workers
 from lumilake_server.runtime.flowmesh_client import close_current_loop_http_client
 from lumilake_server.runtime.server import LumilakeServer, LumilakeServerConfig
+from lumilake_server.startup import reconcile_registrars
 
 # Loud-fail before any server side-effect runs: require .env on disk
 # (unless LUMILAKE_SKIP_DOTENV_CHECK=1 for Docker injection) and verify
@@ -31,6 +33,7 @@ envs.validate()
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(jobs.router)
+api_router.include_router(optimizer.router)
 api_router.include_router(trace.router)
 api_router.include_router(workers.router)
 
@@ -61,7 +64,7 @@ async def _resolve_plugin_bindings(
     plugin_name: str,
     install: Any,
     stack: AsyncExitStack,
-) -> HookBindings:
+) -> lumid_hooks.HookBindings:
     if not callable(install):
         raise TypeError(f"{plugin_name}.install must be callable")
     installed = install()
@@ -71,7 +74,7 @@ async def _resolve_plugin_bindings(
         bindings = await installed
     else:
         bindings = installed
-    if not isinstance(bindings, HookBindings):
+    if not isinstance(bindings, lumid_hooks.HookBindings):
         raise TypeError(
             f"{plugin_name}.install() must return HookBindings, got "
             f"{type(bindings).__name__}"
@@ -129,6 +132,14 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
 
             app.state.compute_db_pool = compute_pool
             app.state.background_tasks = set()
+
+            try:
+                await reconcile_registrars(logger=logger)
+            except Exception:
+                logger.warning(
+                    "ResourceRegistrar reconcile sweep failed; continuing startup.",
+                    exc_info=True,
+                )
 
             if envs.LUMILAKE_RECOVER_IN_FLIGHT_JOBS:
                 try:

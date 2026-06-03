@@ -164,6 +164,11 @@ def submit(
             '`{"query": ["NVDA", "TSLA"], "year": ["2024"]}`.'
         ),
     ),
+    optimizer: str | None = typer.Option(
+        None,
+        "--optimizer",
+        help="Override the server default optimizer (must be in /optimizer/list).",
+    ),
 ) -> None:
     """Submit a workflow for optimization and execution."""
     if not workflow.exists():
@@ -216,6 +221,8 @@ def submit(
         "data": [item],
         "priority": priority,
     }
+    if optimizer is not None:
+        payload["optimizer"] = optimizer
 
     client = client_from_config()
     try:
@@ -628,6 +635,11 @@ def preview(
     input_json: Path | None = typer.Option(
         None, "--input-json", help="JSON file with full inputs object"
     ),
+    optimizer: str | None = typer.Option(
+        None,
+        "--optimizer",
+        help="Override the server default optimizer (must be in /optimizer/list).",
+    ),
 ) -> None:
     """Preview the optimization schedule for a workflow without executing it.
 
@@ -650,6 +662,8 @@ def preview(
     payload: dict[str, Any] = {
         "data": [{"workflow": workflow_text, "inputs": inputs}],
     }
+    if optimizer is not None:
+        payload["optimizer"] = optimizer
 
     client = client_from_config()
     try:

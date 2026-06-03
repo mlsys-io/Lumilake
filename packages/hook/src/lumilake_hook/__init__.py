@@ -1,6 +1,4 @@
 from lumid_hooks import (
-    BaseBindings,
-    HookBindings,
     IdentityProvider,
     PermissionChecker,
     PrincipalContext,
@@ -10,6 +8,8 @@ from lumid_hooks import (
     UsageSink,
 )
 
+from .bindings import BaseBindings, HookBindings
+from .optimizer import OptimizerProvider
 from .resource_kinds import ResourceAction, ResourceKind
 from .usage import LumilakeUsageSink, UsageRow
 
@@ -18,6 +18,7 @@ __all__ = [
     "HookBindings",
     "IdentityProvider",
     "LumilakeUsageSink",
+    "OptimizerProvider",
     "PermissionChecker",
     "PrincipalContext",
     "ResourceAction",

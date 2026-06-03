@@ -170,6 +170,33 @@ the resulting providers from `lumilake_server.hooks.*`. See
 identity, submission, permissions, registrar, usage, and optimizer
 behavior end-to-end.
 
+## Schedule Protocol Contract
+
+`RemoteOptimizer` (`lumilake_server.runtime.optimizer.RemoteOptimizer`) implements `BaseOptimizer` by POSTing a `ScheduleRequest` to `{LUMILAKE_REMOTE_OPTIMIZER_URL}/api/v1/optimizer/schedule` and deserializing the `ScheduleResponse`. `ScheduleRequest` carries the serialized `RuntimeGraph` (under `graph`), `worker_names`, `worker_profiles`, `data_profile_results`, and an `optimizer_type` selector. `ScheduleResponse` carries `worker_assignment`. Both models are importable from `lumilake_server.runtime.optimizer.schemas` and are the canonical contract that any compatible schedule-protocol server must satisfy.
+
+`RemoteOptimizer` requires an explicit `optimizer_type` kwarg at construction time (e.g. `RemoteOptimizer(optimizer_type="halo-greedy")`). The typical integration path is via an `OptimizerProvider` plugin (see below).
+
+## OptimizerProvider Hook
+
+Plugins can contribute optimizer types beyond the built-in `halo` and `topological-sort` by implementing `lumilake_hook.OptimizerProvider` and including instances in `BaseBindings.optimizer_providers`. Lumilake's `create_optimizer(type)` falls through to registered providers when `type` is absent from the local `OPTIMIZER_TYPES` dict.
+
+```python
+from lumilake_hook import BaseBindings, OptimizerProvider
+
+class MyProvider:
+    def list_optimizers(self) -> list[str]:
+        return ["halo-greedy"]
+
+    def create_optimizer(self, optimizer_type: str, **kwargs):
+        from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
+        return RemoteOptimizer(optimizer_type=optimizer_type, **kwargs)
+
+def install() -> BaseBindings:
+    return BaseBindings(optimizer_providers=(MyProvider(),))
+```
+
+Setting `LUMILAKE_OPTIMIZER_TYPE=halo-greedy` then routes schedule generation through the provider. The server also exposes `GET /api/v1/optimizer/list` which returns all locally registered and provider-advertised types.
+
 ## Design Rule
 
 Shared hooks should contain only project-neutral contracts. Resource names, optimizer registration, and workflow/runtime-specific behavior should remain in Lumilake.

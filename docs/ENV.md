@@ -66,7 +66,7 @@ Agent-retrieval keys:
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_OPTIMIZER_TYPE` | Optimizer implementation. Defaults to `halo`. |
+| `LUMILAKE_OPTIMIZER_TYPE` | Default optimizer for all jobs. Defaults to `halo`. Individual jobs can override this with the `optimizer` request field (`POST /api/v1/jobs`, `POST /api/v1/jobs/preview`) or the CLI `--optimizer` flag. |
 | `LUMILAKE_OPTIMIZER_BATCH_SIZE` | Maximum batch size used by the optimizer loop. |
 | `LUMILAKE_BATCH_ACCUMULATION_SECONDS` | Wait window before forming the first optimization batch. |
 | `LUMILAKE_STARVATION_LIMIT` | Starvation threshold; `0` means immediate override. |
@@ -92,6 +92,7 @@ Agent-retrieval keys:
 |-----|---------|
 | `LUMILAKE_PLUGINS` | Comma-separated list of plugin module names the server imports at startup. See `docs/PLUGINS.md`. |
 | `LUMILAKE_PLUGIN_DIR` | Host directory bind-mounted to `/app/plugins` (read-only) and added to `PYTHONPATH`. Each `*.py` placed here is importable by the names listed in `LUMILAKE_PLUGINS`. Defaults to `./plugins` relative to the deploy directory. |
+| `LUMILAKE_REMOTE_OPTIMIZER_URL` | Base URL of the external schedule-protocol service. Required only when a plugin's `OptimizerProvider` constructs a `RemoteOptimizer`. Leave empty in standard deployments. Must use `https://` in production; `http://` is permitted only for loopback addresses (`localhost`, `127.0.0.1`, `::1`). The remote optimizer receives the caller's lum.id bearer token verbatim via `Authorization: Bearer <token>`. Configure this to point only at a trusted upstream that you operate or that lum.id federates with. Use HTTPS in any production deployment. |
 
 ## Data Profiling
 
