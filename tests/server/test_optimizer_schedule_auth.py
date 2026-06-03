@@ -3,7 +3,7 @@
 Covers:
 - Insufficient credentials (unauthenticated or no JOB:WRITE) → 4xx rejection.
 - Authenticated bearer WITH JOB:WRITE permission → 200.
-- /optimizer/list is not gated by the schedule auth (different route contract).
+- /optimizer is not gated by the schedule auth (different route contract).
 """
 
 import logging
@@ -210,10 +210,10 @@ def test_authenticated_with_job_write_succeeds(
 
 
 def test_list_endpoint_not_gated_by_schedule_auth(app: FastAPI) -> None:
-    """/optimizer/list must respond without JOB:WRITE — it has no permission gate."""
+    """/optimizer must respond without JOB:WRITE — it has no permission gate."""
     client = TestClient(app, raise_server_exceptions=True)
     resp = client.get(
-        "/optimizer/list",
+        "/optimizer",
         headers={"Authorization": "Bearer token-bob"},
     )
     assert resp.status_code == 200

@@ -50,7 +50,7 @@ async def schedule(
     return ScheduleResponse(worker_assignment=schedule_result.worker_assignment)
 
 
-@router.get("/list", response_model=OptimizerListResponse)
+@router.get("", response_model=OptimizerListResponse)
 async def list_optimizer_types(
     _principal: PrincipalContext = Depends(authenticate_request),
 ) -> OptimizerListResponse:

@@ -549,7 +549,7 @@ class JobSubmitRequest(BaseModel):
         description=(
             "Override the server's default ``LUMILAKE_OPTIMIZER_TYPE``. Must be a name"
             " in ``OPTIMIZER_TYPES`` or advertised by a loaded ``OptimizerProvider``"
-            " (see GET /api/v1/optimizer/list). If omitted, the server default is used."
+            " (see GET /api/v1/optimizer). If omitted, the server default is used."
         ),
     )
 
@@ -612,7 +612,7 @@ class JobPreviewRequest(BaseModel):
         description=(
             "Override the server's default ``LUMILAKE_OPTIMIZER_TYPE`` for this"
             " preview. Must be a name in ``OPTIMIZER_TYPES`` or advertised by a"
-            " loaded ``OptimizerProvider`` (see GET /api/v1/optimizer/list)."
+            " loaded ``OptimizerProvider`` (see GET /api/v1/optimizer)."
             " If omitted, the server default is used."
         ),
     )
@@ -1583,7 +1583,7 @@ async def _run_job(
                                     " ``LUMILAKE_OPTIMIZER_TYPE`` for this preview."
                                     " Must be a name in ``OPTIMIZER_TYPES`` or"
                                     " advertised by a loaded ``OptimizerProvider``"
-                                    " (see GET /api/v1/optimizer/list)."
+                                    " (see GET /api/v1/optimizer)."
                                     " If omitted, the server default is used."
                                 ),
                             },
@@ -1851,7 +1851,7 @@ async def preview_job(
                                     " ``LUMILAKE_OPTIMIZER_TYPE``."
                                     " Must be a name in ``OPTIMIZER_TYPES`` or"
                                     " advertised by a loaded ``OptimizerProvider``"
-                                    " (see GET /api/v1/optimizer/list)."
+                                    " (see GET /api/v1/optimizer)."
                                     " If omitted, the server default is used."
                                 ),
                             },

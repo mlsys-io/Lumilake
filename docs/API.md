@@ -14,7 +14,7 @@ Versioned API routes live under `/api/v1`.
 | Route | Purpose |
 |-------|---------|
 | `POST /api/v1/jobs/preview` | Compile workflow specs and generate an optimizer schedule without dispatching runtime work. Accepts an optional `optimizer` field to override the server default (`LUMILAKE_OPTIMIZER_TYPE`) for this preview. |
-| `POST /api/v1/jobs` | Submit one or more workflows. Accepts an optional `optimizer` field to override the server default (`LUMILAKE_OPTIMIZER_TYPE`) for this job. Use `GET /api/v1/optimizer/list` to enumerate valid optimizer names. |
+| `POST /api/v1/jobs` | Submit one or more workflows. Accepts an optional `optimizer` field to override the server default (`LUMILAKE_OPTIMIZER_TYPE`) for this job. Use `GET /api/v1/optimizer` to enumerate valid optimizer names. |
 | `GET /api/v1/jobs` | List jobs visible to the caller. |
 | `GET /api/v1/jobs/{job_id}` | Fetch one job. |
 | `POST /api/v1/jobs/{job_id}/cancel` | Cancel a job and its runtime request. |
@@ -38,7 +38,7 @@ Versioned API routes live under `/api/v1`.
 
 | Route | Auth / Permission | Request body | Response body | Purpose |
 |-------|------------------|--------------|---------------|---------|
-| `GET /api/v1/optimizer/list` | Bearer token | none | `{"types": ["halo", ...]}` (`OptimizerListResponse`) | List all optimizer type names available on this server — both locally registered and advertised by installed `OptimizerProvider` plugins. Names are lowercased. Use this to determine valid values for the `optimizer` field on job or preview submission. |
+| `GET /api/v1/optimizer` | Bearer token | none | `{"types": ["halo", ...]}` (`OptimizerListResponse`) | List all optimizer type names available on this server — both locally registered and advertised by installed `OptimizerProvider` plugins. Names are lowercased. Use this to determine valid values for the `optimizer` field on job or preview submission. |
 | `POST /api/v1/optimizer/schedule` | Bearer token + JOB:WRITE + submission guards | `ScheduleRequest` (`graph`, `worker_names`, `worker_profiles`, `data_profile_results?`, `optimizer_type`) | `ScheduleResponse` (`worker_assignment`) | Generate an optimizer schedule for a supplied runtime graph. Used by lumilake-as-remote-optimizer scenarios where an external Lumilake instance acts as the scheduling backend. |
 
 ## Traces

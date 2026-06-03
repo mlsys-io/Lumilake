@@ -306,7 +306,7 @@ async def test_preview_stores_optimizer_lowercase_for_partition_key(
 # Before the fix, _validate_optimizer_type compared the lowercased request
 # against the RAW names from provider.list_optimizers() — so a provider
 # advertising "RemoteX" would reject "remotex" with a 422 even though
-# /optimizer/list already displays it as "remotex".
+# /optimizer already displays it as "remotex".
 # ---------------------------------------------------------------------------
 
 

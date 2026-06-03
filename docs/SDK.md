@@ -104,7 +104,7 @@ All `Jobs` / `AsyncJobs` methods mirror the CLI surface and the server's HTTP ro
 
 ```python
 client.jobs.submit({"data": [...]}, workflow_format="yaml")
-# Override the server default optimizer for one job (see GET /api/v1/optimizer/list):
+# Override the server default optimizer for one job (see GET /api/v1/optimizer):
 client.jobs.submit({"data": [...], "optimizer": "halo"}, workflow_format="yaml")
 client.jobs.preview({"data": [...]}, workflow_format="yaml")
 # Preview with a specific optimizer — or omit "optimizer" to use the server default:

@@ -12,7 +12,7 @@ class OptimizerProvider(Protocol):
     ``OPTIMIZER_TYPES``.
 
     Lumilake may call ``list_optimizers()`` multiple times per request — during
-    submission validation, at the ``/optimizer/list`` endpoint, and inside the
+    submission validation, at the ``/optimizer`` endpoint, and inside the
     factory lookup. If your underlying source is slow or unreliable, cache the
     result inside your provider implementation (e.g. populate a private
     attribute on first call and reuse it). See ``docs/PLUGINS.md`` for a worked

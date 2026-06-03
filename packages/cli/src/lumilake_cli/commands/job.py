@@ -167,7 +167,7 @@ def submit(
     optimizer: str | None = typer.Option(
         None,
         "--optimizer",
-        help="Override the server default optimizer (must be in /optimizer/list).",
+        help="Override the server default optimizer (must be in /optimizer).",
     ),
 ) -> None:
     """Submit a workflow for optimization and execution."""
@@ -638,7 +638,7 @@ def preview(
     optimizer: str | None = typer.Option(
         None,
         "--optimizer",
-        help="Override the server default optimizer (must be in /optimizer/list).",
+        help="Override the server default optimizer (must be in /optimizer).",
     ),
 ) -> None:
     """Preview the optimization schedule for a workflow without executing it.

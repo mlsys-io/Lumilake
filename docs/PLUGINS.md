@@ -195,7 +195,7 @@ def install() -> BaseBindings:
     return BaseBindings(optimizer_providers=(MyProvider(),))
 ```
 
-Setting `LUMILAKE_OPTIMIZER_TYPE=halo-greedy` then routes schedule generation through the provider. The server also exposes `GET /api/v1/optimizer/list` which returns all locally registered and provider-advertised types.
+Setting `LUMILAKE_OPTIMIZER_TYPE=halo-greedy` then routes schedule generation through the provider. The server also exposes `GET /api/v1/optimizer` which returns all locally registered and provider-advertised types.
 
 ## Design Rule
 

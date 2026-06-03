@@ -1,4 +1,4 @@
-"""Tests for GET /api/v1/optimizer/list."""
+"""Tests for GET /api/v1/optimizer."""
 
 import logging
 from typing import Any
@@ -40,7 +40,7 @@ def client() -> TestClient:
 
 
 def test_list_returns_sorted_deduped_lowercased_union(client: TestClient) -> None:
-    """GET /optimizer/list returns the union of local + provider types,
+    """GET /optimizer returns the union of local + provider types,
     lowercased, sorted, and deduplicated.
 
     Setup: two providers — one with mixed-case names and one that duplicates a
@@ -52,7 +52,7 @@ def test_list_returns_sorted_deduped_lowercased_union(client: TestClient) -> Non
     # Second provider advertising names that will sort to extremes.
     OPTIMIZER_PROVIDERS.append(_StubProvider(["zzz-type", "aaa-type"]))
 
-    resp = client.get("/optimizer/list")
+    resp = client.get("/optimizer")
     assert resp.status_code == 200
     types = resp.json()["types"]
 
