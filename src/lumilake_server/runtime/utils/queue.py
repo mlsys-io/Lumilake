@@ -1,5 +1,6 @@
 import asyncio
 import queue
+import threading
 from abc import ABC, abstractmethod
 from queue import Empty, Full
 from typing import TypeVar
@@ -16,7 +17,7 @@ class CloseSignal:
 
 
 _CLOSE_SIGNAL = CloseSignal()
-_DELAY: float = 0
+_FULL_QUEUE_RETRY_SECONDS: float = 0.01
 
 
 class AsyncQueue[T](ABC):
@@ -104,10 +105,12 @@ class TSQueue[T](AsyncQueue):
     Asynchronous wrapper for thread-safe queue.
     """
 
-    def __init__(self, delay: float = _DELAY) -> None:
+    def __init__(self, delay: float | None = None) -> None:
         self._queue: queue.Queue[T | CloseSignal] = queue.Queue()
-        self._delay: float = delay
+        self._delay: float | None = delay
         self._is_closed: bool = False
+        self._waiters: set[asyncio.Future[None]] = set()
+        self._waiters_lock = threading.Lock()
 
     def _unwrap(self, message: T | CloseSignal) -> T:
         if isinstance(message, CloseSignal):
@@ -115,13 +118,45 @@ class TSQueue[T](AsyncQueue):
             raise asyncio.CancelledError()
         return message
 
+    @staticmethod
+    def _set_waiter_result(waiter: asyncio.Future[None]) -> None:
+        if not waiter.done():
+            waiter.set_result(None)
+
+    def _wake_waiters(self) -> None:
+        with self._waiters_lock:
+            waiters = list(self._waiters)
+            self._waiters.clear()
+        for waiter in waiters:
+            try:
+                waiter.get_loop().call_soon_threadsafe(self._set_waiter_result, waiter)
+            except RuntimeError:
+                pass
+
     async def get(self, delay: float | None = None) -> T:
         delay = self._delay if delay is None else delay
         while True:
             try:
                 return self.get_nowait()
             except Empty:
-                await asyncio.sleep(delay)
+                if self._is_closed:
+                    raise asyncio.CancelledError()
+                if delay is not None:
+                    await asyncio.sleep(delay)
+                    continue
+                waiter = asyncio.get_running_loop().create_future()
+                with self._waiters_lock:
+                    self._waiters.add(waiter)
+                try:
+                    try:
+                        return self.get_nowait()
+                    except Empty:
+                        if self._is_closed:
+                            raise asyncio.CancelledError()
+                        await waiter
+                finally:
+                    with self._waiters_lock:
+                        self._waiters.discard(waiter)
 
     def get_nowait(self) -> T:
         return self._unwrap(self._queue.get_nowait())
@@ -138,17 +173,19 @@ class TSQueue[T](AsyncQueue):
 
     async def put(self, obj: T, delay: float | None = None) -> None:
         delay = self._delay if delay is None else delay
+        retry_delay = _FULL_QUEUE_RETRY_SECONDS if delay is None else delay
         while True:
             try:
                 self.put_nowait(obj)
                 return
             except Full:
-                await asyncio.sleep(delay)
+                await asyncio.sleep(retry_delay)
 
     def put_nowait(self, obj: T) -> None:
         if self._is_closed:
             raise asyncio.CancelledError()
         self._queue.put_nowait(obj)
+        self._wake_waiters()
 
     def empty(self) -> bool:
         return self._queue.empty()
@@ -157,3 +194,4 @@ class TSQueue[T](AsyncQueue):
         if not self._is_closed:
             self._is_closed = True
             self._queue.put_nowait(_CLOSE_SIGNAL)
+            self._wake_waiters()
