@@ -10,14 +10,3 @@ Public entry points called from ``cli/commands/deploy.py``:
 External binaries (``docker``, ``uv``) are invoked via subprocess; the
 Python layer owns the control flow, parsing, and state.
 """
-
-from . import containers, docker_client, purge, setup, stop, update_flowmesh
-
-__all__ = [
-    "containers",
-    "docker_client",
-    "purge",
-    "setup",
-    "stop",
-    "update_flowmesh",
-]

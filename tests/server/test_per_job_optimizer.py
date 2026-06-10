@@ -199,6 +199,9 @@ def _make_normalization_app(
         "get_instance",
         classmethod(lambda cls: fake_server),
     )
+    monkeypatch.setattr(
+        job_routes_module, "build_request_data_profile_tasks", lambda **_: []
+    )
     app = FastAPI()
     app.state.logger = logging.getLogger("test.optimizer_normalization")
     app.state.compute_db_pool = None
