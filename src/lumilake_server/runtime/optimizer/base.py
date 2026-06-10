@@ -2,18 +2,15 @@
 
 import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
+from lumilake_hook import Schedule
 
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, merge_runtime_graphs
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
-
-@dataclass(slots=True)
-class Schedule:
-    worker_assignment: dict[str, list[str]]
+__all__ = ["BaseOptimizer", "Schedule"]
 
 
 def _stable_json(value: object) -> str:

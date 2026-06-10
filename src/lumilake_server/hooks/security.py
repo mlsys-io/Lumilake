@@ -1,4 +1,3 @@
-import contextvars
 import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -6,7 +5,12 @@ from typing import Any
 from fastapi import HTTPException, Request, status
 from lumid_hooks import PrincipalContext, ResourceRef
 from lumilake import envs
-from lumilake_hook import ResourceAction, ResourceKind, UsageRow
+from lumilake_hook import (
+    ResourceAction,
+    ResourceKind,
+    UsageRow,
+    runtime_token_var,
+)
 
 from . import (
     IDENTITY_PROVIDERS,
@@ -14,10 +18,6 @@ from . import (
     RESOURCE_REGISTRARS,
     SUBMISSION_GUARDS,
     USAGE_SINKS,
-)
-
-runtime_token_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "lumilake_runtime_token", default=None
 )
 
 

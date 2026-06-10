@@ -1646,6 +1646,7 @@ async def preview_job(
         )
 
     graph_specs: dict[str, dict[str, Any]] = {}
+    workflow_slices: dict[str, WorkflowSliceMeta] = {}
     seen_public_names: set[str] = set()
     preview_request_id = f"preview-{unique_id()}"
 
@@ -1671,7 +1672,7 @@ async def preview_job(
             )
 
         try:
-            _input_shape(inputs)
+            total_length, varying_input_keys = _input_shape(inputs)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1710,6 +1711,16 @@ async def preview_job(
             graph_specs=graph_specs,
             idx=idx,
         )
+        slice_length, _ = _input_shape(first_batch)
+        workflow_slices[graph_name] = WorkflowSliceMeta(
+            public_graph_name=name,
+            slice_index=0,
+            slice_start=0,
+            slice_length=slice_length,
+            total_length=total_length,
+            template_hash=_workflow_template_hash(workflow_payload, workflow_format),
+            varying_input_keys=varying_input_keys,
+        )
 
     server = LumilakeServer.get_started_instance()
     try:
@@ -1719,11 +1730,40 @@ async def preview_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
+
+    # Stash each profile under both task_key (collect_data_profile's
+    # primary lookup) and public graph name (its fallback) so the
+    # optimizer sees real plan variants instead of {}.
+    preview_task_keys: list[str] = []
+    try:
+        data_profile_tasks = build_request_data_profile_tasks(
+            request_id=preview_request_id,
+            graphs=graphs,
+            workflow_slices=workflow_slices,
+        )
+        for task in data_profile_tasks:
+            result = await asyncio.to_thread(run_data_profile_task, task.payload)
+            payload_json = result.model_dump(mode="json")
+            data_profile_registry[task.task_key] = payload_json
+            data_profile_registry[task.payload.public_graph_name] = payload_json
+            preview_task_keys.append(task.task_key)
+            preview_task_keys.append(task.payload.public_graph_name)
+        if data_profile_tasks:
+            logger.info(
+                "Ran %d data profile task(s) inline for preview %s",
+                len(data_profile_tasks),
+                preview_request_id,
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"data profile preflight failed: {exc}",
+        ) from exc
+
     try:
         preview = await server.preview_schedule(
             graphs=graphs,
             request_id=preview_request_id,
-            data_profile_results={},
             config=LumilakeRequestConfig(
                 user_id=preview_request_id,
                 principal_id=preview_request_id,
@@ -1735,6 +1775,9 @@ async def preview_job(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"schedule preview failed: {exc}",
         ) from exc
+    finally:
+        for key in preview_task_keys:
+            data_profile_registry.pop(key, None)
 
     return {
         "ok": True,

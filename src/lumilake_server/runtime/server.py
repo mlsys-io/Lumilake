@@ -42,7 +42,7 @@ from lumilake_server.runtime.job_manager import (
     create_job_manager,
 )
 from lumilake_server.runtime.optimizer import create_optimizer
-from lumilake_server.runtime.optimizer.base import Schedule
+from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.protocol import (
     LumilakeRequest,
     LumilakeRequestConfig,
@@ -309,8 +309,17 @@ class LumilakeServer:
         self.config = LumilakeServerConfig() if config is None else config
 
         # Initialize logical optimizer (no physical execution dependencies)
-        # Use the optimizer factory with default settings
-        self.optimizer = create_optimizer(logger=self.logger)
+        # Use the optimizer factory with default settings. The boot-time
+        # default must be a BaseOptimizer subclass; per-job overrides may
+        # widen to OptimizerHandle (e.g. a plugin's RemoteOptimizer).
+        boot_optimizer = create_optimizer(logger=self.logger)
+        if not isinstance(boot_optimizer, BaseOptimizer):
+            raise RuntimeError(
+                f"LUMILAKE_OPTIMIZER_TYPE={envs.LUMILAKE_OPTIMIZER_TYPE!r} "
+                "must resolve to a built-in optimizer at boot; got "
+                f"{type(boot_optimizer).__name__}"
+            )
+        self.optimizer: BaseOptimizer = boot_optimizer
 
         # Initialize job manager and runtime manager
         self.job_manager: BaseJobManager = create_job_manager(
@@ -2837,7 +2846,15 @@ class LumilakeServer:
             resolved_worker_profiles,
         ) = await self._select_preview_workers_and_profiles(merged_graph)
 
-        resolved_data_profile_results = data_profile_results or {}
+        if data_profile_results is None:
+            # Mirror server.execute(): read from the global registry.
+            resolved_data_profile_results = await collect_data_profile(
+                request_id=resolved_request_id,
+                data_profile_graphs=data_profile_graphs_by_name,
+                logger=self.logger,
+            )
+        else:
+            resolved_data_profile_results = data_profile_results
         preview_optimizer_type = resolved_config.optimizer_type or self._optimizer_type
         if preview_optimizer_type != self._optimizer_type:
             preview_optimizer = create_optimizer(optimizer_type=preview_optimizer_type)

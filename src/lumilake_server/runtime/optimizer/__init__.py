@@ -4,7 +4,7 @@ Select via ``LUMILAKE_OPTIMIZER_TYPE``; plugins extend via ``OPTIMIZER_PROVIDERS
 """
 
 from lumilake import envs
-from lumilake_hook import OptimizerProvider
+from lumilake_hook import OptimizerHandle, OptimizerProvider
 
 from lumilake_server.hooks.optimizer_providers import OPTIMIZER_PROVIDERS
 
@@ -19,7 +19,9 @@ OPTIMIZER_TYPES: dict[str, type[BaseOptimizer]] = {
 }
 
 
-def create_optimizer(optimizer_type: str | None = None, **kwargs) -> BaseOptimizer:
+def create_optimizer(
+    optimizer_type: str | None = None, **kwargs
+) -> BaseOptimizer | OptimizerHandle:
     """Return an optimizer instance, falling through to registered providers."""
     if optimizer_type is None:
         optimizer_type = envs.LUMILAKE_OPTIMIZER_TYPE

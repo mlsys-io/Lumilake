@@ -9,7 +9,13 @@ from lumid_hooks import (
 )
 
 from .bindings import BaseBindings, HookBindings
-from .optimizer import OptimizerProvider
+from .optimizer import (
+    OptimizerHandle,
+    OptimizerProvider,
+    RemoteOptimizer,
+    Schedule,
+    runtime_token_var,
+)
 from .resource_kinds import ResourceAction, ResourceKind
 from .usage import LumilakeUsageSink, UsageRow
 
@@ -18,14 +24,18 @@ __all__ = [
     "HookBindings",
     "IdentityProvider",
     "LumilakeUsageSink",
+    "OptimizerHandle",
     "OptimizerProvider",
     "PermissionChecker",
     "PrincipalContext",
+    "RemoteOptimizer",
     "ResourceAction",
     "ResourceKind",
     "ResourceRef",
     "ResourceRegistrar",
+    "Schedule",
     "SubmissionGuard",
     "UsageRow",
     "UsageSink",
+    "runtime_token_var",
 ]
