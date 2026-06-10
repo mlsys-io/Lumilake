@@ -52,16 +52,19 @@ class AsyncHTTPResponse:
 
 def request(method: str, url: str, **kwargs) -> requests.Response:
     timeout = kwargs.pop("timeout", _DEFAULT_TIMEOUT)
+    kwargs.setdefault("allow_redirects", False)
     return requests.request(method.upper(), url, timeout=timeout, **kwargs)
 
 
 def get(url: str, **kwargs) -> requests.Response:
     timeout = kwargs.pop("timeout", _DEFAULT_TIMEOUT)
+    kwargs.setdefault("allow_redirects", False)
     return requests.get(url, timeout=timeout, **kwargs)
 
 
 def post(url: str, **kwargs) -> requests.Response:
     timeout = kwargs.pop("timeout", _DEFAULT_TIMEOUT)
+    kwargs.setdefault("allow_redirects", False)
     return requests.post(url, timeout=timeout, **kwargs)
 
 
@@ -81,6 +84,8 @@ def post_json(url: str, json: Any = None, **kwargs) -> Any:
 
 
 async def arequest(method: str, url: str, **kwargs) -> AsyncHTTPResponse:
+    kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
+    kwargs.setdefault("allow_redirects", False)
     async with aiohttp.ClientSession() as session:
         async with session.request(method.upper(), url, **kwargs) as resp:
             content = await resp.read()

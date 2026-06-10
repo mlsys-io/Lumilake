@@ -232,7 +232,6 @@ def job_routes() -> Any:
 def app(job_routes: Any) -> FastAPI:
     application = FastAPI()
     application.state.logger = logging.getLogger("test.jobs_workflows_routes")
-    application.state.compute_db_pool = None
     application.state.background_tasks = set()
     application.add_middleware(TraceIdMiddleware)
     application.include_router(job_routes.router)

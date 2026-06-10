@@ -39,8 +39,6 @@ jobs:
           LUMILAKE_SERVER_PORT="9000"
           LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:7000"
           LUMILAKE_RUNTIME_TOKEN=""
-          DATABASE_URL=""
-          S3_URL=""
           S3_ARCHIVE_PREFIX="test-bucket/archive"
           ENVEOF
           sed -i 's/^[[:space:]]*//' .env

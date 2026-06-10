@@ -187,6 +187,9 @@ def _dedupe_runtime_graph(graph: RuntimeGraph) -> RuntimeGraph:
         mapping[node_id]: output_name
         for node_id, output_name in graph.output_node_map.items()
     }
+    new_output_paths = {
+        mapping[node_id]: path for node_id, path in graph.output_paths.items()
+    }
     new_dsl_to_runtime = {
         op_id: _dedupe_ordered([mapping.get(rid, rid) for rid in runtime_ids])
         for op_id, runtime_ids in graph.dsl_to_runtime.items()
@@ -196,6 +199,7 @@ def _dedupe_runtime_graph(graph: RuntimeGraph) -> RuntimeGraph:
         nodes=new_nodes,
         node_order=new_order,
         output_node_map=new_output_node_map,
+        output_paths=new_output_paths,
         dsl_to_runtime=new_dsl_to_runtime,
     )
 

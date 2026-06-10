@@ -1,14 +1,13 @@
 import asyncio
 import inspect
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from string import Formatter
 from typing import Any
 
 import yaml
 from lumilake import envs
-from minio import Minio
 from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.data_profile_models import (
@@ -22,8 +21,7 @@ from lumilake_server.utils.data_profile_offload import (
     normalize_data_profile_result,
     project_data_profile_results_to_runtime_graph,
 )
-from lumilake_server.utils.parsing import split_bucket_prefix
-from lumilake_server.utils.s3 import create_minio_client
+from lumilake_server.utils.lumid_data_client import list_blobs as lumid_list_blobs
 
 
 class DataProfileSource(BaseModel):
@@ -453,14 +451,10 @@ def _derive_s3_profile_for_graph(
         raw_cost = file_count * per_file + (total_size_bytes / 1048576.0) * per_mib
         query_name = f"{node_id}_query"
         cache_key = data_profile_key_for_node_query(node_id, query_name)
-        connection_string = data_spec.get("connection_string")
-        if not isinstance(connection_string, str):
-            connection_string = ""
         row = DataProfileResultRow(
             node_id=node_id,
             raw_node_id=runtime_to_raw.get(node_id, node_id),
             query_name=query_name,
-            connection_string=connection_string.strip(),
             table=template_path,
             cost_estimates=[
                 DataProfileCostEstimate(
@@ -489,42 +483,82 @@ def dump_data_profile_yaml(
     )
 
 
-def _compute_minio_listing() -> tuple[dict[str, int | None], list[str]]:
-    """Return ``(file_sizes, folder_paths)`` for the compute MinIO data area.
+def _extract_required_s3_folders(graph: RuntimeGraph) -> list[str]:
+    """Return every S3 folder referenced by this graph's data-profile nodes.
 
-    Scans the bucket + key prefix from ``S3_DATA_PREFIX``. ``file_sizes``
-    maps relative paths under that prefix to byte size; ``folder_paths`` is
-    the set of folder prefixes implied.
+    Mirrors the folder-derivation logic in :func:`_derive_s3_profile_for_graph`
+    so the on-demand listing covers exactly the folders the profile estimator
+    will query. Placeholders whose values are known statically (literal params,
+    upstream SQL ``estimated_rows``-driven enumerations) are expanded; node-ref
+    placeholders are folded into the same enumeration the consumer uses.
     """
-    endpoint = envs.S3_ENDPOINT
-    access_key = envs.S3_ACCESS_KEY
-    connection_value = envs.S3_CONNECTION_VALUE
-    data_prefix_raw = envs.S3_DATA_PREFIX
-    if not (endpoint and access_key and connection_value and data_prefix_raw):
-        return {}, []
-    client: Minio = create_minio_client(
-        endpoint=endpoint,
-        access_key=access_key,
-        secret_key=connection_value,
-        cert_file=envs.S3_CERT_FILE,
-    )
-    sizes: dict[str, int | None] = {}
     folders: set[str] = set()
-    bucket, key_prefix = split_bucket_prefix(data_prefix_raw)
-    key_prefix_norm = key_prefix.rstrip("/")
-    scan_prefix = f"{key_prefix_norm}/" if key_prefix_norm else ""
-    for obj in client.list_objects(bucket, prefix=scan_prefix, recursive=True):
-        if obj.is_dir or not obj.object_name:
+    for node_id in graph.node_order:
+        data_spec = graph.nodes[node_id].data_spec
+        if data_spec.get("type") != "s3":
             continue
-        name = obj.object_name
-        rel = name[len(scan_prefix) :] if scan_prefix else name
-        if not rel:
+        template = data_spec.get("template")
+        if not isinstance(template, str):
             continue
-        sizes[rel] = obj.size
-        parts = rel.split("/")
-        for idx in range(1, len(parts)):
-            folders.add(f"{'/'.join(parts[:idx])}/")
-    return sizes, sorted(folders)
+        template_path = _normalize_s3_template_path(template)
+        literal_values, node_refs = _collect_s3_params(data_spec)
+        template_fields = _extract_template_fields(template_path)
+        node_fields = {field for field in template_fields if field in node_refs}
+        try:
+            resolved = _resolve_folders_from_template(
+                template_path=template_path,
+                literal_values=literal_values,
+                node_fields=node_fields,
+            )
+        except Exception:
+            # Skip nodes the resolver can't pin down — they'll surface a
+            # clearer error inside ``_derive_s3_profile_for_graph``.
+            continue
+        folders.update(resolved)
+    return sorted(folders)
+
+
+async def _list_blobs_for_folders(
+    folders: Iterable[str],
+) -> tuple[dict[str, int | None], list[str]]:
+    """List blobs under each requested folder in lumid-data-app.
+
+    Returns ``(file_sizes, folder_paths)`` where:
+      * ``file_sizes`` maps **absolute** blob keys to byte sizes; and
+      * ``folder_paths`` lists every folder prefix implied by those keys,
+        including the queried roots.
+
+    Each folder is listed via a separate ``GET /blobs?prefix=<folder>`` call.
+    This matches the worker-side contract that an s3 retrieval ``template``
+    is an absolute blob key, decoupling data profiling from ``S3_DATA_PREFIX``.
+    """
+    if not envs.LUMID_DATA_URL:
+        raise RuntimeError(
+            "LUMID_DATA_URL is required for S3 data profiling via lumid-data-app "
+            "(see .env.example)"
+        )
+    if not envs.LUMID_DATA_TOKEN:
+        raise RuntimeError(
+            "LUMID_DATA_TOKEN is required for S3 data profiling via lumid-data-app "
+            "(see .env.example)"
+        )
+    sizes: dict[str, int | None] = {}
+    folder_paths: set[str] = set()
+    seen: set[str] = set()
+    for folder in folders:
+        norm = folder.strip("/")
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        partial_sizes, _ = await lumid_list_blobs(norm)
+        folder_paths.add(f"{norm}/")
+        for rel, size in partial_sizes.items():
+            full_key = f"{norm}/{rel}"
+            sizes[full_key] = size
+            parts = full_key.split("/")
+            for idx in range(1, len(parts)):
+                folder_paths.add("/".join(parts[:idx]) + "/")
+    return sizes, sorted(folder_paths)
 
 
 async def collect_data_profile(
@@ -540,7 +574,17 @@ async def collect_data_profile(
         raise RequestCancelledError(request_id)
 
     result_data: dict[str, list[dict[str, Any]]] = {}
+    # Pre-collect every S3 folder this batch's data-profile graphs reference
+    # so a single set of /blobs calls (one per distinct folder) covers them
+    # all. The listing is keyed on absolute blob paths — same shape the
+    # worker sees when it dereferences the same templates at task time.
+    required_s3_folders: set[str] = set()
+    for graph_key, graph in data_profile_graphs.items():
+        if _has_s3_data_profile_nodes(graph):
+            required_s3_folders.update(_extract_required_s3_folders(graph))
     s3_listing_cache: tuple[dict[str, int | None], list[str]] | None = None
+    if required_s3_folders:
+        s3_listing_cache = await _list_blobs_for_folders(required_s3_folders)
 
     for graph_key in sorted(data_profile_graphs.keys()):
         graph = data_profile_graphs[graph_key]
@@ -602,9 +646,12 @@ async def collect_data_profile(
                 selected_source=selected,
                 candidates=candidates,
             )
+            sizes: dict[str, int | None]
+            folders: list[str]
             if s3_listing_cache is None:
-                s3_listing_cache = await asyncio.to_thread(_compute_minio_listing)
-            sizes, folders = s3_listing_cache
+                sizes, folders = {}, []
+            else:
+                sizes, folders = s3_listing_cache
             derived_s3 = _derive_s3_profile_for_graph(
                 graph=graph,
                 graph_key=graph_key,

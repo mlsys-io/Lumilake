@@ -13,7 +13,7 @@ Lumilake is a data analytics engine for agentic workflows. It accepts workflow s
 - HALO scheduling for multi-step AI and data workflows.
 - A FastAPI server for job submission, status, cancellation, results, workers, and traces.
 - A CLI and Python SDK for local deployment and server API access.
-- Data access through direct PostgreSQL and S3-compatible storage; agent-style retrievals additionally route through lumid.data when `LUMID_DATA_URL` is set.
+- Data access routed exclusively through lumid-data-app — `DataRetrievalOp` in `sql`, `s3`, and `agent` modes all dispatch via `LUMID_DATA_URL`.
 - Shared hook integration through `lumid-hooks`, plus Lumilake-owned optimizer plugins.
 
 ## Install
@@ -47,7 +47,7 @@ The server runs as the published Docker image. `lumilake deploy` reads its env f
 ```bash
 mkdir -p ~/lumilake-deploy
 lumilake deploy -C ~/lumilake-deploy init --flowmesh   # ~/lumilake-deploy/.env + .env.flowmesh
-$EDITOR ~/lumilake-deploy/.env                          # fill in DATABASE_URL / S3 / model keys
+$EDITOR ~/lumilake-deploy/.env                          # fill in LUMID_DATA_URL / S3_*_PREFIX / model keys
 lumilake deploy -C ~/lumilake-deploy pull               # fetch ghcr.io/mlsys-io/lumilake_server:<tag>
 lumilake deploy -C ~/lumilake-deploy up                 # bring the stack up via docker compose
 lumilake deploy -C ~/lumilake-deploy purge dev --dry-run # preview cleanup of one local image tag
@@ -55,23 +55,14 @@ lumilake deploy -C ~/lumilake-deploy purge dev --dry-run # preview cleanup of on
 
 `LUMILAKE_DEPLOY_DIR=~/lumilake-deploy` is an equivalent override. The deployment directory only needs to hold your `.env` files (and any local state docker compose creates) — the compose file and server image are resolved from the installed `lumilake-deploy` package and GHCR. The server listens on `http://127.0.0.1:9000` by default — open `/docs` for the API browser.
 
-Note: a real workflow run also requires running PostgreSQL and S3-compatible storage; agent-style retrievals (`DataRetrievalOp` with `type: agent`) additionally require `LUMID_DATA_URL`. See `docs/ENV.md` for the env contract. If you don't have your own data plane, the repo ships a bundled Postgres + MinIO at `scripts/dev/compose.data-plane.yml` — see `docs/E2E_DEMO.md` for the full three-step demo flow (data plane → load demo data → run a workflow).
+Note: a real workflow run requires a reachable lumid-data-app instance — `LUMID_DATA_URL` (and optionally `LUMID_DATA_TOKEN`) must be set, since every `DataRetrievalOp` (`sql`, `s3`, and `agent` modes) routes through it. See `docs/ENV.md` for the env contract and `docs/E2E_DEMO.md` for the full three-step demo flow (bring up lumid-data-app → load demo data → run a workflow).
 
 ### Hello world
 
 The repo ships a `hello-world.yaml` template — `FormatOp` →
 `LambdaOp` → `LLMChatOp` — that is the smallest copy-paste starting
 point for a Lumilake YAML workflow. Submit it once the stack is up and
-`S3_URL` points at reachable S3-compatible storage. From a source
-checkout, start the bundled data plane first:
-
-```bash
-docker compose -f scripts/dev/compose.data-plane.yml up -d
-```
-
-PyPI installs do not include `scripts/dev/`; use your own reachable S3
-endpoint, or download the repo's data-plane compose file alongside the
-workflow template before running the local-only example.
+`LUMID_DATA_URL` points at a reachable lumid-data-app instance.
 
 ```bash
 # From a source checkout:
@@ -121,11 +112,9 @@ workflows and dataset.
 
 ## Data Access
 
-- **SQL retrievals** connect directly to `DATABASE_URL`.
-- **S3 retrievals** connect directly to `S3_URL`.
-- **Agent retrievals** (`DataRetrievalOp` with `type: agent`) require `LUMID_DATA_URL` and route through lumid.data's `/agent/v1` endpoint.
+All `DataRetrievalOp` modes (`sql`, `s3`, and `agent`) route through lumid-data-app via the `type: lumid` FlowMesh connector. `LUMID_DATA_URL` (and, for authenticated deployments, `LUMID_DATA_TOKEN`) gate every retrieval. `S3_DATA_PREFIX` is a logical blob-key prefix in lumid-data-app's store used as the base for S3-input key expansion.
 
-Job records and runtime artifacts are written under `S3_ARCHIVE_PREFIX` using the same `S3_URL` connection.
+Job records and runtime artifacts are written under `S3_ARCHIVE_PREFIX`, also resolved against lumid-data-app's blob store via the same `LUMID_DATA_URL` / `LUMID_DATA_TOKEN`.
 
 ## Deployment
 

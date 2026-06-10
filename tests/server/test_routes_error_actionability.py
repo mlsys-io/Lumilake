@@ -141,7 +141,6 @@ def job_routes(monkeypatch: pytest.MonkeyPatch) -> Any:
 def app(job_routes: Any) -> FastAPI:
     app = FastAPI()
     app.state.logger = logging.getLogger("test.routes_error_actionability")
-    app.state.compute_db_pool = None
     app.state.background_tasks = set()
     app.add_middleware(TraceIdMiddleware)
     app.include_router(job_routes.router)
@@ -409,7 +408,6 @@ async def test_empty_inputs_after_resolution_echoes_input_name(
         *,
         input_name: str,
         raw: Any,
-        compute_pool: Any,
         principal: Any,
         hook_logger: Any,
     ) -> list[str]:

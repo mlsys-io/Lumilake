@@ -82,13 +82,9 @@ lint = [
     "types-docker==7.1.0.20260409",
     "pre-commit==4.6.0",
 ]
-delta = [
-    "deltalake>=0.22.0,<2.0.0",
-    "pyarrow>=17.0.0",
-    "polars>=1.0.0,<2.0.0",
-]
 dev = [
     "ipywidgets>=8.1.5,<9.0.0",
+    "minio==7.2.20",
     "pyvis==0.3.1",
     "ipykernel>=6.29.5,<7.0.0",
 ]
@@ -98,7 +94,6 @@ test = [
     "pytest-cov>=6.0.0,<8.0.0",
     "pytest-timeout>=2.4.0,<3.0.0",
     "respx>=0.21.0",
-    {include-group = "delta"},
 ]
 # Runtime deps for src/lumilake_server/. Not a project extra — copied
 # into the Docker image via `sync_requirements.py --write` so the image
@@ -113,10 +108,7 @@ server-runtime = [
     "aiohttp==3.14.0",
     "shortuuid==1.0.13",
     "pandas==3.0.3",
-    "minio==7.2.20",
     "dill==0.4.1",
-    "psycopg[binary]==3.3.4",
-    "psycopg-pool==3.3.1",
     "sqlparse==0.5.4",
     "lumid-hooks==0.1.0",
     "flowmesh-sdk==0.1.1",

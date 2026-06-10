@@ -1,7 +1,6 @@
 import textwrap
 
 import pytest
-from lumilake import envs
 
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import InputOp, LLMChatOp, MessageOp, OutputOp
@@ -9,10 +8,7 @@ from lumilake_server.parser import parse_yaml_payload
 
 
 def _ensure_envs() -> None:
-    if envs.DATABASE_URL is None:
-        envs.DATABASE_URL = "sqlite://"
-    if envs.S3_URL is None:
-        envs.S3_URL = "s3://dummy"
+    pass
 
 
 def test_single_data_op_compiles() -> None:

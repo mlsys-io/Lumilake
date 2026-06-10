@@ -6,6 +6,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
@@ -14,8 +15,25 @@ from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import Priority
 from lumilake_server.utils.utils import unique_id
 
-from .base import BaseJobManager, BatchSelection, Job, WorkflowItem
+from .base import (
+    BaseJobManager,
+    BatchReservation,
+    BatchSelection,
+    Job,
+    WorkflowItem,
+)
 from .cluster_algo.clustering import select_affinity_batch_ids
+
+
+@dataclass(slots=True, frozen=True)
+class _ReservationPayload:
+    """Deferred mutations carried by a :class:`BatchReservation`."""
+
+    selected_workflow_ids: frozenset[str]
+    miss_increment_targets: tuple[str, ...]
+    rr_partition_to_advance: tuple[str, str | None, str] | None
+    user_rr_priorities_to_advance: tuple[Priority, ...]
+
 
 DEFAULT_QUANTUMS: dict[Priority, int] = {
     Priority.HIGH: envs.LUMILAKE_QUEUE_QUANTUM_HIGH,
@@ -64,6 +82,9 @@ class PriorityJobManager(BaseJobManager):
         self._items: dict[str, WorkflowItem] = {}
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
+        # At most one outstanding reserve_batch reservation. Subsequent
+        # reserve_batch calls raise until commit/abort releases this slot.
+        self._active_reservation: BatchReservation | None = None
         self.logger = init_child_logger("JobManager", logger, log_level)
 
     @staticmethod
@@ -194,11 +215,21 @@ class PriorityJobManager(BaseJobManager):
         for workflow_id in workflow_ids:
             self._items.pop(workflow_id, None)
 
-    async def select_batch(self, batch_size: int) -> BatchSelection | None:
+    async def reserve_batch(self, batch_size: int) -> BatchReservation | None:
+        """Compute the next batch without mutating queue state.
+
+        See :class:`BatchReservation` — the returned handle must be either
+        committed (``commit_reservation``) or aborted (``abort_reservation``).
+        """
         if batch_size <= 0:
             batch_size = 1
 
         async with self._lock:
+            if self._active_reservation is not None:
+                raise RuntimeError(
+                    "PriorityJobManager already has an outstanding reservation; "
+                    "commit or abort it before reserving another batch."
+                )
             present_partitions: set[tuple[str, str | None, str]] = set()
             items_by_partition: dict[tuple[str, str | None, str], int] = {}
             starved_global: list[WorkflowItem] = []
@@ -222,6 +253,7 @@ class PriorityJobManager(BaseJobManager):
                 return None
 
             anchor_partition: tuple[str, str | None, str]
+            rr_partition_to_advance: tuple[str, str | None, str] | None = None
             if starved_global:
                 head = starved_global[0]
                 anchor_partition = (
@@ -244,9 +276,10 @@ class PriorityJobManager(BaseJobManager):
                         present_partitions
                     ) or next(iter(present_partitions))
                 anchor_partition = picked
+                rr_partition_to_advance = picked
 
-            candidates = self._build_candidate_pool_for_partition_locked(
-                anchor_partition
+            candidates, user_rr_priorities_to_advance = (
+                self._build_candidate_pool_for_partition_locked(anchor_partition)
             )
             if not candidates:
                 self._not_empty.clear()
@@ -333,14 +366,53 @@ class PriorityJobManager(BaseJobManager):
                 self.logger.debug("Selected batch items=%s", selected_names)
 
             selected_items = [item_map[workflow_id] for workflow_id in selected_ids]
-            selected_set = set(selected_ids)
+            selected_set = frozenset(selected_ids)
+            miss_increment_targets = tuple(
+                item.workflow_id
+                for item in candidates
+                if item.workflow_id not in selected_set
+            )
 
-            # Update miss counters for candidates not selected.
-            for item in candidates:
-                if item.workflow_id not in selected_set:
+            # All items in a single user queue share priority + config, so the
+            # first item's config is representative for the whole batch.
+            config = selected_items[0].config.model_copy(deep=True)
+            runtime_graphs = {
+                item.workflow_id: item.runtime_graph for item in selected_items
+            }
+            data_profile_graphs = {
+                item.workflow_id: item.data_profile_graph for item in selected_items
+            }
+            selection = BatchSelection(
+                workflows=selected_items,
+                runtime_graphs=runtime_graphs,
+                data_profile_graphs=data_profile_graphs,
+                config=config,
+                clustering_seconds=clustering_seconds,
+            )
+            payload = _ReservationPayload(
+                selected_workflow_ids=selected_set,
+                miss_increment_targets=miss_increment_targets,
+                rr_partition_to_advance=rr_partition_to_advance,
+                user_rr_priorities_to_advance=user_rr_priorities_to_advance,
+            )
+            reservation = BatchReservation(selection=selection, _payload=payload)
+            self._active_reservation = reservation
+            return reservation
+
+    async def commit_reservation(self, reservation: BatchReservation) -> None:
+        async with self._lock:
+            if self._active_reservation is not reservation:
+                raise RuntimeError(
+                    "commit_reservation: reservation is not the active one"
+                )
+            payload: _ReservationPayload = reservation._payload
+            selected_set = payload.selected_workflow_ids
+            # 1. Bump miss counters for non-selected candidates.
+            for workflow_id in payload.miss_increment_targets:
+                item = self._items.get(workflow_id)
+                if item is not None:
                     item.miss_count += 1
-
-            # Remove selected items from queues.
+            # 2. Remove selected items from per-priority queues.
             for priority, user_queues in self._queues.items():
                 if not user_queues:
                     continue
@@ -354,7 +426,7 @@ class PriorityJobManager(BaseJobManager):
                     else:
                         del user_queues[user_id]
                 self._prune_empty_user_queues_locked(priority)
-            # Drop partitions whose queues drained completely.
+            # 3. Drop RR partitions whose queues drained completely.
             remaining_partitions = {
                 (
                     item.config.principal_id,
@@ -373,59 +445,85 @@ class PriorityJobManager(BaseJobManager):
                     for partition in self._rr_partition_order
                     if partition not in stale_partitions
                 )
+            # 4. Advance the RR pointer past the picked partition.
+            if payload.rr_partition_to_advance is not None:
+                self._advance_partition_round_robin_locked(
+                    payload.rr_partition_to_advance
+                )
+            # 5. Advance per-priority user-level RR pointers that were
+            # consulted during reserve_batch.
+            for priority in payload.user_rr_priorities_to_advance:
+                self._advance_user_round_robin_locked(priority)
             self.logger.debug(
-                "Post-select queue_sizes=%s",
+                "Post-commit queue_sizes=%s",
                 self._queue_sizes_by_priority(),
             )
-
             if not any(
                 self._priority_queue_size(priority) > 0 for priority in self._queues
             ):
                 self._not_empty.clear()
+            self._active_reservation = None
 
-        # All items in a single user queue share priority + config, so the
-        # first item's config is representative for the whole batch.
-        config = selected_items[0].config.model_copy(deep=True)
-        runtime_graphs = {
-            item.workflow_id: item.runtime_graph for item in selected_items
-        }
-        data_profile_graphs = {
-            item.workflow_id: item.data_profile_graph for item in selected_items
-        }
-        return BatchSelection(
-            workflows=selected_items,
-            runtime_graphs=runtime_graphs,
-            data_profile_graphs=data_profile_graphs,
-            config=config,
-            clustering_seconds=clustering_seconds,
-        )
+    async def abort_reservation(self, reservation: BatchReservation) -> None:
+        async with self._lock:
+            if self._active_reservation is not reservation:
+                raise RuntimeError(
+                    "abort_reservation: reservation is not the active one"
+                )
+            self._active_reservation = None
 
     def _build_candidate_pool_for_partition_locked(
         self, partition: tuple[str, str | None, str]
-    ) -> list[WorkflowItem]:
+    ) -> tuple[list[WorkflowItem], tuple[Priority, ...]]:
+        """Peek the candidate pool plus the priorities whose user-level RR
+        pointer should be rotated by ``commit_reservation``.
+        """
         candidates: list[WorkflowItem] = []
+        priorities_to_advance: list[Priority] = []
         for priority in Priority:
             quantum = max(0, self._quantums.get(priority, 0))
             if quantum == 0:
                 continue
-            candidates.extend(
-                self._peek_round_robin_for_partition_locked(
-                    priority, quantum, partition
-                )
+            picked, advance = self._peek_round_robin_for_partition_locked(
+                priority, quantum, partition
             )
-        return candidates
+            candidates.extend(picked)
+            if advance:
+                priorities_to_advance.append(priority)
+        return candidates, tuple(priorities_to_advance)
 
     def _pick_partition_round_robin_locked(
         self, present_partitions: set[tuple[str, str | None, str]]
     ) -> tuple[str, str | None, str] | None:
+        """Pick the next RR partition without advancing the pointer.
+
+        Stale heads (partitions whose queues are empty) are evicted —
+        that's idempotent housekeeping unrelated to selection state.
+        The rotation that ages the picked partition is performed at
+        ``commit_reservation`` time via ``_advance_partition_round_robin_locked``.
+        """
         while self._rr_partition_order:
             head = self._rr_partition_order[0]
             if head in present_partitions:
-                self._rr_partition_order.rotate(-1)
                 return head
             self._rr_partition_order.popleft()
             self._rr_partition_members.discard(head)
         return None
+
+    def _advance_partition_round_robin_locked(
+        self, partition: tuple[str, str | None, str]
+    ) -> None:
+        """Rotate the RR pointer past ``partition`` (commit-phase mutation)."""
+        if not self._rr_partition_order:
+            return
+        if self._rr_partition_order[0] == partition:
+            self._rr_partition_order.rotate(-1)
+
+    def _advance_user_round_robin_locked(self, priority: Priority) -> None:
+        """Rotate the per-priority user-level RR pointer (commit-phase mutation)."""
+        rr_order = self._rr_user_order[priority]
+        if len(rr_order) > 1:
+            rr_order.rotate(-1)
 
     def _priority_queue_size(self, priority: Priority) -> int:
         return sum(len(queue) for queue in self._queues[priority].values())
@@ -448,14 +546,21 @@ class PriorityJobManager(BaseJobManager):
         priority: Priority,
         limit: int,
         partition: tuple[str, str | None, str],
-    ) -> list[WorkflowItem]:
+    ) -> tuple[list[WorkflowItem], bool]:
+        """Peek the next ``limit`` items for ``partition`` without rotating.
+
+        Returns ``(candidates, should_advance)``. ``should_advance`` is True
+        when the caller's ``commit_reservation`` should rotate this
+        priority's user-level RR pointer; rotation is deferred so aborts
+        leave the pointer untouched.
+        """
         if limit <= 0:
-            return []
+            return [], False
         self._prune_empty_user_queues_locked(priority)
         user_queues = self._queues[priority]
         rr_order = self._rr_user_order[priority]
         if not user_queues or not rr_order:
-            return []
+            return [], False
 
         principal_id, dispatch_token, optimizer_type = partition
         filtered: dict[str, list[WorkflowItem]] = {}
@@ -476,7 +581,7 @@ class PriorityJobManager(BaseJobManager):
 
         ordered_users = [user_id for user_id in rr_order if user_id in filtered]
         if not ordered_users:
-            return []
+            return [], False
         local_offsets = {user_id: 0 for user_id in ordered_users}
         candidates: list[WorkflowItem] = []
         while len(candidates) < limit:
@@ -494,9 +599,8 @@ class PriorityJobManager(BaseJobManager):
             if not progressed:
                 break
 
-        if len(rr_order) > 1:
-            rr_order.rotate(-1)
-        return candidates
+        should_advance = len(rr_order) > 1
+        return candidates, should_advance
 
     def _apply_starvation_policy(
         self,

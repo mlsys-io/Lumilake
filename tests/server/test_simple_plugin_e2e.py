@@ -164,7 +164,6 @@ def job_routes(monkeypatch: pytest.MonkeyPatch) -> Any:
 def app(job_routes: Any) -> FastAPI:
     app = FastAPI()
     app.state.logger = logging.getLogger("test.simple_plugin_e2e")
-    app.state.compute_db_pool = None
     app.state.background_tasks = set()
     app.include_router(job_routes.router)
     app.include_router(trace_routes.router)

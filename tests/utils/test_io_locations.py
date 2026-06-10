@@ -1,192 +1,64 @@
-from dataclasses import dataclass
-from typing import Any
+import pytest
 
-from lumilake_server.schemas.io import S3Location
-from lumilake_server.utils import io_locations
+from lumilake_server.utils.io_locations import normalize_s3_literal
 
 
-class _FakeS3Error(Exception):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
+def test_normalize_s3_literal_strips_leading_slashes() -> None:
+    assert normalize_s3_literal("/foo/bar") == "foo/bar"
 
 
-class _FakeResponse:
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self.closed = False
-        self.released = False
-
-    def read(self) -> bytes:
-        return self._data
-
-    def close(self) -> None:
-        self.closed = True
-
-    def release_conn(self) -> None:
-        self.released = True
+def test_normalize_s3_literal_preserves_trailing_slash() -> None:
+    assert normalize_s3_literal("/foo/bar/") == "foo/bar/"
 
 
-@dataclass
-class _FakeObject:
-    object_name: str
+def test_normalize_s3_literal_raises_on_empty() -> None:
+    with pytest.raises(ValueError, match="s3 path is required"):
+        normalize_s3_literal("")
 
 
-class _FakeMinio:
-    def __init__(self) -> None:
-        self.objects: dict[tuple[str, str], bytes] = {}
-        self.put_calls: list[dict[str, Any]] = []
-
-    def put_object(
-        self,
-        *,
-        bucket_name: str,
-        object_name: str,
-        data: Any,
-        length: int,
-        content_type: str,
-    ) -> None:
-        body = data.read()
-        assert len(body) == length
-        self.objects[(bucket_name, object_name)] = body
-        self.put_calls.append(
-            {
-                "bucket": bucket_name,
-                "object_name": object_name,
-                "content_type": content_type,
-            }
-        )
-
-    def get_object(self, bucket_name: str, object_name: str) -> _FakeResponse:
-        try:
-            data = self.objects[(bucket_name, object_name)]
-        except KeyError as exc:
-            raise _FakeS3Error("NoSuchKey") from exc
-        return _FakeResponse(data)
-
-    def list_objects(
-        self, bucket_name: str, *, prefix: str, recursive: bool
-    ) -> list[_FakeObject]:
-        assert recursive is True
-        return [
-            _FakeObject(object_name)
-            for (bucket, object_name), _body in sorted(self.objects.items())
-            if bucket == bucket_name and object_name.startswith(prefix)
-        ]
+def test_normalize_s3_literal_raises_on_whitespace_only() -> None:
+    with pytest.raises(ValueError, match="s3 path is required"):
+        normalize_s3_literal("   ")
 
 
-def test_sharded_index_helpers_roundtrip_and_preserve_relative_paths(
-    monkeypatch,
-) -> None:
-    fake = _FakeMinio()
-
-    def fake_s3_client_for_uri(uri: str) -> tuple[_FakeMinio, str, str]:
-        bucket, obj = io_locations._split_bucket_object(uri)
-        return fake, bucket, obj
-
-    monkeypatch.setattr(io_locations, "_s3_client_for_uri", fake_s3_client_for_uri)
-    monkeypatch.setattr(io_locations, "S3Error", _FakeS3Error)
-
-    location = S3Location(
-        type="s3",
-        prefix="graphs/run-1",
-        connection_string="s3://user:pass@minio:9000/test-bucket/base-prefix",
-    )
-    io_locations.write_sharded_index(
-        location,
-        {
-            "manifest.json": '{"version": 1}',
-            "chunks/part-000.parquet": b"PAR1",
-            "meta/custom.bin": b"\x00\x01",
-        },
-        content_types={"meta/custom.bin": "application/x-custom"},
-    )
-
-    assert fake.put_calls == [
-        {
-            "bucket": "test-bucket",
-            "object_name": "base-prefix/graphs/run-1/manifest.json",
-            "content_type": "application/json",
-        },
-        {
-            "bucket": "test-bucket",
-            "object_name": "base-prefix/graphs/run-1/chunks/part-000.parquet",
-            "content_type": "application/vnd.apache.parquet",
-        },
-        {
-            "bucket": "test-bucket",
-            "object_name": "base-prefix/graphs/run-1/meta/custom.bin",
-            "content_type": "application/x-custom",
-        },
-    ]
-    assert io_locations.read_s3_json(location, "manifest.json") == {"version": 1}
-    assert io_locations.read_s3_bytes(location, "chunks/part-000.parquet") == b"PAR1"
-    assert io_locations.read_s3_bytes(location, "missing.json") is None
-    assert io_locations.read_s3_json(location, "missing.json") is None
-    assert io_locations.list_sharded_index(location) == [
-        "chunks/part-000.parquet",
-        "manifest.json",
-        "meta/custom.bin",
-    ]
-    assert io_locations.list_sharded_index(location, "chunks") == [
-        "chunks/part-000.parquet"
-    ]
+def test_normalize_s3_literal_no_leading_slash() -> None:
+    assert normalize_s3_literal("bucket/prefix") == "bucket/prefix"
 
 
-def test_write_sharded_index_requires_non_empty_prefix() -> None:
-    location = S3Location(
-        type="s3",
-        prefix="",
-        connection_string="s3://user:pass@minio:9000/test-bucket/base-prefix",
-    )
-
-    try:
-        io_locations.write_sharded_index(location, {"manifest.json": "{}"})
-    except ValueError as exc:
-        assert str(exc) == "write_sharded_index requires a non-empty S3 prefix"
-    else:  # pragma: no cover
-        raise AssertionError("expected write_sharded_index to reject empty prefixes")
+def test_normalize_s3_literal_adds_trailing_slash_when_input_ends_with_slash() -> None:
+    assert normalize_s3_literal("/foo/").endswith("/")
 
 
-def test_normalize_s3_uri_derives_bucket_from_data_prefix(monkeypatch: Any) -> None:
-    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "mybucket/data/v1")
-    assert (
-        io_locations._normalize_s3_uri("subdir/file.parquet")
-        == "s3://mybucket/data/v1/subdir/file.parquet"
-    )
+def test_normalize_s3_literal_rejects_parent_traversal() -> None:
+    with pytest.raises(ValueError, match="traversal"):
+        normalize_s3_literal("data/../private/secret.txt")
 
 
-def test_normalize_s3_uri_passes_through_s3_scheme(monkeypatch: Any) -> None:
-    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "ignored/prefix")
-    assert (
-        io_locations._normalize_s3_uri("s3://other-bucket/path")
-        == "s3://other-bucket/path"
-    )
+def test_normalize_s3_literal_rejects_dot_segment() -> None:
+    with pytest.raises(ValueError, match="traversal"):
+        normalize_s3_literal("data/./private")
 
 
-def test_normalize_s3_uri_raises_when_data_prefix_missing(monkeypatch: Any) -> None:
-    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", None)
-    try:
-        io_locations._normalize_s3_uri("subdir/file.parquet")
-    except ValueError as exc:
-        assert "S3_DATA_PREFIX" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("expected ValueError when S3_DATA_PREFIX is unset")
+def test_normalize_s3_literal_rejects_empty_inner_segment() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        normalize_s3_literal("foo//bar")
 
 
-def test_normalize_s3_uri_raises_when_prefix_has_no_bucket(monkeypatch: Any) -> None:
-    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "/")
-    try:
-        io_locations._normalize_s3_uri("subdir/file.parquet")
-    except ValueError as exc:
-        assert "bucket" in str(exc).lower()
-    else:  # pragma: no cover
-        raise AssertionError("expected ValueError when prefix has no bucket")
+def test_normalize_s3_literal_rejects_question_mark() -> None:
+    with pytest.raises(ValueError, match="forbidden"):
+        normalize_s3_literal("foo/bar?extra")
 
 
-def test_normalize_s3_uri_accepts_leading_slash_in_data_prefix(
-    monkeypatch: Any,
-) -> None:
-    monkeypatch.setattr(io_locations.envs, "S3_DATA_PREFIX", "/bucket/prefix")
-    result = io_locations._normalize_s3_uri("subdir/file.parquet")
-    assert result == "s3://bucket/prefix/subdir/file.parquet"
+def test_normalize_s3_literal_rejects_fragment() -> None:
+    with pytest.raises(ValueError, match="forbidden"):
+        normalize_s3_literal("foo/bar#frag")
+
+
+def test_normalize_s3_literal_rejects_nul_byte() -> None:
+    with pytest.raises(ValueError, match="forbidden"):
+        normalize_s3_literal("foo/bar\x00baz")
+
+
+def test_normalize_s3_literal_rejects_leading_dotdot() -> None:
+    with pytest.raises(ValueError, match="traversal"):
+        normalize_s3_literal("../etc/passwd")

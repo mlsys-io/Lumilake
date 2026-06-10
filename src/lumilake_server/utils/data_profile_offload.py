@@ -14,6 +14,7 @@ from lumilake_server.data_profile_models import (
     DataProfileResultsPayload,
 )
 from lumilake_server.graphs import CompiledGraph
+from lumilake_server.utils.lumid_data_client import profile as lumid_profile
 
 if TYPE_CHECKING:
     from lumilake_server.runtime.request import WorkflowSliceMeta
@@ -174,13 +175,6 @@ def build_request_data_profile_tasks(
 def run_data_profile_task(
     payload: DataProfileTaskPayload,
 ) -> DataProfileTaskResult:
-    try:
-        import psycopg
-    except Exception as exc:
-        raise RuntimeError(
-            "DataProfile worker requires psycopg to be installed"
-        ) from exc
-
     result_data: dict[str, list[DataProfileResultRow]] = {}
     for node_id in payload.node_order:
         node = payload.nodes.get(node_id)
@@ -189,9 +183,8 @@ def run_data_profile_task(
         data_spec = node.data_spec if isinstance(node.data_spec, dict) else {}
         if data_spec.get("type") != "sql":
             continue
-        connection_string = data_spec.get("connection_string")
         template = data_spec.get("template")
-        if not isinstance(connection_string, str) or not isinstance(template, str):
+        if not isinstance(template, str):
             continue
         table = data_spec.get("table")
         if not isinstance(table, str) or not table.strip():
@@ -215,8 +208,6 @@ def run_data_profile_task(
             node_id=node_id,
         )
         cost_estimates = _estimate_plan_variants(
-            psycopg=psycopg,
-            connection_string=connection_string,
             queries=queries,
         )
         if not cost_estimates:
@@ -231,7 +222,6 @@ def run_data_profile_task(
                 node_id=node_id,
                 raw_node_id=node.raw_node_id,
                 query_name=query_name,
-                connection_string=connection_string.strip(),
                 table=table,
                 cost_estimates=cost_estimates,
             )
@@ -533,149 +523,65 @@ def _coerce_footprints(value: Any) -> dict[str, int]:
     return footprints
 
 
-def _aggregate_plan_footprints(
-    node: Mapping[str, Any],
-) -> tuple[dict[str, int], dict[str, int]]:
-    def safe_int(value: Any) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-
-    relations: dict[str, int] = {}
-    indexes: dict[str, int] = {}
-    relation_name = node.get("Relation Name")
-    index_name = node.get("Index Name")
-    footprint = safe_int(node.get("Shared Hit Blocks")) + safe_int(
-        node.get("Shared Read Blocks")
-    )
-    if footprint <= 0:
-        footprint = 1
-    if isinstance(relation_name, str) and relation_name:
-        relations[relation_name] = relations.get(relation_name, 0) + footprint
-    if isinstance(index_name, str) and index_name:
-        indexes[index_name] = indexes.get(index_name, 0) + footprint
-    children = node.get("Plans")
-    if isinstance(children, list):
-        for child in children:
-            if not isinstance(child, Mapping):
-                continue
-            child_relations, child_indexes = _aggregate_plan_footprints(child)
-            for name, weight in child_relations.items():
-                relations[name] = relations.get(name, 0) + weight
-            for name, weight in child_indexes.items():
-                indexes[name] = indexes.get(name, 0) + weight
-    return relations, indexes
-
-
-def _extract_plan_footprints(explain_json: Any) -> dict[str, int]:
-    if not isinstance(explain_json, list) or not explain_json:
-        return {}
-    top = explain_json[0]
-    if not isinstance(top, Mapping):
-        return {}
-    plan = top.get("Plan")
-    if not isinstance(plan, Mapping):
-        return {}
-    relations, indexes = _aggregate_plan_footprints(plan)
-    merged: dict[str, int] = {}
-    for name, weight in relations.items():
-        merged[name] = merged.get(name, 0) + weight
-    for name, weight in indexes.items():
-        merged[name] = merged.get(name, 0) + weight
-    return merged
-
-
-def _estimate_single_query_variant(
-    *,
-    conn: Any,
-    query: str,
-    settings: Mapping[str, str],
-) -> dict[str, Any]:
-    try:
-        with conn.transaction():
-            with conn.cursor() as cursor:
-                for setting_name, setting_value in settings.items():
-                    cursor.execute(f"SET LOCAL {setting_name} = {setting_value}")
-                cursor.execute(f"EXPLAIN (FORMAT JSON, VERBOSE) {query}")
-                row = cursor.fetchone()
-        if not row:
-            return {"ok": False}
-        plan_json = row[0]
-        if not isinstance(plan_json, list) or not plan_json:
-            return {"ok": False}
-        plan = plan_json[0]
-        plan_node = plan.get("Plan") if isinstance(plan, dict) else None
-        estimated_cost = None
-        estimated_rows = None
-        if isinstance(plan_node, dict):
-            estimated_cost = plan_node.get("Total Cost")
-            estimated_rows = plan_node.get("Plan Rows")
-        footprints = _extract_plan_footprints(plan_json)
-        return {
-            "ok": True,
-            "estimated_cost": (
-                float(estimated_cost)
-                if isinstance(estimated_cost, (int, float))
-                else None
-            ),
-            "estimated_rows": (
-                int(estimated_rows)
-                if isinstance(estimated_rows, (int, float))
-                else None
-            ),
-            "footprints": footprints,
-            "explain_json": plan_json,
-        }
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-
-
 def _estimate_plan_variants(
     *,
-    psycopg: Any,
-    connection_string: str,
     queries: Sequence[str],
 ) -> list[DataProfileCostEstimate]:
+    """Call lumid-data-app POST /profile for each sample query and each plan
+    variant, then average the per-variant costs and rows across queries.
+
+    Each ``/profile`` response variant contains a ``footprints`` field
+    (``dict[str, int]``). The first non-empty footprint map for a variant
+    is used as the representative footprint.
+    """
     variants = _local_data_profile_variants()
-    estimates: list[DataProfileCostEstimate] = []
-    with psycopg.connect(connection_string) as conn:
-        for plan_id, description, settings in variants:
-            sample_raw_costs: list[float] = []
-            sample_rows: list[int] = []
-            representative_footprints: dict[str, int] = {}
-            for query in queries:
-                result = _estimate_single_query_variant(
-                    conn=conn,
-                    query=query,
-                    settings=settings,
-                )
-                if not result.get("ok"):
-                    continue
-                estimated_cost = result.get("estimated_cost")
-                estimated_rows = result.get("estimated_rows")
-                if isinstance(estimated_cost, (int, float)):
-                    raw_cost = float(estimated_cost)
-                    sample_raw_costs.append(raw_cost)
-                if isinstance(estimated_rows, (int, float)):
-                    sample_rows.append(int(estimated_rows))
-                footprints = result.get("footprints")
-                if not representative_footprints:
-                    representative_footprints = _coerce_footprints(footprints)
-            if not sample_raw_costs:
+    plans_payload = [
+        {"plan_id": plan_id, "settings": settings}
+        for plan_id, _description, settings in variants
+    ]
+    description_by_id = {
+        plan_id: description for plan_id, description, _settings in variants
+    }
+    per_variant_costs: dict[str, list[float]] = {v[0]: [] for v in variants}
+    per_variant_rows: dict[str, list[int]] = {v[0]: [] for v in variants}
+    per_variant_footprints: dict[str, dict[str, int]] = {v[0]: {} for v in variants}
+
+    for query in queries:
+        response_variants = lumid_profile(query, plans_payload)
+        for item in response_variants:
+            if not isinstance(item, Mapping):
                 continue
-            avg_raw_cost = sum(sample_raw_costs) / len(sample_raw_costs)
-            avg_rows = (
-                round(sum(sample_rows) / len(sample_rows)) if sample_rows else None
+            plan_id = item.get("plan_id")
+            if not isinstance(plan_id, str) or plan_id not in per_variant_costs:
+                continue
+            raw_cost = item.get("raw_cost")
+            estimated_rows = item.get("estimated_rows")
+            footprints_raw = item.get("footprints")
+            if isinstance(raw_cost, (int, float)):
+                per_variant_costs[plan_id].append(float(raw_cost))
+            if isinstance(estimated_rows, (int, float)):
+                per_variant_rows[plan_id].append(int(estimated_rows))
+            if not per_variant_footprints[plan_id]:
+                coerced = _coerce_footprints(footprints_raw)
+                if coerced:
+                    per_variant_footprints[plan_id] = coerced
+
+    estimates: list[DataProfileCostEstimate] = []
+    for plan_id, _description, _settings in variants:
+        costs = per_variant_costs[plan_id]
+        if not costs:
+            continue
+        avg_raw_cost = sum(costs) / len(costs)
+        rows = per_variant_rows[plan_id]
+        avg_rows = round(sum(rows) / len(rows)) if rows else None
+        estimates.append(
+            DataProfileCostEstimate(
+                plan_id=plan_id,
+                description=description_by_id[plan_id],
+                raw_cost=avg_raw_cost,
+                estimated_rows=avg_rows,
+                footprints=per_variant_footprints[plan_id],
             )
-            estimates.append(
-                DataProfileCostEstimate(
-                    plan_id=plan_id,
-                    description=description,
-                    raw_cost=avg_raw_cost,
-                    estimated_rows=avg_rows,
-                    footprints=representative_footprints,
-                )
-            )
+        )
     estimates.sort(key=lambda item: (item.raw_cost, item.plan_id))
     return estimates

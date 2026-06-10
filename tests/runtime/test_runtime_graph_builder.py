@@ -1,3 +1,6 @@
+import pytest
+from lumilake import envs
+
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -11,16 +14,41 @@ from lumilake_server.ops import (
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
+_LUMID_URL = "http://lumid-data"
+_LUMID_TOKEN = "test-token"
+
+
+@pytest.fixture(autouse=True)
+def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
+
+
+def _sql_spec(template: str, params: list) -> dict:
+    return {
+        "type": "lumid",
+        "mode": "sql",
+        "template": template,
+        "params": params,
+    }
+
+
+def _s3_spec(template: str, params: list) -> dict:
+    return {
+        "type": "lumid",
+        "mode": "s3",
+        "template": template,
+        "params": params,
+    }
+
 
 def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "sql",
-            "connection_string": "postgresql://example",
-            "template": "SELECT * FROM t WHERE symbol = :symbol",
-            "params": [{"name": "symbol", "node": stock.id}],
-        },
+        data_spec=_sql_spec(
+            "SELECT * FROM t WHERE symbol = :symbol",
+            [{"name": "symbol", "node": stock.id}],
+        ),
         inputs=[stock],
     )
     llm = LLMChatOp(
@@ -35,6 +63,13 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     assert len(runtime_graph.nodes) == 2
     assert retrieval.id in runtime_graph.nodes
     assert llm.id in runtime_graph.nodes
+    # Verify lumid wire format
+    ds = runtime_graph.nodes[retrieval.id].data_spec
+    assert ds["type"] == "lumid"
+    assert ds["mode"] == "sql"
+    assert ds["lumid_data_url"] == _LUMID_URL
+    assert ds["lumid_data_token"] == _LUMID_TOKEN
+    assert "connection_string" not in ds
 
 
 def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
@@ -44,18 +79,10 @@ def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "sql",
-            "connection_string": "postgresql://example",
-            "template": "SELECT * FROM t WHERE query = :query",
-            "params": [
-                {
-                    "label": "query",
-                    "node": planner.id,
-                    "path": "items.output",
-                }
-            ],
-        },
+        data_spec=_sql_spec(
+            "SELECT * FROM t WHERE query = :query",
+            [{"label": "query", "node": planner.id, "path": "items.output"}],
+        ),
         inputs=[planner],
     )
     report = LLMChatOp(
@@ -76,12 +103,10 @@ def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
 def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "s3",
-            "connection_string": "s3://example",
-            "template": "example-data/news/images/{symbol}.png",
-            "params": [{"name": "symbol", "node": stock.id}],
-        },
+        data_spec=_s3_spec(
+            "example-data/news/images/{symbol}.png",
+            [{"name": "symbol", "node": stock.id}],
+        ),
         inputs=[stock],
     )
     vision = LLMVisionOp(
@@ -107,21 +132,17 @@ def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> No
 def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
     stock = input_placeholder("Stock")
     news_sql = DataRetrievalOp(
-        data_spec={
-            "type": "sql",
-            "connection_string": "postgresql://example",
-            "template": "SELECT title FROM news WHERE symbol = :symbol",
-            "params": [{"name": "symbol", "node": stock.id}],
-        },
+        data_spec=_sql_spec(
+            "SELECT title FROM news WHERE symbol = :symbol",
+            [{"name": "symbol", "node": stock.id}],
+        ),
         inputs=[stock],
     )
     news_s3 = DataRetrievalOp(
-        data_spec={
-            "type": "s3",
-            "connection_string": "s3://example",
-            "template": "example-data/news/images/{symbol}.png",
-            "params": [{"name": "symbol", "node": stock.id}],
-        },
+        data_spec=_s3_spec(
+            "example-data/news/images/{symbol}.png",
+            [{"name": "symbol", "node": stock.id}],
+        ),
         inputs=[stock],
     )
     vision = LLMVisionOp(
@@ -238,3 +259,46 @@ def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:
     upstream_columns = [col for col in columns if col.get("node") == upstream_id]
     assert any(col.get("path") == "items.output" for col in upstream_columns)
     assert all(col.get("path") != "items.metadata.prompt" for col in upstream_columns)
+
+
+def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
+    images = input_placeholder("Images")
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="Describe the image.")],
+        image_source=images.id,
+        image_source_op=images,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+    )
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(
+        Images=["s3://bucket/img/a.png", "s3://bucket/img/b.png"]
+    )
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    embedding_id = f"{vision.id}_embedding"
+    embedding = runtime_graph.nodes[embedding_id]
+    ds = embedding.data_spec
+    assert ds["type"] == "list"
+    assert "lumid_cfg" in ds
+    assert ds["lumid_cfg"]["lumid_data_url"] == _LUMID_URL
+    assert ds["lumid_cfg"]["lumid_data_token"] == _LUMID_TOKEN
+    assert ds["lumid_cfg"]["encoding"] == "utf-8"
+    assert "s3_cfg" not in ds
+
+
+def test_attach_lumid_cfg_not_injected_for_non_s3_list_inputs() -> None:
+    texts = input_placeholder("Texts")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=texts)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Texts=["hello", "world"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    llm_node = runtime_graph.nodes[llm.id]
+    ds = llm_node.data_spec
+    assert "lumid_cfg" not in ds
+    assert "s3_cfg" not in ds

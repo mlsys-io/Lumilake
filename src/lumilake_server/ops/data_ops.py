@@ -151,29 +151,43 @@ def input_placeholder(name: str) -> InputOp:
 @Op.registry.register("OutputOp")
 class OutputOp(FunctionalOp):
     name: str
+    path: str | None
 
-    def __init__(self, name: str, output: list[str] | Op) -> None:
+    def __init__(
+        self,
+        name: str,
+        output: list[str] | Op,
+        path: str | None = None,
+    ) -> None:
         inp = output if isinstance(output, Op) else DataOp(output)
         super().__init__([inp])
         self.name = name
+        self.path = path
 
     @property
     def op(self) -> Op:
         return self.inputs[0]
 
     def _serialize(self) -> dict[str, Any]:
-        return dict(name=self.name)
+        payload: dict[str, Any] = {"name": self.name}
+        if self.path is not None:
+            payload["path"] = self.path
+        return payload
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "OutputOp":
         input_ids = data["_inputs"]
         if len(input_ids) != 1:
             raise ValueError("OutputOp must have exactly one input")
-        return cls(name=data["name"], output=other_ops[input_ids[0]])
+        return cls(
+            name=data["name"],
+            output=other_ops[input_ids[0]],
+            path=data.get("path"),
+        )
 
 
-def as_output(name: str, output: list[str] | Op) -> OutputOp:
-    return OutputOp(name, output)
+def as_output(name: str, output: list[str] | Op, path: str | None = None) -> OutputOp:
+    return OutputOp(name, output, path=path)
 
 
 def data(

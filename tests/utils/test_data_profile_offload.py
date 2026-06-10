@@ -1,5 +1,3 @@
-import sys
-import types
 from typing import Any, cast
 
 import pytest
@@ -102,7 +100,6 @@ def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
                     model="data_profiling",
                     data_spec={
                         "type": "sql",
-                        "connection_string": "postgresql://user:pw@h:5432/db",
                         "template": "select * from t where q = '{q}'",
                     },
                     model_spec={},
@@ -169,7 +166,6 @@ def test_project_data_profile_results_to_runtime_graph_maps_raw_node_ids() -> No
                 "node_id": "source__db_node",
                 "raw_node_id": "db_node",
                 "query_name": "source__db_node_query",
-                "connection_string": "postgresql://user:pw@h:5432/db",
                 "table": "public.t",
                 "cost_estimates": [{"plan_id": "default", "raw_cost": 1.2}],
             }
@@ -235,8 +231,6 @@ def test_build_sample_data_profile_queries_raises_on_unresolved_placeholder() ->
 def test_run_data_profile_task_raises_when_no_valid_estimates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_psycopg = types.SimpleNamespace()
-    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
     monkeypatch.setattr(
         data_profile_offload,
         "_estimate_plan_variants",
@@ -255,7 +249,6 @@ def test_run_data_profile_task_raises_when_no_valid_estimates(
                 raw_node_id="g__slice_1__raw_db_node",
                 data_spec={
                     "type": "sql",
-                    "connection_string": "postgresql://user:pw@h:5432/db",
                     "template": "select * from t where symbol='{symbol}'",
                     "params": [
                         {
@@ -276,8 +269,6 @@ def test_run_data_profile_task_raises_when_no_valid_estimates(
 def test_run_data_profile_task_passes_num_test_queries_per_sql_node(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_psycopg = types.SimpleNamespace()
-    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
     samples_by_node: list[tuple[str | None, int]] = []
 
     def capture_queries(**kwargs: Any) -> list[str]:
@@ -315,7 +306,6 @@ def test_run_data_profile_task_passes_num_test_queries_per_sql_node(
                 raw_node_id="raw_sql_1",
                 data_spec={
                     "type": "sql",
-                    "connection_string": "postgresql://user:pw@h:5432/db",
                     "template": "select 1 from public.t",
                     "table": "public.t",
                     "num_test_queries": 3,
@@ -326,7 +316,6 @@ def test_run_data_profile_task_passes_num_test_queries_per_sql_node(
                 raw_node_id="raw_sql_2",
                 data_spec={
                     "type": "sql",
-                    "connection_string": "postgresql://user:pw@h:5432/db",
                     "template": "select 2 from public.t",
                     "table": "public.t",
                     "num_test_queries": 5,

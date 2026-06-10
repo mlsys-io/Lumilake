@@ -10,7 +10,7 @@ Server-API + filesystem `init` (small surface; httpx only):
 pip install 'lumilake[sdk]'
 ```
 
-Add deploy lifecycle (`client.deploy.up/down/...`). Pulls in `[deploy]` (Docker SDK, psycopg, FlowMesh stack helpers); `client.deploy.*` calls into `lumilake_deploy` directly:
+Add deploy lifecycle (`client.deploy.up/down/...`). Pulls in `[deploy]` (Docker SDK, FlowMesh stack helpers); `client.deploy.*` calls into `lumilake_deploy` directly:
 
 ```bash
 pip install 'lumilake[sdk,deploy]'

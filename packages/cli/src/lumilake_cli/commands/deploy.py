@@ -340,12 +340,13 @@ def down(
 ) -> None:
     """Stop the stack but keep data volumes.
 
-    Safe to run between sessions: the archive bucket (job records, run
-    artifacts) and the compute postgres/minio volumes survive, so
-    ``deploy up`` resumes against the same state. ``--wipe-archive`` also
-    removes the compute Postgres and FlowMesh runtime-state volumes, while
-    preserving MinIO corpus data. Use ``deploy reset`` (destructive) to
-    wipe every volume instead.
+    Safe to run between sessions: the archive layer (job records, runtime
+    artifacts) lives in lumid-data-app under ``S3_ARCHIVE_PREFIX`` and is
+    not managed by ``lumilake deploy``, so ``deploy up`` resumes against
+    the same lumid-data-app state. ``--wipe-archive`` wipes the FlowMesh
+    runtime-state volumes that ``lumilake deploy`` does own; remote
+    lumid-data-app state is untouched. Use ``deploy reset`` (destructive)
+    to wipe every locally-managed volume instead.
     """
     try:
         stop_mod.run_stop(
@@ -493,11 +494,13 @@ def reset(
         help="Skip the destructive-action confirmation prompt.",
     ),
 ) -> None:
-    """Wipe the archive and every volume, then start the stack fresh.
+    """Wipe every locally-managed volume, then start the stack fresh.
 
-    Destructive: removes the compute postgres / minio volumes (job
-    records, run artifacts, demo data) and the FlowMesh runtime state.
-    Use ``deploy down`` if you want to stop the stack but keep its data.
+    Destructive: removes the FlowMesh runtime-state volumes managed by
+    ``lumilake deploy``. The archive layer (job records, runtime
+    artifacts) lives in lumid-data-app under ``S3_ARCHIVE_PREFIX`` and
+    is **not** wiped by this command. Use ``deploy down`` if you want
+    to stop the stack but keep its local state.
     """
     if not yes and not typer.confirm(
         "deploy reset deletes every Lumilake volume (archive + compute "

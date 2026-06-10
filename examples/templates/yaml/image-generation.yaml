@@ -30,8 +30,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock]
     data_spec:
-      type: sql
-      connection_string: ${DATABASE_URL}
+      type: lumid
+      mode: sql
       template: |-
         SELECT
           symbol,
@@ -56,8 +56,8 @@ ops:
     op: DataRetrievalOp
     inputs: ["News Retrieval - SQL"]
     data_spec:
-      type: s3
-      connection_string: ${S3_URL}
+      type: lumid
+      mode: s3
       template: "example-data/news/html/{id}.html"
       params:
         - label: id

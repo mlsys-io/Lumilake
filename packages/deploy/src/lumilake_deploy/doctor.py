@@ -4,7 +4,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 type FindingLevel = Literal["note", "warning", "error"]
 
@@ -57,10 +56,10 @@ _ALWAYS_REQUIRED: tuple[str, ...] = (
     "LUMILAKE_IMAGE_TAG",
 )
 
-_DIRECT_MODE_REQUIRED: tuple[str, ...] = (
-    "DATABASE_URL",
-    "S3_URL",
-)
+# Required whenever any workflow contains a DataRetrievalOp (all modes
+# route through lumid-data-app). LUMID_DATA_TOKEN is optional — it falls
+# back to LUMILAKE_RUNTIME_TOKEN at SDK load time.
+_RETRIEVAL_REQUIRED: tuple[str, ...] = ("LUMID_DATA_URL",)
 
 _OPTIONAL_KEYS: tuple[str, ...] = (
     "LUMILAKE_LOG_LEVEL",
@@ -90,15 +89,11 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "LUMILAKE_DISABLE_DATA_PROFILE",
     "LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB",
     "LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING",
-    "LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S",
-    "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S",
     "LUMILAKE_PLUGINS",
     "LUMILAKE_PLUGIN_DIR",
     "LUMILAKE_REMOTE_OPTIMIZER_URL",
     "LUMILAKE_SKIP_DOTENV_CHECK",
     "S3_DATA_PREFIX",
-    "S3_CERT_FILE",
-    "LUMID_DATA_URL",
     "LUMID_DATA_TOKEN",
     "LUMID_DATA_TIMEOUT_SECONDS",
     "HARDWARE_CPU_REQUIREMENT",
@@ -116,7 +111,7 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
 )
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
-    _ALWAYS_REQUIRED + _DIRECT_MODE_REQUIRED + _OPTIONAL_KEYS
+    _ALWAYS_REQUIRED + _RETRIEVAL_REQUIRED + _OPTIONAL_KEYS
 )
 
 
@@ -142,9 +137,12 @@ def _check_required(values: dict[str, str], report: DoctorReport) -> None:
             report.error(
                 f"{key} is required but missing or empty (fix: set {key}=... in .env)"
             )
-    for key in _DIRECT_MODE_REQUIRED:
+    for key in _RETRIEVAL_REQUIRED:
         if not values.get(key):
-            report.error(f"{key} is required (fix: set {key}=... in .env)")
+            report.error(
+                f"{key} is required for DataRetrievalOp — all retrieval modes "
+                f"route through lumid-data-app (fix: set {key}=... in .env)"
+            )
 
 
 def _check_unknown(values: dict[str, str], report: DoctorReport) -> None:
@@ -157,41 +155,30 @@ def _check_unknown(values: dict[str, str], report: DoctorReport) -> None:
 
 
 def _check_data_plane(values: dict[str, str], report: DoctorReport) -> None:
+    """Validate the lumid.data block configuration."""
     if values.get("LUMID_DATA_URL") and not values.get("LUMID_DATA_TIMEOUT_SECONDS"):
         report.note("LUMID_DATA_TIMEOUT_SECONDS unset; defaulting to 30s.")
 
 
-def _check_s3_url(values: dict[str, str], report: DoctorReport) -> None:
-    raw_url = values.get("S3_URL", "")
-    if not raw_url:
-        return
-    parsed = urlparse(raw_url)
-    if parsed.scheme != "s3":
-        report.error(
-            "S3_URL must use the s3:// scheme "
-            "(fix: set S3_URL=s3://access:secret@host:port in .env)"
-        )
-    if not parsed.hostname:
-        report.error(
-            "S3_URL must include an endpoint host "
-            "(fix: set S3_URL=s3://access:secret@host:port in .env)"
-        )
-    if not parsed.username or not parsed.password:
-        report.error(
-            "S3_URL must include access key and secret "
-            "(fix: set S3_URL=s3://access:secret@host:port in .env)"
-        )
-    if parsed.path.lstrip("/"):
-        report.error(
-            "S3_URL must not include a path; set the prefix in S3_DATA_PREFIX "
-            "(fix: set S3_URL=s3://access:secret@host:port, "
-            "S3_DATA_PREFIX=bucket/prefix in .env)"
-        )
-    if not values.get("S3_DATA_PREFIX"):
-        report.error(
-            "S3_DATA_PREFIX is required when S3_URL is set "
-            "(fix: set S3_DATA_PREFIX=bucket/prefix in .env)"
-        )
+def _check_positive_floats(values: dict[str, str], report: DoctorReport) -> None:
+    """Validate that optional timeout knobs are positive floats when set."""
+    for key in ("LUMID_DATA_TIMEOUT_SECONDS", "LUMILAKE_HTTP_TIMEOUT_SECONDS"):
+        raw = values.get(key)
+        if not raw:
+            continue
+        try:
+            parsed = float(raw)
+        except ValueError:
+            report.error(
+                f"{key}={raw!r} is not a valid number "
+                f"(fix: set {key} to a positive number of seconds)"
+            )
+            continue
+        if parsed <= 0:
+            report.error(
+                f"{key}={raw!r} must be > 0 "
+                f"(fix: set {key} to a positive number of seconds)"
+            )
 
 
 def run_env_checks(
@@ -211,7 +198,7 @@ def run_env_checks(
     _check_required(values, report)
     _check_unknown(values, report)
     _check_data_plane(values, report)
-    _check_s3_url(values, report)
+    _check_positive_floats(values, report)
     if not report.errors:
         report.note(f"{env_path}: schema looks correct")
     return report

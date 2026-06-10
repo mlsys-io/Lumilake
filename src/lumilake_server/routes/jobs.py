@@ -10,7 +10,6 @@ import tarfile
 import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
-from io import BytesIO
 from typing import Any, Literal
 from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
@@ -31,10 +30,6 @@ from lumid_hooks import PrincipalContext
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
-from minio import Minio
-from minio.error import S3Error
-from psycopg import sql
-from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from lumilake_server.hooks.security import (
@@ -70,8 +65,12 @@ from lumilake_server.utils.data_profile_offload import (
 )
 from lumilake_server.utils.io_locations import normalize_s3_literal
 from lumilake_server.utils.job_storage import JobStorage, get_job_storage
+from lumilake_server.utils.lumid_data_client import (
+    acatalog_column_exists,
+    alist_blob_keys,
+    put_blob,
+)
 from lumilake_server.utils.parsing import split_bucket_prefix
-from lumilake_server.utils.s3 import create_minio_client
 from lumilake_server.utils.utils import unique_id
 
 JobStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
@@ -714,7 +713,7 @@ async def mark_running_jobs_failed(reason: str = "server shutdown") -> None:
             if not record.error:
                 record.error = reason
             record.finished_at = _now()
-            _job_storage.save(record)
+            await asyncio.to_thread(_job_storage.save, record)
             _release_output_locations(record)
         logger.warning("Marked %d jobs failed due to shutdown", len(active))
 
@@ -728,11 +727,14 @@ async def recover_in_flight_jobs(
     in_memory: dict[str, JobRecord] = {}
     async with jobs_lock:
         in_memory = dict(jobs)
-    for summary in _job_storage.iter_summaries({"pending", "running"}):
+    summaries = await asyncio.to_thread(
+        lambda: list(_job_storage.iter_summaries({"pending", "running"}))
+    )
+    for summary in summaries:
         if summary.job_id in in_memory:
             continue
         try:
-            loaded = _job_storage.load(summary.job_id)
+            loaded = await asyncio.to_thread(_job_storage.load, summary.job_id)
         except Exception:
             logger.exception(
                 "Failed to load job %s during startup recovery", summary.job_id
@@ -753,7 +755,7 @@ async def recover_in_flight_jobs(
             record.error = reason
         record.finished_at = _now()
         try:
-            _job_storage.save(record)
+            await asyncio.to_thread(_job_storage.save, record)
         except Exception:
             logger.exception(
                 "Failed to persist failed-status for job %s during startup recovery",
@@ -775,7 +777,7 @@ async def _load_job_record(job_id: str) -> JobRecord | None:
         record = jobs.get(job_id)
     if record is None:
         try:
-            loaded = _job_storage.load(job_id)
+            loaded = await asyncio.to_thread(_job_storage.load, job_id)
         except KeyError:
             loaded = None
         if loaded:
@@ -982,85 +984,46 @@ def _coerce_output_values(graph_outputs: Any) -> list[str]:
 
 
 def _write_output_value_set(
-    client: Minio,
-    bucket: str,
     key_prefix: str,
     is_folder: bool,
     values: list[str],
 ) -> None:
-    """Write ``values`` to ``(bucket, key_prefix)``.
+    """Write ``values`` to blobs under ``key_prefix``.
 
     ``is_folder=True`` writes one ``item-000001.txt`` per value under the
-    prefix; ``False`` concatenates values into a single object at the key.
+    prefix; ``False`` concatenates values into a single blob at the key.
     """
     if is_folder:
         for idx, value in enumerate(values, start=1):
-            object_name = f"{key_prefix.rstrip('/')}/item-{idx:06d}.txt"
+            blob_key = f"{key_prefix.rstrip('/')}/item-{idx:06d}.txt"
             data = str(value).encode("utf-8")
-            client.put_object(
-                bucket_name=bucket,
-                object_name=object_name,
-                data=BytesIO(data),
-                length=len(data),
-                content_type="text/plain",
-            )
+            put_blob(blob_key, data, "text/plain")
         return
     payload = "\n".join(values).encode("utf-8")
-    client.put_object(
-        bucket_name=bucket,
-        object_name=key_prefix,
-        data=BytesIO(payload),
-        length=len(payload),
-        content_type="text/plain",
-    )
+    put_blob(key_prefix, payload, "text/plain")
 
 
 async def _dump_output_locations(
     *,
     output_locations: dict[str, IOLocation],
     response_outputs: dict[str, Any],
-    compute_pool: AsyncConnectionPool | None,
 ) -> None:
     """Write each graph's output to its declared location.
 
     Runs from the job-finalize task; a write failure is logged and the job
     still records as completed (best-effort dump semantics).
     """
-    s3_client: Minio | None = None
     for graph_name, location in output_locations.items():
         graph_outputs = response_outputs.get(graph_name)
         values = _coerce_output_values(graph_outputs)
         if not values:
             continue
-        if isinstance(location, DBLocation):
-            schema, table = _parse_table_ref(location.table)
-            column = location.column.strip()
-            insert_stmt = sql.SQL("INSERT INTO {}.{} ({}) VALUES (%s)").format(
-                sql.Identifier(schema),
-                sql.Identifier(table),
-                sql.Identifier(column),
-            )
-            if compute_pool is None:
-                raise RuntimeError(
-                    "DATABASE_URL is not configured; cannot dump DB outputs"
-                )
-            async with compute_pool.connection() as conn:
-                async with conn.cursor() as cur:
-                    for value in values:
-                        await cur.execute(insert_stmt, (value,))
-            continue
         assert isinstance(location, S3Location)
         normalized = normalize_s3_literal(location.prefix)
-        bucket, key_prefix = _resolve_output_s3_to_physical(normalized)
+        key_prefix = _data_blob_prefix(normalized)
         is_folder = normalized.endswith("/")
-        # The Minio client is sync; offload so the event loop doesn't
-        # block on large output writes during job-finalize.
-        if s3_client is None:
-            s3_client = _compute_minio_client()
         await asyncio.to_thread(
             _write_output_value_set,
-            s3_client,
-            bucket,
             key_prefix,
             is_folder,
             values,
@@ -1075,12 +1038,8 @@ def _parse_table_ref(table_ref: str) -> tuple[str, str]:
     return "public", parts[0].strip()
 
 
-async def _validate_db_location_live(
-    location: DBLocation,
-    *,
-    compute_pool: AsyncConnectionPool | None,
-) -> DBLocation:
-    """Validate that the referenced table/column actually exists on compute PG."""
+async def _validate_db_location_live(location: DBLocation) -> DBLocation:
+    """Validate that the referenced table/column actually exists via the catalog."""
     schema, table = _parse_table_ref(location.table)
     column = location.column.strip()
     if not column:
@@ -1088,19 +1047,7 @@ async def _validate_db_location_live(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="column is required",
         )
-    column_exists_sql = (
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_schema = %s AND table_name = %s AND column_name = %s"
-    )
-    if compute_pool is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="DATABASE_URL is not configured",
-        )
-    async with compute_pool.connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(column_exists_sql, (schema, table, column))
-            found = await cur.fetchone() is not None
+    found = await acatalog_column_exists(schema, table, column)
     if not found:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1109,62 +1056,29 @@ async def _validate_db_location_live(
     return DBLocation(type="db", table=f"{schema}.{table}", column=column)
 
 
-def _compute_minio_client():
-    endpoint = envs.S3_ENDPOINT
-    access_key = envs.S3_ACCESS_KEY
-    connection_value = envs.S3_CONNECTION_VALUE
-    if not (endpoint and access_key and connection_value):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Compute S3 is not configured (S3_ENDPOINT/KEYS missing)",
-        )
-    return create_minio_client(
-        endpoint=endpoint,
-        access_key=access_key,
-        secret_key=connection_value,
-        cert_file=envs.S3_CERT_FILE,
-    )
-
-
-def _resolve_logical_s3_to_physical(logical: str) -> tuple[str, str]:
-    """Resolve ``logical`` as an S3 key under the ``S3_DATA_PREFIX`` bucket/prefix."""
+def _data_blob_prefix(logical: str) -> str:
+    """Resolve a logical path to a blob key under ``S3_DATA_PREFIX``."""
     if not envs.S3_DATA_PREFIX:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="S3_DATA_PREFIX is not configured",
         )
-    bucket, base_prefix = split_bucket_prefix(envs.S3_DATA_PREFIX)
+    base = envs.S3_DATA_PREFIX.strip("/")
     rel = logical.lstrip("/")
-    if base_prefix:
-        return bucket, f"{base_prefix}/{rel}" if rel else base_prefix
-    return bucket, rel
+    if base:
+        return f"{base}/{rel}" if rel else base
+    return rel
 
 
-def _resolve_output_s3_to_physical(logical: str) -> tuple[str, str]:
-    """Resolve output locations to compute S3."""
-    if not envs.S3_URL:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="S3_URL is not configured",
-        )
-    return _resolve_logical_s3_to_physical(logical)
-
-
-def _validate_s3_location_live(location: S3Location, *, must_exist: bool) -> S3Location:
+async def _validate_s3_location_live(
+    location: S3Location, *, must_exist: bool
+) -> S3Location:
     normalized = normalize_s3_literal(location.prefix)
     if not must_exist:
         return location.model_copy(update={"prefix": normalized})
-    bucket, key_prefix = _resolve_logical_s3_to_physical(normalized)
-    client = _compute_minio_client()
-    try:
-        objs = client.list_objects(bucket, prefix=key_prefix, recursive=False)
-        first = next(iter(objs), None)
-    except S3Error as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"s3 prefix {normalized} not accessible: {exc}",
-        ) from exc
-    if first is None:
+    blob_prefix = _data_blob_prefix(normalized)
+    keys = await alist_blob_keys(prefix=blob_prefix, recursive=False)
+    if not keys:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"s3 prefix {normalized} missing on compute S3",
@@ -1175,17 +1089,13 @@ def _validate_s3_location_live(location: S3Location, *, must_exist: bool) -> S3L
 async def _validate_location(
     *,
     location: IOLocation,
-    compute_pool: AsyncConnectionPool | None,
     must_exist_for_s3: bool,
 ) -> IOLocation:
     """Validate a DBLocation or S3Location against the compute cluster."""
     if isinstance(location, DBLocation):
-        return await _validate_db_location_live(
-            location,
-            compute_pool=compute_pool,
-        )
+        return await _validate_db_location_live(location)
     assert isinstance(location, S3Location)
-    return _validate_s3_location_live(
+    return await _validate_s3_location_live(
         location,
         must_exist=must_exist_for_s3,
     )
@@ -1196,8 +1106,7 @@ async def _resolve_s3_input_values(
     input_name: str,
     location: S3Location,
 ) -> list[str]:
-    """Expand an S3 prefix to ``s3://bucket/key`` URLs via ``Minio.list_objects``
-    dispatched to a worker thread."""
+    """Expand an S3 prefix to ``s3://bucket/key`` URLs via lumid-data-app."""
     literal = location.prefix.strip()
     if not literal:
         raise HTTPException(
@@ -1205,48 +1114,32 @@ async def _resolve_s3_input_values(
             detail=f"s3 input {input_name!r} prefix is required",
         )
     normalized = normalize_s3_literal(literal)
-    bucket, key_prefix = _resolve_logical_s3_to_physical(normalized)
-
-    client = _compute_minio_client()
-
-    def _list() -> list[str]:
-        urls: list[str] = []
-        for obj in client.list_objects(bucket, prefix=key_prefix, recursive=True):
-            if obj.is_dir:
-                continue
-            name = obj.object_name or ""
-            if not name:
-                continue
-            urls.append(f"s3://{bucket}/{name}")
-        return urls
-
-    try:
-        urls = await asyncio.to_thread(_list)
-    except S3Error as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"s3 resolve failed for input {input_name!r}: {exc}",
-        ) from exc
-    if not urls:
+    blob_prefix = _data_blob_prefix(normalized)
+    keys = await alist_blob_keys(prefix=blob_prefix, recursive=True)
+    if not keys:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"s3 resolve returned no files for input {input_name!r}",
         )
-    return urls
+    bucket, _ = split_bucket_prefix(blob_prefix)
+    bucket_segment = f"{bucket}/"
+    return [
+        f"s3://{bucket}/"
+        f"{key[len(bucket_segment):] if key.startswith(bucket_segment) else key}"
+        for key in keys
+    ]
 
 
 async def _resolve_input_values(
     *,
     input_name: str,
     raw: list[str] | IOLocation,
-    compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
     hook_logger: Logger,
 ) -> list[str]:
     values = await _resolve_input_values_raw(
         input_name=input_name,
         raw=raw,
-        compute_pool=compute_pool,
         principal=principal,
         hook_logger=hook_logger,
     )
@@ -1265,7 +1158,6 @@ async def _resolve_input_values_raw(
     *,
     input_name: str,
     raw: list[str] | IOLocation,
-    compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
     hook_logger: Logger,
 ) -> list[str]:
@@ -1282,7 +1174,6 @@ async def _resolve_input_values_raw(
     if isinstance(location, DBLocation):
         validated_location = await _validate_location(
             location=location,
-            compute_pool=compute_pool,
             must_exist_for_s3=True,
         )
         return [_location_to_literal(validated_location)]
@@ -1303,7 +1194,6 @@ async def _run_job(
     workflow_slices: dict[str, WorkflowSliceMeta],
     record: JobRecord,
     priority: Priority,
-    compute_pool: AsyncConnectionPool | None,
     principal: PrincipalContext,
     runtime_token: str | None,
     trace_id: str,
@@ -1314,14 +1204,14 @@ async def _run_job(
 
     async with jobs_lock:
         if record.status == "cancelled":
-            _job_storage.save(record)
+            await asyncio.to_thread(_job_storage.save, record)
             cancelled_before_start = True
         else:
             cancelled_before_start = False
             record.status = "running"
             record.started_at = _now()
             record.progress.queuing.completed = True
-            _job_storage.save(record)
+            await asyncio.to_thread(_job_storage.save, record)
     if cancelled_before_start:
         if record.finished_at:
             await emit_usage([_usage_row(record, principal)], logger)
@@ -1373,7 +1263,9 @@ async def _run_job(
         do_dump = False
         artifact_uris: set[str] = set()
         async with jobs_lock:
-            stored_payload = _store_artifacts(job_id, response.model_dump())
+            stored_payload = await asyncio.to_thread(
+                _store_artifacts, job_id, response.model_dump()
+            )
             artifact_uris = _collect_artifact_uris(stored_payload)
             record.result = LumilakeResponse.model_validate(stored_payload)
             record.trace_ids = list(trace_ids)
@@ -1402,10 +1294,10 @@ async def _run_job(
                 summary = _summarize_error_info(record.result.error_info)
                 if summary:
                     record.error = summary
-                _job_storage.save(record)
+                await asyncio.to_thread(_job_storage.save, record)
             else:
                 record.status = "completed"
-                _job_storage.save(record)
+                await asyncio.to_thread(_job_storage.save, record)
                 do_dump = True
         for trace_id in trace_ids:
             try:
@@ -1439,7 +1331,6 @@ async def _run_job(
                 await _dump_output_locations(
                     output_locations=record.output_location,
                     response_outputs=result_outputs,
-                    compute_pool=compute_pool,
                 )
             except Exception:
                 logger.exception(
@@ -1457,10 +1348,10 @@ async def _run_job(
                 if not record.error:
                     record.error = str(exc)
                 record.finished_at = _now()
-                _job_storage.save(record)
+                await asyncio.to_thread(_job_storage.save, record)
     finally:
         # ensure latest progress flushed
-        _job_storage.save(record)
+        await asyncio.to_thread(_job_storage.save, record)
         prefix = f"request::{job_id}::"
         stale_keys = [key for key in data_profile_registry if key.startswith(prefix)]
         for key in stale_keys:
@@ -1613,7 +1504,6 @@ async def preview_job(
         principal, ResourceKind.JOB, None, ResourceAction.WRITE, hook_logger
     )
     await run_submission_guards(principal, hook_logger)
-    compute_pool: AsyncConnectionPool | None = request.app.state.compute_db_pool
     try:
         json_body = await request.json()
     except Exception as exc:
@@ -1667,7 +1557,6 @@ async def preview_job(
             inputs[input_name] = await _resolve_input_values(
                 input_name=input_name,
                 raw=raw,
-                compute_pool=compute_pool,
                 principal=principal,
                 hook_logger=hook_logger,
             )
@@ -1940,7 +1829,6 @@ async def submit_job(
         principal, ResourceKind.JOB, None, ResourceAction.WRITE, hook_logger
     )
     await run_submission_guards(principal, hook_logger)
-    compute_pool: AsyncConnectionPool | None = request.app.state.compute_db_pool
     try:
         json_body = await request.json()
     except Exception as exc:
@@ -1991,6 +1879,11 @@ async def submit_job(
         seen_public_names.add(name)
         inputs: dict[str, list[str]] = {}
         output_location = _resolve_output_location(entry.output_location)
+        if isinstance(output_location, DBLocation):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="DBLocation output is not supported",
+            )
         await _require_location_permission(
             output_location,
             ResourceAction.WRITE,
@@ -1999,14 +1892,12 @@ async def submit_job(
         )
         output_location = await _validate_location(
             location=output_location,
-            compute_pool=compute_pool,
             must_exist_for_s3=False,
         )
         for input_name, raw in entry.inputs.items():
             inputs[input_name] = await _resolve_input_values(
                 input_name=input_name,
                 raw=raw,
-                compute_pool=compute_pool,
                 principal=principal,
                 hook_logger=hook_logger,
             )
@@ -2093,7 +1984,7 @@ async def submit_job(
 
     async with jobs_lock:
         jobs[job_id] = record
-        _job_storage.save(record)
+        await asyncio.to_thread(_job_storage.save, record)
     await register_resource(
         principal,
         ResourceKind.JOB,
@@ -2109,7 +2000,6 @@ async def submit_job(
             workflow_slices,
             record,
             priority,
-            compute_pool,
             principal,
             get_runtime_token(request),
             str(getattr(request.state, "trace_id", job_id)),
@@ -2166,7 +2056,8 @@ async def list_jobs(
         ResourceAction.READ,
         hook_logger,
     )
-    items, total = _job_storage.list_summaries(
+    items, total = await asyncio.to_thread(
+        _job_storage.list_summaries,
         org_id=principal.org_id,
         user_id=None,
         job_ids=accessible_job_ids,
@@ -2260,7 +2151,7 @@ async def cancel_job(
         if not record.error:
             record.error = "cancelled by user"
         record.finished_at = _now()
-        _job_storage.save(record)
+        await asyncio.to_thread(_job_storage.save, record)
 
     _release_output_locations(record)
 
@@ -2323,7 +2214,7 @@ async def get_job_progress(
         async with jobs_lock:
             if record.progress != progress_model:
                 record.progress = progress_model
-                _job_storage.save(record)
+                await asyncio.to_thread(_job_storage.save, record)
 
     return {
         "ok": True,
@@ -2486,7 +2377,9 @@ async def get_job_artifact(
     )
 
     try:
-        data, content_type = _job_storage.get_artifact(job_id, filename)
+        data, content_type = await asyncio.to_thread(
+            _job_storage.get_artifact, job_id, filename
+        )
     except KeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="artifact not found"

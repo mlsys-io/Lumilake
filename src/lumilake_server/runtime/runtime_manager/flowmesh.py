@@ -43,6 +43,37 @@ from .base import BaseRuntimeManager
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 
 
+def _walk_output_path(
+    item: Mapping[str, Any], parts: Sequence[str], output_op_id: str
+) -> Any:
+    """Walk a dotted ``items.<a>.<b>.<c>`` path through a result item.
+
+    Supports nested ``dict`` traversal. For DataFrame-shaped fields that arrive
+    as JSON-encoded strings (the canonical shape produced by ``mode: sql``
+    retrievals when ``items.table`` is serialized for transport), the string is
+    JSON-decoded once and traversal continues.
+    """
+    value: Any = item
+    walked: list[str] = []
+    for part in parts:
+        walked.append(part)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"output node {output_op_id} cannot descend into non-JSON "
+                    f"string at path 'items.{'.'.join(walked)}': {value!r}"
+                ) from exc
+        if not isinstance(value, Mapping) or part not in value:
+            raise RuntimeError(
+                f"output node {output_op_id} item missing field at path "
+                f"'items.{'.'.join(walked)}': {item}"
+            )
+        value = value[part]
+    return value
+
+
 def _runtime_output_destination() -> dict[str, Any]:
     if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
         return {"type": "http", "timeoutSec": 3600}
@@ -846,19 +877,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
             if any(isinstance(it.get("image"), dict) for it in items):
                 job_storage = get_job_storage()
-                prefix = envs.S3_ARCHIVE_PREFIX
-                if not prefix:
+                if not envs.S3_ARCHIVE_PREFIX:
                     raise RuntimeError(
                         "S3_ARCHIVE_PREFIX is required for image outputs"
                     )
-                prefix = prefix.strip("/")
-                bucket, _, key_prefix = prefix.partition("/")
-                key_prefix = key_prefix.strip("/")
-                base_key = (
-                    f"{key_prefix}/{request_info.request_id}/artifacts"
-                    if key_prefix
-                    else f"{request_info.request_id}/artifacts"
-                )
                 archived: list[dict[str, Any]] = []
                 for it in items:
                     image_ref = it["image"]
@@ -881,31 +903,51 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                             mimetypes.guess_type(filename)[0]
                             or "application/octet-stream"
                         )
-                        job_storage.save_artifact(
+                        uri = job_storage.save_artifact(
                             request_info.request_id,
                             filename,
                             data,
                             content_type,
                         )
-                        archived.append(
-                            {"output": f"s3://{bucket}/{base_key}/{filename}"}
-                        )
+                        archived.append({"output": uri})
                     except Exception as e:
                         self.logger.warning(
                             f"Failed to archive artifact for {output_op_id}: {e}"
                         )
                         archived.append({"output": "", "error": str(e)})
                 items = archived
-            # structural_outputs returns parsed JSON; re-serialize so callers
-            # always see a string.
-            outputs: list[str] = [
-                (
-                    json.dumps(item["output"])
-                    if isinstance(item["output"], (dict, list))
-                    else item["output"]
-                )
-                for item in items
-            ]
+                # Image-archive items have shape ``{"output": <uri>}`` —
+                # the user's path override (e.g. ``items.table``) is N/A here.
+                output_field_parts: tuple[str, ...] = ("output",)
+            else:
+                output_field_parts = ("output",)
+                output_path = request_info.runtime_graph.output_paths.get(output_op_id)
+                if output_path is not None:
+                    if (
+                        not isinstance(output_path, str)
+                        or not output_path.startswith("items.")
+                        or output_path == "items."
+                    ):
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    parts = tuple(
+                        part for part in output_path[len("items.") :].split(".") if part
+                    )
+                    if not parts:
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    output_field_parts = parts
+            outputs: list[str] = []
+            for item in items:
+                value: Any = _walk_output_path(item, output_field_parts, output_op_id)
+                if isinstance(value, (dict, list)):
+                    outputs.append(json.dumps(value))
+                else:
+                    outputs.append(value)
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
             for item, text in zip(items, outputs):

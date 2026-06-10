@@ -1,13 +1,10 @@
 import hashlib
-import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Any, Self
 
-import psycopg
 import sqlparse
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
@@ -34,6 +31,9 @@ from lumilake_server.utils.data_profile_offload import (
     _type_default_sample,
 )
 from lumilake_server.utils.graph import topological_sort
+from lumilake_server.utils.lumid_data_client import (
+    retrieve_sample as lumid_retrieve_sample,
+)
 
 
 class RuntimeGraphSchema(BaseModel):
@@ -49,6 +49,7 @@ class RuntimeGraphSchema(BaseModel):
     nodes: dict[str, RuntimeOpSchema]
     node_order: list[str]
     output_node_map: dict[str, str] = Field(default_factory=dict)
+    output_paths: dict[str, str] = Field(default_factory=dict)
     dsl_to_runtime: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -75,31 +76,11 @@ def make_node_prefix(name: str) -> str:
     return f"{safe}_{digest}"
 
 
-def _default_sql_sampler(connection_string: str, query: str) -> list[Any]:
-    rows: list[Any] = []
-    connect_timeout = max(
-        1, int(math.ceil(envs.LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S))
-    )
-    statement_timeout_ms = max(
-        1, int(round(envs.LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S * 1000))
-    )
-    with psycopg.connect(
-        connection_string,
-        connect_timeout=connect_timeout,
-    ) as conn:
-        conn.read_only = True
-        with conn.cursor() as cursor:
-            cursor.execute(f"SET LOCAL statement_timeout = {statement_timeout_ms}")
-            cursor.execute(query)
-            if cursor.description is None:
-                return rows
-            column_names = [desc.name for desc in cursor.description]
-            for record in cursor.fetchall():
-                rows.append(dict(zip(column_names, record)))
-    return rows
+def _default_sql_sampler(query: str) -> list[Any]:
+    return lumid_retrieve_sample(query)
 
 
-def _default_s3_sampler(connection_string: str, prefix: str) -> list[str]:
+def _default_s3_sampler(prefix: str) -> list[str]:
     # The default sampler intentionally rejects so the caller raises the
     # sample-value error. Live S3 sampling is opt-in via a test or deploy
     # override of ``_RuntimeProfileSamplers.s3``.
@@ -155,6 +136,7 @@ class RuntimeGraph:
     nodes: dict[str, RuntimeOp]
     node_order: list[str]
     output_node_map: dict[str, str]
+    output_paths: dict[str, str] = field(default_factory=dict)
     dsl_to_runtime: dict[str, list[str]] = field(default_factory=dict)
 
     @property
@@ -169,6 +151,7 @@ class RuntimeGraph:
             },
             node_order=self.node_order,
             output_node_map=self.output_node_map,
+            output_paths=self.output_paths,
             dsl_to_runtime=self.dsl_to_runtime,
         ).model_dump(exclude_none=True)
 
@@ -185,6 +168,7 @@ class RuntimeGraph:
             nodes=nodes,
             node_order=schema.node_order,
             output_node_map=schema.output_node_map,
+            output_paths=schema.output_paths,
             dsl_to_runtime=schema.dsl_to_runtime,
         )
 
@@ -286,6 +270,9 @@ class RuntimeGraph:
             mapping[node_id]: output_name
             for node_id, output_name in self.output_node_map.items()
         }
+        output_paths = {
+            mapping[node_id]: path for node_id, path in self.output_paths.items()
+        }
         dsl_to_runtime = {
             op_id: [mapping.get(node_id, node_id) for node_id in runtime_ids]
             for op_id, runtime_ids in self.dsl_to_runtime.items()
@@ -295,6 +282,7 @@ class RuntimeGraph:
             nodes=nodes,
             node_order=node_order,
             output_node_map=output_node_map,
+            output_paths=output_paths,
             dsl_to_runtime=dsl_to_runtime,
         )
 
@@ -305,6 +293,7 @@ def merge_runtime_graphs(
     nodes: dict[str, RuntimeOp] = {}
     node_order: list[str] = []
     output_node_map: dict[str, str] = {}
+    output_paths: dict[str, str] = {}
     dsl_to_runtime: dict[str, list[str]] = {}
     output_mapping: dict[str, tuple[str, str]] = {}
 
@@ -325,12 +314,15 @@ def merge_runtime_graphs(
         for node_id, output_name in graph.output_node_map.items():
             output_node_map[node_id] = output_name
             output_mapping[node_id] = (graph_name, output_name)
+        for node_id, path in graph.output_paths.items():
+            output_paths[node_id] = path
 
     return (
         RuntimeGraph(
             nodes=nodes,
             node_order=node_order,
             output_node_map=output_node_map,
+            output_paths=output_paths,
             dsl_to_runtime=dsl_to_runtime,
         ),
         output_mapping,
@@ -359,7 +351,7 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str] = set()
         llm_ops: dict[str, LLMOp] = {}
         retrieval_ops: dict[str, DataRetrievalOp] = {}
-        output_llmop_to_outputop: dict[str, str] = {}
+        output_source_to_outputop: dict[str, tuple[str, str | None]] = {}
         for op_id, op in graph_dict.items():
             if isinstance(op, LLMOp):
                 llm_ops[op_id] = op
@@ -369,18 +361,22 @@ class RuntimeGraphBuilder:
                 visited_node_ids.add(op_id)
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
-                assert isinstance(
-                    op.inputs[0], LLMOp
-                ), "OutputOp input should be an LLMOp"
+                source = op.inputs[0]
+                if not isinstance(source, (LLMOp, DataRetrievalOp)):
+                    raise ValueError(
+                        f"OutputOp '{op.name}' input must be an LLMOp or "
+                        f"DataRetrievalOp (got {type(source).__name__})"
+                    )
                 visited_node_ids.add(op_id)
-                output_llmop_to_outputop[op.inputs[0].id] = op.name
+                output_source_to_outputop[source.id] = (op.name, op.path)
 
         if not llm_ops and not retrieval_ops:
-            raise ValueError("No LLMOp found in compiled graph")
+            raise ValueError("Graph must contain at least one LLMOp or DataRetrievalOp")
 
         nodes: dict[str, RuntimeOp] = {}
         node_order: list[str] = []
         output_node_map: dict[str, str] = {}
+        output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
 
         for retrieval_op_id, retrieval_op in retrieval_ops.items():
@@ -408,6 +404,22 @@ class RuntimeGraphBuilder:
             nodes[runtime_op.node_id] = runtime_op
             node_order.append(runtime_op.node_id)
             dsl_to_runtime[retrieval_op_id] = [runtime_op.node_id]
+
+            if retrieval_op_id in output_source_to_outputop:
+                output_name, path_override = output_source_to_outputop[retrieval_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                mode = retrieval_op.data_spec["mode"]
+                # Mode-derived defaults match the item shapes the FlowMesh
+                # data_retrieval executor emits:
+                #   sql / agent → ``items.table`` (a serialized DataFrame; the
+                #     agent replays a generated plan and returns rows)
+                #   s3 → ``items.content``
+                default_path = {
+                    "sql": "items.table",
+                    "s3": "items.content",
+                    "agent": "items.table",
+                }.get(mode, "items.table")
+                output_paths[runtime_op.node_id] = path_override or default_path
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -449,8 +461,11 @@ class RuntimeGraphBuilder:
 
             dsl_to_runtime[llm_op_id] = mapping
 
-            if llm_op_id in output_llmop_to_outputop:
-                output_node_map[llm_op_id] = output_llmop_to_outputop[llm_op_id]
+            if llm_op_id in output_source_to_outputop:
+                output_name, path_override = output_source_to_outputop[llm_op_id]
+                output_node_map[llm_op_id] = output_name
+                if path_override:
+                    output_paths[llm_op_id] = path_override
 
         all_node_ids = set(graph_dict.keys())
         unvisited_node_ids = all_node_ids - visited_node_ids
@@ -466,6 +481,7 @@ class RuntimeGraphBuilder:
             nodes=nodes,
             node_order=node_order,
             output_node_map=output_node_map,
+            output_paths=output_paths,
             dsl_to_runtime=dsl_to_runtime,
         )
         runtime_graph.node_order = runtime_graph.topological_order()
@@ -524,7 +540,7 @@ class RuntimeGraphBuilder:
         output_spec: dict[str, Any] | None = None,
         condition: dict[str, str] | None = None,
     ) -> RuntimeOp:
-        data_spec = self._attach_s3_cfg(data_spec)
+        data_spec = self._attach_lumid_cfg(data_spec)
         return RuntimeOp(
             node_id=name,
             task_type=task_type,
@@ -591,43 +607,8 @@ class RuntimeGraphBuilder:
             "artifacts": artifacts or ["results.json", "logs"],
         }
 
-    def _build_s3_cfg_from_env(self) -> dict[str, Any] | None:
-        if not envs.S3_WORKER_URL:
-            return None
-        cfg: dict[str, Any] = {
-            "connection_string": envs.S3_WORKER_URL,
-            "encoding": "utf-8",
-        }
-        cert_data = self._resolve_s3_cert_data({})
-        if cert_data is not None:
-            cfg["cert_data"] = cert_data
-        return cfg
-
-    def _resolve_s3_cert_data(self, spec: dict[str, Any]) -> str | None:
-        """Return cert_data for an S3 spec — explicit on the spec wins, else env.
-
-        Parsers stay environment-agnostic (don't read ``S3_CERT_FILE`` at
-        parse time), so the same workflow compiles to identical specs across
-        environments. Cert resolution lives here, at the runtime-builder
-        layer that already touches the worker config.
-        """
-        cert_data = spec.get("cert_data")
-        if isinstance(cert_data, str):
-            return cert_data
-        if not envs.S3_CERT_FILE:
-            return None
-        try:
-            return Path(envs.S3_CERT_FILE).read_text(encoding="utf-8")
-        except OSError as exc:
-            self.logger.warning(
-                "Failed to read S3 cert from %s: %s",
-                envs.S3_CERT_FILE,
-                exc,
-            )
-            return None
-
-    def _attach_s3_cfg(self, data_spec: dict[str, Any]) -> dict[str, Any]:
-        if data_spec.get("type") != "list" or "s3_cfg" in data_spec:
+    def _attach_lumid_cfg(self, data_spec: dict[str, Any]) -> dict[str, Any]:
+        if data_spec.get("type") != "list" or "lumid_cfg" in data_spec:
             return data_spec
         items = data_spec.get("items")
         if not isinstance(items, list):
@@ -637,13 +618,26 @@ class RuntimeGraphBuilder:
         )
         if not has_s3:
             return data_spec
-        s3_cfg = self._build_s3_cfg_from_env()
-        if not s3_cfg:
+        if not envs.LUMID_DATA_URL:
             raise ValueError(
-                "S3_URL and S3_DATA_PREFIX are required for s3:// list inputs"
+                "LUMID_DATA_URL is required for s3:// list inputs (see .env.example)"
+            )
+        if not envs.LUMID_DATA_TOKEN:
+            raise ValueError(
+                "LUMID_DATA_TOKEN is required for s3:// list inputs (see .env.example)"
             )
         updated = dict(data_spec)
-        updated["s3_cfg"] = s3_cfg
+        updated["lumid_cfg"] = {
+            "lumid_data_url": envs.LUMID_DATA_URL,
+            "lumid_data_token": envs.LUMID_DATA_TOKEN,
+            "encoding": "utf-8",
+        }
+        self.logger.warning(
+            "Workflow uses 'type: list' with s3:// items; this path requires the "
+            "FlowMesh worker to support lumid_cfg. If your FlowMesh worker does not "
+            "yet support lumid_cfg, the workflow will fail at retrieval. "
+            "See docs/WORKFLOWS.md."
+        )
         return updated
 
     def _build_vlm_nodes_from_image_op(
@@ -857,42 +851,50 @@ class RuntimeGraphBuilder:
             if data_spec_override is not None
             else (op.data_spec or {})
         )
-        spec_type = spec.get("type")
-        if spec_type not in {"sql", "s3", "agent"}:
+        if spec.get("type") != "lumid":
             raise ValueError(
-                f"Unsupported DataRetrievalOp type for {op_id}: {spec_type}"
+                f"DataRetrievalOp {op_id} requires type: lumid "
+                f"(got {spec.get('type')!r})"
+            )
+        mode = spec["mode"]
+        if mode not in {"sql", "s3", "agent"}:
+            raise ValueError(
+                f"DataRetrievalOp {op_id} mode must be 'sql', 's3', or 'agent' "
+                f"(got {mode!r})"
+            )
+        if not envs.LUMID_DATA_URL:
+            raise ValueError(
+                f"DataRetrievalOp {op_id} requires LUMID_DATA_URL to be configured "
+                "(see .env.example)"
+            )
+        if not envs.LUMID_DATA_TOKEN:
+            raise ValueError(
+                f"DataRetrievalOp {op_id} requires LUMID_DATA_TOKEN to be configured "
+                "(see .env.example)"
             )
 
         params = spec.get("params") or []
         if not isinstance(params, list):
             raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
 
-        connection_string: str | None = None
         template: str | None = None
-        if spec_type in {"sql", "s3"}:
-            connection_string = spec.get("connection_string")
+        if mode in {"sql", "s3"}:
             template = spec.get("template")
-            if not isinstance(connection_string, str) or not isinstance(template, str):
+            if not isinstance(template, str):
                 raise ValueError(
-                    f"DataRetrievalOp {op_id} missing connection_string/template"
+                    f"DataRetrievalOp {op_id} (mode={mode}) requires template"
                 )
         else:
             description = spec.get("description")
             schema_scope = spec.get("schema_scope")
             if not isinstance(description, str):
                 raise ValueError(
-                    f"DataRetrievalOp {op_id} (type=agent) requires description"
+                    f"DataRetrievalOp {op_id} (mode=agent) requires description"
                 )
             if schema_scope is not None and not isinstance(schema_scope, str):
                 raise ValueError(
-                    f"DataRetrievalOp {op_id} (type=agent) "
+                    f"DataRetrievalOp {op_id} (mode=agent) "
                     "schema_scope must be a string"
-                )
-            if not envs.LUMID_DATA_URL:
-                raise ValueError(
-                    f"DataRetrievalOp {op_id} (type=agent) requires the lumilake "
-                    "server to be configured with LUMID_DATA_URL "
-                    "(see .env.example's LUMID_DATA_URL)"
                 )
             template = description
 
@@ -956,19 +958,21 @@ class RuntimeGraphBuilder:
                     dependencies.append(node)
             resolved_params.append(param)
 
-        if spec_type in {"sql", "s3"}:
+        if mode in {"sql", "s3"}:
             template, resolved_params = _inline_single_value_list_params(
                 template, resolved_params
             )
 
         data_spec: dict[str, Any] = {
-            "type": spec_type,
+            "type": "lumid",
+            "mode": mode,
+            "lumid_data_url": envs.LUMID_DATA_URL,
+            "lumid_data_token": envs.LUMID_DATA_TOKEN,
             "params": resolved_params,
         }
-        if spec_type in {"sql", "s3"}:
-            data_spec["connection_string"] = connection_string
+        if mode in {"sql", "s3"}:
             data_spec["template"] = template
-        if spec_type == "sql":
+        if mode == "sql":
             table = spec.get("table")
             if isinstance(table, str) and table.strip():
                 data_spec["table"] = table.strip()
@@ -977,21 +981,19 @@ class RuntimeGraphBuilder:
                     data_spec["table"] = self._extract_table_from_sql_template(template)
                 except ValueError:
                     pass
-        if spec_type == "s3":
+            output_format = spec.get("output_format", "jsonl")
+            data_spec["output_format"] = output_format
+        if mode == "s3":
             data_spec["encoding"] = spec.get("encoding", "utf-8")
-            cert_data = self._resolve_s3_cert_data(spec)
-            if cert_data is not None:
-                data_spec["cert_data"] = cert_data
-        if spec_type == "agent":
+        if mode == "agent":
             data_spec["description"] = template
             if spec.get("schema_scope"):
                 data_spec["schema_scope"] = spec["schema_scope"]
-            data_spec["lumid_data_url"] = envs.LUMID_DATA_URL
-            if envs.LUMID_DATA_TOKEN:
-                data_spec["lumid_data_token"] = envs.LUMID_DATA_TOKEN
-            for optional in ("output_format", "max_steps", "model", "verify"):
+            for optional in ("output_format", "max_steps", "model"):
                 if optional in spec:
                     data_spec[optional] = spec[optional]
+        if "verify" in spec:
+            data_spec["verify"] = spec["verify"]
 
         return self._create_runtime_op(
             name=op_id,
@@ -1078,21 +1080,18 @@ class RuntimeGraphBuilder:
         visited: set[str] | None = None,
     ) -> RuntimeOp | None:
         spec = op.data_spec or {}
-        spec_type = spec.get("type")
-        if spec_type not in {"sql", "s3"}:
+        mode = spec["mode"]
+        if mode not in {"sql", "s3"}:
             return None
-        connection_string = spec.get("connection_string")
         template = spec.get("template")
         params = spec.get("params") or []
-        if not isinstance(connection_string, str) or not isinstance(template, str):
-            raise ValueError(
-                f"DataRetrievalOp {op_id} missing connection_string/template"
-            )
+        if not isinstance(template, str):
+            raise ValueError(f"DataRetrievalOp {op_id} missing template")
         if not isinstance(params, list):
             raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
         resolver_visited: set[str] = set(visited) if visited is not None else set()
         resolver_visited.add(op_id)
-        if spec_type == "sql":
+        if mode == "sql":
             resolved_params = [
                 resolved
                 for param in params
@@ -1114,7 +1113,6 @@ class RuntimeGraphBuilder:
                 table = self._extract_table_from_sql_template(template)
             data_spec: dict[str, Any] = {
                 "type": "sql",
-                "connection_string": connection_string,
                 "template": template,
                 "params": resolved_params,
                 "constraints": constraints,
@@ -1138,14 +1136,10 @@ class RuntimeGraphBuilder:
             ]
             data_spec = {
                 "type": "s3",
-                "connection_string": connection_string,
                 "template": template,
                 "params": resolved_params,
                 "encoding": spec.get("encoding", "utf-8"),
             }
-            cert_data = self._resolve_s3_cert_data(spec)
-            if cert_data is not None:
-                data_spec["cert_data"] = cert_data
         return self._create_runtime_op(
             name=op_id,
             task_type="data_profiling",
@@ -1537,10 +1531,10 @@ class RuntimeGraphBuilder:
             elif isinstance(op, DataRetrievalOp):
                 if op.id not in columns:
                     data_spec = op.data_spec
-                    retrieval_type = data_spec.get("type")
-                    if retrieval_type == "sql":
+                    mode = data_spec.get("mode")
+                    if mode == "sql":
                         path = "items.table"
-                    elif retrieval_type == "s3":
+                    elif mode == "s3":
                         path = "items.content"
                     else:
                         path = "items.output"
@@ -1781,30 +1775,28 @@ class RuntimeGraphBuilder:
             inputs_dict=inputs_dict,
             visited=next_visited,
         )
-        upstream_type = upstream_spec.get("type")
-        if upstream_type == "sql":
+        upstream_mode = upstream_spec.get("mode")
+        if upstream_mode == "sql":
             return self._fetch_sql_sample_value(
                 owner_node_id=owner_node_id,
                 label=label,
                 upstream_id=upstream_id,
-                connection_string=upstream_spec.get("connection_string"),
                 query=rendered_query,
                 column=column,
             )
-        if upstream_type == "s3":
+        if upstream_mode == "s3":
             return self._fetch_s3_sample_value(
                 owner_node_id=owner_node_id,
                 label=label,
                 upstream_id=upstream_id,
-                connection_string=upstream_spec.get("connection_string"),
                 prefix=rendered_query,
                 column=column,
                 encoding=upstream_spec.get("encoding", "utf-8"),
             )
         raise ValueError(
             "Data profile preflight cannot sample upstream "
-            f"DataRetrievalOp '{upstream_id}' with type "
-            f"{upstream_type!r}. Add a 'sample_value' to its data_spec or "
+            f"DataRetrievalOp '{upstream_id}' with mode "
+            f"{upstream_mode!r}. Add a 'sample_value' to its data_spec or "
             "set LUMILAKE_DISABLE_DATA_PROFILE=1."
         )
 
@@ -1875,8 +1867,8 @@ class RuntimeGraphBuilder:
             raise ValueError(
                 f"Upstream DataRetrievalOp '{upstream_id}' produced no sample query"
             )
-        upstream_type = upstream_spec.get("type")
-        if upstream_type == "sql":
+        upstream_mode = upstream_spec.get("mode")
+        if upstream_mode == "sql":
             return self._apply_limit_to_sample_sql(
                 queries[0],
                 max(1, int(envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES)),
@@ -1964,26 +1956,17 @@ class RuntimeGraphBuilder:
         owner_node_id: str,
         label: str,
         upstream_id: str,
-        connection_string: Any,
         query: str,
         column: str | None,
     ) -> Any:
-        if not isinstance(connection_string, str):
+        if not envs.LUMID_DATA_URL or not envs.LUMID_DATA_TOKEN:
             raise ValueError(
-                f"Upstream DataRetrievalOp '{upstream_id}' has no "
-                "connection_string for sample query"
+                f"Upstream DataRetrievalOp '{upstream_id}' requires LUMID_DATA_URL "
+                "and LUMID_DATA_TOKEN for live SQL sample query via lumid-data-app"
             )
         sampler = _RuntimeProfileSamplers.sql
         try:
-            rows = sampler(connection_string, query)
-        except psycopg.errors.QueryCanceled as exc:
-            raise ValueError(
-                "Data profile preflight for upstream "
-                f"'{upstream_id}' at node '{owner_node_id}' was cancelled by "
-                "Postgres statement_timeout. Increase "
-                "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S or add "
-                "'sample_value' to the upstream data_spec."
-            ) from exc
+            rows = sampler(query)
         except Exception as exc:
             raise ValueError(
                 "Data profile preflight could not sample upstream "
@@ -2012,19 +1995,18 @@ class RuntimeGraphBuilder:
         owner_node_id: str,
         label: str,
         upstream_id: str,
-        connection_string: Any,
         prefix: str,
         column: str | None,
         encoding: Any,
     ) -> Any:
-        if not isinstance(connection_string, str):
+        if not envs.LUMID_DATA_URL or not envs.LUMID_DATA_TOKEN:
             raise ValueError(
-                f"Upstream DataRetrievalOp '{upstream_id}' has no "
-                "connection_string for S3 sample"
+                f"Upstream DataRetrievalOp '{upstream_id}' requires LUMID_DATA_URL "
+                "and LUMID_DATA_TOKEN for live S3 sample via lumid-data-app"
             )
         sampler = _RuntimeProfileSamplers.s3
         try:
-            keys = sampler(connection_string, prefix)
+            keys = sampler(prefix)
         except Exception as exc:
             raise ValueError(
                 "Data profile preflight could not sample upstream "

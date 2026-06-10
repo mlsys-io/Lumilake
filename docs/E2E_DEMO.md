@@ -7,11 +7,17 @@ independent steps**; skip any step you've already done.
 ```text
 ┌───────────────────────────┐   ┌────────────────────────────┐   ┌──────────────────────────┐
 │ Step 1 (optional)         │   │ Step 2 (optional)          │   │ Step 3                   │
-│ Bring up the data plane   │──▶│ Load the demo dataset      │──▶│ Deploy lumilake + run    │
-│ (Postgres + MinIO)        │   │ (schema + S3 objects)      │   │ workflows                │
+│ Bring up lumid-data-app    │──▶│ Load the demo dataset      │──▶│ Deploy lumilake + run    │
+│ (catalog + blob store)     │   │ (schema + blob objects)    │   │ workflows                │
 └───────────────────────────┘   └────────────────────────────┘   └──────────────────────────┘
-   skip if BYO pg/S3              skip if BYO data already         everyone does this
+   skip if BYO lumid-data-app    skip if BYO data already         everyone does this
 ```
+
+> **NOTE (WIP).** This page predates the lumid-data-app routing change
+> and still references the retired direct-mode `DATABASE_URL` / `S3_URL`
+> contract in places. The authoritative architecture overview is in
+> [`docs/ARCHITECTURE.md`](ARCHITECTURE.md); this page is being
+> rewritten in a follow-up pass.
 
 ## What you get
 
@@ -41,8 +47,7 @@ The bundled demo workflows use locally-served open-weight models
 required. Set one only if you author workflows that call hosted
 providers.
 
-The `mc` MinIO client is **not** required; the bundled scripts use the
-`minio` Python library that ships with `lumilake-sdk`.
+The `mc` MinIO client is **not** required.
 
 > **Working directory.** Step 1 and Step 2 commands use repo-relative
 > paths (`scripts/dev/...`). Run them from a Lumilake source checkout
@@ -97,10 +102,11 @@ Wipe everything (containers + volumes):
 docker compose -f scripts/dev/compose.data-plane.yml down -v
 ```
 
-**Skip this step entirely** if you have your own Postgres and S3 — just
-set `DATABASE_URL`, `S3_URL`, and `S3_DATA_PREFIX` in your `.env` to
-your own endpoints and bucket/prefix. Nothing in step 2 or 3 reads the
-bundled defaults if you've overridden them.
+**Skip this step entirely** if you have your own lumid-data-app
+instance — just set `LUMID_DATA_URL` (+ optional `LUMID_DATA_TOKEN`),
+`S3_DATA_PREFIX`, and `S3_ARCHIVE_PREFIX` in your `.env` to point at
+that instance. Nothing in step 2 or 3 reads the bundled defaults if
+you've overridden them.
 
 ---
 
@@ -201,16 +207,18 @@ lumilake deploy -C ~/lumilake-deploy init --flowmesh     # writes .env + .env.fl
 every job submission fails with `FlowMeshConnectionError` because no
 workers are reachable.
 
-The shipped `.env.example` is **pre-pointed at step 1's data plane**
-(`postgresql://lumilake:lumilake_password@127.0.0.1:15432/lumilake`,
-`s3://lumilake:lumilake_password@127.0.0.1:19100` with `S3_DATA_PREFIX=lumilake-demo`). Open
-`~/lumilake-deploy/.env` only if you need to:
+The shipped `.env.example` is **pre-pointed at step 1's lumid-data-app**
+(`S3_DATA_PREFIX=lumilake-demo` resolved against the bundled instance's
+blob store). Open `~/lumilake-deploy/.env` only if you need to:
 
 - Set a model provider key (`OPENAI_API_KEY`, etc.) — only if you
   author workflows that call hosted providers; the bundled demos run
   on local open-weight models.
-- Point at your own Postgres / S3 (override `DATABASE_URL`, `S3_URL`, `S3_DATA_PREFIX`).
-- Enable agent retrievals (`LUMID_DATA_URL=http://127.0.0.1:9102`).
+- Point at your own lumid-data-app (override `LUMID_DATA_URL`,
+  `LUMID_DATA_TOKEN`, `S3_DATA_PREFIX`, `S3_ARCHIVE_PREFIX`).
+- `LUMID_DATA_URL` is required for **all** retrieval modes (`sql`,
+  `s3`, and `agent`) — every `DataRetrievalOp` routes through
+  lumid-data-app.
 - Set `LUMILAKE_GPU_DEVICES` to one or more free GPU indices on your
   host (default is empty — no GPU workers). On a shared host, pick an
   index that other stacks are not using rather than `"all"`. This is
@@ -252,10 +260,9 @@ The other workflow pairs follow the same shape — swap the YAML path
 shipped default is blank (no GPU workers). Set it to a free GPU index
 on your host (e.g. `"0"`) or a comma-separated subset for partial use.
 
-**Agent-retrieval note.** Requires `LUMID_DATA_URL` set in your `.env`;
-the agent retrievals route through lumid.data's `/agent/v1` endpoint.
-SQL and S3 retrievals always go direct against `DATABASE_URL` /
-`S3_URL` + `S3_DATA_PREFIX`, regardless of `LUMID_DATA_URL`.
+**Agent-retrieval note.** All retrieval modes (`sql`, `s3`, and
+`agent`) route through lumid-data-app — `LUMID_DATA_URL` is required
+for every `DataRetrievalOp`, not just agent retrievals.
 
 ---
 
@@ -299,11 +306,6 @@ halves are loaded as a unit and versioned together.
 - **`pg_restore: error: relation already exists`** — re-running the
   loader against a half-populated schema. Pass `--drop-schema` to wipe
   and restore from scratch.
-- **`HTTPSConnectionPool ... SSL ... record layer failure`** — the
-  loader picked up an `S3_CERT_FILE` from your env that doesn't match
-  the bundled MinIO (which is plain HTTP). Either clear `S3_CERT_FILE`
-  in `.env` or pass `--env-file` pointing at a minimal file with only
-  `DATABASE_URL`, `S3_URL`, and `S3_DATA_PREFIX`.
 - **News-related ops fail with `Object not found`** — the S3 upload
   didn't land under `<bucket>[/<prefix>]/example-data/news/`. Re-run with
   `--s3-prefix example-data` (the default) and confirm via the MinIO

@@ -8,14 +8,12 @@ from types import ModuleType
 from typing import Any
 
 import lumid_hooks
-import psycopg
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from lumilake import envs
 from lumilake.log import configure_default_logger, init_child_logger
-from psycopg_pool import AsyncConnectionPool
 
 from lumilake_server import __version__
 from lumilake_server.hooks import register
@@ -112,25 +110,9 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        compute_pool: AsyncConnectionPool | None = None
-
         async with AsyncExitStack() as plugin_stack:
             await _load_plugins(plugin_stack, logger=logger)
 
-            if envs.DATABASE_URL:
-                compute_pool = AsyncConnectionPool(
-                    conninfo=envs.DATABASE_URL,
-                    min_size=2,
-                    max_size=10,
-                    open=False,
-                )
-                await compute_pool.open()
-            else:
-                logger.warning(
-                    "DATABASE_URL not configured; DBLocation read/write disabled"
-                )
-
-            app.state.compute_db_pool = compute_pool
             app.state.background_tasks = set()
 
             try:
@@ -178,9 +160,6 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
                                 result,
                                 exc_info=result,
                             )
-                if compute_pool is not None:
-                    await compute_pool.close()
-                app.state.compute_db_pool = None
                 try:
                     await close_current_loop_http_client()
                 except Exception:
@@ -197,24 +176,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
         version=__version__,
     )
     app.state.logger = logger
-    app.state.compute_db_pool = None
     app.include_router(api_router)
-
-    @app.exception_handler(psycopg.OperationalError)
-    async def db_connection_error(_request: Request, exc: psycopg.OperationalError):
-        logger.error("Database connection error: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Database unavailable"},
-        )
-
-    @app.exception_handler(psycopg.DatabaseError)
-    async def db_error(_request: Request, exc: psycopg.DatabaseError):
-        logger.error("Database error: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Database error"},
-        )
 
     app.add_middleware(TraceIdMiddleware)
     app.add_middleware(

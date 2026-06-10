@@ -88,9 +88,9 @@ def _iter_job_records(
     """Load full job records, newest-first.
 
     Bounded by ``page_size * max_pages`` — 5000 jobs by default. Reading
-    each record is one MinIO object fetch (``PersistentJobStorage.load``),
-    so this is deliberately capped. The trace UI lists the most recent
-    N synced traces; unbounded pagination would cost too much per hit.
+    each record is one blob fetch via ``PersistentJobStorage.load``, so
+    this is deliberately capped. The trace UI lists the most recent N
+    synced traces; unbounded pagination would cost too much per hit.
     """
     if storage is None:
         storage = get_job_storage()
