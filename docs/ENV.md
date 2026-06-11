@@ -66,7 +66,7 @@ Agent-retrieval keys:
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_DEFAULT_OPTIMIZER` | Optimizer used when a job omits its own `optimizer` field (`POST /api/v1/jobs`, `POST /api/v1/jobs/preview`, CLI `--optimizer`). Must resolve to a built-in (`halo` or `topological-sort`) or a plugin-advertised provider type. Defaults to `halo`. |
+| `LUMILAKE_DEFAULT_OPTIMIZER` | Optimizer used when a job omits its own `optimizer` field (`POST /api/v1/jobs`, `POST /api/v1/jobs/preview`, CLI `--optimizer`). Must resolve to a `BaseOptimizer` registered in `OPTIMIZER_TYPES` — the built-ins `halo` and `topological-sort`, plus any types a plugin adds to `OPTIMIZER_TYPES` at install time. Types advertised only via an `OptimizerProvider` (e.g. `lumilake_hook.RemoteOptimizer`) are not eligible at boot and must be selected per job. Defaults to `halo`. |
 | `LUMILAKE_OPTIMIZER_BATCH_SIZE` | Maximum batch size used by the optimizer loop. |
 | `LUMILAKE_BATCH_ACCUMULATION_SECONDS` | Wait window before forming the first optimization batch. |
 | `LUMILAKE_STARVATION_LIMIT` | Starvation threshold; `0` means immediate override. |

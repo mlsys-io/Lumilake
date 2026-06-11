@@ -308,16 +308,13 @@ class LumilakeServer:
 
         self.config = LumilakeServerConfig() if config is None else config
 
-        # Initialize logical optimizer (no physical execution dependencies)
-        # Use the optimizer factory with the configured default. Per-job
-        # overrides may widen to OptimizerHandle (e.g. a plugin's
-        # RemoteOptimizer); the boot-time default stays on a BaseOptimizer.
         boot_optimizer = create_optimizer(logger=self.logger)
         if not isinstance(boot_optimizer, BaseOptimizer):
             raise RuntimeError(
                 f"LUMILAKE_DEFAULT_OPTIMIZER={envs.LUMILAKE_DEFAULT_OPTIMIZER!r} "
-                "must resolve to a built-in optimizer at boot; got "
-                f"{type(boot_optimizer).__name__}"
+                "must resolve to a BaseOptimizer in OPTIMIZER_TYPES at boot; "
+                f"got {type(boot_optimizer).__name__}. Provider-advertised "
+                "optimizer types are per-job only."
             )
         self.optimizer: BaseOptimizer = boot_optimizer
 
@@ -2775,6 +2772,7 @@ class LumilakeServer:
         *,
         request_id: str | None = None,
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_sources: dict[str, list[DataProfileSource]] | None = None,
         config: LumilakeRequestConfig | None = None,
     ) -> SchedulePreview:
         if not graphs:
@@ -2847,10 +2845,10 @@ class LumilakeServer:
         ) = await self._select_preview_workers_and_profiles(merged_graph)
 
         if data_profile_results is None:
-            # Mirror server.execute(): read from the global registry.
             resolved_data_profile_results = await collect_data_profile(
                 request_id=resolved_request_id,
                 data_profile_graphs=data_profile_graphs_by_name,
+                data_profile_sources=data_profile_sources,
                 logger=self.logger,
             )
         else:

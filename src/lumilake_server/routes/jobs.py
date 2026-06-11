@@ -47,6 +47,7 @@ from lumilake_server.hooks.security import (
     run_submission_guards,
 )
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
+from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for
 from lumilake_server.runtime.optimizer import (
     OPTIMIZER_PROVIDERS,
@@ -1731,50 +1732,67 @@ async def preview_job(
             detail=f"Graph compilation failed: {exc}",
         ) from exc
 
-    # Stash each profile under both task_key (collect_data_profile's
-    # primary lookup) and public graph name (its fallback) so the
-    # optimizer sees real plan variants instead of {}.
     preview_task_keys: list[str] = []
+    preview_data_profile_sources: dict[str, list[DataProfileSource]] = {}
     try:
-        data_profile_tasks = build_request_data_profile_tasks(
-            request_id=preview_request_id,
-            graphs=graphs,
-            workflow_slices=workflow_slices,
-        )
-        for task in data_profile_tasks:
-            result = await asyncio.to_thread(run_data_profile_task, task.payload)
-            payload_json = result.model_dump(mode="json")
-            data_profile_registry[task.task_key] = payload_json
-            data_profile_registry[task.payload.public_graph_name] = payload_json
-            preview_task_keys.append(task.task_key)
-            preview_task_keys.append(task.payload.public_graph_name)
-        if data_profile_tasks:
+        if envs.LUMILAKE_DISABLE_DATA_PROFILE:
             logger.info(
-                "Ran %d data profile task(s) inline for preview %s",
-                len(data_profile_tasks),
+                "Skipping inline data profile build/run for preview %s "
+                "(LUMILAKE_DISABLE_DATA_PROFILE)",
                 preview_request_id,
             )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"data profile preflight failed: {exc}",
-        ) from exc
+        else:
+            try:
+                data_profile_tasks = build_request_data_profile_tasks(
+                    request_id=preview_request_id,
+                    graphs=graphs,
+                    workflow_slices=workflow_slices,
+                )
+                for task in data_profile_tasks:
+                    result = await asyncio.to_thread(
+                        run_data_profile_task, task.payload
+                    )
+                    data_profile_registry[task.task_key] = result.model_dump(
+                        mode="json"
+                    )
+                    preview_task_keys.append(task.task_key)
+                    preview_data_profile_sources.setdefault(
+                        task.payload.public_graph_name, []
+                    ).append(
+                        DataProfileSource(task_key=task.task_key, org_id="default")
+                    )
+                if data_profile_tasks:
+                    logger.info(
+                        "Ran %d data profile task(s) inline for preview %s",
+                        len(data_profile_tasks),
+                        preview_request_id,
+                    )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"data profile preflight failed: {exc}",
+                ) from exc
 
-    try:
-        preview = await server.preview_schedule(
-            graphs=graphs,
-            request_id=preview_request_id,
-            config=LumilakeRequestConfig(
-                user_id=preview_request_id,
-                principal_id=preview_request_id,
-                optimizer_type=optimizer,
-            ),
+        preview_data_profile_results: dict[str, list[dict[str, Any]]] | None = (
+            {} if envs.LUMILAKE_DISABLE_DATA_PROFILE else None
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"schedule preview failed: {exc}",
-        ) from exc
+        try:
+            preview = await server.preview_schedule(
+                graphs=graphs,
+                request_id=preview_request_id,
+                data_profile_results=preview_data_profile_results,
+                data_profile_sources=preview_data_profile_sources or None,
+                config=LumilakeRequestConfig(
+                    user_id=preview_request_id,
+                    principal_id=preview_request_id,
+                    optimizer_type=optimizer,
+                ),
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"schedule preview failed: {exc}",
+            ) from exc
     finally:
         for key in preview_task_keys:
             data_profile_registry.pop(key, None)

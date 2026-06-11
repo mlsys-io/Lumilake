@@ -41,8 +41,9 @@ def load_env_file_or_raise() -> None:
 LUMILAKE_LOG_LEVEL: str = os.environ.get("LUMILAKE_LOG_LEVEL", "INFO")
 
 # Optimizer used when a job omits its own ``optimizer`` field. Must resolve
-# to a built-in (``halo`` / ``topological-sort``) or a plugin-advertised
-# provider type — per-job overrides bypass this entirely.
+# to a ``BaseOptimizer`` registered in ``OPTIMIZER_TYPES`` (built-in or
+# plugin-registered). Types advertised only via an ``OptimizerProvider``
+# are per-job only.
 LUMILAKE_DEFAULT_OPTIMIZER: str = os.environ.get("LUMILAKE_DEFAULT_OPTIMIZER", "halo")
 
 # Server-required (empty defaults; validate() enforces non-empty).

@@ -2,7 +2,7 @@
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from lumid_hooks import PrincipalContext
 from lumilake_hook import ResourceAction, ResourceKind
 
@@ -38,8 +38,13 @@ async def schedule(
         principal, ResourceKind.JOB, None, ResourceAction.WRITE, hook_logger
     )
     await run_submission_guards(principal, hook_logger)
-    graph = RuntimeGraph.deserialize(body.graph.model_dump())
-    optimizer = create_optimizer(optimizer_type=body.optimizer_type)
+    try:
+        graph = RuntimeGraph.deserialize(body.graph.model_dump())
+        optimizer = create_optimizer(optimizer_type=body.optimizer_type)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
     schedule_result = await asyncio.to_thread(
         optimizer.generate_schedule,
         graph,

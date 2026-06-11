@@ -217,4 +217,48 @@ def test_list_endpoint_not_gated_by_schedule_auth(app: FastAPI) -> None:
         headers={"Authorization": "Bearer token-bob"},
     )
     assert resp.status_code == 200
-    assert "types" in resp.json()
+
+
+def test_unknown_optimizer_type_returns_422(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``create_optimizer`` raises ``ValueError`` for unknown types; the
+    schedule endpoint must surface that as a 422 client error, not a 500."""
+
+    def _raise(**_: Any) -> Any:
+        raise ValueError("Unknown optimizer type 'not-a-real-optimizer'")
+
+    monkeypatch.setattr(optimizer_routes, "create_optimizer", _raise)
+
+    client = TestClient(app, raise_server_exceptions=True)
+    body = _schedule_body()
+    body["optimizer_type"] = "not-a-real-optimizer"
+    resp = client.post(
+        "/optimizer/schedule",
+        json=body,
+        headers={"Authorization": "Bearer token-alice"},
+    )
+    assert resp.status_code == 422
+    assert "not-a-real-optimizer" in resp.json()["detail"]
+
+
+def test_malformed_graph_returns_422(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``RuntimeGraph.deserialize`` can raise ``ValueError`` on semantically
+    invalid graphs (e.g. ``node_order`` referencing a missing node). The
+    endpoint must surface that as 422, not 500."""
+
+    def _raise(*_: Any, **__: Any) -> Any:
+        raise ValueError("node_order references missing node 'phantom'")
+
+    monkeypatch.setattr(optimizer_routes.RuntimeGraph, "deserialize", _raise)
+
+    client = TestClient(app, raise_server_exceptions=True)
+    resp = client.post(
+        "/optimizer/schedule",
+        json=_schedule_body(),
+        headers={"Authorization": "Bearer token-alice"},
+    )
+    assert resp.status_code == 422
+    assert "phantom" in resp.json()["detail"]

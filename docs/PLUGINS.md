@@ -32,7 +32,7 @@ Lumilake holds two distinct FlowMesh credentials and never crosses them:
 
 ## Lumilake-Owned Plugin Surface
 
-Optimizer registration is Lumilake-specific. A plugin may register an optimizer implementation; jobs select it through the request config's `optimizer_type` field, and the server's `LUMILAKE_DEFAULT_OPTIMIZER` env var picks the fallback when a request omits it.
+Optimizer registration is Lumilake-specific. A plugin may register an optimizer implementation; jobs select it through the request config's `optimizer_type` field. The server's `LUMILAKE_DEFAULT_OPTIMIZER` env var picks the fallback when a request omits it — the resolved type must be a `BaseOptimizer` in `OPTIMIZER_TYPES` (built-in or plugin-registered), so types advertised only via an `OptimizerProvider` are per-job only.
 
 The example plugin registers:
 

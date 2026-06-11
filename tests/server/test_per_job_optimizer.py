@@ -148,6 +148,7 @@ class _FakePreviewServer:
         *,
         request_id: str | None = None,
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_sources: dict[str, list[Any]] | None = None,
         config: LumilakeRequestConfig | None = None,
     ) -> SchedulePreview:
         self._capture.config = config
