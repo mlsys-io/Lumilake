@@ -47,7 +47,12 @@ from lumilake_server.hooks.security import (
     run_submission_guards,
 )
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
+from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for
+from lumilake_server.runtime.optimizer import (
+    OPTIMIZER_PROVIDERS,
+    OPTIMIZER_TYPES,
+)
 from lumilake_server.runtime.protocol import (
     LumilakeRequestConfig,
     LumilakeResponse,
@@ -440,6 +445,26 @@ def _format_validation_errors(exc: ValidationError) -> str:
     return "; ".join(parts)
 
 
+def _validate_optimizer_type(optimizer_type: str) -> None:
+    """Raise HTTPException 422 if *optimizer_type* is unknown at submission time."""
+    if optimizer_type.lower() in OPTIMIZER_TYPES:
+        return
+    for provider in OPTIMIZER_PROVIDERS:
+        if optimizer_type.lower() in {t.lower() for t in provider.list_optimizers()}:
+            return
+    provider_types: list[str] = []
+    for p in OPTIMIZER_PROVIDERS:
+        provider_types.extend(p.list_optimizers())
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=(
+            f"Unknown optimizer type '{optimizer_type}'. "
+            f"Local: {sorted(OPTIMIZER_TYPES)}. "
+            f"Provider-advertised: {sorted(set(provider_types))}."
+        ),
+    )
+
+
 _IO_LOCATION_TYPES = {"db", "s3"}
 
 
@@ -520,6 +545,15 @@ class JobSubmitRequest(BaseModel):
         default=Priority.MEDIUM,
         description="Job scheduling priority: `low`, `medium`, or `high`.",
     )
+    optimizer: str | None = Field(
+        default=None,
+        description=(
+            "Select the optimizer for this job. Must be a name in"
+            " ``OPTIMIZER_TYPES`` or advertised by a loaded"
+            " ``OptimizerProvider`` (see GET /api/v1/optimizer). If omitted,"
+            " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
+        ),
+    )
 
 
 class JobPreviewItem(BaseModel):
@@ -574,6 +608,15 @@ class JobPreviewRequest(BaseModel):
     priority: Priority = Field(
         default=Priority.MEDIUM,
         description="Accepted for payload compatibility; ignored during preview.",
+    )
+    optimizer: str | None = Field(
+        default=None,
+        description=(
+            "Select the optimizer for this preview. Must be a name in"
+            " ``OPTIMIZER_TYPES`` or advertised by a loaded"
+            " ``OptimizerProvider`` (see GET /api/v1/optimizer). If omitted,"
+            " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
+        ),
     )
 
 
@@ -1264,6 +1307,7 @@ async def _run_job(
     principal: PrincipalContext,
     runtime_token: str | None,
     trace_id: str,
+    optimizer_type: str | None = None,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -1316,6 +1360,7 @@ async def _run_job(
                 user_id=principal.external_id,
                 org_id=principal.org_id,
                 principal_id=principal.principal_id,
+                optimizer_type=optimizer_type,
             ),
             workflow_slices=workflow_slices,
         )
@@ -1531,6 +1576,18 @@ async def _run_job(
                                 "default": "medium",
                                 "description": "Accepted but ignored during preview.",
                             },
+                            "optimizer": {
+                                "type": "string",
+                                "nullable": True,
+                                "default": None,
+                                "description": (
+                                    "Select the optimizer for this preview."
+                                    " Must be a name in ``OPTIMIZER_TYPES`` or"
+                                    " advertised by a loaded ``OptimizerProvider``"
+                                    " (see GET /api/v1/optimizer). If omitted,"
+                                    " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
+                                ),
+                            },
                         },
                         "required": ["data"],
                     }
@@ -1578,6 +1635,10 @@ async def preview_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=_format_validation_errors(exc),
         ) from exc
+    optimizer = preview_request.optimizer
+    if optimizer is not None:
+        _validate_optimizer_type(optimizer)
+        optimizer = optimizer.lower()
     entries = preview_request.data
     if not entries:
         raise HTTPException(
@@ -1586,6 +1647,7 @@ async def preview_job(
         )
 
     graph_specs: dict[str, dict[str, Any]] = {}
+    workflow_slices: dict[str, WorkflowSliceMeta] = {}
     seen_public_names: set[str] = set()
     preview_request_id = f"preview-{unique_id()}"
 
@@ -1611,7 +1673,7 @@ async def preview_job(
             )
 
         try:
-            _input_shape(inputs)
+            total_length, varying_input_keys = _input_shape(inputs)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1650,6 +1712,16 @@ async def preview_job(
             graph_specs=graph_specs,
             idx=idx,
         )
+        slice_length, _ = _input_shape(first_batch)
+        workflow_slices[graph_name] = WorkflowSliceMeta(
+            public_graph_name=name,
+            slice_index=0,
+            slice_start=0,
+            slice_length=slice_length,
+            total_length=total_length,
+            template_hash=_workflow_template_hash(workflow_payload, workflow_format),
+            varying_input_keys=varying_input_keys,
+        )
 
     server = LumilakeServer.get_started_instance()
     try:
@@ -1659,17 +1731,71 @@ async def preview_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
+
+    preview_task_keys: list[str] = []
+    preview_data_profile_sources: dict[str, list[DataProfileSource]] = {}
     try:
-        preview = await server.preview_schedule(
-            graphs=graphs,
-            request_id=preview_request_id,
-            data_profile_results={},
+        if envs.LUMILAKE_DISABLE_DATA_PROFILE:
+            logger.info(
+                "Skipping inline data profile build/run for preview %s "
+                "(LUMILAKE_DISABLE_DATA_PROFILE)",
+                preview_request_id,
+            )
+        else:
+            try:
+                data_profile_tasks = build_request_data_profile_tasks(
+                    request_id=preview_request_id,
+                    graphs=graphs,
+                    workflow_slices=workflow_slices,
+                )
+                for task in data_profile_tasks:
+                    result = await asyncio.to_thread(
+                        run_data_profile_task, task.payload
+                    )
+                    data_profile_registry[task.task_key] = result.model_dump(
+                        mode="json"
+                    )
+                    preview_task_keys.append(task.task_key)
+                    preview_data_profile_sources.setdefault(
+                        task.payload.public_graph_name, []
+                    ).append(
+                        DataProfileSource(task_key=task.task_key, org_id="default")
+                    )
+                if data_profile_tasks:
+                    logger.info(
+                        "Ran %d data profile task(s) inline for preview %s",
+                        len(data_profile_tasks),
+                        preview_request_id,
+                    )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"data profile preflight failed: {exc}",
+                ) from exc
+
+        preview_data_profile_results: dict[str, list[dict[str, Any]]] | None = (
+            {} if envs.LUMILAKE_DISABLE_DATA_PROFILE else None
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"schedule preview failed: {exc}",
-        ) from exc
+        try:
+            preview = await server.preview_schedule(
+                graphs=graphs,
+                request_id=preview_request_id,
+                data_profile_results=preview_data_profile_results,
+                data_profile_sources=preview_data_profile_sources or None,
+                config=LumilakeRequestConfig(
+                    user_id=preview_request_id,
+                    principal_id=preview_request_id,
+                    optimizer_type=optimizer,
+                ),
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"schedule preview failed: {exc}",
+            ) from exc
+    finally:
+        for key in preview_task_keys:
+            data_profile_registry.pop(key, None)
 
     return {
         "ok": True,
@@ -1777,6 +1903,18 @@ async def preview_job(
                                 "enum": ["low", "medium", "high"],
                                 "default": "medium",
                             },
+                            "optimizer": {
+                                "type": "string",
+                                "nullable": True,
+                                "default": None,
+                                "description": (
+                                    "Select the optimizer for this job."
+                                    " Must be a name in ``OPTIMIZER_TYPES`` or"
+                                    " advertised by a loaded ``OptimizerProvider``"
+                                    " (see GET /api/v1/optimizer). If omitted,"
+                                    " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
+                                ),
+                            },
                         },
                         "required": ["data"],
                     }
@@ -1826,6 +1964,10 @@ async def submit_job(
         ) from exc
     entries = submit_request.data
     priority = submit_request.priority
+    optimizer = submit_request.optimizer
+    if optimizer is not None:
+        _validate_optimizer_type(optimizer)
+        optimizer = optimizer.lower()
     if not entries:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1971,6 +2113,7 @@ async def submit_job(
             principal,
             get_runtime_token(request),
             str(getattr(request.state, "trace_id", job_id)),
+            optimizer,
         )
     )
     request.app.state.background_tasks.add(task)

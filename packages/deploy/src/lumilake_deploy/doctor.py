@@ -1,11 +1,4 @@
-"""Validate ``.env`` (and optionally ``.env.flowmesh``) before ``deploy up``.
-
-Mirrors :func:`flowmesh_stack.doctor.run_doctor_checks` in spirit: emits a
-structured report of errors / warnings / notes the operator can read at a
-glance. The primary purpose is to catch a malformed ``.env`` (missing
-required keys, obviously-bad values) before ``deploy up`` brings the
-server up against broken environment.
-"""
+"""Validate ``.env`` (and optionally ``.env.flowmesh``) before ``deploy up``."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -72,7 +65,7 @@ _DIRECT_MODE_REQUIRED: tuple[str, ...] = (
 _OPTIONAL_KEYS: tuple[str, ...] = (
     "LUMILAKE_LOG_LEVEL",
     "LUMILAKE_REGISTRY",
-    "LUMILAKE_OPTIMIZER_TYPE",
+    "LUMILAKE_DEFAULT_OPTIMIZER",
     "LUMILAKE_OPTIMIZER_BATCH_SIZE",
     "LUMILAKE_STARVATION_LIMIT",
     "LUMILAKE_BATCH_ACCUMULATION_SECONDS",
@@ -88,6 +81,8 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "LUMILAKE_POLL_TIMEOUT_SECONDS",
     "LUMILAKE_POLL_INTERVAL_SECONDS",
     "LUMILAKE_HTTP_TIMEOUT_SECONDS",
+    "LUMILAKE_QUEUE_QUANTUM_HIGH",
+    "LUMILAKE_QUEUE_QUANTUM_LOW",
     "LUMILAKE_QUEUE_QUANTUM_MEDIUM",
     "LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES",
     "LUMILAKE_S3_PROFILE_COST_PER_FILE",
@@ -99,6 +94,7 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S",
     "LUMILAKE_PLUGINS",
     "LUMILAKE_PLUGIN_DIR",
+    "LUMILAKE_REMOTE_OPTIMIZER_URL",
     "LUMILAKE_SKIP_DOTENV_CHECK",
     "S3_DATA_PREFIX",
     "S3_CERT_FILE",
@@ -110,6 +106,13 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "HARDWARE_GPU_REQUIREMENT",
     "HARDWARE_GPU_MEMORY_REQUIREMENT",
     "LUMILAKE_GPU_DEVICES",
+    "LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS",
+    "LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION",
+    "LUMILAKE_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE",
+    "LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS",
+    "REDIS_TLS_DIR",
+    "SERVER_TLS_DIR",
+    "SERVER_WORKER_CONFIG",
 )
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
@@ -154,9 +157,6 @@ def _check_unknown(values: dict[str, str], report: DoctorReport) -> None:
 
 
 def _check_data_plane(values: dict[str, str], report: DoctorReport) -> None:
-    """When LUMID_DATA_URL is set, flag the rest of the lumid block to
-    encourage consistent configuration.
-    """
     if values.get("LUMID_DATA_URL") and not values.get("LUMID_DATA_TIMEOUT_SECONDS"):
         report.note("LUMID_DATA_TIMEOUT_SECONDS unset; defaulting to 30s.")
 
@@ -223,10 +223,7 @@ def run_doctor(
     flowmesh_env_path: Path | None = None,
     callback: Callable[[DoctorFinding], Any] | None = None,
 ) -> DoctorReport:
-    """Top-level entry point. Validates ``.env`` and, when supplied,
-    notes the presence of ``.env.flowmesh`` (full validation belongs to
-    ``flowmesh stack doctor``).
-    """
+    """Validate ``.env`` and note the presence of ``.env.flowmesh`` when supplied."""
     report = run_env_checks(env_path, callback=callback)
     if flowmesh_env_path is not None:
         if flowmesh_env_path.is_file():

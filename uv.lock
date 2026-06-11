@@ -1027,11 +1027,15 @@ name = "lumilake-hook"
 version = "0.1.2"
 source = { editable = "packages/hook" }
 dependencies = [
+    { name = "httpx" },
     { name = "lumid-hooks" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "lumid-hooks", specifier = ">=0.1.0" }]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "lumid-hooks", specifier = ">=0.1.0" },
+]
 
 [[package]]
 name = "lumilake-sdk"

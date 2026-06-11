@@ -23,7 +23,8 @@ name: hello-world
 #
 # Submit:
 #   lumilake job submit examples/templates/yaml/hello-world.yaml \
-#       --format yaml --input 'Name=world' --output-prefix demo/hello-world
+#       --format yaml --input 'Name=world' --output-prefix demo/hello-world \
+#       --optimizer halo
 
 inputs:
   Name: ["world"]

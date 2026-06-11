@@ -26,6 +26,10 @@ class LumilakeRequestConfig(BaseModel):
     principal_id: str = Field(min_length=1)
     """Principal identifier; runtime dispatch partitions by this so a single
     FlowMesh submission never spans multiple principals."""
+    optimizer_type: str | None = None
+    """Optimizer to use for this request. Must be a name in
+    ``OPTIMIZER_TYPES`` or advertised by a loaded ``OptimizerProvider``;
+    ``None`` falls back to ``LUMILAKE_DEFAULT_OPTIMIZER``."""
 
 
 class LumilakeRequest(BaseModel):

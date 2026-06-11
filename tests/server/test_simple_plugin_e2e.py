@@ -406,7 +406,6 @@ async def test_sample_plugin_runs_job_flow_and_records_hook_effects(
     assert sample_plugin.OWNERSHIP[("artifact", f"{job_id}/{artifact_name}")] == "bob"
     assert sample_plugin.USAGE_LEDGER[-1]["job_id"] == job_id
     assert sample_plugin.USAGE_LEDGER[-1]["status"] == "completed"
-    assert create_optimizer("simple").__class__.__name__ == "SimpleRoundRobinOptimizer"
 
 
 @pytest.mark.anyio

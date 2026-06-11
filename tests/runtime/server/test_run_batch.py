@@ -405,11 +405,13 @@ async def test_process_batch_uses_parent_workflow_grouping_and_relocates_artifac
         *,
         request_id: str,
         batch_id: str,
+        optimizer_type: str,
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
         data_profile_results: dict[str, list[dict[str, Any]]],
         member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
     ) -> Schedule:
         return Schedule(
             worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
@@ -518,11 +520,13 @@ async def test_process_batch_uses_server_data_profile_collection(
         *,
         request_id: str,
         batch_id: str,
+        optimizer_type: str,
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
         data_profile_results: dict[str, list[dict[str, Any]]],
         member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
     ) -> Schedule:
         return Schedule(
             worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
@@ -621,6 +625,7 @@ async def test_generate_schedule_subprocess_timeout_terminates_and_kills(
         await server._generate_schedule_in_subprocess(
             request_id="req-timeout",
             batch_id="batch-timeout",
+            optimizer_type="halo",
             runtime_graph=runtime_graph,
             selected_workers=["worker-1"],
             worker_profiles={},

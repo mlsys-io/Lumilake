@@ -35,7 +35,6 @@ jobs:
       - name: Create test .env
         run: |
           cat > .env << 'ENVEOF'
-          LUMILAKE_OPTIMIZER_TYPE="halo"
           LUMILAKE_SERVER_HOST="127.0.0.1"
           LUMILAKE_SERVER_PORT="9000"
           LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:7000"

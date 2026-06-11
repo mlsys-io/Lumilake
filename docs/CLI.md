@@ -98,8 +98,8 @@ local server image tags only, not containers or volumes.
 
 | Command | Purpose |
 |---------|---------|
-| `lumilake job submit <workflow>` | Submit a workflow spec. |
-| `lumilake job preview <workflow>` | Compile and schedule a workflow without dispatching runtime work. |
+| `lumilake job submit <workflow>` | Submit a workflow spec. Pass `--optimizer <name>` to override the server's default optimizer for this job. |
+| `lumilake job preview <workflow>` | Compile and schedule a workflow without dispatching runtime work. Pass `--optimizer <name>` to preview with a specific optimizer. |
 | `lumilake job list` | List jobs. |
 | `lumilake job info <job_id>` | Show one job. |
 | `lumilake job progress <job_id>` | Show detailed progress. |

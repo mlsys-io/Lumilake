@@ -14,6 +14,7 @@ from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+import lumid_hooks
 import yaml
 from lumilake import envs
 from lumilake.log import (
@@ -23,6 +24,7 @@ from lumilake.log import (
     log_on_exception_async,
 )
 
+import lumilake_server.hooks as server_hooks
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
@@ -40,7 +42,7 @@ from lumilake_server.runtime.job_manager import (
     create_job_manager,
 )
 from lumilake_server.runtime.optimizer import create_optimizer
-from lumilake_server.runtime.optimizer.base import Schedule
+from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.protocol import (
     LumilakeRequest,
     LumilakeRequestConfig,
@@ -125,23 +127,29 @@ class SchedulePreview:
 _subprocess_logger = init_child_logger("OptimizerSubprocess")
 
 
-async def _resolve_subprocess_install(install: Any) -> None:
+async def _resolve_subprocess_install(install: Any) -> Any:
     installed = install()
     if isinstance(installed, AbstractAsyncContextManager):
-        await installed.__aenter__()
-    elif inspect.isawaitable(installed):
-        await installed
+        return await installed.__aenter__()
+    if inspect.isawaitable(installed):
+        return await installed
+    return installed
 
 
 def _install_plugins_sync() -> None:
-    """Run each plugin's ``install()`` so optimizer types registered by
-    plugins are visible inside the spawned subprocess. Supports sync,
-    awaitable, and async-context-manager install shapes; ``__aexit__``
-    is not invoked so synchronous registrations persist for the
-    subprocess lifetime. Plugins that depend on a long-lived event loop
-    or that register optimizer types via ``register(bindings)`` rather
-    than as a side effect of ``install()`` are not supported in the
-    subprocess."""
+    """Run each plugin's ``install()`` inside the spawned subprocess so
+    optimizer types and other hook contributions are visible during scheduling.
+
+    Supports sync, awaitable, and async-context-manager install shapes.
+    ``__aexit__`` is not invoked so registrations persist for the subprocess
+    lifetime.
+
+    Returned bindings ARE now registered via ``hooks.register()``, including
+    OptimizerProviders. Plugins that only mutate global registries from the
+    install() body still work; bindings-return plugins also work. If
+    ``install()`` returns ``None`` or a value that does not satisfy
+    ``HookBindings``, the value is silently skipped (backward-compatible with
+    side-effect-only plugins)."""
     for plugin_name in envs.LUMILAKE_PLUGINS:
         try:
             module = importlib.import_module(plugin_name)
@@ -155,11 +163,26 @@ def _install_plugins_sync() -> None:
             )
             continue
         try:
-            asyncio.run(_resolve_subprocess_install(install))
+            bindings = asyncio.run(_resolve_subprocess_install(install))
         except Exception as exc:
             _subprocess_logger.error("plugin %r install() failed: %s", plugin_name, exc)
-        else:
-            _subprocess_logger.info("plugin %r registered", plugin_name)
+            continue
+        if bindings is not None and isinstance(bindings, lumid_hooks.HookBindings):
+            try:
+                server_hooks.register(bindings)
+            except Exception as exc:
+                _subprocess_logger.warning(
+                    "plugin %r bindings registration failed: %s", plugin_name, exc
+                )
+                continue
+        elif bindings is not None:
+            _subprocess_logger.warning(
+                "plugin %r install() returned %r which does not satisfy HookBindings;"
+                " skipping registration",
+                plugin_name,
+                type(bindings).__name__,
+            )
+        _subprocess_logger.info("plugin %r installed", plugin_name)
 
 
 def _optimizer_subprocess_entry(
@@ -169,8 +192,11 @@ def _optimizer_subprocess_entry(
     worker_profiles: dict[str, dict[str, Any]],
     data_profile_results: dict[str, list[dict[str, Any]]],
     result_queue: Any,
+    bearer_token: str | None = None,
 ) -> None:
     try:
+        if bearer_token is not None:
+            runtime_token_var.set(bearer_token)
         _install_plugins_sync()
         optimizer = create_optimizer(optimizer_type=optimizer_type)
         schedule = optimizer.generate_schedule(
@@ -282,9 +308,15 @@ class LumilakeServer:
 
         self.config = LumilakeServerConfig() if config is None else config
 
-        # Initialize logical optimizer (no physical execution dependencies)
-        # Use the optimizer factory with default settings
-        self.optimizer = create_optimizer(logger=self.logger)
+        boot_optimizer = create_optimizer(logger=self.logger)
+        if not isinstance(boot_optimizer, BaseOptimizer):
+            raise RuntimeError(
+                f"LUMILAKE_DEFAULT_OPTIMIZER={envs.LUMILAKE_DEFAULT_OPTIMIZER!r} "
+                "must resolve to a BaseOptimizer in OPTIMIZER_TYPES at boot; "
+                f"got {type(boot_optimizer).__name__}. Provider-advertised "
+                "optimizer types are per-job only."
+            )
+        self.optimizer: BaseOptimizer = boot_optimizer
 
         # Initialize job manager and runtime manager
         self.job_manager: BaseJobManager = create_job_manager(
@@ -313,7 +345,7 @@ class LumilakeServer:
         self._request_execution_history_ids: dict[str, set[str]] = {}
 
         self._progress: dict[str, JobProgress] = {}
-        self._optimizer_type = envs.LUMILAKE_OPTIMIZER_TYPE
+        self._optimizer_type = envs.LUMILAKE_DEFAULT_OPTIMIZER
 
     @property
     def is_started(self) -> bool:
@@ -2274,11 +2306,13 @@ class LumilakeServer:
                 schedule = await self._generate_schedule_in_subprocess(
                     request_id=execution_request_id,
                     batch_id=batch_id,
+                    optimizer_type=batch.config.optimizer_type or self._optimizer_type,
                     runtime_graph=batch_request_info.runtime_graph,
                     selected_workers=selected_workers,
                     worker_profiles=worker_profiles,
                     data_profile_results=normalized_data_profile_results,
                     member_request_ids=member_request_ids,
+                    bearer_token=runtime_token_var.get(),
                 )
                 self.logger.debug("Schedule for batch %s: %s", batch_id, schedule)
             schedule_elapsed = time.perf_counter() - schedule_start_time
@@ -2535,23 +2569,26 @@ class LumilakeServer:
         *,
         request_id: str,
         batch_id: str,
+        optimizer_type: str,
         runtime_graph: Any,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
         data_profile_results: dict[str, list[dict[str, Any]]],
         member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
     ) -> Schedule:
         ctx = mp.get_context("spawn")
         result_queue: Any = ctx.Queue(maxsize=1)
         process = ctx.Process(
             target=_optimizer_subprocess_entry,
             args=(
-                self._optimizer_type,
+                optimizer_type,
                 runtime_graph,
                 selected_workers,
                 worker_profiles,
                 data_profile_results,
                 result_queue,
+                bearer_token,
             ),
         )
         interval_s = self._optimizer_progress_interval_s()
@@ -2568,7 +2605,7 @@ class LumilakeServer:
                 request_id,
                 batch_id,
                 process.pid,
-                self._optimizer_type,
+                optimizer_type,
             )
             while process.is_alive():
                 should_cancel = await self.runtime_manager.is_request_cancelled(
@@ -2735,6 +2772,7 @@ class LumilakeServer:
         *,
         request_id: str | None = None,
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_sources: dict[str, list[DataProfileSource]] | None = None,
         config: LumilakeRequestConfig | None = None,
     ) -> SchedulePreview:
         if not graphs:
@@ -2768,6 +2806,7 @@ class LumilakeServer:
             optimizer=self.optimizer,
             quantums=preview_quantums,
             starvation_limit=self.config.starvation_limit,
+            default_optimizer_type=self._optimizer_type,
             logger=self.logger,
         )
         job = Job(
@@ -2805,11 +2844,24 @@ class LumilakeServer:
             resolved_worker_profiles,
         ) = await self._select_preview_workers_and_profiles(merged_graph)
 
-        resolved_data_profile_results = data_profile_results or {}
+        if data_profile_results is None:
+            resolved_data_profile_results = await collect_data_profile(
+                request_id=resolved_request_id,
+                data_profile_graphs=data_profile_graphs_by_name,
+                data_profile_sources=data_profile_sources,
+                logger=self.logger,
+            )
+        else:
+            resolved_data_profile_results = data_profile_results
+        preview_optimizer_type = resolved_config.optimizer_type or self._optimizer_type
+        if preview_optimizer_type != self._optimizer_type:
+            preview_optimizer = create_optimizer(optimizer_type=preview_optimizer_type)
+        else:
+            preview_optimizer = self.optimizer
         optimize_start = time.perf_counter()
         async with self._optimizer_lock:
             schedule = await asyncio.to_thread(
-                self.optimizer.generate_schedule,
+                preview_optimizer.generate_schedule,
                 merged_graph,
                 resolved_workers,
                 resolved_worker_profiles,

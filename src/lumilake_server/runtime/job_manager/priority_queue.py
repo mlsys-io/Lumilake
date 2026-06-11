@@ -32,6 +32,7 @@ class PriorityJobManager(BaseJobManager):
         optimizer: BaseOptimizer,
         quantums: dict[Priority, int] | None = None,
         starvation_limit: int = envs.LUMILAKE_STARVATION_LIMIT,
+        default_optimizer_type: str = envs.LUMILAKE_DEFAULT_OPTIMIZER,
         logger: Logger | None = None,
         log_level: LogLevel | None = None,
     ) -> None:
@@ -42,6 +43,10 @@ class PriorityJobManager(BaseJobManager):
         for priority in Priority:
             self._quantums.setdefault(priority, 1)
         self._starvation_limit = starvation_limit
+        # Normalize None optimizer_type to this default before partitioning so
+        # two requests that are semantically equivalent (both fall back to the
+        # server default) are co-batched rather than split into separate batches.
+        self._default_optimizer_type = default_optimizer_type
         # Per-priority, per-user queues.
         self._queues: dict[Priority, dict[str, deque[WorkflowItem]]] = {
             priority: {} for priority in Priority
@@ -50,26 +55,27 @@ class PriorityJobManager(BaseJobManager):
         self._rr_user_order: dict[Priority, deque[str]] = {
             priority: deque() for priority in Priority
         }
-        # Round-robin order of (principal_id, dispatch_token) partitions across
-        # all priorities. select_batch picks one partition per round so a
-        # single FlowMesh dispatch never spans principals OR tokens (token
-        # rotation makes the same principal show up twice with different
-        # tokens). Set mirrors the deque for O(1) membership.
-        self._rr_partition_order: deque[tuple[str, str | None]] = deque()
-        self._rr_partition_members: set[tuple[str, str | None]] = set()
+        # Round-robin order of (principal_id, dispatch_token, optimizer_type)
+        # partitions across all priorities. select_batch picks one partition per
+        # round so a single FlowMesh dispatch never spans principals, tokens, or
+        # optimizer types. Set mirrors the deque for O(1) membership.
+        self._rr_partition_order: deque[tuple[str, str | None, str]] = deque()
+        self._rr_partition_members: set[tuple[str, str | None, str]] = set()
         self._items: dict[str, WorkflowItem] = {}
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
         self.logger = init_child_logger("JobManager", logger, log_level)
 
     @staticmethod
-    def _redact_partition(partition: tuple[str, str | None]) -> tuple[str, str]:
+    def _redact_partition(
+        partition: tuple[str, str | None, str],
+    ) -> tuple[str, str, str]:
         """Render a partition for logs without leaking the bearer token."""
-        principal_id, token = partition
+        principal_id, token, optimizer_type = partition
         if token is None:
-            return (principal_id, "no-token")
+            return (principal_id, "no-token", optimizer_type)
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
-        return (principal_id, f"tok:{digest}")
+        return (principal_id, f"tok:{digest}", optimizer_type)
 
     @staticmethod
     def _format_item(item: WorkflowItem) -> str:
@@ -132,7 +138,11 @@ class PriorityJobManager(BaseJobManager):
                     self._rr_user_order[job.config.priority].append(owner_id)
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
-                partition = (item.config.principal_id, item.dispatch_token)
+                partition = (
+                    item.config.principal_id,
+                    item.dispatch_token,
+                    item.config.optimizer_type or self._default_optimizer_type,
+                )
                 if partition not in self._rr_partition_members:
                     self._rr_partition_members.add(partition)
                     self._rr_partition_order.append(partition)
@@ -189,13 +199,17 @@ class PriorityJobManager(BaseJobManager):
             batch_size = 1
 
         async with self._lock:
-            present_partitions: set[tuple[str, str | None]] = set()
-            items_by_partition: dict[tuple[str, str | None], int] = {}
+            present_partitions: set[tuple[str, str | None, str]] = set()
+            items_by_partition: dict[tuple[str, str | None, str], int] = {}
             starved_global: list[WorkflowItem] = []
             for priority in Priority:
                 for queue in self._queues[priority].values():
                     for item in queue:
-                        partition = (item.config.principal_id, item.dispatch_token)
+                        partition = (
+                            item.config.principal_id,
+                            item.dispatch_token,
+                            item.config.optimizer_type or self._default_optimizer_type,
+                        )
                         present_partitions.add(partition)
                         items_by_partition[partition] = (
                             items_by_partition.get(partition, 0) + 1
@@ -207,17 +221,21 @@ class PriorityJobManager(BaseJobManager):
                 self._not_empty.clear()
                 return None
 
-            anchor_partition: tuple[str, str | None]
+            anchor_partition: tuple[str, str | None, str]
             if starved_global:
                 head = starved_global[0]
-                anchor_partition = (head.config.principal_id, head.dispatch_token)
+                anchor_partition = (
+                    head.config.principal_id,
+                    head.dispatch_token,
+                    head.config.optimizer_type or self._default_optimizer_type,
+                )
             else:
                 picked = self._pick_partition_round_robin_locked(present_partitions)
                 if picked is None:
                     # Deque drifted from present_partitions; reseed so RR
                     # rotates across every present partition next round.
                     for partition in sorted(
-                        present_partitions, key=lambda p: (p[0], p[1] or "")
+                        present_partitions, key=lambda p: (p[0], p[1] or "", p[2])
                     ):
                         if partition not in self._rr_partition_members:
                             self._rr_partition_members.add(partition)
@@ -338,7 +356,11 @@ class PriorityJobManager(BaseJobManager):
                 self._prune_empty_user_queues_locked(priority)
             # Drop partitions whose queues drained completely.
             remaining_partitions = {
-                (item.config.principal_id, item.dispatch_token)
+                (
+                    item.config.principal_id,
+                    item.dispatch_token,
+                    item.config.optimizer_type or self._default_optimizer_type,
+                )
                 for priority in Priority
                 for queue in self._queues[priority].values()
                 for item in queue
@@ -379,7 +401,7 @@ class PriorityJobManager(BaseJobManager):
         )
 
     def _build_candidate_pool_for_partition_locked(
-        self, partition: tuple[str, str | None]
+        self, partition: tuple[str, str | None, str]
     ) -> list[WorkflowItem]:
         candidates: list[WorkflowItem] = []
         for priority in Priority:
@@ -394,8 +416,8 @@ class PriorityJobManager(BaseJobManager):
         return candidates
 
     def _pick_partition_round_robin_locked(
-        self, present_partitions: set[tuple[str, str | None]]
-    ) -> tuple[str, str | None] | None:
+        self, present_partitions: set[tuple[str, str | None, str]]
+    ) -> tuple[str, str | None, str] | None:
         while self._rr_partition_order:
             head = self._rr_partition_order[0]
             if head in present_partitions:
@@ -425,7 +447,7 @@ class PriorityJobManager(BaseJobManager):
         self,
         priority: Priority,
         limit: int,
-        partition: tuple[str, str | None],
+        partition: tuple[str, str | None, str],
     ) -> list[WorkflowItem]:
         if limit <= 0:
             return []
@@ -435,7 +457,7 @@ class PriorityJobManager(BaseJobManager):
         if not user_queues or not rr_order:
             return []
 
-        principal_id, dispatch_token = partition
+        principal_id, dispatch_token, optimizer_type = partition
         filtered: dict[str, list[WorkflowItem]] = {}
         for user_id in rr_order:
             queue = user_queues.get(user_id)
@@ -446,6 +468,8 @@ class PriorityJobManager(BaseJobManager):
                 for item in queue
                 if item.config.principal_id == principal_id
                 and item.dispatch_token == dispatch_token
+                and (item.config.optimizer_type or self._default_optimizer_type)
+                == optimizer_type
             ]
             if user_items:
                 filtered[user_id] = user_items

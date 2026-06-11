@@ -41,6 +41,7 @@ def _build_job(
     priority: Priority | None = None,
     principal_id: str = "p",
     dispatch_token: str | None = None,
+    optimizer_type: str | None = None,
 ) -> Job:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     owner = request_id if user_id is None else user_id
@@ -52,7 +53,10 @@ def _build_job(
         dsl_graphs={graph_name: cast(Any, object())},
         workflow_slices={graph_name: _slice_meta(graph_name)},
         config=LumilakeRequestConfig(
-            priority=selected_priority, user_id=owner, principal_id=principal_id
+            priority=selected_priority,
+            user_id=owner,
+            principal_id=principal_id,
+            optimizer_type=optimizer_type,
         ),
         dispatch_token=dispatch_token,
     )
@@ -481,3 +485,92 @@ async def test_multi_tenant_case_08_two_jobs_can_share_one_batch() -> None:
         "req-08-trading",
     }
     assert {item.config.user_id for item in batch.workflows} == {"user8", "user4"}
+
+
+@pytest.mark.asyncio
+async def test_mixed_optimizer_types_split_into_separate_batches() -> None:
+    """Two requests from the same principal+token with DIFFERENT optimizer types
+    must land in separate batches.  Under the pre-fix code both requests shared
+    the same (principal_id, dispatch_token) partition key, so select_batch would
+    have returned them together and silently routed both to whichever optimizer
+    appeared first in the batch — a security leak for remote optimizer types."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type="halo",
+    )
+
+    await manager.enqueue(
+        _build_job(
+            "req-halo",
+            "graph-halo",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            optimizer_type="halo",
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-topo",
+            "graph-topo",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            optimizer_type="topological-sort",
+        )
+    )
+
+    first = await manager.select_batch(2)
+    assert first is not None
+    # The batch must be homogeneous: all items share one optimizer_type.
+    first_optimizers = {item.config.optimizer_type for item in first.workflows}
+    assert len(first_optimizers) == 1
+
+    second = await manager.select_batch(2)
+    assert second is not None
+    second_optimizers = {item.config.optimizer_type for item in second.workflows}
+    assert len(second_optimizers) == 1
+
+    # The two batches carry distinct optimizer types.
+    assert first_optimizers != second_optimizers
+    assert first_optimizers | second_optimizers == {"halo", "topological-sort"}
+
+
+@pytest.mark.asyncio
+async def test_none_optimizer_cobatches_with_explicit_default() -> None:
+    """A request with optimizer=None and one with optimizer=<default> are
+    semantically equivalent and must co-batch (None is normalized to the server
+    default before partitioning).  This verifies the normalization choice:
+    keeping them together avoids an unnecessary partition split for the common
+    case where the per-job override happens to match the server default."""
+    default = "halo"
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type=default,
+    )
+
+    await manager.enqueue(
+        _build_job(
+            "req-none",
+            "graph-none",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            optimizer_type=None,
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-explicit",
+            "graph-explicit",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            optimizer_type=default,
+        )
+    )
+
+    batch = await manager.select_batch(2)
+    assert batch is not None
+    # Both requests must appear in a single batch because they resolve to the
+    # same effective optimizer type after None-normalization.
+    assert len(batch.workflows) == 2
+    assert {item.request_id for item in batch.workflows} == {"req-none", "req-explicit"}

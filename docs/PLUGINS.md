@@ -32,7 +32,7 @@ Lumilake holds two distinct FlowMesh credentials and never crosses them:
 
 ## Lumilake-Owned Plugin Surface
 
-Optimizer registration is Lumilake-specific. A plugin may register an optimizer implementation and select it with `LUMILAKE_OPTIMIZER_TYPE`.
+Optimizer registration is Lumilake-specific. A plugin may register an optimizer implementation; jobs select it through the request config's `optimizer_type` field. The server's `LUMILAKE_DEFAULT_OPTIMIZER` env var picks the fallback when a request omits it — the resolved type must be a `BaseOptimizer` in `OPTIMIZER_TYPES` (built-in or plugin-registered), so types advertised only via an `OptimizerProvider` are per-job only.
 
 The example plugin registers:
 
@@ -169,6 +169,33 @@ the resulting providers from `lumilake_server.hooks.*`. See
 `tests/server/test_simple_plugin_e2e.py` for a worked example covering
 identity, submission, permissions, registrar, usage, and optimizer
 behavior end-to-end.
+
+## Schedule Protocol Contract
+
+`RemoteOptimizer` (`lumilake_server.runtime.optimizer.RemoteOptimizer`) implements `BaseOptimizer` by POSTing a `ScheduleRequest` to `{LUMILAKE_REMOTE_OPTIMIZER_URL}/api/v1/optimizer/schedule` and deserializing the `ScheduleResponse`. `ScheduleRequest` carries the serialized `RuntimeGraph` (under `graph`), `worker_names`, `worker_profiles`, `data_profile_results`, and an `optimizer_type` selector. `ScheduleResponse` carries `worker_assignment`. Both models are importable from `lumilake_server.runtime.optimizer.schemas` and are the canonical contract that any compatible schedule-protocol server must satisfy.
+
+`RemoteOptimizer` requires an explicit `optimizer_type` kwarg at construction time (e.g. `RemoteOptimizer(optimizer_type="halo-greedy")`). The typical integration path is via an `OptimizerProvider` plugin (see below).
+
+## OptimizerProvider Hook
+
+Plugins can contribute optimizer types beyond the built-in `halo` and `topological-sort` by implementing `lumilake_hook.OptimizerProvider` and including instances in `BaseBindings.optimizer_providers`. Lumilake's `create_optimizer(type)` falls through to registered providers when `type` is absent from the local `OPTIMIZER_TYPES` dict.
+
+```python
+from lumilake_hook import BaseBindings, OptimizerProvider
+
+class MyProvider:
+    def list_optimizers(self) -> list[str]:
+        return ["halo-greedy"]
+
+    def create_optimizer(self, optimizer_type: str, **kwargs):
+        from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
+        return RemoteOptimizer(optimizer_type=optimizer_type, **kwargs)
+
+def install() -> BaseBindings:
+    return BaseBindings(optimizer_providers=(MyProvider(),))
+```
+
+Optimizer selection is per job via the request config's `optimizer_type` field — pass a built-in (`halo`, `topological-sort`) or any provider-advertised name. Omitting it falls back to `LUMILAKE_DEFAULT_OPTIMIZER`. `GET /api/v1/optimizer` lists all locally registered and provider-advertised types.
 
 ## Design Rule
 
