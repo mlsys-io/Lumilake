@@ -17,6 +17,24 @@ runtime_token_var: ContextVar[str | None] = ContextVar(
 )
 
 
+def validate_remote_url(base_url: str) -> str:
+    """Return ``base_url`` stripped and trailing-slash-trimmed, after
+    enforcing the scheme rule: ``https://`` is always accepted; ``http://``
+    is accepted only when the host resolves to a loopback literal."""
+    url = (base_url or "").strip()
+    if not url:
+        raise ValueError("base_url must be non-empty.")
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return url.rstrip("/")
+    if parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS:
+        return url.rstrip("/")
+    raise ValueError(
+        "base_url must use https:// (or http:// for loopback only). "
+        f"Got: {parsed.scheme}://{parsed.hostname}"
+    )
+
+
 @dataclass(slots=True)
 class Schedule:
     worker_assignment: dict[str, list[str]]
@@ -61,23 +79,9 @@ class RemoteOptimizer:
         **kwargs: Any,
     ) -> None:
         del kwargs
-        url = (base_url or "").strip()
-        if not url:
-            raise ValueError("RemoteOptimizer requires a non-empty base_url.")
-        parsed = urlparse(url)
-        if parsed.scheme == "https":
-            pass
-        elif parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS:
-            pass
-        else:
-            raise ValueError(
-                "RemoteOptimizer base_url must use https:// "
-                "(or http:// for loopback only). "
-                f"Got: {parsed.scheme}://{parsed.hostname}"
-            )
         if not optimizer_type:
             raise ValueError("RemoteOptimizer requires optimizer_type")
-        self._base_url = url.rstrip("/")
+        self._base_url = validate_remote_url(base_url)
         self._optimizer_type = optimizer_type
         self._http_timeout_seconds = http_timeout_seconds
 

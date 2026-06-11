@@ -15,6 +15,7 @@ from .optimizer import (
     RemoteOptimizer,
     Schedule,
     runtime_token_var,
+    validate_remote_url,
 )
 from .resource_kinds import ResourceAction, ResourceKind
 from .usage import LumilakeUsageSink, UsageRow
@@ -38,4 +39,5 @@ __all__ = [
     "UsageRow",
     "UsageSink",
     "runtime_token_var",
+    "validate_remote_url",
 ]
