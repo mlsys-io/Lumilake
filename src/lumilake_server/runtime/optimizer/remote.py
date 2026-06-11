@@ -7,17 +7,15 @@ at plugin-load time. URL must use ``https://``; ``http://`` only for loopback
 """
 
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 from lumilake import envs
+from lumilake_hook import validate_remote_url
 
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphSchema
-
-_LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class RemoteOptimizer(BaseOptimizer):
@@ -36,18 +34,7 @@ class RemoteOptimizer(BaseOptimizer):
             raise ValueError(
                 "RemoteOptimizer requires LUMILAKE_REMOTE_OPTIMIZER_URL to be set."
             )
-        parsed = urlparse(url)
-        if parsed.scheme == "https":
-            pass  # always allowed
-        elif parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS:
-            pass  # loopback http allowed for local dev
-        else:
-            raise ValueError(
-                "LUMILAKE_REMOTE_OPTIMIZER_URL must use https:// "
-                "(or http:// for loopback only). "
-                f"Got: {parsed.scheme}://{parsed.hostname}"
-            )
-        self._base_url = url.rstrip("/")
+        self._base_url = validate_remote_url(url)
 
         if optimizer_type is None:
             raise ValueError(

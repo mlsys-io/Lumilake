@@ -23,9 +23,6 @@ name: hello-world
 #
 # Submit:
 #   lumilake job submit examples/templates/yaml/hello-world.yaml \
-#       --format yaml --input 'Name=world' --output-prefix demo/hello-world
-#   # Override the server default optimizer (or omit --optimizer to use the server default):
-#   lumilake job submit examples/templates/yaml/hello-world.yaml \
 #       --format yaml --input 'Name=world' --output-prefix demo/hello-world \
 #       --optimizer halo
 

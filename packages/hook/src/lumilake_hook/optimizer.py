@@ -21,7 +21,7 @@ def validate_remote_url(base_url: str) -> str:
     """Return ``base_url`` stripped and trailing-slash-trimmed, after
     enforcing the scheme rule: ``https://`` is always accepted; ``http://``
     is accepted only when the host resolves to a loopback literal."""
-    url = (base_url or "").strip()
+    url = base_url.strip()
     if not url:
         raise ValueError("base_url must be non-empty.")
     parsed = urlparse(url)
