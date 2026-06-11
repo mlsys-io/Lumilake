@@ -968,14 +968,9 @@ class LumilakeServer:
 
     @staticmethod
     def _requires_gpu(op: RuntimeOp) -> bool:
-        """Whether ``op`` needs a GPU worker.
-
-        Source-of-truth wrapper around
-        ``FlowmeshRuntimeManager._runtime_op_requires_gpu`` so the scheduler's
-        peek and the dispatcher's selection use the SAME criteria. A divergence
-        here would have the scheduler request 0 GPU workers for a batch the
-        dispatcher then tries to route to GPU — the job would stall.
-        """
+        # Delegate so the scheduler's peek can't drift from the dispatcher's
+        # selection rule — drift means the scheduler asks for 0 GPU workers
+        # and the dispatcher then stalls trying to route to one.
         return FlowmeshRuntimeManager._runtime_op_requires_gpu(op)
 
     @classmethod

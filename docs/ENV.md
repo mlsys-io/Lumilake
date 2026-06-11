@@ -28,7 +28,7 @@ Run `lumilake deploy -C <deploy-dir> doctor` after editing `.env`.
 
 ## Lumid.data routing
 
-All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`, `s3`, and `agent` modes — route through lumid-data-app at runtime. Data profiling (EXPLAIN cost estimation via `POST /profile`, S3 object listing via `GET /blobs`, and live sampling via `POST /retrieve`) also routes through lumid-data-app. `LUMID_DATA_URL` and `LUMID_DATA_TOKEN` are required for any deployment that runs workflows with `DataRetrievalOp`s or has data profiling enabled.
+All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`, `s3`, and `agent` modes — route through lumid-data-app at runtime. Data profiling (EXPLAIN cost estimation via `POST /profile`, S3 object listing via `GET /blobs`, and live sampling via `POST /retrieve`) also routes through lumid-data-app. `LUMID_DATA_URL` is required for any deployment that runs workflows with `DataRetrievalOp`s or has data profiling enabled, and an effective lumid-data bearer token is required: `LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`.
 
 | Key | Purpose |
 |-----|---------|

@@ -1541,16 +1541,9 @@ def _make_code_ops(
 
 
 def _make_output_op(scope: str, name: str, upstream_id: str) -> dict[str, Any]:
-    """Build an ``OutputOp`` graph node from an n8n output annotation.
-
-    n8n has no UI primitive for the YAML ``outputs[].path`` selector, so the
-    emitted OutputOp never carries an explicit path. The runtime layer
-    derives a sensible default from the upstream op's mode
-    (``items.table`` for sql, ``items.content`` for s3, ``items.output``
-    for agent / LLM ops). To override the projection on an n8n-imported
-    workflow, edit the compiled native graph or re-export as YAML — see
-    ``docs/WORKFLOWS.md`` § "Output projection".
-    """
+    # n8n has no UI primitive for the YAML ``outputs[].path`` selector, so the
+    # emitted OutputOp never carries an explicit path — the runtime falls back
+    # to the mode-derived default. See docs/WORKFLOWS.md § "Output projection".
     return {
         "_id": _make_id(scope, "output", name),
         "_op": "OutputOp",

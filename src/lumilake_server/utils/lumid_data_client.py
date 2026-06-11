@@ -334,16 +334,24 @@ def retrieve_sample(sql: str) -> list[dict[str, Any]]:
             "lumid-data-app /retrieve response missing 'materialized_uri': "
             f"{result!r}"
         )
-    logger.info("GET %s", materialized_uri)
+    # Reject absolute URLs — a compromised upstream could redirect the
+    # bearer-attached fetch to an attacker-controlled host.
+    if not materialized_uri.startswith("/"):
+        raise RuntimeError(
+            "lumid-data-app /retrieve materialized_uri must be an "
+            f"app-relative path starting with '/'; got {materialized_uri!r}"
+        )
+    fetch_url = f"{_base_url()}{materialized_uri}"
+    logger.info("GET %s", fetch_url)
     fetch_start = time.monotonic()
     fetch_resp = get(
-        materialized_uri,
+        fetch_url,
         headers=_default_headers(),
         timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
     )
     logger.debug(
         "GET %s status=%d elapsed=%.3fs",
-        materialized_uri,
+        fetch_url,
         fetch_resp.status_code,
         time.monotonic() - fetch_start,
     )

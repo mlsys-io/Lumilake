@@ -484,13 +484,10 @@ def dump_data_profile_yaml(
 
 
 def _extract_required_s3_folders(graph: RuntimeGraph) -> list[str]:
-    """Return every S3 folder referenced by this graph's data-profile nodes.
+    """Return S3 folders to list for this graph's data-profile nodes.
 
-    Mirrors the folder-derivation logic in :func:`_derive_s3_profile_for_graph`
-    so the on-demand listing covers exactly the folders the profile estimator
-    will query. Placeholders whose values are known statically (literal params,
-    upstream SQL ``estimated_rows``-driven enumerations) are expanded; node-ref
-    placeholders are folded into the same enumeration the consumer uses.
+    Must stay in lock-step with :func:`_derive_s3_profile_for_graph`: anything
+    the estimator queries must show up here, or its lookups miss.
     """
     folders: set[str] = set()
     for node_id in graph.node_order:
@@ -521,16 +518,11 @@ def _extract_required_s3_folders(graph: RuntimeGraph) -> list[str]:
 async def _list_blobs_for_folders(
     folders: Iterable[str],
 ) -> tuple[dict[str, int | None], list[str]]:
-    """List blobs under each requested folder in lumid-data-app.
+    """List blobs under each folder via lumid-data-app.
 
-    Returns ``(file_sizes, folder_paths)`` where:
-      * ``file_sizes`` maps **absolute** blob keys to byte sizes; and
-      * ``folder_paths`` lists every folder prefix implied by those keys,
-        including the queried roots.
-
-    Each folder is listed via a separate ``GET /blobs?prefix=<folder>`` call.
-    This matches the worker-side contract that an s3 retrieval ``template``
-    is an absolute blob key, decoupling data profiling from ``S3_DATA_PREFIX``.
+    Returns ``(file_sizes, folder_paths)`` keyed by absolute blob keys —
+    the worker reads s3-retrieval ``template`` as an absolute key, so
+    ``S3_DATA_PREFIX`` is not applied here.
     """
     if not envs.LUMID_DATA_URL:
         raise RuntimeError(

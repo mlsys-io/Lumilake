@@ -46,13 +46,9 @@ TERMINAL_STATUSES = {"DONE", "FAILED"}
 def _walk_output_path(
     item: Mapping[str, Any], parts: Sequence[str], output_op_id: str
 ) -> Any:
-    """Walk a dotted ``items.<a>.<b>.<c>`` path through a result item.
-
-    Supports nested ``dict`` traversal. For DataFrame-shaped fields that arrive
-    as JSON-encoded strings (the canonical shape produced by ``mode: sql``
-    retrievals when ``items.table`` is serialized for transport), the string is
-    JSON-decoded once and traversal continues.
-    """
+    """Walk a dotted ``items.<a>.<b>.<c>`` path through a result item;
+    JSON-decode intermediate string fields so DataFrame-serialized columns
+    (e.g. ``items.table.symbol``) traverse cleanly."""
     value: Any = item
     walked: list[str] = []
     for part in parts:
@@ -916,8 +912,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                         )
                         archived.append({"output": "", "error": str(e)})
                 items = archived
-                # Image-archive items have shape ``{"output": <uri>}`` —
-                # the user's path override (e.g. ``items.table``) is N/A here.
+                # Archived items only have an ``output`` field; ignore user path.
                 output_field_parts: tuple[str, ...] = ("output",)
             else:
                 output_field_parts = ("output",)

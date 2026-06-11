@@ -409,11 +409,8 @@ class RuntimeGraphBuilder:
                 output_name, path_override = output_source_to_outputop[retrieval_op_id]
                 output_node_map[runtime_op.node_id] = output_name
                 mode = retrieval_op.data_spec["mode"]
-                # Mode-derived defaults match the item shapes the FlowMesh
-                # data_retrieval executor emits:
-                #   sql / agent → ``items.table`` (a serialized DataFrame; the
-                #     agent replays a generated plan and returns rows)
-                #   s3 → ``items.content``
+                # Mode-derived defaults match the FlowMesh executor's item
+                # shape; agent replays a SQL plan so it emits ``table`` too.
                 default_path = {
                     "sql": "items.table",
                     "s3": "items.content",

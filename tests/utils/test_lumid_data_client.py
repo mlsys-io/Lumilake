@@ -332,3 +332,53 @@ class TestRequestIdForwarding:
         finally:
             m.trace_id_var.reset(token)
         assert captured.get("X-Request-ID") == "trace-cat-2"
+
+
+class TestRetrieveSampleMaterializedUri:
+    def test_resolves_relative_path_against_base_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _base_url_and_token(monkeypatch)
+        import lumilake_server.utils.lumid_data_client as m
+
+        captured: dict[str, str] = {}
+
+        def _fake_post_json(*args: Any, **kwargs: Any) -> Any:
+            return {"materialized_uri": "/blobs/retrievals/abc/result.jsonl"}
+
+        fetch_resp = MagicMock()
+        fetch_resp.status_code = 200
+        fetch_resp.text = '{"col": 1}\n{"col": 2}\n'
+        fetch_resp.raise_for_status = MagicMock()
+
+        def _fake_get(url: str, **kwargs: Any) -> Any:
+            captured["url"] = url
+            return fetch_resp
+
+        monkeypatch.setattr(m, "post_json", _fake_post_json)
+        monkeypatch.setattr(m, "get", _fake_get)
+        rows = m.retrieve_sample("SELECT 1")
+        assert rows == [{"col": 1}, {"col": 2}]
+        assert captured["url"] == "http://lumid-data/blobs/retrievals/abc/result.jsonl"
+
+    def test_rejects_absolute_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _base_url_and_token(monkeypatch)
+        import lumilake_server.utils.lumid_data_client as m
+
+        def _fake_post_json(*args: Any, **kwargs: Any) -> Any:
+            return {"materialized_uri": "https://attacker.example/leak"}
+
+        monkeypatch.setattr(m, "post_json", _fake_post_json)
+        with pytest.raises(RuntimeError, match="must be an app-relative path"):
+            m.retrieve_sample("SELECT 1")
+
+    def test_rejects_missing_uri(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _base_url_and_token(monkeypatch)
+        import lumilake_server.utils.lumid_data_client as m
+
+        def _fake_post_json(*args: Any, **kwargs: Any) -> Any:
+            return {}
+
+        monkeypatch.setattr(m, "post_json", _fake_post_json)
+        with pytest.raises(RuntimeError, match="missing 'materialized_uri'"):
+            m.retrieve_sample("SELECT 1")
