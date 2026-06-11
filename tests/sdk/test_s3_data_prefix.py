@@ -66,7 +66,6 @@ def test_s3_url_without_data_prefix_raises_value_error(
     )
 
     assert envs.S3_DATA_PREFIX is None
-    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_TYPE", "halo")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
     monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
@@ -94,7 +93,6 @@ def test_s3_slash_only_data_prefix_raises_value_error(
         },
     )
 
-    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_TYPE", "halo")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
     monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
@@ -116,7 +114,6 @@ def test_no_s3_url_no_prefix_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert envs.S3_URL is None
     assert envs.S3_DATA_PREFIX is None
-    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_TYPE", "halo")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
     monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
@@ -138,7 +135,6 @@ def test_s3_url_with_path_raises_value_error(monkeypatch: pytest.MonkeyPatch) ->
         {"S3_URL": "s3://access:secret@endpoint:9000/with/path"},
     )
 
-    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_TYPE", "halo")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
     monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)

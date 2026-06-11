@@ -40,8 +40,12 @@ def load_env_file_or_raise() -> None:
 # Logging — always-defaulted, safe to read on any consumer.
 LUMILAKE_LOG_LEVEL: str = os.environ.get("LUMILAKE_LOG_LEVEL", "INFO")
 
+# Optimizer used when a job omits its own ``optimizer`` field. Must resolve
+# to a built-in (``halo`` / ``topological-sort``) or a plugin-advertised
+# provider type — per-job overrides bypass this entirely.
+LUMILAKE_DEFAULT_OPTIMIZER: str = os.environ.get("LUMILAKE_DEFAULT_OPTIMIZER", "halo")
+
 # Server-required (empty defaults; validate() enforces non-empty).
-LUMILAKE_OPTIMIZER_TYPE: str = os.environ.get("LUMILAKE_OPTIMIZER_TYPE", "halo")
 LUMILAKE_SERVER_HOST: str = os.environ.get("LUMILAKE_SERVER_HOST", "")
 LUMILAKE_SERVER_PORT: int = int(os.environ.get("LUMILAKE_SERVER_PORT", "0") or "0")
 RUNTIME_ORCHESTRATOR_URL: str = os.environ.get("LUMILAKE_RUNTIME_ORCHESTRATOR_URL", "")
@@ -322,7 +326,6 @@ def validate() -> None:
     Raises ``ValueError`` on the first problem.
     """
     required = {
-        "LUMILAKE_OPTIMIZER_TYPE": LUMILAKE_OPTIMIZER_TYPE,
         "LUMILAKE_SERVER_HOST": LUMILAKE_SERVER_HOST,
         "LUMILAKE_RUNTIME_ORCHESTRATOR_URL": RUNTIME_ORCHESTRATOR_URL,
     }

@@ -13,7 +13,7 @@ A self-contained example Lumilake plugin that exercises every shared hook protoc
 | `simple_usage.py` | `UsageSink` | Appends each `UsageRow` to `state.USAGE_LEDGER`. |
 | `simple_permissions.py` | `PermissionChecker` | Admin scope bypasses every check. Otherwise `accessible_ids` returns resources the principal owns; type-level actions require at least one scope; table/object-prefix access requires data scope; concrete-id actions require ownership. |
 | `simple_registrar.py` | `ResourceRegistrar` | Records `(resource_kind, resource_id) -> principal_id` in `state.OWNERSHIP` on `register`; drops the row on `deregister`. |
-| `simple_optimizer.py` | Lumilake optimizer plugin | Registers `SimpleRoundRobinOptimizer` as `LUMILAKE_OPTIMIZER_TYPE=simple`. This is Lumilake-specific and intentionally not part of `lumid-hooks`. |
+| `simple_optimizer.py` | Lumilake optimizer plugin | Registers `SimpleRoundRobinOptimizer` as the `simple` optimizer type. This is Lumilake-specific and intentionally not part of `lumid-hooks`. |
 
 `state.py` holds every shared dict / set / list. `__init__.py` wires the hook classes into a `BaseBindings`, registers the optimizer, and exposes `install()`.
 
@@ -35,11 +35,14 @@ PYTHONPATH=./examples/plugins
 LUMILAKE_PLUGINS=simple_plugin
 ```
 
-To try the example optimizer:
+To make the example optimizer the cluster-wide default:
 
 ```bash
-LUMILAKE_OPTIMIZER_TYPE=simple
+LUMILAKE_DEFAULT_OPTIMIZER=simple
 ```
+
+Per-job submissions can also pass `"optimizer": "simple"` to opt in
+without changing the server default.
 
 Authenticate requests with one of the demo tokens:
 

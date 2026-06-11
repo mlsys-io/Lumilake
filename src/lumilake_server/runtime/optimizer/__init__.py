@@ -1,6 +1,8 @@
 """Built-in optimizer registry: ``halo`` and ``topological-sort``.
 
-Select via ``LUMILAKE_OPTIMIZER_TYPE``; plugins extend via ``OPTIMIZER_PROVIDERS``.
+Requests pick a type via the job's ``optimizer`` field; omitting it falls
+back to ``LUMILAKE_DEFAULT_OPTIMIZER``. Plugins extend via
+``OPTIMIZER_PROVIDERS``.
 """
 
 from lumilake import envs
@@ -24,7 +26,7 @@ def create_optimizer(
 ) -> BaseOptimizer | OptimizerHandle:
     """Return an optimizer instance, falling through to registered providers."""
     if optimizer_type is None:
-        optimizer_type = envs.LUMILAKE_OPTIMIZER_TYPE
+        optimizer_type = envs.LUMILAKE_DEFAULT_OPTIMIZER
     optimizer_type = optimizer_type.lower()
 
     if optimizer_type in OPTIMIZER_TYPES:

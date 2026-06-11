@@ -32,7 +32,7 @@ class PriorityJobManager(BaseJobManager):
         optimizer: BaseOptimizer,
         quantums: dict[Priority, int] | None = None,
         starvation_limit: int = envs.LUMILAKE_STARVATION_LIMIT,
-        default_optimizer_type: str = envs.LUMILAKE_OPTIMIZER_TYPE,
+        default_optimizer_type: str = envs.LUMILAKE_DEFAULT_OPTIMIZER,
         logger: Logger | None = None,
         log_level: LogLevel | None = None,
     ) -> None:

@@ -27,9 +27,9 @@ class LumilakeRequestConfig(BaseModel):
     """Principal identifier; runtime dispatch partitions by this so a single
     FlowMesh submission never spans multiple principals."""
     optimizer_type: str | None = None
-    """Per-job optimizer override. When set, overrides the server default
-    ``LUMILAKE_OPTIMIZER_TYPE`` for this request. Must be a name in
-    ``OPTIMIZER_TYPES`` or advertised by a loaded ``OptimizerProvider``."""
+    """Optimizer to use for this request. Must be a name in
+    ``OPTIMIZER_TYPES`` or advertised by a loaded ``OptimizerProvider``;
+    ``None`` falls back to ``LUMILAKE_DEFAULT_OPTIMIZER``."""
 
 
 class LumilakeRequest(BaseModel):

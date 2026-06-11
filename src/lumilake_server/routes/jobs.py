@@ -547,9 +547,10 @@ class JobSubmitRequest(BaseModel):
     optimizer: str | None = Field(
         default=None,
         description=(
-            "Override the server's default ``LUMILAKE_OPTIMIZER_TYPE``. Must be a name"
-            " in ``OPTIMIZER_TYPES`` or advertised by a loaded ``OptimizerProvider``"
-            " (see GET /api/v1/optimizer). If omitted, the server default is used."
+            "Select the optimizer for this job. Must be a name in"
+            " ``OPTIMIZER_TYPES`` or advertised by a loaded"
+            " ``OptimizerProvider`` (see GET /api/v1/optimizer). If omitted,"
+            " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
         ),
     )
 
@@ -610,10 +611,10 @@ class JobPreviewRequest(BaseModel):
     optimizer: str | None = Field(
         default=None,
         description=(
-            "Override the server's default ``LUMILAKE_OPTIMIZER_TYPE`` for this"
-            " preview. Must be a name in ``OPTIMIZER_TYPES`` or advertised by a"
-            " loaded ``OptimizerProvider`` (see GET /api/v1/optimizer)."
-            " If omitted, the server default is used."
+            "Select the optimizer for this preview. Must be a name in"
+            " ``OPTIMIZER_TYPES`` or advertised by a loaded"
+            " ``OptimizerProvider`` (see GET /api/v1/optimizer). If omitted,"
+            " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
         ),
     )
 
@@ -1579,12 +1580,11 @@ async def _run_job(
                                 "nullable": True,
                                 "default": None,
                                 "description": (
-                                    "Override the server's default"
-                                    " ``LUMILAKE_OPTIMIZER_TYPE`` for this preview."
+                                    "Select the optimizer for this preview."
                                     " Must be a name in ``OPTIMIZER_TYPES`` or"
                                     " advertised by a loaded ``OptimizerProvider``"
-                                    " (see GET /api/v1/optimizer)."
-                                    " If omitted, the server default is used."
+                                    " (see GET /api/v1/optimizer). If omitted,"
+                                    " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
                                 ),
                             },
                         },
@@ -1890,12 +1890,11 @@ async def preview_job(
                                 "nullable": True,
                                 "default": None,
                                 "description": (
-                                    "Override the server's default"
-                                    " ``LUMILAKE_OPTIMIZER_TYPE``."
+                                    "Select the optimizer for this job."
                                     " Must be a name in ``OPTIMIZER_TYPES`` or"
                                     " advertised by a loaded ``OptimizerProvider``"
-                                    " (see GET /api/v1/optimizer)."
-                                    " If omitted, the server default is used."
+                                    " (see GET /api/v1/optimizer). If omitted,"
+                                    " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
                                 ),
                             },
                         },

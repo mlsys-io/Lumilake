@@ -32,7 +32,7 @@ Lumilake holds two distinct FlowMesh credentials and never crosses them:
 
 ## Lumilake-Owned Plugin Surface
 
-Optimizer registration is Lumilake-specific. A plugin may register an optimizer implementation and select it with `LUMILAKE_OPTIMIZER_TYPE`.
+Optimizer registration is Lumilake-specific. A plugin may register an optimizer implementation; jobs select it through the request config's `optimizer_type` field, and the server's `LUMILAKE_DEFAULT_OPTIMIZER` env var picks the fallback when a request omits it.
 
 The example plugin registers:
 
@@ -195,7 +195,7 @@ def install() -> BaseBindings:
     return BaseBindings(optimizer_providers=(MyProvider(),))
 ```
 
-Setting `LUMILAKE_OPTIMIZER_TYPE=halo-greedy` then routes schedule generation through the provider. The server also exposes `GET /api/v1/optimizer` which returns all locally registered and provider-advertised types.
+Optimizer selection is per job via the request config's `optimizer_type` field — pass a built-in (`halo`, `topological-sort`) or any provider-advertised name. Omitting it falls back to `LUMILAKE_DEFAULT_OPTIMIZER`. `GET /api/v1/optimizer` lists all locally registered and provider-advertised types.
 
 ## Design Rule
 

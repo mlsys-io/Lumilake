@@ -13,8 +13,8 @@ Versioned API routes live under `/api/v1`.
 
 | Route | Purpose |
 |-------|---------|
-| `POST /api/v1/jobs/preview` | Compile workflow specs and generate an optimizer schedule without dispatching runtime work. Accepts an optional `optimizer` field to override the server default (`LUMILAKE_OPTIMIZER_TYPE`) for this preview. |
-| `POST /api/v1/jobs` | Submit one or more workflows. Accepts an optional `optimizer` field to override the server default (`LUMILAKE_OPTIMIZER_TYPE`) for this job. Use `GET /api/v1/optimizer` to enumerate valid optimizer names. |
+| `POST /api/v1/jobs/preview` | Compile workflow specs and generate an optimizer schedule without dispatching runtime work. Accepts an optional `optimizer` field to select the optimizer for this preview; omitted falls back to `LUMILAKE_DEFAULT_OPTIMIZER`. |
+| `POST /api/v1/jobs` | Submit one or more workflows. Accepts an optional `optimizer` field to select the optimizer for this job; omitted falls back to `LUMILAKE_DEFAULT_OPTIMIZER`. Use `GET /api/v1/optimizer` to enumerate valid optimizer names. |
 | `GET /api/v1/jobs` | List jobs visible to the caller. |
 | `GET /api/v1/jobs/{job_id}` | Fetch one job. |
 | `POST /api/v1/jobs/{job_id}/cancel` | Cancel a job and its runtime request. |
