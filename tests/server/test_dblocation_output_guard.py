@@ -236,6 +236,24 @@ async def test_db_input_empty_column_raises_422() -> None:
     assert exc_info.value.status_code == 422
 
 
+@pytest.mark.anyio
+async def test_db_input_invalid_identifier_raises_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An identifier the catalog client rejects (``ValueError``) surfaces as 422,
+    not a 500 — malformed user input must not escape the validator."""
+    with patch(
+        "lumilake_server.routes.jobs.acatalog_column_exists",
+        new=AsyncMock(side_effect=ValueError("invalid table identifier")),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _validate_db_location_live(
+                DBLocation(type="db", table="bad-name.t", column="c")
+            )
+    assert exc_info.value.status_code == 422
+    assert "invalid table identifier" in exc_info.value.detail
+
+
 # ---- S3 input listing via alist_blob_keys ----
 
 

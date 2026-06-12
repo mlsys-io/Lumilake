@@ -33,7 +33,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | Key | Purpose |
 |-----|---------|
 | `LUMID_DATA_URL` | Base URL for the lumid-data-app instance. Required for all `DataRetrievalOp` modes and for data profiling. |
-| `LUMID_DATA_TOKEN` | Bearer token sent to lumid-data-app. Required for all `DataRetrievalOp` modes and for data profiling. |
+| `LUMID_DATA_TOKEN` | Bearer token sent to lumid-data-app. Optional — falls back to `LUMILAKE_RUNTIME_TOKEN` when unset; the effective bearer (this key OR the fallback) is required for all `DataRetrievalOp` modes and for data profiling. |
 | `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid-data-app calls. Defaults to `30`. |
 | `S3_DATA_PREFIX` | Logical blob-key prefix in lumid-data-app's store for compute data (workflow inputs/outputs). Used as the base key prefix for S3-input resolution and output writes. |
 | `S3_ARCHIVE_PREFIX` | Logical blob-key prefix in lumid-data-app's store for job records and runtime artifacts (the archive layer). Required. |
@@ -93,7 +93,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_S3_PROFILE_COST_PER_MIB` | Cost-model coefficient (per MiB) for S3 profile estimates. |
 | `LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS` | Comma-separated planner variants used for local data profiles. Defaults to `default,prefer_index,prefer_seq,prefer_nestloop`. |
 | `LUMILAKE_DISABLE_DATA_PROFILE` | When truthy (`1`/`true`/`yes`/`on`), the server skips inline data-profile task build/run, skips `collect_data_profile` at batch dispatch, and the HALO optimizer falls back to its static cost model (any supplied profile results are dropped). Defaults to off. |
-| `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING` | When truthy (`1`/`true`/`yes`/`on`), preflight may issue a bounded `LIMIT N` query via lumid-data-app `POST /retrieve` against an upstream when no `sample_value` is set. Off by default — set `sample_value` on the upstream `data_spec` for zero live-execution surface, or set this var to `1` to opt in to bounded live queries. Requires `LUMID_DATA_URL` and `LUMID_DATA_TOKEN`. |
+| `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING` | When truthy (`1`/`true`/`yes`/`on`), preflight may issue a bounded `LIMIT N` query via lumid-data-app `POST /retrieve` against an upstream when no `sample_value` is set. Off by default — set `sample_value` on the upstream `data_spec` for zero live-execution surface, or set this var to `1` to opt in to bounded live queries. Requires `LUMID_DATA_URL` and an effective lumid-data bearer (set `LUMID_DATA_TOKEN`, or fall back to `LUMILAKE_RUNTIME_TOKEN`). |
 
 ## vLLM Backend
 
@@ -149,4 +149,4 @@ See `.env.example` for the deploy-time template and defaults.
 
 ## Migration: DATABASE_URL / S3_URL / S3_WORKER_URL removed
 
-`DATABASE_URL`, `S3_URL`, `S3_WORKER_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_CONNECTION_VALUE`, `S3_CERT_FILE`, `LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S`, and `LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S` have been removed. All data access — server-side input resolution, job archive reads/writes, and `DataRetrievalOp` dispatch — now routes exclusively through lumid-data-app using `LUMID_DATA_URL` and `LUMID_DATA_TOKEN`. `S3_DATA_PREFIX` and `S3_ARCHIVE_PREFIX` are retained as logical blob-key prefixes within lumid-data-app's store. `DBLocation` output is no longer supported; submitting a job with a `DBLocation` output returns 422.
+`DATABASE_URL`, `S3_URL`, `S3_WORKER_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_CONNECTION_VALUE`, `S3_CERT_FILE`, `LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S`, and `LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S` have been removed. All data access — server-side input resolution, job archive reads/writes, and `DataRetrievalOp` dispatch — now routes exclusively through lumid-data-app using `LUMID_DATA_URL` plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN`, or its fallback `LUMILAKE_RUNTIME_TOKEN`). `S3_DATA_PREFIX` and `S3_ARCHIVE_PREFIX` are retained as logical blob-key prefixes within lumid-data-app's store. `DBLocation` output is no longer supported; submitting a job with a `DBLocation` output returns 422.

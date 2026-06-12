@@ -713,9 +713,10 @@ async def mark_running_jobs_failed(reason: str = "server shutdown") -> None:
             if not record.error:
                 record.error = reason
             record.finished_at = _now()
-            await asyncio.to_thread(_job_storage.save, record)
-            _release_output_locations(record)
-        logger.warning("Marked %d jobs failed due to shutdown", len(active))
+    for record in active:
+        await asyncio.to_thread(_job_storage.save, record)
+        _release_output_locations(record)
+    logger.warning("Marked %d jobs failed due to shutdown", len(active))
 
 
 async def recover_in_flight_jobs(
@@ -1047,7 +1048,13 @@ async def _validate_db_location_live(location: DBLocation) -> DBLocation:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="column is required",
         )
-    found = await acatalog_column_exists(schema, table, column)
+    try:
+        found = await acatalog_column_exists(schema, table, column)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     if not found:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1204,14 +1211,13 @@ async def _run_job(
 
     async with jobs_lock:
         if record.status == "cancelled":
-            await asyncio.to_thread(_job_storage.save, record)
             cancelled_before_start = True
         else:
             cancelled_before_start = False
             record.status = "running"
             record.started_at = _now()
             record.progress.queuing.completed = True
-            await asyncio.to_thread(_job_storage.save, record)
+    await asyncio.to_thread(_job_storage.save, record)
     if cancelled_before_start:
         if record.finished_at:
             await emit_usage([_usage_row(record, principal)], logger)
@@ -1261,44 +1267,56 @@ async def _run_job(
             logger.exception("Failed to resolve trace ids for job %s", job_id)
         trace_ids = [trace_id.strip() for trace_id in trace_ids if trace_id.strip()]
         do_dump = False
-        artifact_uris: set[str] = set()
-        async with jobs_lock:
-            stored_payload = await asyncio.to_thread(
-                _store_artifacts, job_id, response.model_dump()
+        stored_payload = await asyncio.to_thread(
+            _store_artifacts, job_id, response.model_dump()
+        )
+        artifact_uris = _collect_artifact_uris(stored_payload)
+        validated_result = LumilakeResponse.model_validate(stored_payload)
+        try:
+            optimization_seconds = server.optimization_seconds_for_request(job_id)
+        except Exception:
+            optimization_seconds = None
+            logger.exception(
+                "Failed to resolve optimizer timing for job %s",
+                job_id,
             )
-            artifact_uris = _collect_artifact_uris(stored_payload)
-            record.result = LumilakeResponse.model_validate(stored_payload)
-            record.trace_ids = list(trace_ids)
-            try:
-                record.optimization_seconds = server.optimization_seconds_for_request(
-                    job_id
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to resolve optimizer timing for job %s",
-                    job_id,
-                )
-            try:
-                record.selection_seconds = server.selection_seconds_for_request(job_id)
-                record.clustering_seconds = server.clustering_seconds_for_request(
-                    job_id
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to resolve job-manager timing for job %s",
-                    job_id,
-                )
-            record.finished_at = _now()
-            if record.result.error_info:
-                record.status = "failed"
-                summary = _summarize_error_info(record.result.error_info)
-                if summary:
-                    record.error = summary
-                await asyncio.to_thread(_job_storage.save, record)
+        try:
+            selection_seconds = server.selection_seconds_for_request(job_id)
+            clustering_seconds = server.clustering_seconds_for_request(job_id)
+        except Exception:
+            selection_seconds = None
+            clustering_seconds = None
+            logger.exception(
+                "Failed to resolve job-manager timing for job %s",
+                job_id,
+            )
+        cancelled_during_finalize = False
+        async with jobs_lock:
+            # cancel_job may have flipped status during the unlocked artifact /
+            # timing work above. The cancel is the authoritative outcome — do
+            # not overwrite its status, error, or finished_at.
+            if record.status == "cancelled":
+                cancelled_during_finalize = True
             else:
-                record.status = "completed"
-                await asyncio.to_thread(_job_storage.save, record)
-                do_dump = True
+                record.result = validated_result
+                record.trace_ids = list(trace_ids)
+                if optimization_seconds is not None:
+                    record.optimization_seconds = optimization_seconds
+                if selection_seconds is not None:
+                    record.selection_seconds = selection_seconds
+                if clustering_seconds is not None:
+                    record.clustering_seconds = clustering_seconds
+                record.finished_at = _now()
+                if validated_result.error_info:
+                    record.status = "failed"
+                    summary = _summarize_error_info(validated_result.error_info)
+                    if summary:
+                        record.error = summary
+                else:
+                    record.status = "completed"
+                    do_dump = True
+        if not cancelled_during_finalize:
+            await asyncio.to_thread(_job_storage.save, record)
         for trace_id in trace_ids:
             try:
                 await register_resource(
@@ -1348,9 +1366,7 @@ async def _run_job(
                 if not record.error:
                     record.error = str(exc)
                 record.finished_at = _now()
-                await asyncio.to_thread(_job_storage.save, record)
     finally:
-        # ensure latest progress flushed
         await asyncio.to_thread(_job_storage.save, record)
         prefix = f"request::{job_id}::"
         stale_keys = [key for key in data_profile_registry if key.startswith(prefix)]
@@ -1984,7 +2000,7 @@ async def submit_job(
 
     async with jobs_lock:
         jobs[job_id] = record
-        await asyncio.to_thread(_job_storage.save, record)
+    await asyncio.to_thread(_job_storage.save, record)
     await register_resource(
         principal,
         ResourceKind.JOB,
@@ -2151,7 +2167,7 @@ async def cancel_job(
         if not record.error:
             record.error = "cancelled by user"
         record.finished_at = _now()
-        await asyncio.to_thread(_job_storage.save, record)
+    await asyncio.to_thread(_job_storage.save, record)
 
     _release_output_locations(record)
 
@@ -2211,10 +2227,13 @@ async def get_job_progress(
     if "error" not in progress_payload:
         progress_model = record.progress.model_copy(deep=True)
         progress_model.apply_status(progress_payload)
+        needs_save = False
         async with jobs_lock:
             if record.progress != progress_model:
                 record.progress = progress_model
-                await asyncio.to_thread(_job_storage.save, record)
+                needs_save = True
+        if needs_save:
+            await asyncio.to_thread(_job_storage.save, record)
 
     return {
         "ok": True,

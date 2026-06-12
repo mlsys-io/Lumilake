@@ -4,7 +4,9 @@ Uses an in-memory stub keyed on the blob HTTP API to avoid any network calls.
 Verifies exact blob key shapes and ArchiveNotFound semantics.
 """
 
+import threading
 from dataclasses import dataclass, field
+from typing import Any
 
 import pytest
 
@@ -42,10 +44,10 @@ class _Rec:
     started_at: str | None = None
     finished_at: str | None = None
     error: str | None = None
-    inputs: dict[str, object] = field(default_factory=dict)
-    output_location: dict[str, object] = field(default_factory=dict)
-    progress: dict[str, object] = field(default_factory=dict)
-    result: dict[str, object] | None = None
+    inputs: dict[str, Any] = field(default_factory=dict)
+    output_location: dict[str, Any] = field(default_factory=dict)
+    progress: dict[str, Any] = field(default_factory=dict)
+    result: dict[str, Any] | None = None
 
 
 def _make_storage(
@@ -64,6 +66,7 @@ def _make_storage(
     storage = PersistentJobStorage.__new__(PersistentJobStorage)
     JobStorage.__init__(storage)
     storage.key_prefix = prefix.strip("/")
+    storage._index_lock = threading.Lock()
     return storage, backend
 
 
@@ -159,3 +162,27 @@ def test_get_translates_blob_not_found_to_archive_not_found(
     storage, _ = _make_storage("arc", monkeypatch)
     with pytest.raises(ArchiveNotFound):
         storage._get_blob("some/missing/key.json")
+
+
+def test_concurrent_saves_preserve_all_jobs_in_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two threads saving distinct jobs concurrently must both appear in the
+    jobs_index — without the storage-layer ``_index_lock`` the read-modify-write
+    is racy and one save's index entry can clobber the other's."""
+    storage, backend = _make_storage("arc", monkeypatch)
+
+    def _save(job_id: str) -> None:
+        storage.save(_Rec(job_id=job_id))
+
+    threads = [threading.Thread(target=_save, args=(f"j{i}",)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    import json
+
+    body, _ = backend.store["arc/jobs_index.json"]
+    index = json.loads(body.decode("utf-8"))
+    assert sorted(index) == [f"j{i}" for i in range(8)]

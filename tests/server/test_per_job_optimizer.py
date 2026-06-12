@@ -205,7 +205,6 @@ def _make_normalization_app(
     )
     app = FastAPI()
     app.state.logger = logging.getLogger("test.optimizer_normalization")
-    app.state.compute_db_pool = None
     app.state.background_tasks = set()
     app.add_middleware(TraceIdMiddleware)
     app.include_router(job_routes_module.router)
@@ -216,8 +215,8 @@ def _make_normalization_app(
 async def test_submit_stores_optimizer_lowercase_for_partition_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Guards routes/jobs.py:1910 — _validate_optimizer_type accepts mixed case
-    but the stored optimizer_type must be lowercased for consistent partition keys.
+    """``_validate_optimizer_type`` accepts mixed case but the stored
+    ``optimizer_type`` must be lowercased for consistent partition keys.
 
     Submitting optimizer="HALO" must result in optimizer_type="halo" being passed
     to _run_job (and therefore into LumilakeRequestConfig.optimizer_type).
@@ -230,7 +229,6 @@ async def test_submit_stores_optimizer_lowercase_for_partition_key(
         workflow_slices: Any,
         record: Any,
         priority: Any,
-        compute_pool: Any,
         principal: Any,
         runtime_token: Any,
         trace_id: str,
@@ -263,7 +261,7 @@ async def test_submit_stores_optimizer_lowercase_for_partition_key(
         await task
     assert captured == ["halo"], (
         f"expected optimizer_type='halo' but got {captured!r}; "
-        "dropping optimizer.lower() at routes/jobs.py:1910 would reproduce this failure"
+        "dropping optimizer.lower() in the submit handler would reproduce this failure"
     )
 
 

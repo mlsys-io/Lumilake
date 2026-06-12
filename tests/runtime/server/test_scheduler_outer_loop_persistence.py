@@ -375,8 +375,8 @@ async def test_scheduler_commits_reservation_when_workers_acquired(
 
 class _InferenceWithoutBackendBatchJobManager:
     """Yields a batch whose op has task_type=inference but an unrecognized
-    backend. Pre-fix, the scheduler's narrow backend-only check would have
-    classified this CPU-only and stalled at FlowMesh dispatch."""
+    backend. Exercises that the scheduler's GPU peek classifies it as GPU on
+    task_type, not just backend."""
 
     def __init__(self) -> None:
         self._select_calls = 0

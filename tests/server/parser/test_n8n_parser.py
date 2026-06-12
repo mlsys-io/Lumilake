@@ -8,6 +8,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import OutputOp
 from lumilake_server.parser import parse_n8n_payload
 from lumilake_server.parser.n8n import N8N_CHAT_TRIGGER
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "examples" / "templates" / "n8n"
 
@@ -81,9 +82,6 @@ def test_parse_n8n_templates_agent_missing_lumid_data_url_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The runtime graph builder raises when LUMID_DATA_URL is missing."""
-    from lumilake_server.graphs import Graph
-    from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "tok")
 

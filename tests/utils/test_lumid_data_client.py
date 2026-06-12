@@ -207,6 +207,26 @@ class TestListBlobs:
             with pytest.raises(RuntimeError, match="10000-key server cap"):
                 await list_blobs("pfx/")
 
+    @pytest.mark.asyncio
+    async def test_drops_sibling_prefix_matches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _base_url_and_token(monkeypatch)
+        page = {
+            "objects": [
+                {"key": "foo/a.json", "size": 10},
+                {"key": "foo.json", "size": 99},
+                {"key": "foobar/x.json", "size": 77},
+            ],
+            "truncated": False,
+        }
+        with patch(
+            "lumilake_server.utils.lumid_data_client.aget_json",
+            new=AsyncMock(return_value=page),
+        ):
+            sizes, _ = await list_blobs("foo/")
+        assert sizes == {"a.json": 10}
+
 
 class TestValidateSqlIdentifier:
     @pytest.mark.parametrize("name", ["1abc", "pg-cat", "", "drop;--", "a b"])
@@ -339,7 +359,6 @@ class TestRetrieveSampleMaterializedUri:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _base_url_and_token(monkeypatch)
-        import lumilake_server.utils.lumid_data_client as m
 
         captured: dict[str, str] = {}
 
@@ -363,7 +382,6 @@ class TestRetrieveSampleMaterializedUri:
 
     def test_rejects_absolute_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _base_url_and_token(monkeypatch)
-        import lumilake_server.utils.lumid_data_client as m
 
         def _fake_post_json(*args: Any, **kwargs: Any) -> Any:
             return {"materialized_uri": "https://attacker.example/leak"}
@@ -374,7 +392,6 @@ class TestRetrieveSampleMaterializedUri:
 
     def test_rejects_missing_uri(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _base_url_and_token(monkeypatch)
-        import lumilake_server.utils.lumid_data_client as m
 
         def _fake_post_json(*args: Any, **kwargs: Any) -> Any:
             return {}

@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from lumilake_server.runtime.runtime_manager.flowmesh import _walk_output_path
+from lumilake_server.runtime.runtime_manager.flowmesh import (
+    _REDACTED_TOKEN_PLACEHOLDER,
+    _coerce_output_value,
+    _redact_sensitive,
+    _walk_output_path,
+)
 
 
 def test_walk_single_level_dict():
@@ -36,3 +41,97 @@ def test_walk_raises_on_non_dict_descent():
 def test_walk_raises_on_undecodable_string():
     with pytest.raises(RuntimeError, match="non-JSON string"):
         _walk_output_path({"table": "not-json"}, ("table", "col"), "node-5")
+
+
+def test_coerce_output_value_passes_strings_through():
+    assert _coerce_output_value("hello") == "hello"
+
+
+def test_coerce_output_value_serializes_containers():
+    assert _coerce_output_value({"a": 1}) == json.dumps({"a": 1})
+    assert _coerce_output_value([1, 2, 3]) == json.dumps([1, 2, 3])
+
+
+def test_redact_strips_top_level_lumid_data_token():
+    spec = {"type": "lumid", "lumid_data_token": "secret-bearer", "mode": "sql"}
+    redacted = _redact_sensitive(spec)
+    assert redacted["lumid_data_token"] == _REDACTED_TOKEN_PLACEHOLDER
+    assert redacted["type"] == "lumid"
+    assert redacted["mode"] == "sql"
+    assert spec["lumid_data_token"] == "secret-bearer"
+
+
+def test_redact_strips_nested_lumid_cfg_token():
+    spec = {
+        "type": "list",
+        "lumid_cfg": {
+            "lumid_data_url": "http://example",
+            "lumid_data_token": "another-secret",
+            "encoding": "utf-8",
+        },
+    }
+    redacted = _redact_sensitive(spec)
+    assert redacted["lumid_cfg"]["lumid_data_token"] == _REDACTED_TOKEN_PLACEHOLDER
+    assert redacted["lumid_cfg"]["lumid_data_url"] == "http://example"
+
+
+def test_redact_walks_lists_and_full_task_spec_shape():
+    task_spec = {
+        "spec": {
+            "graph": {
+                "nodes": [
+                    {
+                        "name": "n1",
+                        "spec": {
+                            "data": {
+                                "type": "lumid",
+                                "lumid_data_token": "tok-1",
+                            },
+                        },
+                    },
+                    {
+                        "name": "n2",
+                        "spec": {
+                            "data": {
+                                "type": "list",
+                                "lumid_cfg": {"lumid_data_token": "tok-2"},
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+    }
+    redacted = _redact_sensitive(task_spec)
+    nodes = redacted["spec"]["graph"]["nodes"]
+    assert nodes[0]["spec"]["data"]["lumid_data_token"] == _REDACTED_TOKEN_PLACEHOLDER
+    assert (
+        nodes[1]["spec"]["data"]["lumid_cfg"]["lumid_data_token"]
+        == _REDACTED_TOKEN_PLACEHOLDER
+    )
+    # Original is left untouched so the live submission keeps the token.
+    assert (
+        task_spec["spec"]["graph"]["nodes"][0]["spec"]["data"]["lumid_data_token"]
+        == "tok-1"
+    )
+
+
+def test_redact_preserves_empty_token_field():
+    # Empty/absent tokens are left as-is so we don't fabricate placeholders.
+    spec = {"lumid_data_token": ""}
+    assert _redact_sensitive(spec) == {"lumid_data_token": ""}
+
+
+def test_coerce_output_value_serializes_primitive_leaves():
+    # Regression: a path that descends into a JSON-stringified DataFrame
+    # column can yield a primitive leaf; the list[str] contract requires
+    # these to be stringified before flowing into chat prompts.
+    df_json = json.dumps({"symbol": {"0": 42}})
+    walked = _walk_output_path({"table": df_json}, ("table", "symbol", "0"), "node-x")
+    assert walked == 42
+    coerced = _coerce_output_value(walked)
+    assert coerced == "42"
+    assert isinstance(coerced, str)
+    assert _coerce_output_value(True) == "true"
+    assert _coerce_output_value(None) == "null"
+    assert _coerce_output_value(1.5) == "1.5"

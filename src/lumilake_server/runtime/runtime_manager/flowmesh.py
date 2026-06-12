@@ -70,10 +70,34 @@ def _walk_output_path(
     return value
 
 
+def _coerce_output_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value)
+
+
 def _runtime_output_destination() -> dict[str, Any]:
     if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
         return {"type": "http", "timeoutSec": 3600}
     return {"type": "local"}
+
+
+_REDACTED_TOKEN_PLACEHOLDER = "***REDACTED***"
+_SENSITIVE_DATA_SPEC_KEYS = ("lumid_data_token",)
+
+
+def _redact_sensitive(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, sub in value.items():
+            if key in _SENSITIVE_DATA_SPEC_KEYS and isinstance(sub, str) and sub:
+                redacted[key] = _REDACTED_TOKEN_PLACEHOLDER
+            else:
+                redacted[key] = _redact_sensitive(sub)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
 
 
 @dataclass(slots=True)
@@ -646,6 +670,11 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
         task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
+        archive_task_yaml = yaml.dump(
+            _redact_sensitive(task_spec),
+            default_flow_style=False,
+            sort_keys=False,
+        )
         graph_uri = self._save_yaml_artifact(
             request_info,
             "lumilake-runtime-graph.yaml",
@@ -661,7 +690,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         job_uri = self._save_yaml_artifact(
             request_info,
             "flowmesh_job.yaml",
-            task_yaml,
+            archive_task_yaml,
         )
         self.logger.info(
             "Archived runtime graph to %s and FlowMesh job spec to %s",
@@ -939,10 +968,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             outputs: list[str] = []
             for item in items:
                 value: Any = _walk_output_path(item, output_field_parts, output_op_id)
-                if isinstance(value, (dict, list)):
-                    outputs.append(json.dumps(value))
-                else:
-                    outputs.append(value)
+                outputs.append(_coerce_output_value(value))
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
             for item, text in zip(items, outputs):

@@ -152,9 +152,12 @@ async def list_blobs(prefix: str) -> tuple[dict[str, int | None], list[str]]:
         key = obj.get("key")
         if not isinstance(key, str) or not key:
             continue
-        rel = (
-            key[strip_len:] if strip_len and key.startswith(prefix_norm + "/") else key
-        )
+        if prefix_norm:
+            if not key.startswith(prefix_norm + "/"):
+                continue
+            rel = key[strip_len:]
+        else:
+            rel = key
         if not rel:
             continue
         raw_size = obj.get("size")

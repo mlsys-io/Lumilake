@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import logging
+import threading
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -235,6 +236,10 @@ class PersistentJobStorage(JobStorage):
         prefix = envs.S3_ARCHIVE_PREFIX
         assert prefix, "S3_ARCHIVE_PREFIX is not set"
         self.key_prefix = prefix.strip("/")
+        # Serializes the jobs_index / output_index read-modify-write so the
+        # storage layer is safe to call concurrently from multiple threads
+        # without holding a higher-level lock through every HTTP round-trip.
+        self._index_lock = threading.Lock()
 
     def _put_blob(self, key: str, body: bytes, content_type: str) -> None:
         lumid_data_client.put_blob(key, body, content_type)
@@ -293,11 +298,12 @@ class PersistentJobStorage(JobStorage):
             )
         summary = _summary_from_payload(data)
         index_name = self._jobs_index_name()
-        index = self._get_json_optional(index_name) or {}
-        index[record.job_id] = summary.model_dump(mode="json")
-        self._put_json(
-            index_name, json.dumps(index, ensure_ascii=False).encode("utf-8")
-        )
+        with self._index_lock:
+            index = self._get_json_optional(index_name) or {}
+            index[record.job_id] = summary.model_dump(mode="json")
+            self._put_json(
+                index_name, json.dumps(index, ensure_ascii=False).encode("utf-8")
+            )
         self.logger.info("Saved job %s to archive blob %s", record.job_id, obj_name)
 
     def load(self, job_id: str) -> dict[str, Any] | None:
@@ -323,29 +329,31 @@ class PersistentJobStorage(JobStorage):
 
     def reserve_output_location(self, location_key: str, job_id: str) -> None:
         index_name = self._output_index_name()
-        index = self._get_json_optional(index_name) or {}
-        existing = index.get(location_key)
-        if existing and existing != job_id:
-            record = self.load(existing)
-            if record and record.get("status") == "completed":
-                index[location_key] = job_id
+        with self._index_lock:
+            index = self._get_json_optional(index_name) or {}
+            existing = index.get(location_key)
+            if existing and existing != job_id:
+                record = self.load(existing)
+                if record and record.get("status") == "completed":
+                    index[location_key] = job_id
+                else:
+                    raise ValueError(f"output location {location_key} already reserved")
             else:
-                raise ValueError(f"output location {location_key} already reserved")
-        else:
-            index[location_key] = job_id
-        body = json.dumps(index, ensure_ascii=False).encode("utf-8")
-        self._put_json(index_name, body)
+                index[location_key] = job_id
+            body = json.dumps(index, ensure_ascii=False).encode("utf-8")
+            self._put_json(index_name, body)
 
     def release_output_location(self, location_key: str, job_id: str) -> None:
         index_name = self._output_index_name()
-        index = self._get_json_optional(index_name)
-        if index is None:
-            return
-        if index.get(location_key) != job_id:
-            return
-        del index[location_key]
-        body = json.dumps(index, ensure_ascii=False).encode("utf-8")
-        self._put_json(index_name, body)
+        with self._index_lock:
+            index = self._get_json_optional(index_name)
+            if index is None:
+                return
+            if index.get(location_key) != job_id:
+                return
+            del index[location_key]
+            body = json.dumps(index, ensure_ascii=False).encode("utf-8")
+            self._put_json(index_name, body)
 
     def save_artifact(
         self, job_id: str, filename: str, data: bytes, content_type: str

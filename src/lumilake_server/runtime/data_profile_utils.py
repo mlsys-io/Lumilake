@@ -539,13 +539,17 @@ async def _list_blobs_for_folders(
     seen: set[str] = set()
     for folder in folders:
         norm = folder.strip("/")
-        if not norm or norm in seen:
+        if norm in seen:
             continue
         seen.add(norm)
-        partial_sizes, _ = await lumid_list_blobs(norm)
-        folder_paths.add(f"{norm}/")
+        partial_sizes, _ = await lumid_list_blobs(f"{norm}/" if norm else "")
+        # Root-level templates (e.g. ``{id}.json``) resolve to an empty
+        # folder and live under ``folder_paths`` as ``""``.
+        folder_paths.add(f"{norm}/" if norm else "")
         for rel, size in partial_sizes.items():
-            full_key = f"{norm}/{rel}"
+            if rel.endswith("/"):
+                continue
+            full_key = f"{norm}/{rel}" if norm else rel
             sizes[full_key] = size
             parts = full_key.split("/")
             for idx in range(1, len(parts)):
