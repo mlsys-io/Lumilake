@@ -3,10 +3,12 @@ import json
 import pytest
 
 from lumilake_server.runtime.runtime_manager.flowmesh import (
-    _REDACTED_TOKEN_PLACEHOLDER,
     _coerce_output_value,
-    _redact_sensitive,
     _walk_output_path,
+)
+from lumilake_server.runtime.sensitive import (
+    REDACTED_TOKEN_PLACEHOLDER,
+    redact_sensitive,
 )
 
 
@@ -54,8 +56,8 @@ def test_coerce_output_value_serializes_containers():
 
 def test_redact_strips_top_level_lumid_data_token():
     spec = {"type": "lumid", "lumid_data_token": "secret-bearer", "mode": "sql"}
-    redacted = _redact_sensitive(spec)
-    assert redacted["lumid_data_token"] == _REDACTED_TOKEN_PLACEHOLDER
+    redacted = redact_sensitive(spec)
+    assert redacted["lumid_data_token"] == REDACTED_TOKEN_PLACEHOLDER
     assert redacted["type"] == "lumid"
     assert redacted["mode"] == "sql"
     assert spec["lumid_data_token"] == "secret-bearer"
@@ -70,8 +72,8 @@ def test_redact_strips_nested_lumid_cfg_token():
             "encoding": "utf-8",
         },
     }
-    redacted = _redact_sensitive(spec)
-    assert redacted["lumid_cfg"]["lumid_data_token"] == _REDACTED_TOKEN_PLACEHOLDER
+    redacted = redact_sensitive(spec)
+    assert redacted["lumid_cfg"]["lumid_data_token"] == REDACTED_TOKEN_PLACEHOLDER
     assert redacted["lumid_cfg"]["lumid_data_url"] == "http://example"
 
 
@@ -102,12 +104,12 @@ def test_redact_walks_lists_and_full_task_spec_shape():
             },
         },
     }
-    redacted = _redact_sensitive(task_spec)
+    redacted = redact_sensitive(task_spec)
     nodes = redacted["spec"]["graph"]["nodes"]
-    assert nodes[0]["spec"]["data"]["lumid_data_token"] == _REDACTED_TOKEN_PLACEHOLDER
+    assert nodes[0]["spec"]["data"]["lumid_data_token"] == REDACTED_TOKEN_PLACEHOLDER
     assert (
         nodes[1]["spec"]["data"]["lumid_cfg"]["lumid_data_token"]
-        == _REDACTED_TOKEN_PLACEHOLDER
+        == REDACTED_TOKEN_PLACEHOLDER
     )
     # Original is left untouched so the live submission keeps the token.
     assert (
@@ -119,7 +121,7 @@ def test_redact_walks_lists_and_full_task_spec_shape():
 def test_redact_preserves_empty_token_field():
     # Empty/absent tokens are left as-is so we don't fabricate placeholders.
     spec = {"lumid_data_token": ""}
-    assert _redact_sensitive(spec) == {"lumid_data_token": ""}
+    assert redact_sensitive(spec) == {"lumid_data_token": ""}
 
 
 def test_coerce_output_value_serializes_primitive_leaves():

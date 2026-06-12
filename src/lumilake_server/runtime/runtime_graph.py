@@ -26,6 +26,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
+from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _type_default_sample,
@@ -144,7 +145,7 @@ class RuntimeGraph:
         return len(self.nodes)
 
     def serialize(self) -> dict[str, Any]:
-        return RuntimeGraphSchema(
+        payload = RuntimeGraphSchema(
             nodes={
                 nid: RuntimeOpSchema.model_validate(op.serialize())
                 for nid, op in self.nodes.items()
@@ -154,6 +155,7 @@ class RuntimeGraph:
             output_paths=self.output_paths,
             dsl_to_runtime=self.dsl_to_runtime,
         ).model_dump(exclude_none=True)
+        return redact_sensitive(payload)
 
     @classmethod
     def from_schema(cls, schema: "RuntimeGraphSchema") -> "RuntimeGraph":

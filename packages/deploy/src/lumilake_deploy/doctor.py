@@ -110,10 +110,6 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "SERVER_WORKER_CONFIG",
 )
 
-_KNOWN_KEYS: frozenset[str] = frozenset(
-    _ALWAYS_REQUIRED + _RETRIEVAL_REQUIRED + _OPTIONAL_KEYS
-)
-
 
 def _parse_env_file(path: Path) -> dict[str, str]:
     """Tolerant ``.env`` parser — accepts ``KEY=value`` or ``KEY="value"``."""
@@ -142,15 +138,6 @@ def _check_required(values: dict[str, str], report: DoctorReport) -> None:
             report.error(
                 f"{key} is required for DataRetrievalOp — all retrieval modes "
                 f"route through lumid-data-app (fix: set {key}=... in .env)"
-            )
-
-
-def _check_unknown(values: dict[str, str], report: DoctorReport) -> None:
-    for key in values:
-        if key not in _KNOWN_KEYS:
-            report.warning(
-                f"{key} is unknown — typo, or stale schema? "
-                f"(fix: remove {key} from .env, or correct the spelling)"
             )
 
 
@@ -196,7 +183,6 @@ def run_env_checks(
         return report
     values = _parse_env_file(env_path)
     _check_required(values, report)
-    _check_unknown(values, report)
     _check_data_plane(values, report)
     _check_positive_floats(values, report)
     if not report.errors:

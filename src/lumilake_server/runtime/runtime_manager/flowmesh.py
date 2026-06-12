@@ -36,6 +36,7 @@ from lumilake_server.runtime.runtime_graph import (
     RuntimeGraphBuilder,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
 
 from .base import BaseRuntimeManager
@@ -80,24 +81,6 @@ def _runtime_output_destination() -> dict[str, Any]:
     if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
         return {"type": "http", "timeoutSec": 3600}
     return {"type": "local"}
-
-
-_REDACTED_TOKEN_PLACEHOLDER = "***REDACTED***"
-_SENSITIVE_DATA_SPEC_KEYS = ("lumid_data_token",)
-
-
-def _redact_sensitive(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        redacted: dict[str, Any] = {}
-        for key, sub in value.items():
-            if key in _SENSITIVE_DATA_SPEC_KEYS and isinstance(sub, str) and sub:
-                redacted[key] = _REDACTED_TOKEN_PLACEHOLDER
-            else:
-                redacted[key] = _redact_sensitive(sub)
-        return redacted
-    if isinstance(value, list):
-        return [_redact_sensitive(item) for item in value]
-    return value
 
 
 @dataclass(slots=True)
@@ -671,7 +654,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         raw_node_count = len(request_info.runtime_graph.node_order)
         task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
         archive_task_yaml = yaml.dump(
-            _redact_sensitive(task_spec),
+            redact_sensitive(task_spec),
             default_flow_style=False,
             sort_keys=False,
         )

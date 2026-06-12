@@ -238,33 +238,6 @@ def test_resolve_infra_layout_uses_flowmesh_env_file(tmp_path: Path) -> None:
     assert setup_mod._resolve_infra_layout(tmp_path).deploy_fm is True
 
 
-def test_doctor_reports_unknown_s3_url_as_warning(tmp_path: Path) -> None:
-    """S3_URL is no longer a known key — doctor warns instead of validates it."""
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                'LUMILAKE_SERVER_HOST="0.0.0.0"',
-                'LUMILAKE_SERVER_PORT="9000"',
-                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
-                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
-                'LUMILAKE_IMAGE_TAG="latest"',
-                'LUMID_DATA_URL="http://127.0.0.1:9102"',
-                'LUMID_DATA_TOKEN="tok"',
-                'S3_URL="http://s3.example.com:9000"',
-                "",
-            ]
-        )
-    )
-
-    report = doctor_mod.run_env_checks(env_file)
-
-    assert any(
-        "S3_URL" in msg for msg in report.warnings
-    ), "S3_URL should be flagged as unknown"
-    assert not any("S3_URL must use the s3:// scheme" in msg for msg in report.errors)
-
-
 def test_doctor_required_env_failures_name_the_env_var(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("")  # empty file: every required var is missing

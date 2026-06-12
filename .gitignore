@@ -174,4 +174,5 @@ cython_debug/
 #.idea/
 
 # Local plugin mounts for `lumilake deploy`; never checked in.
-/plugins/
+plugins/
+plugin-data/
