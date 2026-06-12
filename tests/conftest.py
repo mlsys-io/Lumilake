@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,9 @@ _ROOT_DIR = _TESTS_DIR.parent
 for path in (str(_TESTS_DIR), str(_ROOT_DIR)):
     if path not in sys.path:
         sys.path.insert(0, path)
+
+for _key in ("LUMILAKE_REQUIRE_IDENTITY_PROVIDER",):
+    os.environ[_key] = ""
 
 from lumilake_server.runtime import flowmesh_client  # noqa: E402
 

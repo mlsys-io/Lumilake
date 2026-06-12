@@ -1,76 +1,20 @@
 import datetime as dt
 import json
 import logging
+import threading
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import asdict
-from io import BytesIO
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from lumilake import envs
-from minio import Minio
-from minio.error import S3Error
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from lumilake_server.utils.parsing import split_bucket_prefix
-from lumilake_server.utils.s3 import create_minio_client
+from lumilake_server.utils import lumid_data_client
 
 
 class ArchiveNotFound(Exception):
     """Raised by archive backends when a key is missing."""
-
-
-class _ArchiveBackend(Protocol):
-    """Minimal storage surface backing :class:`PersistentJobStorage`.
-
-    Two implementations: a Minio client (direct S3) and a lumid.data
-    SDK wrapper. The protocol picks the smallest set of operations
-    PersistentJobStorage actually uses.
-    """
-
-    def put(self, key: str, body: bytes, content_type: str) -> None: ...
-    def get(self, key: str) -> tuple[bytes, str]: ...
-    def ensure_bucket(self) -> None: ...
-
-
-class _MinioBackend:
-    def __init__(self, client: Minio, bucket: str, logger: logging.Logger) -> None:
-        self._client = client
-        self._bucket = bucket
-        self._logger = logger
-
-    def ensure_bucket(self) -> None:
-        try:
-            if not self._client.bucket_exists(self._bucket):
-                self._client.make_bucket(self._bucket)
-                self._logger.info("Created bucket %s", self._bucket)
-        except S3Error as exc:  # pragma: no cover
-            self._logger.warning("Bucket check failed: %s", exc)
-            raise
-
-    def put(self, key: str, body: bytes, content_type: str) -> None:
-        self._client.put_object(
-            bucket_name=self._bucket,
-            object_name=key,
-            data=BytesIO(body),
-            length=len(body),
-            content_type=content_type,
-        )
-
-    def get(self, key: str) -> tuple[bytes, str]:
-        try:
-            stat = self._client.stat_object(self._bucket, key)
-        except S3Error as exc:
-            if exc.code in {"NoSuchKey", "NoSuchObject"}:
-                raise ArchiveNotFound(key) from exc
-            raise
-        resp = self._client.get_object(self._bucket, key)
-        try:
-            body = resp.read()
-        finally:
-            resp.close()
-            resp.release_conn()
-        return body, stat.content_type or "application/octet-stream"
 
 
 def _normalize_payload(value: Any) -> Any:
@@ -285,49 +229,45 @@ class InMemoryJobStorage(JobStorage):
 
 
 class PersistentJobStorage(JobStorage):
-    """Archive backed by direct S3 (Minio client over ``S3_URL``)."""
+    """Archive backed by the lumid-data-app blob HTTP API."""
 
     def __init__(self) -> None:
         super().__init__()
         prefix = envs.S3_ARCHIVE_PREFIX
         assert prefix, "S3_ARCHIVE_PREFIX is not set"
-        self.bucket, self.key_prefix = split_bucket_prefix(prefix)
-        self.backend = self._build_backend()
-        self.backend.ensure_bucket()
+        self.key_prefix = prefix.strip("/")
+        # Serializes the jobs_index / output_index read-modify-write so the
+        # storage layer is safe to call concurrently from multiple threads
+        # without holding a higher-level lock through every HTTP round-trip.
+        self._index_lock = threading.Lock()
 
-    def _build_backend(self) -> _ArchiveBackend:
-        endpoint = envs.S3_ENDPOINT
-        access_key = envs.S3_ACCESS_KEY
-        connection_value = envs.S3_CONNECTION_VALUE
-        assert endpoint, "S3_ENDPOINT is not set"
-        assert access_key, "S3_ACCESS_KEY is not set"
-        assert connection_value, "S3_URL credential is not set"
-        client = create_minio_client(
-            endpoint=endpoint,
-            access_key=access_key,
-            secret_key=connection_value,
-            cert_file=envs.S3_CERT_FILE,
-        )
-        return _MinioBackend(client, self.bucket, self.logger)
+    def _put_blob(self, key: str, body: bytes, content_type: str) -> None:
+        lumid_data_client.put_blob(key, body, content_type)
+
+    def _get_blob(self, key: str) -> tuple[bytes, str]:
+        try:
+            return lumid_data_client.get_blob(key)
+        except lumid_data_client.BlobNotFound as exc:
+            raise ArchiveNotFound(key) from exc
 
     def _object_name(self, job_id: str) -> str:
         if self.key_prefix:
-            return f"{self.key_prefix.rstrip('/')}/{job_id}/record.json"
+            return f"{self.key_prefix}/{job_id}/record.json"
         return f"{job_id}/record.json"
 
     def _job_object_name(self, job_id: str, filename: str) -> str:
         if self.key_prefix:
-            return f"{self.key_prefix.rstrip('/')}/{job_id}/{filename}"
+            return f"{self.key_prefix}/{job_id}/{filename}"
         return f"{job_id}/{filename}"
 
     def _output_index_name(self) -> str:
         if self.key_prefix:
-            return f"{self.key_prefix.rstrip('/')}/output_index.json"
+            return f"{self.key_prefix}/output_index.json"
         return "output_index.json"
 
     def _jobs_index_name(self) -> str:
         if self.key_prefix:
-            return f"{self.key_prefix.rstrip('/')}/jobs_index.json"
+            return f"{self.key_prefix}/jobs_index.json"
         return "jobs_index.json"
 
     def save(self, record: Any) -> None:
@@ -358,14 +298,13 @@ class PersistentJobStorage(JobStorage):
             )
         summary = _summary_from_payload(data)
         index_name = self._jobs_index_name()
-        index = self._get_json_optional(index_name) or {}
-        index[record.job_id] = summary.model_dump(mode="json")
-        self._put_json(
-            index_name, json.dumps(index, ensure_ascii=False).encode("utf-8")
-        )
-        self.logger.info(
-            "Saved job %s to archive %s/%s", record.job_id, self.bucket, obj_name
-        )
+        with self._index_lock:
+            index = self._get_json_optional(index_name) or {}
+            index[record.job_id] = summary.model_dump(mode="json")
+            self._put_json(
+                index_name, json.dumps(index, ensure_ascii=False).encode("utf-8")
+            )
+        self.logger.info("Saved job %s to archive blob %s", record.job_id, obj_name)
 
     def load(self, job_id: str) -> dict[str, Any] | None:
         obj_name = self._object_name(job_id)
@@ -390,49 +329,51 @@ class PersistentJobStorage(JobStorage):
 
     def reserve_output_location(self, location_key: str, job_id: str) -> None:
         index_name = self._output_index_name()
-        index = self._get_json_optional(index_name) or {}
-        existing = index.get(location_key)
-        if existing and existing != job_id:
-            record = self.load(existing)
-            if record and record.get("status") == "completed":
-                index[location_key] = job_id
+        with self._index_lock:
+            index = self._get_json_optional(index_name) or {}
+            existing = index.get(location_key)
+            if existing and existing != job_id:
+                record = self.load(existing)
+                if record and record.get("status") == "completed":
+                    index[location_key] = job_id
+                else:
+                    raise ValueError(f"output location {location_key} already reserved")
             else:
-                raise ValueError(f"output location {location_key} already reserved")
-        else:
-            index[location_key] = job_id
-        body = json.dumps(index, ensure_ascii=False).encode("utf-8")
-        self._put_json(index_name, body)
+                index[location_key] = job_id
+            body = json.dumps(index, ensure_ascii=False).encode("utf-8")
+            self._put_json(index_name, body)
 
     def release_output_location(self, location_key: str, job_id: str) -> None:
         index_name = self._output_index_name()
-        index = self._get_json_optional(index_name)
-        if index is None:
-            return
-        if index.get(location_key) != job_id:
-            return
-        del index[location_key]
-        body = json.dumps(index, ensure_ascii=False).encode("utf-8")
-        self._put_json(index_name, body)
+        with self._index_lock:
+            index = self._get_json_optional(index_name)
+            if index is None:
+                return
+            if index.get(location_key) != job_id:
+                return
+            del index[location_key]
+            body = json.dumps(index, ensure_ascii=False).encode("utf-8")
+            self._put_json(index_name, body)
 
     def save_artifact(
         self, job_id: str, filename: str, data: bytes, content_type: str
     ) -> str:
         object_name = self._job_object_name(job_id, f"artifacts/{filename}")
-        self.backend.put(object_name, data, content_type)
-        return f"s3://{self.bucket}/{object_name}"
+        self._put_blob(object_name, data, content_type)
+        return object_name
 
     def get_artifact(self, job_id: str, filename: str) -> tuple[bytes, str]:
         object_name = self._job_object_name(job_id, f"artifacts/{filename}")
         try:
-            return self.backend.get(object_name)
+            return self._get_blob(object_name)
         except ArchiveNotFound as exc:
             raise KeyError(filename) from exc
 
     def _put_json(self, object_name: str, body: bytes) -> None:
-        self.backend.put(object_name, body, "application/json")
+        self._put_blob(object_name, body, "application/json")
 
     def _get_json(self, object_name: str) -> dict[str, Any]:
-        body, _ = self.backend.get(object_name)
+        body, _ = self._get_blob(object_name)
         return json.loads(body.decode("utf-8"))
 
     def _get_json_optional(self, object_name: str) -> dict[str, Any] | None:

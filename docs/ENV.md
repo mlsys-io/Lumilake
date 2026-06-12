@@ -23,30 +23,20 @@ Run `lumilake deploy -C <deploy-dir> doctor` after editing `.env`.
 | `LUMILAKE_SERVER_HOST` | Host the FastAPI server binds to. |
 | `LUMILAKE_SERVER_PORT` | Port the FastAPI server binds to. |
 | `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` | FlowMesh server URL used for workflow dispatch. |
-| `S3_ARCHIVE_PREFIX` | `bucket/prefix` where job records and runtime artifacts are archived. |
 | `LUMILAKE_IMAGE_TAG` | Docker image tag used by local deployment. Defaults to `dev` (the rolling main-built image). Pin to a `vX.Y.Z` semver tag for production. |
 | `LUMILAKE_REGISTRY` | Container registry the deploy CLI pulls the server image from. Defaults to `ghcr.io/mlsys-io`. **Trust-bearing**: setting this points `lumilake deploy pull` at a different host, so only override it to a registry you control. |
 
-Compute data plane (required for every direct SQL/S3 op):
-
-| Key | Purpose |
-|-----|---------|
-| `DATABASE_URL` | PostgreSQL connection string used by every SQL `DataRetrievalOp`. |
-| `S3_URL` | S3-compatible endpoint and credentials (connection only, no path) used by every S3 `DataRetrievalOp` and the archive. Example: `s3://access:secret@host:port`. |
-| `S3_DATA_PREFIX` | `bucket/prefix` read root for S3 `DataRetrievalOp` and data-profile listing. Required when `S3_URL` is set; `envs.validate()` and `lumilake deploy doctor` both enforce this. |
-| `S3_CERT_FILE` | Path to an S3 TLS cert bundle. Optional; the bundled compose mounts the file when set. |
-
 ## Lumid.data routing
 
-Only `DataRetrievalOp` with `type: agent` routes through lumid.data — SQL and S3 retrievals always go direct against `DATABASE_URL` / `S3_URL` + `S3_DATA_PREFIX` regardless of `LUMID_DATA_URL`.
-
-Agent-retrieval keys:
+All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`, `s3`, and `agent` modes — route through lumid-data-app at runtime. Data profiling (EXPLAIN cost estimation via `POST /profile`, S3 object listing via `GET /blobs`, and live sampling via `POST /retrieve`) also routes through lumid-data-app. `LUMID_DATA_URL` is required for any deployment that runs workflows with `DataRetrievalOp`s or has data profiling enabled, and an effective lumid-data bearer token is required: `LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`.
 
 | Key | Purpose |
 |-----|---------|
-| `LUMID_DATA_URL` | Base URL for lumid.data's `/agent/v1` endpoint. Required when a workflow contains agent retrievals. |
-| `LUMID_DATA_TOKEN` | Bearer token sent to lumid.data. |
-| `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid.data calls. Defaults to `30`. |
+| `LUMID_DATA_URL` | Base URL for the lumid-data-app instance. Required for all `DataRetrievalOp` modes and for data profiling. |
+| `LUMID_DATA_TOKEN` | Bearer token sent to lumid-data-app. Optional — falls back to `LUMILAKE_RUNTIME_TOKEN` when unset; the effective bearer (this key OR the fallback) is required for all `DataRetrievalOp` modes and for data profiling. |
+| `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid-data-app calls. Defaults to `30`. |
+| `S3_DATA_PREFIX` | Logical blob-key prefix in lumid-data-app's store for compute data (workflow inputs/outputs). Used as the base key prefix for S3-input resolution and output writes. |
+| `S3_ARCHIVE_PREFIX` | Logical blob-key prefix in lumid-data-app's store for job records and runtime artifacts (the archive layer). Required. |
 
 ## Server and Logging
 
@@ -103,9 +93,7 @@ Agent-retrieval keys:
 | `LUMILAKE_S3_PROFILE_COST_PER_MIB` | Cost-model coefficient (per MiB) for S3 profile estimates. |
 | `LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS` | Comma-separated planner variants used for local data profiles. Defaults to `default,prefer_index,prefer_seq,prefer_nestloop`. |
 | `LUMILAKE_DISABLE_DATA_PROFILE` | When truthy (`1`/`true`/`yes`/`on`), the server skips inline data-profile task build/run, skips `collect_data_profile` at batch dispatch, and the HALO optimizer falls back to its static cost model (any supplied profile results are dropped). Defaults to off. |
-| `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING` | When truthy (`1`/`true`/`yes`/`on`), preflight may issue a bounded `LIMIT N` query against an upstream's connection when no `sample_value` is set. Off by default — set `sample_value` on the upstream `data_spec` for zero live-execution surface, or set this var to `1` only when you control the connected database and trust that it has no side-effecting functions in scope. |
-| `LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S` | TCP connect timeout in seconds for live SQL sample connections. Defaults to `5.0`. Must be a positive float; non-positive or unparsable values fall back to the default. |
-| `LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S` | Postgres `statement_timeout` applied to each live sample query, in seconds. Defaults to `10.0`. Must be a positive float; non-positive or unparsable values fall back to the default. |
+| `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING` | When truthy (`1`/`true`/`yes`/`on`), preflight may issue a bounded `LIMIT N` query via lumid-data-app `POST /retrieve` against an upstream when no `sample_value` is set. Off by default — set `sample_value` on the upstream `data_spec` for zero live-execution surface, or set this var to `1` to opt in to bounded live queries. Requires `LUMID_DATA_URL` and an effective lumid-data bearer (set `LUMID_DATA_TOKEN`, or fall back to `LUMILAKE_RUNTIME_TOKEN`). |
 
 ## vLLM Backend
 
@@ -158,7 +146,3 @@ Consumed by the SDK and deploy CLI helpers.
 | `LUMILAKE_DEPLOY_DIR` | Default `--project-dir` for `lumilake deploy`. |
 
 See `.env.example` for the deploy-time template and defaults.
-
-## Migration: S3_URL path → S3_DATA_PREFIX
-
-Prior versions parsed the data prefix from the path component of `S3_URL` (e.g. `s3://access:secret@host:port/bucket/prefix`). That path component is no longer read; `S3_URL` must now be a connection-only string with no path. Move the prefix to the new `S3_DATA_PREFIX` variable (e.g. `S3_DATA_PREFIX=bucket/prefix`). Server startup raises a `ValueError` if `S3_URL` still carries a path, so the break is loud and caught before the server accepts traffic.

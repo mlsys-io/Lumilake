@@ -13,10 +13,8 @@ from lumilake_server.runtime.server import LumilakeServer
 
 @pytest.fixture(autouse=True)
 def _direct_parser_envs(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(envs, "DATABASE_URL", "sqlite://")
-    monkeypatch.setattr(envs, "S3_URL", "s3://dummy")
-    monkeypatch.setattr(envs, "S3_WORKER_URL", "s3://dummy/bucket")
-    monkeypatch.setattr(envs, "LUMID_DATA_URL", "")
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
 
 def _build_image_generation_slices(
@@ -110,8 +108,7 @@ def _find_sql_symbol_items(compiled_graph: Graph) -> list[str]:
         if not isinstance(op, DataRetrievalOp):
             continue
         data_spec = op.data_spec
-        spec_type = data_spec.get("type")
-        if spec_type != "sql":
+        if data_spec.get("type") != "lumid" or data_spec.get("mode") != "sql":
             continue
         params = data_spec.get("params")
         if not isinstance(params, list):

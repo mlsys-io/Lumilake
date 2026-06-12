@@ -1,8 +1,8 @@
 name: agent-retrieval
 
-# Data-agent equity research workflow. Each ``type: agent`` retrieval
-# delegates the SQL planning to lumid.data /agent/v1 (requires
-# ``LUMID_DATA_URL`` on the server). The agent decides what to query
+# Data-agent equity research workflow. Each ``type: lumid, mode: agent``
+# retrieval routes through lumid.data (requires ``LUMID_DATA_URL`` and
+# ``LUMID_DATA_TOKEN`` on the server). The agent decides what to query
 # from the listed ``schema_scope`` tables.
 #
 # Inputs:  Stock (single symbol per slice; ``--batch-size 1`` is default)
@@ -39,7 +39,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock]
     data_spec:
-      type: agent
+      type: lumid
+      mode: agent
       schema_scope: lumilake_demo.instrument_profile
       output_format: jsonl
       max_steps: 10
@@ -53,7 +54,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock, "SQL Date Planner"]
     data_spec:
-      type: agent
+      type: lumid
+      mode: agent
       schema_scope: lumilake_demo.financial_income_statement
       output_format: jsonl
       max_steps: 10
@@ -70,7 +72,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock, "SQL Date Planner"]
     data_spec:
-      type: agent
+      type: lumid
+      mode: agent
       schema_scope: lumilake_demo.ohlc_10m,lumilake_demo.market_metrics
       output_format: jsonl
       max_steps: 10
@@ -87,7 +90,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock, "SQL Date Planner"]
     data_spec:
-      type: agent
+      type: lumid
+      mode: agent
       schema_scope: lumilake_demo.insider_sentiment
       output_format: jsonl
       max_steps: 10
@@ -104,7 +108,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock]
     data_spec:
-      type: agent
+      type: lumid
+      mode: agent
       schema_scope: lumilake_demo.news_metadata
       output_format: jsonl
       max_steps: 10

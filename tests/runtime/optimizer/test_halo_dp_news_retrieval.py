@@ -34,6 +34,8 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             model_spec={},
             inference_spec={"max_tokens": 256},
         ),
+        # Profiling-node wire shape: type is read by the data-profile cost
+        # model, not by the DataRetrievalOp dispatcher.
         "news_sql": RuntimeOp(
             node_id="news_sql",
             task_type="data_retrieval",

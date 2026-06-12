@@ -43,14 +43,14 @@ ops:
       temperature: 0.4
       top_p: 1
 
-  # ---- Stage 2: SQL retrievals ---------------------------------------
+  # ---- Stage 2: SQL retrievals (via lumid-data-app) -----------------
 
   - id: "Fundamentals Query"
     op: DataRetrievalOp
     inputs: [Stock, "SQL Date Planner"]
     data_spec:
-      type: sql
-      connection_string: ${DATABASE_URL}
+      type: lumid
+      mode: sql
       template: |-
         WITH profile AS (
           SELECT symbol, "companyName", sector, industry, "marketCap", beta
@@ -94,8 +94,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock, "SQL Date Planner"]
     data_spec:
-      type: sql
-      connection_string: ${DATABASE_URL}
+      type: lumid
+      mode: sql
       template: |-
         WITH bars_recent AS (
           SELECT
@@ -142,8 +142,8 @@ ops:
     op: DataRetrievalOp
     inputs: [Stock]
     data_spec:
-      type: sql
-      connection_string: ${DATABASE_URL}
+      type: lumid
+      mode: sql
       template: |-
         SELECT
           symbol,

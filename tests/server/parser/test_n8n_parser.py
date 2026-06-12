@@ -8,6 +8,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import OutputOp
 from lumilake_server.parser import parse_n8n_payload
 from lumilake_server.parser.n8n import N8N_CHAT_TRIGGER
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "examples" / "templates" / "n8n"
 
@@ -44,15 +45,9 @@ def _build_inputs(workflow: dict) -> dict[str, list[str]]:
     sorted(TEMPLATE_DIR.glob("*.json")),
     ids=lambda p: str(p.relative_to(TEMPLATE_DIR)),
 )
-def test_parse_n8n_templates(template_path: Path):
-    if envs.DATABASE_URL is None:
-        envs.DATABASE_URL = "sqlite://"
-    if envs.S3_URL is None:
-        envs.S3_URL = "s3://dummy"
-    if envs.S3_WORKER_URL is None:
-        envs.S3_WORKER_URL = "s3://dummy/bucket"
-    if not envs.LUMID_DATA_URL:
-        envs.LUMID_DATA_URL = "http://lumid-data"
+def test_parse_n8n_templates(template_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
     workflow = _load_template(template_path)
     inputs = _build_inputs(workflow)
@@ -69,14 +64,49 @@ def test_parse_n8n_templates(template_path: Path):
     assert compiled is not None
     assert list(graph.iter_ops(OutputOp)), "expected at least one output op"
 
+    # Verify every DataRetrievalOp carries the new lumid wire format
+    from lumilake_server.ops import DataRetrievalOp as _DROp
 
-def test_image_generation_digest_uses_row_summary_aggregate_table() -> None:
-    if envs.DATABASE_URL is None:
-        envs.DATABASE_URL = "sqlite://"
-    if envs.S3_URL is None:
-        envs.S3_URL = "s3://dummy"
-    if envs.S3_WORKER_URL is None:
-        envs.S3_WORKER_URL = "s3://dummy/bucket"
+    for op in graph.iter_ops(_DROp):
+        ds = op.data_spec
+        assert ds.get("type") == "lumid", f"op {op.id} has type {ds.get('type')!r}"
+        assert ds.get("mode") in {
+            "sql",
+            "s3",
+            "agent",
+        }, f"op {op.id} has unknown mode {ds.get('mode')!r}"
+        assert "connection_string" not in ds
+
+
+def test_parse_n8n_templates_agent_missing_lumid_data_url_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runtime graph builder raises when LUMID_DATA_URL is missing."""
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "tok")
+
+    agent_template = TEMPLATE_DIR / "agent-retrieval.json"
+    if not agent_template.exists():
+        pytest.skip("agent-retrieval.json not found")
+    workflow = _load_template(agent_template)
+    inputs = _build_inputs(workflow)
+    payload = {
+        "graphs": [
+            {"name": agent_template.stem, "workflow": workflow, "inputs": inputs}
+        ]
+    }
+    graph_specs = parse_n8n_payload(payload)
+    spec = graph_specs[agent_template.stem]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    with pytest.raises(ValueError, match="LUMID_DATA_URL"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_image_generation_digest_uses_row_summary_aggregate_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
     template_path = TEMPLATE_DIR / "image-generation.json"
     workflow = _load_template(template_path)

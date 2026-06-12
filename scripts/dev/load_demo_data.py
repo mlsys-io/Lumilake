@@ -2,22 +2,22 @@
 """Fetch the Lumilake e2e demo dataset and load it into the local stack."""
 
 import argparse
+import mimetypes
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import urllib3
 from lumilake_deploy._demo_data import (
+    LumidBlobClient,
     compose_key_prefix,
     find_default_env_file,
     human_bytes,
     info,
-    make_minio_client,
-    parse_s3_url,
+    lumid_config_from_env,
     require_env,
     resolve_env,
 )
@@ -35,12 +35,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--env-file", type=Path)
     p.add_argument("--database-url")
-    p.add_argument("--s3-url")
-    p.add_argument("--s3-data-prefix")
-    p.add_argument("--s3-cert-file")
+    p.add_argument("--lumid-data-url", help="lumid-data-app base URL")
+    p.add_argument("--lumid-data-token", help="lumid-data-app bearer token")
+    p.add_argument(
+        "--blob-prefix",
+        help="logical prefix inside lumid-data-app's blob store "
+        "(matches the Lumilake server's S3_DATA_PREFIX)",
+    )
     p.add_argument("--tag", default=DEFAULT_TAG)
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
-    p.add_argument("--s3-prefix", default=DEFAULT_S3_PREFIX)
+    p.add_argument("--news-key-prefix", default=DEFAULT_S3_PREFIX)
     p.add_argument("--drop-schema", action="store_true")
     p.add_argument("--pg-restore-jobs", type=int, default=4)
     return p.parse_args(argv)
@@ -115,7 +119,12 @@ def pg_restore(database_url: str, dump_path: Path, drop: bool, jobs: int) -> Non
     )
 
 
-def upload_news_tree(client: Any, bucket: str, key_prefix: str, src_root: Path) -> int:
+def _guess_content_type(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(str(path))
+    return mime or "application/octet-stream"
+
+
+def upload_news_tree(client: LumidBlobClient, key_prefix: str, src_root: Path) -> int:
     base = key_prefix.strip("/")
     upload_base = f"{base}/news" if base else "news"
     count = 0
@@ -124,7 +133,8 @@ def upload_news_tree(client: Any, bucket: str, key_prefix: str, src_root: Path) 
         if not path.is_file():
             continue
         rel = path.relative_to(news_root).as_posix()
-        client.fput_object(bucket, f"{upload_base}/{rel}", str(path))
+        key = f"{upload_base}/{rel}"
+        client.put_blob(key, path.read_bytes(), _guess_content_type(path))
         count += 1
         if count % 200 == 0:
             info(f"       uploaded {count} objects...")
@@ -139,12 +149,13 @@ def main(argv: list[str]) -> int:
         env_file,
         overrides={
             "DATABASE_URL": args.database_url,
-            "S3_URL": args.s3_url,
-            "S3_DATA_PREFIX": args.s3_data_prefix,
-            "S3_CERT_FILE": args.s3_cert_file,
+            "LUMID_DATA_URL": args.lumid_data_url,
+            "LUMID_DATA_TOKEN": args.lumid_data_token,
+            "S3_DATA_PREFIX": args.blob_prefix,
         },
     )
-    require_env(env, ["DATABASE_URL", "S3_URL", "S3_DATA_PREFIX"])
+    require_env(env, ["DATABASE_URL", "S3_DATA_PREFIX"])
+    lumid_cfg = lumid_config_from_env(env)
 
     cache = args.cache_dir.expanduser().resolve()
     pg_path = cache / PG_ASSET
@@ -154,22 +165,19 @@ def main(argv: list[str]) -> int:
     gh_download(args.tag, PG_ASSET, pg_path)
     gh_download(args.tag, S3_ASSET, s3_path)
     info(f"       pg dump  {human_bytes(pg_path.stat().st_size)}")
-    info(f"       s3 tar   {human_bytes(s3_path.stat().st_size)}")
+    info(f"       blob tar {human_bytes(s3_path.stat().st_size)}")
 
     info(f"[2/3] restoring schema {EMBEDDED_SCHEMA} into DATABASE_URL")
     pg_restore(env["DATABASE_URL"], pg_path, args.drop_schema, args.pg_restore_jobs)
 
-    cfg = parse_s3_url(
-        env["S3_URL"], env["S3_DATA_PREFIX"], env.get("S3_CERT_FILE") or None
-    )
-    client = make_minio_client(cfg)
-    full_key_prefix = compose_key_prefix(cfg.base_prefix, args.s3_prefix)
-    info(f"[3/3] uploading news/ -> s3://{cfg.bucket}/{full_key_prefix}/news")
+    client = LumidBlobClient(lumid_cfg)
+    full_key_prefix = compose_key_prefix(env["S3_DATA_PREFIX"], args.news_key_prefix)
+    info(f"[3/3] uploading news/ -> {lumid_cfg.base_url}/blobs/{full_key_prefix}/news")
     with tempfile.TemporaryDirectory(prefix="lumilake-demo-news-") as stage:
         stage_path = Path(stage)
         with tarfile.open(s3_path, "r:gz") as tar:
             tar.extractall(stage_path, filter="data")
-        count = upload_news_tree(client, cfg.bucket, full_key_prefix, stage_path)
+        count = upload_news_tree(client, full_key_prefix, stage_path)
     info(f"       uploaded {count} objects")
 
     info("")

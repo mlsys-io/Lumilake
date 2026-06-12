@@ -1,0 +1,69 @@
+name: data-retrieval
+
+# Three lumid retrieval modes (sql / s3 / agent), CPU-only.
+# Endpoint + bearer come from envs.LUMID_DATA_URL / LUMID_DATA_TOKEN
+# (with fallback to LUMILAKE_RUNTIME_TOKEN) — not declared here.
+
+inputs:
+  Stock: ["NVDA"]
+
+ops:
+
+  - id: "OHLC via SQL"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: sql
+      output_format: jsonl
+      verify: false
+      template: |-
+        SELECT symbol, close
+        FROM demo.fact_ohlc_10m
+        WHERE symbol = '{symbol}'
+        ORDER BY timestamp DESC
+        LIMIT 5
+      params:
+        - label: symbol
+          node: "Stock"
+
+  - id: "News HTML via S3"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: s3
+      encoding: utf-8
+      verify: false
+      # Render with envsubst against a real blob key before submitting, e.g.
+      #   NEWS_KEY=$(curl -sf -H "Authorization: Bearer $LUMID_DATA_TOKEN" \
+      #     "$LUMID_DATA_URL/blobs?prefix=demo/unstructured/news-html/&limit=1" \
+      #     | jq -r '.objects[0].key')
+      #   envsubst < data-retrieval.yaml > /tmp/rendered.yaml
+      template: "${NEWS_KEY}"
+
+  - id: "OHLC via Agent"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: agent
+      schema_scope: demo
+      output_format: jsonl
+      max_steps: 10
+      verify: false
+      description: "Retrieve the 5 most recent OHLC rows for {ref_stock} from the demo schema."
+      params:
+        - label: ref_stock
+          node: "Stock"
+
+outputs:
+  - name: ohlc_sql
+    ref: "OHLC via SQL"
+    path: items.table
+  - name: news_html
+    ref: "News HTML via S3"
+    path: items.content
+  - name: ohlc_agent
+    ref: "OHLC via Agent"
+    path: items.table

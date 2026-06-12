@@ -3,8 +3,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from lumilake import envs
-
 from .common import make_id as _make_id
 
 # n8n wire-format node type identifiers. Private to this module — anything
@@ -987,11 +985,6 @@ def _make_postgres_retrieval_op(
                 inputs=inputs,
             )
         )
-        if not envs.DATABASE_URL:
-            raise ValueError(
-                f"n8n data-retrieval node '{node_name}' missing connection_string "
-                "(set DATABASE_URL)"
-            )
         dep_inputs = [
             param["node"]
             for param in sql_params
@@ -1003,8 +996,8 @@ def _make_postgres_retrieval_op(
             "_max_iter": None,
             "_inputs": list(dict.fromkeys(extra_inputs + dep_inputs + main_inputs)),
             "data_spec": {
-                "type": "sql",
-                "connection_string": envs.DATABASE_URL,
+                "type": "lumid",
+                "mode": "sql",
                 "template": sql_template,
                 "params": sql_params,
             },
@@ -1043,12 +1036,6 @@ def _make_postgres_retrieval_op(
         inputs=inputs,
     )
 
-    if not envs.DATABASE_URL:
-        raise ValueError(
-            f"n8n data-retrieval node '{node_name}' missing connection_string "
-            "(set DATABASE_URL)"
-        )
-
     dep_inputs = [
         param["node"]
         for param in sql_params
@@ -1062,8 +1049,8 @@ def _make_postgres_retrieval_op(
             dict.fromkeys(extra_inputs + limit_inputs + dep_inputs + main_inputs)
         ),
         "data_spec": {
-            "type": "sql",
-            "connection_string": envs.DATABASE_URL,
+            "type": "lumid",
+            "mode": "sql",
             "template": sql_template,
             "params": sql_params,
             "table": full_table,
@@ -1141,12 +1128,6 @@ def _make_agent_retrieval_op(
         query=text, op_ids=op_ids, inputs=inputs
     )
 
-    if not envs.LUMID_DATA_URL:
-        raise ValueError(
-            f"n8n agent node '{node_name}' requires LUMID_DATA_URL to be"
-            " configured on the lumilake server."
-        )
-
     main_inputs = [
         op_ids[dep]
         for dep in _main_incoming(node_name, incoming, node_map)
@@ -1159,7 +1140,8 @@ def _make_agent_retrieval_op(
     ]
 
     data_spec: dict[str, Any] = {
-        "type": "agent",
+        "type": "lumid",
+        "mode": "agent",
         "schema_scope": schema_scope,
         "output_format": output_format,
         "verify": bool(verify) if verify is not None else False,
@@ -1209,11 +1191,6 @@ def _make_s3_retrieval_op(
         op_ids=op_ids,
         inputs=inputs,
     )
-    if not envs.S3_WORKER_URL:
-        raise ValueError(
-            f"n8n s3 node '{node_name}' missing S3 connection string "
-            "(set S3_URL and S3_DATA_PREFIX)"
-        )
     _BINARY_EXTENSIONS = (
         ".png",
         ".jpg",
@@ -1234,8 +1211,8 @@ def _make_s3_retrieval_op(
         else "utf-8"
     )
     data_spec: dict[str, Any] = {
-        "type": "s3",
-        "connection_string": envs.S3_WORKER_URL,
+        "type": "lumid",
+        "mode": "s3",
         "template": s3_template,
         "params": s3_params,
         "encoding": encoding,
@@ -1286,11 +1263,6 @@ def _make_lake_retrieval_op(
         op_ids=op_ids,
         inputs=inputs,
     )
-    if not envs.S3_WORKER_URL:
-        raise ValueError(
-            f"n8n lake retrieval node '{node_name}' missing S3 connection string "
-            "(set S3_URL and S3_DATA_PREFIX)"
-        )
     _BINARY_EXTENSIONS = (
         ".png",
         ".jpg",
@@ -1311,8 +1283,8 @@ def _make_lake_retrieval_op(
         else "utf-8"
     )
     data_spec: dict[str, Any] = {
-        "type": "s3",
-        "connection_string": envs.S3_WORKER_URL,
+        "type": "lumid",
+        "mode": "s3",
         "template": s3_template,
         "params": s3_params,
         "encoding": encoding,
@@ -1569,6 +1541,9 @@ def _make_code_ops(
 
 
 def _make_output_op(scope: str, name: str, upstream_id: str) -> dict[str, Any]:
+    # n8n has no UI primitive for the YAML ``outputs[].path`` selector, so the
+    # emitted OutputOp never carries an explicit path — the runtime falls back
+    # to the mode-derived default. See docs/WORKFLOWS.md § "Output projection".
     return {
         "_id": _make_id(scope, "output", name),
         "_op": "OutputOp",

@@ -55,7 +55,11 @@ from lumilake_server.runtime.request import (
     RequestInfo,
     WorkflowSliceMeta,
 )
-from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import (
+    RuntimeGraph,
+    RuntimeGraphBuilder,
+    RuntimeOp,
+)
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     create_runtime_manager,
@@ -731,39 +735,57 @@ class LumilakeServer:
             try:
                 await self.job_manager.wait_for_work()
                 await self._wait_for_batch_accumulation()
-                workers = await self._wait_for_available_worker_group(
-                    cpu_group_size=self.config.cpu_worker_group_size,
-                    gpu_group_size=self.config.gpu_worker_group_size,
-                )
-                if workers is None:
-                    continue
                 select_start = time.perf_counter()
-                batch = await self.job_manager.select_batch(self.config.batch_size)
+                reservation = await self.job_manager.reserve_batch(
+                    self.config.batch_size
+                )
                 select_elapsed = time.perf_counter() - select_start
-                if batch is None:
-                    async with self._worker_lock:
-                        self._busy_workers.difference_update(workers)
+                if reservation is None:
                     continue
-                member_request_ids = {item.request_id for item in batch.workflows}
-                selection_only_elapsed = max(
-                    0.0, select_elapsed - batch.clustering_seconds
-                )
-                self._record_job_manager_time(
-                    member_request_ids=member_request_ids,
-                    selection_seconds=selection_only_elapsed,
-                    clustering_seconds=batch.clustering_seconds,
-                )
-                self.logger.info(
-                    "Dispatching batch (size=%d) to workers %s "
-                    "(cpu_group_size=%d gpu_group_size=%d)",
-                    len(batch.workflows),
-                    workers,
-                    self.config.cpu_worker_group_size,
-                    self.config.gpu_worker_group_size,
-                )
-                task = asyncio.create_task(self._run_batch(workers, batch))
-                self._inflight_tasks.add(task)
-                task.add_done_callback(self._inflight_tasks.discard)
+                committed = False
+                try:
+                    batch = reservation.selection
+                    gpu_group_size = (
+                        self.config.gpu_worker_group_size
+                        if self._batch_requires_gpu(batch)
+                        else 0
+                    )
+                    workers = await self._wait_for_available_worker_group(
+                        cpu_group_size=self.config.cpu_worker_group_size,
+                        gpu_group_size=gpu_group_size,
+                    )
+                    if workers is None:
+                        continue
+                    await self.job_manager.commit_reservation(reservation)
+                    committed = True
+                    member_request_ids = {item.request_id for item in batch.workflows}
+                    selection_only_elapsed = max(
+                        0.0, select_elapsed - batch.clustering_seconds
+                    )
+                    self._record_job_manager_time(
+                        member_request_ids=member_request_ids,
+                        selection_seconds=selection_only_elapsed,
+                        clustering_seconds=batch.clustering_seconds,
+                    )
+                    self.logger.info(
+                        "Dispatching batch (size=%d) to workers %s "
+                        "(cpu_group_size=%d gpu_group_size=%d)",
+                        len(batch.workflows),
+                        workers,
+                        self.config.cpu_worker_group_size,
+                        gpu_group_size,
+                    )
+                    task = asyncio.create_task(self._run_batch(workers, batch))
+                    self._inflight_tasks.add(task)
+                    task.add_done_callback(self._inflight_tasks.discard)
+                finally:
+                    if not committed:
+                        try:
+                            await self.job_manager.abort_reservation(reservation)
+                        except Exception:
+                            self.logger.exception(
+                                "Failed to abort reservation after scheduler error"
+                            )
             except asyncio.CancelledError:
                 return
             except Exception:
@@ -875,8 +897,7 @@ class LumilakeServer:
             raise RuntimeError("No workers available for schedule preview")
 
         requires_gpu = any(
-            self._is_gpu_runtime_backend(op.backend)
-            for op in runtime_graph.nodes.values()
+            self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
         requires_cpu = any(
             op.task_type == "data_retrieval" for op in runtime_graph.nodes.values()
@@ -946,8 +967,19 @@ class LumilakeServer:
         return isinstance(devices, list) and len(devices) > 0
 
     @staticmethod
-    def _is_gpu_runtime_backend(backend: str) -> bool:
-        return backend in {"vllm", "transformers", "diffusers"}
+    def _requires_gpu(op: RuntimeOp) -> bool:
+        # Delegate so the scheduler's peek can't drift from the dispatcher's
+        # selection rule — drift means the scheduler asks for 0 GPU workers
+        # and the dispatcher then stalls trying to route to one.
+        return FlowmeshRuntimeManager._runtime_op_requires_gpu(op)
+
+    @classmethod
+    def _batch_requires_gpu(cls, batch: BatchSelection) -> bool:
+        for runtime_graph in batch.runtime_graphs.values():
+            for op in runtime_graph.nodes.values():
+                if cls._requires_gpu(op):
+                    return True
+        return False
 
     @classmethod
     def _normalize_worker_profile(

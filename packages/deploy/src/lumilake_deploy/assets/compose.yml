@@ -25,11 +25,8 @@ services:
       # Env vars are injected via env_file; no .env inside the container.
       LUMILAKE_SKIP_DOTENV_CHECK: "1"
     volumes:
-      # Surface the host's S3 cert at the same path inside the container
-      # so ``S3_CERT_FILE`` resolves. Mounting ``/dev/null`` is a no-op
-      # when the variable is unset (direct-mode without TLS verification).
-      - ${S3_CERT_FILE:-/dev/null}:${S3_CERT_FILE:-/dev/null}:ro
       - ${LUMILAKE_PLUGIN_DIR:-./plugins}:/app/plugins:ro
+      - ./data/plugin-data:/app/plugin-data:rw
     healthcheck:
       test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"LUMILAKE_SERVER_PORT\", \"9000\")}/healthz')"]
       interval: 10s

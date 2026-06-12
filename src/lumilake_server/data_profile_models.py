@@ -21,7 +21,6 @@ class DataProfileResultRow(BaseModel):
     node_id: str = Field(min_length=1)
     raw_node_id: str = Field(min_length=1)
     query_name: str = Field(min_length=1)
-    connection_string: str
     table: str
     cost_estimates: list[DataProfileCostEstimate]
 

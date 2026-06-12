@@ -122,11 +122,6 @@ def submit(
         "--output-prefix",
         help="S3 output prefix (required when --output-type s3)",
     ),
-    output_connection_string: str | None = typer.Option(
-        None,
-        "--output-connection-string",
-        help="S3 connection string (s3://user:pass@endpoint/bucket)",
-    ),
     output_table: str | None = typer.Option(
         None, "--output-table", help="DB output table (required when --output-type db)"
     ),
@@ -193,8 +188,6 @@ def submit(
             logging.error("--output-prefix is required when --output-type is s3")
             raise typer.Exit(code=1)
         output_location: dict[str, Any] = {"type": "s3", "prefix": output_prefix}
-        if output_connection_string:
-            output_location["connection_string"] = output_connection_string
     elif output_type == "db":
         if not output_table or not output_column:
             logging.error("--output-table and --output-column required for db output")

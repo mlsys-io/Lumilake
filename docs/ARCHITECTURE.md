@@ -35,7 +35,8 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
           v
 +-------------------+
 | Archive + results |
-| S3 (S3_ARCHIVE_   |
+| lumid-data-app    |
+| (S3_ARCHIVE_      |
 |     PREFIX)       |
 +-------------------+
 ```
@@ -64,7 +65,7 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 
 Lumilake separates compute data from job archive data.
 
-- **SQL `DataRetrievalOp`** connects directly to `DATABASE_URL`.
-- **S3 `DataRetrievalOp`** uses the `S3_URL` connection (endpoint + credentials) and reads under the `S3_DATA_PREFIX` path. Both are required for S3 reads; the prefixes are orthogonal on the same connection.
-- **Agent `DataRetrievalOp`** (`type: agent`) routes through lumid.data's `/agent/v1` endpoint and therefore requires `LUMID_DATA_URL`.
-- **Archive** (job records, runtime artifacts) is always written under `S3_ARCHIVE_PREFIX` using the same `S3_URL` connection. `S3_DATA_PREFIX` and `S3_ARCHIVE_PREFIX` are independent — they may point at different buckets or prefixes on the same endpoint.
+- **`DataRetrievalOp`** (all modes — `sql`, `s3`, `agent`) routes through lumid-data-app using the `type: lumid` FlowMesh connector. `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`).
+- **Data profiling** (EXPLAIN cost estimation via `POST /profile`, S3 object listing via `GET /blobs`, and live sampling via `POST /retrieve`) also routes through lumid-data-app, gated by the same URL + effective-token contract.
+- **Archive** (job records, runtime artifacts) is written under `S3_ARCHIVE_PREFIX`, a logical blob-key prefix in lumid-data-app's store. All archive reads and writes route through lumid-data-app using `LUMID_DATA_URL` / `LUMID_DATA_TOKEN`.
+- **Server-side input resolution** (resolving `InputOp` SQL/S3 inputs) routes through lumid-data-app. `S3_DATA_PREFIX` is a logical blob-key prefix in lumid-data-app's store used as the base for S3-input key expansion. `DBLocation` output is not supported; submitting a job with a `DBLocation` output returns 422.

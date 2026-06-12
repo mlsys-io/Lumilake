@@ -25,6 +25,18 @@ from .schedule.model_size import MODEL_SIZE
 from .schedule.models import DBQuery, Edge, GraphSpec, Node, QueryPlanChoice, Worker
 
 
+def _retrieval_is_data_profile_eligible(data_spec: Mapping[str, Any]) -> bool:
+    """True when the retrieval is sql or s3 — accepts both the runtime
+    ``type=lumid, mode=sql|s3`` shape and the bare ``type=sql|s3`` shape
+    that profile-graph nodes carry."""
+    spec_type = data_spec.get("type")
+    if spec_type in {"sql", "s3"}:
+        return True
+    if spec_type == "lumid":
+        return data_spec.get("mode") in {"sql", "s3"}
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class HaloTuningContext:
     input_query_count: int
@@ -451,8 +463,7 @@ class HaloOptimizer(BaseOptimizer):
         data_profile_results: Mapping[str, Sequence[DataProfileResultRow]],
     ) -> tuple[QueryPlanChoice, ...]:
         data_spec = op.data_spec
-        spec_type = data_spec.get("type")
-        if spec_type not in {"sql", "s3"}:
+        if not _retrieval_is_data_profile_eligible(data_spec):
             return tuple()
         query_name = f"{node_id}_query"
         cache_key = data_profile_key_for_node_query(node_id, query_name)
@@ -548,7 +559,7 @@ class HaloOptimizer(BaseOptimizer):
     def _is_data_profile_candidate(self, op: RuntimeOp) -> bool:
         if self._map_engine(op.backend, op.task_type) != "db":
             return False
-        return op.data_spec.get("type") in {"sql", "s3"}
+        return _retrieval_is_data_profile_eligible(op.data_spec)
 
     @staticmethod
     def _build_node_raw(op: RuntimeOp, deps: Sequence[str]) -> dict[str, Any]:

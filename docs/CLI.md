@@ -86,7 +86,7 @@ HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
 
 | Command | Stops services | Removes data volumes |
 |---------|----------------|----------------------|
-| `lumilake deploy down` | yes | no — archive (job records, run artifacts), compute Postgres, and MinIO corpus data survive, so `deploy up` resumes against the same state. `--wipe-archive` additionally wipes compute Postgres and FlowMesh runtime-state volumes while preserving MinIO corpus data. |
+| `lumilake deploy down` | yes | no — `deploy up` resumes against the same lumid-data-app state. The archive layer (job records, runtime artifacts) lives in lumid-data-app under `S3_ARCHIVE_PREFIX` and is not managed by `lumilake deploy`. `--wipe-archive` wipes the FlowMesh runtime-state volumes that `lumilake deploy` own. |
 | `lumilake deploy clean` | yes | yes (every Lumilake-managed volume) |
 | `lumilake deploy reset` | yes | yes (every Lumilake-managed volume), then re-runs `deploy up`. Prompts for confirmation; pass `--yes` to skip the prompt in scripts. |
 

@@ -36,11 +36,45 @@ from lumilake_server.runtime.runtime_graph import (
     RuntimeGraphBuilder,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
 
 from .base import BaseRuntimeManager
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+
+
+def _walk_output_path(
+    item: Mapping[str, Any], parts: Sequence[str], output_op_id: str
+) -> Any:
+    """Walk a dotted ``items.<a>.<b>.<c>`` path through a result item;
+    JSON-decode intermediate string fields so DataFrame-serialized columns
+    (e.g. ``items.table.symbol``) traverse cleanly."""
+    value: Any = item
+    walked: list[str] = []
+    for part in parts:
+        walked.append(part)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"output node {output_op_id} cannot descend into non-JSON "
+                    f"string at path 'items.{'.'.join(walked)}': {value!r}"
+                ) from exc
+        if not isinstance(value, Mapping) or part not in value:
+            raise RuntimeError(
+                f"output node {output_op_id} item missing field at path "
+                f"'items.{'.'.join(walked)}': {item}"
+            )
+        value = value[part]
+    return value
+
+
+def _coerce_output_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value)
 
 
 def _runtime_output_destination() -> dict[str, Any]:
@@ -619,6 +653,11 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
         task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
+        archive_task_yaml = yaml.dump(
+            redact_sensitive(task_spec),
+            default_flow_style=False,
+            sort_keys=False,
+        )
         graph_uri = self._save_yaml_artifact(
             request_info,
             "lumilake-runtime-graph.yaml",
@@ -634,7 +673,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         job_uri = self._save_yaml_artifact(
             request_info,
             "flowmesh_job.yaml",
-            task_yaml,
+            archive_task_yaml,
         )
         self.logger.info(
             "Archived runtime graph to %s and FlowMesh job spec to %s",
@@ -846,19 +885,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
             if any(isinstance(it.get("image"), dict) for it in items):
                 job_storage = get_job_storage()
-                prefix = envs.S3_ARCHIVE_PREFIX
-                if not prefix:
+                if not envs.S3_ARCHIVE_PREFIX:
                     raise RuntimeError(
                         "S3_ARCHIVE_PREFIX is required for image outputs"
                     )
-                prefix = prefix.strip("/")
-                bucket, _, key_prefix = prefix.partition("/")
-                key_prefix = key_prefix.strip("/")
-                base_key = (
-                    f"{key_prefix}/{request_info.request_id}/artifacts"
-                    if key_prefix
-                    else f"{request_info.request_id}/artifacts"
-                )
                 archived: list[dict[str, Any]] = []
                 for it in items:
                     image_ref = it["image"]
@@ -881,31 +911,47 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                             mimetypes.guess_type(filename)[0]
                             or "application/octet-stream"
                         )
-                        job_storage.save_artifact(
+                        uri = job_storage.save_artifact(
                             request_info.request_id,
                             filename,
                             data,
                             content_type,
                         )
-                        archived.append(
-                            {"output": f"s3://{bucket}/{base_key}/{filename}"}
-                        )
+                        archived.append({"output": uri})
                     except Exception as e:
                         self.logger.warning(
                             f"Failed to archive artifact for {output_op_id}: {e}"
                         )
                         archived.append({"output": "", "error": str(e)})
                 items = archived
-            # structural_outputs returns parsed JSON; re-serialize so callers
-            # always see a string.
-            outputs: list[str] = [
-                (
-                    json.dumps(item["output"])
-                    if isinstance(item["output"], (dict, list))
-                    else item["output"]
-                )
-                for item in items
-            ]
+                # Archived items only have an ``output`` field; ignore user path.
+                output_field_parts: tuple[str, ...] = ("output",)
+            else:
+                output_field_parts = ("output",)
+                output_path = request_info.runtime_graph.output_paths.get(output_op_id)
+                if output_path is not None:
+                    if (
+                        not isinstance(output_path, str)
+                        or not output_path.startswith("items.")
+                        or output_path == "items."
+                    ):
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    parts = tuple(
+                        part for part in output_path[len("items.") :].split(".") if part
+                    )
+                    if not parts:
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    output_field_parts = parts
+            outputs: list[str] = []
+            for item in items:
+                value: Any = _walk_output_path(item, output_field_parts, output_op_id)
+                outputs.append(_coerce_output_value(value))
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
             for item, text in zip(items, outputs):

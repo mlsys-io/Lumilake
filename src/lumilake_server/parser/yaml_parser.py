@@ -15,8 +15,8 @@ ops:
     op: DataRetrievalOp           # registered Op class name
     inputs: [query]               # references to other op ids (or input names)
     data_spec:                    # op-specific fields are passed through
-      type: s3
-      connection_string: s3://bucket
+      type: lumid
+      mode: s3
       template: docs/{entity}.json
       params:
         - label: entity
@@ -87,7 +87,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
-from lumilake import envs
 
 from .common import make_id as _make_id
 
@@ -124,6 +123,7 @@ class _OpEntry:
 class _OutputEntry:
     name: str
     ref: str
+    path: str | None = None
 
 
 def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
@@ -283,13 +283,16 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         op_id = _make_id(scope, "output", out.name)
         if op_id in graph_ops:
             raise ValueError(f"duplicate output id derived for '{out.name}'")
-        graph_ops[op_id] = {
+        out_dict: dict[str, Any] = {
             "_id": op_id,
             "_op": "OutputOp",
             "_max_iter": None,
             "_inputs": [user_id_to_internal[out.ref]],
             "name": out.name,
         }
+        if out.path is not None:
+            out_dict["path"] = out.path
+        graph_ops[op_id] = out_dict
 
     return _YamlGraphSpec(graph=graph_ops, inputs=inputs)
 
@@ -349,7 +352,14 @@ def _parse_output_entry(entry: Any, idx: int) -> _OutputEntry:
         raise ValueError(f"output entry at index {idx} missing 'name'")
     if not isinstance(ref, str) or not ref.strip():
         raise ValueError(f"output entry '{name}' missing 'ref'")
-    return _OutputEntry(name=name.strip(), ref=ref.strip())
+    path = entry.get("path")
+    if path is not None and (not isinstance(path, str) or not path.strip()):
+        raise ValueError(f"output entry '{name}' path must be a non-empty string")
+    return _OutputEntry(
+        name=name.strip(),
+        ref=ref.strip(),
+        path=path.strip() if isinstance(path, str) else None,
+    )
 
 
 def _build_op_dict(
@@ -415,15 +425,12 @@ def _resolve_data_spec(
     op_label: str = "DataRetrievalOp",
     field_label: str = "data_spec",
 ) -> dict[str, Any]:
-    """Resolve ``${VAR}`` placeholders + ``params[*].node`` refs in a spec.
+    """Resolve ``params[*].node`` refs in a spec.
 
     ``op_label`` and ``field_label`` are threaded through every error
     message so the caller sees the op and field they actually authored.
     """
     resolved = dict(data_spec)
-    conn = resolved.get("connection_string")
-    if isinstance(conn, str):
-        resolved["connection_string"] = _expand_env_placeholders(conn)
     params = resolved.get("params")
     if params is None:
         return resolved
@@ -982,33 +989,6 @@ def _build_generation_config(
             f"{op_kind} '{entry_id}' config has unknown fields: {sorted(unknown)}"
         )
     return dict(config)
-
-
-_ENV_PLACEHOLDERS: dict[str, Any] = {
-    "${DATABASE_URL}": lambda: envs.DATABASE_URL,
-    "${S3_URL}": lambda: envs.S3_WORKER_URL,
-}
-
-
-def _expand_env_placeholders(value: str) -> str:
-    """Resolve ``${DATABASE_URL}`` / ``${S3_URL}`` sentinel values.
-
-    Parsers bake ``envs.DATABASE_URL`` / ``envs.S3_WORKER_URL`` into each
-    ``DataRetrievalOp.data_spec.connection_string`` at parse time. To keep the
-    YAML portable across machines (CI, laptops, containers) the same ``envs``
-    values are substituted here when a YAML author writes the sentinel as the
-    literal connection string.
-    """
-    for placeholder, getter in _ENV_PLACEHOLDERS.items():
-        if value == placeholder:
-            actual = getter()
-            if actual is None:
-                raise ValueError(
-                    f"YAML connection_string uses {placeholder} but the "
-                    "corresponding envs value is unset"
-                )
-            return str(actual)
-    return value
 
 
 def _op_id_prefix(op_type: str) -> str:

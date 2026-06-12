@@ -574,3 +574,75 @@ async def test_none_optimizer_cobatches_with_explicit_default() -> None:
     # same effective optimizer type after None-normalization.
     assert len(batch.workflows) == 2
     assert {item.request_id for item in batch.workflows} == {"req-none", "req-explicit"}
+
+
+@pytest.mark.asyncio
+async def test_reserve_then_abort_does_not_drift_user_rr_pointer() -> None:
+    """Aborting a reservation must leave the user-level RR pointer untouched.
+
+    Directly inspects ``_rr_user_order`` before/after an abort cycle and
+    also asserts that two consecutive ``reserve+abort`` calls with
+    ``batch_size=1`` return the same single item — both would break if
+    ``reserve_batch`` rotated the user-RR pointer on the peek path.
+    """
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+    primary = _primary_priority()
+
+    await manager.enqueue(_build_job("req-a", "graph-a", user_id="user-a"))
+    await manager.enqueue(_build_job("req-b", "graph-b", user_id="user-b"))
+    await manager.enqueue(_build_job("req-c", "graph-c", user_id="user-c"))
+
+    order_before = list(manager._rr_user_order[primary])
+
+    first = await manager.reserve_batch(1)
+    assert first is not None
+    first_ids = [item.workflow_id for item in first.selection.workflows]
+    await manager.abort_reservation(first)
+
+    order_after_abort = list(manager._rr_user_order[primary])
+    assert order_after_abort == order_before
+
+    second = await manager.reserve_batch(1)
+    assert second is not None
+    second_ids = [item.workflow_id for item in second.selection.workflows]
+    await manager.abort_reservation(second)
+
+    assert order_before == list(manager._rr_user_order[primary])
+    assert first_ids == second_ids
+
+
+@pytest.mark.asyncio
+async def test_commit_reservation_rejects_stale_after_abort() -> None:
+    """``commit_reservation`` raises if the reservation was already aborted."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+    await manager.enqueue(_build_job("req-a", "graph-a", user_id="user-a"))
+
+    first = await manager.reserve_batch(1)
+    assert first is not None
+    await manager.abort_reservation(first)
+
+    with pytest.raises(RuntimeError, match="active"):
+        await manager.commit_reservation(first)
+
+
+@pytest.mark.asyncio
+async def test_abort_reservation_rejects_stale_after_commit() -> None:
+    """``abort_reservation`` raises if the reservation was already committed."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+    await manager.enqueue(_build_job("req-a", "graph-a", user_id="user-a"))
+
+    first = await manager.reserve_batch(1)
+    assert first is not None
+    await manager.commit_reservation(first)
+
+    with pytest.raises(RuntimeError, match="active"):
+        await manager.abort_reservation(first)

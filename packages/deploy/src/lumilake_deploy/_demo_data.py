@@ -1,22 +1,18 @@
+import json
 import os
 import re
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from urllib.parse import unquote, urlparse
+
+import urllib3
 
 
 @dataclass(frozen=True)
-class S3Config:
-    endpoint: str
-    access_key: str
-    secret_key: str
-    bucket: str
-    base_prefix: str
-    secure: bool
-    cert_file: str | None
+class LumidDataConfig:
+    base_url: str
+    token: str | None
 
 
 def load_env_file(env_file: Path | None) -> dict[str, str]:
@@ -65,66 +61,107 @@ def require_env(env: dict[str, str], keys: Iterable[str]) -> None:
         )
 
 
-def parse_s3_url(raw: str, data_prefix: str, cert_file: str | None = None) -> S3Config:
-    parsed = urlparse(raw)
-    if parsed.scheme != "s3":
-        raise SystemExit(f"S3_URL must use s3:// scheme: {raw!r}")
-    if not parsed.hostname or not parsed.username or not parsed.password:
+def lumid_config_from_env(env: dict[str, str]) -> LumidDataConfig:
+    base = env.get("LUMID_DATA_URL", "").strip().rstrip("/")
+    if not base:
         raise SystemExit(
-            "S3_URL must include credentials and host, e.g. "
-            "s3://access:secret@host:port"
+            "LUMID_DATA_URL is required "
+            "(fix: set LUMID_DATA_URL=http://host:port in --env-file or pass "
+            "--lumid-data-url)"
         )
-    if parsed.path and parsed.path.strip("/"):
-        raise SystemExit(
-            "S3_URL must not include a path; set the prefix in S3_DATA_PREFIX "
-            "(fix: set S3_URL=s3://access:secret@host:port, "
-            "S3_DATA_PREFIX=bucket/prefix in .env)"
-        )
-    bucket, _, base_prefix = data_prefix.lstrip("/").partition("/")
-    if not bucket:
-        raise SystemExit(
-            "S3_DATA_PREFIX must include a bucket in the path "
-            "(fix: set S3_DATA_PREFIX=bucket/prefix in .env)"
-        )
-    endpoint = parsed.hostname
-    if parsed.port:
-        endpoint = f"{endpoint}:{parsed.port}"
-    return S3Config(
-        endpoint=endpoint,
-        access_key=unquote(parsed.username),
-        secret_key=unquote(parsed.password),
-        bucket=bucket,
-        base_prefix=base_prefix.strip("/"),
-        secure=bool(cert_file),
-        cert_file=cert_file,
-    )
+    token = env.get("LUMID_DATA_TOKEN") or env.get("LUMILAKE_RUNTIME_TOKEN") or None
+    return LumidDataConfig(base_url=base, token=token)
 
 
-def make_minio_client(cfg: S3Config) -> Any:
-    try:
-        from minio import Minio
-    except ImportError as exc:
-        raise SystemExit(
-            "minio package is required. Install via "
-            "`uv sync --all-packages` or `pip install minio`."
-        ) from exc
+def _headers(
+    cfg: LumidDataConfig, extra: dict[str, str] | None = None
+) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if cfg.token:
+        headers["Authorization"] = f"Bearer {cfg.token}"
+    if extra:
+        headers.update(extra)
+    return headers
 
-    http_client = None
-    if cfg.cert_file:
-        import certifi
-        import urllib3
 
-        http_client = urllib3.PoolManager(
-            cert_reqs="CERT_REQUIRED",
-            ca_certs=cfg.cert_file or certifi.where(),
+class LumidBlobClient:
+    _LIST_PAGE_LIMIT = 10000
+
+    def __init__(self, cfg: LumidDataConfig, *, timeout_seconds: float = 60.0) -> None:
+        self._cfg = cfg
+        self._http = urllib3.PoolManager()
+        self._timeout = timeout_seconds
+
+    def put_blob(self, key: str, body: bytes, content_type: str) -> None:
+        url = f"{self._cfg.base_url}/blobs/{_encode_key(key)}"
+        resp = self._http.request(
+            "PUT",
+            url,
+            body=body,
+            headers=_headers(self._cfg, {"Content-Type": content_type}),
+            timeout=urllib3.Timeout(total=self._timeout),
         )
-    return Minio(
-        endpoint=cfg.endpoint,
-        access_key=cfg.access_key,
-        secret_key=cfg.secret_key,
-        secure=cfg.secure,
-        http_client=http_client,
-    )
+        if resp.status >= 400:
+            raise SystemExit(
+                f"PUT {url} failed: HTTP {resp.status} {resp.data[:200]!r}"
+            )
+
+    def iter_blob_keys(self, prefix: str) -> Iterator[str]:
+        url = f"{self._cfg.base_url}/blobs"
+        norm = prefix.strip("/")
+        resp = self._http.request(
+            "GET",
+            url,
+            fields={"prefix": norm, "limit": str(self._LIST_PAGE_LIMIT)},
+            headers=_headers(self._cfg),
+            timeout=urllib3.Timeout(total=self._timeout),
+        )
+        if resp.status >= 400:
+            raise SystemExit(
+                f"GET {url}?prefix={norm!r} failed: HTTP {resp.status} "
+                f"{resp.data[:200]!r}"
+            )
+        try:
+            payload = json.loads(resp.data.decode("utf-8"))
+        except ValueError as exc:
+            raise SystemExit(f"GET {url} returned non-JSON: {exc}") from exc
+        if payload.get("truncated"):
+            raise SystemExit(
+                f"listing for prefix {norm!r} exceeds the "
+                f"{self._LIST_PAGE_LIMIT}-key server cap; narrow the prefix"
+            )
+        for obj in payload.get("objects", []):
+            key = obj.get("key") if isinstance(obj, dict) else None
+            if isinstance(key, str) and key and not key.endswith("/"):
+                yield key
+
+    def download_blob(self, key: str, dest: Path) -> None:
+        url = f"{self._cfg.base_url}/blobs/{_encode_key(key)}"
+        resp = self._http.request(
+            "GET",
+            url,
+            headers=_headers(self._cfg),
+            preload_content=False,
+            timeout=urllib3.Timeout(total=self._timeout),
+        )
+        try:
+            if resp.status >= 400:
+                raise SystemExit(
+                    f"GET {url} failed: HTTP {resp.status} {resp.read()[:200]!r}"
+                )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(dest, "wb") as f:
+                for chunk in resp.stream(64 * 1024):
+                    f.write(chunk)
+        finally:
+            resp.release_conn()
+
+
+def _encode_key(key: str) -> str:
+    # Keep '/' literal so the path hierarchy survives encoding.
+    from urllib.parse import quote
+
+    return quote(key, safe="/")
 
 
 def find_default_env_file(start: Path | None = None) -> Path | None:
@@ -136,12 +173,14 @@ def find_default_env_file(start: Path | None = None) -> Path | None:
     return None
 
 
-def compose_key_prefix(base_prefix: str, s3_prefix: str) -> str:
-    """Return the full S3 key prefix by joining base_prefix and s3_prefix.
+def compose_key_prefix(base_prefix: str, sub_prefix: str) -> str:
+    """Return the full key prefix by joining ``base_prefix`` and ``sub_prefix``.
 
     Either segment may be empty; no leading or trailing slash is produced.
     """
-    return "/".join(seg for seg in (base_prefix, s3_prefix.strip("/")) if seg)
+    base = base_prefix.strip("/")
+    sub = sub_prefix.strip("/")
+    return "/".join(seg for seg in (base, sub) if seg)
 
 
 def info(msg: str) -> None:

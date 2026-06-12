@@ -29,9 +29,12 @@ def main() -> int:
         raise SystemExit(f"Missing env example: {ENV_EXAMPLE.relative_to(REPO_ROOT)}")
 
     keys = _example_keys(ENV_EXAMPLE)
-    required = set(doctor._ALWAYS_REQUIRED + doctor._DIRECT_MODE_REQUIRED)
+    required = set(doctor._ALWAYS_REQUIRED)
+    known = set(
+        doctor._ALWAYS_REQUIRED + doctor._RETRIEVAL_REQUIRED + doctor._OPTIONAL_KEYS
+    )
     missing = sorted(required - keys)
-    unknown = sorted(keys - doctor._KNOWN_KEYS)
+    unknown = sorted(keys - known)
 
     failed = False
     if missing:

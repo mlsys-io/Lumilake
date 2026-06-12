@@ -10,9 +10,8 @@ for unsupported upstream op kinds.
 """
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import psycopg.errors
 import pytest
 from lumilake import envs
 from lumilake.envs import _positive_float
@@ -51,8 +50,8 @@ class TestStructuralOutputTypeDefault:
         )
         retrieval = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": (
                     "SELECT * FROM t WHERE symbol='{symbol}' " "AND code='{code}'"
                 ),
@@ -91,8 +90,8 @@ class TestStructuralOutputTypeDefault:
         )
         retrieval = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM t WHERE n={n}",
                 "params": [
                     {
@@ -134,8 +133,8 @@ class TestStructuralOutputTypeDefault:
         )
         retrieval = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM t WHERE side='{side}'",
                 "params": [
                     {
@@ -162,8 +161,8 @@ class TestSampleValueShortCircuit:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT key FROM lookup WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
                 "sample_value": "K-123",
@@ -172,8 +171,8 @@ class TestSampleValueShortCircuit:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM facts WHERE key='{key}'",
                 "params": [
                     {
@@ -198,8 +197,8 @@ class TestSampleValueShortCircuit:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT key, label FROM lookup WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
                 "sample_value": {"key": "K-7", "label": "alpha"},
@@ -208,8 +207,8 @@ class TestSampleValueShortCircuit:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM facts WHERE key='{key}'",
                 "params": [
                     {
@@ -236,11 +235,13 @@ class TestLiveSqlSampler:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING", True)
+        monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data-test")
+        monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
-        calls: list[tuple[str, str]] = []
+        calls: list[str] = []
 
-        def fake_sampler(connection_string: str, query: str) -> list[Any]:
-            calls.append((connection_string, query))
+        def fake_sampler(query: str) -> list[Any]:
+            calls.append(query)
             return [{"key": "fetched-key"}]
 
         monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", fake_sampler)
@@ -248,8 +249,8 @@ class TestLiveSqlSampler:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://upstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT key FROM lookup WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
             },
@@ -257,8 +258,8 @@ class TestLiveSqlSampler:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://downstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM facts WHERE key='{key}'",
                 "params": [
                     {
@@ -279,14 +280,15 @@ class TestLiveSqlSampler:
         sample = node.data_spec["params"][0]["data"]["items"][0]
         assert sample == "fetched-key"
         assert len(calls) == 1
-        assert calls[0][0] == "postgresql://upstream"
-        assert "LIMIT" in calls[0][1].upper()
-        assert "SELECT key FROM lookup WHERE s='NVDA'" in calls[0][1]
+        assert "LIMIT" in calls[0].upper()
+        assert "SELECT key FROM lookup WHERE s='NVDA'" in calls[0]
 
     def test_empty_sampler_result_raises_explicit_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING", True)
+        monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data-test")
+        monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
         monkeypatch.setattr(
             rg._RuntimeProfileSamplers,
             "sql",
@@ -296,8 +298,8 @@ class TestLiveSqlSampler:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://upstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT key FROM lookup WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
             },
@@ -305,8 +307,8 @@ class TestLiveSqlSampler:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://downstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM facts WHERE key='{key}'",
                 "params": [
                     {
@@ -333,8 +335,8 @@ class TestDefaultDenyLiveSampling:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://upstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT key FROM lookup WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
             },
@@ -342,8 +344,8 @@ class TestDefaultDenyLiveSampling:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://downstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM facts WHERE key='{key}'",
                 "params": [
                     {
@@ -378,33 +380,16 @@ class TestDefaultDenyLiveSampling:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING", True)
+        monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data-test")
+        monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
-        connect_calls: list[str] = []
-        mock_cursor = MagicMock()
-        mock_cursor.description = [MagicMock(name="key")]
-        mock_cursor.fetchall.return_value = [("live-key",)]
-        mock_cursor.__enter__ = lambda s: s
-        mock_cursor.__exit__ = MagicMock(return_value=False)
+        sample_calls: list[str] = []
 
-        class FakeConn:
-            read_only = False
+        def fake_sampler(query: str) -> list[Any]:
+            sample_calls.append(query)
+            return [{"key": "live-key"}]
 
-            def cursor(self) -> Any:
-                return mock_cursor
-
-            def __enter__(self) -> "FakeConn":
-                return self
-
-            def __exit__(self, *_: Any) -> None:
-                pass
-
-        def fake_connect(conn_str: str, **_kwargs: Any) -> FakeConn:
-            connect_calls.append(conn_str)
-            return FakeConn()
-
-        monkeypatch.setattr(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect", fake_connect
-        )
+        monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", fake_sampler)
 
         stock, upstream, downstream = self._make_upstream_downstream()
         llm = LLMChatOp(
@@ -415,11 +400,8 @@ class TestDefaultDenyLiveSampling:
         node = _build_profile_node(compiled, downstream.id)
         sample = node.data_spec["params"][0]["data"]["items"][0]
         assert sample == "live-key"
-        assert connect_calls == ["postgresql://upstream"]
-        # call_args returns the most recent execute call, which is the actual
-        # sample query (the SET LOCAL fires first as a separate execute).
-        executed_query: str = mock_cursor.execute.call_args[0][0]
-        assert "LIMIT" in executed_query.upper()
+        assert len(sample_calls) == 1
+        assert "LIMIT" in sample_calls[0].upper()
 
     def test_sample_value_short_circuit_works_regardless_of_env_var(
         self, monkeypatch: pytest.MonkeyPatch
@@ -429,8 +411,8 @@ class TestDefaultDenyLiveSampling:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://upstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT key FROM lookup WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
                 "sample_value": "static-key",
@@ -439,8 +421,8 @@ class TestDefaultDenyLiveSampling:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://downstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM facts WHERE key='{key}'",
                 "params": [
                     {
@@ -457,11 +439,9 @@ class TestDefaultDenyLiveSampling:
             config=GenerationConfig(model="x"),
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
-        with patch(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect"
-        ) as mock_connect:
+        with patch("lumilake_server.utils.lumid_data_client.post_json") as mock_post:
             node = _build_profile_node(compiled, downstream.id)
-            mock_connect.assert_not_called()
+            mock_post.assert_not_called()
 
         sample = node.data_spec["params"][0]["data"]["items"][0]
         assert sample == "static-key"
@@ -472,8 +452,8 @@ class TestRecursiveResolverAndCycleGuard:
         stock = input_placeholder("Stock")
         hop1 = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://hop1",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT a FROM t1 WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
                 "sample_value": "hop1-a",
@@ -482,8 +462,8 @@ class TestRecursiveResolverAndCycleGuard:
         )
         hop2 = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://hop2",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT b FROM t2 WHERE a='{a}'",
                 "params": [{"label": "a", "node": hop1.id, "path": "items.table.a"}],
                 "sample_value": "hop2-b",
@@ -492,8 +472,8 @@ class TestRecursiveResolverAndCycleGuard:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://downstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM t3 WHERE b='{b}'",
                 "params": [{"label": "b", "node": hop2.id, "path": "items.table.b"}],
             },
@@ -519,8 +499,8 @@ class TestRecursiveResolverAndCycleGuard:
         stock = input_placeholder("Stock")
         op_a = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://a",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT x FROM ta WHERE k='{k}'",
                 "params": [{"label": "k", "node": "OP_B", "path": "items.table.x"}],
             },
@@ -528,8 +508,8 @@ class TestRecursiveResolverAndCycleGuard:
         )
         op_b = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://b",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT x FROM tb WHERE k='{k}'",
                 "params": [{"label": "k", "node": op_a.id, "path": "items.table.x"}],
             },
@@ -563,8 +543,8 @@ class TestUnsupportedUpstreamRejection:
         fmt = FormatOp("prefix-{s}", s=stock)
         retrieval = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM t WHERE k='{k}'",
                 "params": [{"label": "k", "node": fmt.id, "path": "items.output"}],
             },
@@ -679,51 +659,24 @@ class TestSampleQueryReadonlyValidation:
         assert "LIMIT" in result.upper()
         assert "SELECT id FROM t WHERE id = 1" in result
 
-    def test_sql_sampler_uses_read_only_transaction(self) -> None:
-        mock_cursor = MagicMock()
-        mock_cursor.description = [MagicMock(name="id")]
-        mock_cursor.fetchall.return_value = [(42,)]
-        mock_cursor.__enter__ = lambda s: s
-        mock_cursor.__exit__ = MagicMock(return_value=False)
+    def test_sql_sampler_delegates_to_http_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """_default_sql_sampler routes through lumid_retrieve_sample; the
+        lumid-data-app server enforces read-only access server-side."""
+        calls: list[str] = []
 
-        read_only_set_at: list[bool] = []
-        execute_called_after_readonly: list[bool] = []
+        def fake_retrieve(sql: str) -> list[Any]:
+            calls.append(sql)
+            return [{"id": 42}]
 
-        class TrackingConnection:
-            def __init__(self) -> None:
-                self._read_only = False
-
-            @property
-            def read_only(self) -> bool:
-                return self._read_only
-
-            @read_only.setter
-            def read_only(self, value: bool) -> None:
-                self._read_only = value
-                read_only_set_at.append(value)
-
-            def cursor(self) -> Any:
-                execute_called_after_readonly.append(self._read_only)
-                return mock_cursor
-
-            def __enter__(self) -> "TrackingConnection":
-                return self
-
-            def __exit__(self, *_: Any) -> None:
-                pass
-
-        with patch(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect"
-        ) as mock_connect:
-            mock_connect.return_value = TrackingConnection()
-            _default_sql_sampler("postgresql://test", "SELECT id FROM t LIMIT 1")
-
-        assert read_only_set_at == [
-            True
-        ], "read_only must be set to True before cursor use"
-        assert execute_called_after_readonly == [
-            True
-        ], "cursor opened after read_only=True"
+        monkeypatch.setattr(
+            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            fake_retrieve,
+        )
+        result = _default_sql_sampler("SELECT id FROM t LIMIT 1")
+        assert result == [{"id": 42}]
+        assert calls == ["SELECT id FROM t LIMIT 1"]
 
 
 class TestStructuralOutputsMissingOrFieldAbsent:
@@ -737,8 +690,8 @@ class TestStructuralOutputsMissingOrFieldAbsent:
         )
         retrieval = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM t WHERE code='{code}'",
                 "params": [
                     {
@@ -773,8 +726,8 @@ class TestStructuralOutputsMissingOrFieldAbsent:
         )
         retrieval = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://example",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM t WHERE code='{code}'",
                 "params": [
                     {
@@ -799,120 +752,42 @@ class TestStructuralOutputsMissingOrFieldAbsent:
 
 
 class TestSqlSamplerTimeouts:
-    def _make_tracking_conn(
-        self,
-    ) -> tuple[Any, list[str]]:
-        """Return (FakeConn class, execute_log).
-
-        execute_log records each SQL string passed to cursor.execute in order.
-        """
-        execute_log: list[str] = []
-        mock_cursor = MagicMock()
-        mock_cursor.description = [MagicMock(name="id")]
-        mock_cursor.fetchall.return_value = [(42,)]
-        mock_cursor.__enter__ = lambda s: s
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-
-        def recording_execute(sql: str) -> None:
-            execute_log.append(sql)
-
-        mock_cursor.execute.side_effect = recording_execute
-
-        class FakeConn:
-            read_only = False
-
-            def cursor(self) -> Any:
-                return mock_cursor
-
-            def __enter__(self) -> "FakeConn":
-                return self
-
-            def __exit__(self, *_: Any) -> None:
-                pass
-
-        return FakeConn, execute_log
-
-    def test_sql_sampler_passes_connect_timeout(
+    def test_sql_sampler_routes_through_lumid_retrieve_sample(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S", 5.0)
+        """_default_sql_sampler passes the query to lumid_retrieve_sample."""
+        calls: list[str] = []
 
-        connect_kwargs: list[dict[str, Any]] = []
+        def fake_retrieve(sql: str) -> list[Any]:
+            calls.append(sql)
+            return [{"id": 42}]
 
-        FakeConn, _ = self._make_tracking_conn()
+        monkeypatch.setattr(
+            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            fake_retrieve,
+        )
+        result = _default_sql_sampler("SELECT id FROM t LIMIT 1")
+        assert result == [{"id": 42}]
+        assert len(calls) == 1
+        assert calls[0] == "SELECT id FROM t LIMIT 1"
 
-        def fake_connect(conn_str: str, **kwargs: Any) -> Any:
-            connect_kwargs.append(kwargs)
-            return FakeConn()
-
-        with patch(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect", fake_connect
-        ):
-            _default_sql_sampler("postgresql://test", "SELECT id FROM t LIMIT 1")
-
-        assert len(connect_kwargs) == 1
-        assert connect_kwargs[0].get("connect_timeout") == 5
-
-    def test_sql_sampler_sets_statement_timeout_before_query(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S", 10.0)
-
-        FakeConn, execute_log = self._make_tracking_conn()
-
-        def fake_connect(conn_str: str, **kwargs: Any) -> Any:
-            return FakeConn()
-
-        with patch(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect", fake_connect
-        ):
-            _default_sql_sampler("postgresql://test", "SELECT id FROM t LIMIT 1")
-
-        assert len(execute_log) == 2
-        assert execute_log[0] == "SET LOCAL statement_timeout = 10000"
-        assert "SELECT id FROM t" in execute_log[1]
-
-    def test_sql_sampler_translates_query_cancelled_into_actionable_error(
+    def test_sql_sampler_translates_http_error_into_actionable_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING", True)
-        monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S", 10.0)
+        monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data-test")
+        monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
-        execute_log: list[str] = []
-        mock_cursor = MagicMock()
-        mock_cursor.description = [MagicMock(name="id")]
-        mock_cursor.__enter__ = lambda s: s
-        mock_cursor.__exit__ = MagicMock(return_value=False)
+        def failing_sampler(query: str) -> list[Any]:
+            raise RuntimeError("HTTP 504: Gateway Timeout")
 
-        def recording_execute(sql: str) -> None:
-            execute_log.append(sql)
-            if "SELECT" in sql.upper() and "statement_timeout" not in sql:
-                raise psycopg.errors.QueryCanceled(
-                    "canceling statement due to statement timeout"
-                )
-
-        mock_cursor.execute.side_effect = recording_execute
-
-        class FakeConn:
-            read_only = False
-
-            def cursor(self) -> Any:
-                return mock_cursor
-
-            def __enter__(self) -> "FakeConn":
-                return self
-
-            def __exit__(self, *_: Any) -> None:
-                pass
-
-        def fake_connect(conn_str: str, **kwargs: Any) -> Any:
-            return FakeConn()
+        monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", failing_sampler)
 
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://upstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT key FROM lookup WHERE s='{s}'",
                 "params": [{"label": "s", "node": stock.id}],
             },
@@ -920,8 +795,8 @@ class TestSqlSamplerTimeouts:
         )
         downstream = DataRetrievalOp(
             data_spec={
-                "type": "sql",
-                "connection_string": "postgresql://downstream",
+                "type": "lumid",
+                "mode": "sql",
                 "template": "SELECT * FROM facts WHERE key='{key}'",
                 "params": [
                     {
@@ -938,17 +813,11 @@ class TestSqlSamplerTimeouts:
             config=GenerationConfig(model="x"),
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
-
-        with patch(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect", fake_connect
-        ):
-            with pytest.raises(ValueError) as excinfo:
-                _build_profile_node(compiled, downstream.id)
+        with pytest.raises(ValueError) as excinfo:
+            _build_profile_node(compiled, downstream.id)
 
         message = str(excinfo.value)
         assert upstream.id in message
-        assert "statement_timeout" in message.lower() or "STATEMENT_TIMEOUT" in message
-        assert "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S" in message
         assert "sample_value" in message
 
 
@@ -976,95 +845,43 @@ class TestCollectorTypeDefaultFallback:
 
 
 class TestTimeoutEnvValidation:
-    def test_envs_rejects_zero_connect_timeout(self) -> None:
-        result = _positive_float("LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S", "0", 5.0)
+    def test_envs_rejects_zero_timeout(self) -> None:
+        result = _positive_float("LUMILAKE_TEST_TIMEOUT_S", "0", 5.0)
         assert result == 5.0
 
-    def test_envs_rejects_negative_statement_timeout(self) -> None:
-        result = _positive_float(
-            "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S", "-3.5", 10.0
-        )
+    def test_envs_rejects_negative_timeout(self) -> None:
+        result = _positive_float("LUMILAKE_TEST_TIMEOUT_S", "-3.5", 10.0)
         assert result == 10.0
 
     def test_envs_rejects_non_finite_values(self) -> None:
         for raw in ("nan", "inf", "-inf"):
-            result = _positive_float(
-                "LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S", raw, 5.0
-            )
+            result = _positive_float("LUMILAKE_TEST_TIMEOUT_S", raw, 5.0)
             assert result == 5.0, f"{raw!r} should fall back to default"
 
-    def test_sub_second_connect_timeout_rounds_up_to_int(
+    def test_default_sql_sampler_passes_query_to_http_client(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S", 0.5)
+        """_default_sql_sampler delegates entirely to lumid_retrieve_sample."""
+        received: list[str] = []
 
-        connect_kwargs: list[dict[str, Any]] = []
-        mock_cursor = MagicMock()
-        mock_cursor.description = [MagicMock(name="id")]
-        mock_cursor.fetchall.return_value = [(1,)]
-        mock_cursor.__enter__ = lambda s: s
-        mock_cursor.__exit__ = MagicMock(return_value=False)
+        def fake_retrieve(sql: str) -> list[Any]:
+            received.append(sql)
+            return [{"id": 1}]
 
-        class FakeConn:
-            read_only = False
+        monkeypatch.setattr(
+            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            fake_retrieve,
+        )
+        result = _default_sql_sampler("SELECT id FROM t LIMIT 1")
+        assert result == [{"id": 1}]
+        assert received == ["SELECT id FROM t LIMIT 1"]
 
-            def cursor(self) -> Any:
-                return mock_cursor
-
-            def __enter__(self) -> "FakeConn":
-                return self
-
-            def __exit__(self, *_: Any) -> None:
-                pass
-
-        def fake_connect(conn_str: str, **kwargs: Any) -> Any:
-            connect_kwargs.append(kwargs)
-            return FakeConn()
-
-        with patch(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect", fake_connect
-        ):
-            _default_sql_sampler("postgresql://test", "SELECT id FROM t LIMIT 1")
-
-        assert len(connect_kwargs) == 1
-        assert connect_kwargs[0].get("connect_timeout") == 1
-
-    def test_sub_second_statement_timeout_rounds_to_ms(
+    def test_default_sql_sampler_returns_empty_list_when_http_client_returns_empty(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S", 0.5)
-
-        execute_log: list[str] = []
-        mock_cursor = MagicMock()
-        mock_cursor.description = [MagicMock(name="id")]
-        mock_cursor.fetchall.return_value = [(1,)]
-        mock_cursor.__enter__ = lambda s: s
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-
-        def recording_execute(sql: str) -> None:
-            execute_log.append(sql)
-
-        mock_cursor.execute.side_effect = recording_execute
-
-        class FakeConn:
-            read_only = False
-
-            def cursor(self) -> Any:
-                return mock_cursor
-
-            def __enter__(self) -> "FakeConn":
-                return self
-
-            def __exit__(self, *_: Any) -> None:
-                pass
-
-        def fake_connect(conn_str: str, **kwargs: Any) -> Any:
-            return FakeConn()
-
-        with patch(
-            "lumilake_server.runtime.runtime_graph.psycopg.connect", fake_connect
-        ):
-            _default_sql_sampler("postgresql://test", "SELECT id FROM t LIMIT 1")
-
-        assert len(execute_log) == 2
-        assert execute_log[0] == "SET LOCAL statement_timeout = 500"
+        monkeypatch.setattr(
+            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            lambda sql: [],
+        )
+        result = _default_sql_sampler("SELECT id FROM t LIMIT 1")
+        assert result == []

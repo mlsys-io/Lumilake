@@ -9,12 +9,10 @@ submit time.
 These tests load the ``trading-agent.json`` n8n template (q2
 multi-modal-analysis workload). Execution is stubbed:
 
-* ``psycopg`` is monkey-patched to a no-op module so the data profile
-  task never touches a database.
 * ``_estimate_plan_variants`` is replaced with a fixture returning
   fixed cost estimates so every SQL probe yields a deterministic row
   count.
-* ``_compute_minio_listing`` is replaced with a fixture that returns
+* ``_compute_blob_listing`` is replaced with a fixture that returns
   the exact folder + sizes the S3 derivation step expects.
 
 The live code path exercised here is the DSL→runtime ID plumbing across
@@ -28,7 +26,6 @@ The live code path exercised here is the DSL→runtime ID plumbing across
 import asyncio
 import copy
 import json
-import sys
 import types
 from pathlib import Path
 from typing import Any
@@ -61,13 +58,6 @@ def _clean_registry():
 
 
 @pytest.fixture(autouse=True)
-def _stub_psycopg(monkeypatch):
-    """``run_data_profile_task`` imports ``psycopg`` at call time; the
-    test never hits a real database, so swap in a no-op stub."""
-    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace())
-
-
-@pytest.fixture(autouse=True)
 def _stub_plan_estimates(monkeypatch):
     """Every SQL probe returns one deterministic estimate."""
 
@@ -90,8 +80,8 @@ def _stub_plan_estimates(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _stub_minio_listing(monkeypatch):
-    """The S3 derivation step probes MinIO to check folder existence.
+def _stub_blob_listing(monkeypatch):
+    """The S3 derivation step calls lumid-data-app to check folder existence.
 
     The trading-agent template's S3 retrieval node fans out under a
     ``news/`` static folder prefix, so the listing only needs that.
@@ -104,10 +94,16 @@ def _stub_minio_listing(monkeypatch):
         for name in ("NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "GOOGL")
     }
     listing_folders = ["unstructured/news-images/"]
+
+    async def _fake_listing(
+        folders: Any,
+    ) -> tuple[dict[str, int | None], list[str]]:
+        return listing_sizes, listing_folders
+
     monkeypatch.setattr(
         data_profile_utils,
-        "_compute_minio_listing",
-        lambda: (listing_sizes, listing_folders),
+        "_list_blobs_for_folders",
+        _fake_listing,
     )
 
 

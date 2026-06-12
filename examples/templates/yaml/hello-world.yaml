@@ -10,9 +10,8 @@ name: hello-world
 # Runtime requirements:
 #   - A standard ``lumilake deploy up`` (server + a reachable FlowMesh
 #     orchestrator at ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL``).
-#   - Reachable S3-compatible storage from ``S3_URL``. For local trials,
-#     start the bundled data plane with:
-#       docker compose -f scripts/dev/compose.data-plane.yml up -d
+#   - Reachable lumid-data-app via ``LUMID_DATA_URL`` (and
+#     ``LUMID_DATA_TOKEN`` if the deployment is authenticated).
 #   - A FlowMesh worker that can serve the model named in ``config.model``.
 #     ``Qwen/Qwen3-8B`` is the bundled text-demo model.
 #

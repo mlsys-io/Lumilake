@@ -190,7 +190,6 @@ def test_disable_data_profile_drops_supplied_results(
                 node_id="r1",
                 raw_node_id="r1",
                 query_name="r1_query",
-                connection_string="postgres://localhost",
                 table="public.t",
                 cost_estimates=[
                     DataProfileCostEstimate(

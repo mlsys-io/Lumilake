@@ -2,7 +2,8 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.runtime.protocol import LumilakeRequestConfig
@@ -41,6 +42,25 @@ class BatchSelection:
 
 
 @dataclass(slots=True)
+class BatchReservation:
+    """Two-phase batch selection handle.
+
+    ``reserve_batch`` returns a reservation whose ``selection`` is the batch
+    that *would* be consumed by a subsequent ``commit_reservation``. The
+    queue is not mutated until commit; callers that fail to acquire
+    workers can call ``abort_reservation`` to release the items back. This
+    keeps "selected batches are never dropped" intact when scheduling
+    decisions need to inspect batch contents before reserving workers.
+
+    ``_payload`` is opaque per-implementation state (e.g. the set of
+    workflow ids to remove on commit). External callers must not touch it.
+    """
+
+    selection: BatchSelection
+    _payload: Any = field(default=None, repr=False)
+
+
+@dataclass(slots=True)
 class Job:
     request_id: str
     runtime_graphs: dict[str, RuntimeGraph]
@@ -74,8 +94,31 @@ class BaseJobManager(ABC):
         """Return (pending workflow count, oldest enqueue timestamp)."""
 
     @abstractmethod
+    async def reserve_batch(self, batch_size: int) -> BatchReservation | None:
+        """Compute (without consuming) the next batch the manager would select.
+
+        Returns ``None`` if no batch is available. The reservation must be
+        finalized with ``commit_reservation`` (queue is updated) or
+        released with ``abort_reservation`` (queue is unchanged).
+        Overlapping reservations are not supported.
+        """
+
+    @abstractmethod
+    async def commit_reservation(self, reservation: BatchReservation) -> None:
+        """Apply the queue mutations associated with ``reservation``."""
+
+    @abstractmethod
+    async def abort_reservation(self, reservation: BatchReservation) -> None:
+        """Discard the reservation; the queue is left exactly as it was."""
+
     async def select_batch(self, batch_size: int) -> BatchSelection | None:
-        """Select and dequeue a batch of workflows."""
+        """Reserve + commit in one call. Convenience for callers that don't
+        need to inspect batch contents before consuming."""
+        reservation = await self.reserve_batch(batch_size)
+        if reservation is None:
+            return None
+        await self.commit_reservation(reservation)
+        return reservation.selection
 
     @abstractmethod
     def finalize_workflows(self, workflow_ids: Iterable[str]) -> None:

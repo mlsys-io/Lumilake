@@ -1,9 +1,11 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DBLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["db"] = Field(
         description="Location type. Always `db` for database table/column targets."
     )
@@ -12,21 +14,16 @@ class DBLocation(BaseModel):
 
 
 class S3Location(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["s3"] = Field(
         description="Location type. Always `s3` for object storage prefixes."
     )
     prefix: str = Field(
         description=(
-            "S3 object key prefix. Resolved against the configured S3_URL. "
-            "Use a trailing slash to denote a folder prefix."
+            "S3 object key prefix used as a logical key prefix in lumid-data-app's "
+            "store. Use a trailing slash to denote a folder prefix."
         )
-    )
-    connection_string: str | None = Field(
-        default=None,
-        description=(
-            "Optional full S3 connection string (s3://user:pass@endpoint:port/bucket). "
-            "If provided, credentials are used when Flowmesh fetches files."
-        ),
     )
 
 

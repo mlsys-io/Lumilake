@@ -18,7 +18,6 @@ def _s3_node(
     *,
     template: str,
     params: list[dict[str, str]],
-    connection_string: str = "s3://demo:demo@localhost/",
 ) -> RuntimeOp:
     return RuntimeOp(
         node_id=node_id,
@@ -27,7 +26,6 @@ def _s3_node(
         model="data_retrieval",
         data_spec={
             "type": "s3",
-            "connection_string": connection_string,
             "template": template,
             "params": params,
         },
@@ -44,7 +42,6 @@ def _sql_node(node_id: str) -> RuntimeOp:
         model="data_retrieval",
         data_spec={
             "type": "sql",
-            "connection_string": "postgres://localhost",
             "template": "SELECT 1",
             "params": [],
         },
@@ -132,7 +129,6 @@ class TestInputDrivenProfile:
                     node_id=sql.node_id,
                     raw_node_id=sql.node_id,
                     query_name=f"{sql.node_id}_query",
-                    connection_string="postgres://localhost",
                     table="public.t",
                     cost_estimates=[
                         DataProfileCostEstimate(

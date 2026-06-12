@@ -10,7 +10,6 @@ import math
 import os
 from collections.abc import Mapping
 from typing import overload
-from urllib.parse import unquote, urlparse
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -119,12 +118,18 @@ LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS: float = float(
     os.environ.get("LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS") or "60"
 )
 
-# Optional data-plane forwarding via lumid.data. When ``LUMID_DATA_URL``
-# is set, every DBLocation SQL + every S3 op is routed through that
-# service instead of speaking psycopg / minio directly. Direct mode
-# stays the default when the URL is empty.
+# Data-plane routing via lumid.data. All DataRetrievalOps (sql, s3, agent
+# modes) route through lumid-data-app. Data profiling (EXPLAIN cost
+# estimation, S3 object listing, and live sampling) also routes through
+# lumid-data-app. LUMID_DATA_URL is required for any workflow that contains
+# a DataRetrievalOp or has profiling enabled. LUMID_DATA_TOKEN defaults to
+# LUMILAKE_RUNTIME_TOKEN (the FlowMesh bearer) since most deploys use the
+# same lum.id PAT for both; set LUMID_DATA_TOKEN explicitly to override
+# (e.g. when FlowMesh is unauthenticated locally but lumid-data-app isn't).
 LUMID_DATA_URL: str = os.environ.get("LUMID_DATA_URL", "").strip()
-LUMID_DATA_TOKEN: str | None = os.environ.get("LUMID_DATA_TOKEN") or None
+LUMID_DATA_TOKEN: str | None = (
+    os.environ.get("LUMID_DATA_TOKEN") or RUNTIME_TOKEN or None
+)
 # ``or "<default>"`` covers the LUMID_DATA_TIMEOUT_SECONDS="" case —
 # ``os.environ.get(k, default)`` returns "" if the key is set to empty,
 # bypassing the default and crashing ``float("")``.
@@ -194,17 +199,6 @@ def _positive_float(name: str, raw: str | None, default: float) -> float:
     return value
 
 
-LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S: float = _positive_float(
-    "LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S",
-    os.environ.get("LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S"),
-    5.0,
-)
-LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S: float = _positive_float(
-    "LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S",
-    os.environ.get("LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S"),
-    10.0,
-)
-
 # vLLM runtime defaults
 LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS: int = int(
     os.environ.get("LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS", "2048")
@@ -217,43 +211,7 @@ LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION: float = float(
 )
 
 
-def get_database_url(environ: Mapping[str, str] | None = None) -> str | None:
-    source = os.environ if environ is None else environ
-    return source.get("DATABASE_URL") or None
-
-
-DATABASE_URL: str | None = get_database_url()
-
-
-def _parse_s3_url(
-    raw_url: str | None,
-) -> tuple[str | None, str | None, str | None]:
-    if not raw_url:
-        return None, None, None
-    parsed = urlparse(raw_url)
-    if parsed.scheme != "s3" or not parsed.hostname:
-        return None, None, None
-    endpoint = parsed.hostname
-    if parsed.port is not None:
-        endpoint = f"{endpoint}:{parsed.port}"
-    return (
-        endpoint,
-        unquote(parsed.username) if parsed.username else None,
-        unquote(parsed.password) if parsed.password else None,
-    )
-
-
-S3_URL: str | None = os.getenv("S3_URL") or None
-
-S3_ENDPOINT, S3_ACCESS_KEY, S3_CONNECTION_VALUE = _parse_s3_url(S3_URL)
-S3_CERT_FILE: str | None = os.getenv("S3_CERT_FILE")
-
 S3_DATA_PREFIX: str | None = os.getenv("S3_DATA_PREFIX")
-S3_WORKER_URL: str | None = (
-    f"{S3_URL.rstrip('/')}/{S3_DATA_PREFIX.lstrip('/')}"
-    if S3_URL and S3_DATA_PREFIX
-    else None
-)
 S3_ARCHIVE_PREFIX: str | None = os.getenv("S3_ARCHIVE_PREFIX")
 
 FLOWMESH_OUTPUT_DESTINATION: str = os.environ.get(
@@ -363,15 +321,13 @@ def validate() -> None:
         )
     if LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS <= 0:
         raise ValueError("LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS must be > 0")
-    if S3_URL and urlparse(S3_URL).path.lstrip("/"):
-        raise ValueError(
-            "S3_URL must not carry a path component; move the prefix to "
-            "S3_DATA_PREFIX (e.g. S3_URL=s3://endpoint, "
-            "S3_DATA_PREFIX=my/data/path)"
+    if LUMID_DATA_TIMEOUT_SECONDS <= 0:
+        raise ValueError("LUMID_DATA_TIMEOUT_SECONDS must be > 0")
+    if LUMILAKE_HTTP_TIMEOUT_SECONDS <= 0:
+        raise ValueError("LUMILAKE_HTTP_TIMEOUT_SECONDS must be > 0")
+    if os.environ.get("LUMID_DATA_TOKEN") is None and RUNTIME_TOKEN is not None:
+        logging.getLogger(__name__).warning(
+            "LUMID_DATA_TOKEN is unset; falling back to LUMILAKE_RUNTIME_TOKEN. "
+            "Set LUMID_DATA_TOKEN explicitly when FlowMesh and lumid-data-app "
+            "live at different trust boundaries."
         )
-    if S3_URL:
-        if not S3_DATA_PREFIX or not S3_DATA_PREFIX.strip("/"):
-            raise ValueError(
-                "S3_DATA_PREFIX must be a non-empty bucket/prefix when S3_URL is set "
-                "(e.g. S3_DATA_PREFIX=bucket/data)"
-            )
