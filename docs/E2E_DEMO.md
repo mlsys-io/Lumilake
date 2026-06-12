@@ -16,10 +16,8 @@ independent steps**; skip any step you've already done.
 > **One HTTP boundary.** Step 2's `load_demo_data.py` writes Postgres
 > via `pg_restore` directly against the bundled database, but uploads
 > blobs through lumid-data-app's `PUT /blobs/<key>` API — the same
-> boundary the lumilake server uses. `DATABASE_URL` is a per-script
-> seed input; lumilake's own `.env` carries `LUMID_DATA_URL` /
-> `LUMID_DATA_TOKEN` instead. See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)
-> for the control-plane overview.
+> boundary the lumilake server uses. See
+> [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) for the control-plane overview.
 
 ## What you get
 
@@ -49,7 +47,6 @@ The bundled demo workflows use locally-served open-weight models
 required. Set one only if you author workflows that call hosted
 providers.
 
-The `mc` MinIO client is **not** required.
 
 > **Working directory.** Step 1 and Step 2 commands use repo-relative
 > paths (`scripts/dev/...`). Run them from a Lumilake source checkout

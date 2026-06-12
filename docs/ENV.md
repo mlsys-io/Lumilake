@@ -146,7 +146,3 @@ Consumed by the SDK and deploy CLI helpers.
 | `LUMILAKE_DEPLOY_DIR` | Default `--project-dir` for `lumilake deploy`. |
 
 See `.env.example` for the deploy-time template and defaults.
-
-## Migration: DATABASE_URL / S3_URL / S3_WORKER_URL removed
-
-`DATABASE_URL`, `S3_URL`, `S3_WORKER_URL`, `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_CONNECTION_VALUE`, `S3_CERT_FILE`, `LUMILAKE_DATA_PROFILE_CONNECT_TIMEOUT_S`, and `LUMILAKE_DATA_PROFILE_STATEMENT_TIMEOUT_S` have been removed. All data access — server-side input resolution, job archive reads/writes, and `DataRetrievalOp` dispatch — now routes exclusively through lumid-data-app using `LUMID_DATA_URL` plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN`, or its fallback `LUMILAKE_RUNTIME_TOKEN`). `S3_DATA_PREFIX` and `S3_ARCHIVE_PREFIX` are retained as logical blob-key prefixes within lumid-data-app's store. `DBLocation` output is no longer supported; submitting a job with a `DBLocation` output returns 422.

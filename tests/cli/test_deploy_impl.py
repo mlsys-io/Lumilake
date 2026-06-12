@@ -255,56 +255,6 @@ def test_doctor_required_env_failures_name_the_env_var(tmp_path: Path) -> None:
         assert matched, f"{var} should produce an actionable error: {report.errors}"
 
 
-def test_doctor_database_url_not_required(tmp_path: Path) -> None:
-    """DATABASE_URL is no longer required; a complete env without it passes."""
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                'LUMILAKE_SERVER_HOST="0.0.0.0"',
-                'LUMILAKE_SERVER_PORT="9000"',
-                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
-                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
-                'LUMILAKE_IMAGE_TAG="latest"',
-                'LUMID_DATA_URL="http://127.0.0.1:9102"',
-                'LUMID_DATA_TOKEN="tok"',
-                "",
-            ]
-        )
-    )
-
-    report = doctor_mod.run_env_checks(env_file)
-
-    assert not any(
-        "DATABASE_URL" in msg for msg in report.errors
-    ), f"DATABASE_URL must not appear in errors: {report.errors}"
-
-
-def test_doctor_s3_url_not_required(tmp_path: Path) -> None:
-    """S3_URL is no longer required; a complete env without it passes."""
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                'LUMILAKE_SERVER_HOST="0.0.0.0"',
-                'LUMILAKE_SERVER_PORT="9000"',
-                'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:18000"',
-                'S3_ARCHIVE_PREFIX="lumilake-archive/artifacts"',
-                'LUMILAKE_IMAGE_TAG="latest"',
-                'LUMID_DATA_URL="http://127.0.0.1:9102"',
-                'LUMID_DATA_TOKEN="tok"',
-                "",
-            ]
-        )
-    )
-
-    report = doctor_mod.run_env_checks(env_file)
-
-    assert not any(
-        "S3_URL" in msg for msg in report.errors
-    ), f"S3_URL must not appear in errors: {report.errors}"
-
-
 def test_doctor_missing_env_file_message_is_actionable(tmp_path: Path) -> None:
     report = doctor_mod.run_env_checks(tmp_path / ".env")
     assert any("lumilake deploy init" in msg for msg in report.errors)

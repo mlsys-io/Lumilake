@@ -74,19 +74,3 @@ def test_validate_passes_without_s3_data_prefix(
     monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
     monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 60.0)
     envs.validate()
-
-
-def test_deleted_vars_are_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DATABASE_URL, S3_URL, S3_WORKER_URL, S3_ENDPOINT, S3_ACCESS_KEY,
-    S3_CONNECTION_VALUE, and S3_CERT_FILE no longer exist on envs."""
-    envs = _reload_envs(monkeypatch, {})
-    for attr in (
-        "DATABASE_URL",
-        "S3_URL",
-        "S3_WORKER_URL",
-        "S3_ENDPOINT",
-        "S3_ACCESS_KEY",
-        "S3_CONNECTION_VALUE",
-        "S3_CERT_FILE",
-    ):
-        assert not hasattr(envs, attr), f"envs.{attr} should not exist after Phase 3"

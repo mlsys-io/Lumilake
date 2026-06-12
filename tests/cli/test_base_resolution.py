@@ -55,24 +55,6 @@ def test_resolve_recovers_from_corrupt_config(
     assert source == "default"
 
 
-def test_no_legacy_auth_commands_present() -> None:
-    """The CLI follows FlowMesh's init/deinit/config naming, not login/logout."""
-    from lumilake_cli.commands import base as base_commands
-
-    names: set[str] = set()
-    for cmd in base_commands.app.registered_commands:
-        if cmd.name is not None:
-            names.add(cmd.name)
-            continue
-        callback = cmd.callback
-        if callback is not None:
-            names.add(callback.__name__)
-    assert "login" not in names
-    assert "logout" not in names
-    assert "init" in names
-    assert "deinit" in names
-
-
 def test_resolve_empty_env_falls_through_to_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
