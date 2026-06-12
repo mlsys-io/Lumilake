@@ -1,38 +1,50 @@
-"""Unit tests for _demo_data helpers: parse_s3_url and compose_key_prefix."""
+"""Unit tests for _demo_data helpers: lumid_config_from_env, compose_key_prefix."""
 
 import pytest
-from lumilake_deploy._demo_data import compose_key_prefix, parse_s3_url
+from lumilake_deploy._demo_data import (
+    compose_key_prefix,
+    lumid_config_from_env,
+)
 
 # ---------------------------------------------------------------------------
-# parse_s3_url
+# lumid_config_from_env
 # ---------------------------------------------------------------------------
 
 
-def test_parse_s3_url_populates_bucket_and_base_prefix() -> None:
-    """data_prefix='mybucket/data/v1' → bucket='mybucket', base_prefix='data/v1'."""
-    cfg = parse_s3_url("s3://access:secret@host:9000", "mybucket/data/v1")
-    assert cfg.bucket == "mybucket"
-    assert cfg.base_prefix == "data/v1"
+def test_lumid_config_explicit_token_wins() -> None:
+    cfg = lumid_config_from_env(
+        {
+            "LUMID_DATA_URL": "http://lumid:5101",
+            "LUMID_DATA_TOKEN": "explicit",
+            "LUMILAKE_RUNTIME_TOKEN": "fallback",
+        }
+    )
+    assert cfg.base_url == "http://lumid:5101"
+    assert cfg.token == "explicit"
 
 
-def test_parse_s3_url_bucket_only_gives_empty_base_prefix() -> None:
-    """data_prefix='mybucket' (no slash) → base_prefix is empty string."""
-    cfg = parse_s3_url("s3://access:secret@host:9000", "mybucket")
-    assert cfg.bucket == "mybucket"
-    assert cfg.base_prefix == ""
+def test_lumid_config_falls_back_to_runtime_token() -> None:
+    cfg = lumid_config_from_env(
+        {
+            "LUMID_DATA_URL": "http://lumid:5101/",
+            "LUMILAKE_RUNTIME_TOKEN": "fallback",
+        }
+    )
+    # Trailing slash on the base URL is stripped so callers can always join
+    # with ``/blobs/...`` without producing a double slash.
+    assert cfg.base_url == "http://lumid:5101"
+    assert cfg.token == "fallback"
 
 
-def test_parse_s3_url_leading_slash_stripped() -> None:
-    """Leading slash in data_prefix is stripped before splitting."""
-    cfg = parse_s3_url("s3://access:secret@host:9000", "/mybucket/prefix")
-    assert cfg.bucket == "mybucket"
-    assert cfg.base_prefix == "prefix"
+def test_lumid_config_token_optional() -> None:
+    """When neither token nor runtime-token is set, cfg.token is None."""
+    cfg = lumid_config_from_env({"LUMID_DATA_URL": "http://lumid:5101"})
+    assert cfg.token is None
 
 
-def test_parse_s3_url_raises_when_s3_url_has_path() -> None:
-    """parse_s3_url raises SystemExit when S3_URL includes a path component."""
-    with pytest.raises(SystemExit, match="S3_DATA_PREFIX"):
-        parse_s3_url("s3://k:s@h:p/bucket/prefix", "x")
+def test_lumid_config_missing_url_raises() -> None:
+    with pytest.raises(SystemExit, match="LUMID_DATA_URL"):
+        lumid_config_from_env({})
 
 
 # ---------------------------------------------------------------------------
@@ -40,35 +52,19 @@ def test_parse_s3_url_raises_when_s3_url_has_path() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_compose_key_prefix_joins_base_and_s3_prefix() -> None:
-    """base_prefix='data/v1' + s3_prefix='example-data' → 'data/v1/example-data'."""
+def test_compose_key_prefix_joins_base_and_sub_prefix() -> None:
     assert compose_key_prefix("data/v1", "example-data") == "data/v1/example-data"
 
 
-def test_compose_key_prefix_empty_base_returns_s3_prefix_only() -> None:
-    """base_prefix='' + s3_prefix='example-data' → 'example-data' (no leading slash)."""
+def test_compose_key_prefix_empty_base_returns_sub_prefix_only() -> None:
+    """Empty base + 'example-data' → 'example-data' (no leading slash)."""
     assert compose_key_prefix("", "example-data") == "example-data"
 
 
-def test_compose_key_prefix_strips_leading_trailing_slash_from_s3_prefix() -> None:
-    """Leading/trailing slashes in s3_prefix are stripped before joining."""
-    assert compose_key_prefix("data/v1", "/example-data/") == "data/v1/example-data"
+def test_compose_key_prefix_strips_leading_trailing_slash() -> None:
+    """Leading/trailing slashes in either segment are stripped before joining."""
+    assert compose_key_prefix("/data/v1/", "/example-data/") == "data/v1/example-data"
 
 
-# ---------------------------------------------------------------------------
-# End-to-end composition: parse_s3_url + compose_key_prefix
-# ---------------------------------------------------------------------------
-
-
-def test_full_key_prefix_with_base_prefix_and_s3_prefix() -> None:
-    """S3_DATA_PREFIX='mybucket/data/v1' + --s3-prefix='example-data' → correct key."""
-    cfg = parse_s3_url("s3://access:secret@host:9000", "mybucket/data/v1")
-    full_key_prefix = compose_key_prefix(cfg.base_prefix, "example-data")
-    assert full_key_prefix == "data/v1/example-data"
-
-
-def test_full_key_prefix_bucket_only_data_prefix() -> None:
-    """S3_DATA_PREFIX='mybucket' + --s3-prefix='example-data' → 'example-data'."""
-    cfg = parse_s3_url("s3://access:secret@host:9000", "mybucket")
-    full_key_prefix = compose_key_prefix(cfg.base_prefix, "example-data")
-    assert full_key_prefix == "example-data"
+def test_compose_key_prefix_both_empty() -> None:
+    assert compose_key_prefix("", "") == ""

@@ -84,7 +84,6 @@ lint = [
 ]
 dev = [
     "ipywidgets>=8.1.5,<9.0.0",
-    "minio==7.2.20",
     "pyvis==0.3.1",
     "ipykernel>=6.29.5,<7.0.0",
 ]

@@ -8,15 +8,14 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any
 
 from lumilake_deploy._demo_data import (
+    LumidBlobClient,
     compose_key_prefix,
     find_default_env_file,
     human_bytes,
     info,
-    make_minio_client,
-    parse_s3_url,
+    lumid_config_from_env,
     require_env,
     resolve_env,
 )
@@ -24,17 +23,20 @@ from lumilake_deploy._demo_data import (
 DEFAULT_OUT_DIR = Path(__file__).resolve().parents[2].parent / "demo-data-bundle"
 DEFAULT_SCHEMA = "lumilake_demo"
 DEFAULT_S3_PREFIX = "example-data"
-NEWS_SUBDIRS = ("html", "images")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--env-file", type=Path)
     p.add_argument("--database-url")
-    p.add_argument("--s3-url")
-    p.add_argument("--s3-data-prefix")
-    p.add_argument("--s3-cert-file")
-    p.add_argument("--s3-prefix", default=DEFAULT_S3_PREFIX)
+    p.add_argument("--lumid-data-url", help="lumid-data-app base URL")
+    p.add_argument("--lumid-data-token", help="lumid-data-app bearer token")
+    p.add_argument(
+        "--blob-prefix",
+        help="logical prefix inside lumid-data-app's blob store "
+        "(matches the Lumilake server's S3_DATA_PREFIX)",
+    )
+    p.add_argument("--news-key-prefix", default=DEFAULT_S3_PREFIX)
     p.add_argument("--schema", default=DEFAULT_SCHEMA)
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     p.add_argument("--force", action="store_true")
@@ -58,19 +60,18 @@ def pg_dump(database_url: str, schema: str, out_path: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
-def download_news_tree(client: Any, bucket: str, key_prefix: str, dest: Path) -> int:
-    base = key_prefix.rstrip("/")
-    scan_prefix = f"{base}/news/" if base else "news/"
+def download_news_tree(client: LumidBlobClient, key_prefix: str, dest: Path) -> int:
+    base = key_prefix.strip("/")
+    scan_prefix = f"{base}/news" if base else "news"
+    strip_len = len(scan_prefix) + 1  # include trailing '/'
     count = 0
-    for sub in NEWS_SUBDIRS:
-        (dest / "news" / sub).mkdir(parents=True, exist_ok=True)
-    for obj in client.list_objects(bucket, prefix=scan_prefix, recursive=True):
-        if obj.is_dir or not obj.object_name:
+    for key in client.iter_blob_keys(f"{scan_prefix}/"):
+        if not key.startswith(f"{scan_prefix}/"):
             continue
-        rel = obj.object_name[len(scan_prefix.rstrip("/")) + 1 :]
+        # Tarball uses ``news/<rel>`` paths — strip the absolute prefix.
+        rel = key[strip_len:]
         target = dest / "news" / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        client.fget_object(bucket, obj.object_name, str(target))
+        client.download_blob(key, target)
         count += 1
         if count % 200 == 0:
             info(f"       downloaded {count} objects...")
@@ -90,12 +91,13 @@ def main(argv: list[str]) -> int:
         env_file,
         overrides={
             "DATABASE_URL": args.database_url,
-            "S3_URL": args.s3_url,
-            "S3_DATA_PREFIX": args.s3_data_prefix,
-            "S3_CERT_FILE": args.s3_cert_file,
+            "LUMID_DATA_URL": args.lumid_data_url,
+            "LUMID_DATA_TOKEN": args.lumid_data_token,
+            "S3_DATA_PREFIX": args.blob_prefix,
         },
     )
-    require_env(env, ["DATABASE_URL", "S3_URL", "S3_DATA_PREFIX"])
+    require_env(env, ["DATABASE_URL", "S3_DATA_PREFIX"])
+    lumid_cfg = lumid_config_from_env(env)
 
     out_dir = args.out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -112,16 +114,15 @@ def main(argv: list[str]) -> int:
     pg_dump(env["DATABASE_URL"], args.schema, pg_path)
     info(f"       wrote {pg_path} ({human_bytes(pg_path.stat().st_size)})")
 
-    cfg = parse_s3_url(
-        env["S3_URL"], env["S3_DATA_PREFIX"], env.get("S3_CERT_FILE") or None
+    client = LumidBlobClient(lumid_cfg)
+    full_key_prefix = compose_key_prefix(env["S3_DATA_PREFIX"], args.news_key_prefix)
+    info(
+        f"[2/2] bundling {lumid_cfg.base_url}/blobs/{full_key_prefix}/news -> "
+        f"{s3_path}"
     )
-    client = make_minio_client(cfg)
-
-    full_key_prefix = compose_key_prefix(cfg.base_prefix, args.s3_prefix)
-    info(f"[2/2] bundling s3://{cfg.bucket}/{full_key_prefix}/news -> {s3_path}")
     with tempfile.TemporaryDirectory(prefix="lumilake-demo-news-") as stage:
         stage_path = Path(stage)
-        count = download_news_tree(client, cfg.bucket, full_key_prefix, stage_path)
+        count = download_news_tree(client, full_key_prefix, stage_path)
         info(f"       downloaded {count} objects")
         make_tarball(stage_path, s3_path)
     info(f"       wrote {s3_path} ({human_bytes(s3_path.stat().st_size)})")

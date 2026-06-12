@@ -13,11 +13,13 @@ independent steps**; skip any step you've already done.
    skip if BYO lumid-data-app    skip if BYO data already         everyone does this
 ```
 
-> **NOTE (WIP).** This page predates the lumid-data-app routing change
-> and still references the retired direct-mode `DATABASE_URL` / `S3_URL`
-> contract in places. The authoritative architecture overview is in
-> [`docs/ARCHITECTURE.md`](ARCHITECTURE.md); this page is being
-> rewritten in a follow-up pass.
+> **One HTTP boundary.** Step 2's `load_demo_data.py` writes Postgres
+> via `pg_restore` directly against the bundled database, but uploads
+> blobs through lumid-data-app's `PUT /blobs/<key>` API — the same
+> boundary the lumilake server uses. `DATABASE_URL` is a per-script
+> seed input; lumilake's own `.env` carries `LUMID_DATA_URL` /
+> `LUMID_DATA_TOKEN` instead. See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)
+> for the control-plane overview.
 
 ## What you get
 
@@ -119,37 +121,30 @@ you've overridden them.
 optional sub-path portion of `S3_DATA_PREFIX`, absent for the default
 `lumilake-demo` value).
 
-It reads database / S3 credentials from a `.env` file (auto-detected
-by walking up from the current directory). If you haven't run
-`lumilake deploy init` yet — which writes a `.env` — pass the data-plane
-URLs explicitly:
+`load_demo_data.py` writes Postgres directly via `pg_restore` and
+uploads blobs via lumid-data-app's HTTP API. Pass the seed-time URLs
+as CLI flags (or set them in an env file via `--env-file`):
 
 ```bash
 uv run python scripts/dev/load_demo_data.py \
-  --database-url postgresql://lumilake:lumilake_password@127.0.0.1:15432/lumilake \
-  --s3-url s3://lumilake:lumilake_password@127.0.0.1:19100 \
-  --s3-data-prefix lumilake-demo
-```
-
-Once `lumilake deploy init` has written a `.env`, the no-flag form
-auto-detects everything:
-
-```bash
-uv run python scripts/dev/load_demo_data.py
+  --database-url postgresql://lumilake:lumilake_password@127.0.0.1:5102/lumilake \
+  --lumid-data-url http://127.0.0.1:5101 \
+  --lumid-data-token devkey \
+  --blob-prefix lumilake-demo
 ```
 
 Useful flags:
 
 | Flag | Purpose |
 |---|---|
-| `--env-file PATH`         | Explicit path to `.env` (default: search upward from CWD). |
-| `--database-url URL`      | Override `DATABASE_URL`. |
-| `--s3-url URL`            | Override `S3_URL` (endpoint only, no path — e.g. `s3://access:secret@host:port`). |
-| `--s3-data-prefix PREFIX` | Override `S3_DATA_PREFIX` (e.g. `lumilake-demo`). |
-| `--s3-cert-file PATH`     | CA bundle for HTTPS S3 endpoints (not needed for the bundled MinIO). |
+| `--env-file PATH`         | Explicit path to an env file for the seed script (default: search upward from CWD). Independent of `lumilake deploy`'s `.env`. |
+| `--database-url URL`      | Postgres connection string the seed script writes to. |
+| `--lumid-data-url URL`    | lumid-data-app base URL (e.g. `http://127.0.0.1:5101`). Sets `LUMID_DATA_URL`. |
+| `--lumid-data-token TOK`  | Bearer token for lumid-data-app. Sets `LUMID_DATA_TOKEN`; falls back to `LUMILAKE_RUNTIME_TOKEN` if unset. |
+| `--blob-prefix PREFIX`    | Logical prefix inside lumid-data-app's blob store (matches the server's `S3_DATA_PREFIX`, e.g. `lumilake-demo`). |
 | `--tag demo-data-v2`      | Pull a different bundle release. |
 | `--cache-dir PATH`        | Where downloads land (default `~/.cache/lumilake-demo`). |
-| `--s3-prefix PATH`        | Key prefix to write `news/` under (default `example-data`). |
+| `--news-key-prefix PATH`  | Key prefix to write `news/` under (default `example-data`). |
 | `--drop-schema`           | `DROP SCHEMA lumilake_demo CASCADE` before restore (destructive — explicit only). |
 | `--pg-restore-jobs N`     | `pg_restore -j` value (default 4). |
 
@@ -295,7 +290,7 @@ halves are loaded as a unit and versioned together.
 | You have… | Step 1 | Step 2 | Step 3 |
 |---|---|---|---|
 | Nothing | run | run | run |
-| Own pg + S3, no demo data | skip | run (point `.env` at your services) | run |
+| Own pg + S3, no demo data | skip | run (pass `--database-url` + `--lumid-data-url` / `--lumid-data-token`) | run |
 | Own pg + S3 + demo data already loaded | skip | skip | run |
 | Bundled data plane + demo data | – | – | run |
 
@@ -306,10 +301,10 @@ halves are loaded as a unit and versioned together.
 - **`pg_restore: error: relation already exists`** — re-running the
   loader against a half-populated schema. Pass `--drop-schema` to wipe
   and restore from scratch.
-- **News-related ops fail with `Object not found`** — the S3 upload
-  didn't land under `<bucket>[/<prefix>]/example-data/news/`. Re-run with
-  `--s3-prefix example-data` (the default) and confirm via the MinIO
-  console.
+- **News-related ops fail with `Object not found`** — the blob upload
+  didn't land under `<blob-prefix>/example-data/news/`. Re-run with
+  `--news-key-prefix example-data` (the default) and verify with
+  `curl -H "Authorization: Bearer $TOKEN" "$LUMID_DATA_URL/blobs?prefix=<blob-prefix>/example-data/news/"`.
 - **`Waiting for worker group` hang** — no FlowMesh worker matches the
   workflow's hardware requirements. Confirm with `lumilake worker list`
   that at least one CPU worker is registered; image-generation also
