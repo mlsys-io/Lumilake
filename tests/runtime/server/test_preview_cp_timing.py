@@ -30,7 +30,9 @@ async def test_preview_schedule_surfaces_control_plane_timings(
     server = server_factory()
     graphs = _tiny_preview_graphs()
 
-    async def _stub_select_workers(_runtime_graph) -> tuple[list[str], dict]:
+    async def _stub_select_workers(
+        _runtime_graph, _hardware=None
+    ) -> tuple[list[str], dict]:
         return ["gpu-worker"], {"gpu-worker": {"has_gpu": True}}
 
     monkeypatch.setattr(

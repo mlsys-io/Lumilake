@@ -98,8 +98,8 @@ local server image tags only, not containers or volumes.
 
 | Command | Purpose |
 |---------|---------|
-| `lumilake job submit <workflow>` | Submit a workflow spec. Pass `--optimizer <name>` to override the server's default optimizer for this job. |
-| `lumilake job preview <workflow>` | Compile and schedule a workflow without dispatching runtime work. Pass `--optimizer <name>` to preview with a specific optimizer. |
+| `lumilake job submit <workflow>` | Submit a workflow spec. Pass `--optimizer <name>` to override the server default optimizer. Pass `--cpu` / `--memory` / `--gpu` / `--gpu-memory` (or `--hardware-json`) to override the worker hardware for this job; unset fields fall back to the server's `HARDWARE_*` env defaults. `--cpu` / `--memory` filter every worker; `--gpu` / `--gpu-memory` only filter GPU-capable workers, so `--gpu 1` is not a job-wide "GPU workers only" switch — a mixed CPU+GPU graph still admits CPU workers for its CPU ops instead of forcing the entire graph onto GPU workers. A job with constraints no worker satisfies stays queued and the scheduler keeps retrying; cancel the job to release it. |
+| `lumilake job preview <workflow>` | Compile and schedule a workflow without dispatching runtime work. Accepts the same `--optimizer` and `--cpu` / `--memory` / `--gpu` / `--gpu-memory` / `--hardware-json` overrides as `submit`. |
 | `lumilake job list` | List jobs. |
 | `lumilake job info <job_id>` | Show one job. |
 | `lumilake job progress <job_id>` | Show detailed progress. |

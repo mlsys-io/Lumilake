@@ -7,7 +7,11 @@ from support.runtime_graphs import build_dummy_runtime_graph
 from lumilake_server.runtime.job_manager.base import Job
 from lumilake_server.runtime.job_manager.priority_queue import PriorityJobManager
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
-from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
+from lumilake_server.runtime.protocol import (
+    HardwareRequirements,
+    LumilakeRequestConfig,
+    Priority,
+)
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
@@ -42,6 +46,7 @@ def _build_job(
     principal_id: str = "p",
     dispatch_token: str | None = None,
     optimizer_type: str | None = None,
+    hardware_requirements: HardwareRequirements | None = None,
 ) -> Job:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     owner = request_id if user_id is None else user_id
@@ -57,6 +62,7 @@ def _build_job(
             user_id=owner,
             principal_id=principal_id,
             optimizer_type=optimizer_type,
+            hardware_requirements=hardware_requirements,
         ),
         dispatch_token=dispatch_token,
     )
@@ -646,3 +652,130 @@ async def test_abort_reservation_rejects_stale_after_commit() -> None:
 
     with pytest.raises(RuntimeError, match="active"):
         await manager.abort_reservation(first)
+
+
+@pytest.mark.asyncio
+async def test_commit_reservation_retains_nonempty_partition() -> None:
+    """After committing a batch that drains only part of a partition, the
+    partition must remain in ``_rr_partition_members`` and
+    ``_rr_partition_order`` so the cross-partition round-robin can rotate it
+    rather than relying on the fallback reseed every round.
+    """
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(1),
+        default_optimizer_type="halo",
+    )
+
+    await manager.enqueue(
+        _build_job(
+            "req-1",
+            "graph-1",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            hardware_requirements=HardwareRequirements(cpu=4, memory="8Gi"),
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-2",
+            "graph-2",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            hardware_requirements=HardwareRequirements(cpu=4, memory="8Gi"),
+        )
+    )
+
+    members_before = set(manager._rr_partition_members)
+    order_before = list(manager._rr_partition_order)
+    assert len(members_before) == 1
+    partition = next(iter(members_before))
+
+    reservation = await manager.reserve_batch(1)
+    assert reservation is not None
+    await manager.commit_reservation(reservation)
+
+    assert partition in manager._rr_partition_members
+    assert partition in manager._rr_partition_order
+    assert set(manager._rr_partition_members) == members_before
+    assert list(manager._rr_partition_order) == order_before
+
+
+@pytest.mark.asyncio
+async def test_mixed_hardware_requirements_split_into_separate_batches() -> None:
+    """Two requests from the same principal+token+optimizer with DIFFERENT
+    hardware requirements must land in separate batches — a FlowMesh task
+    spec carries one hardware tuple, so any mix would have to be split anyway.
+    """
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type="halo",
+    )
+
+    await manager.enqueue(
+        _build_job(
+            "req-small",
+            "graph-small",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            hardware_requirements=HardwareRequirements(cpu=4, memory="8Gi"),
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-big",
+            "graph-big",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            hardware_requirements=HardwareRequirements(cpu=32, memory="128Gi"),
+        )
+    )
+
+    first = await manager.select_batch(2)
+    assert first is not None
+    first_specs = {item.config.hardware_requirements for item in first.workflows}
+    assert len(first_specs) == 1
+
+    second = await manager.select_batch(2)
+    assert second is not None
+    second_specs = {item.config.hardware_requirements for item in second.workflows}
+    assert len(second_specs) == 1
+
+    assert first_specs != second_specs
+
+
+@pytest.mark.asyncio
+async def test_jobs_without_hardware_override_cobatch() -> None:
+    """Two requests that both rely on env defaults (hardware_requirements=None)
+    must co-batch — otherwise the partition split would be a regression on the
+    common case where no one passes ``--cpu`` / ``--memory``."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type="halo",
+    )
+
+    await manager.enqueue(
+        _build_job(
+            "req-1",
+            "graph-1",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            hardware_requirements=None,
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-2",
+            "graph-2",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            hardware_requirements=None,
+        )
+    )
+
+    batch = await manager.select_batch(2)
+    assert batch is not None
+    assert len(batch.workflows) == 2
+    assert {item.request_id for item in batch.workflows} == {"req-1", "req-2"}

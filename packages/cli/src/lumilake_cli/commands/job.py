@@ -27,6 +27,55 @@ def _unwrap(response_json: dict[str, Any]) -> dict[str, Any]:
     return response_json.get("data", response_json)
 
 
+_HARDWARE_FIELDS = ("cpu", "memory", "gpu", "gpu_memory")
+
+
+def _build_hardware_payload(
+    cpu: int | None,
+    memory: str | None,
+    gpu: int | None,
+    gpu_memory: str | None,
+    hardware_json: Path | None,
+) -> dict[str, Any] | None:
+    """Merge ``--hardware-json`` with individual ``--cpu`` etc. flags.
+
+    Individual flags win on conflict so users can layer a one-off override on a
+    saved profile. Returns ``None`` when nothing is set so the server keeps the
+    env defaults.
+    """
+    base: dict[str, Any] = {}
+    if hardware_json is not None:
+        if not hardware_json.is_file():
+            logging.error(f"--hardware-json file not found: {hardware_json}")
+            raise typer.Exit(code=1)
+        try:
+            loaded = json.loads(hardware_json.read_text())
+        except json.JSONDecodeError as exc:
+            logging.error(f"--hardware-json is not valid JSON: {exc}")
+            raise typer.Exit(code=1) from exc
+        if not isinstance(loaded, dict):
+            logging.error("--hardware-json must contain a JSON object")
+            raise typer.Exit(code=1)
+        unknown = set(loaded) - set(_HARDWARE_FIELDS)
+        if unknown:
+            logging.error(
+                "--hardware-json has unknown fields "
+                f"{sorted(unknown)}; allowed: {list(_HARDWARE_FIELDS)}"
+            )
+            raise typer.Exit(code=1)
+        base.update(loaded)
+    overrides: dict[str, Any] = {
+        "cpu": cpu,
+        "memory": memory,
+        "gpu": gpu,
+        "gpu_memory": gpu_memory,
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            base[key] = value
+    return base or None
+
+
 def _build_inputs(
     input_values: list[str] | None,
     input_files: list[str] | None,
@@ -164,6 +213,48 @@ def submit(
         "--optimizer",
         help="Override the server default optimizer (must be in /optimizer).",
     ),
+    cpu: int | None = typer.Option(
+        None,
+        "--cpu",
+        help=(
+            "Per-job CPU cores override. Unset falls back to "
+            "HARDWARE_CPU_REQUIREMENT."
+        ),
+    ),
+    memory: str | None = typer.Option(
+        None,
+        "--memory",
+        help=(
+            "Per-job RAM override (e.g. `32Gi`). Unset falls back to "
+            "HARDWARE_MEMORY_REQUIREMENT."
+        ),
+    ),
+    gpu: int | None = typer.Option(
+        None,
+        "--gpu",
+        help=(
+            "Per-job GPU count override. `0` disables GPU; the server rejects "
+            "workflows with GPU ops when `--gpu 0`. Unset falls back to "
+            "HARDWARE_GPU_REQUIREMENT."
+        ),
+    ),
+    gpu_memory: str | None = typer.Option(
+        None,
+        "--gpu-memory",
+        help=(
+            "Per-job GPU memory override (e.g. `24Gi`). Unset falls back to "
+            "HARDWARE_GPU_MEMORY_REQUIREMENT."
+        ),
+    ),
+    hardware_json: Path | None = typer.Option(
+        None,
+        "--hardware-json",
+        help=(
+            "JSON file with the full hardware override (keys: cpu, memory, gpu, "
+            "gpu_memory). Merged with `--cpu`/`--memory`/`--gpu`/`--gpu-memory`; "
+            "flag values win on conflict."
+        ),
+    ),
 ) -> None:
     """Submit a workflow for optimization and execution."""
     if not workflow.exists():
@@ -216,6 +307,11 @@ def submit(
     }
     if optimizer is not None:
         payload["optimizer"] = optimizer
+    hardware_payload = _build_hardware_payload(
+        cpu, memory, gpu, gpu_memory, hardware_json
+    )
+    if hardware_payload is not None:
+        payload["hardware"] = hardware_payload
 
     client = client_from_config()
     try:
@@ -633,6 +729,22 @@ def preview(
         "--optimizer",
         help="Override the server default optimizer (must be in /optimizer).",
     ),
+    cpu: int | None = typer.Option(None, "--cpu", help="Per-job CPU cores override."),
+    memory: str | None = typer.Option(
+        None, "--memory", help="Per-job RAM override (e.g. `32Gi`)."
+    ),
+    gpu: int | None = typer.Option(None, "--gpu", help="Per-job GPU count override."),
+    gpu_memory: str | None = typer.Option(
+        None, "--gpu-memory", help="Per-job GPU memory override (e.g. `24Gi`)."
+    ),
+    hardware_json: Path | None = typer.Option(
+        None,
+        "--hardware-json",
+        help=(
+            "JSON file with the full hardware override; merged with `--cpu` / "
+            "`--memory` / `--gpu` / `--gpu-memory` (flags win on conflict)."
+        ),
+    ),
 ) -> None:
     """Preview the optimization schedule for a workflow without executing it.
 
@@ -657,6 +769,11 @@ def preview(
     }
     if optimizer is not None:
         payload["optimizer"] = optimizer
+    hardware_payload = _build_hardware_payload(
+        cpu, memory, gpu, gpu_memory, hardware_json
+    )
+    if hardware_payload is not None:
+        payload["hardware"] = hardware_payload
 
     client = client_from_config()
     try:

@@ -54,6 +54,7 @@ class _TwoBatchThenCancelJobManager:
         self._select_calls += 1
         if self._select_calls == 1:
             selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-1", id="wf-1")],
                 runtime_graphs={},
                 clustering_seconds=0.0,
@@ -62,6 +63,7 @@ class _TwoBatchThenCancelJobManager:
             return SimpleNamespace(selection=selection)
         if self._select_calls == 2:
             selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-2", id="wf-2")],
                 runtime_graphs={},
                 clustering_seconds=0.0,
@@ -99,6 +101,7 @@ async def test_scheduler_loop_can_dispatch_multiple_batches_concurrently(
     async def _fake_wait_for_available_worker_group(
         cpu_group_size: int,
         gpu_group_size: int,
+        **_kw: Any,
     ) -> list[str]:
         nonlocal worker_calls
         worker_calls += 1
@@ -159,6 +162,7 @@ class _CpuOnlyBatchJobManager:
                 backend="data_retrieval", task_type="data_retrieval"
             )
             selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-cpu", id="wf-cpu")],
                 runtime_graphs={
                     "g": SimpleNamespace(nodes={"n": cpu_node}),
@@ -190,7 +194,7 @@ async def test_scheduler_cpu_only_batch_skips_gpu_wait(server_factory) -> None:
         return
 
     async def _record_worker_group(
-        cpu_group_size: int, gpu_group_size: int
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
     ) -> list[str]:
         captured_gpu_sizes.append(gpu_group_size)
         return ["cpu-0"]
@@ -224,6 +228,7 @@ class _GpuBatchJobManager:
         if self._select_calls == 1:
             gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
             selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-gpu", id="wf-gpu")],
                 runtime_graphs={
                     "g": SimpleNamespace(nodes={"n": gpu_node}),
@@ -257,7 +262,7 @@ async def test_scheduler_gpu_batch_requests_configured_gpu_group(
         return
 
     async def _record_worker_group(
-        cpu_group_size: int, gpu_group_size: int
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
     ) -> list[str]:
         captured_gpu_sizes.append(gpu_group_size)
         return ["gpu-0", "gpu-1", "cpu-0"]
@@ -293,6 +298,7 @@ class _RecordingJobManager:
             return None
         cpu_node = SimpleNamespace(backend="data_retrieval", task_type="data_retrieval")
         selection = SimpleNamespace(
+            config=SimpleNamespace(hardware_requirements=None),
             workflows=[
                 SimpleNamespace(request_id=f"req-{self._calls}", id=f"wf-{self._calls}")
             ],
@@ -324,7 +330,7 @@ async def test_scheduler_aborts_reservation_when_workers_unavailable(
         return
 
     async def _worker_acquisition_times_out(
-        cpu_group_size: int, gpu_group_size: int
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
     ) -> Any:
         return None
 
@@ -357,7 +363,9 @@ async def test_scheduler_commits_reservation_when_workers_acquired(
     async def _no_accumulation_wait() -> None:
         return
 
-    async def _grant_workers(cpu_group_size: int, gpu_group_size: int) -> Any:
+    async def _grant_workers(
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
+    ) -> Any:
         return ["cpu-0"]
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
@@ -392,6 +400,7 @@ class _InferenceWithoutBackendBatchJobManager:
         if self._select_calls == 1:
             mystery_op = SimpleNamespace(backend="", task_type="inference")
             selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-mystery", id="wf-mystery")],
                 runtime_graphs={"g": SimpleNamespace(nodes={"n": mystery_op})},
                 name="mystery-batch",
@@ -425,7 +434,7 @@ async def test_scheduler_inference_task_type_requests_gpu_even_without_backend(
         return
 
     async def _record_worker_group(
-        cpu_group_size: int, gpu_group_size: int
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
     ) -> list[str]:
         captured_gpu_sizes.append(gpu_group_size)
         return ["gpu-0", "gpu-1", "cpu-0"]

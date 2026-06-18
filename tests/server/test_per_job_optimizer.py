@@ -26,7 +26,7 @@ from lumilake_server.routes.jobs import (
 )
 from lumilake_server.runtime.optimizer import OPTIMIZER_PROVIDERS
 from lumilake_server.runtime.optimizer.base import Schedule
-from lumilake_server.runtime.protocol import LumilakeRequestConfig
+from lumilake_server.runtime.protocol import HardwareRequirements, LumilakeRequestConfig
 from lumilake_server.runtime.server import SchedulePreview
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -222,6 +222,7 @@ async def test_submit_stores_optimizer_lowercase_for_partition_key(
     to _run_job (and therefore into LumilakeRequestConfig.optimizer_type).
     """
     captured: list[str | None] = []
+    captured_hardware: list[Any] = []
 
     async def _fake_run_job(
         job_id: str,
@@ -233,12 +234,15 @@ async def test_submit_stores_optimizer_lowercase_for_partition_key(
         runtime_token: Any,
         trace_id: str,
         optimizer_type: str | None = None,
+        hardware_requirements: Any = None,
+        parsed_graphs: Any = None,
     ) -> None:
         captured.append(optimizer_type)
+        captured_hardware.append(hardware_requirements)
 
     monkeypatch.setattr(job_routes_module, "_run_job", _fake_run_job)
 
-    app = _make_normalization_app(monkeypatch, object())
+    app = _make_normalization_app(monkeypatch, _FakePreviewServer(_PreviewCapture()))
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -252,6 +256,7 @@ async def test_submit_stores_optimizer_lowercase_for_partition_key(
                     }
                 ],
                 "optimizer": "HALO",
+                "hardware": {"cpu": 8, "memory": "16Gi"},
             },
             headers={"Authorization": "Bearer token"},
         )
@@ -262,6 +267,11 @@ async def test_submit_stores_optimizer_lowercase_for_partition_key(
     assert captured == ["halo"], (
         f"expected optimizer_type='halo' but got {captured!r}; "
         "dropping optimizer.lower() in the submit handler would reproduce this failure"
+    )
+    assert captured_hardware == [HardwareRequirements(cpu=8, memory="16Gi")], (
+        f"expected hardware_requirements=HardwareRequirements(cpu=8, memory='16Gi') "
+        f"but got {captured_hardware!r}; dropping the hardware kwarg from the "
+        "_run_job call in submit_job would reproduce this failure"
     )
 
 
@@ -291,6 +301,7 @@ async def test_preview_stores_optimizer_lowercase_for_partition_key(
                     }
                 ],
                 "optimizer": "HALO",
+                "hardware": {"cpu": 8, "memory": "16Gi"},
             },
             headers={"Authorization": "Bearer token"},
         )
@@ -299,6 +310,14 @@ async def test_preview_stores_optimizer_lowercase_for_partition_key(
     assert capture.config.optimizer_type == "halo", (
         f"expected optimizer_type='halo' but got {capture.config.optimizer_type!r}; "
         "dropping optimizer.lower() at routes/jobs.py:1640 would reproduce this failure"
+    )
+    assert capture.config.hardware_requirements == HardwareRequirements(
+        cpu=8, memory="16Gi"
+    ), (
+        f"expected hardware_requirements=HardwareRequirements(cpu=8, memory='16Gi') "
+        f"but got {capture.config.hardware_requirements!r}; dropping "
+        "hardware_requirements=preview_hardware from the preview "
+        "LumilakeRequestConfig would reproduce this failure"
     )
 
 

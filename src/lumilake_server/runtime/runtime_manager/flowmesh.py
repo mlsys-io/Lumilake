@@ -28,7 +28,7 @@ from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_server,
 )
 from lumilake_server.runtime.optimizer.base import Schedule
-from lumilake_server.runtime.protocol import RequestCancelledError
+from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import (
     Roles,
@@ -42,6 +42,30 @@ from lumilake_server.utils.job_storage import get_job_storage
 from .base import BaseRuntimeManager
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+
+
+def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
+    if hardware is not None and hardware.cpu is not None:
+        return hardware.cpu
+    return envs.HARDWARE_CPU_REQUIREMENT
+
+
+def _resolve_memory(hardware: HardwareRequirements | None) -> str:
+    if hardware is not None and hardware.memory is not None:
+        return hardware.memory
+    return envs.HARDWARE_MEMORY_REQUIREMENT
+
+
+def _resolve_gpu_count(hardware: HardwareRequirements | None) -> int:
+    if hardware is not None and hardware.gpu is not None:
+        return hardware.gpu
+    return envs.HARDWARE_GPU_REQUIREMENT
+
+
+def _resolve_gpu_memory(hardware: HardwareRequirements | None) -> str:
+    if hardware is not None and hardware.gpu_memory is not None:
+        return hardware.gpu_memory
+    return envs.HARDWARE_GPU_MEMORY_REQUIREMENT
 
 
 def _walk_output_path(
@@ -1000,7 +1024,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             - Flowmesh node name -> raw runtime node ID mapping
         """
         nodes = runtime_graph.to_flowmesh_nodes()
-        self._apply_per_node_resource_hints(nodes, runtime_graph)
+        self._apply_per_node_resource_hints(
+            nodes, runtime_graph, request_info.hardware_requirements
+        )
         output_node_indices: list[tuple[int, str]] = []
         for idx, node_id in enumerate(runtime_graph.node_order):
             if node_id in runtime_graph.output_node_map:
@@ -1048,8 +1074,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 "resources": {
                     "replicas": 1,
                     "hardware": {
-                        "cpu": envs.HARDWARE_CPU_REQUIREMENT,
-                        "memory": envs.HARDWARE_MEMORY_REQUIREMENT,
+                        "cpu": _resolve_cpu(request_info.hardware_requirements),
+                        "memory": _resolve_memory(request_info.hardware_requirements),
                     },
                 },
                 "graph": {
@@ -1104,7 +1130,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self,
         nodes: list[dict[str, Any]],
         runtime_graph: RuntimeGraph,
+        hardware: HardwareRequirements | None,
     ) -> None:
+        cpu = _resolve_cpu(hardware)
+        memory = _resolve_memory(hardware)
+        gpu_count = _resolve_gpu_count(hardware)
+        gpu_memory = _resolve_gpu_memory(hardware)
         gpu_nodes = 0
         cpu_nodes = 0
         for node in nodes:
@@ -1115,6 +1146,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             if runtime_op is None:
                 continue
             if self._runtime_op_requires_gpu(runtime_op):
+                if gpu_count <= 0:
+                    raise ValueError(
+                        f"hardware.gpu={gpu_count} but runtime node "
+                        f"{node_name!r} requires a GPU worker "
+                        "(vLLM / transformers / diffusers / text-to-image)."
+                    )
                 gpu_nodes += 1
                 node_spec = node.setdefault("spec", {})
                 if not isinstance(node_spec, dict):
@@ -1125,12 +1162,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 node_hardware = node_resources.setdefault("hardware", {})
                 if not isinstance(node_hardware, dict):
                     continue
-                node_hardware["cpu"] = envs.HARDWARE_CPU_REQUIREMENT
-                node_hardware["memory"] = envs.HARDWARE_MEMORY_REQUIREMENT
+                node_hardware["cpu"] = cpu
+                node_hardware["memory"] = memory
                 node_hardware["gpu"] = {
                     "type": "any",
-                    "count": max(1, int(envs.HARDWARE_GPU_REQUIREMENT)),
-                    "memory": envs.HARDWARE_GPU_MEMORY_REQUIREMENT,
+                    "count": gpu_count,
+                    "memory": gpu_memory,
                 }
             else:
                 cpu_nodes += 1

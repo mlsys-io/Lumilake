@@ -32,6 +32,7 @@ from lumilake.log import Logger, init_child_logger, set_trace_id
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
+from lumilake_server.graphs import CompiledGraph
 from lumilake_server.hooks.security import (
     authenticate_request,
     emit_usage,
@@ -49,6 +50,7 @@ from lumilake_server.runtime.optimizer import (
     OPTIMIZER_TYPES,
 )
 from lumilake_server.runtime.protocol import (
+    HardwareRequirements,
     LumilakeRequestConfig,
     LumilakeResponse,
     Priority,
@@ -553,6 +555,16 @@ class JobSubmitRequest(BaseModel):
             " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
         ),
     )
+    hardware: HardwareRequirements | None = Field(
+        default=None,
+        description=(
+            "Per-job hardware overrides for the FlowMesh task spec. Unset"
+            " fields fall back to ``HARDWARE_*`` env defaults. Jobs with"
+            " different per-job override tuples land in distinct FlowMesh"
+            " dispatches; the partition key uses the raw override, not the"
+            " env-resolved value."
+        ),
+    )
 
 
 class JobPreviewItem(BaseModel):
@@ -615,6 +627,14 @@ class JobPreviewRequest(BaseModel):
             " ``OPTIMIZER_TYPES`` or advertised by a loaded"
             " ``OptimizerProvider`` (see GET /api/v1/optimizer). If omitted,"
             " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
+        ),
+    )
+    hardware: HardwareRequirements | None = Field(
+        default=None,
+        description=(
+            "Hardware overrides applied during schedule preview. Mirrors"
+            " ``JobSubmitRequest.hardware`` so the same payload can be sent"
+            " to both ``/jobs`` and ``/jobs/preview``."
         ),
     )
 
@@ -691,8 +711,79 @@ _IMAGE_EXT = {
 }
 
 
+_OPENAPI_HARDWARE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "nullable": True,
+    "default": None,
+    "description": (
+        "Per-job hardware overrides. Unset fields fall back to the"
+        " server's ``HARDWARE_*`` env defaults. GPU constraints"
+        " (``gpu`` / ``gpu_memory``) only apply to GPU-capable workers;"
+        " CPU workers are filtered by ``cpu`` / ``memory`` only, so a"
+        " mixed CPU+GPU graph that sets ``gpu=1`` still picks up CPU"
+        " workers for its CPU ops. ``gpu=0`` against a workflow that"
+        " contains a GPU op is rejected with HTTP 422 by the API before"
+        " scheduling (both submit and preview)."
+        " Jobs whose constraints no worker satisfies stay queued until"
+        " a matching worker appears."
+    ),
+    "properties": {
+        "cpu": {
+            "type": "integer",
+            "nullable": True,
+            "default": None,
+            "exclusiveMinimum": 0,
+            "maximum": 1024,
+            "description": "CPU cores per worker.",
+        },
+        "memory": {
+            "type": "string",
+            "nullable": True,
+            "default": None,
+            "pattern": r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$",
+            "maxLength": 6,
+            "description": "RAM per worker (e.g. ``16Gi``).",
+        },
+        "gpu": {
+            "type": "integer",
+            "nullable": True,
+            "default": None,
+            "minimum": 0,
+            "maximum": 8,
+            "description": "GPU count per worker. ``0`` = no GPU.",
+        },
+        "gpu_memory": {
+            "type": "string",
+            "nullable": True,
+            "default": None,
+            "pattern": r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$",
+            "maxLength": 6,
+            "description": "GPU memory per worker (e.g. ``24Gi``).",
+        },
+    },
+    "additionalProperties": False,
+}
+
+
 def _now() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
+
+
+def _any_graph_requires_gpu(
+    server: LumilakeServer, graphs: dict[str, CompiledGraph]
+) -> bool:
+    """True when any runtime op across ``graphs`` needs a GPU worker.
+
+    ``backend`` / ``task_type`` only exist on ``RuntimeOp``s built by
+    ``RuntimeGraphBuilder.build``; the guard builds runtime graphs from the
+    compiled DSL graphs before classifying so it shares the dispatcher's rule.
+    """
+    for name, compiled in graphs.items():
+        runtime_graph = server._runtime_builder.build(compiled, node_prefix=name)
+        for op in runtime_graph.nodes.values():
+            if LumilakeServer._requires_gpu(op):
+                return True
+    return False
 
 
 def _release_output_locations(_record: JobRecord) -> None:
@@ -1205,6 +1296,8 @@ async def _run_job(
     runtime_token: str | None,
     trace_id: str,
     optimizer_type: str | None = None,
+    hardware_requirements: HardwareRequirements | None = None,
+    parsed_graphs: dict[str, CompiledGraph] | None = None,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -1225,7 +1318,11 @@ async def _run_job(
 
     server.runtime_manager.set_dispatch_token(job_id, runtime_token)
     try:
-        graphs = server.parse_query(graph_specs)
+        graphs = (
+            parsed_graphs
+            if parsed_graphs is not None
+            else server.parse_query(graph_specs)
+        )
         record.progress.query_parsing.completed = True
         if envs.LUMILAKE_DISABLE_DATA_PROFILE:
             logger.info(
@@ -1257,6 +1354,7 @@ async def _run_job(
                 org_id=principal.org_id,
                 principal_id=principal.principal_id,
                 optimizer_type=optimizer_type,
+                hardware_requirements=hardware_requirements,
             ),
             workflow_slices=workflow_slices,
         )
@@ -1495,6 +1593,7 @@ async def _run_job(
                                     " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
                                 ),
                             },
+                            "hardware": _OPENAPI_HARDWARE_SCHEMA,
                         },
                         "required": ["data"],
                     }
@@ -1545,6 +1644,7 @@ async def preview_job(
     if optimizer is not None:
         _validate_optimizer_type(optimizer)
         optimizer = optimizer.lower()
+    preview_hardware = preview_request.hardware
     entries = preview_request.data
     if not entries:
         raise HTTPException(
@@ -1636,6 +1736,19 @@ async def preview_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
+    if (
+        preview_hardware is not None
+        and preview_hardware.gpu == 0
+        and _any_graph_requires_gpu(server, graphs)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "hardware.gpu=0 conflicts with workflow: this graph contains "
+                "ops that require a GPU worker (vLLM / transformers / "
+                "diffusers / text-to-image). Drop --gpu 0 or remove the GPU op."
+            ),
+        )
 
     preview_task_keys: list[str] = []
     preview_data_profile_sources: dict[str, list[DataProfileSource]] = {}
@@ -1691,6 +1804,7 @@ async def preview_job(
                     user_id=preview_request_id,
                     principal_id=preview_request_id,
                     optimizer_type=optimizer,
+                    hardware_requirements=preview_hardware,
                 ),
             )
         except Exception as exc:
@@ -1820,6 +1934,7 @@ async def preview_job(
                                     " ``LUMILAKE_DEFAULT_OPTIMIZER`` is used."
                                 ),
                             },
+                            "hardware": _OPENAPI_HARDWARE_SCHEMA,
                         },
                         "required": ["data"],
                     }
@@ -1872,6 +1987,7 @@ async def submit_job(
     if optimizer is not None:
         _validate_optimizer_type(optimizer)
         optimizer = optimizer.lower()
+    hardware = submit_request.hardware
     if not entries:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1987,6 +2103,28 @@ async def submit_job(
             effective_batch_size,
         )
 
+    server = LumilakeServer.get_started_instance()
+    try:
+        graphs = server.parse_query(graph_specs)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Graph compilation failed: {exc}",
+        ) from exc
+    if (
+        hardware is not None
+        and hardware.gpu == 0
+        and _any_graph_requires_gpu(server, graphs)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "hardware.gpu=0 conflicts with workflow: this graph contains "
+                "ops that require a GPU worker (vLLM / transformers / "
+                "diffusers / text-to-image). Drop --gpu 0 or remove the GPU op."
+            ),
+        )
+
     record = JobRecord(
         job_id=job_id,
         status="pending",
@@ -2020,6 +2158,8 @@ async def submit_job(
             get_runtime_token(request),
             str(getattr(request.state, "trace_id", job_id)),
             optimizer,
+            hardware,
+            graphs,
         )
     )
     request.app.state.background_tasks.add(task)

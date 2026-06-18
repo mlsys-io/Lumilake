@@ -2,7 +2,11 @@ from dataclasses import dataclass, field
 
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
-from lumilake_server.runtime.protocol import LumilakeRequestConfig, LumilakeResponse
+from lumilake_server.runtime.protocol import (
+    HardwareRequirements,
+    LumilakeRequestConfig,
+    LumilakeResponse,
+)
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.utils.queue import TSQueue
 
@@ -28,6 +32,10 @@ class RequestInfo:
     data_profile_sources: dict[str, list[DataProfileSource]] = field(
         default_factory=dict
     )
+    hardware_requirements: HardwareRequirements | None = None
+    """Per-batch hardware override mirrored from the originating
+    ``LumilakeRequestConfig``. Batched items share the same hardware tuple
+    because the job manager partitions by hardware."""
 
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)

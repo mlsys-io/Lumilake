@@ -105,7 +105,10 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 
 ## Hardware Requirements
 
-Used by FlowMesh worker placement.
+Used by FlowMesh worker placement as the fallback when a job does not pass an
+explicit per-job override (see `lumilake job submit --cpu / --memory / --gpu
+/ --gpu-memory / --hardware-json`). Overrides merge field-by-field against
+these defaults — unset fields fall back here.
 
 | Key | Purpose |
 |-----|---------|
@@ -113,6 +116,22 @@ Used by FlowMesh worker placement.
 | `HARDWARE_MEMORY_REQUIREMENT` | Memory per worker. Defaults to `16Gi`. |
 | `HARDWARE_GPU_REQUIREMENT` | GPUs per worker. Defaults to `1`. |
 | `HARDWARE_GPU_MEMORY_REQUIREMENT` | GPU memory per worker. Defaults to `8Gi`. |
+
+Jobs with different per-job override tuples (the raw ``hardware`` payload —
+``None`` is its own partition, ``{"cpu": 8}`` is another, ``{"cpu": 8,
+"memory": "16Gi"}`` is another) land in distinct FlowMesh dispatches because
+a single FlowMesh task spec carries one hardware tuple. The partition is
+keyed on the raw override, not the env-resolved value, so two jobs that
+happen to resolve to the same effective spec via env defaults still split.
+
+The worker filter is role-aware: ``cpu`` and ``memory`` filter every worker
+(CPU and GPU), but ``gpu`` and ``gpu_memory`` only filter GPU-capable
+workers. A mixed CPU+GPU graph that sets ``gpu=1`` therefore still picks up
+CPU workers for its CPU ops; ``gpu`` is not a job-wide "GPU workers only"
+switch.
+Submitting `--gpu 0` against a workflow that contains a GPU op (vLLM /
+transformers / diffusers / text-to-image) is rejected with a clear error
+before the optimizer runs.
 
 ## FlowMesh TLS and Worker Config
 

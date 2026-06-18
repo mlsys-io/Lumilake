@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.common import Message
 
@@ -10,6 +10,31 @@ class Priority(Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class HardwareRequirements(BaseModel):
+    """Per-request hardware overrides for the FlowMesh task spec.
+
+    Any field left ``None`` falls back to the matching ``HARDWARE_*`` env
+    default at dispatch time, so a partial override is well-defined.
+    """
+
+    cpu: int | None = Field(default=None, gt=0, le=1024)
+    """CPU cores per worker (e.g. ``8``). Capped to prevent cross-tenant
+    DoS / quota bypass; any larger request returns 422."""
+    memory: str | None = Field(
+        default=None, max_length=6, pattern=r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$"
+    )
+    """RAM per worker (e.g. ``"16Gi"``)."""
+    gpu: int | None = Field(default=None, ge=0, le=8)
+    """GPU count per worker. ``0`` means "no GPU"; the server still rejects
+    workflows that contain GPU ops when ``gpu == 0``."""
+    gpu_memory: str | None = Field(
+        default=None, max_length=6, pattern=r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$"
+    )
+    """GPU memory per worker (e.g. ``"24Gi"``)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class LumilakeRequestConfig(BaseModel):
@@ -30,6 +55,10 @@ class LumilakeRequestConfig(BaseModel):
     """Optimizer to use for this request. Must be a name in
     ``OPTIMIZER_TYPES`` or advertised by a loaded ``OptimizerProvider``;
     ``None`` falls back to ``LUMILAKE_DEFAULT_OPTIMIZER``."""
+    hardware_requirements: HardwareRequirements | None = None
+    """Per-job hardware overrides. Unset fields fall back to ``HARDWARE_*``
+    env defaults. Different hardware tuples land in distinct FlowMesh
+    dispatches (the job manager treats hardware as part of the partition key)."""
 
 
 class LumilakeRequest(BaseModel):

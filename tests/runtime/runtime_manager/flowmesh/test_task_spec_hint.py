@@ -29,7 +29,9 @@ async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
         dsl_to_runtime={},
     )
     schedule = Schedule(worker_assignment={"gpu-0": ["n1"]})
-    request_info = cast(Any, SimpleNamespace(request_id="req-1"))
+    request_info = cast(
+        Any, SimpleNamespace(request_id="req-1", hardware_requirements=None)
+    )
 
     spec, _, _ = await flowmesh_manager._build_task_spec(
         request_info=request_info,

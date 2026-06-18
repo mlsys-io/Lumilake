@@ -12,7 +12,7 @@ from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
-from lumilake_server.runtime.protocol import Priority
+from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.utils.utils import unique_id
 
 from .base import (
@@ -24,6 +24,24 @@ from .base import (
 )
 from .cluster_algo.clustering import select_affinity_batch_ids
 
+HardwareSignature = tuple[int | None, str | None, int | None, str | None]
+"""Stable tuple form of ``HardwareRequirements`` used inside the partition key.
+
+``(None, None, None, None)`` represents "use env defaults" so jobs that omit
+the override co-batch with each other.
+"""
+
+PartitionKey = tuple[str, str | None, str, HardwareSignature]
+"""``(principal_id, dispatch_token, optimizer_type, hardware_signature)`` —
+two requests share a FlowMesh dispatch iff their partition keys are equal.
+"""
+
+
+def _hardware_signature(hw: HardwareRequirements | None) -> HardwareSignature:
+    if hw is None:
+        return (None, None, None, None)
+    return (hw.cpu, hw.memory, hw.gpu, hw.gpu_memory)
+
 
 @dataclass(slots=True, frozen=True)
 class _ReservationPayload:
@@ -31,7 +49,7 @@ class _ReservationPayload:
 
     selected_workflow_ids: frozenset[str]
     miss_increment_targets: tuple[str, ...]
-    rr_partition_to_advance: tuple[str, str | None, str] | None
+    rr_partition_to_advance: PartitionKey | None
     user_rr_priorities_to_advance: tuple[Priority, ...]
 
 
@@ -73,12 +91,13 @@ class PriorityJobManager(BaseJobManager):
         self._rr_user_order: dict[Priority, deque[str]] = {
             priority: deque() for priority in Priority
         }
-        # Round-robin order of (principal_id, dispatch_token, optimizer_type)
-        # partitions across all priorities. select_batch picks one partition per
-        # round so a single FlowMesh dispatch never spans principals, tokens, or
-        # optimizer types. Set mirrors the deque for O(1) membership.
-        self._rr_partition_order: deque[tuple[str, str | None, str]] = deque()
-        self._rr_partition_members: set[tuple[str, str | None, str]] = set()
+        # Round-robin order of (principal_id, dispatch_token, optimizer_type,
+        # hardware_signature) partitions across all priorities. select_batch
+        # picks one partition per round so a single FlowMesh dispatch never
+        # spans principals, tokens, optimizer types, or hardware requirements.
+        # Set mirrors the deque for O(1) membership.
+        self._rr_partition_order: deque[PartitionKey] = deque()
+        self._rr_partition_members: set[PartitionKey] = set()
         self._items: dict[str, WorkflowItem] = {}
         self._lock = asyncio.Lock()
         self._not_empty = asyncio.Event()
@@ -89,14 +108,14 @@ class PriorityJobManager(BaseJobManager):
 
     @staticmethod
     def _redact_partition(
-        partition: tuple[str, str | None, str],
-    ) -> tuple[str, str, str]:
+        partition: PartitionKey,
+    ) -> tuple[str, str, str, HardwareSignature]:
         """Render a partition for logs without leaking the bearer token."""
-        principal_id, token, optimizer_type = partition
+        principal_id, token, optimizer_type, hardware = partition
         if token is None:
-            return (principal_id, "no-token", optimizer_type)
+            return (principal_id, "no-token", optimizer_type, hardware)
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
-        return (principal_id, f"tok:{digest}", optimizer_type)
+        return (principal_id, f"tok:{digest}", optimizer_type, hardware)
 
     @staticmethod
     def _format_item(item: WorkflowItem) -> str:
@@ -159,10 +178,11 @@ class PriorityJobManager(BaseJobManager):
                     self._rr_user_order[job.config.priority].append(owner_id)
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
-                partition = (
+                partition: PartitionKey = (
                     item.config.principal_id,
                     item.dispatch_token,
                     item.config.optimizer_type or self._default_optimizer_type,
+                    _hardware_signature(item.config.hardware_requirements),
                 )
                 if partition not in self._rr_partition_members:
                     self._rr_partition_members.add(partition)
@@ -230,16 +250,17 @@ class PriorityJobManager(BaseJobManager):
                     "PriorityJobManager already has an outstanding reservation; "
                     "commit or abort it before reserving another batch."
                 )
-            present_partitions: set[tuple[str, str | None, str]] = set()
-            items_by_partition: dict[tuple[str, str | None, str], int] = {}
+            present_partitions: set[PartitionKey] = set()
+            items_by_partition: dict[PartitionKey, int] = {}
             starved_global: list[WorkflowItem] = []
             for priority in Priority:
                 for queue in self._queues[priority].values():
                     for item in queue:
-                        partition = (
+                        partition: PartitionKey = (
                             item.config.principal_id,
                             item.dispatch_token,
                             item.config.optimizer_type or self._default_optimizer_type,
+                            _hardware_signature(item.config.hardware_requirements),
                         )
                         present_partitions.add(partition)
                         items_by_partition[partition] = (
@@ -252,14 +273,15 @@ class PriorityJobManager(BaseJobManager):
                 self._not_empty.clear()
                 return None
 
-            anchor_partition: tuple[str, str | None, str]
-            rr_partition_to_advance: tuple[str, str | None, str] | None = None
+            anchor_partition: PartitionKey
+            rr_partition_to_advance: PartitionKey | None = None
             if starved_global:
                 head = starved_global[0]
                 anchor_partition = (
                     head.config.principal_id,
                     head.dispatch_token,
                     head.config.optimizer_type or self._default_optimizer_type,
+                    _hardware_signature(head.config.hardware_requirements),
                 )
             else:
                 picked = self._pick_partition_round_robin_locked(present_partitions)
@@ -267,7 +289,13 @@ class PriorityJobManager(BaseJobManager):
                     # Deque drifted from present_partitions; reseed so RR
                     # rotates across every present partition next round.
                     for partition in sorted(
-                        present_partitions, key=lambda p: (p[0], p[1] or "", p[2])
+                        present_partitions,
+                        key=lambda p: (
+                            p[0],
+                            p[1] or "",
+                            p[2],
+                            tuple("" if v is None else str(v) for v in p[3]),
+                        ),
                     ):
                         if partition not in self._rr_partition_members:
                             self._rr_partition_members.add(partition)
@@ -432,6 +460,7 @@ class PriorityJobManager(BaseJobManager):
                     item.config.principal_id,
                     item.dispatch_token,
                     item.config.optimizer_type or self._default_optimizer_type,
+                    _hardware_signature(item.config.hardware_requirements),
                 )
                 for priority in Priority
                 for queue in self._queues[priority].values()
@@ -473,7 +502,7 @@ class PriorityJobManager(BaseJobManager):
             self._active_reservation = None
 
     def _build_candidate_pool_for_partition_locked(
-        self, partition: tuple[str, str | None, str]
+        self, partition: PartitionKey
     ) -> tuple[list[WorkflowItem], tuple[Priority, ...]]:
         """Peek the candidate pool plus the priorities whose user-level RR
         pointer should be rotated by ``commit_reservation``.
@@ -493,8 +522,8 @@ class PriorityJobManager(BaseJobManager):
         return candidates, tuple(priorities_to_advance)
 
     def _pick_partition_round_robin_locked(
-        self, present_partitions: set[tuple[str, str | None, str]]
-    ) -> tuple[str, str | None, str] | None:
+        self, present_partitions: set[PartitionKey]
+    ) -> PartitionKey | None:
         """Pick the next RR partition without advancing the pointer.
 
         Stale heads (partitions whose queues are empty) are evicted —
@@ -510,9 +539,7 @@ class PriorityJobManager(BaseJobManager):
             self._rr_partition_members.discard(head)
         return None
 
-    def _advance_partition_round_robin_locked(
-        self, partition: tuple[str, str | None, str]
-    ) -> None:
+    def _advance_partition_round_robin_locked(self, partition: PartitionKey) -> None:
         """Rotate the RR pointer past ``partition`` (commit-phase mutation)."""
         if not self._rr_partition_order:
             return
@@ -545,7 +572,7 @@ class PriorityJobManager(BaseJobManager):
         self,
         priority: Priority,
         limit: int,
-        partition: tuple[str, str | None, str],
+        partition: PartitionKey,
     ) -> tuple[list[WorkflowItem], bool]:
         """Peek the next ``limit`` items for ``partition`` without rotating.
 
@@ -562,7 +589,7 @@ class PriorityJobManager(BaseJobManager):
         if not user_queues or not rr_order:
             return [], False
 
-        principal_id, dispatch_token, optimizer_type = partition
+        principal_id, dispatch_token, optimizer_type, hardware_signature = partition
         filtered: dict[str, list[WorkflowItem]] = {}
         for user_id in rr_order:
             queue = user_queues.get(user_id)
@@ -575,6 +602,8 @@ class PriorityJobManager(BaseJobManager):
                 and item.dispatch_token == dispatch_token
                 and (item.config.optimizer_type or self._default_optimizer_type)
                 == optimizer_type
+                and _hardware_signature(item.config.hardware_requirements)
+                == hardware_signature
             ]
             if user_items:
                 filtered[user_id] = user_items
