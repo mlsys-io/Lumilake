@@ -22,20 +22,20 @@ class GenerationConfig:
     logit_bias: dict[str, int] | None = None
     logprobs: int | None = None
     max_tokens: int | None = None
-    min_tokens: int | None = None
-    n: int | None = 1
+    n: int | None = None
     presence_penalty: float | None = None
-    repetition_penalty: float | None = None
     seed: int | None = None
     stop: str | list[str] | None = None
-    stream: bool | None = False
+    stream: bool | None = None
     stream_options: Any = None
     temperature: float | None = None
-    top_k: int | None = None
     top_p: float | None = None
-    min_p: float | None = None
-    ignore_eos: bool = False
+    ignore_eos: bool | None = None
     chat_template_kwargs: dict[str, Any] | None = None
+    min_tokens: int | None = None
+    repetition_penalty: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
     extra_sampling_params: dict[str, Any] | None = None
 
     # Engine-level
@@ -64,6 +64,8 @@ class GenerationConfig:
     _NON_SAMPLER_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
             "model",
+            "stream",
+            "stream_options",
             "extra_sampling_params",
             "max_model_len",
             "gpu_memory_utilization",

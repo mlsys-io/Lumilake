@@ -567,9 +567,22 @@ class RuntimeGraphBuilder:
             }
         elif backend == "diffusers":
             diffusers_cfg = backend_config or {"dtype": "bf16", "use_safetensors": True}
-            # dtype is the only engine-overlay key meaningful for diffusers.
-            if "dtype" in overlay:
-                diffusers_cfg["dtype"] = overlay["dtype"]
+            # Only dtype is a typed engine field meaningful for diffusers;
+            # the rest are vLLM-only and would be silently dropped here.
+            invalid = sorted(
+                name
+                for name in (
+                    "max_model_len",
+                    "gpu_memory_utilization",
+                    "tensor_parallel_size",
+                )
+                if getattr(config, name) is not None
+            )
+            if invalid:
+                raise ValueError(
+                    f"diffusers backend does not accept typed engine fields: {invalid}"
+                )
+            diffusers_cfg.update(overlay)
             spec["diffusers"] = diffusers_cfg
         return spec
 
@@ -1156,15 +1169,13 @@ class RuntimeGraphBuilder:
         if isinstance(llm_op, ImageGenerationOp):
             visited_node_ids.add(llm_op_id)
             visited_node_ids.add(llm_op.content.id)
-            inference_spec = llm_op.config.inference_spec()
-            inference_spec.update(
-                {
-                    "num_inference_steps": 8,
-                    "guidance_scale": 1.0,
-                    "height": 1024,
-                    "width": 1024,
-                }
-            )
+            inference_spec = {
+                "num_inference_steps": 8,
+                "guidance_scale": 1.0,
+                "height": 1024,
+                "width": 1024,
+                **llm_op.config.inference_spec(),
+            }
             content_op = llm_op.content
             if (
                 isinstance(content_op, FormatOp)

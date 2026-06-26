@@ -5,6 +5,7 @@ from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
+    ImageGenerationOp,
     LLMChatOp,
     LLMVisionOp,
     OpMessage,
@@ -434,3 +435,88 @@ def test_extra_engine_kwargs_conflict_rejected() -> None:
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
     with pytest.raises(ValueError, match="extra_engine_kwargs conflict"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_inference_spec_omits_unset_defaults() -> None:
+    runtime_graph, llm_id = _build_llm_graph()
+    spec = runtime_graph.nodes[llm_id].inference_spec
+    # n/stream/ignore_eos must not be emitted when the user did not set them.
+    assert "n" not in spec
+    assert "stream" not in spec
+    assert "stream_options" not in spec
+    assert "ignore_eos" not in spec
+
+
+def test_inference_spec_omits_stream_even_when_set() -> None:
+    # stream is a request-mode flag, not a sampler knob; it must never leak
+    # into the runtime inference spec sent to the worker.
+    runtime_graph, llm_id = _build_llm_graph(stream=True)
+    spec = runtime_graph.nodes[llm_id].inference_spec
+    assert "stream" not in spec
+
+
+def test_inference_spec_emits_explicit_n_and_ignore_eos() -> None:
+    runtime_graph, llm_id = _build_llm_graph(n=2, ignore_eos=True)
+    spec = runtime_graph.nodes[llm_id].inference_spec
+    assert spec["n"] == 2
+    assert spec["ignore_eos"] is True
+
+
+def test_diffusers_backend_applies_dtype_and_extra_engine_kwargs() -> None:
+    builder = RuntimeGraphBuilder()
+    config = GenerationConfig(
+        model="stabilityai/sdxl",
+        dtype="fp16",
+        extra_engine_kwargs={"use_safetensors": False, "variant": "fp16"},
+    )
+    spec = builder._build_model_spec(config, backend="diffusers")
+    diffusers_cfg = spec["diffusers"]
+    assert diffusers_cfg["dtype"] == "fp16"
+    assert diffusers_cfg["use_safetensors"] is False
+    assert diffusers_cfg["variant"] == "fp16"
+
+
+def test_diffusers_backend_rejects_vllm_only_engine_fields() -> None:
+    builder = RuntimeGraphBuilder()
+    config = GenerationConfig(
+        model="stabilityai/sdxl",
+        max_model_len=8192,
+    )
+    with pytest.raises(
+        ValueError, match="diffusers backend does not accept typed engine fields"
+    ):
+        builder._build_model_spec(config, backend="diffusers")
+
+
+def _build_image_gen_graph(**config_kwargs):
+    prompt = input_placeholder("Prompt")
+    cfg = GenerationConfig(model="stabilityai/sdxl", **config_kwargs)
+    img = ImageGenerationOp(content=prompt, config=cfg)
+    output = as_output("result", img)
+    compiled = Graph.from_ops([output]).compile(Prompt=["a cat"])
+    return RuntimeGraphBuilder().build(compiled), img.id
+
+
+def test_image_gen_defaults_emitted_when_user_omits() -> None:
+    runtime_graph, img_id = _build_image_gen_graph()
+    spec = runtime_graph.nodes[img_id].inference_spec
+    assert spec["num_inference_steps"] == 8
+    assert spec["guidance_scale"] == 1.0
+    assert spec["height"] == 1024
+    assert spec["width"] == 1024
+
+
+def test_image_gen_user_extras_override_defaults() -> None:
+    runtime_graph, img_id = _build_image_gen_graph(
+        extra_sampling_params={
+            "num_inference_steps": 30,
+            "guidance_scale": 7.5,
+            "height": 768,
+            "width": 768,
+        },
+    )
+    spec = runtime_graph.nodes[img_id].inference_spec
+    assert spec["num_inference_steps"] == 30
+    assert spec["guidance_scale"] == 7.5
+    assert spec["height"] == 768
+    assert spec["width"] == 768
