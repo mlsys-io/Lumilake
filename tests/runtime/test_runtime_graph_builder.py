@@ -5,6 +5,7 @@ from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
+    ImageGenerationOp,
     LLMChatOp,
     LLMVisionOp,
     OpMessage,
@@ -302,3 +303,220 @@ def test_attach_lumid_cfg_not_injected_for_non_s3_list_inputs() -> None:
     ds = llm_node.data_spec
     assert "lumid_cfg" not in ds
     assert "s3_cfg" not in ds
+
+
+def test_runtime_graph_propagates_extended_sampler_fields() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            max_tokens=256,
+            min_tokens=4,
+            temperature=0.7,
+            top_p=0.8,
+            top_k=20,
+            min_p=0.0,
+            presence_penalty=1.5,
+            frequency_penalty=0.5,
+            repetition_penalty=1.0,
+            seed=42,
+            chat_template_kwargs={"enable_thinking": False},
+            extra_sampling_params={"length_penalty": 1.1},
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    spec = runtime_graph.nodes[llm.id].inference_spec
+    assert spec["max_tokens"] == 256
+    assert spec["min_tokens"] == 4
+    assert spec["temperature"] == 0.7
+    assert spec["top_p"] == 0.8
+    assert spec["top_k"] == 20
+    assert spec["min_p"] == 0.0
+    assert spec["presence_penalty"] == 1.5
+    assert spec["frequency_penalty"] == 0.5
+    assert spec["repetition_penalty"] == 1.0
+    assert spec["seed"] == 42
+    assert spec["chat_template_kwargs"] == {"enable_thinking": False}
+    # extra_sampling_params keys are merged into the spec as flat keys.
+    assert spec["length_penalty"] == 1.1
+    # model never appears in inference_spec — it's carried separately.
+    assert "model" not in spec
+    # The escape-hatch wrapper key itself is not leaked into the spec.
+    assert "extra_sampling_params" not in spec
+
+
+def _build_llm_graph(**config_kwargs):
+    stock = input_placeholder("Stock")
+    cfg = GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct", **config_kwargs)
+    llm = LLMChatOp([OpMessage(role="user", content=stock)], config=cfg)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    return RuntimeGraphBuilder().build(compiled), llm.id
+
+
+_ENGINE_FIELDS = (
+    "max_model_len",
+    "gpu_memory_utilization",
+    "tensor_parallel_size",
+    "dtype",
+)
+
+
+def test_engine_overlay_lands_in_vllm_backend() -> None:
+    runtime_graph, llm_id = _build_llm_graph(
+        max_model_len=8192,
+        gpu_memory_utilization=0.75,
+        tensor_parallel_size=2,
+        dtype="bf16",
+        extra_engine_kwargs={"quantization": "fp8", "kv_cache_dtype": "fp8"},
+    )
+    node = runtime_graph.nodes[llm_id]
+    vllm_cfg = node.model_spec["vllm"]
+    assert vllm_cfg["max_model_len"] == 8192
+    assert vllm_cfg["gpu_memory_utilization"] == 0.75
+    assert vllm_cfg["tensor_parallel_size"] == 2
+    assert vllm_cfg["dtype"] == "bf16"
+    assert vllm_cfg["quantization"] == "fp8"
+    assert vllm_cfg["kv_cache_dtype"] == "fp8"
+    # Engine fields must NOT leak into inference_spec.
+    for k in _ENGINE_FIELDS + ("quantization", "kv_cache_dtype"):
+        assert k not in node.inference_spec
+
+
+def test_engine_overlay_omitted_when_unset() -> None:
+    # gpu_memory_utilization has an env-var default in the baseline vLLM
+    # config, so unset means "stays at env default" not "absent". The other
+    # three fields have no default and should not appear when unset.
+    runtime_graph, llm_id = _build_llm_graph()
+    vllm_cfg = runtime_graph.nodes[llm_id].model_spec["vllm"]
+    for k in ("max_model_len", "tensor_parallel_size", "dtype"):
+        assert k not in vllm_cfg
+
+
+def test_engine_overlay_overrides_baseline_default() -> None:
+    # gpu_memory_utilization is set in the baseline config; an explicit
+    # value on GenerationConfig must override it.
+    runtime_graph, llm_id = _build_llm_graph(gpu_memory_utilization=0.6)
+    vllm_cfg = runtime_graph.nodes[llm_id].model_spec["vllm"]
+    assert vllm_cfg["gpu_memory_utilization"] == 0.6
+
+
+def test_extra_sampling_params_conflict_rejected() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            temperature=0.7,
+            extra_sampling_params={"temperature": 0.0},
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    with pytest.raises(ValueError, match="extra_sampling_params conflict"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_extra_engine_kwargs_conflict_rejected() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            max_model_len=8192,
+            extra_engine_kwargs={"max_model_len": 4096},
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    with pytest.raises(ValueError, match="extra_engine_kwargs conflict"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_inference_spec_omits_unset_defaults() -> None:
+    runtime_graph, llm_id = _build_llm_graph()
+    spec = runtime_graph.nodes[llm_id].inference_spec
+    # n/stream/ignore_eos must not be emitted when the user did not set them.
+    assert "n" not in spec
+    assert "stream" not in spec
+    assert "stream_options" not in spec
+    assert "ignore_eos" not in spec
+
+
+def test_inference_spec_omits_stream_even_when_set() -> None:
+    # stream is a request-mode flag, not a sampler knob; it must never leak
+    # into the runtime inference spec sent to the worker.
+    runtime_graph, llm_id = _build_llm_graph(stream=True)
+    spec = runtime_graph.nodes[llm_id].inference_spec
+    assert "stream" not in spec
+
+
+def test_inference_spec_emits_explicit_n_and_ignore_eos() -> None:
+    runtime_graph, llm_id = _build_llm_graph(n=2, ignore_eos=True)
+    spec = runtime_graph.nodes[llm_id].inference_spec
+    assert spec["n"] == 2
+    assert spec["ignore_eos"] is True
+
+
+def test_diffusers_backend_applies_dtype_and_extra_engine_kwargs() -> None:
+    builder = RuntimeGraphBuilder()
+    config = GenerationConfig(
+        model="stabilityai/sdxl",
+        dtype="fp16",
+        extra_engine_kwargs={"use_safetensors": False, "variant": "fp16"},
+    )
+    spec = builder._build_model_spec(config, backend="diffusers")
+    diffusers_cfg = spec["diffusers"]
+    assert diffusers_cfg["dtype"] == "fp16"
+    assert diffusers_cfg["use_safetensors"] is False
+    assert diffusers_cfg["variant"] == "fp16"
+
+
+def test_diffusers_backend_rejects_vllm_only_engine_fields() -> None:
+    builder = RuntimeGraphBuilder()
+    config = GenerationConfig(
+        model="stabilityai/sdxl",
+        max_model_len=8192,
+    )
+    with pytest.raises(
+        ValueError, match="diffusers backend does not accept typed engine fields"
+    ):
+        builder._build_model_spec(config, backend="diffusers")
+
+
+def _build_image_gen_graph(**config_kwargs):
+    prompt = input_placeholder("Prompt")
+    cfg = GenerationConfig(model="stabilityai/sdxl", **config_kwargs)
+    img = ImageGenerationOp(content=prompt, config=cfg)
+    output = as_output("result", img)
+    compiled = Graph.from_ops([output]).compile(Prompt=["a cat"])
+    return RuntimeGraphBuilder().build(compiled), img.id
+
+
+def test_image_gen_defaults_emitted_when_user_omits() -> None:
+    runtime_graph, img_id = _build_image_gen_graph()
+    spec = runtime_graph.nodes[img_id].inference_spec
+    assert spec["num_inference_steps"] == 8
+    assert spec["guidance_scale"] == 1.0
+    assert spec["height"] == 1024
+    assert spec["width"] == 1024
+
+
+def test_image_gen_user_extras_override_defaults() -> None:
+    runtime_graph, img_id = _build_image_gen_graph(
+        extra_sampling_params={
+            "num_inference_steps": 30,
+            "guidance_scale": 7.5,
+            "height": 768,
+            "width": 768,
+        },
+    )
+    spec = runtime_graph.nodes[img_id].inference_spec
+    assert spec["num_inference_steps"] == 30
+    assert spec["guidance_scale"] == 7.5
+    assert spec["height"] == 768
+    assert spec["width"] == 768
