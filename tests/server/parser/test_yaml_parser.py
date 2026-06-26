@@ -361,3 +361,69 @@ def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
     # The literal system-message stays as-is, no wrapping.
     sys_msg = next(m for m in msg_op["messages"] if m["role"] == "system")
     assert sys_msg["content"] == "You summarize documents."
+
+
+def test_llm_config_accepts_extended_sampler_fields() -> None:
+    """Every typed GenerationConfig field is accepted by the YAML parser and
+    persisted on the op spec; the allowlist is derived from the dataclass."""
+    yaml_text = textwrap.dedent(
+        """
+        name: extended_sampler
+        ops:
+          - id: ask
+            op: LLMChatOp
+            messages:
+              - role: user
+                content: "hello"
+            config:
+              model: dummy-model
+              temperature: 0.7
+              top_p: 0.8
+              top_k: 20
+              min_p: 0.0
+              presence_penalty: 1.5
+              repetition_penalty: 1.0
+              min_tokens: 4
+              chat_template_kwargs:
+                enable_thinking: false
+              extra_sampling_params:
+                length_penalty: 1.1
+        outputs:
+          - name: out
+            ref: ask
+        """
+    )
+    specs = parse_yaml_payload(yaml_text)
+    graph_dict = specs["extended_sampler"]["graph"]
+    llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
+    cfg = llm_op["config"]
+    assert cfg["top_k"] == 20
+    assert cfg["min_p"] == 0.0
+    assert cfg["repetition_penalty"] == 1.0
+    assert cfg["min_tokens"] == 4
+    assert cfg["chat_template_kwargs"] == {"enable_thinking": False}
+    assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
+
+
+def test_llm_config_rejects_unknown_field() -> None:
+    """Unknown top-level keys still fail — extra_sampling_params is the
+    escape hatch for vendor-specific samplers."""
+    yaml_text = textwrap.dedent(
+        """
+        name: bad_field
+        ops:
+          - id: ask
+            op: LLMChatOp
+            messages:
+              - role: user
+                content: "hello"
+            config:
+              model: dummy-model
+              not_a_real_sampler: 0.5
+        outputs:
+          - name: out
+            ref: ask
+        """
+    )
+    with pytest.raises(ValueError, match="unknown fields"):
+        parse_yaml_payload(yaml_text)

@@ -83,12 +83,18 @@ Users with an existing n8n workflow should submit it as
 YAML equivalent of the n8n wire format exists in this parser.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import yaml
 
+from lumilake_server.common import GenerationConfig
+
 from .common import make_id as _make_id
+
+_GENERATION_CONFIG_FIELDS: frozenset[str] = frozenset(
+    f.name for f in fields(GenerationConfig)
+)
 
 SUPPORTED_OPS: frozenset[str] = frozenset(
     {
@@ -966,27 +972,11 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
 def _build_generation_config(
     config: dict[str, Any], entry_id: str, op_kind: str = "LLMChatOp"
 ) -> dict[str, Any]:
-    # Mirror the subset that n8n parser produces; rest pass through.
-    allowed = {
-        "model",
-        "frequency_penalty",
-        "logit_bias",
-        "logprobs",
-        "max_tokens",
-        "n",
-        "presence_penalty",
-        "seed",
-        "stop",
-        "stream",
-        "stream_options",
-        "temperature",
-        "top_p",
-        "ignore_eos",
-    }
-    unknown = set(config) - allowed
+    unknown = set(config) - _GENERATION_CONFIG_FIELDS
     if unknown:
         raise ValueError(
-            f"{op_kind} '{entry_id}' config has unknown fields: {sorted(unknown)}"
+            f"{op_kind} '{entry_id}' config has unknown fields: {sorted(unknown)}. "
+            "Use 'extra_sampling_params' for keys not on GenerationConfig."
         )
     return dict(config)
 

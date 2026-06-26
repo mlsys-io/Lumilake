@@ -514,18 +514,6 @@ class RuntimeGraphBuilder:
             if isinstance(node, str) and node in graph_dict:
                 visited_node_ids.add(node)
 
-    def _build_inference_spec_from_config(self, config: Any) -> dict[str, Any]:
-        spec: dict[str, Any] = {}
-        if config.max_tokens:
-            spec["max_tokens"] = config.max_tokens
-        if config.temperature is not None:
-            spec["temperature"] = config.temperature
-        if config.top_p is not None:
-            spec["top_p"] = config.top_p
-        if config.chat_template_kwargs:
-            spec["chat_template_kwargs"] = config.chat_template_kwargs
-        return spec
-
     def _create_runtime_op(
         self,
         name: str,
@@ -566,8 +554,11 @@ class RuntimeGraphBuilder:
                 "revision": "main",
             }
         }
+        overlay = config.engine_overlay()
         if backend == "vllm":
-            spec["vllm"] = backend_config or self._build_default_vllm_backend_config()
+            vllm_cfg = backend_config or self._build_default_vllm_backend_config()
+            vllm_cfg.update(overlay)
+            spec["vllm"] = vllm_cfg
         elif backend == "transformers":
             spec["transformers"] = backend_config or {
                 "mode": "visual-embedding",
@@ -575,10 +566,11 @@ class RuntimeGraphBuilder:
                 "trust_remote_code": True,
             }
         elif backend == "diffusers":
-            spec["diffusers"] = backend_config or {
-                "dtype": "bf16",
-                "use_safetensors": True,
-            }
+            diffusers_cfg = backend_config or {"dtype": "bf16", "use_safetensors": True}
+            # dtype is the only engine-overlay key meaningful for diffusers.
+            if "dtype" in overlay:
+                diffusers_cfg["dtype"] = overlay["dtype"]
+            spec["diffusers"] = diffusers_cfg
         return spec
 
     def _build_default_vllm_backend_config(
@@ -727,7 +719,7 @@ class RuntimeGraphBuilder:
             },
         )
 
-        inference_spec = self._build_inference_spec_from_config(llm_op.config)
+        inference_spec = llm_op.config.inference_spec()
         backend_config = self._build_default_vllm_backend_config(enable_mm_embeds=True)
 
         template_dependencies = self._collect_graph_template_dependencies(template_spec)
@@ -1164,7 +1156,7 @@ class RuntimeGraphBuilder:
         if isinstance(llm_op, ImageGenerationOp):
             visited_node_ids.add(llm_op_id)
             visited_node_ids.add(llm_op.content.id)
-            inference_spec = self._build_inference_spec_from_config(llm_op.config)
+            inference_spec = llm_op.config.inference_spec()
             inference_spec.update(
                 {
                     "num_inference_steps": 8,
@@ -1231,7 +1223,7 @@ class RuntimeGraphBuilder:
             task_type = task_type_override or "inference"
             backend = "vllm"
 
-        inference_spec = self._build_inference_spec_from_config(llm_op.config)
+        inference_spec = llm_op.config.inference_spec()
         output_spec = None
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:

@@ -302,3 +302,135 @@ def test_attach_lumid_cfg_not_injected_for_non_s3_list_inputs() -> None:
     ds = llm_node.data_spec
     assert "lumid_cfg" not in ds
     assert "s3_cfg" not in ds
+
+
+def test_runtime_graph_propagates_extended_sampler_fields() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            max_tokens=256,
+            min_tokens=4,
+            temperature=0.7,
+            top_p=0.8,
+            top_k=20,
+            min_p=0.0,
+            presence_penalty=1.5,
+            frequency_penalty=0.5,
+            repetition_penalty=1.0,
+            seed=42,
+            chat_template_kwargs={"enable_thinking": False},
+            extra_sampling_params={"length_penalty": 1.1},
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    spec = runtime_graph.nodes[llm.id].inference_spec
+    assert spec["max_tokens"] == 256
+    assert spec["min_tokens"] == 4
+    assert spec["temperature"] == 0.7
+    assert spec["top_p"] == 0.8
+    assert spec["top_k"] == 20
+    assert spec["min_p"] == 0.0
+    assert spec["presence_penalty"] == 1.5
+    assert spec["frequency_penalty"] == 0.5
+    assert spec["repetition_penalty"] == 1.0
+    assert spec["seed"] == 42
+    assert spec["chat_template_kwargs"] == {"enable_thinking": False}
+    # extra_sampling_params keys are merged into the spec as flat keys.
+    assert spec["length_penalty"] == 1.1
+    # model never appears in inference_spec — it's carried separately.
+    assert "model" not in spec
+    # The escape-hatch wrapper key itself is not leaked into the spec.
+    assert "extra_sampling_params" not in spec
+
+
+def _build_llm_graph(**config_kwargs):
+    stock = input_placeholder("Stock")
+    cfg = GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct", **config_kwargs)
+    llm = LLMChatOp([OpMessage(role="user", content=stock)], config=cfg)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    return RuntimeGraphBuilder().build(compiled), llm.id
+
+
+_ENGINE_FIELDS = (
+    "max_model_len",
+    "gpu_memory_utilization",
+    "tensor_parallel_size",
+    "dtype",
+)
+
+
+def test_engine_overlay_lands_in_vllm_backend() -> None:
+    runtime_graph, llm_id = _build_llm_graph(
+        max_model_len=8192,
+        gpu_memory_utilization=0.75,
+        tensor_parallel_size=2,
+        dtype="bf16",
+        extra_engine_kwargs={"quantization": "fp8", "kv_cache_dtype": "fp8"},
+    )
+    node = runtime_graph.nodes[llm_id]
+    vllm_cfg = node.model_spec["vllm"]
+    assert vllm_cfg["max_model_len"] == 8192
+    assert vllm_cfg["gpu_memory_utilization"] == 0.75
+    assert vllm_cfg["tensor_parallel_size"] == 2
+    assert vllm_cfg["dtype"] == "bf16"
+    assert vllm_cfg["quantization"] == "fp8"
+    assert vllm_cfg["kv_cache_dtype"] == "fp8"
+    # Engine fields must NOT leak into inference_spec.
+    for k in _ENGINE_FIELDS + ("quantization", "kv_cache_dtype"):
+        assert k not in node.inference_spec
+
+
+def test_engine_overlay_omitted_when_unset() -> None:
+    # gpu_memory_utilization has an env-var default in the baseline vLLM
+    # config, so unset means "stays at env default" not "absent". The other
+    # three fields have no default and should not appear when unset.
+    runtime_graph, llm_id = _build_llm_graph()
+    vllm_cfg = runtime_graph.nodes[llm_id].model_spec["vllm"]
+    for k in ("max_model_len", "tensor_parallel_size", "dtype"):
+        assert k not in vllm_cfg
+
+
+def test_engine_overlay_overrides_baseline_default() -> None:
+    # gpu_memory_utilization is set in the baseline config; an explicit
+    # value on GenerationConfig must override it.
+    runtime_graph, llm_id = _build_llm_graph(gpu_memory_utilization=0.6)
+    vllm_cfg = runtime_graph.nodes[llm_id].model_spec["vllm"]
+    assert vllm_cfg["gpu_memory_utilization"] == 0.6
+
+
+def test_extra_sampling_params_conflict_rejected() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            temperature=0.7,
+            extra_sampling_params={"temperature": 0.0},
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    with pytest.raises(ValueError, match="extra_sampling_params conflict"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_extra_engine_kwargs_conflict_rejected() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            max_model_len=8192,
+            extra_engine_kwargs={"max_model_len": 4096},
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    with pytest.raises(ValueError, match="extra_engine_kwargs conflict"):
+        RuntimeGraphBuilder().build(compiled)
