@@ -20,6 +20,7 @@ from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.utils.job_storage import get_job_storage
 
 
 @pytest.mark.asyncio
@@ -834,3 +835,37 @@ async def test_stale_single_item_embedding_output_fails_downstream_length_check(
     errors = handlers["req-embed"].results[0].error_info
     assert errors is not None
     assert any("Output length mismatch" in str(item) for item in errors)
+
+
+def test_relocate_artifacts_rewrites_nested_uri_in_json_encoded_output(
+    server_factory,
+) -> None:
+    """Per-row artifact output is a JSON-encoded ref, not a bare uri;
+    relocate must decode + recurse, not string-replace the raw blob."""
+    server = server_factory()
+    storage = get_job_storage()
+    source_id = "exec-abc123"
+    target_id = "req-xyz789"
+    filename = "Embed-embeddings.safetensors"
+    payload_bytes = b"fake-safetensors-bytes"
+    source_uri = storage.save_artifact(
+        source_id, filename, payload_bytes, "application/octet-stream"
+    )
+    value = json.dumps(
+        {"output": source_uri, "model": "BAAI/bge-small-en-v1.5", "row": 0}
+    )
+
+    relocated = server._relocate_artifacts_for_request(
+        value,
+        source_request_id=source_id,
+        target_request_id=target_id,
+        cache={},
+    )
+
+    decoded = json.loads(relocated)
+    assert decoded["model"] == "BAAI/bge-small-en-v1.5"
+    assert decoded["row"] == 0
+    assert target_id in decoded["output"]
+    # Bytes must actually be copied to target, not just the uri string.
+    data, _ = storage.get_artifact(target_id, filename)
+    assert data == payload_bytes

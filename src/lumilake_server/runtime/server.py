@@ -1199,6 +1199,22 @@ class LumilakeServer:
         cache: dict[tuple[str, str], str],
     ) -> Any:
         if isinstance(value, str):
+            # Per-row artifact output is a JSON-encoded ref, not a bare
+            # uri; decode + recurse to relocate the nested `output` uri,
+            # else the fallback string-replace leaves it pointing at
+            # bytes that were never copied to the target.
+            try:
+                decoded = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                decoded = None
+            if isinstance(decoded, dict | list):
+                relocated = self._relocate_artifacts_for_request(
+                    decoded,
+                    source_request_id=source_request_id,
+                    target_request_id=target_request_id,
+                    cache=cache,
+                )
+                return json.dumps(relocated)
             return self._relocate_artifact_uri(
                 value,
                 source_request_id=source_request_id,

@@ -972,8 +972,17 @@ def _collect_artifact_uris(payload: Any) -> set[str]:
         for item in payload:
             uris.update(_collect_artifact_uris(item))
         return uris
-    if isinstance(payload, str) and _artifact_name_from_uri(payload):
-        uris.add(payload)
+    if isinstance(payload, str):
+        # Per-row artifact output is a JSON-encoded ref, not a bare uri;
+        # decode and recurse so the nested `output` uri is registered.
+        try:
+            decoded = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        if isinstance(decoded, dict | list):
+            uris.update(_collect_artifact_uris(decoded))
+        elif _artifact_name_from_uri(payload):
+            uris.add(payload)
     return uris
 
 
