@@ -619,6 +619,127 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         return aggregated_status
 
+    async def _archive_artifact_items(
+        self,
+        *,
+        output_op_id: str,
+        output_task_id: str,
+        request_id: str,
+        items: list[dict[str, Any]],
+        ref_key: str,
+        artifact_label: str,
+        extra_fields: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        """Download each item's artifact into job storage and return its ref.
+
+        ``extra_fields`` are copied verbatim from the source item onto the
+        archived entry so task metadata (e.g. the embedding ``model``)
+        survives aggregation alongside the artifact ``output`` uri.
+        """
+        job_storage = get_job_storage()
+        if not envs.S3_ARCHIVE_PREFIX:
+            raise RuntimeError(
+                f"S3_ARCHIVE_PREFIX is required for {artifact_label} outputs"
+            )
+        archived: list[dict[str, Any]] = []
+        for it in items:
+            ref = it.get(ref_key)
+            if not isinstance(ref, dict):
+                raise RuntimeError(f"item missing {ref_key}: {it}")
+            path = ref.get("path")
+            if not path:
+                raise RuntimeError(f"item missing {ref_key}.path: {it}")
+            raw_name = ref.get("filename") or Path(path).name
+            filename = f"{output_op_id}-{Path(raw_name).name}"
+            try:
+                with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                try:
+                    await self.fm.results.download_file(
+                        output_task_id, f"artifacts/{path}", tmp_path
+                    )
+                    data = tmp_path.read_bytes()
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+                content_type = (
+                    mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                )
+                uri = job_storage.save_artifact(
+                    request_id, filename, data, content_type
+                )
+                entry: dict[str, Any] = {"output": uri}
+                for field_name in extra_fields:
+                    entry[field_name] = it.get(field_name)
+                archived.append(entry)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to archive artifact for {output_op_id}: {e}"
+                )
+                archived.append({"output": "", "error": str(e)})
+        return archived
+
+    async def _aggregate_output_node(
+        self,
+        *,
+        output_op_id: str,
+        output_task_id: str,
+        request_id: str,
+        items: list[dict[str, Any]],
+        output_path: str | None,
+    ) -> list[str]:
+        if any(isinstance(it.get("image"), dict) for it in items):
+            items = await self._archive_artifact_items(
+                output_op_id=output_op_id,
+                output_task_id=output_task_id,
+                request_id=request_id,
+                items=items,
+                ref_key="image",
+                artifact_label="image",
+            )
+            # Archived image items expose only the artifact ``output`` uri.
+            output_field_parts: tuple[str, ...] = ("output",)
+        elif any(isinstance(it.get("embedding_file"), dict) for it in items):
+            # Embedding tasks return vectors as a safetensors artifact rather
+            # than inline; archive the file and surface the artifact ``output``
+            # uri alongside the model ident.
+            items = await self._archive_artifact_items(
+                output_op_id=output_op_id,
+                output_task_id=output_task_id,
+                request_id=request_id,
+                items=items,
+                ref_key="embedding_file",
+                artifact_label="embedding",
+                extra_fields=("model",),
+            )
+            output_field_parts = ()
+        else:
+            output_field_parts = ("output",)
+            if output_path is not None:
+                if (
+                    not isinstance(output_path, str)
+                    or not output_path.startswith("items.")
+                    or output_path == "items."
+                ):
+                    raise RuntimeError(
+                        f"OutputOp {output_op_id!r} has malformed path "
+                        f"{output_path!r}"
+                    )
+                parts = tuple(
+                    part for part in output_path[len("items.") :].split(".") if part
+                )
+                if not parts:
+                    raise RuntimeError(
+                        f"OutputOp {output_op_id!r} has malformed path "
+                        f"{output_path!r}"
+                    )
+                output_field_parts = parts
+        return [
+            _coerce_output_value(
+                _walk_output_path(item, output_field_parts, output_op_id)
+            )
+            for item in items
+        ]
+
     async def process_request(
         self,
         request_info: RequestInfo,
@@ -907,75 +1028,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             if not isinstance(items, list) or not items:
                 raise RuntimeError(f"output {output_op_id} produced no items")
 
-            if any(isinstance(it.get("image"), dict) for it in items):
-                job_storage = get_job_storage()
-                if not envs.S3_ARCHIVE_PREFIX:
-                    raise RuntimeError(
-                        "S3_ARCHIVE_PREFIX is required for image outputs"
-                    )
-                archived: list[dict[str, Any]] = []
-                for it in items:
-                    image_ref = it["image"]
-                    path = image_ref.get("path")
-                    if not path:
-                        raise RuntimeError(f"item missing image.path: {it}")
-                    raw_name = image_ref.get("filename") or Path(path).name
-                    filename = f"{output_op_id}-{Path(raw_name).name}"
-                    try:
-                        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                            tmp_path = Path(tmp.name)
-                        try:
-                            await self.fm.results.download_file(
-                                output_task_id, f"artifacts/{path}", tmp_path
-                            )
-                            data = tmp_path.read_bytes()
-                        finally:
-                            tmp_path.unlink(missing_ok=True)
-                        content_type = (
-                            mimetypes.guess_type(filename)[0]
-                            or "application/octet-stream"
-                        )
-                        uri = job_storage.save_artifact(
-                            request_info.request_id,
-                            filename,
-                            data,
-                            content_type,
-                        )
-                        archived.append({"output": uri})
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Failed to archive artifact for {output_op_id}: {e}"
-                        )
-                        archived.append({"output": "", "error": str(e)})
-                items = archived
-                # Archived items only have an ``output`` field; ignore user path.
-                output_field_parts: tuple[str, ...] = ("output",)
-            else:
-                output_field_parts = ("output",)
-                output_path = request_info.runtime_graph.output_paths.get(output_op_id)
-                if output_path is not None:
-                    if (
-                        not isinstance(output_path, str)
-                        or not output_path.startswith("items.")
-                        or output_path == "items."
-                    ):
-                        raise RuntimeError(
-                            f"OutputOp {output_op_id!r} has malformed path "
-                            f"{output_path!r}"
-                        )
-                    parts = tuple(
-                        part for part in output_path[len("items.") :].split(".") if part
-                    )
-                    if not parts:
-                        raise RuntimeError(
-                            f"OutputOp {output_op_id!r} has malformed path "
-                            f"{output_path!r}"
-                        )
-                    output_field_parts = parts
-            outputs: list[str] = []
-            for item in items:
-                value: Any = _walk_output_path(item, output_field_parts, output_op_id)
-                outputs.append(_coerce_output_value(value))
+            output_path = request_info.runtime_graph.output_paths.get(output_op_id)
+            outputs = await self._aggregate_output_node(
+                output_op_id=output_op_id,
+                output_task_id=output_task_id,
+                request_id=request_info.request_id,
+                items=items,
+                output_path=output_path,
+            )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
             for item, text in zip(items, outputs):

@@ -75,8 +75,8 @@ templating is done by upstream `FormatOp`s.
 
 Supported op types: ``InputOp`` (auto-generated from ``inputs:`` block),
 ``DataOp``, ``DataRetrievalOp``, ``MessageOp``, ``LLMChatOp``,
-``LLMVisionOp``, ``ImageGenerationOp``, ``FormatOp``, ``LambdaOp``,
-``OutputOp`` (auto-generated from ``outputs:`` block).
+``LLMVisionOp``, ``ImageGenerationOp``, ``EmbeddingOp``, ``FormatOp``,
+``LambdaOp``, ``OutputOp`` (auto-generated from ``outputs:`` block).
 
 Users with an existing n8n workflow should submit it as
 ``Workflow-Format: n8n`` rather than transliterating it into YAML — no
@@ -104,6 +104,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "LLMChatOp",
         "LLMVisionOp",
         "ImageGenerationOp",
+        "EmbeddingOp",
         "FormatOp",
         "LambdaOp",
     }
@@ -396,6 +397,8 @@ def _build_op_dict(
         _emit_llm_vision_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
     elif entry.op == "ImageGenerationOp":
         _emit_image_generation_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
+    elif entry.op == "EmbeddingOp":
+        _emit_embedding_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "FormatOp":
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
@@ -591,6 +594,38 @@ def _emit_image_generation_op(
     op_dict["content"] = content_id
     op_dict["config"] = _build_generation_config(
         config, entry.id, op_kind="ImageGenerationOp"
+    )
+    op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
+    op_dict["_inputs"] = [content_id]
+
+
+def _emit_embedding_op(
+    op_dict: dict[str, Any],
+    entry: _OpEntry,
+    user_id_to_internal: dict[str, str],
+) -> None:
+    config = entry.fields.get("config")
+    if not isinstance(config, dict) or "model" not in config:
+        raise ValueError(
+            f"EmbeddingOp '{entry.id}' requires 'config' with a 'model' field"
+        )
+
+    content_ref = entry.fields.get("input")
+    if not isinstance(content_ref, str) or not content_ref.strip():
+        raise ValueError(
+            f"EmbeddingOp '{entry.id}' requires an 'input' reference to a text op "
+            "or workflow input id"
+        )
+    target = content_ref.strip()
+    if target not in user_id_to_internal:
+        raise ValueError(
+            f"EmbeddingOp '{entry.id}' input references unknown id '{target}'"
+        )
+    content_id = user_id_to_internal[target]
+
+    op_dict["content"] = content_id
+    op_dict["config"] = _build_generation_config(
+        config, entry.id, op_kind="EmbeddingOp"
     )
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
     op_dict["_inputs"] = [content_id]
@@ -989,6 +1024,7 @@ def _op_id_prefix(op_type: str) -> str:
         "LLMChatOp": "llm",
         "LLMVisionOp": "llmvision",
         "ImageGenerationOp": "imagegen",
+        "EmbeddingOp": "embedding",
         "FormatOp": "format",
         "LambdaOp": "lambda",
     }
