@@ -85,8 +85,13 @@ outputs:
     ref: "Embed"
 ```
 
-The `vectors` output resolves to the archived `embeddings.safetensors`
-artifact reference (not an inline list of floats).
+The `vectors` output is a per-row list — one entry per input text, not an
+inline list of floats. Every entry carries its `row` index, the `model`,
+and a reference to the shared `embeddings.safetensors` artifact; row `i`
+is the embedding of input text `i`. A downstream op therefore receives
+`slice_length` per-row vector inputs (one embedding per input doc), and a
+consumer needing raw floats loads `embeddings.safetensors` and indexes by
+`row`.
 
 ### LambdaOp
 

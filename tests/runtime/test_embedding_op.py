@@ -1,6 +1,8 @@
 import json
+import struct
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 from lumilake import envs
@@ -308,19 +310,25 @@ async def test_aggregation_surfaces_artifact_uri_and_metadata(
         items=_embedding_items(),
         output_path=None,
     )
-    assert len(outputs) == 1
-    obj = json.loads(outputs[0])
-    # The archived entry surfaces the artifact uri + model ident. Redundant
-    # count/dim are no longer copied onto the archive surface.
-    assert obj["model"] == _MODEL
-    assert "count" not in obj
-    assert "dim" not in obj
-    assert obj["output"].endswith("embeddings.safetensors")
-    # The safetensors artifact was archived through job storage.
+    # usage.num_requests=2 covers 2 input rows via one artifact: the
+    # per-row output contract requires 2 output items, not 1.
+    assert len(outputs) == 2
+    rows = [json.loads(o) for o in outputs]
+    for idx, obj in enumerate(rows):
+        # The archived entry surfaces the artifact uri + model ident +
+        # row index. Redundant count/dim are no longer copied onto the
+        # archive surface.
+        assert obj["model"] == _MODEL
+        assert obj["row"] == idx
+        assert "count" not in obj
+        assert "dim" not in obj
+        assert obj["output"].endswith("embeddings.safetensors")
+    # The shared safetensors artifact is downloaded/archived only once,
+    # even though it is referenced by every row.
     assert len(stub_storage.saved) == 1
-    assert stub_fm.results.downloaded == [
-        ("task-1", "artifacts/embeddings.safetensors")
-    ]
+    # FlowMesh's `/files/{filename}` route resolves relative to the task's
+    # `artifacts/` dir itself; the SDK call must pass the bare ref path.
+    assert stub_fm.results.downloaded == [("task-1", "embeddings.safetensors")]
 
 
 @pytest.mark.asyncio
@@ -363,3 +371,151 @@ async def test_aggregation_fails_fast_on_missing_embedding_path(
             items=bad_items,
             output_path=None,
         )
+
+
+def test_resolve_output_items_accepts_flat_embedding_result() -> None:
+    # Live FlowMesh embedding tasks return a flat result with no `items`
+    # list: {"ok": true, "embedding_file": {...}, "usage": {...}}.
+    manager = FlowmeshRuntimeManager()
+    results_json = {
+        "ok": True,
+        "embedding_file": {"path": "embeddings.safetensors"},
+        "usage": {"num_requests": 3, "embedding_dim": 384},
+    }
+    items = manager._resolve_output_items(results_json, "Embed")
+    assert items == [results_json]
+
+
+def test_resolve_output_items_prefers_items_list_when_present() -> None:
+    manager = FlowmeshRuntimeManager()
+    results_json = {"items": _embedding_items()}
+    assert manager._resolve_output_items(results_json, "Embed") == _embedding_items()
+
+
+def test_resolve_output_items_fails_fast_without_items_or_embedding_file() -> None:
+    manager = FlowmeshRuntimeManager()
+    with pytest.raises(RuntimeError, match="produced no items"):
+        manager._resolve_output_items({"ok": True}, "Embed")
+
+
+@pytest.mark.asyncio
+async def test_flat_embedding_result_aggregates_to_artifact_ref(
+    _archive_env: tuple[_StubFm, _StubStorage],
+) -> None:
+    """End-to-end regression: a flat embedding result covering a slice of 3
+    input rows (no `items`, `usage.num_requests=3`) must resolve to 3
+    per-row `vectors` output items, not 1 — the bug that produced
+    "Output length mismatch ... expected=3 got=1" downstream."""
+    manager = FlowmeshRuntimeManager()
+    results_json = {
+        "ok": True,
+        "embedding_file": {"path": "embeddings.safetensors"},
+        "usage": {"num_requests": 3, "embedding_dim": 384},
+    }
+    items = manager._resolve_output_items(results_json, "Embed")
+    outputs = await manager._aggregate_output_node(
+        output_op_id="Embed",
+        output_task_id="task-1",
+        request_id="req-1",
+        items=items,
+        output_path=None,
+        expected_row_count=3,
+    )
+    assert len(outputs) == 3
+    for idx, raw in enumerate(outputs):
+        obj = json.loads(raw)
+        assert obj["row"] == idx
+        assert obj["output"].endswith("embeddings.safetensors")
+
+
+@pytest.mark.asyncio
+async def test_embedding_row_count_mismatch_fails_fast(
+    _archive_env: tuple[_StubFm, _StubStorage],
+) -> None:
+    """If the artifact's vector count doesn't match the expected slice
+    length, fail fast instead of silently padding/truncating the output."""
+    manager = FlowmeshRuntimeManager()
+    results_json = {
+        "ok": True,
+        "embedding_file": {"path": "embeddings.safetensors"},
+        "usage": {"num_requests": 3, "embedding_dim": 384},
+    }
+    items = manager._resolve_output_items(results_json, "Embed")
+    with pytest.raises(RuntimeError, match="row count mismatch"):
+        await manager._aggregate_output_node(
+            output_op_id="Embed",
+            output_task_id="task-1",
+            request_id="req-1",
+            items=items,
+            output_path=None,
+            expected_row_count=5,
+        )
+
+
+def test_embedding_row_count_from_literal_data_spec() -> None:
+    runtime_graph, emb_id = _build_literal_graph()
+    manager = FlowmeshRuntimeManager()
+    assert manager._embedding_row_count(runtime_graph, emb_id) == 2
+
+
+def test_embedding_row_count_none_for_non_embedding_node() -> None:
+    runtime_graph, emb_id = _build_literal_graph()
+    manager = FlowmeshRuntimeManager()
+    assert manager._embedding_row_count(runtime_graph, "not-a-node") is None
+
+
+def _pack_safetensors(name: str, shape: tuple[int, int], values: list[float]) -> bytes:
+    # Minimal safetensors writer (stdlib only, no `safetensors`/`torch`
+    # dependency): 8-byte LE header length, JSON header, then raw F32 data.
+    body = struct.pack(f"<{len(values)}f", *values)
+    header = {
+        name: {"dtype": "F32", "shape": list(shape), "data_offsets": [0, len(body)]}
+    }
+    header_bytes = json.dumps(header).encode("utf-8")
+    return struct.pack("<Q", len(header_bytes)) + header_bytes + body
+
+
+def _unpack_safetensors_tensor(
+    data: bytes, name: str
+) -> tuple[tuple[int, ...], list[float]]:
+    (header_len,) = struct.unpack_from("<Q", data, 0)
+    header: dict[str, Any] = json.loads(data[8 : 8 + header_len])
+    meta = header[name]
+    start, end = meta["data_offsets"]
+    body_start = 8 + header_len
+    values = list(
+        struct.unpack(
+            f"<{(end - start) // 4}f", data[body_start + start : body_start + end]
+        )
+    )
+    return tuple(meta["shape"]), values
+
+
+@pytest.mark.asyncio
+async def test_embedding_artifact_is_fetchable_and_loads_real_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The archived artifact isn't just a path: downloading and parsing it
+    yields the real per-row float vectors at the documented [count, dim]
+    shape (docs/OPS.md), proving a consumer can actually load `vectors`."""
+    rows = [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]
+    payload = _pack_safetensors("embeddings", (2, 4), [v for row in rows for v in row])
+    stub_fm = _StubFm(payload)
+    stub_storage = _StubStorage()
+    monkeypatch.setattr(fm_mod, "flowmesh_for_context", lambda: stub_fm)
+    monkeypatch.setattr(fm_mod, "get_job_storage", lambda: stub_storage)
+    monkeypatch.setattr(fm_mod.envs, "S3_ARCHIVE_PREFIX", "s3://bucket/prefix")
+
+    manager = FlowmeshRuntimeManager()
+    await manager._aggregate_output_node(
+        output_op_id="Embed",
+        output_task_id="task-1",
+        request_id="req-1",
+        items=_embedding_items(),
+        output_path=None,
+    )
+
+    _, _, archived_bytes, _ = stub_storage.saved[0]
+    shape, values = _unpack_safetensors_tensor(archived_bytes, "embeddings")
+    assert shape == (2, 4)
+    assert values == pytest.approx([v for row in rows for v in row], abs=1e-6)

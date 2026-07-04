@@ -39,10 +39,9 @@ def _as_text_list(content: str | list[str]) -> list[str]:
 class EmbeddingOp(LLMOp):
     """Op that embeds text with a FlowMesh-served embedding model.
 
-    The config carries the embedding model id (plus optional vLLM engine
-    kwargs such as ``gpu_memory_utilization`` / ``tensor_parallel_size``).
-    Input is a single string, a list of strings, or an upstream op whose
-    output is embedded. Output is one vector per input text.
+    Output is one vector per input text; config carries the model id plus
+    optional vLLM engine kwargs (``gpu_memory_utilization``,
+    ``tensor_parallel_size``).
     """
 
     def __init__(
@@ -78,12 +77,8 @@ class EmbeddingOp(LLMOp):
     def parse_response(result: dict[str, Any]) -> EmbeddingArtifact:
         """Parse a FlowMesh embedding result envelope into an artifact ref.
 
-        The executor returns ``embedding_file`` — the safetensors file holding
-        the ``"embeddings"`` tensor — plus a ``usage`` block; the framework
-        stamps the ``_artifacts`` context with the durable artifact locations.
-        Fails fast when the artifact ref, the ``_artifacts`` context, or
-        ``usage`` are absent so a malformed response never silently yields
-        empty vectors.
+        Fails fast if ``embedding_file``, ``_artifacts``, or ``usage`` is
+        missing, so a malformed response never silently yields empty vectors.
         """
         if not isinstance(result, dict):
             raise ValueError(

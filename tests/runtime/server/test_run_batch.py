@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -12,10 +14,12 @@ from support.runtime_server import (
     make_workflow,
 )
 
+import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 
 
 @pytest.mark.asyncio
@@ -634,3 +638,199 @@ async def test_generate_schedule_subprocess_timeout_terminates_and_kills(
 
     assert fake_process.terminate_calls >= 1
     assert fake_process.kill_calls == 1
+
+
+class _StubResults:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    async def download_file(
+        self, task_id: str, remote_path: str, local_path: Path
+    ) -> None:
+        Path(local_path).write_bytes(self._payload)
+
+
+class _StubFm:
+    def __init__(self, payload: bytes) -> None:
+        self.results = _StubResults(payload)
+
+
+class _EmbeddingRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch but runs the real per-row embedding
+    aggregation, proving the fix satisfies `_process_batch`'s per-slice
+    output-length contract, not just the aggregation unit in isolation."""
+
+    def __init__(self, *, row_count: int) -> None:
+        super().__init__()
+        self._row_count = row_count
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        flowmesh_manager = FlowmeshRuntimeManager()
+        items = [
+            {
+                "embedding_file": {"path": "embeddings.safetensors"},
+                "model": "BAAI/bge-small-en-v1.5",
+                "usage": {"num_requests": self._row_count, "embedding_dim": 4},
+            }
+        ]
+        flat_outputs: dict[str, list[str]] = {}
+        for node_id in request_info.output_node_map:
+            flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
+                output_op_id=node_id,
+                output_task_id="task-1",
+                request_id=request_info.request_id,
+                items=items,
+                output_path=None,
+                expected_row_count=self._row_count,
+            )
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+class _StaleSingleItemRuntimeManager(RecordingRuntimeManager):
+    """Mimics the pre-fix behavior: one collapsed output item for the whole
+    embedded slice instead of one per row."""
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        flat_outputs = {
+            node_id: ["single-collapsed-item"]
+            for node_id in request_info.output_node_map
+        }
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+def _install_fake_build_and_schedule(server: Any, output_name: str) -> None:
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
+        node_id = f"{node_prefix}__{suffix}"
+        op = make_runtime_op(node_id)
+        output_node_map = (
+            {} if task_type_override == "data_profile" else {node_id: output_name}
+        )
+        return RuntimeGraph(
+            nodes={node_id: op}, node_order=[node_id], output_node_map=output_node_map
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_embedding_per_row_outputs_reach_downstream_consumer_one_per_doc(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the per-row output fix: a 3-doc embedding batch must
+    surface 3 `vectors` entries on the workflow's output, one per input doc,
+    not 1 collapsed artifact — proving a downstream consumer reading the
+    job result gets exactly as many embeddings as it submitted docs."""
+    docs = ["doc one", "doc two", "doc three"]
+    monkeypatch.setattr(
+        fm_mod, "flowmesh_for_context", lambda: _StubFm(b"safetensors-bytes")
+    )
+    monkeypatch.setattr(fm_mod.envs, "S3_ARCHIVE_PREFIX", "s3://bucket/prefix")
+
+    server = server_factory()
+    server.runtime_manager = cast(Any, _EmbeddingRuntimeManager(row_count=len(docs)))
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-embed",
+            request_id="req-embed",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=len(docs),
+            total_length=len(docs),
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_fake_build_and_schedule(server, "vectors")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-embed"].results[0]
+    assert resp.error_info is None
+    vectors = resp.outputs["shared"]["vectors"]
+    assert len(vectors) == len(docs)
+    for idx, raw in enumerate(vectors):
+        row = json.loads(raw)
+        assert row["row"] == idx
+        assert row["output"].endswith("embeddings.safetensors")
+
+
+@pytest.mark.asyncio
+async def test_stale_single_item_embedding_output_fails_downstream_length_check(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Documents the exact failure the fix prevents: collapsing a 3-row
+    embedding slice into 1 output item trips the workflow's per-slice
+    output-length contract instead of silently under-delivering rows."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, _StaleSingleItemRuntimeManager())
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-embed",
+            request_id="req-embed",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=3,
+            total_length=3,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_fake_build_and_schedule(server, "vectors")
+
+    await server._run_batch(["worker-1"], batch)
+
+    errors = handlers["req-embed"].results[0].error_info
+    assert errors is not None
+    assert any("Output length mismatch" in str(item) for item in errors)
