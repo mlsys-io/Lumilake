@@ -209,6 +209,12 @@ LUMILAKE_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE: int = int(
 LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION: float = float(
     os.environ.get("LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION", "0.9")
 )
+# 0 = use the model's native context length; > 0 caps it so the KV cache fits
+# smaller-VRAM GPUs (a model's default max_model_len can demand more KV cache
+# than fits after weights, failing vLLM engine init).
+LUMILAKE_VLLM_MAX_MODEL_LEN: int = int(
+    os.environ.get("LUMILAKE_VLLM_MAX_MODEL_LEN", "0")
+)
 
 
 S3_DATA_PREFIX: str | None = os.getenv("S3_DATA_PREFIX")

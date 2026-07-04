@@ -102,6 +102,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS` | vLLM `max_num_batched_tokens`. Defaults to `2048`. |
 | `LUMILAKE_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE` | vLLM CUDA-graph capture size. Defaults to `64`. |
 | `LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION` | vLLM GPU memory utilization fraction. Defaults to `0.9`. |
+| `LUMILAKE_VLLM_MAX_MODEL_LEN` | vLLM `max_model_len` cap. Defaults to `0` (use the model's native context). Set `> 0` when a model's native context demands more KV cache than fits after weights on smaller-VRAM GPUs (else vLLM engine init fails with insufficient KV cache memory). |
 
 ## Hardware Requirements
 

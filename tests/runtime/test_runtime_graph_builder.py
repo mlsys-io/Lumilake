@@ -405,6 +405,28 @@ def test_engine_overlay_overrides_baseline_default() -> None:
     assert vllm_cfg["gpu_memory_utilization"] == 0.6
 
 
+def test_vllm_max_model_len_env_caps_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # LUMILAKE_VLLM_MAX_MODEL_LEN > 0 caps max_model_len in the baseline vLLM
+    # config when GenerationConfig sets none, so a model's native context can't
+    # demand a KV cache larger than a smaller-VRAM GPU allows.
+    monkeypatch.setattr(envs, "LUMILAKE_VLLM_MAX_MODEL_LEN", 8192)
+    runtime_graph, llm_id = _build_llm_graph()
+    vllm_cfg = runtime_graph.nodes[llm_id].model_spec["vllm"]
+    assert vllm_cfg["max_model_len"] == 8192
+
+
+def test_vllm_max_model_len_env_overridden_by_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An explicit GenerationConfig max_model_len wins over the env cap.
+    monkeypatch.setattr(envs, "LUMILAKE_VLLM_MAX_MODEL_LEN", 8192)
+    runtime_graph, llm_id = _build_llm_graph(max_model_len=4096)
+    vllm_cfg = runtime_graph.nodes[llm_id].model_spec["vllm"]
+    assert vllm_cfg["max_model_len"] == 4096
+
+
 def test_extra_sampling_params_conflict_rejected() -> None:
     stock = input_placeholder("Stock")
     llm = LLMChatOp(

@@ -596,6 +596,8 @@ class RuntimeGraphBuilder:
             "trust_remote_code": True,
             "env_vars": {"VLLM_ATTENTION_BACKEND": "FLASHINFER"},
         }
+        if envs.LUMILAKE_VLLM_MAX_MODEL_LEN > 0:
+            cfg["max_model_len"] = envs.LUMILAKE_VLLM_MAX_MODEL_LEN
         if enable_mm_embeds:
             cfg["enable_mm_embeds"] = True
             cfg["limit_mm_per_prompt"] = {"image": 1}
