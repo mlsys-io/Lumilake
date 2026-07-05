@@ -6,4 +6,5 @@ MODEL_SIZE = {
     "stabilityai/stable-diffusion-3.5-large": 8.1,
     "meta-llama/Llama-3.2-3B-Instruct": 3.0,
     "Tongyi-MAI/Z-Image-Turbo": 6.0,
+    "BAAI/bge-small-en-v1.5": 0.033,
 }

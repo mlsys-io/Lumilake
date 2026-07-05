@@ -10,6 +10,11 @@ from lumilake_server.ops.data_ops import (
     input_placeholder,
     message_data,
 )
+from lumilake_server.ops.embedding_ops import (
+    EmbeddingArtifact,
+    EmbeddingOp,
+    embedding,
+)
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
@@ -30,6 +35,8 @@ from lumilake_server.ops.util_ops import (
 __all__ = [
     "DataOp",
     "DataRetrievalOp",
+    "EmbeddingArtifact",
+    "EmbeddingOp",
     "FormatOp",
     "FunctionalOp",
     "ImageGenerationOp",
@@ -45,6 +52,7 @@ __all__ = [
     "SingleDtype",
     "as_output",
     "data",
+    "embedding",
     "format_op",
     "image_generation",
     "input_placeholder",

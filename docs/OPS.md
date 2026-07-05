@@ -12,6 +12,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. |
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
+| `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 
@@ -46,6 +47,51 @@ outputs:
 `format_args` is the positional variant: each id resolves to a `{0}`,
 `{1}`, ... placeholder. Use `format_kwargs` for named placeholders and
 `format_args` for positional ones; the two may be combined.
+
+### EmbeddingOp
+
+`EmbeddingOp` embeds text with a FlowMesh-served embedding model and
+returns one vector per input text. `config.model` is the embedding model
+id; the optional `gpu_memory_utilization` / `tensor_parallel_size` config
+fields are passed through to the vLLM engine. `input` references the
+upstream op (or workflow input) whose text is embedded — declare a
+`DataOp` for literal text, or point at an `InputOp` / upstream op output.
+Wire the reference into `inputs:` to keep the DAG explicit.
+
+The op dispatches a FlowMesh `embedding` task whose `model.vllm.convert`
+is `embed`; that routes the task to the vLLM embedding executor. Vectors
+are returned as an artifact, not inline: the response carries `model`,
+`embedding_file` (`embeddings.safetensors`, tensor key `embeddings`,
+shape `[count, dim]` float32, row-aligned to the input texts), and a
+`usage` block whose `num_requests` / `embedding_dim` give the row count
+and vector dimension. The op surfaces the archived embedding artifact ref
+the same way `ImageGenerationOp` surfaces produced images; a consumer
+that needs raw vectors loads `embeddings.safetensors`.
+
+```yaml
+inputs:
+  Docs: ["The quick brown fox.", "Lorem ipsum dolor sit amet."]
+
+ops:
+  - id: "Embed"
+    op: EmbeddingOp
+    inputs: [Docs]
+    input: Docs
+    config:
+      model: BAAI/bge-small-en-v1.5
+
+outputs:
+  - name: vectors
+    ref: "Embed"
+```
+
+The `vectors` output is a per-row list — one entry per input text, not an
+inline list of floats. Every entry carries its `row` index, the `model`,
+and a reference to the shared `embeddings.safetensors` artifact; row `i`
+is the embedding of input text `i`. A downstream op therefore receives
+`slice_length` per-row vector inputs (one embedding per input doc), and a
+consumer needing raw floats loads `embeddings.safetensors` and indexes by
+`row`.
 
 ### LambdaOp
 
