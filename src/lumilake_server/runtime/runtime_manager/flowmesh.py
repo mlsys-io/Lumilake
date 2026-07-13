@@ -517,13 +517,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         """
         Fetch the list of available workers from the orchestrator.
 
+        Stale (dead-heartbeat) workers are excluded so they are never
+        selected as scheduling candidates.
+
         Returns
         -------
         list[str]
             List of worker IDs
         """
         workers = await flowmesh_for_server().workers.list(status="IDLE")
-        return [w.id for w in workers]
+        return [w.id for w in workers if not w.stale]
 
     def count_runtime_nodes(self, graphs: dict[str, RuntimeGraph]) -> int:
         return sum(graph.node_count for graph in graphs.values())
