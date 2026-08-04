@@ -635,7 +635,7 @@ class RuntimeGraphBuilder:
             )
         updated = dict(data_spec)
         updated["lumid_cfg"] = {
-            "lumid_data_url": envs.LUMID_DATA_URL,
+            "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             "lumid_data_token": envs.LUMID_DATA_TOKEN,
             "encoding": "utf-8",
         }
@@ -973,7 +973,7 @@ class RuntimeGraphBuilder:
         data_spec: dict[str, Any] = {
             "type": "lumid",
             "mode": mode,
-            "lumid_data_url": envs.LUMID_DATA_URL,
+            "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             "lumid_data_token": envs.LUMID_DATA_TOKEN,
             "params": resolved_params,
         }
