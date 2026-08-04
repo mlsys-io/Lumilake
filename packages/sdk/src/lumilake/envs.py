@@ -127,6 +127,12 @@ LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS: float = float(
 # same lum.id PAT for both; set LUMID_DATA_TOKEN explicitly to override
 # (e.g. when FlowMesh is unauthenticated locally but lumid-data-app isn't).
 LUMID_DATA_URL: str = os.environ.get("LUMID_DATA_URL", "").strip()
+# URL embedded into DataRetrievalOp / s3-input FlowMesh tasks for the worker to
+# reach lumid-data-app. Empty unless set; call sites fall back to LUMID_DATA_URL.
+# Set it when workers reach lumid-data-app at a different address than the server
+# does (e.g. the server uses an in-cluster Service name that the external worker
+# fleet cannot resolve).
+LUMID_DATA_WORKER_URL: str = os.environ.get("LUMID_DATA_WORKER_URL", "").strip()
 LUMID_DATA_TOKEN: str | None = (
     os.environ.get("LUMID_DATA_TOKEN") or RUNTIME_TOKEN or None
 )
