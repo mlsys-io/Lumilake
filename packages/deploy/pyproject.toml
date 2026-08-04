@@ -1,6 +1,6 @@
 [project]
 name = "lumilake-deploy"
-version = "0.1.4"
+version = "0.1.5"
 description = "Lumilake deploy orchestration"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
@@ -10,7 +10,7 @@ authors = [
     {name = "Lumilake contributors"},
 ]
 dependencies = [
-    "lumilake-sdk==0.1.4",
+    "lumilake-sdk==0.1.5",
     "docker>=7.1.0",
     "pyyaml>=6.0",
     "flowmesh-sdk-stack==0.1.1",
