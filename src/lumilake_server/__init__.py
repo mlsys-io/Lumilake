@@ -2,7 +2,7 @@
 
 import logging
 
-__version__ = "0.1.5"
+__version__ = "0.1.6rc1"
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)

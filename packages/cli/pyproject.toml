@@ -1,6 +1,6 @@
 [project]
 name = "lumilake-cli"
-version = "0.1.5"
+version = "0.1.6rc1"
 description = "Lumilake command-line interface"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
@@ -10,7 +10,7 @@ authors = [
     {name = "Lumilake contributors"},
 ]
 dependencies = [
-    "lumilake-sdk==0.1.5",
+    "lumilake-sdk==0.1.6rc1",
     # Renders ``lumilake trace`` ProfileSummary payloads.
     "flowmesh-sdk==0.1.1",
     "requests>=2.32.3",
@@ -26,7 +26,7 @@ classifiers = [
 
 [project.optional-dependencies]
 # Thin ``pip install lumilake-cli`` (no extra) skips Docker/FlowMesh.
-deploy = ["lumilake-deploy==0.1.5"]
+deploy = ["lumilake-deploy==0.1.6rc1"]
 
 [project.urls]
 Homepage = "https://github.com/mlsys-io/lumilake_OSS"
