@@ -544,7 +544,8 @@ class SqliteJobStorage(PersistentJobStorage):
             optimization_seconds REAL,
             selection_seconds    REAL,
             clustering_seconds   REAL,
-            error                TEXT
+            error                TEXT,
+            parent_job_id        TEXT
         )
         """,
         # Serves the list_summaries filter (org/user/status) and its sort in one
@@ -582,6 +583,18 @@ class SqliteJobStorage(PersistentJobStorage):
             self._conn.execute("PRAGMA synchronous=NORMAL")
             for stmt in self._SCHEMA:
                 self._conn.execute(stmt)
+            # Existing databases predate the parent_job_id column; CREATE TABLE
+            # IF NOT EXISTS will not add it, so migrate it in idempotently.
+            columns = {
+                row["name"]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(job_summaries)"
+                ).fetchall()
+            }
+            if "parent_job_id" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE job_summaries ADD COLUMN parent_job_id TEXT"
+                )
             self._conn.commit()
         # None = never pruned. NOT 0.0: time.monotonic()'s origin is
         # arbitrary, so on a freshly-booted host `now - 0.0 < 3600` is true and
@@ -601,8 +614,8 @@ class SqliteJobStorage(PersistentJobStorage):
                     job_id, org_id, user_id, status, submitted_at,
                     submitted_at_ts, started_at, finished_at,
                     optimization_seconds, selection_seconds,
-                    clustering_seconds, error
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    clustering_seconds, error, parent_job_id
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     org_id=excluded.org_id,
                     user_id=excluded.user_id,
@@ -614,7 +627,8 @@ class SqliteJobStorage(PersistentJobStorage):
                     optimization_seconds=excluded.optimization_seconds,
                     selection_seconds=excluded.selection_seconds,
                     clustering_seconds=excluded.clustering_seconds,
-                    error=excluded.error
+                    error=excluded.error,
+                    parent_job_id=excluded.parent_job_id
                 """,
                 (
                     summary.job_id,
@@ -629,6 +643,7 @@ class SqliteJobStorage(PersistentJobStorage):
                     summary.selection_seconds,
                     summary.clustering_seconds,
                     summary.error,
+                    summary.parent_job_id,
                 ),
             )
             self._conn.commit()
@@ -660,6 +675,10 @@ class SqliteJobStorage(PersistentJobStorage):
             marks = ",".join("?" for _ in statuses)
             clauses.append(f"status IN ({marks})")
             params.extend(sorted(statuses))
+        # Dynamic children are internal to their parent; hide them from the
+        # user-facing listing. This must live in _where so the COUNT(*) and the
+        # page query agree on the same total.
+        clauses.append("parent_job_id IS NULL")
         return " AND ".join(clauses), params
 
     def list_summaries(
@@ -715,6 +734,7 @@ class SqliteJobStorage(PersistentJobStorage):
                 "selection_seconds": row["selection_seconds"],
                 "clustering_seconds": row["clustering_seconds"],
                 "error": row["error"],
+                "parent_job_id": row["parent_job_id"],
             }
         )
 
@@ -813,7 +833,7 @@ class SqliteJobStorage(PersistentJobStorage):
                     "INSERT OR REPLACE INTO job_summaries (job_id, org_id, user_id,"
                     " status, submitted_at, submitted_at_ts, started_at, finished_at,"
                     " optimization_seconds, selection_seconds, clustering_seconds,"
-                    " error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " error, parent_job_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         summary.job_id,
                         summary.org_id,
@@ -827,6 +847,7 @@ class SqliteJobStorage(PersistentJobStorage):
                         summary.selection_seconds,
                         summary.clustering_seconds,
                         summary.error,
+                        summary.parent_job_id,
                     ),
                 )
             imported += 1
