@@ -108,7 +108,7 @@ server-runtime = [
     "shortuuid==1.0.13",
     "pandas==3.0.3",
     "dill==0.4.1",
-    "sqlparse==0.5.4",
+    "sqlparse==0.6.0",
     "lumid-hooks==0.1.0",
     "flowmesh-sdk==0.1.1",
 ]
