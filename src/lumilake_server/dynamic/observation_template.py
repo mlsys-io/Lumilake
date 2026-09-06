@@ -13,10 +13,50 @@ input is caught and treated as text rather than raising.
 
 
 def observe(args):
-    # ``args`` is one entry per leaf. Each entry may be a JSON string, a list
-    # of JSON strings (archived leaf outputs), a list of records, or plain
-    # text. Normalize every entry into a flat list of records so the numeric
-    # stats below see real values.
+    # ``args`` is one entry per leaf. Each entry may be a JSON string, a list of
+    # JSON strings (archived leaf outputs), a list of records, or plain text.
+    # Normalize every entry into a flat list of records so the numeric stats
+    # below see real values.
+    def unwrap(value):
+        # Retrieval leaves arrive as {"df": "<json string>"} whose value is
+        # itself a column-oriented table; unwrap the envelope so the transpose
+        # below sees {column: {row_index: value}}.
+        if (
+            isinstance(value, dict)
+            and list(value) == ["df"]
+            and isinstance(value["df"], str)
+        ):
+            try:
+                return json.loads(value["df"])  # fmt: skip  # noqa: E501, F821  # type: ignore[name-defined]
+            except json.JSONDecodeError:  # noqa: F821  # type: ignore[name-defined]
+                return value
+        return value
+
+    def transpose(value):
+        # Column-oriented table: {column: {row_index: value}}. Transpose to
+        # row-oriented records so each record comes from one table.
+        records = {}
+        for col, idxvals in value.items():
+            if not isinstance(idxvals, dict):
+                continue
+            for idx, val in idxvals.items():
+                rec = records.get(idx)
+                if rec is None:
+                    rec = {}
+                    records[idx] = rec
+                rec[col] = val
+        return list(records.values())
+
+    def records(value):
+        # Normalize one item into a flat list of row-oriented records. Each
+        # table is transposed on its own so records never mix columns across
+        # leaves.
+        value = unwrap(value)
+        vals = list(value.values()) if isinstance(value, dict) else []
+        if vals and isinstance(vals[0], dict):
+            return transpose(value)
+        return [value]
+
     rows = []
     for entry in args:
         if isinstance(entry, str):
@@ -32,29 +72,9 @@ def observe(args):
                         item = json.loads(item)  # fmt: skip  # noqa: E501, F821  # type: ignore[name-defined]
                     except json.JSONDecodeError:  # fmt: skip  # noqa: E501, F821  # type: ignore[name-defined]
                         pass
-                rows.append(item)
+                rows.extend(records(item))
         else:
-            rows.append(entry)
-    # SQL retrievals arrive as column-oriented DataFrames: a list of dicts
-    # mapping each column to a {row_index: value} map. Transpose to
-    # row-oriented records so the numeric stats below see real values.
-    if rows and isinstance(rows[0], dict):
-        first_vals = list(rows[0].values())
-        if first_vals and isinstance(first_vals[0], dict):
-            records = {}
-            for cmap in rows:
-                if not isinstance(cmap, dict):
-                    continue
-                for col, idxvals in cmap.items():
-                    if not isinstance(idxvals, dict):
-                        continue
-                    for idx, val in idxvals.items():
-                        rec = records.get(idx)
-                        if rec is None:
-                            rec = {}
-                            records[idx] = rec
-                        rec[col] = val
-            rows = list(records.values())
+            rows.extend(records(entry))
     n = len(rows)
     cols = []
     for r in rows:

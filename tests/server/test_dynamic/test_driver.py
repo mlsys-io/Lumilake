@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
     STOP,
     SUBGRAPH,
@@ -376,7 +377,9 @@ def test_system_message_includes_goal_observations_topology() -> None:
 def test_system_message_empty_observations() -> None:
     msg = system_message("goal", [], [])
     assert "PRIOR OBSERVATIONS" not in msg
-    assert "(none yet)" in msg
+    # With no accumulated nodes the run's input node is still available to
+    # wire to, so the planner is told about it rather than "(none yet)".
+    assert INPUT_NODE_ID in msg
 
 
 # --- compute_observation ---
@@ -422,6 +425,56 @@ def test_compute_observation_two_leaves_deterministic() -> None:
     )
     assert "rows=2" in obs
     assert "sum=6" in obs
+
+
+def test_compute_observation_unwraps_df_envelope() -> None:
+    # A retrieval leaf arrives as {"df": "<json string>"} whose value is a
+    # column-oriented table. The envelope must be unwrapped and transposed so
+    # the observation reports the real row count and numeric stats, not one
+    # row per leaf holding the raw JSON string.
+    obs = compute_observation(
+        {
+            "leaf1": [
+                '{"df": "{\\"avg_market_cap\\": {\\"0\\": 44683131633.8, '
+                '\\"1\\": 28540212749.0}, \\"sector\\": {\\"0\\": '
+                '\\"Communication Services\\", \\"1\\": \\"Technology\\"}}"}'
+            ]
+        },
+        preview_width=900,
+    )
+    assert "rows=2" in obs
+    assert "avg_market_cap" in obs
+    assert "sum=7.322e+10" in obs
+    assert "avg=3.661e+10" in obs
+
+
+def test_compute_observation_two_tables_do_not_mix() -> None:
+    # Two unrelated retrieval tables, each transposed on its own. The row count
+    # is the sum across leaves, no preview record carries columns from more
+    # than one table, and both leaves' numeric stats are still reported.
+    sectors = (
+        '{"df": "{\\"sector\\": {\\"0\\": \\"Communication Services\\", '
+        '\\"1\\": \\"Technology\\"}, \\"avg_market_cap\\": {\\"0\\": '
+        '44683131633.8, \\"1\\": 28540212749.0}}"}'
+    )
+    peers = (
+        '{"df": "{\\"symbol\\": {\\"0\\": \\"NVDA\\", \\"1\\": \\"AVGO\\"}, '
+        '\\"market_cap\\": {\\"0\\": 1826303491551.5, \\"1\\": '
+        '1040000000000.0}}"}'
+    )
+    obs = compute_observation(
+        {"leaf_a": [sectors], "leaf_b": [peers]}, preview_width=400
+    )
+    assert "rows=4" in obs
+    assert "avg_market_cap" in obs
+    assert "market_cap" in obs
+    preview = json.loads(obs.split("preview=", 1)[1])
+    # Each preview record comes from exactly one table; no record mixes
+    # sector/avg_market_cap with symbol/market_cap.
+    for record in preview:
+        assert not ({"sector", "avg_market_cap"} & set(record)) or not (
+            {"symbol", "market_cap"} & set(record)
+        )
 
 
 # --- build_round ---
@@ -645,6 +698,39 @@ def test_resolve_subgraph_wires_param_slot() -> None:
     assert params == [{"label": "symbol", "node": "q0"}]
 
 
+def test_resolve_subgraph_preserves_param_path() -> None:
+    # peers_in_sector declares a sector param with a drill path; wiring it to a
+    # prior node must preserve both the node pointer and the path so the worker
+    # resolves <node>.items.table.sector.
+    library = {
+        "peers_in_sector": {
+            "op": "DataRetrievalOp",
+            "data_spec": {
+                "type": "lumid",
+                "mode": "sql",
+                "output_format": "jsonl",
+                "verify": False,
+                "template": "SELECT * FROM reference.profile "
+                "WHERE sector = '{sector}'",
+                "params": [
+                    {
+                        "label": "sector",
+                        "node": "top_sector",
+                        "path": "items.table.sector",
+                    }
+                ],
+                "param_bindings": [{"label": "sector", "input": 0}],
+            },
+        }
+    }
+    subgraph = [{"id": "q1", "ref": "peers_in_sector", "inputs": ["some_prior_node"]}]
+    resolved = resolve_subgraph(subgraph, library)
+    params = resolved[0]["data_spec"]["params"]
+    assert params == [
+        {"label": "sector", "node": "some_prior_node", "path": "items.table.sector"}
+    ]
+
+
 def test_resolve_subgraph_rejects_wrong_input_count() -> None:
     # top_peers declares one binding; two inputs must be rejected.
     subgraph = [
@@ -679,6 +765,20 @@ def test_system_message_describes_library() -> None:
     assert "sector_market_cap" in msg
     assert "top_peers" in msg
     assert "DataRetrievalOp" in msg
+
+
+def test_system_message_no_duplicate_nodes_instruction() -> None:
+    msg = system_message("goal", [], [], library=_LIBRARY)
+    assert "AVAILABLE NODES" in msg
+    # New ids only: an emitted id must not collide with an existing node.
+    assert 'Every "id" you emit must be NEW' in msg
+    assert "must not be any id already listed in AVAILABLE NODES" in msg
+    # Reuse via inputs only: never declare an existing node again as an op.
+    assert 'name it in "inputs" only' in msg
+    assert "never declare it again as an op" in msg
+    # The concrete example shows the correct single-op shape.
+    assert "peers_in_sector_1" in msg
+    assert "top_sector_1" in msg
 
 
 def test_build_round_resolves_library_ref() -> None:

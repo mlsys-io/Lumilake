@@ -312,6 +312,7 @@ def _render_dynamic_round0(
             temperature=spec.driver.temperature,
             threshold=spec.driver.threshold,
             library=spec.library,
+            chat_template_kwargs=spec.driver.chat_template_kwargs,
         )
         return round_build.graph, declared_output_location
     except Exception as exc:
@@ -1713,6 +1714,7 @@ async def _run_dynamic_job(
                     temperature=spec.driver.temperature,
                     threshold=spec.driver.threshold,
                     library=spec.library,
+                    chat_template_kwargs=spec.driver.chat_template_kwargs,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:

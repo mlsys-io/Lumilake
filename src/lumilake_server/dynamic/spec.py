@@ -34,6 +34,7 @@ class DriverSettings(BaseModel):
     max_rounds: StrictInt = Field(default=10, ge=1)
     max_nodes_per_round: StrictInt = Field(default=8, ge=1)
     threshold: StrictFloat | None = None
+    chat_template_kwargs: dict[StrictStr, Any] | None = None
     output_location: dict[StrictStr, Any] | None = None
 
 

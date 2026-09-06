@@ -29,6 +29,16 @@ PROPOSER_NODE_ID = "proposer"
 OUTPUT_NODE_ID = "output"
 
 
+def _escape_braces(text: str) -> str:
+    """Escape braces in a literal message string.
+
+    The runtime renders every literal message through ``str.format_map``, so a
+    bare ``{`` in the plan schema or in a library entry's SQL template is read
+    as a replacement field and rejected.
+    """
+    return text.replace("{", "{{").replace("}", "}}")
+
+
 def observe(args):
     """Observation LambdaOp entry point; the real body is the ``lambda_code``
     the runtime embeds, so this stub only supplies the function name."""
@@ -45,6 +55,7 @@ def fused_round_graph(
     model: str = "Qwen/Qwen3-8B",
     max_tokens: int = 768,
     temperature: float = 0.4,
+    chat_template_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the native graph for one fused round.
 
@@ -88,24 +99,34 @@ def fused_round_graph(
         for ref, leaf_id in zip(leaf_refs, leaf_ids):
             ref.id = leaf_id
 
-        observation = LambdaOp(leaf_refs, observe, code=lambda_code)
+        # A retrieval leaf reaches the sandbox as a table, which it rejects:
+        # a lambda argument must be text. FormatOp is where the runtime turns a
+        # table into text, so each leaf is rendered before it is observed.
+        rendered_leaves = []
+        for ref, leaf_id in zip(leaf_refs, leaf_ids):
+            render_op = FormatOp("{ref0}", ref0=ref)
+            render_op.id = f"render_{leaf_id}"
+            ordered[render_op.id] = render_op.serialize()
+            rendered_leaves.append(render_op)
+
+        observation = LambdaOp(rendered_leaves, observe, code=lambda_code)
         observation.id = OBSERVATION_NODE_ID
         ordered[OBSERVATION_NODE_ID] = observation.serialize()
 
         format_op = FormatOp(f"{proposer_user}\n\n{{ref0}}", ref0=observation)
         format_op.id = FORMAT_NODE_ID
         ordered[FORMAT_NODE_ID] = format_op.serialize()
+        user_content: Any = format_op
     else:
         # Round 0 has no subgraph and no observation; the proposer sees only
-        # the system message (goal + topology).
-        format_op = FormatOp(proposer_user)
-        format_op.id = FORMAT_NODE_ID
-        ordered[FORMAT_NODE_ID] = format_op.serialize()
+        # the system message (goal + topology). The runtime rejects a FormatOp
+        # with no inputs, so the user turn is carried as a literal string.
+        user_content = _escape_braces(proposer_user)
 
     message_op = MessageOp(
         [
-            OpMessage("system", proposer_system),
-            OpMessage("user", format_op),
+            OpMessage("system", _escape_braces(proposer_system)),
+            OpMessage("user", user_content),
         ]
     )
     message_op.id = MESSAGE_NODE_ID
@@ -114,7 +135,10 @@ def fused_round_graph(
     proposer = LLMChatOp(
         message_op,
         config=GenerationConfig(
-            model=model, max_tokens=max_tokens, temperature=temperature
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            chat_template_kwargs=chat_template_kwargs,
         ),
         return_history=False,
         cacheable=False,

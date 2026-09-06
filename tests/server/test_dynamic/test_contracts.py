@@ -937,7 +937,11 @@ def test_observation_order_differential() -> None:
     observation = graph.get("observation")
     assert observation is not None, "round graph has no observation node"
     assert observation.get("_op") == "LambdaOp"
-    in_graph_internal = list(observation["_inputs"])
+    # Each leaf is observed through its render_<leaf> FormatOp, so strip that
+    # prefix to recover the leaf order the observation actually sees.
+    in_graph_internal = [
+        node_id[len("render_") :] for node_id in observation["_inputs"]
+    ]
 
     # round_build.leaf_output_names are leaf_<internal id> in the same order
     # build_round produced; strip the prefix to get internal ids.
@@ -1015,6 +1019,22 @@ def test_example_yaml_does_not_promise_overrides_beyond_allowlist() -> None:
     )
     text = example.read_text()
     _assert_no_forbidden_override(text, "example YAML")
+
+
+def test_example_yaml_loads_and_library_validates() -> None:
+    """The shipped example YAML must load through the dynamic spec loader and
+    its library must pass validate_library."""
+    from lumilake_server.dynamic.spec import load_spec
+
+    example = (
+        _REPO_ROOT / "examples" / "templates" / "yaml" / "market-data-dynamic.yaml"
+    )
+    spec = load_spec(example)
+    assert spec.library is not None
+    validate_library(spec.library)
+    # The cross-round entries the example advertises are present.
+    assert "top_sector" in spec.library
+    assert "peers_in_sector" in spec.library
 
 
 def test_sdk_docs_do_not_promise_overrides_beyond_allowlist() -> None:

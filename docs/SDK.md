@@ -214,6 +214,10 @@ The `driver:` YAML settings the server accepts are:
 - `max_rounds` — round limit, default `10`.
 - `max_nodes_per_round` — per-round subgraph node limit, default `8`.
 - `threshold` — sufficiency threshold, default `None`.
+- `chat_template_kwargs` — chat-template kwargs for the proposer, default
+  `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:
+  `{enable_thinking: false}`), which otherwise consumes the token budget
+  the plan has to fit behind.
 - `output_location` — OPTIONAL S3 destination. When omitted, the envelope's
   item-level `output_location` is used. S3 outputs receive a unique
   run-and-round suffix. DB output locations are rejected: the server has no DB

@@ -10,6 +10,7 @@ the returned plan.
 
 import ast
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -566,6 +567,21 @@ def validate_emitted_subgraph(
             )
 
 
+_THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+
+
+def _strip_plan_wrappers(value: str) -> str:
+    """Strip a reasoning model's wrappers from around the plan JSON.
+
+    A reasoning model emits its chain of thought in a ``<think>`` block and
+    often fences the answer; both wrap the plan without changing it.
+    """
+    stripped = _THINK_BLOCK_RE.sub("", value)
+    fenced = _FENCE_RE.match(stripped)
+    return fenced.group(1) if fenced else stripped.strip()
+
+
 def system_message(
     goal: str,
     observations: list[str],
@@ -589,10 +605,20 @@ def system_message(
             lines.append(observation)
     lines.append("")
     lines.append("AVAILABLE NODES (existing, immutable, reference by id):")
-    if topology:
-        lines.append(", ".join(topology))
-    else:
-        lines.append("(none yet)")
+    lines.append(", ".join([INPUT_NODE_ID, *topology]))
+    lines.append(
+        f"{INPUT_NODE_ID} is the run's input node, carrying the symbol under "
+        "analysis; wire it to any op that needs the symbol."
+    )
+    lines.append(
+        'Every "id" you emit must be NEW and must not be any id already '
+        "listed in AVAILABLE NODES. To use an existing node, name it in "
+        '"inputs" only — never declare it again as an op. For example, if '
+        "top_sector_1 already exists, the correct plan is a single op "
+        '{"id": "peers_in_sector_1", "ref": "peers_in_sector", '
+        '"inputs": ["top_sector_1"]} — not one that also declares '
+        "top_sector_1 again."
+    )
     lines.append("")
     lines.append(
         'Emit a structured plan: either {"next": "STOP"} or '
@@ -614,8 +640,9 @@ def system_message(
                 rendered = str(value).replace("\n", " ")
                 lines.append(f"    {key}: {rendered[:200]}")
             lines.append(
-                f'    To use it, emit an op with "ref": "{ref}" (plus '
-                '"id" and "inputs"); the template fills in the rest.'
+                f'    To use it, emit {{"id": <unique id>, "ref": "{ref}", '
+                '"inputs": [<node ids>]} — key "ref", never "op"; the '
+                "template fills in the rest."
             )
             bindings = template.get("data_spec", {}).get("param_bindings")
             if isinstance(bindings, list) and bindings:
@@ -707,7 +734,7 @@ def validate_plan(raw_outputs: dict[str, Any]) -> StopPlan | SubgraphPlan:
             f"plan value must be a serialized string, got {type(value).__name__}"
         )
     try:
-        plan = json.loads(value)
+        plan = json.loads(_strip_plan_wrappers(value))
     except (ValueError, TypeError) as exc:
         raise DriverProtocolError(f"plan is not valid JSON: {exc}") from exc
     if not isinstance(plan, dict):
@@ -786,6 +813,7 @@ def build_round(
     temperature: float,
     threshold: float | None = None,
     library: dict[str, dict[str, Any]] | None = None,
+    chat_template_kwargs: dict[str, Any] | None = None,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
@@ -814,8 +842,10 @@ def build_round(
     )
     system = system_message(goal, observations, topology, threshold, library)
     user = (
-        "Here is the observation from the last round. Based on it, emit the "
-        "next subgraph, or STOP."
+        "Emit the first subgraph that starts to advance the goal."
+        if not subgraph
+        else "Here is the observation from the last round. Based on it, emit "
+        "the next subgraph, or STOP."
     )
     graph = fused_round_graph(
         native,
@@ -826,6 +856,7 @@ def build_round(
         model=model,
         max_tokens=max_tokens,
         temperature=temperature,
+        chat_template_kwargs=chat_template_kwargs,
     )
     return RoundBuild(
         graph=graph,
