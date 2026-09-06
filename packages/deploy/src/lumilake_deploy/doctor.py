@@ -62,6 +62,11 @@ _ALWAYS_REQUIRED: tuple[str, ...] = (
 _RETRIEVAL_REQUIRED: tuple[str, ...] = ("LUMID_DATA_URL",)
 
 _OPTIONAL_KEYS: tuple[str, ...] = (
+    # Job-history index backend. Optional: unset keeps the historical blob
+    # indexes, so an existing deployment is unaffected by upgrading.
+    "LUMILAKE_JOB_INDEX_BACKEND",
+    "LUMILAKE_JOB_INDEX_DB_PATH",
+    "LUMILAKE_JOB_INDEX_RETENTION_DAYS",
     "LUMILAKE_LOG_LEVEL",
     "LUMILAKE_REGISTRY",
     "LUMILAKE_DEFAULT_OPTIMIZER",

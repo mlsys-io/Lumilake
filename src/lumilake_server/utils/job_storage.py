@@ -1,7 +1,10 @@
 import datetime as dt
 import json
 import logging
+import os
+import sqlite3
 import threading
+import time
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -270,7 +273,14 @@ class PersistentJobStorage(JobStorage):
             return f"{self.key_prefix}/jobs_index.json"
         return "jobs_index.json"
 
-    def save(self, record: Any) -> None:
+    def _save_record_blobs(self, record: Any) -> tuple[JobSummary, str]:
+        """Write the per-job blobs and return ``(summary, record_object_name)``.
+
+        Split out of :meth:`save` so an alternative index backend can reuse the
+        record/inputs/progress/result writes verbatim. These are per-job keys
+        and are NOT what overflows the blob quota -- only the monolithic
+        ``jobs_index.json`` is (see :class:`SqliteJobStorage`).
+        """
         data = _normalize_payload(asdict(record))
         record_data = dict(data)
         record_data.pop("inputs", None)
@@ -296,7 +306,10 @@ class PersistentJobStorage(JobStorage):
             self._put_json(
                 self._job_object_name(record.job_id, "result.json"), result_body
             )
-        summary = _summary_from_payload(data)
+        return _summary_from_payload(data), obj_name
+
+    def save(self, record: Any) -> None:
+        summary, obj_name = self._save_record_blobs(record)
         index_name = self._jobs_index_name()
         with self._index_lock:
             index = self._get_json_optional(index_name) or {}
@@ -424,11 +437,393 @@ class PersistentJobStorage(JobStorage):
                 yield summary
 
 
+def _epoch(value: dt.datetime | None) -> float | None:
+    """Stable epoch seconds for ordering.
+
+    ``_sort_summaries`` sorts ``datetime`` objects directly, so the SQL ORDER BY
+    has to reproduce that exactly. Naive values are read as UTC rather than local
+    time so a container's TZ can never reorder history.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=dt.UTC)
+    return value.timestamp()
+
+
+class SqliteJobStorage(PersistentJobStorage):
+    """Blob-backed job records with the two monolithic INDEXES in SQLite.
+
+    # Why this exists
+
+    ``PersistentJobStorage`` keeps every job summary in a single
+    ``jobs_index.json`` blob and rewrites it in full on every ``save()`` --
+    and ``save()`` runs on each status transition, not just on submit. So the
+    write is O(n) in job count and the blob grows without bound until
+    ``put_blob`` gets HTTP 413 from lumid-data, at which point EVERY submission
+    fails. ``output_index.json`` has the identical shape and the identical
+    fault; fixing only the jobs index would leave the second one armed.
+
+    Both indexes become tables here: ``save()`` is a single-row UPSERT and
+    ``list_summaries`` is an indexed query with real LIMIT/OFFSET, so neither
+    write nor read scales with history size any more.
+
+    # What deliberately does NOT move
+
+    Job records, inputs/progress/result, and artifacts stay in blob storage.
+    They are per-job keys, they never drove the 413, and moving them would mean
+    migrating existing data for no benefit. Only the indexes move, so an
+    existing archive keeps working unchanged.
+
+    # Why SQLite and not Postgres
+
+    Lumilake has no database dependency; ``sqlite3`` is stdlib, so this adds
+    none. The deployment is already single-writer -- ``replicas: 1`` with
+    ``Recreate`` -- and was ALREADY single-writer-only because ``_index_lock``
+    is an in-process lock, so SQLite gives up nothing that exists today.
+
+    If multi-replica Lumilake is ever wanted, this is the wrong backend and
+    Postgres is right -- but that change is bigger than storage, because the
+    in-process locking has to go too. Choosing SQLite here is deliberate, not
+    a default.
+
+    NOTE: the database file must live on a real block device. SQLite locking is
+    unsafe on NFS, so moving the volume to RWX/NFS would silently break this.
+    """
+
+    _SCHEMA = (
+        """
+        CREATE TABLE IF NOT EXISTS job_summaries (
+            job_id               TEXT PRIMARY KEY,
+            org_id               TEXT NOT NULL,
+            user_id              TEXT NOT NULL,
+            status               TEXT NOT NULL,
+            submitted_at         TEXT NOT NULL,
+            submitted_at_ts      REAL NOT NULL,
+            started_at           TEXT,
+            finished_at          TEXT,
+            optimization_seconds REAL,
+            selection_seconds    REAL,
+            clustering_seconds   REAL,
+            error                TEXT
+        )
+        """,
+        # Serves the list_summaries filter (org/user/status) and its sort in one
+        # index; submitted_at_ts is the sort key, never the text column.
+        """
+        CREATE INDEX IF NOT EXISTS ix_job_summaries_query
+            ON job_summaries (org_id, user_id, status, submitted_at_ts DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_job_summaries_sort
+            ON job_summaries (submitted_at_ts DESC, job_id DESC)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS output_locations (
+            location_key TEXT PRIMARY KEY,
+            job_id       TEXT NOT NULL
+        )
+        """,
+    )
+
+    def __init__(self, db_path: str | None = None) -> None:
+        super().__init__()
+        self._db_path = db_path or envs.LUMILAKE_JOB_INDEX_DB_PATH
+        parent = os.path.dirname(self._db_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        # check_same_thread=False + the inherited _index_lock: the server calls
+        # storage from several threads, and every write below is taken under
+        # that lock, so the connection is never touched concurrently.
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        with self._index_lock:
+            # WAL so a long list_summaries cannot block a save.
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            for stmt in self._SCHEMA:
+                self._conn.execute(stmt)
+            self._conn.commit()
+        # None = never pruned. NOT 0.0: time.monotonic()'s origin is
+        # arbitrary, so on a freshly-booted host `now - 0.0 < 3600` is true and
+        # the first prune would be skipped for the first hour of uptime.
+        self._last_prune: float | None = None
+        self._backfill_if_empty()
+
+    # ---- index writes -------------------------------------------------
+
+    def save(self, record: Any) -> None:
+        summary, obj_name = self._save_record_blobs(record)
+        row = summary.model_dump(mode="json")
+        with self._index_lock:
+            self._conn.execute(
+                """
+                INSERT INTO job_summaries (
+                    job_id, org_id, user_id, status, submitted_at,
+                    submitted_at_ts, started_at, finished_at,
+                    optimization_seconds, selection_seconds,
+                    clustering_seconds, error
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    org_id=excluded.org_id,
+                    user_id=excluded.user_id,
+                    status=excluded.status,
+                    submitted_at=excluded.submitted_at,
+                    submitted_at_ts=excluded.submitted_at_ts,
+                    started_at=excluded.started_at,
+                    finished_at=excluded.finished_at,
+                    optimization_seconds=excluded.optimization_seconds,
+                    selection_seconds=excluded.selection_seconds,
+                    clustering_seconds=excluded.clustering_seconds,
+                    error=excluded.error
+                """,
+                (
+                    summary.job_id,
+                    summary.org_id,
+                    summary.user_id,
+                    summary.status,
+                    row["submitted_at"],
+                    _epoch(summary.submitted_at),
+                    row.get("started_at"),
+                    row.get("finished_at"),
+                    summary.optimization_seconds,
+                    summary.selection_seconds,
+                    summary.clustering_seconds,
+                    summary.error,
+                ),
+            )
+            self._conn.commit()
+        self._maybe_prune()
+        self.logger.info("Saved job %s to archive blob %s", record.job_id, obj_name)
+
+    # ---- index reads --------------------------------------------------
+
+    def _where(
+        self,
+        *,
+        org_id: str,
+        user_id: str | None,
+        job_ids: frozenset[str] | None,
+        statuses: set[str] | None,
+    ) -> tuple[str, list[Any]]:
+        clauses = ["org_id = ?"]
+        params: list[Any] = [org_id]
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if job_ids is not None:
+            if not job_ids:
+                return "0", []  # empty set matches nothing, mirroring the blob path
+            marks = ",".join("?" for _ in job_ids)
+            clauses.append(f"job_id IN ({marks})")
+            params.extend(sorted(job_ids))
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            clauses.append(f"status IN ({marks})")
+            params.extend(sorted(statuses))
+        return " AND ".join(clauses), params
+
+    def list_summaries(
+        self,
+        *,
+        org_id: str,
+        user_id: str | None,
+        job_ids: frozenset[str] | None,
+        statuses: set[str] | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        where, params = self._where(
+            org_id=org_id, user_id=user_id, job_ids=job_ids, statuses=statuses
+        )
+        with self._index_lock:
+            total = self._conn.execute(
+                f"SELECT COUNT(*) FROM job_summaries WHERE {where}", params
+            ).fetchone()[0]
+            rows = self._conn.execute(
+                f"SELECT * FROM job_summaries WHERE {where} "
+                "ORDER BY submitted_at_ts DESC, job_id DESC LIMIT ? OFFSET ?",
+                [*params, page_size, max(page - 1, 0) * page_size],
+            ).fetchall()
+        return [self._row_to_summary(r).model_dump(mode="json") for r in rows], total
+
+    def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
+        sql = "SELECT * FROM job_summaries"
+        params: list[Any] = []
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({marks})"
+            params.extend(sorted(statuses))
+        with self._index_lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        for row in rows:
+            try:
+                yield self._row_to_summary(row)
+            except ValidationError as exc:
+                self.logger.warning("Ignoring invalid job summary row: %s", exc)
+
+    def _row_to_summary(self, row: sqlite3.Row) -> JobSummary:
+        return JobSummary.model_validate(
+            {
+                "job_id": row["job_id"],
+                "org_id": row["org_id"],
+                "user_id": row["user_id"],
+                "status": row["status"],
+                "submitted_at": row["submitted_at"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "optimization_seconds": row["optimization_seconds"],
+                "selection_seconds": row["selection_seconds"],
+                "clustering_seconds": row["clustering_seconds"],
+                "error": row["error"],
+            }
+        )
+
+    # ---- output locations ---------------------------------------------
+
+    def reserve_output_location(self, location_key: str, job_id: str) -> None:
+        with self._index_lock:
+            row = self._conn.execute(
+                "SELECT job_id FROM output_locations WHERE location_key = ?",
+                (location_key,),
+            ).fetchone()
+            existing = row["job_id"] if row else None
+        # load() re-enters blob storage, so it must not run under the lock.
+        if existing and existing != job_id:
+            record = self.load(existing)
+            if not (record and record.get("status") == "completed"):
+                raise ValueError(f"output location {location_key} already reserved")
+        with self._index_lock:
+            self._conn.execute(
+                "INSERT INTO output_locations (location_key, job_id) VALUES (?,?) "
+                "ON CONFLICT(location_key) DO UPDATE SET job_id=excluded.job_id",
+                (location_key, job_id),
+            )
+            self._conn.commit()
+
+    def release_output_location(self, location_key: str, job_id: str) -> None:
+        with self._index_lock:
+            self._conn.execute(
+                "DELETE FROM output_locations WHERE location_key = ? AND job_id = ?",
+                (location_key, job_id),
+            )
+            self._conn.commit()
+
+    # ---- retention -----------------------------------------------------
+
+    def _maybe_prune(self) -> None:
+        """Prune terminal rows older than the retention window, at most hourly.
+
+        Without this the table grows forever and we have only moved the ceiling
+        rather than removed it. Only completed/failed/cancelled rows are ever
+        deleted -- a pending or running job is kept regardless of age, so a
+        stuck job can never be silently erased.
+        """
+        days = envs.LUMILAKE_JOB_INDEX_RETENTION_DAYS
+        if days <= 0:
+            return
+        now = time.monotonic()
+        if self._last_prune is not None and now - self._last_prune < 3600:
+            return
+        self._last_prune = now
+        cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=days)).timestamp()
+        with self._index_lock:
+            cur = self._conn.execute(
+                "DELETE FROM job_summaries WHERE submitted_at_ts < ? "
+                "AND status IN ('completed','failed','cancelled')",
+                (cutoff,),
+            )
+            self._conn.commit()
+        if cur.rowcount:
+            self.logger.info(
+                "Pruned %d job summaries older than %d days", cur.rowcount, days
+            )
+
+    # ---- one-time backfill ---------------------------------------------
+
+    def _backfill_if_empty(self) -> None:
+        """Import the legacy blob indexes once, if this table is still empty.
+
+        Best-effort: the blobs are left in place, so a rollback to the blob
+        backend loses nothing. A missing or unreadable index is not fatal --
+        a fresh deployment simply has no history to import.
+        """
+        with self._index_lock:
+            already = self._conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM job_summaries)"
+            ).fetchone()[0]
+        if already:
+            return
+        try:
+            index = self._get_json_optional(self._jobs_index_name()) or {}
+        except Exception as exc:  # pragma: no cover - network/permission issues
+            self.logger.warning("Job index backfill skipped: %s", exc)
+            return
+        imported = 0
+        for value in index.values():
+            if not isinstance(value, dict):
+                continue
+            try:
+                summary = JobSummary.model_validate(value)
+            except ValidationError as exc:
+                self.logger.warning("Skipping invalid summary during backfill: %s", exc)
+                continue
+            row = summary.model_dump(mode="json")
+            with self._index_lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO job_summaries (job_id, org_id, user_id,"
+                    " status, submitted_at, submitted_at_ts, started_at, finished_at,"
+                    " optimization_seconds, selection_seconds, clustering_seconds,"
+                    " error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        summary.job_id,
+                        summary.org_id,
+                        summary.user_id,
+                        summary.status,
+                        row["submitted_at"],
+                        _epoch(summary.submitted_at),
+                        row.get("started_at"),
+                        row.get("finished_at"),
+                        summary.optimization_seconds,
+                        summary.selection_seconds,
+                        summary.clustering_seconds,
+                        summary.error,
+                    ),
+                )
+            imported += 1
+        try:
+            outputs = self._get_json_optional(self._output_index_name()) or {}
+        except Exception:  # pragma: no cover
+            outputs = {}
+        for location_key, owner in outputs.items():
+            if isinstance(owner, str):
+                with self._index_lock:
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO output_locations"
+                        " (location_key, job_id) VALUES (?,?)",
+                        (location_key, owner),
+                    )
+        with self._index_lock:
+            self._conn.commit()
+        if imported:
+            self.logger.info(
+                "Backfilled %d job summaries and %d output locations into %s",
+                imported,
+                len(outputs),
+                self._db_path,
+            )
+
+
 _job_storage: JobStorage | None = None
 
 
 def get_job_storage() -> JobStorage:
     global _job_storage
     if _job_storage is None:
-        _job_storage = PersistentJobStorage()
+        # Default stays "blob" so no existing deployment changes behaviour on
+        # upgrade; sqlite is opt-in via LUMILAKE_JOB_INDEX_BACKEND.
+        if envs.LUMILAKE_JOB_INDEX_BACKEND == "sqlite":
+            _job_storage = SqliteJobStorage()
+        else:
+            _job_storage = PersistentJobStorage()
     return _job_storage

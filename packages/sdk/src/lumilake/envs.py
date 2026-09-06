@@ -226,6 +226,30 @@ LUMILAKE_VLLM_MAX_MODEL_LEN: int = int(
 S3_DATA_PREFIX: str | None = os.getenv("S3_DATA_PREFIX")
 S3_ARCHIVE_PREFIX: str | None = os.getenv("S3_ARCHIVE_PREFIX")
 
+# Job-history index backend. "blob" (default) keeps the historical behaviour:
+# jobs_index.json / output_index.json are single blobs rewritten in full on
+# every save. "sqlite" moves ONLY those two indexes into a local SQLite file;
+# job records and artifacts stay in blob storage either way.
+#
+# The blob index is O(n)-per-write and unbounded, so it eventually exceeds the
+# lumid-data blob quota and every submission fails with HTTP 413. See
+# SqliteJobStorage for the full rationale.
+LUMILAKE_JOB_INDEX_BACKEND: str = (
+    os.environ.get("LUMILAKE_JOB_INDEX_BACKEND", "blob").strip().lower()
+)
+
+# Where the SQLite index lives. Must be a real block device -- SQLite locking
+# is not safe on NFS. Defaults alongside the plugin's existing lumid_acl.sqlite.
+LUMILAKE_JOB_INDEX_DB_PATH: str = os.environ.get(
+    "LUMILAKE_JOB_INDEX_DB_PATH", "/app/plugin-data/jobs.sqlite"
+)
+
+# Prune TERMINAL jobs (completed/failed/cancelled) older than this many days.
+# 0 disables pruning. Pending/running rows are never pruned regardless of age.
+LUMILAKE_JOB_INDEX_RETENTION_DAYS: int = int(
+    os.environ.get("LUMILAKE_JOB_INDEX_RETENTION_DAYS", "90")
+)
+
 FLOWMESH_OUTPUT_DESTINATION: str = os.environ.get(
     "LUMILAKE_FLOWMESH_OUTPUT_DESTINATION", "local"
 )
