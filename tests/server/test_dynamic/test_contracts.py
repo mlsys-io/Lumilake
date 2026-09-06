@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import re
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -1345,7 +1344,7 @@ async def test_loop_child_failure_reaches_terminal(app: Any, job_routes: Any) ->
 
 @pytest.mark.anyio
 async def test_loop_child_cancelled_reaches_terminal(
-    app: Any, job_routes: Any, wait_for_child: Any
+    app: Any, job_routes: Any, wait_for_inflight_child: Any
 ) -> None:
     """A child cancelled mid-loop must leave the parent cancelled."""
     transport = httpx.ASGITransport(app=app)
@@ -1364,10 +1363,9 @@ async def test_loop_child_cancelled_reaches_terminal(
     fake_server.hang_rounds = {1}
     fake_server.cancel_raises_cancelled = True
     loop_task = asyncio.create_task(_run_background(app))
-    # Wait for round 0's child to be created and hanging.
-    parent = await wait_for_child(job_routes, job_id)
-    assert parent.status == "running"
-    child_id = parent.child_job_ids[-1]
+    # Wait for the round-1 child (the one that hangs) to be genuinely in flight.
+    child_id = await wait_for_inflight_child(job_routes, job_id)
+    assert job_routes.jobs[job_id].status == "running"
     job_routes.jobs[child_id].status = "cancelled"
     fake_server.hang_event.set()
     await loop_task
@@ -1680,7 +1678,10 @@ async def test_loop_failed_terminal_persisted_and_hooks_fire_once(
 
 @pytest.mark.anyio
 async def test_loop_cancelled_terminal_persisted_and_hooks_fire_once(
-    app: Any, job_routes: Any, monkeypatch: pytest.MonkeyPatch, wait_for_child: Any
+    app: Any,
+    job_routes: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    wait_for_inflight_child: Any,
 ) -> None:
     """A CANCELLED parent's terminal status is durably saved and terminal hooks
     fire exactly once."""
@@ -1736,8 +1737,7 @@ async def test_loop_cancelled_terminal_persisted_and_hooks_fire_once(
     fake_server.hang_rounds = {1}
     fake_server.cancel_raises_cancelled = True
     loop_task = asyncio.create_task(_run_background(app))
-    parent = await wait_for_child(job_routes, job_id)
-    child_id = parent.child_job_ids[-1]
+    child_id = await wait_for_inflight_child(job_routes, job_id)
     job_routes.jobs[child_id].status = "cancelled"
     # A cancelled child that DID reach the runtime carries trace ids; seed them
     # so the parent aggregates them into its terminal trace resources.
@@ -1762,7 +1762,7 @@ async def test_loop_cancelled_terminal_persisted_and_hooks_fire_once(
 
 @pytest.mark.anyio
 async def test_cancel_job_with_failing_backend_cancel_marks_child_failed(
-    app: Any, job_routes: Any, wait_for_child: Any
+    app: Any, job_routes: Any, wait_for_inflight_child: Any
 ) -> None:
     """Cancelling a dynamic parent through the real endpoint with a failing
     backend cancel must record the in-flight child failed while the parent
@@ -1781,9 +1781,8 @@ async def test_cancel_job_with_failing_backend_cancel_marks_child_failed(
     fake_server.hang_rounds = {1}
     fake_server.fail_cancel = True
     loop_task = asyncio.create_task(_run_background(app))
-    # Wait for round 0's child to be created and hanging.
-    parent = await wait_for_child(job_routes, job_id)
-    child_id = parent.child_job_ids[-1]
+    # Wait for the round-1 child (the one that hangs) to be genuinely in flight.
+    child_id = await wait_for_inflight_child(job_routes, job_id)
     # Cancel through the real endpoint.
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         cancel_resp = await client.post(
@@ -1956,7 +1955,7 @@ async def test_runtime_reported_cancellation_marks_record_cancelled(
 
 @pytest.mark.anyio
 async def test_terminal_parent_survives_failed_child_path(
-    app: Any, job_routes: Any, wait_for_child: Any
+    app: Any, job_routes: Any, wait_for_inflight_child: Any
 ) -> None:
     """A parent marked failed (e.g. by shutdown recovery) while a child is in
     flight must not be resurrected to completed by the dynamic loop's
@@ -1977,13 +1976,9 @@ async def test_terminal_parent_survives_failed_child_path(
     # Round 0 hangs so a child is genuinely in flight when shutdown lands.
     fake_server.hang_rounds = {0}
     loop_task = asyncio.create_task(_run_background(app))
-    await wait_for_child(job_routes, job_id)
     # Wait until the child is genuinely executing (blocked on hang_event), not
     # merely registered, so shutdown lands while it is truly in flight.
-    deadline = time.monotonic() + 5.0
-    while not fake_server.execute_calls and time.monotonic() < deadline:
-        await asyncio.sleep(0.005)
-    assert fake_server.execute_calls, "child never entered execute within 5s"
+    await wait_for_inflight_child(job_routes, job_id)
     # Mark the parent failed while the child is in flight, as shutdown recovery
     # would.
     await jobs_module.mark_running_jobs_failed("server shutdown")

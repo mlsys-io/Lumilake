@@ -436,7 +436,7 @@ async def test_dynamic_child_prefixes_under_parent_effective_base(
 
 @pytest.mark.anyio
 async def test_dynamic_cancel_propagates_to_inflight_child(
-    app: FastAPI, job_routes: Any, wait_for_child: Any
+    app: FastAPI, job_routes: Any, wait_for_inflight_child: Any
 ) -> None:
     """Cancelling a dynamic parent through the real endpoint must cancel its
     in-flight child."""
@@ -453,9 +453,8 @@ async def test_dynamic_cancel_propagates_to_inflight_child(
     fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
     fake_server.hang_rounds = {1}
     loop_task = asyncio.create_task(_run_background(app))
-    # Wait for round 0's child to be created and hanging.
-    parent = await wait_for_child(job_routes, job_id)
-    child_id = parent.child_job_ids[-1]
+    # Wait for the round-1 child (the one that hangs) to be genuinely in flight.
+    child_id = await wait_for_inflight_child(job_routes, job_id)
     # Cancel through the real endpoint.
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         cancel_resp = await client.post(
