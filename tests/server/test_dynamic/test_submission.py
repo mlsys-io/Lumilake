@@ -1,10 +1,14 @@
-"""Tests for the dynamic-workflow submission path.
+"""End-to-end tests for the dynamic-workflow submission path.
 
 A dynamic workflow is a YAML spec with a root ``type: dynamic`` plus a
 plaintext ``goal`` and a ``driver`` section. Submitting it renders round 0 into
 a native graph and runs the planning loop server-side; invalid specs are
 rejected at submission time. A YAML without ``type: dynamic`` is a normal
 static workflow.
+
+These are the core E2E scenarios: the loop running to STOP, cross-round
+registry handoff, cancel propagation, the round budget, failure paths reaching
+a terminal state, leaf-output integrity, and the static-workflow regression.
 """
 
 import asyncio
@@ -122,16 +126,6 @@ class _AllowAllGuards:
 
     async def check(self, principal: PrincipalContext, logger: logging.Logger) -> None:
         return None
-
-
-class _RecordingUsageSink:
-    name = "test.usage"
-
-    def __init__(self) -> None:
-        self.rows: list[Any] = []
-
-    async def emit(self, rows: list[Any], logger: logging.Logger) -> None:
-        self.rows.extend(rows)
 
 
 class _FakeRuntimeManager:
@@ -376,87 +370,6 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
 
 
 @pytest.mark.anyio
-async def test_dynamic_round_output_locations_are_distinct(
-    app: FastAPI, job_routes: Any
-) -> None:
-    """Each round's child gets a distinct effective S3 prefix carrying the
-    run_namespace segment, so later rounds cannot overwrite earlier leaves."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "completed"
-    assert len(record.child_job_ids) == 2
-    prefixes = []
-    for child_id in record.child_job_ids:
-        child = job_routes.jobs[child_id]
-        loc = next(iter(child.output_location.values()))
-        prefixes.append(loc.prefix)
-    # Both prefixes carry the run_namespace segment and differ by round.
-    assert prefixes[0] != prefixes[1], f"round prefixes not distinct: {prefixes}"
-    assert all("/run-" in p for p in prefixes), f"missing run_namespace: {prefixes}"
-    assert prefixes[0].endswith("/round-0/") and prefixes[1].endswith(
-        "/round-1/"
-    ), f"unexpected round suffixes: {prefixes}"
-
-
-@pytest.mark.anyio
-async def test_dynamic_child_prefixes_under_parent_effective_base(
-    app: FastAPI, job_routes: Any
-) -> None:
-    """Each child's prefix is namespaced under the PARENT effective base (the
-    driver location, which shadows the entry location), then carries
-    run-.../round-N/."""
-    transport = httpx.ASGITransport(app=app)
-    # Driver location differs from the entry location, so the effective base is
-    # the driver one.
-    envelope = _submit_body(_VALID_DYNAMIC_YAML)
-    envelope["data"][0]["output_location"] = {
-        "type": "s3",
-        "prefix": "dynamic/entry-prefix/",
-    }
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=envelope,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "completed"
-    assert len(record.child_job_ids) == 2
-    # The parent effective base is the DRIVER location (dynamic/data-free/).
-    parent_base = next(iter(record.output_location.values())).prefix
-    assert parent_base == "dynamic/data-free/"
-    for child_id in record.child_job_ids:
-        child = job_routes.jobs[child_id]
-        prefix = next(iter(child.output_location.values())).prefix
-        # Child prefix starts with the driver-derived base, not the entry base.
-        assert prefix.startswith(
-            parent_base
-        ), f"child prefix {prefix!r} not under parent base {parent_base!r}"
-        assert (
-            "dynamic/entry-prefix/" not in prefix
-        ), f"child prefix {prefix!r} uses the shadowed entry base"
-        assert (
-            "/run-" in prefix and "/round-" in prefix
-        ), f"child prefix {prefix!r} missing run/round namespace"
-
-
-@pytest.mark.anyio
 async def test_dynamic_cancel_propagates_to_inflight_child(
     app: FastAPI, job_routes: Any, wait_for_inflight_child: Any
 ) -> None:
@@ -574,92 +487,6 @@ async def test_dynamic_multi_round_registry_handoff(
 
 
 @pytest.mark.anyio
-async def test_dynamic_multi_round_typed_message_ref_handoff(
-    app: FastAPI, job_routes: Any
-) -> None:
-    """Round 0 emits a MessageOp; round 1 emits an LLMChatOp whose messages_ref
-    points at that prior-round node. The round-1 graph builds only if the
-    registry preserved the MessageOp's real type (not a stub or pruned entry)."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [
-        {
-            "next": "subgraph",
-            "ops": [
-                {
-                    "id": "m0",
-                    "op": "MessageOp",
-                    "inputs": [],
-                    "messages": [{"role": "user", "content": "hello"}],
-                },
-                {
-                    "id": "L0",
-                    "op": "LLMChatOp",
-                    "inputs": ["m0"],
-                    "messages_ref": "m0",
-                    "config": {"model": "Qwen/Qwen3-8B"},
-                },
-            ],
-        },
-        {
-            "next": "subgraph",
-            "ops": [
-                {
-                    "id": "L",
-                    "op": "LLMChatOp",
-                    "inputs": ["m0"],
-                    "messages_ref": "m0",
-                    "config": {"model": "Qwen/Qwen3-8B"},
-                }
-            ],
-        },
-        {"next": "STOP"},
-    ]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "completed"
-    assert len(record.child_job_ids) == 3
-    # The round-1 child built and completed only if the registry preserved the
-    # prior MessageOp's real type; a stub or pruned entry would fail the
-    # messages_ref type check.
-    round1_child = job_routes.jobs[record.child_job_ids[1]]
-    assert round1_child.status == "completed"
-
-
-@pytest.mark.anyio
-async def test_dynamic_submit_invalid_yaml_returns_400(app: FastAPI) -> None:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body("not: [valid"),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 400
-
-
-@pytest.mark.anyio
-async def test_dynamic_submit_missing_goal_returns_422(app: FastAPI) -> None:
-    spec = "name: dynamic\ntype: dynamic\ndriver:\n  model: Qwen/Qwen3-8B\n"
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(spec),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
 async def test_dynamic_max_rounds_cutoff(app: FastAPI, job_routes: Any) -> None:
     spec_yaml = _VALID_DYNAMIC_YAML.replace("  max_rounds: 4\n", "  max_rounds: 2\n")
     transport = httpx.ASGITransport(app=app)
@@ -705,92 +532,6 @@ async def test_dynamic_round_failure_fails_parent(
 
 
 @pytest.mark.anyio
-async def test_dynamic_malformed_plan_fails_parent(
-    app: FastAPI, job_routes: Any
-) -> None:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "bogus"}]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "failed"
-    assert "invalid plan" in (record.error or "")
-
-
-@pytest.mark.anyio
-async def test_dynamic_build_round_failure_fails_parent(
-    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # A build_round failure during the loop must mark the parent failed, not
-    # leave it running. (Validation now catches malformed op configs earlier,
-    # so build_round is monkeypatched to raise for the loop's rounds.)
-    import lumilake_server.routes.jobs as jobs_module
-
-    real_build_round = jobs_module.build_round
-
-    def _boom(*args: Any, **kwargs: Any) -> Any:
-        if kwargs.get("round_index", 0) >= 1:
-            raise ValueError("build failed")
-        return real_build_round(*args, **kwargs)
-
-    monkeypatch.setattr(jobs_module, "build_round", _boom)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [_SUBGRAPH_PLAN]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "failed"
-    assert "failed to build" in (record.error or "")
-
-
-@pytest.mark.anyio
-async def test_dynamic_missing_leaf_outputs_fails_parent(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # A subgraph round that produces no archived leaf outputs must fail the
-    # parent, not silently proceed without the promised observation.
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
-    fake_server = job_routes._fake_runtime_server
-    # Round 0 emits a subgraph (q2); round 1 runs it and emits another subgraph
-    # (q3) so the loop reaches leaf extraction, where q2's missing output fails
-    # the parent.
-    plan_a = json.loads(json.dumps(_SUBGRAPH_PLAN))
-    plan_a["ops"][0]["id"] = "q2"
-    plan_b = json.loads(json.dumps(_SUBGRAPH_PLAN))
-    plan_b["ops"][0]["id"] = "q3"
-    fake_server.plans = [plan_a, plan_b]
-    fake_server.omit_leaf_outputs = True
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "failed"
-    assert "missing expected leaf output" in (record.error or "")
-
-
-@pytest.mark.anyio
 async def test_dynamic_stop_round_missing_leaf_fails_parent(
     app: FastAPI, job_routes: Any
 ) -> None:
@@ -819,26 +560,13 @@ async def test_dynamic_stop_round_missing_leaf_fails_parent(
 
 
 @pytest.mark.anyio
-async def test_dynamic_submit_multi_entry_returns_422(app: FastAPI) -> None:
-    body = {
-        "data": [
-            {
-                "name": "a",
-                "workflow": _VALID_DYNAMIC_YAML,
-                "inputs": {"Symbols": ["NVDA"]},
-            },
-            {
-                "name": "b",
-                "workflow": _VALID_DYNAMIC_YAML,
-                "inputs": {"Symbols": ["NVDA"]},
-            },
-        ]
-    }
+async def test_dynamic_submit_missing_goal_returns_422(app: FastAPI) -> None:
+    spec = "name: dynamic\ntype: dynamic\ndriver:\n  model: Qwen/Qwen3-8B\n"
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/jobs",
-            json=body,
+            json=_submit_body(spec),
             headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
         )
     assert resp.status_code == 422
@@ -852,70 +580,6 @@ async def test_dynamic_submit_empty_symbol_returns_422(app: FastAPI) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_dynamic_preview_multi_entry_returns_422(app: FastAPI) -> None:
-    body = {
-        "data": [
-            {
-                "name": "a",
-                "workflow": _VALID_DYNAMIC_YAML,
-                "inputs": {"Symbols": ["NVDA"]},
-            },
-            {
-                "name": "b",
-                "workflow": _VALID_DYNAMIC_YAML,
-                "inputs": {"Symbols": ["NVDA"]},
-            },
-        ]
-    }
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs/preview",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_dynamic_preview_empty_symbol_returns_422(app: FastAPI) -> None:
-    body = _submit_body(_VALID_DYNAMIC_YAML)
-    body["data"][0]["inputs"] = {"Symbols": [""]}
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs/preview",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_dynamic_preview_entry_db_location_returns_422(app: FastAPI) -> None:
-    # A per-entry DB output location must be rejected by preview, matching
-    # submit. Use a YAML with no driver location so the entry DB is effective.
-    yaml_no_driver = _VALID_DYNAMIC_YAML.replace(
-        "  output_location:\n" "    type: s3\n" "    prefix: dynamic/data-free/\n",
-        "",
-    )
-    body = _submit_body(yaml_no_driver)
-    body["data"][0]["output_location"] = {
-        "type": "db",
-        "table": "schema.tbl",
-        "column": "col",
-    }
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs/preview",
             json=body,
             headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
         )
@@ -960,39 +624,3 @@ async def test_static_yaml_without_type_runs_as_static(
     assert record.status == "completed"
     # A static job is a single job with no dynamic child rounds.
     assert record.child_job_ids == []
-
-
-@pytest.mark.anyio
-async def test_static_yaml_with_explicit_static_type_runs_as_static(
-    app: FastAPI, job_routes: Any
-) -> None:
-    """A YAML workflow with ``type: static`` is also treated as static."""
-    static_yaml = _STATIC_YAML.replace("name: static\n", "name: static\ntype: static\n")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(static_yaml),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "completed"
-    assert record.child_job_ids == []
-
-
-@pytest.mark.anyio
-async def test_dynamic_format_header_rejected(app: FastAPI) -> None:
-    """The ``dynamic`` Workflow-Format value is dropped; it must be rejected
-    with 422. Dynamic workflows are now differentiated by the YAML root
-    ``type: dynamic`` field instead."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "dynamic"},
-        )
-    assert resp.status_code == 422

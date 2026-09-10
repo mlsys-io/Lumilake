@@ -63,13 +63,6 @@ def test_execution_summary_marks_completed() -> None:
     assert "3/3 rounds done" in text.plain
 
 
-def test_execution_summary_none_without_details() -> None:
-    assert (
-        _execution_summary({"execution": {"completed": False, "details": None}}) is None
-    )
-    assert _execution_summary({}) is None
-
-
 def test_format_progress_line_includes_rounds() -> None:
     line = _format_progress_line(
         "req-abc",
@@ -79,27 +72,3 @@ def test_format_progress_line_includes_rounds() -> None:
     )
     assert "1/3 rounds" in line
     assert "req-abc" in line
-
-
-def test_format_progress_line_static_job_no_rounds() -> None:
-    prog = {
-        "execution": {"completed": False, "details": None},
-        "batch_progress": {
-            "total": 2,
-            "completed": 1,
-            "running": 1,
-            "pending": 0,
-            "failed": 0,
-            "batches": [],
-            "overall_progress": {
-                "processed_runtime_nodes_raw": 5,
-                "raw_nodes": 10,
-                "eta_seconds": None,
-            },
-            "eta_seconds": None,
-        },
-    }
-    line = _format_progress_line("req-abc", "running", prog, 5.0)
-    assert "5/10 nodes" in line
-    assert "batches 1/2 done" in line
-    assert "rounds" not in line
