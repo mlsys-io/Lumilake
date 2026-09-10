@@ -353,6 +353,26 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
     record = job_routes.jobs[job_id]
     assert record.status == "completed"
     assert len(record.child_job_ids) == 2
+    # The parent's execution progress reflects the completed rounds: two
+    # subgraph rounds ran before STOP, so succeeded=2 and the step is done.
+    execution = record.progress.execution
+    assert execution.completed is True
+    assert execution.details is not None
+    assert execution.details.succeeded == 2
+    assert execution.details.pending == 0
+    # The parent's result carries both the per-round plan and the per-round
+    # leaf results (the actual data each round produced), as nested JSON.
+    # Round 0 is the initial proposal with an empty subgraph, so it archives
+    # no leaves; round 1 executes the proposed subgraph and archives its leaf
+    # data; the terminal STOP round has no leaves.
+    assert record.result is not None
+    round_outputs = record.result.outputs["round"]
+    assert len(round_outputs["plan"]) == 2
+    assert len(round_outputs["results"]) == 2
+    assert round_outputs["results"][0] == {}
+    subgraph_leaf = round_outputs["results"][1]
+    assert len(subgraph_leaf) == 1
+    assert list(subgraph_leaf.values())[0] == [{"market_cap": 10}]
 
 
 @pytest.mark.anyio

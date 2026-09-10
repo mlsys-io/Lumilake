@@ -30,12 +30,16 @@ type: dynamic
 #   - LUMID_DATA_URL must point at a lumid-data service exposing the
 #     `reference` schema (e.g. https://lum.id/data), with LUMID_DATA_TOKEN
 #     (or the LUMILAKE_RUNTIME_TOKEN fallback) for auth.
-#   - A FlowMesh worker serving Qwen/Qwen3-8B for the planner.
+#   - A FlowMesh worker serving the planner model on a GPU (8 GiB is enough).
 #   - The normal Lumilake S3 archive configuration for submitted plans.
 #
 # Submit:
 #   uv run lumilake job submit -f yaml examples/templates/yaml/market-data-dynamic.yaml \
-#     --input Symbols=NVDA --output-prefix dynamic/market/
+#     --input Symbols=NVDA --output-prefix dynamic/market/ --gpu 1 --gpu-memory 8Gi
+#
+# Monitor and inspect the run:
+#   uv run lumilake job progress <job_id>   # rounds completed / remaining
+#   uv run lumilake job result <job_id>     # each round's emitted plan
 
 goal: >-
   Analyze the market-cap distribution across sectors in two phases. First
@@ -48,10 +52,10 @@ goal: >-
   sector and its top companies.
 
 driver:
-  model: Qwen/Qwen3-8B
+  model: Qwen/Qwen3-4B-Instruct-2507
   max_tokens: 2048
-  # The planner emits a structured plan, not prose; Qwen3's reasoning mode adds
-  # a long <think> block that the plan must still fit behind.
+  # The planner emits a structured plan, not prose; a reasoning model's
+  # <think> block would otherwise consume the token budget the plan needs.
   chat_template_kwargs:
     enable_thinking: false
   max_rounds: 4

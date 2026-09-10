@@ -10,6 +10,7 @@ import requests
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 from ..core import logging
 from ..core.http import HttpError, client_from_config
@@ -448,6 +449,24 @@ def _format_progress_line(
     Uses only ASCII characters — no special fonts needed.
     """
     parts = [f"[{job_id}] {status}"]
+    execution = prog.get("execution") if isinstance(prog, dict) else None
+    if isinstance(execution, dict):
+        details = execution.get("details")
+        if isinstance(details, dict):
+            succeeded = _coerce_int(details.get("succeeded"))
+            failed = _coerce_int(details.get("failed"))
+            pending = _coerce_int(details.get("pending"))
+            total = (
+                succeeded + failed + pending + _coerce_int(details.get("dispatched"))
+            )
+            if total > 0:
+                pct = succeeded / total * 100 if total > 0 else 0
+                width = 20
+                filled = int(width * pct / 100)
+                bar = "#" * filled + "-" * (width - filled)
+                parts.append(f"[{bar}] {succeeded}/{total} rounds ({pct:.0f}%)")
+                if failed:
+                    parts.append(f"{failed} failed")
     batch_progress = prog.get("batch_progress") if isinstance(prog, dict) else None
     if isinstance(batch_progress, dict):
         overall = batch_progress.get("overall_progress")
@@ -472,13 +491,55 @@ def _format_progress_line(
     return "  ".join(parts)
 
 
+def _coerce_int(value: Any) -> int:
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    return 0
+
+
+def _execution_summary(progress: dict[str, Any]) -> Text | None:
+    """Build a one-line execution/rounds summary, or ``None`` when the job has
+    no execution progress (e.g. a static job that only reports batch progress).
+
+    Dynamic parents report their planning loop through ``execution.details``
+    (each completed round is one succeeded unit against the round budget), so
+    this surfaces that activity in the live table.
+    """
+    execution = progress.get("execution")
+    if not isinstance(execution, dict):
+        return None
+    details = execution.get("details")
+    if not isinstance(details, dict):
+        return None
+    succeeded = _coerce_int(details.get("succeeded"))
+    failed = _coerce_int(details.get("failed"))
+    pending = _coerce_int(details.get("pending"))
+    dispatched = _coerce_int(details.get("dispatched"))
+    total = succeeded + failed + pending + dispatched
+    if total == 0 and not execution.get("completed"):
+        return None
+    completed = bool(execution.get("completed"))
+    state = "done" if completed else "running"
+    pct = succeeded / total * 100 if total > 0 else 0.0
+    width = 20
+    filled = int(width * pct / 100)
+    bar = f"{'#' * filled}{'-' * (width - filled)} {pct:>5.1f}%"
+    return Text(
+        f"Execution ({state}): [{bar}] {succeeded}/{total} rounds done, "
+        f"{pending} pending, {failed} failed",
+        style="bold green" if completed else "bold yellow",
+    )
+
+
 def _build_progress_panel(job_id: str, progress: dict[str, Any]) -> Any:
     """Build a Rich Panel with a batch-level progress table for ``progress``.
 
     Renders one ``Overall`` row (raw-node progress + outcome counters) and
     one ``Running batches`` row (active batch progress + average elapsed
     time), wrapped in a header line that summarizes raw/FlowMesh node
-    totals, ETA, and the done/running batch counts.
+    totals, ETA, and the done/running batch counts. When the job reports
+    execution progress (dynamic parents), an execution/rounds line is shown
+    above the batch table.
     """
     from rich.console import Group
     from rich.panel import Panel
@@ -582,8 +643,13 @@ def _build_progress_panel(job_id: str, progress: dict[str, Any]) -> Any:
     summary_parts.append(f"Batches done/running: {c_batches}/{r_batches}")
     header = Text("; ".join(summary_parts), style="bold cyan")
 
+    exec_line = _execution_summary(progress)
+    body: list[Any] = [header, table]
+    if exec_line is not None:
+        body.insert(1, exec_line)
+
     return Panel(
-        Group(header, table),
+        Group(*body),
         title="Batch Progress",
         border_style="blue",
         padding=(1, 2),

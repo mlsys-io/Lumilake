@@ -82,7 +82,7 @@ class LumilakeResponse(BaseModel):
     Response object returned by the Lumilake server.
     """
 
-    outputs: dict[str, dict[str, list[str]]] = Field(
+    outputs: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
         description="Outputs grouped by graph name and output name.",
     )

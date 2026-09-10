@@ -77,7 +77,11 @@ from lumilake_server.runtime.protocol import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.server import LumilakeServer
 from lumilake_server.schemas.io import DBLocation, IOLocation, S3Location
-from lumilake_server.schemas.progress import JobProgress
+from lumilake_server.schemas.progress import (
+    JobProgress,
+    ProgressDetails,
+    ProgressStep,
+)
 from lumilake_server.utils.data_profile_offload import (
     build_request_data_profile_tasks,
     data_profile_registry,
@@ -379,6 +383,28 @@ def _extract_leaf_outputs(
             )
         leaf_outputs[name[len("leaf_") :]] = [values[0]]
     return leaf_outputs
+
+
+def _flatten_leaf_outputs(
+    leaf_outputs: dict[str, list[str]],
+) -> dict[str, list[Any]]:
+    """Decode each archived leaf value (a JSON string) into nested JSON.
+
+    The archived leaf representation is a list containing exactly one JSON
+    string; decode it so the stored result carries the actual data as nested
+    JSON rather than a re-encoded string. A value that is not valid JSON is
+    kept verbatim.
+    """
+    flattened: dict[str, list[Any]] = {}
+    for leaf_id, values in leaf_outputs.items():
+        decoded: list[Any] = []
+        for value in values:
+            try:
+                decoded.append(json.loads(value))
+            except (TypeError, ValueError):
+                decoded.append(value)
+        flattened[leaf_id] = decoded
+    return flattened
 
 
 def _dispatch_workflow_to_graph_specs(
@@ -1695,6 +1721,22 @@ async def _run_dynamic_job(
         observations: list[str] = []
         stopped_by: str | None = None
         plans: list[dict[str, Any]] = []
+        round_results: list[dict[str, list[str]]] = []
+
+        # Report the planning loop's progress through the parent's execution
+        # step: each completed round is one succeeded unit against the round
+        # budget, so `lumilake job progress` reflects the loop's activity.
+        async with jobs_lock:
+            record.progress.execution = ProgressStep(
+                completed=False,
+                details=ProgressDetails(
+                    succeeded=0,
+                    failed=0,
+                    pending=max_rounds,
+                    dispatched=0,
+                ),
+            )
+        await asyncio.to_thread(_job_storage.save, record)
 
         round_index = 0
         current_subgraph: list[dict[str, Any]] = []
@@ -1800,6 +1842,7 @@ async def _run_dynamic_job(
                 leaf_outputs = _extract_leaf_outputs(
                     outputs, round_build.leaf_output_names
                 )
+                round_results.append(_flatten_leaf_outputs(leaf_outputs))
                 observations.append(
                     compute_observation(leaf_outputs, spec.driver.preview_width)
                 )
@@ -1831,6 +1874,19 @@ async def _run_dynamic_job(
                 await asyncio.to_thread(_job_storage.save, record)
                 return
             round_index += 1
+            async with jobs_lock:
+                if record.status in TERMINAL_JOB_STATUSES:
+                    return
+                record.progress.execution = ProgressStep(
+                    completed=False,
+                    details=ProgressDetails(
+                        succeeded=round_index,
+                        failed=0,
+                        pending=max_rounds - round_index,
+                        dispatched=0,
+                    ),
+                )
+            await asyncio.to_thread(_job_storage.save, record)
         if stopped_by is None:
             stopped_by = "max_rounds"
         async with jobs_lock:
@@ -1839,8 +1895,22 @@ async def _run_dynamic_job(
                 return
             record.status = "completed"
             record.finished_at = _now()
+            record.progress.execution = ProgressStep(
+                completed=True,
+                details=ProgressDetails(
+                    succeeded=len(plans),
+                    failed=0,
+                    pending=0,
+                    dispatched=0,
+                ),
+            )
             record.result = LumilakeResponse(
-                outputs={"round": {"plan": [json.dumps(plans)]}}
+                outputs={
+                    "round": {
+                        "plan": plans,
+                        "results": round_results,
+                    }
+                }
             )
         await asyncio.to_thread(_job_storage.save, record)
     except Exception as exc:  # noqa: BLE001 - any escape must fail the parent
