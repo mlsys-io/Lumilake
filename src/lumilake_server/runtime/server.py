@@ -72,6 +72,16 @@ from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.utils import async_runner, stop_async_runner, unique_id
 
 
+def _empty_runtime_graph() -> RuntimeGraph:
+    """A node-less graph used when data profiling is disabled.
+
+    The job manager indexes ``data_profile_graphs`` by the same keys as
+    ``runtime_graphs``, so the placeholder keeps the key sets aligned while
+    profiling is skipped entirely.
+    """
+    return RuntimeGraph(nodes={}, node_order=[], output_node_map={})
+
+
 @dataclass(slots=True)
 class RequestState:
     handler: RequestHandler
@@ -2258,11 +2268,12 @@ class LumilakeServer:
                 merged_compiled,
                 node_prefix=group_key,
             )
-            data_profile_graphs_by_name[group_key] = self._runtime_builder.build(
-                merged_compiled,
-                task_type_override="data_profile",
-                node_prefix=group_key,
-            )
+            if not envs.LUMILAKE_DISABLE_DATA_PROFILE:
+                data_profile_graphs_by_name[group_key] = self._runtime_builder.build(
+                    merged_compiled,
+                    task_type_override="data_profile",
+                    node_prefix=group_key,
+                )
 
         merged_graph, output_mapping = self.optimizer.optimize_graphs(
             runtime_graphs_by_name
@@ -2922,12 +2933,16 @@ class LumilakeServer:
             name: self._runtime_builder.build(graph, node_prefix=name)
             for name, graph in graphs.items()
         }
-        data_profile_graphs_by_name = {
-            name: self._runtime_builder.build(
-                graph, task_type_override="data_profile", node_prefix=name
-            )
-            for name, graph in graphs.items()
-        }
+        data_profile_graphs_by_name = (
+            {
+                name: self._runtime_builder.build(
+                    graph, task_type_override="data_profile", node_prefix=name
+                )
+                for name, graph in graphs.items()
+            }
+            if not envs.LUMILAKE_DISABLE_DATA_PROFILE
+            else {name: _empty_runtime_graph() for name in graphs}
+        )
         if not any(graph.node_count > 0 for graph in runtime_graphs_by_name.values()):
             raise ValueError("Preview graph has no runtime nodes")
 
@@ -3117,12 +3132,16 @@ class LumilakeServer:
             name: self._runtime_builder.build(graph, node_prefix=name)
             for name, graph in graphs.items()
         }
-        data_profile_graphs = {
-            name: self._runtime_builder.build(
-                graph, task_type_override="data_profile", node_prefix=name
-            )
-            for name, graph in graphs.items()
-        }
+        data_profile_graphs = (
+            {
+                name: self._runtime_builder.build(
+                    graph, task_type_override="data_profile", node_prefix=name
+                )
+                for name, graph in graphs.items()
+            }
+            if not envs.LUMILAKE_DISABLE_DATA_PROFILE
+            else {name: _empty_runtime_graph() for name in graphs}
+        )
         handler = RequestHandler(
             runtime_graphs,
             data_profile_graphs,

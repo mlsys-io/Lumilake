@@ -567,6 +567,91 @@ async def test_process_batch_uses_server_data_profile_collection(
 
 
 @pytest.mark.asyncio
+async def test_run_batch_skips_data_profile_when_disabled(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    runtime_manager = RecordingRuntimeManager()
+    server.runtime_manager = cast(Any, runtime_manager)
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        )
+    ]
+    attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+
+    data_profile_builds: list[str] = []
+
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        if task_type_override == "data_profile":
+            data_profile_builds.append(node_prefix)
+        node_id = f"{node_prefix}__runtime"
+        op = make_runtime_op(node_id)
+        return RuntimeGraph(
+            nodes={node_id: op},
+            node_order=[node_id],
+            output_node_map={node_id: "output"},
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+
+    collect_called = False
+
+    async def _fake_collect_data_profile(
+        **kwargs: Any,
+    ) -> dict[str, list[dict[str, Any]]]:
+        nonlocal collect_called
+        collect_called = True
+        return {}
+
+    monkeypatch.setattr(
+        "lumilake_server.runtime.server.collect_data_profile",
+        _fake_collect_data_profile,
+    )
+
+    monkeypatch.setattr(envs, "LUMILAKE_DISABLE_DATA_PROFILE", True)
+    await server._run_batch(["worker-1"], batch)
+
+    assert data_profile_builds == []
+    assert collect_called is False
+
+
+@pytest.mark.asyncio
 async def test_generate_schedule_subprocess_timeout_terminates_and_kills(
     server_factory,
     monkeypatch,
