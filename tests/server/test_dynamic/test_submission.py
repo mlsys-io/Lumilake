@@ -149,6 +149,7 @@ class _FakeRuntimeServer:
         self.fail_cancel = False
         self.cancel_raises_cancelled = False
         self.omit_leaf_outputs = False
+        self.hanging_requests: set[str] = set()
         self._traces: dict[str, list[str]] = {}
         self.runtime_manager = _FakeRuntimeManager()
 
@@ -174,7 +175,13 @@ class _FakeRuntimeServer:
             self._traces[request_id] = [f"trace-{request_id}"]
         round_index = len(self.execute_calls) - 1
         if round_index in self.hang_rounds:
-            await self.hang_event.wait()
+            if request_id:
+                self.hanging_requests.add(request_id)
+            try:
+                await self.hang_event.wait()
+            finally:
+                if request_id:
+                    self.hanging_requests.discard(request_id)
             if self.cancel_raises_cancelled:
                 from lumilake_server.runtime.protocol import RequestCancelledError
 

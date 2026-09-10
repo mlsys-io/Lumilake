@@ -17,23 +17,20 @@ def wait_for_inflight_child():
 
     async def _wait(job_routes: Any, job_id: str, timeout: float = 5.0) -> str:
         fake = job_routes._fake_runtime_server
-        terminal = {"completed", "failed", "cancelled"}
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             parent = job_routes.jobs[job_id]
             for child_id in parent.child_job_ids:
-                child = job_routes.jobs.get(child_id)
-                if (
-                    child is not None
-                    and child_id in fake.execute_calls
-                    and child.status not in terminal
-                ):
+                # Only a child whose execute() is genuinely blocked on the hang
+                # event is the one the test wants to cancel; an earlier round's
+                # child may still be in execute_calls while finishing.
+                if child_id in fake.hanging_requests:
                     return child_id
             await asyncio.sleep(0.005)
         raise AssertionError(
-            f"no in-flight child for {job_id} within {timeout}s; "
+            f"no hanging child for {job_id} within {timeout}s; "
             f"children={job_routes.jobs[job_id].child_job_ids} "
-            f"execute_calls={fake.execute_calls}"
+            f"hanging={fake.hanging_requests}"
         )
 
     return _wait
