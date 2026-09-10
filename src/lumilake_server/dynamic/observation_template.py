@@ -13,14 +13,7 @@ input is caught and treated as text rather than raising.
 
 
 def observe(args):
-    # ``args`` is one entry per leaf. Each entry may be a JSON string, a list of
-    # JSON strings (archived leaf outputs), a list of records, or plain text.
-    # Normalize every entry into a flat list of records so the numeric stats
-    # below see real values.
     def unwrap(value):
-        # Retrieval leaves arrive as {"df": "<json string>"} whose value is
-        # itself a column-oriented table; unwrap the envelope so the transpose
-        # below sees {column: {row_index: value}}.
         if (
             isinstance(value, dict)
             and list(value) == ["df"]
@@ -33,8 +26,6 @@ def observe(args):
         return value
 
     def transpose(value):
-        # Column-oriented table: {column: {row_index: value}}. Transpose to
-        # row-oriented records so each record comes from one table.
         records = {}
         for col, idxvals in value.items():
             if not isinstance(idxvals, dict):
@@ -48,9 +39,6 @@ def observe(args):
         return list(records.values())
 
     def records(value):
-        # Normalize one item into a flat list of row-oriented records. Each
-        # table is transposed on its own so records never mix columns across
-        # leaves.
         value = unwrap(value)
         vals = list(value.values()) if isinstance(value, dict) else []
         if vals and isinstance(vals[0], dict):

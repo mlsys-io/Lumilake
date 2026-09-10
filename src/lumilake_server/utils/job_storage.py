@@ -33,11 +33,6 @@ def _normalize_payload(value: Any) -> Any:
 class JobStorage:
     def __init__(self) -> None:
         self.logger = logging.getLogger("JobStorage")
-        # One lock per job id, kept for the process lifetime. Evicting an entry
-        # is unsafe without refcounting: a thread holding lock L could be
-        # racing a thread that evicts L (unlocked) and a third that creates L2,
-        # reintroducing the stale-write race. Bounded by the number of distinct
-        # job ids seen, which is acceptable for the server's job volume.
         self._save_locks: dict[str, threading.Lock] = {}
         self._save_locks_guard = threading.Lock()
 
@@ -171,8 +166,6 @@ def _filter_summaries(
             continue
         if statuses and summary.status not in statuses:
             continue
-        # Dynamic children are internal to their parent; hide them from the
-        # user-facing listing.
         if summary.parent_job_id is not None:
             continue
         filtered.append(summary)
@@ -583,8 +576,6 @@ class SqliteJobStorage(PersistentJobStorage):
             self._conn.execute("PRAGMA synchronous=NORMAL")
             for stmt in self._SCHEMA:
                 self._conn.execute(stmt)
-            # Existing databases predate the parent_job_id column; CREATE TABLE
-            # IF NOT EXISTS will not add it, so migrate it in idempotently.
             columns = {
                 row["name"]
                 for row in self._conn.execute(
@@ -675,9 +666,6 @@ class SqliteJobStorage(PersistentJobStorage):
             marks = ",".join("?" for _ in statuses)
             clauses.append(f"status IN ({marks})")
             params.extend(sorted(statuses))
-        # Dynamic children are internal to their parent; hide them from the
-        # user-facing listing. This must live in _where so the COUNT(*) and the
-        # page query agree on the same total.
         clauses.append("parent_job_id IS NULL")
         return " AND ".join(clauses), params
 

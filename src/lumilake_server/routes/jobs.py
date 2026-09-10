@@ -111,8 +111,6 @@ JOB_STATUS_DESCRIPTION = (
     "`cancelled` (cancelled before completion)."
 )
 
-# The terminal subset of JobStatus: a record in any of these states is
-# finished, so a status another coroutine has already written is authoritative.
 TERMINAL_JOB_STATUSES: frozenset[JobStatus] = frozenset(
     {"completed", "failed", "cancelled"}
 )
@@ -288,8 +286,6 @@ def _render_dynamic_round0(
     declare one. Raises ``HTTPException`` 422 for an invalid driver config or
     unsupported op.
     """
-    # The server-side loop directly awaits each child; it does not poll, so a
-    # non-default poll_interval has no server-side meaning. Reject it.
     if spec.driver.poll_interval != 2.0:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -298,8 +294,6 @@ def _render_dynamic_round0(
                 "omit it or use the default"
             ),
         )
-    # None when the spec declares no driver output_location, in which case the
-    # envelope's item-level location stays effective.
     declared_output_location = spec.driver.output_location
     try:
         validate_library(spec.library)
@@ -1569,8 +1563,6 @@ async def _submit_dynamic_child(
     )
     async with jobs_lock:
         parent_record = jobs.get(parent_job_id)
-        # Atomic pre-round check + child creation: if the parent is already
-        # terminal, do not create or dispatch this child.
         if parent_record is None or parent_record.status in TERMINAL_JOB_STATUSES:
             return None
         jobs[child_job_id] = child_record
@@ -1605,15 +1597,10 @@ async def _submit_dynamic_child(
         await asyncio.wait_for(task, timeout=job_timeout)
     except TimeoutError:
         task.cancel()
-        # Cancel the backend runtime request too — cancelling the local waiter
-        # does not remove the queued runtime request.
         try:
             server = LumilakeServer.get_started_instance()
             await server.cancel_request(child_job_id)
         except Exception as exc:
-            # The backend cancellation failed, so the child must not be
-            # recorded as cancelled — that would falsely claim the backend
-            # work was cancelled. Record it as failed with the error.
             async with jobs_lock:
                 child_record.status = "failed"
                 child_record.error = f"cancellation failed after timeout: {exc}"
@@ -1623,7 +1610,6 @@ async def _submit_dynamic_child(
                 f"dynamic round {round_index} ({child_job_id}) exceeded "
                 f"job_timeout {job_timeout}s and backend cancellation failed"
             ) from exc
-        # Mark the child cancelled so it does not remain running forever.
         async with jobs_lock:
             child_record.status = "cancelled"
             child_record.finished_at = _now()
@@ -1663,9 +1649,6 @@ async def _fire_parent_terminal_hooks(
     trace_ids = list(dict.fromkeys(trace_ids))
     async with jobs_lock:
         record.trace_ids = trace_ids
-        # Snapshot under the lock so a concurrent writer (e.g. cancel_job's
-        # unlocked save) cannot interleave a stale snapshot that omits the
-        # trace ids. The snapshot, not the IO, is what must be atomic.
         snapshot = copy.deepcopy(record)
     await asyncio.to_thread(_job_storage.save, snapshot)
     await emit_usage([_usage_row(record, principal)], logger)
@@ -1715,17 +1698,12 @@ async def _run_dynamic_job(
         run_namespace = f"run-{uuid.uuid4().hex}"
         max_rounds = spec.driver.max_rounds
         max_nodes = spec.driver.max_nodes_per_round
-        # Global node registry: every node ever emitted, keyed by its user-facing
-        # id. Nodes are immutable once created.
         node_registry: dict[str, dict[str, Any]] = {}
         observations: list[str] = []
         stopped_by: str | None = None
         plans: list[dict[str, Any]] = []
         round_results: list[dict[str, list[str]]] = []
 
-        # Report the planning loop's progress through the parent's execution
-        # step: each completed round is one succeeded unit against the round
-        # budget, so `lumilake job progress` reflects the loop's activity.
         async with jobs_lock:
             record.progress.execution = ProgressStep(
                 completed=False,
@@ -1796,8 +1774,6 @@ async def _run_dynamic_job(
                 await asyncio.to_thread(_job_storage.save, record)
                 return
             if child_job_id is None:
-                # The parent was cancelled at child-creation time; no child was
-                # created or dispatched. Stop without failing the parent.
                 return
             async with jobs_lock:
                 child = jobs[child_job_id]
@@ -1835,10 +1811,6 @@ async def _run_dynamic_job(
                 outputs = result_outputs({"result": {"outputs": result.outputs}})
                 plan = validate_plan(outputs)
                 plans.append(plan_to_dict(plan))
-                # Validate the round's archived leaf outputs BEFORE the STOP
-                # break, so the round-result integrity contract holds even for
-                # the terminal STOP round. Every expected leaf must have
-                # produced exactly one value.
                 leaf_outputs = _extract_leaf_outputs(
                     outputs, round_build.leaf_output_names
                 )
@@ -1856,9 +1828,6 @@ async def _run_dynamic_job(
                     max_nodes,
                     spec.library,
                 )
-                # Store the RESOLVED ops in the registry so a later round that
-                # references a prior op gets a full config (with an `op` field),
-                # not the raw emitted ref.
                 current_subgraph = resolve_subgraph(current_subgraph, spec.library)
                 for op in current_subgraph:
                     node_registry[op["id"]] = op
@@ -1890,7 +1859,6 @@ async def _run_dynamic_job(
         if stopped_by is None:
             stopped_by = "max_rounds"
         async with jobs_lock:
-            # A terminal status that raced in during the loop is authoritative.
             if record.status in TERMINAL_JOB_STATUSES:
                 return
             record.status = "completed"
@@ -1929,8 +1897,6 @@ async def _run_dynamic_job(
                 save_exc,
             )
     finally:
-        # Fire the parent's lifecycle hooks once, when it reaches a terminal
-        # state. Children suppress their own hooks (they are internal).
         await _fire_parent_terminal_hooks(record, principal, parent_job_id)
 
 
@@ -2039,10 +2005,6 @@ async def _run_job(
             )
         already_terminal = False
         async with jobs_lock:
-            # Another coroutine (e.g. cancel_job) may have flipped the record to
-            # a terminal status during the unlocked artifact / timing work
-            # above. Any terminal status already written is authoritative — do
-            # not overwrite its status, error, or finished_at.
             if record.status in TERMINAL_JOB_STATUSES:
                 already_terminal = True
             else:
@@ -2120,10 +2082,6 @@ async def _run_job(
                     record.error = str(exc)
                 record.finished_at = _now()
     finally:
-        # Capture the child's trace ids on every termination path (success,
-        # cancellation, timeout/CancelledError, failure) BEFORE the runtime
-        # mapping is released below, so the parent can still aggregate them.
-        # The child still suppresses its own hooks.
         final_trace_ids: list[str] = []
         try:
             final_trace_ids = server.trace_ids_for_request(job_id)
@@ -2349,8 +2307,6 @@ async def preview_job(
             workflow_payload, dynamic_output_location = _render_dynamic_round0(
                 dynamic_spec
             )
-            # Validate the effective output location the same way /jobs does,
-            # so both doors reject the same malformed dynamic specs.
             _effective_dynamic_output_location(
                 dynamic_output_location, entry.output_location
             )
@@ -2725,14 +2681,9 @@ async def submit_job(
             )
         seen_public_names.add(name)
         inputs: dict[str, list[str]] = {}
-        # Determine the effective output location first: a dynamic spec's
-        # declared driver.output_location takes precedence over the envelope's.
         output_location = _effective_dynamic_output_location(
             dynamic_output_location, entry.output_location
         )
-        # Authorize and validate only the effective location. The ignored
-        # envelope location (when the driver location has precedence) is
-        # neither authorized nor validated.
         await _require_location_permission(
             output_location,
             ResourceAction.WRITE,
@@ -2843,8 +2794,6 @@ async def submit_job(
         )
 
     if is_dynamic and dynamic_spec is not None:
-        # Validate the one-symbol contract before creating the parent record,
-        # so an invalid request returns 422 without leaving an orphan job.
         _validate_dynamic_submission(resolved_inputs)
 
     record = JobRecord(
@@ -2870,7 +2819,6 @@ async def submit_job(
     )
 
     if is_dynamic and dynamic_spec is not None:
-        # The dynamic run is the parent; each round is a child job.
         name = next(iter(resolved_inputs))
         symbols = list(resolved_inputs[name].get(INPUT_NODE_ID, []))
         effective_location = output_locations[name]
@@ -3063,7 +3011,6 @@ async def cancel_job(
                 "Failed to cancel job %s in runtime backend", job_id, exc_info=True
             )
 
-    # A dynamic parent's cancellation must reach its in-flight children.
     for child_id in list(record.child_job_ids):
         async with jobs_lock:
             child = jobs.get(child_id)
@@ -3078,9 +3025,6 @@ async def cancel_job(
             try:
                 await server.cancel_request(child_id)
             except Exception as exc:
-                # The backend cancellation failed, so the child must not be
-                # recorded as cancelled — that would falsely claim the backend
-                # work was cancelled. Record it as failed with the error.
                 async with jobs_lock:
                     child.status = "failed"
                     child.error = f"cancellation failed: {exc}"

@@ -70,7 +70,6 @@ def observation_lambda(*, preview_width: int = 900) -> str:
 STOP = "STOP"
 SUBGRAPH = "subgraph"
 
-# Round-graph node ids a subgraph node id must not collide with.
 FIXED_ROUND_NODE_IDS: frozenset[str] = frozenset(
     {
         INPUT_NODE_ID,
@@ -79,10 +78,6 @@ FIXED_ROUND_NODE_IDS: frozenset[str] = frozenset(
     }
 )
 
-# Op types the runtime permits as an OutputOp source; every subgraph leaf is
-# wrapped in an OutputOp, so leaves must be one of these. Derived from the
-# runtime's admission predicate so the driver is never stricter than the
-# runtime.
 _OP_CLASSES: dict[str, type] = {
     name: obj for name, obj in vars(ops_pkg).items() if isinstance(obj, type)
 }
@@ -181,10 +176,6 @@ def validate_library(library: dict[str, dict[str, Any]] | None) -> None:
             )
 
 
-# Fields a planner may override when referencing a library template. The
-# template is authoritative for its config; only identity and wiring vary.
-# ``op`` is a matching assertion (checked, not stored); ``inputs`` wires the
-# template's declared param slots.
 _LIBRARY_REF_OVERRIDES = frozenset({"id", "inputs", "op"})
 
 
@@ -209,8 +200,6 @@ def _apply_param_bindings(
         )
     bindings = data_spec.get("param_bindings")
     if not isinstance(bindings, list):
-        # No declared bindings: inputs are used only for closure/leaf wiring,
-        # not native param substitution. Leave the config untouched.
         return data_spec
     if len(inputs) != len(bindings):
         raise DriverProtocolError(
@@ -300,9 +289,6 @@ def resolve_subgraph(
                         "of node ids"
                     )
                 merged["inputs"] = value
-                # A non-retrieval template (no data_spec) with no inputs has no
-                # param slots to wire; resolve it as-is. Retrieval templates
-                # wire their declared param slots.
                 if isinstance(template.get("data_spec"), dict):
                     merged["data_spec"] = _apply_param_bindings(template, ref, value)
                 continue
@@ -330,10 +316,6 @@ def _validate_declared_inputs(
     rejection.
     """
     declared = {ref for ref in inputs if ref != INPUT_NODE_ID}
-    # Build the probe from the REAL referenced ops so type-constrained
-    # references (e.g. LLMChatOp messages_ref -> MessageOp) resolve. Include
-    # each declared ref's actual op plus whatever it transitively references;
-    # fall back to a DataOp stub only for a ref absent from available_ops.
     probe_ops: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -345,9 +327,6 @@ def _validate_declared_inputs(
         if real is None:
             probe_ops.append({"id": ref, "op": "DataOp", "inputs": [], "data": ["x"]})
             return
-        # Drop any reference back to the op being validated: in a valid
-        # (acyclic) subgraph no referenced op points at it, so this only
-        # affects cyclic subgraphs, which the acyclic check rejects anyway.
         probe_op = dict(real)
         probe_op["inputs"] = [dep for dep in real.get("inputs", []) if dep != op_id]
         probe_ops.append(probe_op)
@@ -366,8 +345,6 @@ def _validate_declared_inputs(
     try:
         parsed = parse_yaml_payload(workflow)
     except ValueError as exc:
-        # The parser could not resolve a config reference not in declared
-        # inputs — a native-but-undeclared dependency.
         raise DriverProtocolError(
             f"subgraph op {op_id!r} references a node not in its declared "
             f"inputs: {exc}"
@@ -375,9 +352,6 @@ def _validate_declared_inputs(
     graph_name = next(iter(parsed))
     spec = parsed[graph_name]
     native = spec["graph"]
-    # Build the reverse internal->user map LOCALLY from the probe ops we
-    # authored, using the same id derivation the parser uses. Implicit nodes
-    # the parser synthesises (MessageOp/FormatOp) are not in this map.
     internal_to_user: dict[str, str] = {}
     for probe_op in [op, *probe_ops]:
         uid = probe_op.get("id")
@@ -391,12 +365,6 @@ def _validate_declared_inputs(
             f"subgraph op {op_id!r} did not produce a native node"
         )
 
-    # Derive the native dependency set from the parsed graph: collect every
-    # string in the op's config fields that is an internal id, then walk
-    # ``_inputs`` transitively through implicit nodes (those not in the
-    # reverse map) to reach the user-facing ids they feed. ``_inputs`` itself
-    # is deliberately not read directly: for DataRetrievalOp it equals the
-    # declared inputs, which would mask declared-but-unused inputs.
     def collect_config_refs(node: dict[str, Any]) -> set[str]:
         refs: set[str] = set()
         for key, value in node.items():
@@ -418,7 +386,6 @@ def _validate_declared_inputs(
         user = internal_to_user.get(internal)
         if user is not None:
             return {user}
-        # Implicit node (MessageOp/FormatOp): follow its deps through the graph.
         implicit = native.get(internal)
         if implicit is None:
             return set()
@@ -429,9 +396,6 @@ def _validate_declared_inputs(
         return resolved
 
     config_refs = collect_config_refs(native_op)
-    # Op types with no config-based node references (DataOp/LambdaOp) use
-    # ``inputs`` purely for closure/leaf computation; there is no dataflow
-    # contract to enforce. Derived from the parsed graph, not a name list.
     if not any(internal in native for internal in config_refs):
         return
     native_deps: set[str] = set()
@@ -478,14 +442,10 @@ def validate_emitted_subgraph(
     if not subgraph:
         raise DriverProtocolError("subgraph must not be empty")
 
-    # Resolve library refs first so validation (including declared-input checks)
-    # runs against the full op config, not the raw ref envelope.
     resolved = resolve_subgraph(subgraph, library)
 
     ids: set[str] = set()
     types: dict[str, str] = {}
-    # Current-round ops plus prior-round registry ops, so a reference to either
-    # resolves to its real op with its real type.
     available_ops: dict[str, dict[str, Any]] = {
         op["id"]: op for op in resolved if isinstance(op.get("id"), str)
     }
@@ -526,11 +486,6 @@ def validate_emitted_subgraph(
             )
         _validate_declared_inputs(op_id, op_type, op, raw_inputs, available_ops)
 
-    # Acyclicity: a node may only reference nodes that precede it in the
-    # emitted order (the planner emits a topologically sorted DAG). References
-    # to prior-round nodes (in ``node_registry``) or the input are always
-    # valid; references to other subgraph nodes must already have been emitted
-    # (be in ``seen``).
     seen: set[str] = set()
     for op in resolved:
         op_id = op["id"]
@@ -548,9 +503,6 @@ def validate_emitted_subgraph(
                 )
         seen.add(op_id)
 
-    # Every leaf is wrapped in an OutputOp, and the runtime only permits
-    # OutputOp sources that are LLMOp or DataRetrievalOp. Reject subgraphs whose
-    # leaves are any other op type so the round fails at validation, not compile.
     consumed: set[str] = set()
     for op in resolved:
         for ref in op.get("inputs", []):
@@ -671,8 +623,6 @@ def compute_observation(leaf_outputs: dict[str, list[str]], preview_width: int) 
     namespace: dict[str, Any] = {"json": json}
     exec(source, namespace)  # noqa: S102 - sandbox-safe aggregation template
     observe = namespace["observe"]
-    # Mirror the in-graph framing: one entry per leaf, each a list of the
-    # archived (JSON-serialized) output values. observe normalizes each entry.
     per_leaf: list[Any] = [leaf_outputs[leaf_id] for leaf_id in sorted(leaf_outputs)]
     return observe(per_leaf)
 
@@ -833,8 +783,6 @@ def build_round(
     parsed = parse_yaml_payload(workflow)
     graph_name = next(iter(parsed))
     native = parsed[graph_name]["graph"]
-    # Sort leaf ids so the in-graph observation (blocks.py) and the server-side
-    # compute_observation agree on a single deterministic order.
     leaf_ids = sorted(
         _internal_id(graph_name, op["op"], op["id"])
         for op in subgraph

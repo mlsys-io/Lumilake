@@ -76,10 +76,6 @@ def fused_round_graph(
     for node_id, node in subgraph.items():
         ordered[node_id] = node
 
-    # One OutputOp per leaf so each leaf result is archived and retrievable.
-    # The path is left unset so the runtime applies its per-op-type default
-    # (items.table for sql/agent retrieval, items.content for s3, items.output
-    # for LLM leaves) rather than a fixed path that mismatches the leaf shape.
     leaf_outputs: dict[str, dict[str, Any]] = {}
     for leaf_id in leaf_ids:
         leaf_ref = DataOp(data=[])
@@ -90,18 +86,11 @@ def fused_round_graph(
     for node_id, node in leaf_outputs.items():
         ordered[node_id] = node
 
-    # Feed each leaf directly to the observation LambdaOp. The leaves are
-    # heterogeneous (retrieval records vs. LLM text), so observe receives a
-    # list of per-leaf outputs and normalizes each; a newline-joined string
-    # would not be parseable JSON.
     if leaf_ids:
         leaf_refs = [DataOp(data=[]) for _ in leaf_ids]
         for ref, leaf_id in zip(leaf_refs, leaf_ids):
             ref.id = leaf_id
 
-        # A retrieval leaf reaches the sandbox as a table, which it rejects:
-        # a lambda argument must be text. FormatOp is where the runtime turns a
-        # table into text, so each leaf is rendered before it is observed.
         rendered_leaves = []
         for ref, leaf_id in zip(leaf_refs, leaf_ids):
             render_op = FormatOp("{ref0}", ref0=ref)
@@ -118,9 +107,6 @@ def fused_round_graph(
         ordered[FORMAT_NODE_ID] = format_op.serialize()
         user_content: Any = format_op
     else:
-        # Round 0 has no subgraph and no observation; the proposer sees only
-        # the system message (goal + topology). The runtime rejects a FormatOp
-        # with no inputs, so the user turn is carried as a literal string.
         user_content = _escape_braces(proposer_user)
 
     message_op = MessageOp(
