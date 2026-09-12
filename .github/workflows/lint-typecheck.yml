@@ -12,10 +12,22 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# RUNNER LANES — policy: deploy_infra k8s-lift/nus-cluster/ci/arc-scaleset-values.yaml
+#
+# Lumilake is a PUBLIC repo, so the split is by TRUST OF THE TRIGGER, never by repo:
+#   * `pull_request` — on a fork this runs the FORK's workflow code — stays on GitHub-hosted
+#     runners, which are free and unlimited for a public repo. It must never reach the NUS farm.
+#   * `push` to a branch here required write access, so it may use `nus-lumilake` (ARC scale set on
+#     NUS s0: 512 cores, 2.2 TiB RAM, warm BuildKit cache).
+#
+# `vars.NUS_RUNNERS` is the repository-variable kill switch — unset, or anything but `on`, means
+# ubuntu-latest everywhere with no code change. The event test is an allowlist, so a new GitHub
+# event type cannot silently inherit a self-hosted runner, and both arms are literal labels, so
+# the expression can never evaluate to an empty `runs-on` (a job nothing ever picks up).
 jobs:
   lint:
     name: Lint + typecheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'push' && vars.NUS_RUNNERS == 'on' && 'nus-lumilake' || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout
