@@ -113,18 +113,19 @@ ops:
       api:
         url: https://api.example.com/v1/chat/completions
         model: gpt-4o   # optional override; defaults to config.model
+        credential_env: OPENAI_API_KEY   # worker env var holding the bearer token
       max_tokens: 256
 ```
 
 The `api.url` is the full chat-completions endpoint. Sampler fields on
 `config` (e.g. `max_tokens`, `temperature`) are merged into the request
-body. The API key is **not** part of the workflow spec: the worker's
-`api_executor` reads `NEBULA_API_TOKEN` from the worker environment and
-injects `Authorization: Bearer <token>` itself, so the key never enters
-the job spec, archive, or logs. `NEBULA_API_TOKEN` must be set both in
-the Lumilake environment (a config-time gate — API mode fails closed at
-build time if it is absent) and on the FlowMesh workers that run the
-call. Only literal (build-time) message content is supported in API
+body. The credential is **not** part of the workflow spec:
+`api.credential_env` names the env var on the worker that holds the bearer
+token, and the worker's `api_executor` resolves it at call time and injects
+`Authorization: Bearer <value>` itself, so the secret never enters the job
+spec, archive, or logs. The referenced env var must be set on the FlowMesh
+workers that run the call (e.g. `OPENAI_API_KEY`); the Lumilake server never
+reads it. Only literal (build-time) message content is supported in API
 mode; a message that references an upstream node's runtime output fails
 closed rather than silently falling back to a local model.
 

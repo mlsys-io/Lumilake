@@ -13,13 +13,13 @@ class Message:
 
 @dataclass
 class ApiConfig:
-    """External LLM API endpoint. When set on a ``GenerationConfig``, the
-    runtime routes the op to FlowMesh's ``api`` executor instead of a
-    locally-loaded model. The bearer key is resolved from env at runtime and
-    never stored here (this object crosses op-serialization boundaries)."""
+    """External OpenAI-compatible LLM API endpoint. ``credential_env`` names
+    the worker env var holding the bearer token; the secret is resolved by
+    the worker at call time and never stored here."""
 
     url: str
     model: str | None = None
+    credential_env: str | None = None
 
 
 @dataclass

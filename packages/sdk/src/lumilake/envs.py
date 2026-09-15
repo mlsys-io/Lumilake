@@ -222,13 +222,6 @@ LUMILAKE_VLLM_MAX_MODEL_LEN: int = int(
     os.environ.get("LUMILAKE_VLLM_MAX_MODEL_LEN", "0")
 )
 
-# Bearer token for external LLM API calls (LLMChatOp with ``config.api``).
-# The worker's FlowMesh ``api_executor`` reads this from the worker
-# environment and injects ``Authorization: Bearer <token>``. Lumilake
-# requires it to be set in its own environment as a config-time gate for
-# API-backed ops; the value is never placed in the task spec.
-NEBULA_API_TOKEN: str | None = os.environ.get("NEBULA_API_TOKEN") or None
-
 
 S3_DATA_PREFIX: str | None = os.getenv("S3_DATA_PREFIX")
 S3_ARCHIVE_PREFIX: str | None = os.getenv("S3_ARCHIVE_PREFIX")

@@ -405,6 +405,8 @@ class HaloOptimizer(BaseOptimizer):
                 eligible = gpu_workers
             elif node.engine == "db" and node.type == "data_retrieval":
                 eligible = cpu_workers
+            elif node.engine == "http":
+                eligible = cpu_workers
             else:
                 raise ValueError(
                     "Unsupported node for Halo worker assignment: "
@@ -938,6 +940,8 @@ class HaloOptimizer(BaseOptimizer):
         if self._is_gpu_backend(normalized_backend):
             return "vllm"
         if normalized_backend == "http":
+            return "http"
+        if normalized_backend == "api":
             return "http"
         if normalized_backend == "data_retrieval":
             return "db"

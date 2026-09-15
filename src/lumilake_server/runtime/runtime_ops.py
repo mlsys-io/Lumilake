@@ -80,10 +80,9 @@ class RuntimeOp:
         return cls.from_schema(node_id, RuntimeOpSchema.model_validate(payload))
 
     def to_flowmesh_node(self) -> dict[str, Any]:
-        spec_payload: dict[str, Any] = {
-            "taskType": self.task_type,
-            "data": self.data_spec,
-        }
+        spec_payload: dict[str, Any] = {"taskType": self.task_type}
+        if self.task_type != "api":
+            spec_payload["data"] = self.data_spec
         if self.task_type == "api":
             spec_payload["api"] = self.api_spec
         elif self.task_type in {

@@ -73,6 +73,13 @@ def _sanitize_node_prefix(prefix: str) -> str:
     return safe or "graph"
 
 
+def _is_valid_env_name(name: str) -> bool:
+    """A POSIX env var name: uppercase letters, digits, and underscores, not
+    starting with a digit. Used to validate a credential reference before it
+    is emitted into a task spec."""
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
+
+
 def make_node_prefix(name: str) -> str:
     safe = _sanitize_node_prefix(name)
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
@@ -1534,17 +1541,25 @@ class RuntimeGraphBuilder:
     ) -> RuntimeOp:
         """Build a FlowMesh ``api`` task for an externally-hosted LLM.
 
-        Renders the resolved ``graph_template`` messages into a flat
-        OpenAI-style chat body. Only literal (build-time) message content is
-        supported; a message that references an upstream node's runtime output
-        cannot be rendered here and fails closed.
+        Renders resolved ``graph_template`` messages into a flat OpenAI-style
+        chat body. Only literal (build-time) message content is supported; a
+        message referencing an upstream node's runtime output fails closed.
         """
-        if not envs.NEBULA_API_TOKEN:
+        if not api_config.url:
             raise ValueError(
-                f"LLMChatOp '{llm_op_id}' API mode requires NEBULA_API_TOKEN to"
-                " be configured (set it in the Lumilake env and on FlowMesh"
-                " workers); the worker's api_executor uses it for the"
-                " Authorization header."
+                f"LLMChatOp '{llm_op_id}' API mode requires an endpoint: set "
+                "config.api.url to the chat-completions URL."
+            )
+        if not api_config.credential_env:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' API mode requires a credential "
+                "reference: set config.api.credential_env to the name of the "
+                "env var on the worker that holds the bearer token."
+            )
+        if not _is_valid_env_name(api_config.credential_env):
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' API mode credential_env "
+                f"{api_config.credential_env!r} is not a valid env var name."
             )
         options = template_spec.get("options") or {}
         format_options = options.get("format") or {}
@@ -1605,6 +1620,7 @@ class RuntimeGraphBuilder:
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": api_config.url,
+            "auth": {"credential_env": api_config.credential_env},
             "headers": {"Content-Type": "application/json"},
             "json": body,
             "response": {
