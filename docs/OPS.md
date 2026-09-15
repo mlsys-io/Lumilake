@@ -121,10 +121,12 @@ The `api.url` is the full chat-completions endpoint. Sampler fields on
 body. The API key is **not** part of the workflow spec: the worker's
 `api_executor` reads `NEBULA_API_TOKEN` from the worker environment and
 injects `Authorization: Bearer <token>` itself, so the key never enters
-the job spec, archive, or logs. Only literal (build-time) message content
-is supported in API mode; a message that references an upstream node's
-runtime output fails closed rather than silently falling back to a local
-model.
+the job spec, archive, or logs. `NEBULA_API_TOKEN` must be set both in
+the Lumilake environment (a config-time gate — API mode fails closed at
+build time if it is absent) and on the FlowMesh workers that run the
+call. Only literal (build-time) message content is supported in API
+mode; a message that references an upstream node's runtime output fails
+closed rather than silently falling back to a local model.
 
 ### LambdaOp
 

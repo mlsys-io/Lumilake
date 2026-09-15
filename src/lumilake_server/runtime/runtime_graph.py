@@ -1539,6 +1539,13 @@ class RuntimeGraphBuilder:
         supported; a message that references an upstream node's runtime output
         cannot be rendered here and fails closed.
         """
+        if not envs.NEBULA_API_TOKEN:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' API mode requires NEBULA_API_TOKEN to"
+                " be configured (set it in the Lumilake env and on FlowMesh"
+                " workers); the worker's api_executor uses it for the"
+                " Authorization header."
+            )
         options = template_spec.get("options") or {}
         format_options = options.get("format") or {}
         messages_spec = format_options.get("messages") or []

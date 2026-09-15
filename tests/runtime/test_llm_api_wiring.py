@@ -20,6 +20,7 @@ _LUMID_TOKEN = "test-token"
 def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
+    monkeypatch.setattr(envs, "NEBULA_API_TOKEN", "test-token")
 
 
 def _build_api_graph(**config_kwargs) -> tuple[RuntimeGraph, str]:
@@ -87,6 +88,15 @@ def test_api_key_not_in_spec() -> None:
     serialized = node.serialize()
     assert "Authorization" not in str(serialized)
     assert "Bearer" not in str(serialized)
+
+
+def test_api_requires_token_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """API mode without NEBULA_API_TOKEN configured fails at build time with
+    a clear message naming the variable, rather than silently sending an
+    unauthenticated request at call time."""
+    monkeypatch.setattr(envs, "NEBULA_API_TOKEN", None)
+    with pytest.raises(ValueError, match="NEBULA_API_TOKEN"):
+        _build_api_graph()
 
 
 def test_api_dynamic_column_fails_closed() -> None:
