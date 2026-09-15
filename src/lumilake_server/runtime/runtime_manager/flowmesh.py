@@ -697,16 +697,28 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return archived
 
     def _resolve_output_items(
-        self, results_json: dict[str, Any], output_op_id: str
+        self,
+        results_json: dict[str, Any],
+        output_op_id: str,
+        task_type: str | None = None,
     ) -> list[dict[str, Any]]:
         """Normalize a retrieved result into an item list.
 
         Inference tasks return ``items``; embedding tasks return a flat
-        result with no ``items`` key — treat that as a one-item batch.
+        result with no ``items`` key — treat that as a one-item batch. API
+        tasks return the executor's ``text``/``response_json`` — wrap the
+        assistant text as a single ``items[].output`` entry.
         """
         items = results_json.get("items")
         if isinstance(items, list) and items:
             return items
+        if task_type == "api":
+            text = results_json.get("text")
+            if not isinstance(text, str) or not text:
+                raise RuntimeError(
+                    f"output {output_op_id} produced no API response text"
+                )
+            return [{"output": text}]
         embedding_file = results_json.get("embedding_file")
         if isinstance(embedding_file, dict) and embedding_file.get("path"):
             return [results_json]
@@ -1110,7 +1122,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 )
 
             results_json = await self.fm.results.retrieve(output_task_id)
-            items = self._resolve_output_items(results_json, output_op_id)
+            output_node = request_info.runtime_graph.nodes.get(output_op_id)
+            items = self._resolve_output_items(
+                results_json,
+                output_op_id,
+                task_type=output_node.task_type if output_node else None,
+            )
 
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)
             outputs = await self._aggregate_output_node(

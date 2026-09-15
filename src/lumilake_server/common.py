@@ -12,12 +12,24 @@ class Message:
 
 
 @dataclass
+class ApiConfig:
+    """External LLM API endpoint. When set on a ``GenerationConfig``, the
+    runtime routes the op to FlowMesh's ``api`` executor instead of a
+    locally-loaded model. The bearer key is resolved from env at runtime and
+    never stored here (this object crosses op-serialization boundaries)."""
+
+    url: str
+    model: str | None = None
+
+
+@dataclass
 class GenerationConfig:
     """LLM generation parameters. Add a typed field here and both the YAML
     parser allowlist and the runtime inference_spec pick it up automatically;
     use ``extra_sampling_params`` for vendor-specific keys not worth typing."""
 
     model: str
+    api: ApiConfig | None = None
     frequency_penalty: float | None = None
     logit_bias: dict[str, int] | None = None
     logprobs: int | None = None
@@ -47,6 +59,7 @@ class GenerationConfig:
 
     # Stripped by openai_kwargs() — OpenAI Chat API rejects these.
     _NON_OPENAI_FIELDS: ClassVar[tuple[str, ...]] = (
+        "api",
         "ignore_eos",
         "chat_template_kwargs",
         "repetition_penalty",
@@ -64,6 +77,7 @@ class GenerationConfig:
     _NON_SAMPLER_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
             "model",
+            "api",
             "stream",
             "stream_options",
             "extra_sampling_params",
@@ -81,6 +95,10 @@ class GenerationConfig:
         "tensor_parallel_size",
         "dtype",
     )
+
+    def __post_init__(self) -> None:
+        if isinstance(self.api, dict):
+            self.api = ApiConfig(**self.api)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

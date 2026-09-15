@@ -405,6 +405,36 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
 
 
+def test_llm_config_accepts_api_block() -> None:
+    """An ``api`` block on the config is accepted and persisted on the op."""
+    yaml_text = textwrap.dedent(
+        """
+        name: api_llm
+        ops:
+          - id: ask
+            op: LLMChatOp
+            messages:
+              - role: user
+                content: "hello"
+            config:
+              model: dummy-model
+              api:
+                url: https://api.example.com/v1/chat/completions
+                model: gpt-4o
+        outputs:
+          - name: out
+            ref: ask
+        """
+    )
+    specs = parse_yaml_payload(yaml_text)
+    graph_dict = specs["api_llm"]["graph"]
+    llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
+    assert llm_op["config"]["api"] == {
+        "url": "https://api.example.com/v1/chat/completions",
+        "model": "gpt-4o",
+    }
+
+
 def test_llm_config_rejects_unknown_field() -> None:
     """Unknown top-level keys still fail — extra_sampling_params is the
     escape hatch for vendor-specific samplers."""

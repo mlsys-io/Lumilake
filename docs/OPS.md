@@ -9,7 +9,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `DataOp` | Inline static data. |
 | `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
-| `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. |
+| `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
@@ -92,6 +92,39 @@ is the embedding of input text `i`. A downstream op therefore receives
 `slice_length` per-row vector inputs (one embedding per input doc), and a
 consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `row`.
+
+### LLMChatOp via external API
+
+By default `LLMChatOp` runs against a locally-loaded model (vLLM /
+transformers) on a FlowMesh worker. Setting `config.api` routes the op to
+an external LLM API endpoint instead: the runtime builds a FlowMesh `api`
+task whose body is an OpenAI-style `{model, messages, ...samplers}` chat
+completion request, and the worker's `api_executor` performs the HTTP call.
+
+```yaml
+ops:
+  - id: "Ask"
+    op: LLMChatOp
+    messages:
+      - role: user
+        content: "Summarize the latest news for {symbol}."
+    config:
+      model: meta-llama/Llama-3.1-8B-Instruct
+      api:
+        url: https://api.example.com/v1/chat/completions
+        model: gpt-4o   # optional override; defaults to config.model
+      max_tokens: 256
+```
+
+The `api.url` is the full chat-completions endpoint. Sampler fields on
+`config` (e.g. `max_tokens`, `temperature`) are merged into the request
+body. The API key is **not** part of the workflow spec: the worker's
+`api_executor` reads `NEBULA_API_TOKEN` from the worker environment and
+injects `Authorization: Bearer <token>` itself, so the key never enters
+the job spec, archive, or logs. Only literal (build-time) message content
+is supported in API mode; a message that references an upstream node's
+runtime output fails closed rather than silently falling back to a local
+model.
 
 ### LambdaOp
 
