@@ -19,9 +19,21 @@ _BEARER_TOKEN_RE = re.compile(r"Bearer\s+\S+")
 _AUTH_HEADER_JSON_RE = re.compile(r'("Authorization"\s*:\s*)"[^"]*"')
 
 
+def _redact_text(text: str) -> str:
+    """Regex-scrub an arbitrary string that may embed a credential (a
+    remote error body that is not valid JSON, or already-serialized text)."""
+    scrubbed = _BEARER_TOKEN_RE.sub(f"Bearer {REDACTED_TOKEN_PLACEHOLDER}", text)
+    scrubbed = _AUTH_HEADER_JSON_RE.sub(rf'\1"{REDACTED_TOKEN_PLACEHOLDER}"', scrubbed)
+    return scrubbed
+
+
 def redact_sensitive(value: Any) -> Any:
     """Recursively replace sensitive keys (tokens, Authorization headers)
-    with a placeholder."""
+    with a placeholder, and regex-scrub any bearer token or Authorization
+    header text embedded in a string value under an unrecognized key. The
+    latter matters for content this process does not control (an untrusted
+    endpoint's response body): a credential it reflects back may not surface
+    under one of ``SENSITIVE_DATA_SPEC_KEYS``."""
     if isinstance(value, Mapping):
         return {
             key: (
@@ -33,15 +45,9 @@ def redact_sensitive(value: Any) -> Any:
         }
     if isinstance(value, list):
         return [redact_sensitive(item) for item in value]
+    if isinstance(value, str):
+        return _redact_text(value)
     return value
-
-
-def _redact_text(text: str) -> str:
-    """Regex-scrub an arbitrary string that may embed a credential (a
-    remote error body that is not valid JSON, or already-serialized text)."""
-    scrubbed = _BEARER_TOKEN_RE.sub(f"Bearer {REDACTED_TOKEN_PLACEHOLDER}", text)
-    scrubbed = _AUTH_HEADER_JSON_RE.sub(rf'\1"{REDACTED_TOKEN_PLACEHOLDER}"', scrubbed)
-    return scrubbed
 
 
 def redact_secrets_in_text(value: Any) -> str:

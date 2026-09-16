@@ -56,3 +56,16 @@ def test_redact_sensitive_leaves_non_sensitive_values_untouched() -> None:
     value = {"model": "meta-llama/Llama-3.1-8B-Instruct", "nested": {"count": 3}}
 
     assert redact_sensitive(value) == value
+
+
+def test_redact_sensitive_scrubs_bearer_token_under_unrecognized_key() -> None:
+    """redact_sensitive's key-based replacement only fires for keys in
+    SENSITIVE_DATA_SPEC_KEYS. Untrusted content (e.g. a remote endpoint's
+    response body) can reflect a credential back under any key, so every
+    string leaf must also get the regex-based bearer-token scrub."""
+    value = {"debug": {"request_headers": "Authorization: Bearer sk-live-secret"}}
+
+    result = redact_sensitive(value)
+
+    assert "sk-live-secret" not in json.dumps(result)
+    assert REDACTED_TOKEN_PLACEHOLDER in json.dumps(result)

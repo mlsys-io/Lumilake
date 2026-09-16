@@ -857,6 +857,30 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             for item in items
         ]
 
+    async def _archive_task_response(
+        self,
+        request_info: RequestInfo,
+        tid: str,
+        node_id: str,
+    ) -> str:
+        """Fetch a task's raw FlowMesh response and archive it as a job
+        artifact. The response body is untrusted content from a remote
+        service and is redacted before being persisted, since the artifact
+        API exposes it verbatim to callers."""
+        response_data = await self.fm.results.retrieve(tid)
+        response_uri = self._save_json_artifact(
+            request_info,
+            f"per-task-response/{tid}.json",
+            redact_sensitive(response_data),
+        )
+        self.logger.info(
+            "Archived response for task %s (%s) to %s",
+            tid,
+            node_id,
+            response_uri,
+        )
+        return response_uri
+
     async def process_request(
         self,
         request_info: RequestInfo,
@@ -1046,18 +1070,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                             "Missing task->node mapping for task "
                             f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                         )
-                    response_data = await self.fm.results.retrieve(tid)
-                    response_uri = self._save_json_artifact(
-                        request_info,
-                        f"per-task-response/{tid}.json",
-                        response_data,
-                    )
-                    self.logger.info(
-                        "Archived response for task %s (%s) to %s",
-                        tid,
-                        node_id,
-                        response_uri,
-                    )
+                    await self._archive_task_response(request_info, tid, node_id)
                     downloaded_tasks.add(tid)
 
             # Count statuses for all nodes and output nodes

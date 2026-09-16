@@ -33,8 +33,8 @@ def test_api_reasoning_present_still_raises_clear_error() -> None:
 
 
 def test_api_reasoning_content_present_still_raises_clear_error() -> None:
-    """Same as above for the ``reasoning_content`` key, which the removed
-    fallback also read."""
+    """Same as above for the ``reasoning_content`` key: it must not be
+    surfaced as the node output either."""
     results = {
         "text": None,
         "response_json": {

@@ -305,11 +305,11 @@ def test_messages_ref_must_point_at_message_op() -> None:
 def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
     """A user-role message with content = bare upstream id auto-wraps into a FormatOp.
 
-    Pins the behaviour the module docstring promises: ``content: retrieve``
-    does NOT pass the literal string "retrieve" through — it detects that
-    "retrieve" is a user-facing op id and synthesizes an implicit FormatOp
-    whose ``_inputs`` point at that op. The MessageOp's content then points
-    at the FormatOp, not the original op or the literal string.
+    ``content: retrieve`` does NOT pass the literal string "retrieve" through
+    — it detects that "retrieve" is a user-facing op id and synthesizes an
+    implicit FormatOp whose ``_inputs`` point at that op. The MessageOp's
+    content then points at the FormatOp, not the original op or the literal
+    string.
     """
     _ensure_envs()
     yaml_text = textwrap.dedent(
@@ -436,10 +436,9 @@ def test_llm_config_accepts_api_block() -> None:
 
 
 def test_llm_chat_config_may_omit_model_when_api_is_set() -> None:
-    """API-mode LLMChatOp no longer requires a top-level ``config.model`` -
+    """API-mode LLMChatOp does not require a top-level ``config.model`` -
     GenerationConfig.resolved_model() supplies the typed default at graph
-    build time. Pins the relaxed requiredness check in
-    yaml_parser._emit_llm_like_op (the ``is_api_chat_op`` branch)."""
+    build time."""
     yaml_text = textwrap.dedent(
         """
         name: api_llm_no_model

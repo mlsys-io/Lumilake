@@ -15,6 +15,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -208,11 +209,7 @@ def test_yaml_api_config_string_fails_at_graph_build_not_runtime_build() -> None
     where ``GenerationConfig`` is constructed -- during ``Graph.from_json`` --
     rather than reaching ``RuntimeGraphBuilder`` and crashing there with
     ``AttributeError: 'str' object has no attribute 'url'`` from
-    ``_build_api_llm_op``. Pins the ``elif`` branch added to
-    ``GenerationConfig.__post_init__`` (common.py): reverting it lets this
-    string pass ``parse_yaml_payload``/``Graph.from_json`` unrejected, and
-    only ``RuntimeGraphBuilder().build(compiled)`` fails, with an
-    ``AttributeError`` instead of this test's ``ValueError``."""
+    ``_build_api_llm_op``."""
     yaml_text = textwrap.dedent(
         """
         name: yaml-api-bad-type
@@ -281,7 +278,7 @@ def test_api_explicit_default_port_is_trusted(monkeypatch: pytest.MonkeyPatch) -
 
 def test_api_multi_row_input_fans_out_row_aligned_nodes() -> None:
     """A literal message column with N rows must fan out into N nodes, one
-    per row, in row order - not reject the graph as it did previously."""
+    per row, in row order."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -470,35 +467,80 @@ _YAML_API_NODE_FEEDS_LOCAL_NODE = textwrap.dedent(
 )
 
 
-def test_api_row_fanned_non_terminal_node_survives_dedupe() -> None:
-    """A row-fanned API node that is not itself output-mapped (it feeds a
-    downstream local op instead) reuses the same unresolved data_spec for
-    every row - only api_spec differs per row. The optimizer's dedupe
-    signature must include api_spec, or it will incorrectly collapse
-    distinct rows of a non-terminal API node into one."""
+def test_api_row_fanned_node_feeding_local_node_fails_closed() -> None:
+    """A local (non-API) LLM node cannot consume a row-fanned API node's
+    output: the structural-message wiring only knows the unsuffixed node id,
+    so a downstream local node would silently see only the first row. The
+    graph build fails closed instead."""
     specs = parse_yaml_payload(_YAML_API_NODE_FEEDS_LOCAL_NODE)
     spec = specs["api-node-feeds-local-node"]
     graph = Graph.from_json(spec["graph"])
     compiled = graph.compile(**spec["inputs"])
-    summarise_id = next(
-        op_id
-        for op_id, op_dict in spec["graph"].items()
-        if op_dict.get("_op") == "LLMChatOp" and "api" in op_dict.get("config", {})
+
+    with pytest.raises(ValueError, match="fanned out into multiple row-aligned"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
+    """Two API nodes that are not output-mapped (they only feed a downstream
+    consumer) but share an identical data_spec must still be kept distinct by
+    the optimizer's dedupe pass when their api_spec differs - dedupe must key
+    on api_spec, not just data_spec."""
+    shared_data_spec = {"type": "graph_template", "template": {"columns": []}}
+    row0 = RuntimeOp(
+        node_id="Summarise",
+        task_type="api",
+        backend="api",
+        model="model-a",
+        data_spec=shared_data_spec,
+        model_spec={},
+        inference_spec={},
+        api_spec={
+            "method": "POST",
+            "url": "https://lum.id/llm/v1/chat/completions",
+            "json": {"messages": [{"role": "user", "content": "a database index"}]},
+        },
+    )
+    row1 = RuntimeOp(
+        node_id="Summarise__row1",
+        task_type="api",
+        backend="api",
+        model="model-a",
+        data_spec=shared_data_spec,
+        model_spec={},
+        inference_spec={},
+        api_spec={
+            "method": "POST",
+            "url": "https://lum.id/llm/v1/chat/completions",
+            "json": {"messages": [{"role": "user", "content": "a message queue"}]},
+        },
+    )
+    consumer = RuntimeOp(
+        node_id="Critique",
+        task_type="inference",
+        backend="local",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+        dependencies=(row0.node_id,),
+    )
+    graph = RuntimeGraph(
+        nodes={row0.node_id: row0, row1.node_id: row1, consumer.node_id: consumer},
+        node_order=[row0.node_id, row1.node_id, consumer.node_id],
+        output_node_map={consumer.node_id: "result"},
+        dsl_to_runtime={
+            "Summarise": [row0.node_id, row1.node_id],
+            "Critique": [consumer.node_id],
+        },
     )
 
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    summarise_row_ids = runtime_graph.dsl_to_runtime[summarise_id]
-    assert len(summarise_row_ids) == 2
+    optimized_graph, _ = HaloOptimizer().optimize_graphs({"wf": graph})
 
-    optimized_graph, _ = HaloOptimizer().optimize_graphs({"wf": runtime_graph})
-
-    optimized_summarise_ids = {
-        node_id for node_id in summarise_row_ids if node_id in optimized_graph.nodes
-    }
-    assert len(optimized_summarise_ids) == 2
-
+    assert row0.node_id in optimized_graph.nodes
+    assert row1.node_id in optimized_graph.nodes
     contents = [
-        optimized_graph.nodes[row_id].api_spec["json"]["messages"][-1]["content"]
-        for row_id in summarise_row_ids
+        optimized_graph.nodes[node_id].api_spec["json"]["messages"][-1]["content"]
+        for node_id in (row0.node_id, row1.node_id)
     ]
     assert contents == ["a database index", "a message queue"]

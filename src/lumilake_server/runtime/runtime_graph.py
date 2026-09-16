@@ -1790,6 +1790,18 @@ class RuntimeGraphBuilder:
                 assert (
                     op.id != target_llm_op.id
                 ), "Encountered starting LLMOp again unexpectedly"
+                if (
+                    dsl_to_runtime is not None
+                    and len(dsl_to_runtime.get(op.id, [op.id])) > 1
+                ):
+                    raise ValueError(
+                        f"LLMOp '{llm_op_id}' consumes '{op.id}', which fanned"
+                        " out into multiple row-aligned runtime nodes; only"
+                        " API mode message columns can carry that per-row"
+                        " alignment, so wiring this downstream node to the"
+                        " single unsuffixed output would silently drop every"
+                        " row but the first."
+                    )
                 if op.id not in upstream_llm_ids:
                     upstream_llm_ids.add(op.id)
                     if isinstance(op, LLMChatOp) and op.return_history:
