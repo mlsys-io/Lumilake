@@ -67,6 +67,7 @@ def test_api_config_model_override() -> None:
         api=ApiConfig(
             url="https://api.example.com/v1/chat/completions",
             model="gpt-4o",
+            authorization="Bearer caller-key",
         )
     )
     node = runtime_graph.nodes[llm_id]
@@ -77,7 +78,10 @@ def test_api_config_model_override() -> None:
 
 def test_api_config_url_override() -> None:
     runtime_graph, llm_id = _build_api_graph(
-        api=ApiConfig(url="https://api.example.com/v1/chat/completions")
+        api=ApiConfig(
+            url="https://api.example.com/v1/chat/completions",
+            authorization="Bearer caller-key",
+        )
     )
     node = runtime_graph.nodes[llm_id]
     assert node.api_spec["url"] == "https://api.example.com/v1/chat/completions"
@@ -108,11 +112,36 @@ def test_api_key_redacted_on_serialization() -> None:
 
 
 def test_api_missing_pat_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """API mode without a PAT fails at build time with a clear error rather
-    than emitting a spec that would fail later inside the worker."""
+    """API mode against a trusted endpoint without a PAT fails at build time
+    with a clear error rather than emitting a spec that fails later."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", None)
     with pytest.raises(ValueError, match="LUMILAKE_RUNTIME_TOKEN"):
         _build_api_graph()
+
+
+def test_api_untrusted_origin_with_caller_credential_passes_through() -> None:
+    runtime_graph, llm_id = _build_api_graph(
+        api=ApiConfig(
+            url="https://api.example.com/v1/chat/completions",
+            authorization="Bearer caller-key",
+        )
+    )
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["headers"]["Authorization"] == "Bearer caller-key"
+
+
+def test_api_untrusted_origin_without_credential_fails_closed() -> None:
+    with pytest.raises(ValueError, match="untrusted endpoint"):
+        _build_api_graph(
+            api=ApiConfig(url="https://api.example.com/v1/chat/completions")
+        )
+
+
+def test_api_lookalike_host_not_trusted() -> None:
+    with pytest.raises(ValueError, match="untrusted endpoint"):
+        _build_api_graph(
+            api=ApiConfig(url="https://lum.id.attacker.example/v1/chat/completions")
+        )
 
 
 def test_api_url_omitted_defaults_to_lumid() -> None:
@@ -151,3 +180,17 @@ def test_api_dynamic_column_fails_closed() -> None:
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
     with pytest.raises(ValueError, match="cannot render message"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_scheme_less_url_raises_clean_error() -> None:
+    with pytest.raises(ValueError, match="no host"):
+        _build_api_graph(api=ApiConfig(url="lum.id/llm/v1/chat/completions"))
+
+
+def test_api_explicit_default_port_is_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "LUMILAKE_API_TRUSTED_ORIGINS", "https://lum.id")
+    runtime_graph, llm_id = _build_api_graph(
+        api=ApiConfig(url="https://lum.id:443/v1/chat/completions")
+    )
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"

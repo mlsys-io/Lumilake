@@ -14,11 +14,13 @@ class Message:
 @dataclass
 class ApiConfig:
     """External OpenAI-compatible LLM API endpoint. When ``url`` is absent it
-    defaults to the serving endpoint ``lum.id/llm``. The worker's api executor
-    injects the bearer token itself; no credential is stored here."""
+    defaults to the serving endpoint ``lum.id/llm``. ``authorization`` lets the
+    caller supply their own credential for untrusted endpoints; otherwise the
+    server attaches its PAT only for a trusted origin."""
 
     url: str | None = None
     model: str | None = None
+    authorization: str | None = None
 
 
 @dataclass

@@ -714,15 +714,45 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             return items
         if task_type == "api":
             text = results_json.get("text")
-            if not isinstance(text, str) or not text:
-                raise RuntimeError(
-                    f"output {output_op_id} produced no API response text"
-                )
-            return [{"output": text}]
+            if isinstance(text, str) and text:
+                return [{"output": text}]
+            reasoning = self._extract_api_reasoning(results_json)
+            if reasoning:
+                return [{"output": reasoning}]
+            raise RuntimeError(
+                f"output {output_op_id} produced no API response text; the "
+                "model returned no content (a reasoning model may have spent "
+                "its whole token budget on reasoning — raise max_tokens)"
+            )
         embedding_file = results_json.get("embedding_file")
         if isinstance(embedding_file, dict) and embedding_file.get("path"):
             return [results_json]
         raise RuntimeError(f"output {output_op_id} produced no items")
+
+    @staticmethod
+    def _extract_api_reasoning(results_json: dict[str, Any]) -> str | None:
+        """Extract a reasoning model's chain-of-thought when content is absent.
+
+        The upstream response is under ``json`` (the executor's serialized
+        alias) or ``response_json`` (the field name); read either. A reasoning
+        model returns ``message.reasoning`` / ``reasoning_content`` with
+        ``content`` None when its budget is exhausted on reasoning."""
+        upstream = results_json.get("json")
+        if not isinstance(upstream, dict):
+            upstream = results_json.get("response_json")
+        if not isinstance(upstream, dict):
+            return None
+        choices = upstream.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            return None
+        for key in ("reasoning", "reasoning_content"):
+            value = message.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
 
     def _embedding_row_count(
         self, runtime_graph: RuntimeGraph, output_op_id: str

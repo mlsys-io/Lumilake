@@ -27,6 +27,10 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
+from lumilake_server.runtime.flowmesh_client import (
+    is_api_origin_trusted,
+    resolve_api_credential,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.data_profile_offload import (
@@ -1598,20 +1602,28 @@ class RuntimeGraphBuilder:
         body: dict[str, Any] = {"model": model, "messages": messages}
         body.update(llm_op.config.inference_spec())
 
-        token = envs.RUNTIME_TOKEN
-        if not token:
+        url = api_config.url or _DEFAULT_API_URL
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if api_config.authorization:
+            headers["Authorization"] = api_config.authorization
+        elif is_api_origin_trusted(url):
+            server_token = resolve_api_credential(url)
+            if not server_token:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode targets trusted endpoint "
+                    f"{url} but no PAT is configured; set LUMILAKE_RUNTIME_TOKEN."
+                )
+            headers["Authorization"] = f"Bearer {server_token}"
+        else:
             raise ValueError(
-                f"LLMChatOp '{llm_op_id}' API mode requires a credential: set "
-                "LUMILAKE_RUNTIME_TOKEN so the emitted spec can carry an "
-                "Authorization header."
+                f"LLMChatOp '{llm_op_id}' API mode targets untrusted endpoint "
+                f"{url}; supply config.api.authorization or add its origin to "
+                "LUMILAKE_API_TRUSTED_ORIGINS."
             )
         api_spec: dict[str, Any] = {
             "method": "POST",
-            "url": api_config.url or _DEFAULT_API_URL,
-            "headers": {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
+            "url": url,
+            "headers": headers,
             "json": body,
             "response": {
                 "parse_json": True,
