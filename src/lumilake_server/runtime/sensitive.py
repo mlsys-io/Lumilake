@@ -8,11 +8,14 @@ from typing import Any
 
 REDACTED_TOKEN_PLACEHOLDER = "***REDACTED***"
 
-SENSITIVE_DATA_SPEC_KEYS: frozenset[str] = frozenset({"lumid_data_token"})
+SENSITIVE_DATA_SPEC_KEYS: frozenset[str] = frozenset(
+    {"lumid_data_token", "Authorization"}
+)
 
 
 def redact_sensitive(value: Any) -> Any:
-    """Recursively replace sensitive ``data_spec`` keys with a placeholder."""
+    """Recursively replace sensitive keys (tokens, Authorization headers)
+    with a placeholder."""
     if isinstance(value, Mapping):
         return {
             key: (

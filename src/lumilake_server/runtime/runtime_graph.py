@@ -1598,10 +1598,20 @@ class RuntimeGraphBuilder:
         body: dict[str, Any] = {"model": model, "messages": messages}
         body.update(llm_op.config.inference_spec())
 
+        token = envs.RUNTIME_TOKEN
+        if not token:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' API mode requires a credential: set "
+                "LUMILAKE_RUNTIME_TOKEN so the emitted spec can carry an "
+                "Authorization header."
+            )
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": api_config.url or _DEFAULT_API_URL,
-            "headers": {"Content-Type": "application/json"},
+            "headers": {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
             "json": body,
             "response": {
                 "parse_json": True,

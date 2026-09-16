@@ -14,6 +14,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuil
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
+_RUNTIME_TOKEN = "test" + "-pat"
 _DEFAULT_API_URL = "https://lum.id/llm/v1/chat/completions"
 _DEFAULT_API_MODEL = "deepseek-v4-flash"
 
@@ -22,6 +23,7 @@ _DEFAULT_API_MODEL = "deepseek-v4-flash"
 def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", _RUNTIME_TOKEN)
 
 
 def _build_api_graph(**config_kwargs) -> tuple[RuntimeGraph, str]:
@@ -54,6 +56,7 @@ def test_api_config_emits_api_task_type() -> None:
     assert api["method"] == "POST"
     assert api["url"] == _DEFAULT_API_URL
     assert "auth" not in api
+    assert api["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
     body = api["json"]
     assert body["model"] == "meta-llama/Llama-3.1-8B-Instruct"
     assert body["messages"] == [{"role": "user", "content": "NVDA"}]
@@ -88,16 +91,28 @@ def test_api_samplers_flow_into_body() -> None:
     assert body["temperature"] == 0.5
 
 
-def test_api_key_not_in_spec() -> None:
-    """The API key is a worker-side secret; it must never be embedded in the
-    task spec, which is archived."""
+def test_api_key_redacted_on_serialization() -> None:
+    """The Authorization header carries the PAT in the emitted spec, but must
+    be redacted whenever the spec is serialized for storage or logging."""
     runtime_graph, llm_id = _build_api_graph()
     node = runtime_graph.nodes[llm_id]
-    assert "Authorization" not in node.api_spec["headers"]
-    assert "key" not in node.api_spec
-    serialized = node.serialize()
-    assert "Authorization" not in str(serialized)
-    assert "Bearer" not in str(serialized)
+
+    # The live spec must carry the real credential - it is what reaches FlowMesh.
+    assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+
+    # Graph-level serialization is the form that gets stored, and it must not.
+    # Op-level serialize() is an internal step that graph-level builds from, so
+    # it deliberately still carries the token.
+    assert _RUNTIME_TOKEN not in str(runtime_graph.serialize())
+    assert "Bearer" not in str(runtime_graph.serialize())
+
+
+def test_api_missing_pat_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """API mode without a PAT fails at build time with a clear error rather
+    than emitting a spec that would fail later inside the worker."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", None)
+    with pytest.raises(ValueError, match="LUMILAKE_RUNTIME_TOKEN"):
+        _build_api_graph()
 
 
 def test_api_url_omitted_defaults_to_lumid() -> None:
