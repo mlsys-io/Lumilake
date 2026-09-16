@@ -123,6 +123,21 @@ git rebase --signoff HEAD~N   # N = number of commits to sign off
 
 See [`docs/RELEASE.md`](docs/RELEASE.md) for the full release runbook, including PyPI Trusted Publisher setup, GHCR visibility setup, and rollback options.
 
+### Runner Lanes
+
+`env-examples`, `package-build`, `unit-tests`, `lint-typecheck`, and `security` each pick a runner with:
+
+```yaml
+runs-on: ${{ github.event_name == 'push' && vars.NUS_RUNNERS == 'on' && 'nus-lumilake' || 'ubuntu-latest' }}
+```
+
+Lumilake is a PUBLIC repo, so the split is by TRUST OF THE TRIGGER, never by repo:
+
+- `pull_request` — on a fork this runs the fork's workflow code — stays on GitHub-hosted runners, which are free and unlimited for a public repo. It must never reach the NUS farm.
+- `push` to a branch here required write access, so it may use `nus-lumilake` (ARC scale set on NUS s0: 512 cores, 2.2 TiB RAM, warm BuildKit cache). Scale-set policy lives in `deploy_infra k8s-lift/nus-cluster/ci/arc-scaleset-values.yaml`.
+
+`vars.NUS_RUNNERS` is the repository-variable kill switch — unset, or anything but `on`, means `ubuntu-latest` everywhere with no code change. The event test is an allowlist, so a new GitHub event type cannot silently inherit a self-hosted runner, and both arms are literal labels, so the expression can never evaluate to an empty `runs-on` (a job nothing ever picks up).
+
 ## Running Locally
 
 `lumilake deploy` reads `.env` (and optionally `.env.flowmesh`) from `--project-dir` (`-C <path>`) or the current working directory. From a workspace checkout, `uv run lumilake deploy ...` works; from a PyPI install just use `lumilake deploy ...` directly. Either way, point the CLI at a deployment directory that holds your env files.
