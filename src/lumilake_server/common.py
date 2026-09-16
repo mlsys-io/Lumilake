@@ -112,6 +112,11 @@ class GenerationConfig:
     def __post_init__(self) -> None:
         if isinstance(self.api, dict):
             self.api = ApiConfig(**self.api)
+        elif self.api is not None and not isinstance(self.api, ApiConfig):
+            raise ValueError(
+                "GenerationConfig.api must be a mapping or ApiConfig, got "
+                f"{type(self.api).__name__}."
+            )
         if self.api is None and not self.model:
             raise ValueError(
                 "GenerationConfig.model is required when config.api is not set."

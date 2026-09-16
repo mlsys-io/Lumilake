@@ -37,3 +37,13 @@ def test_generation_config_resolved_model_returns_local_model_without_api() -> N
     cfg = GenerationConfig(model="local-model")
 
     assert cfg.resolved_model() == "local-model"
+
+
+def test_generation_config_rejects_non_dict_api() -> None:
+    """A YAML ``api: "x"`` must fail validation where the config is
+    constructed, not crash later as an AttributeError when the runtime graph
+    calls ``api_config.url``. Pins the ``elif`` branch added to
+    ``GenerationConfig.__post_init__`` (common.py) that rejects any non-dict,
+    non-``ApiConfig``, non-``None`` value for ``api``."""
+    with pytest.raises(ValueError, match="api must be a mapping or ApiConfig"):
+        GenerationConfig(model="local-model", api="x")  # type: ignore[arg-type]

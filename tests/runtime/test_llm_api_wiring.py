@@ -205,6 +205,42 @@ def test_yaml_api_llm_op_without_config_model_reaches_the_default() -> None:
     assert runtime_graph.nodes[llm_id].api_spec["json"]["model"] == _DEFAULT_API_MODEL
 
 
+def test_yaml_api_config_string_fails_at_graph_build_not_runtime_build() -> None:
+    """A YAML ``config.api: "x"`` (a scalar, not a mapping) must be rejected
+    where ``GenerationConfig`` is constructed -- during ``Graph.from_json`` --
+    rather than reaching ``RuntimeGraphBuilder`` and crashing there with
+    ``AttributeError: 'str' object has no attribute 'url'`` from
+    ``_build_api_llm_op``. Pins the ``elif`` branch added to
+    ``GenerationConfig.__post_init__`` (common.py): reverting it lets this
+    string pass ``parse_yaml_payload``/``Graph.from_json`` unrejected, and
+    only ``RuntimeGraphBuilder().build(compiled)`` fails, with an
+    ``AttributeError`` instead of this test's ``ValueError``."""
+    yaml_text = textwrap.dedent(
+        """
+        name: yaml-api-bad-type
+
+        ops:
+          - id: "Ask"
+            op: LLMChatOp
+            messages:
+              - role: user
+                content: "hello"
+            config:
+              model: "local-model"
+              api: "x"
+
+        outputs:
+          - name: result
+            ref: "Ask"
+        """
+    )
+    specs = parse_yaml_payload(yaml_text)
+    spec = specs["yaml-api-bad-type"]
+
+    with pytest.raises(ValueError, match="api must be a mapping or ApiConfig"):
+        Graph.from_json(spec["graph"])
+
+
 def test_api_dynamic_column_fails_closed() -> None:
     """A message referencing an upstream node's runtime output cannot be
     rendered at build time and must fail rather than silently fall back."""
