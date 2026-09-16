@@ -119,10 +119,17 @@ once `config.api` is set — the request model resolves from `config.api.model`,
 then the top-level `config.model`, then the typed default `deepseek-v4-flash`
 (`LLMVisionOp` always runs against a locally-loaded model and still requires
 `config.model`). Sampler fields on `config` (e.g.
-`max_tokens`, `temperature`) are merged into the request body. There is no
-credential in the workflow spec: the worker's `api_executor` injects
-`Authorization: Bearer <token>` from its own `NEBULA_API_TOKEN`, or the
-caller may supply an explicit `Authorization` header. Only literal
+`max_tokens`, `temperature`) are merged into the request body.
+
+The credential is resolved server-side, not supplied by the caller. If
+`config.api.url`'s origin is on the trusted-origin allowlist (the default
+`https://lum.id`, extendable via `LUMILAKE_API_TRUSTED_ORIGINS`), the server
+attaches `Authorization: Bearer <LUMILAKE_RUNTIME_TOKEN>` itself; for any
+other origin the caller must set `config.api.authorization` explicitly, or
+the request is rejected before dispatch. This header does become part of
+the FlowMesh task spec that is actually submitted for execution — it is not
+kept out of the spec — but it is redacted (replaced with `***REDACTED***`)
+before the job is archived or an error body is logged. Only literal
 (build-time) message content is supported in API mode; a message that
 references an upstream node's runtime output fails closed rather than
 silently falling back to a local model.

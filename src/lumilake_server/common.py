@@ -18,9 +18,12 @@ DEFAULT_API_MODEL = "deepseek-v4-flash"
 class ApiConfig:
     """External OpenAI-compatible LLM API endpoint. When ``url`` is absent it
     defaults to the serving endpoint ``lum.id/llm``. ``authorization`` lets the
-    caller supply their own credential for untrusted endpoints; otherwise the
-    server attaches its PAT only for a trusted origin. When ``model`` is also
-    absent, :meth:`GenerationConfig.resolved_model` falls back to the
+    caller supply their own credential for an untrusted origin; for a
+    trusted origin (see ``LUMILAKE_API_TRUSTED_ORIGINS``) the server attaches
+    its own ``LUMILAKE_RUNTIME_TOKEN`` PAT instead. That header becomes part
+    of the FlowMesh task spec submitted for execution and is redacted only
+    before archival and logging, never before dispatch. When ``model`` is
+    also absent, :meth:`GenerationConfig.resolved_model` falls back to the
     top-level ``config.model`` and then to :data:`DEFAULT_API_MODEL`."""
 
     url: str | None = None
