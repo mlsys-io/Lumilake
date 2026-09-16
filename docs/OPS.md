@@ -109,25 +109,20 @@ ops:
       - role: user
         content: "Summarize the latest news for {symbol}."
     config:
-      model: meta-llama/Llama-3.1-8B-Instruct
-      api:
-        url: https://api.example.com/v1/chat/completions
-        model: gpt-4o   # optional override; defaults to config.model
-        credential_env: OPENAI_API_KEY   # worker env var holding the bearer token
+      api: {}
       max_tokens: 256
 ```
 
-The `api.url` is the full chat-completions endpoint. Sampler fields on
-`config` (e.g. `max_tokens`, `temperature`) are merged into the request
-body. The credential is **not** part of the workflow spec:
-`api.credential_env` names the env var on the worker that holds the bearer
-token, and the worker's `api_executor` resolves it at call time and injects
-`Authorization: Bearer <value>` itself, so the secret never enters the job
-spec, archive, or logs. The referenced env var must be set on the FlowMesh
-workers that run the call (e.g. `OPENAI_API_KEY`); the Lumilake server never
-reads it. Only literal (build-time) message content is supported in API
-mode; a message that references an upstream node's runtime output fails
-closed rather than silently falling back to a local model.
+`config.api.url` is optional and defaults to the serving endpoint
+`https://lum.id/llm/v1/chat/completions`. When no model is specified the
+request defaults to `deepseek-v4-flash`. Sampler fields on `config` (e.g.
+`max_tokens`, `temperature`) are merged into the request body. There is no
+credential in the workflow spec: the worker's `api_executor` injects
+`Authorization: Bearer <token>` from its own `NEBULA_API_TOKEN`, or the
+caller may supply an explicit `Authorization` header. Only literal
+(build-time) message content is supported in API mode; a message that
+references an upstream node's runtime output fails closed rather than
+silently falling back to a local model.
 
 ### LambdaOp
 

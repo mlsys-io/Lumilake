@@ -73,11 +73,8 @@ def _sanitize_node_prefix(prefix: str) -> str:
     return safe or "graph"
 
 
-def _is_valid_env_name(name: str) -> bool:
-    """A POSIX env var name: uppercase letters, digits, and underscores, not
-    starting with a digit. Used to validate a credential reference before it
-    is emitted into a task spec."""
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
+_DEFAULT_API_URL = "https://lum.id/llm/v1/chat/completions"
+_DEFAULT_API_MODEL = "deepseek-v4-flash"
 
 
 def make_node_prefix(name: str) -> str:
@@ -1545,22 +1542,6 @@ class RuntimeGraphBuilder:
         chat body. Only literal (build-time) message content is supported; a
         message referencing an upstream node's runtime output fails closed.
         """
-        if not api_config.url:
-            raise ValueError(
-                f"LLMChatOp '{llm_op_id}' API mode requires an endpoint: set "
-                "config.api.url to the chat-completions URL."
-            )
-        if not api_config.credential_env:
-            raise ValueError(
-                f"LLMChatOp '{llm_op_id}' API mode requires a credential "
-                "reference: set config.api.credential_env to the name of the "
-                "env var on the worker that holds the bearer token."
-            )
-        if not _is_valid_env_name(api_config.credential_env):
-            raise ValueError(
-                f"LLMChatOp '{llm_op_id}' API mode credential_env "
-                f"{api_config.credential_env!r} is not a valid env var name."
-            )
         options = template_spec.get("options") or {}
         format_options = options.get("format") or {}
         messages_spec = format_options.get("messages") or []
@@ -1613,14 +1594,13 @@ class RuntimeGraphBuilder:
         if not messages:
             raise ValueError(f"LLMChatOp '{llm_op_id}' API mode requires messages.")
 
-        model = api_config.model or llm_op.config.model
+        model = api_config.model or llm_op.config.model or _DEFAULT_API_MODEL
         body: dict[str, Any] = {"model": model, "messages": messages}
         body.update(llm_op.config.inference_spec())
 
         api_spec: dict[str, Any] = {
             "method": "POST",
-            "url": api_config.url,
-            "auth": {"credential_env": api_config.credential_env},
+            "url": api_config.url or _DEFAULT_API_URL,
             "headers": {"Content-Type": "application/json"},
             "json": body,
             "response": {

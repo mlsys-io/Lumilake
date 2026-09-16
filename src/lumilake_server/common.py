@@ -13,13 +13,12 @@ class Message:
 
 @dataclass
 class ApiConfig:
-    """External OpenAI-compatible LLM API endpoint. ``credential_env`` names
-    the worker env var holding the bearer token; the secret is resolved by
-    the worker at call time and never stored here."""
+    """External OpenAI-compatible LLM API endpoint. When ``url`` is absent it
+    defaults to the serving endpoint ``lum.id/llm``. The worker's api executor
+    injects the bearer token itself; no credential is stored here."""
 
-    url: str
+    url: str | None = None
     model: str | None = None
-    credential_env: str | None = None
 
 
 @dataclass

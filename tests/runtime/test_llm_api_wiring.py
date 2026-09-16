@@ -14,6 +14,8 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuil
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
+_DEFAULT_API_URL = "https://lum.id/llm/v1/chat/completions"
+_DEFAULT_API_MODEL = "deepseek-v4-flash"
 
 
 @pytest.fixture(autouse=True)
@@ -24,12 +26,10 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _build_api_graph(**config_kwargs) -> tuple[RuntimeGraph, str]:
     stock = input_placeholder("Stock")
-    api = config_kwargs.pop("api", None) or ApiConfig(
-        url="https://api.example.com/v1/chat/completions",
-        credential_env="OPENAI_API_KEY",
-    )
+    api = config_kwargs.pop("api", None) or ApiConfig()
+    model = config_kwargs.pop("model", "meta-llama/Llama-3.1-8B-Instruct")
     cfg = GenerationConfig(
-        model="meta-llama/Llama-3.1-8B-Instruct",
+        model=model,
         api=api,
         **config_kwargs,
     )
@@ -52,8 +52,8 @@ def test_api_config_emits_api_task_type() -> None:
     assert "data" not in spec
     api = spec["api"]
     assert api["method"] == "POST"
-    assert api["url"] == "https://api.example.com/v1/chat/completions"
-    assert api["auth"]["credential_env"] == "OPENAI_API_KEY"
+    assert api["url"] == _DEFAULT_API_URL
+    assert "auth" not in api
     body = api["json"]
     assert body["model"] == "meta-llama/Llama-3.1-8B-Instruct"
     assert body["messages"] == [{"role": "user", "content": "NVDA"}]
@@ -64,13 +64,20 @@ def test_api_config_model_override() -> None:
         api=ApiConfig(
             url="https://api.example.com/v1/chat/completions",
             model="gpt-4o",
-            credential_env="OPENAI_API_KEY",
         )
     )
     node = runtime_graph.nodes[llm_id]
     body = node.api_spec["json"]
     assert body["model"] == "gpt-4o"
     assert node.model == "gpt-4o"
+
+
+def test_api_config_url_override() -> None:
+    runtime_graph, llm_id = _build_api_graph(
+        api=ApiConfig(url="https://api.example.com/v1/chat/completions")
+    )
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["url"] == "https://api.example.com/v1/chat/completions"
 
 
 def test_api_samplers_flow_into_body() -> None:
@@ -82,8 +89,8 @@ def test_api_samplers_flow_into_body() -> None:
 
 
 def test_api_key_not_in_spec() -> None:
-    """The API key is a worker-side secret resolved from ``credential_env`` at
-    call time; it must never be embedded in the task spec, which is archived."""
+    """The API key is a worker-side secret; it must never be embedded in the
+    task spec, which is archived."""
     runtime_graph, llm_id = _build_api_graph()
     node = runtime_graph.nodes[llm_id]
     assert "Authorization" not in node.api_spec["headers"]
@@ -93,31 +100,16 @@ def test_api_key_not_in_spec() -> None:
     assert "Bearer" not in str(serialized)
 
 
-def test_api_missing_endpoint_fails_closed() -> None:
-    """API mode without a URL fails at build time with a clear message."""
-    with pytest.raises(ValueError, match="requires an endpoint"):
-        _build_api_graph(api=ApiConfig(url="", credential_env="OPENAI_API_KEY"))
+def test_api_url_omitted_defaults_to_lumid() -> None:
+    runtime_graph, llm_id = _build_api_graph(api=ApiConfig())
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["url"] == _DEFAULT_API_URL
 
 
-def test_api_missing_credential_ref_fails_closed() -> None:
-    """API mode without a credential reference fails at build time with a
-    clear message, rather than silently sending an unauthenticated request."""
-    with pytest.raises(ValueError, match="credential reference"):
-        _build_api_graph(
-            api=ApiConfig(url="https://api.example.com/v1/chat/completions")
-        )
-
-
-def test_api_invalid_credential_env_name_fails_closed() -> None:
-    """A malformed credential reference (not a valid env var name) is rejected
-    at build time."""
-    with pytest.raises(ValueError, match="not a valid env var name"):
-        _build_api_graph(
-            api=ApiConfig(
-                url="https://api.example.com/v1/chat/completions",
-                credential_env="1BAD NAME",
-            )
-        )
+def test_api_model_omitted_defaults_to_deepseek() -> None:
+    runtime_graph, llm_id = _build_api_graph(api=ApiConfig(), model="")
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["json"]["model"] == _DEFAULT_API_MODEL
 
 
 def test_api_dynamic_column_fails_closed() -> None:
@@ -137,10 +129,7 @@ def test_api_dynamic_column_fails_closed() -> None:
         [OpMessage(role="user", content=retrieval)],
         config=GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig(
-                url="https://api.example.com/v1/chat/completions",
-                credential_env="OPENAI_API_KEY",
-            ),
+            api=ApiConfig(),
         ),
     )
     output = as_output("result", llm)
