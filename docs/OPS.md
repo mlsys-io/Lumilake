@@ -114,8 +114,11 @@ ops:
 ```
 
 `config.api.url` is optional and defaults to the serving endpoint
-`https://lum.id/llm/v1/chat/completions`. When no model is specified the
-request defaults to `deepseek-v4-flash`. Sampler fields on `config` (e.g.
+`https://lum.id/llm/v1/chat/completions`. `config.model` is also optional
+once `config.api` is set — the request model resolves from `config.api.model`,
+then the top-level `config.model`, then the typed default `deepseek-v4-flash`
+(`LLMVisionOp` always runs against a locally-loaded model and still requires
+`config.model`). Sampler fields on `config` (e.g.
 `max_tokens`, `temperature`) are merged into the request body. There is no
 credential in the workflow spec: the worker's `api_executor` injects
 `Authorization: Bearer <token>` from its own `NEBULA_API_TOKEN`, or the

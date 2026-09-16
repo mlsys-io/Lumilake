@@ -11,12 +11,17 @@ class Message:
         return asdict(self)
 
 
+DEFAULT_API_MODEL = "deepseek-v4-flash"
+
+
 @dataclass
 class ApiConfig:
     """External OpenAI-compatible LLM API endpoint. When ``url`` is absent it
     defaults to the serving endpoint ``lum.id/llm``. ``authorization`` lets the
     caller supply their own credential for untrusted endpoints; otherwise the
-    server attaches its PAT only for a trusted origin."""
+    server attaches its PAT only for a trusted origin. When ``model`` is also
+    absent, :meth:`GenerationConfig.resolved_model` falls back to the
+    top-level ``config.model`` and then to :data:`DEFAULT_API_MODEL`."""
 
     url: str | None = None
     model: str | None = None
@@ -27,9 +32,13 @@ class ApiConfig:
 class GenerationConfig:
     """LLM generation parameters. Add a typed field here and both the YAML
     parser allowlist and the runtime inference_spec pick it up automatically;
-    use ``extra_sampling_params`` for vendor-specific keys not worth typing."""
+    use ``extra_sampling_params`` for vendor-specific keys not worth typing.
 
-    model: str
+    ``model`` is required unless ``api`` is set: a locally-loaded backend has
+    no default to fall back to, but API mode resolves one via
+    :meth:`resolved_model`."""
+
+    model: str = ""
     api: ApiConfig | None = None
     frequency_penalty: float | None = None
     logit_bias: dict[str, int] | None = None
@@ -100,6 +109,18 @@ class GenerationConfig:
     def __post_init__(self) -> None:
         if isinstance(self.api, dict):
             self.api = ApiConfig(**self.api)
+        if self.api is None and not self.model:
+            raise ValueError(
+                "GenerationConfig.model is required when config.api is not set."
+            )
+
+    def resolved_model(self) -> str:
+        """The model name to submit. Local mode always has a required
+        ``model``; API mode prefers ``api.model``, then the top-level
+        ``model``, then :data:`DEFAULT_API_MODEL`."""
+        if self.api is not None:
+            return self.api.model or self.model or DEFAULT_API_MODEL
+        return self.model
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

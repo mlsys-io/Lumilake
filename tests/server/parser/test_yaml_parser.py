@@ -435,6 +435,65 @@ def test_llm_config_accepts_api_block() -> None:
     }
 
 
+def test_llm_chat_config_may_omit_model_when_api_is_set() -> None:
+    """API-mode LLMChatOp no longer requires a top-level ``config.model`` -
+    GenerationConfig.resolved_model() supplies the typed default at graph
+    build time. Pins the relaxed requiredness check in
+    yaml_parser._emit_llm_like_op (the ``is_api_chat_op`` branch)."""
+    yaml_text = textwrap.dedent(
+        """
+        name: api_llm_no_model
+        ops:
+          - id: ask
+            op: LLMChatOp
+            messages:
+              - role: user
+                content: "hello"
+            config:
+              api: {}
+        outputs:
+          - name: out
+            ref: ask
+        """
+    )
+    specs = parse_yaml_payload(yaml_text)
+    graph_dict = specs["api_llm_no_model"]["graph"]
+    llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
+    assert "model" not in llm_op["config"]
+    assert llm_op["config"]["api"] == {}
+
+
+def test_llm_vision_config_still_requires_model_even_with_api_set() -> None:
+    """LLMVisionOp always runs locally (runtime_graph never routes it through
+    config.api), so the model-omission relaxation must not apply to it. This
+    guards the ``op_kind == "LLMChatOp"`` scoping added alongside the
+    relaxation in yaml_parser._emit_llm_like_op; it does not by itself pin
+    that edit (the unmodified pre-fix check already requires 'model' for
+    every op_kind, so this assertion holds either way)."""
+    yaml_text = textwrap.dedent(
+        """
+        name: vision_no_model
+        ops:
+          - id: img
+            op: DataOp
+            data: ["images/cat.png"]
+          - id: describe
+            op: LLMVisionOp
+            image_source: img
+            messages:
+              - role: user
+                content: "describe this image"
+            config:
+              api: {}
+        outputs:
+          - name: out
+            ref: describe
+        """
+    )
+    with pytest.raises(ValueError, match="requires 'config' with a 'model' field"):
+        parse_yaml_payload(yaml_text)
+
+
 def test_llm_config_rejects_unknown_field() -> None:
     """Unknown top-level keys still fail — extra_sampling_params is the
     escape hatch for vendor-specific samplers."""

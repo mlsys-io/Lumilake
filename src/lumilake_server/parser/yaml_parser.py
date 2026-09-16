@@ -654,7 +654,16 @@ def _emit_llm_like_op(
         the caller after this helper returns.
     """
     config = entry.fields.get("config")
-    if not isinstance(config, dict) or "model" not in config:
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"{op_kind} '{entry.id}' requires 'config' with a 'model' field"
+        )
+    # LLMVisionOp always runs against a locally-loaded model (runtime_graph
+    # never routes it through config.api), so it keeps the unconditional
+    # requirement. LLMChatOp with config.api set defers to
+    # GenerationConfig.resolved_model()'s typed default instead.
+    is_api_chat_op = op_kind == "LLMChatOp" and config.get("api") is not None
+    if "model" not in config and not is_api_chat_op:
         raise ValueError(
             f"{op_kind} '{entry.id}' requires 'config' with a 'model' field"
         )

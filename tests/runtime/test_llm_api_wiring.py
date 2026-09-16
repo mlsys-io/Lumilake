@@ -160,6 +160,51 @@ def test_api_model_omitted_defaults_to_deepseek() -> None:
     assert node.api_spec["json"]["model"] == _DEFAULT_API_MODEL
 
 
+def test_yaml_api_llm_op_without_config_model_reaches_the_default() -> None:
+    """A YAML LLMChatOp that sets ``config.api`` and omits ``config.model``
+    entirely (not merely an empty string) must parse and resolve to the
+    typed API default end-to-end. Pins yaml_parser.py's
+    ``_emit_llm_like_op`` relaxation (the ``is_api_chat_op`` check) that
+    lets ``config`` omit the ``model`` key when ``config.api`` is set;
+    without it, ``parse_yaml_payload`` raises before this op ever reaches
+    the runtime graph. It does not separately pin runtime_graph.py's
+    ``_build_api_llm_op`` model-resolution line: the old
+    ``api_config.model or llm_op.config.model or _DEFAULT_API_MODEL`` chain
+    and the new ``llm_op.config.resolved_model()`` call compute the same
+    value here, since both defer to the same default model string."""
+    yaml_text = textwrap.dedent(
+        """
+        name: yaml-api-no-model
+
+        ops:
+          - id: "Ask"
+            op: LLMChatOp
+            messages:
+              - role: user
+                content: "hello"
+            config:
+              api: {}
+
+        outputs:
+          - name: result
+            ref: "Ask"
+        """
+    )
+    specs = parse_yaml_payload(yaml_text)
+    spec = specs["yaml-api-no-model"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile()
+    llm_id = next(
+        op_id
+        for op_id, op_dict in spec["graph"].items()
+        if op_dict.get("_op") == "LLMChatOp"
+    )
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert runtime_graph.nodes[llm_id].api_spec["json"]["model"] == _DEFAULT_API_MODEL
+
+
 def test_api_dynamic_column_fails_closed() -> None:
     """A message referencing an upstream node's runtime output cannot be
     rendered at build time and must fail rather than silently fall back."""

@@ -78,7 +78,6 @@ def _sanitize_node_prefix(prefix: str) -> str:
 
 
 _DEFAULT_API_URL = "https://lum.id/llm/v1/chat/completions"
-_DEFAULT_API_MODEL = "deepseek-v4-flash"
 
 
 def make_node_prefix(name: str) -> str:
@@ -1666,7 +1665,7 @@ class RuntimeGraphBuilder:
         if not resolved:
             raise ValueError(f"LLMChatOp '{llm_op_id}' API mode requires messages.")
 
-        model = api_config.model or llm_op.config.model or _DEFAULT_API_MODEL
+        model = llm_op.config.resolved_model()
         url = api_config.url or _DEFAULT_API_URL
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_config.authorization:
