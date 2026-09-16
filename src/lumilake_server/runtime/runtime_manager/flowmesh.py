@@ -36,7 +36,7 @@ from lumilake_server.runtime.runtime_graph import (
     RuntimeGraphBuilder,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.sensitive import redact_sensitive
+from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
 
 from .base import BaseRuntimeManager
@@ -105,6 +105,23 @@ def _runtime_output_destination() -> dict[str, Any]:
     if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
         return {"type": "http", "timeoutSec": 3600}
     return {"type": "local"}
+
+
+def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
+    """Redact any credential FlowMesh's rejection may echo back (its body
+    can carry the task spec we submitted, Authorization header included)
+    before the error is logged or persisted anywhere."""
+    body = redact_secrets_in_text(e.body if hasattr(e, "body") else str(e))
+    if len(body) > 2000:
+        body = body[:2000] + "...[truncated]"
+    message = redact_secrets_in_text(str(e))
+    return type(e)(
+        message,
+        status_code=e.status_code,
+        method=e.method,
+        url=e.url,
+        body=body,
+    )
 
 
 @dataclass(slots=True)
@@ -936,15 +953,17 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         try:
             submit_resp = await self.fm.workflows.submit(task_yaml)
         except APIError as e:
-            body = str(e.body) if hasattr(e, "body") else str(e)
-            if len(body) > 2000:
-                body = body[:2000] + "...[truncated]"
+            sanitized = _sanitize_flowmesh_api_error(e)
             self.logger.error(
                 "Flowmesh request failed: %s. Body: %s",
-                e,
-                body,
+                sanitized,
+                sanitized.body,
             )
-            raise
+            # Re-raise the sanitized error rather than the original: the
+            # original's message/body already carries the credential FlowMesh
+            # echoed back in its rejection, and would leak again through any
+            # traceback (exc_info=True) that chains back to it.
+            raise sanitized from None
 
         task_ids = [t.task_id for t in submit_resp.tasks]
         self.logger.info(f"Flowmesh accepted {len(task_ids)} tasks: {task_ids}")

@@ -65,6 +65,7 @@ from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     create_runtime_manager,
 )
+from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.schemas.progress import JobProgress
@@ -2053,7 +2054,7 @@ class LumilakeServer:
                 append_error(
                     state,
                     {
-                        "batch_error": str(error),
+                        "batch_error": redact_secrets_in_text(str(error)),
                         "execution_request_id": execution_request_id,
                         "graph": workflow.public_graph_name,
                         "slice_index": workflow.slice_index,

@@ -307,6 +307,43 @@ async def test_run_batch_failure_does_not_fetch_task_node_map(
 
 
 @pytest.mark.asyncio
+async def test_run_batch_failure_redacts_credential_from_batch_error(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch-processing exception can carry a credential FlowMesh echoed
+    back in a rejection body (e.g. the Authorization header from the task
+    spec we submitted). The persisted `batch_error` must not leak it."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        )
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    async def _fail_process_batch(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(
+            'submit rejected, echoed spec: {"Authorization": "Bearer sk-live-secret"}'
+        )
+
+    monkeypatch.setattr(server, "_process_batch", _fail_process_batch)
+    await server._run_batch(["worker-1"], batch)
+
+    errors = handlers["req-a"].results[0].error_info
+    assert errors is not None
+    serialized_errors = json.dumps(errors)
+    assert "sk-live-secret" not in serialized_errors
+    assert "***REDACTED***" in serialized_errors
+
+
+@pytest.mark.asyncio
 async def test_run_batch_tracks_success_only_completed_inputs(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
