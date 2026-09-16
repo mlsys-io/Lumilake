@@ -923,7 +923,7 @@ class LumilakeServer:
             self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
         requires_cpu = any(
-            op.task_type == "data_retrieval" for op in runtime_graph.nodes.values()
+            self._requires_cpu(op) for op in runtime_graph.nodes.values()
         )
 
         gpu_workers: list[str] = []
@@ -1073,6 +1073,13 @@ class LumilakeServer:
         # selection rule — drift means the scheduler asks for 0 GPU workers
         # and the dispatcher then stalls trying to route to one.
         return FlowmeshRuntimeManager._runtime_op_requires_gpu(op)
+
+    @staticmethod
+    def _requires_cpu(op: RuntimeOp) -> bool:
+        # Delegate for the same reason as _requires_gpu: a preview that
+        # disagrees with HALO's actual CPU-only engines (data_retrieval,
+        # api) can select a GPU-only worker pool that HALO then rejects.
+        return FlowmeshRuntimeManager._runtime_op_requires_cpu(op)
 
     @classmethod
     def _batch_requires_gpu(cls, batch: BatchSelection) -> bool:
