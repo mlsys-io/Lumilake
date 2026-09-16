@@ -1076,9 +1076,8 @@ class LumilakeServer:
 
     @staticmethod
     def _requires_cpu(op: RuntimeOp) -> bool:
-        # Delegate for the same reason as _requires_gpu: a preview that
-        # disagrees with HALO's actual CPU-only engines (data_retrieval,
-        # api) can select a GPU-only worker pool that HALO then rejects.
+        """See FlowmeshRuntimeManager._runtime_op_requires_cpu for why this
+        must mirror the dispatcher's CPU-only engine list."""
         return FlowmeshRuntimeManager._runtime_op_requires_cpu(op)
 
     @classmethod

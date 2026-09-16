@@ -100,17 +100,15 @@ def test_api_samplers_flow_into_body() -> None:
 
 
 def test_api_key_redacted_on_serialization() -> None:
-    """The Authorization header carries the PAT in the emitted spec, but must
-    be redacted whenever the spec is serialized for storage or logging."""
+    """The Authorization header carries the PAT in the runtime spec (what
+    reaches FlowMesh) but must be redacted from graph-level serialize(), the
+    form that gets stored; op-level serialize() deliberately still carries
+    it since graph-level building reads from it."""
     runtime_graph, llm_id = _build_api_graph()
     node = runtime_graph.nodes[llm_id]
 
-    # The live spec must carry the real credential - it is what reaches FlowMesh.
     assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
 
-    # Graph-level serialization is the form that gets stored, and it must not.
-    # Op-level serialize() is an internal step that graph-level builds from, so
-    # it deliberately still carries the token.
     assert _RUNTIME_TOKEN not in str(runtime_graph.serialize())
     assert "Bearer" not in str(runtime_graph.serialize())
 

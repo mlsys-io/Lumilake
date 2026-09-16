@@ -108,9 +108,9 @@ def _runtime_output_destination() -> dict[str, Any]:
 
 
 def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
-    """Redact any credential FlowMesh's rejection may echo back (its body
-    can carry the task spec we submitted, Authorization header included)
-    before the error is logged or persisted anywhere."""
+    """Redact any credential FlowMesh's rejection may echo back. Callers
+    must raise this return value instead of ``e``: the original still
+    carries the credential and would leak again through a chained traceback."""
     body = redact_secrets_in_text(e.body if hasattr(e, "body") else str(e))
     if len(body) > 2000:
         body = body[:2000] + "...[truncated]"
@@ -959,10 +959,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 sanitized,
                 sanitized.body,
             )
-            # Re-raise the sanitized error rather than the original: the
-            # original's message/body already carries the credential FlowMesh
-            # echoed back in its rejection, and would leak again through any
-            # traceback (exc_info=True) that chains back to it.
             raise sanitized from None
 
         task_ids = [t.task_id for t in submit_resp.tasks]
@@ -1373,10 +1369,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     @staticmethod
     def _runtime_op_requires_cpu(runtime_op: RuntimeOp) -> bool:
-        # Mirrors HaloOptimizer._map_engine: "db" (data_retrieval) and "http"
-        # (api) engines are only ever assigned to CPU workers, so a preview
-        # that doesn't reserve a CPU worker for these nodes disagrees with
-        # what the dispatcher will actually schedule.
+        """Mirrors HaloOptimizer._map_engine's CPU-only engines
+        (data_retrieval, api) so schedule previews agree with dispatch."""
         task_type = (runtime_op.task_type or "").strip().lower()
         return task_type in {"data_retrieval", "api"}
 
