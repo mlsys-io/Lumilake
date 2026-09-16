@@ -194,3 +194,60 @@ def test_api_explicit_default_port_is_trusted(monkeypatch: pytest.MonkeyPatch) -
     )
     node = runtime_graph.nodes[llm_id]
     assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+
+
+def test_api_multi_row_input_fans_out_row_aligned_nodes() -> None:
+    """A literal message column with N rows must fan out into N nodes, one
+    per row, in row order - not reject the graph as it did previously."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    row1_id = f"{llm.id}__row1"
+    assert runtime_graph.dsl_to_runtime[llm.id] == [llm.id, row1_id]
+    assert set(runtime_graph.nodes) == {llm.id, row1_id}
+    assert runtime_graph.nodes[llm.id].api_spec["json"]["messages"] == [
+        {"role": "user", "content": "NVDA"}
+    ]
+    assert runtime_graph.nodes[row1_id].api_spec["json"]["messages"] == [
+        {"role": "user", "content": "AAPL"}
+    ]
+    assert runtime_graph.output_node_map[llm.id] == "result"
+    assert runtime_graph.output_node_map[row1_id] == "result"
+
+
+def test_api_fanout_row_order_matches_input_across_two_nodes() -> None:
+    """Row alignment must be a per-node property of the fan-out itself, not
+    an accident of a single node under test: two independent API nodes fed
+    by the same multi-row input must both preserve row order identically."""
+    stock = input_placeholder("Stock")
+    first = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="model-a", api=ApiConfig()),
+    )
+    second = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="model-b", api=ApiConfig()),
+    )
+    compiled = Graph.from_ops(
+        [as_output("first_result", first), as_output("second_result", second)]
+    ).compile(Stock=["NVDA", "AAPL", "MSFT"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    for llm in (first, second):
+        row_ids = runtime_graph.dsl_to_runtime[llm.id]
+        assert row_ids == [llm.id, f"{llm.id}__row1", f"{llm.id}__row2"]
+        contents = [
+            runtime_graph.nodes[row_id].api_spec["json"]["messages"][0]["content"]
+            for row_id in row_ids
+        ]
+        assert contents == ["NVDA", "AAPL", "MSFT"]

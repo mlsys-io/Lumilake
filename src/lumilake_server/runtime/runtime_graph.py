@@ -437,6 +437,7 @@ class RuntimeGraphBuilder:
 
             runtime_ops: list[RuntimeOp] = []
             mapping: list[str] = []
+            output_node_ids: list[str] = [llm_op_id]
             if isinstance(llm_op, LLMVisionOp):
                 runtime_ops, embedding_node_id = self._build_vlm_nodes_from_image_op(
                     llm_op_id,
@@ -448,6 +449,28 @@ class RuntimeGraphBuilder:
                     runtime_nodes=nodes,
                 )
                 mapping = [embedding_node_id, llm_op_id]
+            elif task_type_override != "data_profile" and llm_op.config.api is not None:
+                upstream_llm_ids, template_spec = self._infer_structural_messages(
+                    llm_op_id,
+                    graph_dict,
+                    inputs_dict,
+                    visited_node_ids,
+                    dsl_to_runtime=dsl_to_runtime,
+                    runtime_nodes=nodes,
+                )
+                runtime_ops = self._build_api_llm_op(
+                    llm_op_id=llm_op_id,
+                    llm_op=llm_op,
+                    api_config=llm_op.config.api,
+                    template_spec=template_spec,
+                    upstream_llm_ids=upstream_llm_ids,
+                    output_spec=None,
+                    condition=(
+                        llm_op.condition if isinstance(llm_op, LLMChatOp) else None
+                    ),
+                )
+                mapping = [runtime_op.node_id for runtime_op in runtime_ops]
+                output_node_ids = mapping
             else:
                 runtime_ops = [
                     self._build_node_from_llm_op(
@@ -473,9 +496,10 @@ class RuntimeGraphBuilder:
 
             if llm_op_id in output_source_to_outputop:
                 output_name, path_override = output_source_to_outputop[llm_op_id]
-                output_node_map[llm_op_id] = output_name
-                if path_override:
-                    output_paths[llm_op_id] = path_override
+                for output_node_id in output_node_ids:
+                    output_node_map[output_node_id] = output_name
+                    if path_override:
+                        output_paths[output_node_id] = path_override
 
         all_node_ids = set(graph_dict.keys())
         unvisited_node_ids = all_node_ids - visited_node_ids
@@ -1317,18 +1341,6 @@ class RuntimeGraphBuilder:
             task_type = task_type_override or "inference"
             backend = "vllm"
 
-        api_config = llm_op.config.api
-        if api_config is not None:
-            return self._build_api_llm_op(
-                llm_op_id=llm_op_id,
-                llm_op=llm_op,
-                api_config=api_config,
-                template_spec=template_spec,
-                upstream_llm_ids=upstream_llm_ids,
-                output_spec=None,
-                condition=(llm_op.condition if isinstance(llm_op, LLMChatOp) else None),
-            )
-
         inference_spec = llm_op.config.inference_spec()
         output_spec = None
 
@@ -1539,12 +1551,14 @@ class RuntimeGraphBuilder:
         upstream_llm_ids: list[str],
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
-    ) -> RuntimeOp:
-        """Build a FlowMesh ``api`` task for an externally-hosted LLM.
+    ) -> list[RuntimeOp]:
+        """Build FlowMesh ``api`` tasks for an externally-hosted LLM.
 
-        Renders resolved ``graph_template`` messages into a flat OpenAI-style
-        chat body. Only literal (build-time) message content is supported; a
-        message referencing an upstream node's runtime output fails closed.
+        Renders resolved ``graph_template`` messages into flat OpenAI-style
+        chat bodies. Only literal (build-time) message content is supported; a
+        message referencing an upstream node's runtime output fails closed. A
+        literal column with more than one row fans out into one node per row,
+        each row keeping its position so a chain of API nodes stays aligned.
         """
         options = template_spec.get("options") or {}
         format_options = options.get("format") or {}
@@ -1556,7 +1570,7 @@ class RuntimeGraphBuilder:
             if isinstance(col, dict) and isinstance(col.get("label"), str):
                 column_by_label[col["label"]] = col
 
-        def _resolve_content(content: Any) -> str:
+        def _resolve_content_rows(content: Any) -> list[str]:
             if not isinstance(content, str):
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' API mode requires string message"
@@ -1564,7 +1578,7 @@ class RuntimeGraphBuilder:
                 )
             column = column_by_label.get(content)
             if column is None:
-                return content
+                return [content]
             data = column.get("data")
             if not isinstance(data, dict) or data.get("type") != "list":
                 raise ValueError(
@@ -1573,35 +1587,40 @@ class RuntimeGraphBuilder:
                     " literal inputs are supported."
                 )
             items = data.get("items")
-            if not isinstance(items, list) or len(items) != 1:
+            if not isinstance(items, list) or not items:
                 count = len(items) if isinstance(items, list) else "none"
                 raise ValueError(
-                    f"LLMChatOp '{llm_op_id}' API mode requires exactly one row"
+                    f"LLMChatOp '{llm_op_id}' API mode requires at least one row"
                     f" per message column, got {count}."
                 )
-            return str(items[0])
+            return [str(item) for item in items]
 
-        messages: list[dict[str, str]] = []
+        resolved: list[tuple[str, list[str]]] = []
+        row_count = 1
         for message in messages_spec:
             if not isinstance(message, dict):
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' API mode requires message objects."
                 )
             role = message.get("role")
-            content = _resolve_content(message.get("content"))
             if not isinstance(role, str) or not role:
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' API mode requires a message role."
                 )
-            messages.append({"role": role, "content": content})
+            rows = _resolve_content_rows(message.get("content"))
+            if len(rows) > 1:
+                if row_count != 1 and row_count != len(rows):
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' API mode message columns have"
+                        f" mismatched row counts: {row_count} vs {len(rows)}."
+                    )
+                row_count = len(rows)
+            resolved.append((role, rows))
 
-        if not messages:
+        if not resolved:
             raise ValueError(f"LLMChatOp '{llm_op_id}' API mode requires messages.")
 
         model = api_config.model or llm_op.config.model or _DEFAULT_API_MODEL
-        body: dict[str, Any] = {"model": model, "messages": messages}
-        body.update(llm_op.config.inference_spec())
-
         url = api_config.url or _DEFAULT_API_URL
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if api_config.authorization:
@@ -1620,32 +1639,47 @@ class RuntimeGraphBuilder:
                 f"{url}; supply config.api.authorization or add its origin to "
                 "LUMILAKE_API_TRUSTED_ORIGINS."
             )
-        api_spec: dict[str, Any] = {
-            "method": "POST",
-            "url": url,
-            "headers": headers,
-            "json": body,
-            "response": {
-                "parse_json": True,
-                "return_body": True,
-                "raise_for_status": True,
-            },
-        }
 
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else None
-        return self._create_runtime_op(
-            name=llm_op_id,
-            task_type="api",
-            data_spec={"type": "graph_template", "template": template_spec},
-            model_spec={},
-            inference_spec={},
-            api_spec=api_spec,
-            backend="api",
-            model=model,
-            dependencies=dependencies,
-            output_spec=output_spec,
-            condition=condition,
-        )
+        runtime_ops: list[RuntimeOp] = []
+        for row_index in range(row_count):
+            messages = [
+                {
+                    "role": role,
+                    "content": rows[row_index] if len(rows) > 1 else rows[0],
+                }
+                for role, rows in resolved
+            ]
+            body: dict[str, Any] = {"model": model, "messages": messages}
+            body.update(llm_op.config.inference_spec())
+            api_spec: dict[str, Any] = {
+                "method": "POST",
+                "url": url,
+                "headers": dict(headers),
+                "json": body,
+                "response": {
+                    "parse_json": True,
+                    "return_body": True,
+                    "raise_for_status": True,
+                },
+            }
+            node_id = llm_op_id if row_index == 0 else f"{llm_op_id}__row{row_index}"
+            runtime_ops.append(
+                self._create_runtime_op(
+                    name=node_id,
+                    task_type="api",
+                    data_spec={"type": "graph_template", "template": template_spec},
+                    model_spec={},
+                    inference_spec={},
+                    api_spec=api_spec,
+                    backend="api",
+                    model=model,
+                    dependencies=dependencies,
+                    output_spec=output_spec,
+                    condition=condition,
+                )
+            )
+        return runtime_ops
 
     def _collect_graph_template_dependencies(
         self, template_spec: dict[str, Any]
