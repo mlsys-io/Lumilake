@@ -348,3 +348,78 @@ def test_merged_workflow_result_stays_row_aligned_after_optimize() -> None:
         for row_id in row_ids
     ]
     assert contents == ["a database index", "a message queue"]
+
+
+_YAML_API_NODE_FEEDS_LOCAL_NODE = textwrap.dedent(
+    """
+    name: api-node-feeds-local-node
+
+    inputs:
+      Topic:
+        - "a database index"
+        - "a message queue"
+
+    ops:
+      - id: "Summarise"
+        op: LLMChatOp
+        inputs: [Topic]
+        messages:
+          - role: system
+            content: "Answer in one short sentence."
+          - role: user
+            content: "Topic"
+        config:
+          model: model-a
+          api:
+            url: https://lum.id/llm/v1/chat/completions
+
+      - id: "Critique"
+        op: LLMChatOp
+        inputs: ["Summarise"]
+        messages:
+          - role: system
+            content: "Reply with one word."
+          - role: user
+            content: "Summarise"
+        config:
+          model: meta-llama/Llama-3.1-8B-Instruct
+
+    outputs:
+      - name: result
+        ref: "Critique"
+    """
+)
+
+
+def test_api_row_fanned_non_terminal_node_survives_dedupe() -> None:
+    """A row-fanned API node that is not itself output-mapped (it feeds a
+    downstream local op instead) reuses the same unresolved data_spec for
+    every row - only api_spec differs per row. The optimizer's dedupe
+    signature must include api_spec, or it will incorrectly collapse
+    distinct rows of a non-terminal API node into one."""
+    specs = parse_yaml_payload(_YAML_API_NODE_FEEDS_LOCAL_NODE)
+    spec = specs["api-node-feeds-local-node"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    summarise_id = next(
+        op_id
+        for op_id, op_dict in spec["graph"].items()
+        if op_dict.get("_op") == "LLMChatOp" and "api" in op_dict.get("config", {})
+    )
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    summarise_row_ids = runtime_graph.dsl_to_runtime[summarise_id]
+    assert len(summarise_row_ids) == 2
+
+    optimized_graph, _ = HaloOptimizer().optimize_graphs({"wf": runtime_graph})
+
+    optimized_summarise_ids = {
+        node_id for node_id in summarise_row_ids if node_id in optimized_graph.nodes
+    }
+    assert len(optimized_summarise_ids) == 2
+
+    contents = [
+        optimized_graph.nodes[row_id].api_spec["json"]["messages"][-1]["content"]
+        for row_id in summarise_row_ids
+    ]
+    assert contents == ["a database index", "a message queue"]
