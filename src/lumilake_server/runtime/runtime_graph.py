@@ -1564,26 +1564,24 @@ class RuntimeGraphBuilder:
         format_options = options.get("format") or {}
         messages_spec = format_options.get("messages") or []
         columns_spec = template_spec.get("columns") or []
+        steps_spec = format_options.get("steps") or []
 
         column_by_label: dict[str, dict[str, Any]] = {}
         for col in columns_spec:
             if isinstance(col, dict) and isinstance(col.get("label"), str):
                 column_by_label[col["label"]] = col
 
-        def _resolve_content_rows(content: Any) -> list[str]:
-            if not isinstance(content, str):
-                raise ValueError(
-                    f"LLMChatOp '{llm_op_id}' API mode requires string message"
-                    f" content, got {type(content).__name__}."
-                )
-            column = column_by_label.get(content)
-            if column is None:
-                return [content]
+        step_by_label: dict[str, dict[str, Any]] = {}
+        for step in steps_spec:
+            if isinstance(step, dict) and isinstance(step.get("label"), str):
+                step_by_label[step["label"]] = step
+
+        def _resolve_literal_column(label: str, column: dict[str, Any]) -> list[str]:
             data = column.get("data")
             if not isinstance(data, dict) or data.get("type") != "list":
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' API mode cannot render message"
-                    f" referencing column '{content}' from a runtime node; only"
+                    f" referencing column '{label}' from a runtime node; only"
                     " literal inputs are supported."
                 )
             items = data.get("items")
@@ -1594,6 +1592,54 @@ class RuntimeGraphBuilder:
                     f" per message column, got {count}."
                 )
             return [str(item) for item in items]
+
+        def _resolve_label_rows(label: str) -> list[str]:
+            column = column_by_label.get(label)
+            if column is not None:
+                return _resolve_literal_column(label, column)
+
+            step = step_by_label[label]
+            if "function" in step:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode cannot render message step"
+                    f" '{label}': function inputs are not supported; only literal"
+                    " inputs and format templates are."
+                )
+            template = step["template"]
+            arguments = step.get("arguments") or []
+            arg_rows: dict[str, list[str]] = {}
+            step_row_count = 1
+            for argument in arguments:
+                arg_label = argument["label"]
+                value_label = argument["value"]
+                rows = _resolve_label_rows(value_label)
+                if len(rows) > 1:
+                    if step_row_count != 1 and step_row_count != len(rows):
+                        raise ValueError(
+                            f"LLMChatOp '{llm_op_id}' API mode step '{label}' has"
+                            " mismatched row counts across its arguments."
+                        )
+                    step_row_count = len(rows)
+                arg_rows[arg_label] = rows
+            return [
+                template.format(
+                    **{
+                        arg_label: rows[index] if len(rows) > 1 else rows[0]
+                        for arg_label, rows in arg_rows.items()
+                    }
+                )
+                for index in range(step_row_count)
+            ]
+
+        def _resolve_content_rows(content: Any) -> list[str]:
+            if not isinstance(content, str):
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode requires string message"
+                    f" content, got {type(content).__name__}."
+                )
+            if content in column_by_label or content in step_by_label:
+                return _resolve_label_rows(content)
+            return [content]
 
         resolved: list[tuple[str, list[str]]] = []
         row_count = 1

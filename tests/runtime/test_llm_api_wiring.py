@@ -1,3 +1,5 @@
+import textwrap
+
 import pytest
 from lumilake import envs
 
@@ -10,6 +12,8 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
+from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 
 _LUMID_URL = "http://lumid-data"
@@ -251,3 +255,96 @@ def test_api_fanout_row_order_matches_input_across_two_nodes() -> None:
             for row_id in row_ids
         ]
         assert contents == ["NVDA", "AAPL", "MSFT"]
+
+
+_YAML_SINGLE_HOP_TWO_ROWS = textwrap.dedent(
+    """
+    name: yaml-api-two-rows
+
+    inputs:
+      Topic:
+        - "a database index"
+        - "a message queue"
+
+    ops:
+      - id: "Summarise"
+        op: LLMChatOp
+        inputs: [Topic]
+        messages:
+          - role: system
+            content: "Answer in one short sentence."
+          - role: user
+            content: "Topic"
+        config:
+          model: meta-llama/Llama-3.1-8B-Instruct
+          api:
+            url: https://lum.id/llm/v1/chat/completions
+
+    outputs:
+      - name: result
+        ref: "Summarise"
+    """
+)
+
+
+def _build_yaml_two_row_graph() -> tuple[RuntimeGraph, str]:
+    specs = parse_yaml_payload(_YAML_SINGLE_HOP_TWO_ROWS)
+    spec = specs["yaml-api-two-rows"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    llm_id = next(
+        op_id
+        for op_id, op_dict in spec["graph"].items()
+        if op_dict.get("_op") == "LLMChatOp"
+    )
+    return RuntimeGraphBuilder().build(compiled), llm_id
+
+
+def test_yaml_wrapped_bare_reference_fans_out_row_aligned_nodes() -> None:
+    """A bare ``content: "Topic"`` reference in YAML is implicitly wrapped
+    into a FormatOp step by the parser (mirroring n8n's prompt wrapping), so
+    it never appears as a literal column to the runtime graph builder - only
+    as a format step. Two input rows must still produce two row-aligned API
+    nodes through that step, not collapse to one."""
+    runtime_graph, llm_id = _build_yaml_two_row_graph()
+
+    row_ids = runtime_graph.dsl_to_runtime[llm_id]
+    assert row_ids == [llm_id, f"{llm_id}__row1"]
+
+    contents = [
+        runtime_graph.nodes[row_id].api_spec["json"]["messages"][-1]["content"]
+        for row_id in row_ids
+    ]
+    assert contents == ["a database index", "a message queue"]
+
+    assert runtime_graph.output_node_map[row_ids[0]] == "result"
+    assert runtime_graph.output_node_map[row_ids[1]] == "result"
+
+
+def test_merged_workflow_result_stays_row_aligned_after_optimize() -> None:
+    """The merged/optimized graph that scheduling actually runs against must
+    keep both per-row output nodes distinct and row-ordered; a job with two
+    input rows must resolve to two output entries, not collapse to one."""
+    runtime_graph, llm_id = _build_yaml_two_row_graph()
+
+    optimized_graph, output_mapping = HaloOptimizer().optimize_graphs(
+        {"yaml-api-two-rows": runtime_graph}
+    )
+
+    row_ids = runtime_graph.dsl_to_runtime[llm_id]
+    assert len(row_ids) == 2
+
+    result_nodes = [
+        node_id
+        for node_id, name in optimized_graph.output_node_map.items()
+        if name == "result"
+    ]
+    assert sorted(result_nodes) == sorted(row_ids)
+    for node_id in result_nodes:
+        assert output_mapping[node_id] == ("yaml-api-two-rows", "result")
+
+    contents = [
+        optimized_graph.nodes[row_id].api_spec["json"]["messages"][-1]["content"]
+        for row_id in row_ids
+    ]
+    assert contents == ["a database index", "a message queue"]

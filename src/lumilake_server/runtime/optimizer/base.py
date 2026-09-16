@@ -81,6 +81,7 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
     normalized_inference_spec = _normalize_spec_for_signature(
         op.inference_spec, mapping
     )
+    normalized_api_spec = _normalize_spec_for_signature(op.api_spec, mapping)
     normalized_output_spec = (
         _normalize_spec_for_signature(op.output_spec, mapping)
         if op.output_spec is not None
@@ -94,6 +95,7 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
         _stable_json(normalized_data_spec),
         _stable_json(normalized_model_spec),
         _stable_json(normalized_inference_spec),
+        _stable_json(normalized_api_spec),
         (
             _stable_json(normalized_output_spec)
             if normalized_output_spec is not None
