@@ -5,17 +5,21 @@ import hashlib
 import logging
 import time
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 
+from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.utils.utils import unique_id
 
+from .attained import AttainedService
 from .base import (
+    AbortReason,
     BaseJobManager,
     BatchReservation,
     BatchSelection,
@@ -23,6 +27,7 @@ from .base import (
     WorkflowItem,
 )
 from .cluster_algo.clustering import select_affinity_batch_ids
+from .cost import CostParams, estimate_area
 
 HardwareSignature = tuple[int | None, str | None, int | None, str | None]
 """Stable tuple form of ``HardwareRequirements`` used inside the partition key.
@@ -31,9 +36,12 @@ HardwareSignature = tuple[int | None, str | None, int | None, str | None]
 the override co-batch with each other.
 """
 
-PartitionKey = tuple[str, str | None, str, HardwareSignature]
-"""``(principal_id, dispatch_token, optimizer_type, hardware_signature)`` —
-two requests share a FlowMesh dispatch iff their partition keys are equal.
+PartitionKey = tuple[str, str | None, str, HardwareSignature, bool]
+"""``(principal_id, dispatch_token, optimizer_type, hardware_signature,
+requires_gpu)`` — two requests share a FlowMesh dispatch iff their partition
+keys are equal. ``requires_gpu`` splits CPU and GPU items into different
+partitions so a busy GPU group never suppresses CPU-only items in the same
+principal/token/optimizer/hardware class.
 """
 
 
@@ -69,6 +77,14 @@ class PriorityJobManager(BaseJobManager):
         quantums: dict[Priority, int] | None = None,
         starvation_limit: int = envs.LUMILAKE_STARVATION_LIMIT,
         default_optimizer_type: str = envs.LUMILAKE_DEFAULT_OPTIMIZER,
+        cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
+        gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
+        policy: str = envs.LUMILAKE_SCHEDULER_POLICY,
+        fair_share_target: float = envs.LUMILAKE_FAIR_SHARE_TARGET,
+        fairness_half_life_seconds: float = envs.LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS,
+        cost_params: CostParams | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
         logger: Logger | None = None,
         log_level: LogLevel | None = None,
     ) -> None:
@@ -79,6 +95,19 @@ class PriorityJobManager(BaseJobManager):
         for priority in Priority:
             self._quantums.setdefault(priority, 1)
         self._starvation_limit = starvation_limit
+        self._cpu_worker_group_size = max(0, cpu_worker_group_size)
+        self._gpu_worker_group_size = max(0, gpu_worker_group_size)
+        self._policy = policy
+        self._fair_share_target = fair_share_target
+        self._cost_params = cost_params or CostParams()
+        self._attained = AttainedService(fairness_half_life_seconds, clock=clock)
+        # Callable ``(worker_profile, HardwareRequirements) -> bool`` used to
+        # filter candidate workers by hardware when capacity is supplied.
+        # Defaults to accepting every worker so selection is unconstrained when
+        # the server does not wire a checker.
+        self._worker_meets_hardware = worker_meets_hardware or (
+            lambda _profile, _hw: True
+        )
         # Normalize None optimizer_type to this default before partitioning so
         # two requests that are semantically equivalent (both fall back to the
         # server default) are co-batched rather than split into separate batches.
@@ -109,13 +138,72 @@ class PriorityJobManager(BaseJobManager):
     @staticmethod
     def _redact_partition(
         partition: PartitionKey,
-    ) -> tuple[str, str, str, HardwareSignature]:
+    ) -> tuple[str, str, str, HardwareSignature, bool]:
         """Render a partition for logs without leaking the bearer token."""
-        principal_id, token, optimizer_type, hardware = partition
+        principal_id, token, optimizer_type, hardware, requires_gpu = partition
         if token is None:
-            return (principal_id, "no-token", optimizer_type, hardware)
+            return (principal_id, "no-token", optimizer_type, hardware, requires_gpu)
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
-        return (principal_id, f"tok:{digest}", optimizer_type, hardware)
+        return (principal_id, f"tok:{digest}", optimizer_type, hardware, requires_gpu)
+
+    def _partition_of(self, item: WorkflowItem) -> PartitionKey:
+        return (
+            item.config.principal_id,
+            item.dispatch_token,
+            item.config.optimizer_type or self._default_optimizer_type,
+            _hardware_signature(item.config.hardware_requirements),
+            item.requires_gpu,
+        )
+
+    def _partition_eligible(
+        self,
+        partition: PartitionKey,
+        capacity: FreeCapacity,
+    ) -> bool:
+        """True when ``capacity`` holds enough idle workers to run ``partition``.
+
+        A GPU-requiring partition needs both the CPU and GPU group sizes (the
+        dispatch path always claims a CPU group alongside a GPU group); a
+        CPU-only partition needs only the CPU group size. When the capacity
+        snapshot carries worker profiles, the candidate workers must also meet
+        the partition's hardware signature, so selection never picks a
+        partition that cannot be claimed.
+        """
+        requires_gpu = partition[4]
+        cpu_group_size = self._cpu_worker_group_size
+        gpu_group_size = self._gpu_worker_group_size if requires_gpu else 0
+        if not capacity.can_satisfy(
+            cpu_group_size=cpu_group_size, gpu_group_size=gpu_group_size
+        ):
+            return False
+        if not capacity.profiles:
+            return True
+        hardware = self._hardware_from_signature(partition[3])
+        return capacity.can_satisfy_hardware(
+            cpu_group_size=cpu_group_size,
+            gpu_group_size=gpu_group_size,
+            worker_meets_hardware=self._worker_meets_hardware,
+            hardware=hardware,
+        )
+
+    @staticmethod
+    def _hardware_from_signature(
+        signature: HardwareSignature,
+    ) -> HardwareRequirements | None:
+        """Rebuild a :class:`HardwareRequirements` from a partition signature.
+
+        ``(None, None, None, None)`` means "use env defaults" and maps to
+        ``None`` so the hardware filter degrades to "no constraint".
+        """
+        cpu, memory, gpu, gpu_memory = signature
+        if cpu is None and memory is None and gpu is None and gpu_memory is None:
+            return None
+        return HardwareRequirements(
+            cpu=cpu,
+            memory=memory,
+            gpu=gpu,
+            gpu_memory=gpu_memory,
+        )
 
     @staticmethod
     def _format_item(item: WorkflowItem) -> str:
@@ -123,7 +211,8 @@ class PriorityJobManager(BaseJobManager):
             f"{item.workflow_id}"
             f"(req={item.request_id},user={item.config.user_id},pri={item.config.priority.value},"
             f"graph={item.graph_name},public={item.public_graph_name},"
-            f"slice={item.slice_index},miss={item.miss_count})"
+            f"slice={item.slice_index},miss={item.miss_count},"
+            f"chain={item.config.chain_id},round={item.config.chain_round})"
         )
 
     @staticmethod
@@ -167,6 +256,7 @@ class PriorityJobManager(BaseJobManager):
                     config=job.config,
                     enqueued_at=now,
                     dispatch_token=job.dispatch_token,
+                    requires_gpu=job.requires_gpu.get(graph_name, False),
                 )
             )
         async with self._lock:
@@ -178,12 +268,7 @@ class PriorityJobManager(BaseJobManager):
                     self._rr_user_order[job.config.priority].append(owner_id)
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
-                partition: PartitionKey = (
-                    item.config.principal_id,
-                    item.dispatch_token,
-                    item.config.optimizer_type or self._default_optimizer_type,
-                    _hardware_signature(item.config.hardware_requirements),
-                )
+                partition: PartitionKey = self._partition_of(item)
                 if partition not in self._rr_partition_members:
                     self._rr_partition_members.add(partition)
                     self._rr_partition_order.append(partition)
@@ -235,11 +320,20 @@ class PriorityJobManager(BaseJobManager):
         for workflow_id in workflow_ids:
             self._items.pop(workflow_id, None)
 
-    async def reserve_batch(self, batch_size: int) -> BatchReservation | None:
+    async def reserve_batch(
+        self,
+        batch_size: int,
+        *,
+        capacity: FreeCapacity | None = None,
+    ) -> BatchReservation | None:
         """Compute the next batch without mutating queue state.
 
         See :class:`BatchReservation` — the returned handle must be either
         committed (``commit_reservation``) or aborted (``abort_reservation``).
+
+        When ``capacity`` is given, partitions the current free capacity cannot
+        run are excluded from selection before the round-robin pick and before
+        starvation pinning.
         """
         if batch_size <= 0:
             batch_size = 1
@@ -256,18 +350,26 @@ class PriorityJobManager(BaseJobManager):
             for priority in Priority:
                 for queue in self._queues[priority].values():
                     for item in queue:
-                        partition: PartitionKey = (
-                            item.config.principal_id,
-                            item.dispatch_token,
-                            item.config.optimizer_type or self._default_optimizer_type,
-                            _hardware_signature(item.config.hardware_requirements),
-                        )
+                        partition: PartitionKey = self._partition_of(item)
                         present_partitions.add(partition)
                         items_by_partition[partition] = (
                             items_by_partition.get(partition, 0) + 1
                         )
                         if item.miss_count >= self._starvation_limit:
                             starved_global.append(item)
+
+            if capacity is not None:
+                eligible = {
+                    partition
+                    for partition in present_partitions
+                    if self._partition_eligible(partition, capacity)
+                }
+                starved_global = [
+                    item
+                    for item in starved_global
+                    if self._partition_of(item) in eligible
+                ]
+                present_partitions = eligible
 
             if not present_partitions:
                 self._not_empty.clear()
@@ -277,12 +379,7 @@ class PriorityJobManager(BaseJobManager):
             rr_partition_to_advance: PartitionKey | None = None
             if starved_global:
                 head = starved_global[0]
-                anchor_partition = (
-                    head.config.principal_id,
-                    head.dispatch_token,
-                    head.config.optimizer_type or self._default_optimizer_type,
-                    _hardware_signature(head.config.hardware_requirements),
-                )
+                anchor_partition = self._partition_of(head)
             else:
                 picked = self._pick_partition_round_robin_locked(present_partitions)
                 if picked is None:
@@ -295,6 +392,7 @@ class PriorityJobManager(BaseJobManager):
                             p[1] or "",
                             p[2],
                             tuple("" if v is None else str(v) for v in p[3]),
+                            p[4],
                         ),
                     ):
                         if partition not in self._rr_partition_members:
@@ -370,11 +468,18 @@ class PriorityJobManager(BaseJobManager):
                 candidates, base_batch_ids, batch_size
             )
             if not starved:
-                selected_ids = self._apply_user_fairness(
-                    candidates,
-                    selected_ids,
-                    batch_size,
-                )
+                if self._policy == "fair_index":
+                    selected_ids = self._apply_fair_index(
+                        candidates,
+                        selected_ids,
+                        batch_size,
+                    )
+                else:
+                    selected_ids = self._apply_user_fairness(
+                        candidates,
+                        selected_ids,
+                        batch_size,
+                    )
             if starved:
                 self.logger.info(
                     "Starvation override: forced=%d selected=%d forced_items=%s",
@@ -435,6 +540,13 @@ class PriorityJobManager(BaseJobManager):
                 )
             payload: _ReservationPayload = reservation._payload
             selected_set = payload.selected_workflow_ids
+            # 0. Charge attained service for committed items (not on selection,
+            # so aborted reservations do not corrupt the accounting).
+            if self._policy == "fair_index":
+                for charged in reservation.selection.workflows:
+                    area = estimate_area(charged, self._cost_params)
+                    if area is not None and area > 0:
+                        self._attained.charge(self._queue_owner_id(charged), area)
             # 1. Bump miss counters for non-selected candidates.
             for workflow_id in payload.miss_increment_targets:
                 item = self._items.get(workflow_id)
@@ -456,12 +568,7 @@ class PriorityJobManager(BaseJobManager):
                 self._prune_empty_user_queues_locked(priority)
             # 3. Drop RR partitions whose queues drained completely.
             remaining_partitions = {
-                (
-                    item.config.principal_id,
-                    item.dispatch_token,
-                    item.config.optimizer_type or self._default_optimizer_type,
-                    _hardware_signature(item.config.hardware_requirements),
-                )
+                self._partition_of(item)
                 for priority in Priority
                 for queue in self._queues[priority].values()
                 for item in queue
@@ -493,13 +600,23 @@ class PriorityJobManager(BaseJobManager):
                 self._not_empty.clear()
             self._active_reservation = None
 
-    async def abort_reservation(self, reservation: BatchReservation) -> None:
+    async def abort_reservation(
+        self,
+        reservation: BatchReservation,
+        *,
+        reason: AbortReason = AbortReason.POLICY,
+    ) -> None:
         async with self._lock:
             if self._active_reservation is not reservation:
                 raise RuntimeError(
                     "abort_reservation: reservation is not the active one"
                 )
             self._active_reservation = None
+            if reason == AbortReason.CAPACITY:
+                self.logger.debug(
+                    "Aborted reservation for capacity (selected=%d)",
+                    len(reservation.selection.workflows),
+                )
 
     def _build_candidate_pool_for_partition_locked(
         self, partition: PartitionKey
@@ -589,7 +706,13 @@ class PriorityJobManager(BaseJobManager):
         if not user_queues or not rr_order:
             return [], False
 
-        principal_id, dispatch_token, optimizer_type, hardware_signature = partition
+        (
+            principal_id,
+            dispatch_token,
+            optimizer_type,
+            hardware_signature,
+            requires_gpu,
+        ) = partition
         filtered: dict[str, list[WorkflowItem]] = {}
         for user_id in rr_order:
             queue = user_queues.get(user_id)
@@ -604,6 +727,7 @@ class PriorityJobManager(BaseJobManager):
                 == optimizer_type
                 and _hardware_signature(item.config.hardware_requirements)
                 == hardware_signature
+                and item.requires_gpu == requires_gpu
             ]
             if user_items:
                 filtered[user_id] = user_items
@@ -717,3 +841,40 @@ class PriorityJobManager(BaseJobManager):
             if len(final_ids) >= batch_size:
                 break
         return final_ids[:batch_size]
+
+    def _apply_fair_index(
+        self,
+        candidates: list[WorkflowItem],
+        selected_ids: list[str],
+        batch_size: int,
+    ) -> list[str]:
+        """Select the batch by the fair-weighted index ``w(user) / p_hat(item)``.
+
+        ``w(user) = 1 / (1 + attained(user) / fair_share_target)``; higher index
+        first (Smith's rule with a fairness weight). Items the cost model cannot
+        estimate fall back to least-attained-service (ranked as if ``p_hat`` were
+        the user's current decayed attained area). Affinity's ``selected_ids``
+        order breaks ties so clustering still shapes the batch.
+        """
+        affinity_rank = {wid: i for i, wid in enumerate(selected_ids)}
+        rank: dict[str, float] = {}
+        for item in candidates:
+            user_id = self._queue_owner_id(item)
+            attained = self._attained.get(user_id)
+            weight = 1.0 / (1.0 + attained / self._fair_share_target)
+            p_hat = estimate_area(item, self._cost_params)
+            if p_hat is None or p_hat <= 0:
+                # LAS fallback: treat p_hat as the user's attained area.
+                index = weight / max(attained, 1e-9)
+            else:
+                index = weight / p_hat
+            rank[item.workflow_id] = index
+
+        ordered = sorted(
+            candidates,
+            key=lambda item: (
+                -rank[item.workflow_id],
+                affinity_rank.get(item.workflow_id, len(selected_ids)),
+            ),
+        )
+        return [item.workflow_id for item in ordered[:batch_size]]

@@ -3,12 +3,19 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from lumilake_server.graphs import CompiledGraph
+from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.protocol import LumilakeRequestConfig
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+
+
+class AbortReason(StrEnum):
+    POLICY = "policy"  # not selected by the ordering policy
+    CAPACITY = "capacity"  # selected, but workers could not be claimed
 
 
 @dataclass(slots=True)
@@ -30,6 +37,7 @@ class WorkflowItem:
     enqueued_at: float
     dispatch_token: str | None = None
     miss_count: int = 0
+    requires_gpu: bool = False
 
 
 @dataclass(slots=True)
@@ -69,6 +77,7 @@ class Job:
     workflow_slices: dict[str, WorkflowSliceMeta]
     config: LumilakeRequestConfig
     dispatch_token: str | None = None
+    requires_gpu: dict[str, bool] = field(default_factory=dict)
 
 
 class BaseJobManager(ABC):
@@ -94,13 +103,21 @@ class BaseJobManager(ABC):
         """Return (pending workflow count, oldest enqueue timestamp)."""
 
     @abstractmethod
-    async def reserve_batch(self, batch_size: int) -> BatchReservation | None:
+    async def reserve_batch(
+        self,
+        batch_size: int,
+        *,
+        capacity: FreeCapacity | None = None,
+    ) -> BatchReservation | None:
         """Compute (without consuming) the next batch the manager would select.
 
         Returns ``None`` if no batch is available. The reservation must be
         finalized with ``commit_reservation`` (queue is updated) or
         released with ``abort_reservation`` (queue is unchanged).
         Overlapping reservations are not supported.
+
+        ``capacity`` narrows selection to partitions the current free capacity
+        can run; ``None`` means unconstrained.
         """
 
     @abstractmethod
@@ -108,7 +125,12 @@ class BaseJobManager(ABC):
         """Apply the queue mutations associated with ``reservation``."""
 
     @abstractmethod
-    async def abort_reservation(self, reservation: BatchReservation) -> None:
+    async def abort_reservation(
+        self,
+        reservation: BatchReservation,
+        *,
+        reason: AbortReason = AbortReason.POLICY,
+    ) -> None:
         """Discard the reservation; the queue is left exactly as it was."""
 
     async def select_batch(self, batch_size: int) -> BatchSelection | None:

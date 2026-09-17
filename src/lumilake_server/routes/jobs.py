@@ -1591,6 +1591,8 @@ async def _submit_dynamic_child(
             optimizer_type,
             hardware_requirements,
             suppress_hooks=True,
+            chain_id=parent_job_id,
+            chain_round=round_index,
         )
     )
     try:
@@ -1913,6 +1915,8 @@ async def _run_job(
     hardware_requirements: HardwareRequirements | None = None,
     parsed_graphs: dict[str, CompiledGraph] | None = None,
     suppress_hooks: bool = False,
+    chain_id: str | None = None,
+    chain_round: int = 0,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -1970,6 +1974,8 @@ async def _run_job(
                 principal_id=principal.principal_id,
                 optimizer_type=optimizer_type,
                 hardware_requirements=hardware_requirements,
+                chain_id=chain_id,
+                chain_round=chain_round,
             ),
             workflow_slices=workflow_slices,
         )

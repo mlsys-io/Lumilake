@@ -779,3 +779,21 @@ async def test_jobs_without_hardware_override_cobatch() -> None:
     assert batch is not None
     assert len(batch.workflows) == 2
     assert {item.request_id for item in batch.workflows} == {"req-1", "req-2"}
+
+
+def test_standalone_job_config_has_no_chain_lineage() -> None:
+    """A non-dynamic job's config carries no chain lineage: ``chain_id`` is
+    ``None`` and ``chain_round`` defaults to zero."""
+    job = _build_job("req-standalone", "graph-1")
+    assert job.config.chain_id is None
+    assert job.config.chain_round == 0
+
+
+def test_chain_round_rejects_negative_values() -> None:
+    """``chain_round`` is zero-based and must not go negative."""
+    with pytest.raises(ValueError):
+        LumilakeRequestConfig(
+            user_id="u",
+            principal_id="p",
+            chain_round=-1,
+        )

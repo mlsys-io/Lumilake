@@ -59,6 +59,11 @@ class LumilakeRequestConfig(BaseModel):
     """Per-job hardware overrides. Unset fields fall back to ``HARDWARE_*``
     env defaults. Different hardware tuples land in distinct FlowMesh
     dispatches (the job manager treats hardware as part of the partition key)."""
+    chain_id: str | None = None
+    """Parent job id when this request is one round of a dynamic chain; ``None``
+    for a standalone job. Chains are the fairness principal for scheduling."""
+    chain_round: int = Field(default=0, ge=0)
+    """Zero-based round index within the chain; ``0`` for a standalone job."""
 
 
 class LumilakeRequest(BaseModel):
