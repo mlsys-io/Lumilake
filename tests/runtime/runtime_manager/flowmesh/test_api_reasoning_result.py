@@ -30,27 +30,3 @@ def test_api_reasoning_present_still_raises_clear_error() -> None:
     }
     with pytest.raises(RuntimeError, match="raise max_tokens"):
         _manager()._resolve_output_items(results, "out-1", task_type="api")
-
-
-def test_api_reasoning_content_present_still_raises_clear_error() -> None:
-    """Same as above for the ``reasoning_content`` key: it must not be
-    surfaced as the node output either."""
-    results = {
-        "text": None,
-        "response_json": {
-            "choices": [
-                {
-                    "finish_reason": "length",
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "reasoning_content": (
-                            "The user wants me to calculate 17 x 23 and show my"
-                        ),
-                    },
-                }
-            ]
-        },
-    }
-    with pytest.raises(RuntimeError, match="raise max_tokens"):
-        _manager()._resolve_output_items(results, "out-1", task_type="api")

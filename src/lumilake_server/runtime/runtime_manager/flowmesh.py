@@ -718,13 +718,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         results_json: dict[str, Any],
         output_op_id: str,
         task_type: str | None = None,
+        prompt: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Normalize a retrieved result into an item list.
 
         Inference tasks return ``items``; embedding tasks return a flat
         result with no ``items`` key — treat that as a one-item batch. API
         tasks return the executor's ``text``/``response_json`` — wrap the
-        assistant text as a single ``items[].output`` entry.
+        assistant text as a single ``items[].output`` entry, carrying the
+        request's own ``prompt`` as ``metadata.prompt`` so history assembly
+        works the same as it does for a local inference item.
         """
         items = results_json.get("items")
         if isinstance(items, list) and items:
@@ -732,7 +735,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         if task_type == "api":
             text = results_json.get("text")
             if isinstance(text, str) and text:
-                return [{"output": text}]
+                item: dict[str, Any] = {"output": text}
+                if prompt is not None:
+                    item["metadata"] = {"prompt": prompt}
+                return [item]
             raise RuntimeError(
                 f"output {output_op_id} produced no API response text; the "
                 "model returned no content (a reasoning model may have spent "
@@ -1153,10 +1159,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
             results_json = await self.fm.results.retrieve(output_task_id)
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
+            api_prompt = None
+            if output_node is not None and output_node.task_type == "api":
+                api_messages = output_node.api_spec.get("json", {}).get("messages")
+                if isinstance(api_messages, list):
+                    api_prompt = api_messages
             items = self._resolve_output_items(
                 results_json,
                 output_op_id,
                 task_type=output_node.task_type if output_node else None,
+                prompt=api_prompt,
             )
 
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)

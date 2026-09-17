@@ -139,10 +139,19 @@ When a message's literal content resolves to a multi-row input column
 task per row instead of one aggregate call: row 0 keeps the op's own id,
 and row `i` (`i >= 1`) runs as `<op id>__row<i>`, each with that row's
 value substituted into the message content and each mapped back to the
-same declared output. Rows dispatch and complete independently, but the
-workflow's failure semantics are all-or-nothing: if any row's task fails,
-the whole workflow request fails and no partial per-row results are
-returned, even for rows that already completed successfully.
+same declared output. Rows dispatch and complete independently, but
+within a single FlowMesh workflow request the failure semantics are
+all-or-nothing: if any row's task fails, that workflow request fails
+and no partial per-row results are returned for it, even for rows that
+already completed successfully.
+
+This guarantee holds per FlowMesh workflow request, not per job. A
+job's input rows can be split across multiple `input_batch_size`
+slices, each dispatched as its own independent workflow request; one
+slice's failure does not roll back another slice's already-merged
+results. The job's final response mixes the failed slice's rows (empty
+output plus an error entry) with the other slice's real per-row
+values.
 
 ### LambdaOp
 

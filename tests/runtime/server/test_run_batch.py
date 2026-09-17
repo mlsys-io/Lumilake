@@ -12,6 +12,7 @@ from support.runtime_server import (
     make_batch,
     make_runtime_op,
     make_workflow,
+    make_workflow_slices_from_inputs,
 )
 
 import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
@@ -387,6 +388,56 @@ async def test_run_batch_tracks_success_only_completed_inputs(
     state = server._requests["req-a"]
     assert state.completed_input_items_success == 1
     assert state.successful_workflow_ids == {"wf-a"}
+
+
+@pytest.mark.asyncio
+async def test_run_batch_slice_failure_does_not_roll_back_other_slice_results(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OPS.md's all-or-nothing fan-out guarantee holds per FlowMesh workflow
+    request, not per job: a job's inputs can be split into multiple
+    input_batch_size slices, each dispatched as its own independent workflow
+    request across separate scheduling rounds. This pins that one slice's
+    later failure does not erase an earlier slice's already-merged success -
+    the existing fail-fast test only drives a single FlowMesh graph, which is
+    why it never covered a request spanning multiple slices."""
+    server = server_factory()
+    runtime_manager = RecordingRuntimeManager()
+    server.runtime_manager = cast(Any, runtime_manager)
+
+    slice0, slice1 = make_workflow_slices_from_inputs(
+        request_id="req-slices",
+        public_graph_name="shared",
+        entities=["NVDA", "AAPL"],
+    )
+    handlers = attach_request_states(server, [slice0, slice1])
+
+    async def _succeed_process_batch(
+        selected_batch: BatchSelection,
+        batch_id: str,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        *,
+        execution_request_id: str,
+        member_request_ids: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return {slice0.workflow_id: {"result": ["nvda-reply"]}}, {}
+
+    monkeypatch.setattr(server, "_process_batch", _succeed_process_batch)
+    await server._run_batch(["worker-1"], make_batch([slice0]))
+
+    async def _fail_process_batch(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("api row failed for AAPL")
+
+    monkeypatch.setattr(server, "_process_batch", _fail_process_batch)
+    await server._run_batch(["worker-1"], make_batch([slice1]))
+
+    assert len(handlers["req-slices"].results) == 1
+    response = handlers["req-slices"].results[0]
+    assert response.outputs["shared"]["result"] == ["nvda-reply", ""]
+    assert response.error_info is not None
+    assert any("api row failed for AAPL" in str(item) for item in response.error_info)
 
 
 @pytest.mark.asyncio
