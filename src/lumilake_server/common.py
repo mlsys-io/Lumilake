@@ -11,9 +11,6 @@ class Message:
         return asdict(self)
 
 
-DEFAULT_API_MODEL = "deepseek-v4-flash"
-
-
 @dataclass
 class ApiConfig:
     """External OpenAI-compatible LLM API endpoint. When ``url`` is absent it
@@ -22,9 +19,8 @@ class ApiConfig:
     trusted origin (see ``LUMILAKE_API_TRUSTED_ORIGINS``) the server attaches
     its own ``LUMILAKE_RUNTIME_TOKEN`` PAT instead. That header becomes part
     of the FlowMesh task spec submitted for execution and is redacted only
-    before archival and logging, never before dispatch. When ``model`` is
-    also absent, :meth:`GenerationConfig.resolved_model` falls back to the
-    top-level ``config.model`` and then to :data:`DEFAULT_API_MODEL`."""
+    before archival and logging, never before dispatch. ``model`` overrides
+    the top-level ``config.model`` for the request."""
 
     url: str | None = None
     model: str | None = None
@@ -38,9 +34,9 @@ class GenerationConfig:
     parser allowlist and the runtime inference_spec pick it up automatically;
     use ``extra_sampling_params`` for vendor-specific keys not worth typing.
 
-    ``model`` is required unless ``api`` is set: a locally-loaded backend has
-    no default to fall back to, but API mode resolves one via
-    :meth:`resolved_model`."""
+    ``model`` is required in both local and API mode: setting ``config.api``
+    routes the op to an external endpoint but does not relax the model
+    requirement, so the workflow spec reads the same either way."""
 
     model: str = ""
     api: ApiConfig | None = None
@@ -118,17 +114,17 @@ class GenerationConfig:
                 "GenerationConfig.api must be a mapping or ApiConfig, got "
                 f"{type(self.api).__name__}."
             )
-        if self.api is None and not self.model:
+        if not self.model:
             raise ValueError(
-                "GenerationConfig.model is required when config.api is not set."
+                "GenerationConfig.model is required in both local and API mode."
             )
 
     def resolved_model(self) -> str:
-        """The model name to submit. Local mode always has a required
-        ``model``; API mode prefers ``api.model``, then the top-level
-        ``model``, then :data:`DEFAULT_API_MODEL`."""
+        """The model name to submit. API mode prefers ``api.model``, then the
+        top-level ``model``; local mode returns ``model`` directly. ``model``
+        is required in both modes, so this never falls back to a default."""
         if self.api is not None:
-            return self.api.model or self.model or DEFAULT_API_MODEL
+            return self.api.model or self.model
         return self.model
 
     def to_dict(self) -> dict[str, Any]:

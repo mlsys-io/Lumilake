@@ -29,7 +29,6 @@ _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
 _RUNTIME_TOKEN = "test" + "-pat"
 _DEFAULT_API_URL = "https://lum.id/llm/v1/chat/completions"
-_DEFAULT_API_MODEL = "deepseek-v4-flash"
 
 
 @pytest.fixture(autouse=True)
@@ -188,20 +187,19 @@ def test_api_url_omitted_defaults_to_lumid() -> None:
     assert node.api_spec["url"] == _DEFAULT_API_URL
 
 
-def test_api_model_omitted_defaults_to_deepseek() -> None:
-    runtime_graph, llm_id = _build_api_graph(api=ApiConfig(), model="")
-    node = runtime_graph.nodes[llm_id]
-    assert node.api_spec["json"]["model"] == _DEFAULT_API_MODEL
+def test_api_model_omitted_is_rejected() -> None:
+    """API mode is a backend switch, not a model source: an empty top-level
+    ``model`` must be rejected at config construction, exactly like local
+    mode, so the workflow spec reads the same either way."""
+    with pytest.raises(ValueError, match="model is required"):
+        GenerationConfig(model="", api=ApiConfig())
 
 
-def test_yaml_api_llm_op_without_config_model_reaches_the_default() -> None:
-    """A YAML LLMChatOp that sets ``config.api`` and omits ``config.model``
-    entirely (not merely an empty string) must parse and resolve to the
-    typed API default end-to-end. Pins yaml_parser.py's
-    ``_emit_llm_like_op`` relaxation (the ``is_api_chat_op`` check) that
-    lets ``config`` omit the ``model`` key when ``config.api`` is set;
-    without it, ``parse_yaml_payload`` raises before this op ever reaches
-    the runtime graph."""
+def test_yaml_api_llm_op_without_config_model_is_rejected() -> None:
+    """A YAML LLMChatOp that sets ``config.api`` but omits ``config.model``
+    must be rejected at parse time, exactly like local mode: ``config.api`` is
+    a backend switch and must not relax the model requirement, so the workflow
+    spec reads the same either way."""
     yaml_text = textwrap.dedent(
         """
         name: yaml-api-no-model
@@ -220,19 +218,8 @@ def test_yaml_api_llm_op_without_config_model_reaches_the_default() -> None:
             ref: "Ask"
         """
     )
-    specs = parse_yaml_payload(yaml_text)
-    spec = specs["yaml-api-no-model"]
-    graph = Graph.from_json(spec["graph"])
-    compiled = graph.compile()
-    llm_id = next(
-        op_id
-        for op_id, op_dict in spec["graph"].items()
-        if op_dict.get("_op") == "LLMChatOp"
-    )
-
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    assert runtime_graph.nodes[llm_id].api_spec["json"]["model"] == _DEFAULT_API_MODEL
+    with pytest.raises(ValueError, match="requires 'config' with a 'model' field"):
+        parse_yaml_payload(yaml_text)
 
 
 def test_yaml_api_config_string_fails_at_graph_build_not_runtime_build() -> None:

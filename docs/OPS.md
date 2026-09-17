@@ -114,12 +114,12 @@ ops:
 ```
 
 `config.api.url` is optional and defaults to the serving endpoint
-`https://lum.id/llm/v1/chat/completions`. `config.model` is also optional
-once `config.api` is set — the request model resolves from `config.api.model`,
-then the top-level `config.model`, then the typed default `deepseek-v4-flash`
-(`LLMVisionOp` always runs against a locally-loaded model and still requires
-`config.model`). Sampler fields on `config` (e.g.
-`max_tokens`, `temperature`) are merged into the request body.
+`https://lum.id/llm/v1/chat/completions`. `config.model` is required in both
+local and API mode — `config.api` is a backend switch and does not relax the
+model requirement, so the workflow spec reads the same either way. The request
+model resolves from `config.api.model`, then the top-level `config.model`.
+Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
+the request body.
 
 `config.api.timeout_sec` sets the per-request timeout for the API call,
 in seconds. When set, it is emitted into the FlowMesh `api` task spec and

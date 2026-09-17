@@ -51,9 +51,11 @@ ops:
       - role: user
         content: "Topic"
     config:
+      model: qwen3.8-27b
       max_tokens: 256
       temperature: 0.2
-      api: {}
+      api:
+        timeout_sec: 300
 
   - id: "Polish"
     op: LLMChatOp
@@ -77,9 +79,11 @@ ops:
       - role: user
         content: "Polish"
     config:
+      model: qwen3.8-27b
       max_tokens: 256
       temperature: 0.0
-      api: {}
+      api:
+        timeout_sec: 300
 
 outputs:
   - name: result

@@ -1,4 +1,5 @@
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -435,10 +436,10 @@ def test_llm_config_accepts_api_block() -> None:
     }
 
 
-def test_llm_chat_config_may_omit_model_when_api_is_set() -> None:
-    """API-mode LLMChatOp does not require a top-level ``config.model`` -
-    GenerationConfig.resolved_model() supplies the typed default at graph
-    build time."""
+def test_llm_chat_config_requires_model_even_with_api_set() -> None:
+    """API-mode LLMChatOp still requires a top-level ``config.model`` -
+    ``config.api`` is a backend switch and must not relax the model
+    requirement, so the workflow spec reads the same either way."""
     yaml_text = textwrap.dedent(
         """
         name: api_llm_no_model
@@ -455,11 +456,8 @@ def test_llm_chat_config_may_omit_model_when_api_is_set() -> None:
             ref: ask
         """
     )
-    specs = parse_yaml_payload(yaml_text)
-    graph_dict = specs["api_llm_no_model"]["graph"]
-    llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
-    assert "model" not in llm_op["config"]
-    assert llm_op["config"]["api"] == {}
+    with pytest.raises(ValueError, match="requires 'config' with a 'model' field"):
+        parse_yaml_payload(yaml_text)
 
 
 def test_llm_vision_config_still_requires_model_even_with_api_set() -> None:
@@ -515,3 +513,23 @@ def test_llm_config_rejects_unknown_field() -> None:
     )
     with pytest.raises(ValueError, match="unknown fields"):
         parse_yaml_payload(yaml_text)
+
+
+def test_api_chat_api_template_names_a_model_on_every_llm_op() -> None:
+    """The committed api-chat-api.yaml example must parse under the parity
+    contract: every LLMChatOp - API-backed or local - names a ``config.model``,
+    so the workflow spec reads the same regardless of ``config.api``."""
+    yaml_text = Path("examples/templates/yaml/api-chat-api.yaml").read_text()
+    specs = parse_yaml_payload(yaml_text)
+    spec = specs["api-chat-api"]
+    graph = Graph.from_json(spec["graph"])
+    llm_ops = list(graph.iter_ops(LLMChatOp))
+    assert len(llm_ops) == 3
+    for op in llm_ops:
+        assert op.config.model, f"{op.id} must name a config.model"
+    api_ops = [op for op in llm_ops if op.config.api is not None]
+    assert len(api_ops) == 2
+    for op in api_ops:
+        api = op.config.api
+        assert api is not None
+        assert api.timeout_sec == 300.0

@@ -1,6 +1,6 @@
 import pytest
 
-from lumilake_server.common import DEFAULT_API_MODEL, ApiConfig, GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig
 
 
 def test_generation_config_requires_model_without_api() -> None:
@@ -10,12 +10,12 @@ def test_generation_config_requires_model_without_api() -> None:
         GenerationConfig()
 
 
-def test_generation_config_resolved_model_defaults_when_api_mode_omits_model() -> None:
-    """API mode has a typed default to fall back to when neither
-    ``config.api.model`` nor the top-level ``config.model`` is set."""
-    cfg = GenerationConfig(api=ApiConfig())
-
-    assert cfg.resolved_model() == DEFAULT_API_MODEL
+def test_generation_config_requires_model_with_api() -> None:
+    """API mode is a backend switch, not a model source: it must reject a
+    missing ``model`` exactly like local mode, so the workflow spec reads the
+    same either way."""
+    with pytest.raises(ValueError, match="model is required"):
+        GenerationConfig(api=ApiConfig())
 
 
 def test_generation_config_resolved_model_prefers_api_model_over_top_level() -> None:
