@@ -1450,6 +1450,7 @@ class RuntimeGraphBuilder:
                 model=llm_op.config.model,
                 dependencies=row_dependencies if row_dependencies else None,
                 output_spec=output_spec,
+                condition=llm_op.condition,
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
@@ -1571,6 +1572,7 @@ class RuntimeGraphBuilder:
                 model=llm_op.config.model,
                 dependencies=aggregate_dependencies if aggregate_dependencies else None,
                 output_spec=output_spec,
+                condition=llm_op.condition,
             )
 
         default_dependencies: list[str] | None = None
@@ -1635,12 +1637,10 @@ class RuntimeGraphBuilder:
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
     ) -> list[RuntimeOp]:
-        """Build FlowMesh ``api`` tasks for an externally-hosted LLM. Renders
-        resolved ``graph_template`` messages into flat OpenAI-style chat bodies;
-        an upstream node reference renders as a ``${node.path}`` dispatch-time
-        placeholder and adds the node to this op's dependencies. A reference is
-        always single-valued: a fanned-out upstream is rejected up front, and a
-        multi-row literal column fans out into one node per row."""
+        """Build FlowMesh ``api`` tasks for an externally-hosted LLM: render
+        resolved ``graph_template`` messages into flat OpenAI-style chat bodies,
+        with upstream node references as ``${node.path}`` dispatch placeholders
+        that fan out one node per row."""
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             return self._build_api_rowwise_op(
                 llm_op_id=llm_op_id,
@@ -2068,16 +2068,63 @@ class RuntimeGraphBuilder:
                 "data": {"type": "dataframe", "columns": table_columns},
             }
         )
+        format_options = template_spec.get("options", {}).get("format", {})
+        base_messages = format_options.get("messages", [])
+        if not isinstance(base_messages, list):
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} aggregate template messages must be a list"
+            )
+        base_steps = format_options.get("steps", [])
+        if not isinstance(base_steps, list):
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} aggregate template steps must be a list"
+            )
+        merged_column_labels = {
+            col.get("label")
+            for col in merged_columns
+            if isinstance(col, dict) and isinstance(col.get("label"), str)
+        }
+        rendered_steps: list[dict[str, Any]] = []
+        for step in base_steps:
+            if not isinstance(step, dict):
+                raise ValueError(
+                    f"LLMChatOp {llm_op_id} aggregate format step must be an object"
+                )
+            step_template = step.get("template")
+            step_arguments = step.get("arguments", [])
+            if not isinstance(step_arguments, list):
+                raise ValueError(
+                    f"LLMChatOp {llm_op_id} aggregate format step arguments must be"
+                    " a list"
+                )
+            arguments = [*step_arguments]
+            existing_labels = {
+                arg.get("label")
+                for arg in arguments
+                if isinstance(arg, dict) and isinstance(arg.get("label"), str)
+            }
+            if isinstance(step_template, str):
+                placeholder_labels = {
+                    match.group(1)
+                    for match in re.finditer(
+                        r"\{([A-Za-z_][A-Za-z0-9_]*)\}", step_template
+                    )
+                }
+                for label in sorted(placeholder_labels):
+                    if label in existing_labels:
+                        continue
+                    if label not in merged_column_labels:
+                        continue
+                    arguments.append({"label": label, "value": label})
+            rendered_steps.append({**step, "arguments": arguments})
+
+        format_payload: dict[str, Any] = {"messages": base_messages}
+        if rendered_steps:
+            format_payload["steps"] = rendered_steps
         aggregate_template_spec: dict[str, Any] = {
             "name": "format",
             "columns": merged_columns,
-            "options": {
-                "format": {
-                    "messages": template_spec.get("options", {})
-                    .get("format", {})
-                    .get("messages", [])
-                }
-            },
+            "options": {"format": format_payload},
         }
         resolved, row_count = self._resolve_api_messages(
             llm_op_id, aggregate_template_spec

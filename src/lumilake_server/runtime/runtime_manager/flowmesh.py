@@ -110,7 +110,7 @@ def _runtime_output_destination() -> dict[str, Any]:
 def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
     """Redact any credential FlowMesh's rejection may echo back; callers must
     raise this return value, not ``e``, which still carries the credential."""
-    body = redact_secrets_in_text(e.body if hasattr(e, "body") else str(e))
+    body = redact_secrets_in_text(e.body if e.body is not None else str(e))
     if len(body) > 2000:
         body = body[:2000] + "...[truncated]"
     message = redact_secrets_in_text(str(e))
@@ -719,10 +719,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_type: str | None = None,
         prompt: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Normalize a retrieved result into an item list. Inference returns
-        ``items``; embedding returns a flat result (one-item batch); API wraps
-        the assistant ``text`` as a single ``items[].output`` carrying the
-        request's ``prompt`` as ``metadata.prompt``."""
+        """Normalize a retrieved result into an item list: inference returns
+        ``items``, embedding a flat one-item batch, and API wraps the assistant
+        ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
         items = results_json.get("items")
         if isinstance(items, list) and items:
             return items

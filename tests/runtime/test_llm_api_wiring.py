@@ -600,6 +600,32 @@ def test_api_rowwise_timeout_sec_reaches_emitted_spec() -> None:
     assert runtime_graph.nodes[row_ids[1]].api_spec["timeout_sec"] == 300.0
 
 
+def test_api_rowwise_model_override_reaches_emitted_spec() -> None:
+    """A rowwise API op must resolve ``config.api.model`` into every fanned-out
+    row's request body, not fall back to top-level ``config.model``."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(model="gpt-4o"),
+        ),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
+        ],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    row_ids = runtime_graph.dsl_to_runtime[llm.id]
+    assert row_ids == [llm.id, f"{llm.id}__row1"]
+    assert runtime_graph.nodes[row_ids[0]].api_spec["json"]["model"] == "gpt-4o"
+    assert runtime_graph.nodes[row_ids[1]].api_spec["json"]["model"] == "gpt-4o"
+    assert runtime_graph.nodes[row_ids[0]].model == "gpt-4o"
+
+
 def test_api_aggregate_table_renders_df_column() -> None:
     """An API-backed LLMChatOp with ``aggregate_table`` must mirror the local
     aggregate contract: the base template columns are merged with a ``df``
@@ -660,6 +686,69 @@ def test_api_aggregate_timeout_sec_reaches_emitted_spec() -> None:
     (llm_row_id,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_row_id]
     assert node.api_spec["timeout_sec"] == 300.0
+
+
+def test_api_aggregate_df_prompt_renders_into_request_body() -> None:
+    """An aggregate API op whose message is a ``FormatOp`` template containing
+    ``{df}`` must render the dataframe into the request body, mirroring the
+    local aggregate contract; dropping the format steps leaves the message
+    referencing an unresolved step label."""
+    stock = input_placeholder("Stock")
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    digest = FormatOp("Summarize the table:\n{df}", df=upstream)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=digest)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[{"label": "summary", "node": upstream.id, "path": "text"}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (llm_row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    node = runtime_graph.nodes[llm_row_id]
+    messages = node.api_spec["json"]["messages"]
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert "Summarize the table:" in messages[0]["content"]
+
+
+def test_api_aggregate_model_override_reaches_emitted_spec() -> None:
+    """An aggregate API op must resolve ``config.api.model`` into its request
+    body, not fall back to top-level ``config.model``."""
+    stock = input_placeholder("Stock")
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(model="gpt-4o"),
+        ),
+        aggregate_table=[{"label": "summary", "node": upstream.id, "path": "text"}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (llm_row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    node = runtime_graph.nodes[llm_row_id]
+    assert node.api_spec["json"]["model"] == "gpt-4o"
+    assert node.model == "gpt-4o"
 
 
 def test_api_ancestor_with_return_history_feeds_local_downstream() -> None:

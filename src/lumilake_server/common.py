@@ -13,14 +13,10 @@ class Message:
 
 @dataclass
 class ApiConfig:
-    """External OpenAI-compatible LLM API endpoint. When ``url`` is absent it
-    defaults to the serving endpoint ``lum.id/llm``. ``authorization`` lets the
-    caller supply their own credential for an untrusted origin; for a
-    trusted origin (see ``LUMILAKE_API_TRUSTED_ORIGINS``) the server attaches
-    its own ``LUMILAKE_RUNTIME_TOKEN`` PAT instead. That header becomes part
-    of the FlowMesh task spec submitted for execution and is redacted only
-    before archival and logging, never before dispatch. ``model`` overrides
-    the top-level ``config.model`` for the request."""
+    """External OpenAI-compatible LLM API endpoint; ``url`` defaults to the
+    serving endpoint ``lum.id/llm``, ``authorization`` supplies a caller
+    credential for an untrusted origin, and ``model`` overrides the top-level
+    ``config.model`` for the request."""
 
     url: str | None = None
     model: str | None = None
@@ -30,13 +26,8 @@ class ApiConfig:
 
 @dataclass
 class GenerationConfig:
-    """LLM generation parameters. Add a typed field here and both the YAML
-    parser allowlist and the runtime inference_spec pick it up automatically;
-    use ``extra_sampling_params`` for vendor-specific keys not worth typing.
-
-    ``model`` is required in both local and API mode: setting ``config.api``
-    routes the op to an external endpoint but does not relax the model
-    requirement, so the workflow spec reads the same either way."""
+    """LLM generation parameters; ``model`` is required in both local and API
+    mode, so ``config.api`` routes the op externally without relaxing it."""
 
     model: str = ""
     api: ApiConfig | None = None
