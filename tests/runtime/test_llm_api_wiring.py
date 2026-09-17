@@ -101,6 +101,20 @@ def test_api_config_url_override() -> None:
     assert node.api_spec["url"] == "https://api.example.com/v1/chat/completions"
 
 
+def test_api_config_timeout_sec_reaches_emitted_spec() -> None:
+    runtime_graph, llm_id = _build_api_graph(
+        api=ApiConfig(timeout_sec=120.0),
+    )
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["timeout_sec"] == 120.0
+
+
+def test_api_config_unset_timeout_emits_no_key() -> None:
+    runtime_graph, llm_id = _build_api_graph(api=ApiConfig())
+    node = runtime_graph.nodes[llm_id]
+    assert "timeout_sec" not in node.api_spec
+
+
 def test_api_samplers_flow_into_body() -> None:
     runtime_graph, llm_id = _build_api_graph(max_tokens=64, temperature=0.5)
     node = runtime_graph.nodes[llm_id]
@@ -1036,3 +1050,63 @@ def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
         for node_id in (row0.node_id, row1.node_id)
     ]
     assert contents == ["a database index", "a message queue"]
+
+
+def test_api_nodes_distinguished_by_timeout_sec_in_dedupe() -> None:
+    """Two API nodes that differ only in ``timeout_sec`` must not be merged by
+    the optimizer's dedupe pass - dedupe keys on api_spec, so the timeout must
+    be part of the emitted spec for the distinction to survive."""
+    shared = {
+        "method": "POST",
+        "url": "https://lum.id/llm/v1/chat/completions",
+        "json": {"messages": [{"role": "user", "content": "a database index"}]},
+    }
+    row0 = RuntimeOp(
+        node_id="Summarise",
+        task_type="api",
+        backend="api",
+        model="model-a",
+        data_spec={"type": "graph_template", "template": {"columns": []}},
+        model_spec={},
+        inference_spec={},
+        api_spec={**shared, "timeout_sec": 60.0},
+    )
+    row1 = RuntimeOp(
+        node_id="Summarise__row1",
+        task_type="api",
+        backend="api",
+        model="model-a",
+        data_spec={"type": "graph_template", "template": {"columns": []}},
+        model_spec={},
+        inference_spec={},
+        api_spec={**shared, "timeout_sec": 300.0},
+    )
+    consumer = RuntimeOp(
+        node_id="Critique",
+        task_type="inference",
+        backend="local",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+        dependencies=(row0.node_id,),
+    )
+    graph = RuntimeGraph(
+        nodes={row0.node_id: row0, row1.node_id: row1, consumer.node_id: consumer},
+        node_order=[row0.node_id, row1.node_id, consumer.node_id],
+        output_node_map={consumer.node_id: "result"},
+        dsl_to_runtime={
+            "Summarise": [row0.node_id, row1.node_id],
+            "Critique": [consumer.node_id],
+        },
+    )
+
+    optimized_graph, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+
+    assert row0.node_id in optimized_graph.nodes
+    assert row1.node_id in optimized_graph.nodes
+    timeouts = sorted(
+        optimized_graph.nodes[node_id].api_spec["timeout_sec"]
+        for node_id in (row0.node_id, row1.node_id)
+    )
+    assert timeouts == [60.0, 300.0]

@@ -121,6 +121,12 @@ then the top-level `config.model`, then the typed default `deepseek-v4-flash`
 `config.model`). Sampler fields on `config` (e.g.
 `max_tokens`, `temperature`) are merged into the request body.
 
+`config.api.timeout_sec` sets the per-request timeout for the API call,
+in seconds. When set, it is emitted into the FlowMesh `api` task spec and
+overrides the executor's default; when unset, no timeout key is emitted and
+the executor's own default applies. Use it for long-running extractions over
+large documents, which can exceed the executor's default.
+
 The credential is resolved server-side, not supplied by the caller. If
 `config.api.url`'s origin is on the trusted-origin allowlist (the default
 `https://lum.id`, extendable via `LUMILAKE_API_TRUSTED_ORIGINS`), the server

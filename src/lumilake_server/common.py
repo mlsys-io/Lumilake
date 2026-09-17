@@ -29,6 +29,7 @@ class ApiConfig:
     url: str | None = None
     model: str | None = None
     authorization: str | None = None
+    timeout_sec: float | None = None
 
 
 @dataclass
