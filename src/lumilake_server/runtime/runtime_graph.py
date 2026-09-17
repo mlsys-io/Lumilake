@@ -1227,14 +1227,8 @@ class RuntimeGraphBuilder:
 
     @staticmethod
     def _upstream_output_path(op: Op) -> str:
-        """Result path for an upstream op's text output.
-
-        An API-backed ``LLMOp`` produces an ``APIResult`` whose assistant text
-        lives at ``text``; every other upstream (local inference, retrieval)
-        produces ``items``-shaped results whose text is at ``items.output``.
-        Keeping the two distinct is what lets a downstream node reference an
-        API-backed upstream exactly like a local one.
-        """
+        """Result path for an upstream op's text output: ``text`` for an
+        API-backed LLMOp, ``items.output`` otherwise."""
         if isinstance(op, LLMOp) and op.config.api is not None:
             return "text"
         return "items.output"
@@ -1242,14 +1236,9 @@ class RuntimeGraphBuilder:
     def _api_prior_prompt(
         self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
     ) -> list[str]:
-        """Resolve an API-backed op's user message to a literal prior prompt.
-
-        ``return_history`` needs the prompt that was sent to the upstream op.
-        A local op carries it as ``items.metadata.prompt``; an API op's result
-        does not, so the server inlines the user message it sent instead. Only
-        literal (string / ``InputOp`` / ``DataOp``) content is supported — a
-        prompt that itself references a runtime node cannot be inlined at build
-        time."""
+        """Resolve an API-backed op's user message to a literal prior prompt
+        (an API result carries no ``metadata.prompt``, so inline the message
+        that was sent; only literal content can be inlined)."""
         messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
         user_msgs = [m for m in messages if m.role == "user"]
         if not user_msgs:
@@ -1646,22 +1635,12 @@ class RuntimeGraphBuilder:
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
     ) -> list[RuntimeOp]:
-        """Build FlowMesh ``api`` tasks for an externally-hosted LLM.
-
-        Renders resolved ``graph_template`` messages into flat OpenAI-style
-        chat bodies. A message may reference an upstream node's runtime output;
-        that renders as a FlowMesh ``${node.path}`` dispatch-time placeholder
-        (see ``_resolve_stage_references`` in FlowMesh's dispatcher) instead of
-        a literal value, and the referenced node is added to this op's FlowMesh
-        dependencies so the dispatcher defers until it is done. A runtime
-        reference is always single-valued: an upstream LLMOp that itself fanned
-        out into multiple row-aligned nodes is rejected before reaching this
-        function (see ``_infer_structural_messages``), so the placeholder
-        broadcasts across every row exactly like a single-row literal column
-        would. A literal column with more than one row fans out into one node
-        per row, each row keeping its position so a chain of API nodes stays
-        aligned.
-        """
+        """Build FlowMesh ``api`` tasks for an externally-hosted LLM. Renders
+        resolved ``graph_template`` messages into flat OpenAI-style chat bodies;
+        an upstream node reference renders as a ``${node.path}`` dispatch-time
+        placeholder and adds the node to this op's dependencies. A reference is
+        always single-valued: a fanned-out upstream is rejected up front, and a
+        multi-row literal column fans out into one node per row."""
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             return self._build_api_rowwise_op(
                 llm_op_id=llm_op_id,
@@ -1750,12 +1729,9 @@ class RuntimeGraphBuilder:
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
     ) -> list[RuntimeOp]:
-        """Build API tasks for a rowwise LLMChatOp, mirroring the local
-        dataframe contract: each ``rowwise_column`` resolves to a row of
-        values, the ``rowwise_template`` is formatted per row, and the op fans
-        out into one API task per row. A ``node``+``path`` column renders as a
-        single-valued ``${node.path}`` dispatch placeholder that broadcasts
-        across every row."""
+        """Build API tasks for a rowwise LLMChatOp: each ``rowwise_column``
+        resolves to a row of values, the template is formatted per row, and the
+        op fans out into one API task per row."""
         template = llm_op.rowwise_template
         assert template is not None
         columns: list[dict[str, Any]] = []
@@ -1852,10 +1828,8 @@ class RuntimeGraphBuilder:
         self, llm_op_id: str, template_spec: dict[str, Any]
     ) -> tuple[list[tuple[str, list[str]]], int]:
         """Resolve a graph-template spec into per-row message content for API
-        mode. Columns resolve to literal rows or a single ``${node.path}``
-        dispatch placeholder; format/function steps render at build time when
-        their inputs are literal. Returns ``(resolved, row_count)`` where each
-        resolved entry is ``(role, rows)``."""
+        mode; returns ``(resolved, row_count)`` where each entry is
+        ``(role, rows)``."""
         options = template_spec.get("options") or {}
         format_options = options.get("format") or {}
         messages_spec = format_options.get("messages") or []
@@ -2061,10 +2035,8 @@ class RuntimeGraphBuilder:
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
     ) -> list[RuntimeOp]:
-        """Build API tasks for an aggregate LLMChatOp, mirroring the local
-        aggregate contract: the base template columns are merged with a ``df``
-        dataframe column built from ``aggregate_table``, and the base messages
-        render against the merged columns."""
+        """Build API tasks for an aggregate LLMChatOp: merge the base template
+        columns with a ``df`` dataframe column built from ``aggregate_table``."""
         base_columns = template_spec.get("columns", [])
         if not isinstance(base_columns, list):
             raise ValueError(

@@ -123,10 +123,8 @@ def test_api_samplers_flow_into_body() -> None:
 
 
 def test_api_key_redacted_on_serialization() -> None:
-    """The Authorization header carries the PAT in the runtime spec (what
-    reaches FlowMesh) but must be redacted from graph-level serialize(), the
-    form that gets stored; op-level serialize() deliberately still carries
-    it since graph-level building reads from it."""
+    """The Authorization header is redacted from graph-level serialize() (the
+    stored form) but kept at op level, which graph building reads from."""
     runtime_graph, llm_id = _build_api_graph()
     node = runtime_graph.nodes[llm_id]
 
@@ -137,8 +135,7 @@ def test_api_key_redacted_on_serialization() -> None:
 
 
 def test_api_missing_pat_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """API mode against a trusted endpoint without a PAT fails at build time
-    with a clear error rather than emitting a spec that fails later."""
+    """API mode against a trusted endpoint without a PAT fails at build time."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", None)
     with pytest.raises(ValueError, match="LUMILAKE_RUNTIME_TOKEN"):
         _build_api_graph()
@@ -157,9 +154,7 @@ def test_api_untrusted_origin_with_caller_credential_passes_through() -> None:
 
 def test_api_trusted_origin_ignores_caller_credential() -> None:
     """For a trusted origin the server PAT always wins; a caller-supplied
-    config.api.authorization is not honored (common.py's ApiConfig
-    docstring and OPS.md both say the credential is resolved server-side
-    for a trusted origin, not supplied by the caller)."""
+    config.api.authorization is not honored."""
     runtime_graph, llm_id = _build_api_graph(
         api=ApiConfig(authorization="Bearer caller-key")
     )
@@ -256,9 +251,8 @@ def test_yaml_api_config_string_fails_at_graph_build_not_runtime_build() -> None
 
 def test_api_dynamic_column_renders_as_dispatch_placeholder() -> None:
     """A message referencing an upstream node's runtime output renders as a
-    FlowMesh ``${node.path}`` dispatch-time placeholder (resolved by
-    FlowMesh's dispatcher before the api executor runs), and the referenced
-    node is declared as a FlowMesh dependency."""
+    FlowMesh ``${node.path}`` dispatch-time placeholder and declares the node
+    as a dependency."""
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
         data_spec={
@@ -289,11 +283,8 @@ def test_api_dynamic_column_renders_as_dispatch_placeholder() -> None:
 
 def test_api_node_downstream_of_api_node_receives_upstream_placeholder() -> None:
     """An API-mode LLMChatOp consuming another API-mode LLMChatOp's output
-    (relayed through a ``FormatOp``, the same idiom ``hello-world.yaml`` uses
-    to carry an upstream op's output into a message) renders the FlowMesh
-    ``${node.text}`` placeholder that FlowMesh's dispatcher resolves against
-    the upstream node's real ``APIResult`` before dispatch, and declares
-    that upstream node as a dependency."""
+    (relayed through a ``FormatOp``) renders a ``${node.text}`` placeholder
+    and declares the upstream node as a dependency."""
     stock = input_placeholder("Stock")
     first = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -324,10 +315,8 @@ def test_api_node_downstream_of_api_node_receives_upstream_placeholder() -> None
 
 
 def test_node_prefix_remaps_api_placeholder_stage_name() -> None:
-    """Real job dispatch renames every node via ``RuntimeGraph.with_node_prefix``;
-    the FlowMesh dispatcher keys its stage context by that prefixed graph node
-    name, so the ``${node.path}`` placeholder an API node emits for an upstream
-    runtime reference must be rewritten to the prefixed name too, or dispatch
+    """``with_node_prefix`` must rewrite the ``${node.path}`` placeholder an API
+    node emits for an upstream reference to the prefixed node name, or dispatch
     fails with ``Unknown stage reference``."""
     stock = input_placeholder("Stock")
     first = LLMChatOp(
@@ -362,11 +351,9 @@ def test_node_prefix_remaps_api_placeholder_stage_name() -> None:
 
 
 def test_node_prefix_preserves_literal_placeholder_in_user_content() -> None:
-    """``with_node_prefix`` must rewrite only the ``${node.path}`` placeholders
-    Lumilake generated for upstream runtime references (which always point at a
-    dependency), never a user's literal ``${...}`` in message content. A literal
-    prompt that spells a runtime node id which is NOT a dependency of the node
-    must survive prefixing unchanged."""
+    """``with_node_prefix`` rewrites only generated upstream references (which
+    point at a dependency), never a user's literal ``${...}`` in message
+    content."""
     stock = input_placeholder("Stock")
     first = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -408,10 +395,8 @@ def test_node_prefix_preserves_literal_placeholder_in_user_content() -> None:
 
 def test_local_node_downstream_of_api_node_uses_text_path() -> None:
     """A local-backend LLMChatOp consuming an API-backed ancestor's output
-    (relayed through a ``FormatOp``) renders a ``text`` column (matching
-    ``APIResult``'s shape) instead of ``items.output`` (which only
-    ``InferenceResult`` carries), so the local worker's graph-template
-    renderer does not fail at execution time."""
+    (relayed through a ``FormatOp``) renders a ``text`` column, not
+    ``items.output``."""
     stock = input_placeholder("Stock")
     api_node = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -438,10 +423,8 @@ def test_local_node_downstream_of_api_node_uses_text_path() -> None:
 
 
 def test_api_structural_outputs_flow_into_request_body() -> None:
-    """A local LLMChatOp with ``structural_outputs`` emits them as
-    ``inference.templates``; an API-backed one must emit the same structured
-    output instructions into the request body, so switching only ``config.api``
-    does not drop the planner's structured-output contract."""
+    """An API-backed LLMChatOp must emit ``structural_outputs`` into the request
+    body, matching the local backend's ``inference.templates``."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -461,9 +444,7 @@ def test_api_structural_outputs_flow_into_request_body() -> None:
 
 def test_embedding_op_downstream_of_api_node_uses_text_path() -> None:
     """An EmbeddingOp consuming an API-backed ancestor's output must resolve
-    ``text`` (the ``APIResult`` shape) instead of ``items.output`` (which only
-    ``InferenceResult`` carries), so the embedding worker does not fail at
-    execution time."""
+    ``text`` (the ``APIResult`` shape), not ``items.output``."""
     stock = input_placeholder("Stock")
     api_node = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -508,10 +489,8 @@ def test_image_generation_op_downstream_of_api_node_uses_text_path() -> None:
 
 
 def test_api_lambda_op_message_input_renders_literal() -> None:
-    """A LambdaOp message input (which local mode emits as a function step the
-    worker runs) must render in API mode too: the server evaluates the function
-    at build time when its inputs are literal, so switching only ``config.api``
-    does not turn a valid message reference into a build error."""
+    """A LambdaOp message input must render in API mode: the server evaluates
+    the function at build time when its inputs are literal."""
     stock = input_placeholder("Stock")
     greeting = FormatOp("Hello, {name}!", name=stock)
 
@@ -537,11 +516,9 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
 
 
 def test_api_lambda_op_message_input_renders_literal_with_lambda() -> None:
-    """A LambdaOp whose function is a real ``lambda`` (not a named ``def``)
-    must render in API mode too. The server evaluates the callable directly
-    rather than recovering source text, so a lambda behaves identically to a
-    named def and switching only ``config.api`` does not turn a valid message
-    reference into a build error."""
+    """A LambdaOp whose function is a real ``lambda`` must render in API mode
+    too: the server evaluates the callable directly, so a lambda behaves
+    identically to a named def."""
     stock = input_placeholder("Stock")
     greeting = FormatOp("Hello, {name}!", name=stock)
     shout = LambdaOp(
@@ -568,8 +545,7 @@ def test_api_lambda_op_message_input_renders_literal_with_lambda() -> None:
 def test_api_rowwise_template_fans_out_row_aligned_nodes() -> None:
     """An API-backed LLMChatOp with ``rowwise_template``/``rowwise_columns``/
     ``system_messages`` must mirror the local rowwise contract: the template is
-    formatted per row and the op fans out into one API task per row, so
-    switching only ``config.api`` does not change rowwise behaviour."""
+    formatted per row and the op fans out into one API task per row."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -600,9 +576,8 @@ def test_api_rowwise_template_fans_out_row_aligned_nodes() -> None:
 
 
 def test_api_rowwise_timeout_sec_reaches_emitted_spec() -> None:
-    """A rowwise API op configured with ``timeout_sec`` must emit it on every
-    fanned-out row, so a per-row timeout is not silently lost to the executor
-    default."""
+    """A rowwise API op with ``timeout_sec`` must emit it on every fanned-out
+    row."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -628,8 +603,7 @@ def test_api_rowwise_timeout_sec_reaches_emitted_spec() -> None:
 def test_api_aggregate_table_renders_df_column() -> None:
     """An API-backed LLMChatOp with ``aggregate_table`` must mirror the local
     aggregate contract: the base template columns are merged with a ``df``
-    dataframe column built from ``aggregate_table``, and the base message
-    renders against the merged columns."""
+    dataframe column built from ``aggregate_table``."""
     stock = input_placeholder("Stock")
     upstream = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -662,9 +636,7 @@ def test_api_aggregate_table_renders_df_column() -> None:
 
 
 def test_api_aggregate_timeout_sec_reaches_emitted_spec() -> None:
-    """An aggregate API op configured with ``timeout_sec`` must emit it, so the
-    timeout is not silently lost to the executor default on the aggregate
-    path."""
+    """An aggregate API op with ``timeout_sec`` must emit it."""
     stock = input_placeholder("Stock")
     upstream = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -693,9 +665,7 @@ def test_api_aggregate_timeout_sec_reaches_emitted_spec() -> None:
 def test_api_ancestor_with_return_history_feeds_local_downstream() -> None:
     """An API-backed ancestor with ``return_history`` feeding a local
     downstream must mirror the local history contract: the prior prompt is
-    inlined as a literal column (an API result carries no ``metadata.prompt``)
-    and the assistant output resolves ``text``. Switching only ``config.api``
-    must not turn a valid history edge into a build error."""
+    inlined as a literal column and the assistant output resolves ``text``."""
     stock = input_placeholder("Stock")
     api_node = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -772,8 +742,7 @@ def test_api_trusted_origins_env_var_is_additive_to_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """LUMILAKE_API_TRUSTED_ORIGINS extends the trusted-origin allowlist; it
-    must not replace the always-trusted default https://lum.id (ENV.md's
-    documented contract for the env var)."""
+    must not replace the always-trusted default https://lum.id."""
     monkeypatch.setattr(
         envs, "LUMILAKE_API_TRUSTED_ORIGINS", "https://vendor.example.com"
     )
@@ -822,11 +791,8 @@ def test_api_multi_row_input_fans_out_row_aligned_nodes() -> None:
 
 
 def test_node_prefix_preserves_api_spec_on_row_fanned_nodes() -> None:
-    """RuntimeGraphBuilder.build's node_prefix path (used for real job
-    dispatch, e.g. routes/jobs.py) renames every node via
-    RuntimeGraph.with_node_prefix; that rename must carry a row-fanned API
-    node's api_spec through unchanged, or the prefixed node dispatches with
-    no URL/headers/body and the request never goes out."""
+    """``with_node_prefix`` must carry a row-fanned API node's api_spec through
+    unchanged, or the prefixed node dispatches with no URL/headers/body."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -851,9 +817,8 @@ def test_node_prefix_preserves_api_spec_on_row_fanned_nodes() -> None:
 
 
 def test_api_fanout_row_order_matches_input_across_two_nodes() -> None:
-    """Row alignment must be a per-node property of the fan-out itself, not
-    an accident of a single node under test: two independent API nodes fed
-    by the same multi-row input must both preserve row order identically."""
+    """Two independent API nodes fed by the same multi-row input must both
+    preserve row order identically."""
     stock = input_placeholder("Stock")
     first = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -923,11 +888,9 @@ def _build_yaml_two_row_graph() -> tuple[RuntimeGraph, str]:
 
 
 def test_yaml_wrapped_bare_reference_fans_out_row_aligned_nodes() -> None:
-    """A bare ``content: "Topic"`` reference in YAML is implicitly wrapped
-    into a FormatOp step by the parser (mirroring n8n's prompt wrapping), so
-    it never appears as a literal column to the runtime graph builder - only
-    as a format step. Two input rows must still produce two row-aligned API
-    nodes through that step, not collapse to one."""
+    """A bare ``content: "Topic"`` reference in YAML is implicitly wrapped into
+    a FormatOp step by the parser; two input rows must still produce two
+    row-aligned API nodes through that step, not collapse to one."""
     runtime_graph, llm_id = _build_yaml_two_row_graph()
 
     row_ids = runtime_graph.dsl_to_runtime[llm_id]
@@ -944,9 +907,8 @@ def test_yaml_wrapped_bare_reference_fans_out_row_aligned_nodes() -> None:
 
 
 def test_merged_workflow_result_stays_row_aligned_after_optimize() -> None:
-    """The merged/optimized graph that scheduling actually runs against must
-    keep both per-row output nodes distinct and row-ordered; a job with two
-    input rows must resolve to two output entries, not collapse to one."""
+    """The merged/optimized graph must keep both per-row output nodes distinct
+    and row-ordered; two input rows must resolve to two output entries."""
     runtime_graph, llm_id = _build_yaml_two_row_graph()
 
     optimized_graph, output_mapping = HaloOptimizer().optimize_graphs(
@@ -1093,9 +1055,8 @@ def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
 
 
 def test_api_nodes_distinguished_by_timeout_sec_in_dedupe() -> None:
-    """Two API nodes that differ only in ``timeout_sec`` must not be merged by
-    the optimizer's dedupe pass - dedupe keys on api_spec, so the timeout must
-    be part of the emitted spec for the distinction to survive."""
+    """Two API nodes differing only in ``timeout_sec`` must not be merged by
+    the optimizer's dedupe pass."""
     shared = {
         "method": "POST",
         "url": "https://lum.id/llm/v1/chat/completions",

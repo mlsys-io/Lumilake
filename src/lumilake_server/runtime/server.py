@@ -1079,8 +1079,8 @@ class LumilakeServer:
 
     @staticmethod
     def _requires_cpu(op: RuntimeOp) -> bool:
-        """See FlowmeshRuntimeManager._runtime_op_requires_cpu for why this
-        must mirror the dispatcher's CPU-only engine list."""
+        """Mirror the dispatcher's CPU-only engine list (see
+        FlowmeshRuntimeManager._runtime_op_requires_cpu)."""
         return FlowmeshRuntimeManager._runtime_op_requires_cpu(op)
 
     @classmethod
@@ -1093,9 +1093,9 @@ class LumilakeServer:
 
     @classmethod
     def _batch_requires_cpu(cls, batch: BatchSelection) -> bool:
-        """A configured CPU group size of 0 is only valid alongside a
-        nonzero GPU group; a batch with a data_retrieval or api op still
-        needs one CPU worker, matching _select_preview_workers_and_profiles."""
+        """A configured CPU group size of 0 is only valid alongside a nonzero
+        GPU group; a batch with a data_retrieval or api op still needs one CPU
+        worker (matching _select_preview_workers_and_profiles)."""
         for runtime_graph in batch.runtime_graphs.values():
             for op in runtime_graph.nodes.values():
                 if cls._requires_cpu(op):

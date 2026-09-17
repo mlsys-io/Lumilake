@@ -108,9 +108,8 @@ def _runtime_output_destination() -> dict[str, Any]:
 
 
 def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
-    """Redact any credential FlowMesh's rejection may echo back. Callers
-    must raise this return value instead of ``e``: the original still
-    carries the credential and would leak again through a chained traceback."""
+    """Redact any credential FlowMesh's rejection may echo back; callers must
+    raise this return value, not ``e``, which still carries the credential."""
     body = redact_secrets_in_text(e.body if hasattr(e, "body") else str(e))
     if len(body) > 2000:
         body = body[:2000] + "...[truncated]"
@@ -720,15 +719,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_type: str | None = None,
         prompt: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Normalize a retrieved result into an item list.
-
-        Inference tasks return ``items``; embedding tasks return a flat
-        result with no ``items`` key — treat that as a one-item batch. API
-        tasks return the executor's ``text``/``response_json`` — wrap the
-        assistant text as a single ``items[].output`` entry, carrying the
-        request's own ``prompt`` as ``metadata.prompt`` so history assembly
-        works the same as it does for a local inference item.
-        """
+        """Normalize a retrieved result into an item list. Inference returns
+        ``items``; embedding returns a flat result (one-item batch); API wraps
+        the assistant ``text`` as a single ``items[].output`` carrying the
+        request's ``prompt`` as ``metadata.prompt``."""
         items = results_json.get("items")
         if isinstance(items, list) and items:
             return items
@@ -870,9 +864,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         node_id: str,
     ) -> str:
         """Fetch a task's raw FlowMesh response and archive it as a job
-        artifact. The response body is untrusted content from a remote
-        service and is redacted before being persisted, since the artifact
-        API exposes it verbatim to callers."""
+        artifact, redacting the untrusted body before persisting it."""
         response_data = await self.fm.results.retrieve(tid)
         response_uri = self._save_json_artifact(
             request_info,
