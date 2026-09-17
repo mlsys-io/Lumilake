@@ -82,6 +82,7 @@ class BaseRuntimeManager(ABC):
         schedule: Schedule,
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None,
+        worker_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Submit a request for execution and return outputs.
 

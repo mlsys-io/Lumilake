@@ -553,6 +553,7 @@ async def test_process_batch_uses_server_data_profile_collection(
             schedule: Schedule,
             worker_ids: list[str],
             data_profile_results: dict[str, list[dict[str, Any]]] | None,
+            worker_profiles: dict[str, dict[str, Any]] | None = None,
         ) -> dict[str, Any]:
             self.last_data_profile_results = data_profile_results
             flat_outputs = {
@@ -839,6 +840,7 @@ class _EmbeddingRuntimeManager(RecordingRuntimeManager):
         schedule: Schedule,
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None,
+        worker_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         items = [
@@ -871,6 +873,7 @@ class _StaleSingleItemRuntimeManager(RecordingRuntimeManager):
         schedule: Schedule,
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None,
+        worker_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         flat_outputs = {
             node_id: ["single-collapsed-item"]

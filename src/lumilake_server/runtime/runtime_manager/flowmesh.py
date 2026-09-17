@@ -949,6 +949,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         schedule: Schedule,
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        worker_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         Submit a batch of graphs to Flowmesh with a schedule hint and worker assignment.
@@ -997,6 +998,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             request_info,
             request_info.runtime_graph,
             schedule=schedule,
+            worker_profiles=worker_profiles,
         )
         self._resolve_api_credentials(request_info.member_request_ids, task_spec)
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
@@ -1269,6 +1271,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         request_info: RequestInfo,
         runtime_graph: RuntimeGraph,
         schedule: Schedule | None = None,
+        worker_profiles: dict[str, dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], list[tuple[int, str]], dict[str, str]]:
         """
         Build a Flowmesh-compatible task specification from Lumilake's runtime graph.
@@ -1317,6 +1320,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 nodes=nodes,
                 worker_assignment=active_worker_assignment,
                 output_node_names=[node_id for _, node_id in output_node_indices],
+                worker_kinds=self._worker_kinds_from_profiles(
+                    worker_profiles, active_worker_assignment
+                ),
             )
             nodes = rewrite.nodes
             active_worker_assignment = rewrite.worker_assignment
@@ -1607,6 +1613,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         nodes: list[dict[str, Any]],
         worker_assignment: Mapping[str, Sequence[str]],
         output_node_names: Sequence[str] = (),
+        worker_kinds: Mapping[str, str] | None = None,
     ) -> ShardRewriteResult:
         node_map: dict[str, dict[str, Any]] = {}
         node_order: list[str] = []
@@ -1623,6 +1630,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             worker_assignment=worker_assignment,
             node_names=node_order,
         )
+        if worker_kinds is not None:
+            node_candidates = self._expand_row_aligned_fanout_candidates(
+                node_candidates=node_candidates,
+                node_map=node_map,
+                worker_assignment=worker_assignment,
+                worker_kinds=worker_kinds,
+            )
         baseline_node_candidates = {
             node_id: list(workers) for node_id, workers in node_candidates.items()
         }
@@ -2087,6 +2101,99 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 f"Missing: {missing}, extra: {extra}"
             )
         return candidates, normalized_assignment
+
+    def _expand_row_aligned_fanout_candidates(
+        self,
+        *,
+        node_candidates: Mapping[str, Sequence[str]],
+        node_map: Mapping[str, Mapping[str, Any]],
+        worker_assignment: Mapping[str, Sequence[str]],
+        worker_kinds: Mapping[str, str],
+    ) -> dict[str, list[str]]:
+        """Expand a row-aligned fan-out node's candidates to all eligible pool workers.
+
+        Nothing in the ``worker_assignment`` contract obliges an optimizer to
+        offer a node more than one candidate, so the shard rewrite's
+        "more than one candidate" trigger cannot be relied on to fire for a
+        fan-out node on its own. A row-aligned fan-out node (partition total
+        > 1, from its own static lists or its dependency chain) is inherently
+        shardable across every eligible worker in the pool regardless of which
+        optimizer produced the assignment; expand its candidates so the
+        rewrite splits it across those workers.
+        """
+        pool_workers = list(worker_assignment.keys())
+        expanded: dict[str, list[str]] = {}
+        for node_id, workers in node_candidates.items():
+            node = node_map.get(node_id)
+            if node is None:
+                expanded[node_id] = list(workers)
+                continue
+            spec = node.get("spec")
+            if not isinstance(spec, Mapping):
+                expanded[node_id] = list(workers)
+                continue
+            data_spec = spec.get("data")
+            if not isinstance(data_spec, Mapping):
+                expanded[node_id] = list(workers)
+                continue
+            total = self._resolve_static_partition_total(
+                raw_node_id=node_id,
+                data_spec=data_spec,
+                context_node_id=node_id,
+            )
+            if total is None or total <= 1:
+                deps = node.get("dependsOn")
+                dep_ids = (
+                    [dep for dep in deps if isinstance(dep, str)]
+                    if isinstance(deps, list)
+                    else []
+                )
+                total = self._infer_unsharded_dependency_total(
+                    raw_node_id=node_id,
+                    dependency_ids=dep_ids,
+                    node_map=node_map,
+                )
+            if total is None or total <= 1:
+                expanded[node_id] = list(workers)
+                continue
+            requires_gpu = self._flowmesh_node_requires_gpu(node)
+            eligible = [
+                worker
+                for worker in pool_workers
+                if (worker_kinds.get(worker) == "gpu") == requires_gpu
+            ]
+            if not eligible:
+                expanded[node_id] = list(workers)
+                continue
+            expanded[node_id] = eligible
+        return expanded
+
+    @staticmethod
+    def _flowmesh_node_requires_gpu(node: Mapping[str, Any]) -> bool:
+        spec = node.get("spec")
+        if not isinstance(spec, Mapping):
+            return False
+        task_type = (spec.get("taskType") or "").strip().lower()
+        if task_type in {"inference", "embedding", "diffusion", "omni_text2image"}:
+            return True
+        model = spec.get("model")
+        return isinstance(model, Mapping)
+
+    @staticmethod
+    def _worker_kinds_from_profiles(
+        worker_profiles: dict[str, dict[str, Any]] | None,
+        worker_assignment: Mapping[str, Sequence[str]],
+    ) -> dict[str, str] | None:
+        if not worker_profiles:
+            return None
+        kinds: dict[str, str] = {}
+        for worker in worker_assignment:
+            profile = worker_profiles.get(worker)
+            if profile is None:
+                return None
+            has_gpu = profile.get("has_gpu")
+            kinds[worker] = "gpu" if has_gpu else "cpu"
+        return kinds
 
     def _infer_shard_input_size(
         self,
@@ -2581,6 +2688,22 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             out = rewritten.setdefault(worker, [])
             if node_id not in out:
                 out.append(node_id)
+
+        # A shard's candidate worker may not have listed the raw node in the
+        # original assignment (row-aligned fan-out expansion adds candidates
+        # beyond the optimizer-assigned worker). Ensure every candidate worker
+        # receives its shard.
+        for node_id, workers in node_candidates.items():
+            if node_id not in shard_nodes_by_raw:
+                continue
+            for worker in workers:
+                shard_idx = shard_index_by_worker.get(node_id, {}).get(worker)
+                if shard_idx is None:
+                    continue
+                shard = shard_nodes_by_raw[node_id][shard_idx]
+                out = rewritten.setdefault(worker, [])
+                if shard not in out:
+                    out.append(shard)
 
         return rewritten
 

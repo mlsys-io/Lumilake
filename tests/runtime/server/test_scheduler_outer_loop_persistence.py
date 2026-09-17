@@ -82,7 +82,9 @@ class _TwoBatchThenCancelJobManager:
         if self._select_calls == 1:
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
-                workflows=[SimpleNamespace(request_id="req-1", id="wf-1")],
+                workflows=[
+                    SimpleNamespace(request_id="req-1", id="wf-1", slice_length=1)
+                ],
                 runtime_graphs={},
                 clustering_seconds=0.0,
                 name="batch-1",
@@ -91,7 +93,9 @@ class _TwoBatchThenCancelJobManager:
         if self._select_calls == 2:
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
-                workflows=[SimpleNamespace(request_id="req-2", id="wf-2")],
+                workflows=[
+                    SimpleNamespace(request_id="req-2", id="wf-2", slice_length=1)
+                ],
                 runtime_graphs={},
                 clustering_seconds=0.0,
                 name="batch-2",
@@ -182,7 +186,9 @@ class _CpuOnlyBatchJobManager:
             )
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
-                workflows=[SimpleNamespace(request_id="req-cpu", id="wf-cpu")],
+                workflows=[
+                    SimpleNamespace(request_id="req-cpu", id="wf-cpu", slice_length=1)
+                ],
                 runtime_graphs={
                     "g": SimpleNamespace(nodes={"n": cpu_node}),
                 },
@@ -281,7 +287,9 @@ class _GpuBatchJobManager:
             gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
-                workflows=[SimpleNamespace(request_id="req-gpu", id="wf-gpu")],
+                workflows=[
+                    SimpleNamespace(request_id="req-gpu", id="wf-gpu", slice_length=1)
+                ],
                 runtime_graphs={
                     "g": SimpleNamespace(nodes={"n": gpu_node}),
                 },
@@ -357,6 +365,7 @@ class _RecordingJobManager:
                     workflow_id=f"wf-{self._calls}",
                     public_graph_name="g",
                     slice_index=0,
+                    slice_length=1,
                 )
             ],
             runtime_graphs={"g": SimpleNamespace(nodes={"n": cpu_node})},
@@ -441,6 +450,7 @@ class _DoomedJobManager:
                 workflow_id="wf-1",
                 public_graph_name="g",
                 slice_index=0,
+                slice_length=1,
             )
         ]
 
@@ -490,6 +500,7 @@ async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
                 workflow_id="wf-1",
                 public_graph_name="g",
                 slice_index=0,
+                slice_length=1,
                 runtime_graph=SimpleNamespace(node_count=1),
             )
         ],
@@ -536,6 +547,7 @@ class _GpuThenCpuJobManager:
                     workflow_id="wf-gpu",
                     public_graph_name="g",
                     slice_index=0,
+                    slice_length=1,
                 )
             ]
         return []
@@ -553,6 +565,7 @@ class _GpuThenCpuJobManager:
                         workflow_id="wf-gpu",
                         public_graph_name="g",
                         slice_index=0,
+                        slice_length=1,
                     )
                 ],
                 runtime_graphs={"g": SimpleNamespace(nodes={"n": gpu_node})},
@@ -571,6 +584,7 @@ class _GpuThenCpuJobManager:
                     workflow_id="wf-cpu",
                     public_graph_name="g",
                     slice_index=0,
+                    slice_length=1,
                 )
             ],
             runtime_graphs={"g": SimpleNamespace(nodes={"n": cpu_node})},
@@ -669,6 +683,7 @@ class _TransientGpuJobManager:
                         workflow_id="wf-gpu",
                         public_graph_name="g",
                         slice_index=0,
+                        slice_length=1,
                     )
                 ],
                 runtime_graphs={"g": SimpleNamespace(nodes={"n": gpu_node})},
@@ -807,7 +822,11 @@ class _InferenceWithoutBackendBatchJobManager:
             mystery_op = SimpleNamespace(backend="", task_type="inference")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
-                workflows=[SimpleNamespace(request_id="req-mystery", id="wf-mystery")],
+                workflows=[
+                    SimpleNamespace(
+                        request_id="req-mystery", id="wf-mystery", slice_length=1
+                    )
+                ],
                 runtime_graphs={"g": SimpleNamespace(nodes={"n": mystery_op})},
                 name="mystery-batch",
                 clustering_seconds=0.0,
@@ -868,7 +887,7 @@ class _AlwaysReserveJobManager:
         self.reserve_calls += 1
         selection = SimpleNamespace(
             config=SimpleNamespace(hardware_requirements=None),
-            workflows=[SimpleNamespace(request_id="req", id="wf")],
+            workflows=[SimpleNamespace(request_id="req", id="wf", slice_length=1)],
             runtime_graphs={},
             clustering_seconds=0.0,
             name="batch",
@@ -963,7 +982,7 @@ class _CapacityRecordingJobManager:
         self.capacities.append(capacity)
         selection = SimpleNamespace(
             config=SimpleNamespace(hardware_requirements=None),
-            workflows=[SimpleNamespace(request_id="req", id="wf")],
+            workflows=[SimpleNamespace(request_id="req", id="wf", slice_length=1)],
             runtime_graphs={},
             clustering_seconds=0.0,
             name="batch",
@@ -1053,7 +1072,7 @@ async def test_try_claim_workers_rejects_undersized_worker(server_factory) -> No
                 cpu=8, memory=None, gpu=None, gpu_memory=None
             )
         ),
-        workflows=[SimpleNamespace(request_id="req", id="wf")],
+        workflows=[SimpleNamespace(request_id="req", id="wf", slice_length=1)],
         runtime_graphs={},
         clustering_seconds=0.0,
     )
@@ -1083,7 +1102,7 @@ class _CommitRaisesJobManager:
         if self._select_calls == 1:
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
-                workflows=[SimpleNamespace(request_id="req", id="wf")],
+                workflows=[SimpleNamespace(request_id="req", id="wf", slice_length=1)],
                 runtime_graphs={},
                 clustering_seconds=0.0,
                 name="batch",
@@ -1128,3 +1147,53 @@ async def test_scheduler_releases_workers_when_commit_raises(server_factory) -> 
     # must have been released and the reservation aborted.
     assert server._busy_workers == set()
     assert job_manager.aborted_count == 1
+
+
+def _fanout_batch(*, gpu: bool) -> Any:
+    node = SimpleNamespace(
+        backend="vllm" if gpu else "data_retrieval",
+        task_type="inference" if gpu else "data_retrieval",
+        data_spec={"type": "list", "items": ["a", "b", "c", "d"]},
+    )
+    return SimpleNamespace(
+        config=SimpleNamespace(hardware_requirements=None),
+        workflows=[SimpleNamespace(request_id="req-fan", id="wf-fan", slice_length=1)],
+        runtime_graphs={"g": SimpleNamespace(nodes={"n": node})},
+        clustering_seconds=0.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_sizes_gpu_group_to_fanout_width(
+    server_factory,
+) -> None:
+    """A 4-row GPU fan-out must claim all 4 eligible GPU workers, not just the
+    configured group size of 1."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 0
+    free = FreeCapacity(
+        cpu_worker_ids=(),
+        gpu_worker_ids=("gpu-0", "gpu-1", "gpu-2", "gpu-3"),
+    )
+    workers = await server._try_claim_workers(_fanout_batch(gpu=True), free)
+    assert workers is not None
+    assert set(workers) == {"gpu-0", "gpu-1", "gpu-2", "gpu-3"}
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_sizes_cpu_group_to_fanout_width(
+    server_factory,
+) -> None:
+    """A 4-row CPU fan-out must claim all 4 eligible CPU workers, not just the
+    configured group size of 1."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-0", "cpu-1", "cpu-2", "cpu-3"),
+        gpu_worker_ids=(),
+    )
+    workers = await server._try_claim_workers(_fanout_batch(gpu=False), free)
+    assert workers is not None
+    assert set(workers) == {"cpu-0", "cpu-1", "cpu-2", "cpu-3"}

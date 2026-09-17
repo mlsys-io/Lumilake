@@ -849,11 +849,12 @@ class LumilakeServer:
                     )
                     self.logger.info(
                         "Dispatching batch (size=%d) to workers %s "
-                        "(cpu_group_size=%d gpu_group_size=%d)",
+                        "(cpu_group_size=%d gpu_group_size=%d fanout_width=%d)",
                         len(batch.workflows),
                         workers,
                         self.config.cpu_worker_group_size,
                         gpu_group_size,
+                        self._batch_fanout_width(batch),
                     )
                     task = asyncio.create_task(self._run_batch(workers, batch))
                     self._inflight_tasks.add(task)
@@ -994,6 +995,11 @@ class LumilakeServer:
         cpu_group_size = self.config.cpu_worker_group_size
         if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
             cpu_group_size = 1
+        fanout_width = self._batch_fanout_width(batch)
+        if self._batch_requires_gpu(batch):
+            gpu_group_size = max(gpu_group_size, fanout_width)
+        else:
+            cpu_group_size = max(cpu_group_size, fanout_width)
         hardware = batch.config.hardware_requirements
         selected = free.eligible_workers(
             cpu_group_size=cpu_group_size,
@@ -1257,6 +1263,54 @@ class LumilakeServer:
                 if cls._requires_cpu(op):
                     return True
         return False
+
+    @classmethod
+    def _batch_fanout_width(cls, batch: BatchSelection) -> int:
+        """Largest row-aligned fan-out width across the batch.
+
+        The width is the batch's row count: the rows a batch executes are the
+        sum of its items' ``slice_length``. A static list in an op's
+        ``data_spec`` is one way a batch has more than one row, but not the
+        only one. The worker pool must be sized to at least the row count so
+        the shard rewrite can spread the fan-out across distinct workers.
+        Returns 1 when there is no fan-out.
+        """
+        width = 1
+        for runtime_graph in batch.runtime_graphs.values():
+            for op in runtime_graph.nodes.values():
+                data_spec = getattr(op, "data_spec", None)
+                if not isinstance(data_spec, dict):
+                    continue
+                total = cls._static_partition_total(data_spec)
+                if total is not None and total > width:
+                    width = total
+        row_total = sum(item.slice_length for item in batch.workflows)
+        if row_total > width:
+            width = row_total
+        return width
+
+    @staticmethod
+    def _static_partition_total(data_spec: dict[str, Any]) -> int | None:
+        lengths: list[int] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                if value.get("type") == "list" and isinstance(value.get("items"), list):
+                    lengths.append(len(value["items"]))
+                for item in value.values():
+                    collect(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        collect(data_spec)
+        if not lengths:
+            return None
+        total = max(lengths)
+        for length in lengths:
+            if length not in {1, total}:
+                return None
+        return max(1, total)
 
     @classmethod
     def _normalize_worker_profile(
@@ -2697,6 +2751,7 @@ class LumilakeServer:
             schedule,
             selected_workers,
             normalized_data_profile_results,
+            worker_profiles=worker_profiles,
         )
         flat_outputs = connector_result["flat_outputs"]
         chat_histories = connector_result["chat_histories"]
