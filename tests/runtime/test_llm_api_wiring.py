@@ -542,6 +542,36 @@ def test_api_lambda_op_message_input_renders_literal_with_lambda() -> None:
     assert messages == [{"role": "user", "content": "HELLO, NVDA!"}]
 
 
+def test_api_lambda_over_runtime_output_fails_closed() -> None:
+    """A Lambda message transform over a runtime output must fail closed in API
+    mode with a self-explaining error: the API request body cannot carry a
+    graph_template function step, so the transform cannot be evaluated at
+    dispatch time. This pins the rejection so it cannot silently become a
+    wrong-answer path."""
+    stock = input_placeholder("Stock")
+    local = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    relay = FormatOp("{prior}", prior=local)
+    shout = LambdaOp(
+        [relay],
+        fn=lambda inputs: str(inputs[0]).upper(),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="Lambda message transform over a runtime"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_api_rowwise_template_fans_out_row_aligned_nodes() -> None:
     """An API-backed LLMChatOp with ``rowwise_template``/``rowwise_columns``/
     ``system_messages`` must mirror the local rowwise contract: the template is

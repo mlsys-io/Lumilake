@@ -1970,9 +1970,11 @@ class RuntimeGraphBuilder:
             ):
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' API mode cannot render message step"
-                    f" '{label}': its function input references an upstream"
-                    " runtime output, which API mode cannot evaluate at build"
-                    " time; only literal function inputs are supported."
+                    f" '{label}': a Lambda message transform over a runtime output"
+                    " is not supported in API mode. The API request body cannot"
+                    " carry a graph_template function step, so the transform"
+                    " cannot be evaluated at dispatch time. Apply the transform"
+                    " in a separate local op, or keep this op local."
                 )
             fn = safe_materialize_function(code)
             return [
