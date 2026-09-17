@@ -764,11 +764,6 @@ class LumilakeServer:
                     )
                     cpu_group_size = self.config.cpu_worker_group_size
                     if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
-                        # A CPU-only deployment (LUMILAKE_CPU_WORKER_GROUP_SIZE=0)
-                        # is only valid alongside a nonzero GPU group; a batch
-                        # containing a CPU-only op (data_retrieval/api) still
-                        # needs one CPU worker, matching what schedule preview
-                        # (_select_preview_workers_and_profiles) already requires.
                         cpu_group_size = 1
                     workers = await self._wait_for_available_worker_group(
                         cpu_group_size=cpu_group_size,
@@ -1098,6 +1093,9 @@ class LumilakeServer:
 
     @classmethod
     def _batch_requires_cpu(cls, batch: BatchSelection) -> bool:
+        """A configured CPU group size of 0 is only valid alongside a
+        nonzero GPU group; a batch with a data_retrieval or api op still
+        needs one CPU worker, matching _select_preview_workers_and_profiles."""
         for runtime_graph in batch.runtime_graphs.values():
             for op in runtime_graph.nodes.values():
                 if cls._requires_cpu(op):
