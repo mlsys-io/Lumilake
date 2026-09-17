@@ -109,6 +109,7 @@ ops:
       - role: user
         content: "Summarize the latest news for {symbol}."
     config:
+      model: Qwen/Qwen2.5-0.5B-Instruct
       api: {}
       max_tokens: 256
 ```
