@@ -123,3 +123,126 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
 
     merged, _ = optimizer.optimize_graphs({"g1": _graph("req1"), "g2": _graph("req2")})
     assert merged.node_count == 2
+
+
+def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
+    """When dedupe merges an API predecessor, ``${node.path}`` references to it
+    inside a downstream ``api_spec`` body must be remapped to the canonical node,
+    or the placeholder would name a node that no longer exists."""
+    api0 = RuntimeOp(
+        node_id="Api0",
+        task_type="api",
+        backend="api",
+        model="model-a",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+        api_spec={"json": {"messages": [{"role": "user", "content": "hello"}]}},
+        dependencies=(),
+    )
+    api1 = RuntimeOp(
+        node_id="Api1",
+        task_type="api",
+        backend="api",
+        model="model-a",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+        api_spec={"json": {"messages": [{"role": "user", "content": "hello"}]}},
+        dependencies=(),
+    )
+    downstream = RuntimeOp(
+        node_id="Down",
+        task_type="api",
+        backend="api",
+        model="model-a",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+        api_spec={
+            "json": {
+                "messages": [{"role": "user", "content": "${Api1.items.0.output}"}]
+            }
+        },
+        dependencies=("Api1",),
+    )
+    graph = RuntimeGraph(
+        nodes={"Api0": api0, "Api1": api1, "Down": downstream},
+        node_order=["Api0", "Api1", "Down"],
+        output_node_map={"Down": "result"},
+        dsl_to_runtime={},
+    )
+
+    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+
+    assert optimized.node_count == 2
+    down = optimized.nodes["Down"]
+    assert down.dependencies == ("Api0",)
+    assert down.api_spec["json"]["messages"] == [
+        {"role": "user", "content": "${Api0.items.0.output}"}
+    ]
+
+
+def test_dedupe_keys_on_condition_and_preserves_it() -> None:
+    """Two ops identical except for ``condition`` must not be merged, and a
+    surviving op must keep its ``condition`` through the rebuild."""
+
+    def _op(node_id: str, expr: str) -> RuntimeOp:
+        return RuntimeOp(
+            node_id=node_id,
+            task_type="inference",
+            backend="vllm",
+            model="model-a",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+            dependencies=(),
+            condition={"node": "gate", "expr": expr},
+        )
+
+    graph = RuntimeGraph(
+        nodes={
+            "A": _op("A", "gate == 'on'"),
+            "B": _op("B", "gate == 'off'"),
+        },
+        node_order=["A", "B"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+
+    assert optimized.node_count == 2
+    assert optimized.nodes["A"].condition == {"node": "gate", "expr": "gate == 'on'"}
+    assert optimized.nodes["B"].condition == {"node": "gate", "expr": "gate == 'off'"}
+
+
+def test_dedupe_merges_ops_with_identical_condition() -> None:
+    """Two ops with the same ``condition`` are still dedupable, and the merged
+    op keeps the condition."""
+
+    def _op(node_id: str) -> RuntimeOp:
+        return RuntimeOp(
+            node_id=node_id,
+            task_type="inference",
+            backend="vllm",
+            model="model-a",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+            dependencies=(),
+            condition={"node": "gate", "expr": "gate == 'on'"},
+        )
+
+    graph = RuntimeGraph(
+        nodes={"C": _op("C"), "D": _op("D")},
+        node_order=["C", "D"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+
+    assert optimized.node_count == 1
+    (survivor,) = optimized.nodes.values()
+    assert survivor.condition == {"node": "gate", "expr": "gate == 'on'"}

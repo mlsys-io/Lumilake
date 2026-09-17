@@ -1,6 +1,7 @@
 """Base optimizer class for Lumilake runtime supporting multiple implementations."""
 
 import json
+import re
 from abc import ABC, abstractmethod
 from typing import Any, cast
 
@@ -102,6 +103,7 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
             else None
         ),
         normalized_dependencies,
+        _stable_json(op.condition) if op.condition is not None else None,
     )
 
 
@@ -114,6 +116,20 @@ def _dedupe_ordered(items: list[str]) -> list[str]:
         seen.add(item)
         ordered.append(item)
     return ordered
+
+
+_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
+
+
+def _remap_placeholder(text: str, mapping: dict[str, str]) -> str:
+    def _sub(match: re.Match[str]) -> str:
+        node = match.group(1)
+        remapped = mapping.get(node)
+        if remapped is None:
+            return match.group(0)
+        return f"${{{remapped}.{match.group(2)}}}"
+
+    return _PLACEHOLDER_RE.sub(_sub, text)
 
 
 def _remap_node_refs(value: object, mapping: dict[str, str]) -> object:
@@ -129,6 +145,8 @@ def _remap_node_refs(value: object, mapping: dict[str, str]) -> object:
         return [_remap_node_refs(item, mapping) for item in value]
     if isinstance(value, tuple):
         return tuple(_remap_node_refs(item, mapping) for item in value)
+    if isinstance(value, str):
+        return _remap_placeholder(value, mapping)
     return value
 
 
@@ -181,6 +199,11 @@ def _dedupe_runtime_graph(graph: RuntimeGraph) -> RuntimeGraph:
             output_spec=(
                 _remap_node_spec(op.output_spec, mapping)
                 if op.output_spec is not None
+                else None
+            ),
+            condition=(
+                _remap_node_spec(op.condition, mapping)
+                if op.condition is not None
                 else None
             ),
         )
