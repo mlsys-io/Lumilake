@@ -134,6 +134,16 @@ before the job is archived or an error body is logged. Only literal
 references an upstream node's runtime output fails closed rather than
 silently falling back to a local model.
 
+When a message's literal content resolves to a multi-row input column
+(e.g. `Stock: ["NVDA", "AAPL"]`), the op fans out into one FlowMesh `api`
+task per row instead of one aggregate call: row 0 keeps the op's own id,
+and row `i` (`i >= 1`) runs as `<op id>__row<i>`, each with that row's
+value substituted into the message content and each mapped back to the
+same declared output. Rows dispatch and complete independently, but the
+workflow's failure semantics are all-or-nothing: if any row's task fails,
+the whole workflow request fails and no partial per-row results are
+returned, even for rows that already completed successfully.
+
 ### LambdaOp
 
 `LambdaOp` runs a serialized Python function against the listed
