@@ -352,9 +352,9 @@ def test_node_prefix_remaps_api_placeholder_stage_name() -> None:
 
 
 def test_node_prefix_preserves_literal_placeholder_in_user_content() -> None:
-    """``with_node_prefix`` rewrites only generated upstream references (which
-    point at a dependency), never a user's literal ``${...}`` in message
-    content."""
+    """``with_node_prefix`` rewrites only placeholders whose node is a
+    dependency of the op; a ``${...}`` in message content that references a
+    node outside the dependency set (here ``sibling``) is left untouched."""
     stock = input_placeholder("Stock")
     first = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1311,6 +1311,38 @@ def test_api_rowwise_node_feeding_local_multi_row_upstream_fails_closed() -> Non
         rowwise_columns=[{"label": "Prior", "node": local.id, "path": "items.output"}],
     )
     llm.inputs.append(local)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="rowwise column 'Prior' references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_rowwise_node_feeding_multi_row_api_upstream_fails_closed() -> None:
+    """A rowwise API op whose node-ref column references a fanned-out API
+    upstream (multiple rows) must fail closed too: the rowwise branch binds
+    only the unsuffixed row-0 node, silently dropping every row but the first.
+    The guard must cover API upstreams, not just local ones."""
+    stock = input_placeholder("Stock")
+    api_up = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "text"}],
+    )
+    llm.inputs.append(api_up)
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
