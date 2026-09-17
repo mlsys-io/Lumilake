@@ -16,6 +16,7 @@ SENSITIVE_DATA_SPEC_KEYS: frozenset[str] = frozenset(
 )
 
 _BEARER_TOKEN_RE = re.compile(r"Bearer\s+\S+")
+_AUTH_HEADER_RE = re.compile(r"(Authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+)\S+")
 _AUTH_HEADER_JSON_RE = re.compile(r'("Authorization"\s*:\s*)"[^"]*"')
 
 
@@ -23,6 +24,7 @@ def _redact_text(text: str) -> str:
     """Regex-scrub a string that may embed a credential (a non-JSON error
     body or already-serialized text)."""
     scrubbed = _BEARER_TOKEN_RE.sub(f"Bearer {REDACTED_TOKEN_PLACEHOLDER}", text)
+    scrubbed = _AUTH_HEADER_RE.sub(rf"\1{REDACTED_TOKEN_PLACEHOLDER}", scrubbed)
     scrubbed = _AUTH_HEADER_JSON_RE.sub(rf'\1"{REDACTED_TOKEN_PLACEHOLDER}"', scrubbed)
     return scrubbed
 

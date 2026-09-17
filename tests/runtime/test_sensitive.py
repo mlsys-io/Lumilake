@@ -52,6 +52,19 @@ def test_redact_secrets_in_text_scrubs_authorization_json_text_pattern() -> None
     assert REDACTED_TOKEN_PLACEHOLDER in result
 
 
+def test_redact_secrets_in_text_scrubs_non_bearer_auth_scheme() -> None:
+    """config.api.authorization accepts arbitrary schemes (e.g. Basic), so a
+    plain-text reflected ``Authorization: Basic ...`` must be scrubbed too,
+    not just Bearer tokens."""
+    value = "rejected: Authorization: Basic dXNlcjpwYXNz is invalid"
+
+    result = redact_secrets_in_text(value)
+
+    assert "dXNlcjpwYXNz" not in result
+    assert REDACTED_TOKEN_PLACEHOLDER in result
+    assert "rejected" in result
+
+
 def test_redact_sensitive_leaves_non_sensitive_values_untouched() -> None:
     value = {"model": "meta-llama/Llama-3.1-8B-Instruct", "nested": {"count": 3}}
 
