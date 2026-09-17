@@ -152,10 +152,11 @@ renders per its mode (e.g. `sql` renders the retrieved table). A reference
 is always single-valued: an upstream `LLMChatOp` that itself fanned out
 into multiple row-aligned nodes (see below) cannot be referenced this way —
 building the graph rejects it up front, since only this op's own message
-columns can carry that per-row alignment. `return_history` also needs
-per-item prompt metadata that only a locally-run `LLMChatOp` carries, so an
-API-backed op with `return_history` enabled cannot be referenced by a
-downstream op's message either.
+columns can carry that per-row alignment. An upstream `LLMChatOp` with
+`return_history` enabled is referenced the same way whether it ran locally
+or against an API: the runtime synthesizes the prior prompt as
+`metadata.prompt` on the API result (the same field a local inference item
+carries), so history assembly works identically for both backends.
 
 When a message's literal content resolves to a multi-row input column
 (e.g. `Stock: ["NVDA", "AAPL"]`), the op fans out into one FlowMesh `api`
