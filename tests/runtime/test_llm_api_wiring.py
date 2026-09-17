@@ -376,8 +376,6 @@ def test_node_prefix_preserves_literal_placeholder_in_user_content() -> None:
         ),
     )
     relay = FormatOp("{prior}", prior=first)
-    # A sibling runtime node that is not consumed by ``second``: a literal
-    # referencing it is user content, not a generated upstream reference.
     sibling = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(

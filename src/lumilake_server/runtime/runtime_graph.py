@@ -43,9 +43,6 @@ from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
 
-# FlowMesh dispatch-time stage reference, e.g. ``${node.path}``. ``with_node_prefix``
-# rewrites the node segment so it matches the prefixed graph node name the
-# dispatcher keys its stage context by.
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
 
 
@@ -279,10 +276,6 @@ class RuntimeGraph:
         nodes: dict[str, RuntimeOp] = {}
         for old_id, op in self.nodes.items():
             new_id = mapping[old_id]
-            # Only rewrite ``${node.path}`` placeholders whose node is a
-            # dependency of this node: those are the references Lumilake
-            # generated for upstream runtime outputs. A user's literal
-            # ``${...}`` in message content is left untouched.
             rewritable = {
                 dep: mapping[dep] for dep in op.dependencies if dep in mapping
             }
