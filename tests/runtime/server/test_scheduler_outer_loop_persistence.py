@@ -1,9 +1,12 @@
 import asyncio
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from lumilake import envs
+
+from lumilake_server.runtime.server import LumilakeServer
 
 
 class _FailThenCancelJobManager:
@@ -19,7 +22,7 @@ class _FailThenCancelJobManager:
 
 @pytest.mark.asyncio
 async def test_scheduler_loop_continues_after_cycle_exception(
-    server_factory,
+    server_factory: Callable[[], LumilakeServer],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = server_factory()
@@ -81,7 +84,7 @@ class _TwoBatchThenCancelJobManager:
 
 @pytest.mark.asyncio
 async def test_scheduler_loop_can_dispatch_multiple_batches_concurrently(
-    server_factory,
+    server_factory: Callable[[], LumilakeServer],
 ) -> None:
     server = server_factory()
     release_batches = asyncio.Event()
@@ -129,7 +132,7 @@ async def test_scheduler_loop_can_dispatch_multiple_batches_concurrently(
 
     server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._wait_for_available_worker_group = (  # type: ignore[method-assign]
-        _fake_wait_for_available_worker_group
+        _fake_wait_for_available_worker_group  # type: ignore[assignment]
     )
     server._run_batch = _blocking_run_batch  # type: ignore[method-assign]
 
@@ -181,7 +184,9 @@ class _CpuOnlyBatchJobManager:
 
 
 @pytest.mark.asyncio
-async def test_scheduler_cpu_only_batch_skips_gpu_wait(server_factory) -> None:
+async def test_scheduler_cpu_only_batch_skips_gpu_wait(
+    server_factory: Callable[[], LumilakeServer],
+) -> None:
     """A batch with no GPU-backend ops must request gpu_group_size=0."""
     server = server_factory()
     server.config.gpu_worker_group_size = 2
@@ -203,7 +208,7 @@ async def test_scheduler_cpu_only_batch_skips_gpu_wait(server_factory) -> None:
         return
 
     server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[assignment]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
@@ -213,7 +218,7 @@ async def test_scheduler_cpu_only_batch_skips_gpu_wait(server_factory) -> None:
 
 @pytest.mark.asyncio
 async def test_scheduler_cpu_batch_requests_a_cpu_worker_when_group_size_is_zero(
-    server_factory,
+    server_factory: Callable[[], LumilakeServer],
 ) -> None:
     """LUMILAKE_CPU_WORKER_GROUP_SIZE=0 is only valid alongside a nonzero GPU
     group (envs.py), but a batch containing a CPU-only op (data_retrieval /
@@ -241,7 +246,7 @@ async def test_scheduler_cpu_batch_requests_a_cpu_worker_when_group_size_is_zero
         return
 
     server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[assignment]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
