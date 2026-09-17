@@ -614,6 +614,32 @@ def test_api_rowwise_template_fans_out_row_aligned_nodes() -> None:
     ]
 
 
+def test_api_rowwise_timeout_sec_reaches_emitted_spec() -> None:
+    """A rowwise API op configured with ``timeout_sec`` must emit it on every
+    fanned-out row, so a per-row timeout is not silently lost to the executor
+    default."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(timeout_sec=300.0),
+        ),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
+        ],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    row_ids = runtime_graph.dsl_to_runtime[llm.id]
+    assert row_ids == [llm.id, f"{llm.id}__row1"]
+    assert runtime_graph.nodes[row_ids[0]].api_spec["timeout_sec"] == 300.0
+    assert runtime_graph.nodes[row_ids[1]].api_spec["timeout_sec"] == 300.0
+
+
 def test_api_aggregate_table_renders_df_column() -> None:
     """An API-backed LLMChatOp with ``aggregate_table`` must mirror the local
     aggregate contract: the base template columns are merged with a ``df``
@@ -648,6 +674,35 @@ def test_api_aggregate_table_renders_df_column() -> None:
     assert df_col["data"]["columns"] == [
         {"label": "summary", "node": upstream.id, "path": "text"}
     ]
+
+
+def test_api_aggregate_timeout_sec_reaches_emitted_spec() -> None:
+    """An aggregate API op configured with ``timeout_sec`` must emit it, so the
+    timeout is not silently lost to the executor default on the aggregate
+    path."""
+    stock = input_placeholder("Stock")
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(timeout_sec=300.0),
+        ),
+        aggregate_table=[{"label": "summary", "node": upstream.id, "path": "text"}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (llm_row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    node = runtime_graph.nodes[llm_row_id]
+    assert node.api_spec["timeout_sec"] == 300.0
 
 
 def test_api_ancestor_with_return_history_feeds_local_downstream() -> None:
