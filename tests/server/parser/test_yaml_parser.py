@@ -461,12 +461,8 @@ def test_llm_chat_config_requires_model_even_with_api_set() -> None:
 
 
 def test_llm_vision_config_still_requires_model_even_with_api_set() -> None:
-    """LLMVisionOp always runs locally (runtime_graph never routes it through
-    config.api), so the model-omission relaxation must not apply to it. This
-    guards the ``op_kind == "LLMChatOp"`` scoping added alongside the
-    relaxation in yaml_parser._emit_llm_like_op; it does not by itself pin
-    that edit (the unmodified pre-fix check already requires 'model' for
-    every op_kind, so this assertion holds either way)."""
+    """LLMVisionOp requires ``config.model`` even when ``config.api`` is set,
+    matching the parity contract that applies to every LLM op."""
     yaml_text = textwrap.dedent(
         """
         name: vision_no_model

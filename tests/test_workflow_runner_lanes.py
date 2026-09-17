@@ -16,13 +16,9 @@ _OLD_DUPLICATED_TEXT = (
 
 
 def test_runner_lane_comment_is_not_duplicated_across_workflows() -> None:
-    """These five workflows used to each carry their own copy of an
-    ~11-line runner-lane policy comment. Pins the replacement of that
-    duplicated block (in each of the five ``.github/workflows/*.yml`` files)
-    with a short pointer to CONTRIBUTING.md#runner-lanes: reverting any
-    single file back to the old inline block makes that file's checks fail
-    below, even though the other four files and CONTRIBUTING.md are
-    unchanged."""
+    """Each of the five runner-lane workflows must carry a short pointer to
+    CONTRIBUTING.md#runner-lanes instead of an inline copy of the policy
+    comment."""
     for name in _RUNNER_LANE_WORKFLOWS:
         text = (REPO_ROOT / ".github" / "workflows" / name).read_text()
         assert (
