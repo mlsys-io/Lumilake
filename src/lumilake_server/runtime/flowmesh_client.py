@@ -92,10 +92,11 @@ def _origin(url: str) -> tuple[str, str, int | None]:
 
 
 def _trusted_origins() -> set[tuple[str, str, int | None]]:
+    origins = {_origin(_DEFAULT_API_ORIGIN)}
     raw = envs.LUMILAKE_API_TRUSTED_ORIGINS.strip()
-    if not raw:
-        return {_origin(_DEFAULT_API_ORIGIN)}
-    return {_origin(item.strip()) for item in raw.split(",") if item.strip()}
+    if raw:
+        origins.update(_origin(item.strip()) for item in raw.split(",") if item.strip())
+    return origins
 
 
 def is_api_origin_trusted(url: str) -> bool:

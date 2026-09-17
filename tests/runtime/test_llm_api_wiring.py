@@ -276,6 +276,31 @@ def test_api_explicit_default_port_is_trusted(monkeypatch: pytest.MonkeyPatch) -
     assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
 
 
+def test_api_trusted_origins_env_var_is_additive_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LUMILAKE_API_TRUSTED_ORIGINS extends the trusted-origin allowlist; it
+    must not replace the always-trusted default https://lum.id (ENV.md's
+    documented contract for the env var)."""
+    monkeypatch.setattr(
+        envs, "LUMILAKE_API_TRUSTED_ORIGINS", "https://vendor.example.com"
+    )
+
+    default_graph, default_llm_id = _build_api_graph(api=ApiConfig())
+    default_node = default_graph.nodes[default_llm_id]
+    assert (
+        default_node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+    )
+
+    vendor_graph, vendor_llm_id = _build_api_graph(
+        api=ApiConfig(url="https://vendor.example.com/v1/chat/completions")
+    )
+    vendor_node = vendor_graph.nodes[vendor_llm_id]
+    assert (
+        vendor_node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+    )
+
+
 def test_api_multi_row_input_fans_out_row_aligned_nodes() -> None:
     """A literal message column with N rows must fan out into N nodes, one
     per row, in row order."""
