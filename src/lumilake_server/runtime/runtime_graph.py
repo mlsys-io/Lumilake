@@ -491,6 +491,8 @@ class RuntimeGraphBuilder:
                     condition=(
                         llm_op.condition if isinstance(llm_op, LLMChatOp) else None
                     ),
+                    graph_dict=graph_dict,
+                    inputs_dict=inputs_dict,
                 )
                 mapping = [runtime_op.node_id for runtime_op in runtime_ops]
                 output_node_ids = mapping
@@ -1635,6 +1637,8 @@ class RuntimeGraphBuilder:
         upstream_llm_ids: list[str],
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
     ) -> list[RuntimeOp]:
         """Build FlowMesh ``api`` tasks for an externally-hosted LLM: render
         resolved ``graph_template`` messages into flat OpenAI-style chat bodies,
@@ -1647,6 +1651,8 @@ class RuntimeGraphBuilder:
                 api_config=api_config,
                 output_spec=output_spec,
                 condition=condition,
+                graph_dict=graph_dict,
+                inputs_dict=inputs_dict,
             )
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
             return self._build_api_aggregate_op(
@@ -1657,6 +1663,8 @@ class RuntimeGraphBuilder:
                 upstream_llm_ids=upstream_llm_ids,
                 output_spec=output_spec,
                 condition=condition,
+                graph_dict=graph_dict,
+                inputs_dict=inputs_dict,
             )
         resolved, row_count = self._resolve_api_messages(llm_op_id, template_spec)
 
@@ -1727,6 +1735,8 @@ class RuntimeGraphBuilder:
         api_config: ApiConfig,
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
     ) -> list[RuntimeOp]:
         """Build API tasks for a rowwise LLMChatOp: each ``rowwise_column``
         resolves to a row of values, the template is formatted per row, and the
@@ -1753,6 +1763,25 @@ class RuntimeGraphBuilder:
                 and isinstance(node_ref, str)
                 and isinstance(path, str)
             ):
+                upstream = graph_dict.get(node_ref)
+                upstream_row_count = (
+                    self._static_output_row_count(upstream, inputs_dict)
+                    if isinstance(upstream, LLMOp)
+                    else None
+                )
+                if (
+                    isinstance(upstream, LLMOp)
+                    and upstream.config.api is None
+                    and upstream_row_count is not None
+                    and upstream_row_count > 1
+                ):
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' rowwise column '{label}'"
+                        f" references '{node_ref}', which produces multiple rows;"
+                        " API mode can only carry one row per node reference, so"
+                        " wiring this to the single unsuffixed output would"
+                        " silently drop every row but the first."
+                    )
                 resolved_path = path
                 if resolved_path == "items" or resolved_path.startswith("items."):
                     resolved_path = f"items.0{resolved_path[len('items'):]}"
@@ -2035,6 +2064,8 @@ class RuntimeGraphBuilder:
         upstream_llm_ids: list[str],
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
     ) -> list[RuntimeOp]:
         """Build API tasks for an aggregate LLMChatOp: merge the base template
         columns with a ``df`` dataframe column built from ``aggregate_table``."""
@@ -2055,6 +2086,25 @@ class RuntimeGraphBuilder:
                 and isinstance(path, str)
             ):
                 continue
+            upstream = graph_dict.get(node_ref)
+            upstream_row_count = (
+                self._static_output_row_count(upstream, inputs_dict)
+                if isinstance(upstream, LLMOp)
+                else None
+            )
+            if (
+                isinstance(upstream, LLMOp)
+                and upstream.config.api is None
+                and upstream_row_count is not None
+                and upstream_row_count > 1
+            ):
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' aggregate column '{label}'"
+                    f" references '{node_ref}', which produces multiple rows;"
+                    " API mode can only carry one row per node reference, so"
+                    " wiring this to the single unsuffixed output would"
+                    " silently drop every row but the first."
+                )
             table_columns.append({"label": label, "node": node_ref, "path": path})
             if node_ref not in aggregate_dependencies:
                 aggregate_dependencies.append(node_ref)
@@ -2302,14 +2352,18 @@ class RuntimeGraphBuilder:
                         if is_api_ancestor:
                             prior = self._api_prior_prompt(op, inputs_dict)
                             if prior is None:
-                                columns[f"{op.id}_context"] = {
-                                    "node": op.id,
-                                    "path": "items.metadata.prompt",
-                                }
-                            else:
-                                columns[f"{op.id}_context"] = {
-                                    "data": {"type": "list", "items": prior},
-                                }
+                                raise ValueError(
+                                    f"LLMChatOp '{llm_op_id}' consumes '{op.id}',"
+                                    " which has return_history and a runtime-derived"
+                                    " prior prompt. API mode cannot inline that"
+                                    " prompt at build time, and an API task result"
+                                    " carries no metadata.prompt at dispatch time,"
+                                    " so the history cannot be reconstructed. Use a"
+                                    " literal prior prompt, or keep this op local."
+                                )
+                            columns[f"{op.id}_context"] = {
+                                "data": {"type": "list", "items": prior},
+                            }
                         else:
                             columns[f"{op.id}_context"] = {
                                 "node": op.id,

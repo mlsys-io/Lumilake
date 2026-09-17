@@ -1,4 +1,5 @@
 import textwrap
+from typing import Any
 
 import pytest
 from lumilake import envs
@@ -38,7 +39,7 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", _RUNTIME_TOKEN)
 
 
-def _build_api_graph(**config_kwargs) -> tuple[RuntimeGraph, str]:
+def _build_api_graph(**config_kwargs: Any) -> tuple[RuntimeGraph, str]:
     stock = input_placeholder("Stock")
     api = config_kwargs.pop("api", None) or ApiConfig()
     model = config_kwargs.pop("model", "meta-llama/Llama-3.1-8B-Instruct")
@@ -924,10 +925,11 @@ def test_api_ancestor_with_return_history_feeds_api_downstream() -> None:
     ]
 
 
-def test_api_ancestor_return_history_defers_runtime_prior_prompt() -> None:
+def test_api_ancestor_return_history_runtime_prior_prompt_fails_closed() -> None:
     """An API-backed ancestor with ``return_history`` whose prior prompt is
-    runtime-derived (not a literal) must defer it via ``items.metadata.prompt``
-    like the local path, instead of failing to inline it at build time."""
+    runtime-derived must fail closed: API mode cannot inline it at build time,
+    and an API task result carries no ``metadata.prompt`` at dispatch time, so
+    the history cannot be reconstructed."""
     stock = input_placeholder("Stock")
     local = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -948,16 +950,9 @@ def test_api_ancestor_return_history_defers_runtime_prior_prompt() -> None:
     )
     output = as_output("result", downstream)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
-    (downstream_row_id,) = runtime_graph.dsl_to_runtime[downstream.id]
-    columns = runtime_graph.nodes[downstream_row_id].data_spec["template"]["columns"]
-    context_cols = [c for c in columns if c.get("label") == f"{api_row_id}_context"]
-    assert context_cols and context_cols[0]["node"] == api_row_id
-    assert context_cols[0]["path"] == "items.metadata.prompt"
-    output_cols = [c for c in columns if c.get("label") == f"{api_row_id}_output"]
-    assert output_cols and output_cols[0]["path"] == "text"
+    with pytest.raises(ValueError, match="runtime-derived prior prompt"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_api_scheme_less_url_raises_clean_error() -> None:
@@ -1292,6 +1287,58 @@ def test_api_node_feeding_single_row_local_upstream_builds() -> None:
     assert api_node.api_spec["json"]["messages"] == [
         {"role": "user", "content": f"${{{api_node.dependencies[0]}.items.0.output}}"}
     ]
+
+
+def test_api_rowwise_node_feeding_local_multi_row_upstream_fails_closed() -> None:
+    """A rowwise API op whose node-ref column references a local upstream that
+    produces multiple rows must fail closed: the rowwise branch rewrites the
+    reference to ``items.0.output``, silently dropping every row but the first."""
+    stock = input_placeholder("Stock")
+    local = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=local)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": local.id, "path": "items.output"}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_aggregate_node_feeding_local_multi_row_upstream_fails_closed() -> None:
+    """An aggregate API op whose ``aggregate_table`` references a local upstream
+    that produces multiple rows must fail closed: the aggregate branch rewrites
+    the reference to ``items.0.output``, silently dropping every row but the
+    first."""
+    stock = input_placeholder("Stock")
+    local = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=local)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[
+            {"label": "summary", "node": local.id, "path": "items.output"}
+        ],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
