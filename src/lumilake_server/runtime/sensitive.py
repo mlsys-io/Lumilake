@@ -16,7 +16,7 @@ SENSITIVE_DATA_SPEC_KEYS: frozenset[str] = frozenset(
 )
 
 _BEARER_TOKEN_RE = re.compile(r"Bearer\s+\S+")
-_AUTH_HEADER_RE = re.compile(r"(Authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+)\S+")
+_AUTH_HEADER_RE = re.compile(r"(Authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+)[^\n]*")
 _AUTH_HEADER_JSON_RE = re.compile(r'("Authorization"\s*:\s*)"[^"]*"')
 
 

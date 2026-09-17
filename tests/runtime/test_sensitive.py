@@ -65,6 +65,24 @@ def test_redact_secrets_in_text_scrubs_non_bearer_auth_scheme() -> None:
     assert "rejected" in result
 
 
+def test_redact_secrets_in_text_scrubs_multi_part_auth_value() -> None:
+    """A multi-part Authorization value (e.g. AWS SigV4 or HTTP Digest) must be
+    redacted in full, not just its first fragment: later parameters such as
+    ``Signature`` would otherwise leak into FlowMesh error logs or archived
+    task responses."""
+    value = (
+        "rejected: Authorization: AWS4-HMAC-SHA256 "
+        "Credential=AKIA123/x, Signature=SUPERSECRET"
+    )
+
+    result = redact_secrets_in_text(value)
+
+    assert "AKIA123" not in result
+    assert "SUPERSECRET" not in result
+    assert REDACTED_TOKEN_PLACEHOLDER in result
+    assert "rejected" in result
+
+
 def test_redact_sensitive_leaves_non_sensitive_values_untouched() -> None:
     value = {"model": "meta-llama/Llama-3.1-8B-Instruct", "nested": {"count": 3}}
 
