@@ -1,14 +1,15 @@
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 
 import pytest
 from support.runtime_server import cleanup_runtime_result_dirs, make_server
 
 import lumilake_server.utils.job_storage as job_storage_module
+from lumilake_server.runtime.server import LumilakeServer
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
 @pytest.fixture
-def server_factory():
+def server_factory() -> Callable[[], LumilakeServer]:
     return make_server
 
 
