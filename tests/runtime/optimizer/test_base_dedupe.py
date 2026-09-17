@@ -246,3 +246,47 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
     assert optimized.node_count == 1
     (survivor,) = optimized.nodes.values()
     assert survivor.condition == {"node": "gate", "expr": "gate == 'on'"}
+
+
+def test_dedupe_remaps_condition_node_reference() -> None:
+    """A surviving op's ``condition.node`` must be remapped when it references
+    a predecessor that dedupe merged away, or the gate would name a node that
+    no longer exists."""
+
+    def _op(node_id: str) -> RuntimeOp:
+        return RuntimeOp(
+            node_id=node_id,
+            task_type="inference",
+            backend="vllm",
+            model="model-a",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+            dependencies=(),
+        )
+
+    a = _op("A")
+    b = _op("B")
+    c = RuntimeOp(
+        node_id="C",
+        task_type="inference",
+        backend="vllm",
+        model="model-a",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+        dependencies=("B",),
+        condition={"node": "B", "expr": "B == 'ok'"},
+    )
+    graph = RuntimeGraph(
+        nodes={"A": a, "B": b, "C": c},
+        node_order=["A", "B", "C"],
+        output_node_map={"C": "result"},
+        dsl_to_runtime={},
+    )
+
+    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+
+    assert optimized.node_count == 2
+    assert optimized.nodes["C"].dependencies == ("A",)
+    assert optimized.nodes["C"].condition == {"node": "A", "expr": "B == 'ok'"}
