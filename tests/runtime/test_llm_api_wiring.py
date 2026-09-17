@@ -14,7 +14,11 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
-from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import (
+    RuntimeGraph,
+    RuntimeGraphBuilder,
+    make_node_prefix,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 _LUMID_URL = "http://lumid-data"
@@ -65,6 +69,7 @@ def test_api_config_emits_api_task_type() -> None:
     body = api["json"]
     assert body["model"] == "meta-llama/Llama-3.1-8B-Instruct"
     assert body["messages"] == [{"role": "user", "content": "NVDA"}]
+    assert "api" not in body
 
 
 def test_api_config_model_override() -> None:
@@ -335,6 +340,35 @@ def test_api_multi_row_input_fans_out_row_aligned_nodes() -> None:
     ]
     assert runtime_graph.output_node_map[llm.id] == "result"
     assert runtime_graph.output_node_map[row1_id] == "result"
+
+
+def test_node_prefix_preserves_api_spec_on_row_fanned_nodes() -> None:
+    """RuntimeGraphBuilder.build's node_prefix path (used for real job
+    dispatch, e.g. routes/jobs.py) renames every node via
+    RuntimeGraph.with_node_prefix; that rename must carry a row-fanned API
+    node's api_spec through unchanged, or the prefixed node dispatches with
+    no URL/headers/body and the request never goes out."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    unprefixed = RuntimeGraphBuilder().build(compiled)
+    prefix = make_node_prefix("job1")
+    prefixed = RuntimeGraphBuilder().build(compiled, node_prefix="job1")
+
+    row_ids = unprefixed.dsl_to_runtime[llm.id]
+    assert len(row_ids) == 2
+    for row_id in row_ids:
+        prefixed_id = f"{prefix}__{row_id}"
+        assert prefixed_id in prefixed.nodes
+        assert prefixed.nodes[prefixed_id].api_spec == unprefixed.nodes[row_id].api_spec
+        assert prefixed.nodes[prefixed_id].api_spec != {}
 
 
 def test_api_fanout_row_order_matches_input_across_two_nodes() -> None:
