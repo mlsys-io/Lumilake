@@ -45,11 +45,8 @@ def _build_single_row_api_request() -> tuple[RequestInfo, str]:
 async def test_api_backend_returns_chat_history_like_local_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An LLM API node and a local LLMChatOp are meant to be identical to the
-    caller, with the backend only an implementation detail. Local inference
-    items carry ``metadata.prompt`` for history assembly; an API-backed node
-    must carry the same shape, or ``return_history`` silently produces no
-    history at all once the request is routed to the API backend."""
+    """An API-backed node must carry ``metadata.prompt`` like a local
+    inference item, or ``return_history`` silently drops its history."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(

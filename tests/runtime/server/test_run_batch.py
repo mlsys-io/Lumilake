@@ -395,13 +395,8 @@ async def test_run_batch_slice_failure_does_not_roll_back_other_slice_results(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """OPS.md's all-or-nothing fan-out guarantee holds per FlowMesh workflow
-    request, not per job: a job's inputs can be split into multiple
-    input_batch_size slices, each dispatched as its own independent workflow
-    request across separate scheduling rounds. This pins that one slice's
-    later failure does not erase an earlier slice's already-merged success -
-    the existing fail-fast test only drives a single FlowMesh graph, which is
-    why it never covered a request spanning multiple slices."""
+    """Characterizes the documented cross-slice contract: a later slice's
+    failure does not erase an earlier slice's already-merged results."""
     server = server_factory()
     runtime_manager = RecordingRuntimeManager()
     server.runtime_manager = cast(Any, runtime_manager)
