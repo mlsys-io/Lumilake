@@ -1292,14 +1292,17 @@ def test_api_node_feeding_single_row_local_upstream_builds() -> None:
 def test_api_rowwise_node_feeding_local_multi_row_upstream_fails_closed() -> None:
     """A rowwise API op whose node-ref column references a local upstream that
     produces multiple rows must fail closed: the rowwise branch rewrites the
-    reference to ``items.0.output``, silently dropping every row but the first."""
+    reference to ``items.0.output``, silently dropping every row but the first.
+    The upstream is wired into the graph via ``inputs`` (as the parser does for
+    aggregate/rowwise node refs), not the structural messages, so the rowwise
+    guard itself must raise rather than the structural guard preempting it."""
     stock = input_placeholder("Stock")
     local = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
     llm = LLMChatOp(
-        [OpMessage(role="user", content=local)],
+        [OpMessage(role="user", content=stock)],
         config=GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
@@ -1307,10 +1310,11 @@ def test_api_rowwise_node_feeding_local_multi_row_upstream_fails_closed() -> Non
         rowwise_template="Summarize {Prior}.",
         rowwise_columns=[{"label": "Prior", "node": local.id, "path": "items.output"}],
     )
+    llm.inputs.append(local)
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
-    with pytest.raises(ValueError, match="produces multiple rows"):
+    with pytest.raises(ValueError, match="rowwise column 'Prior' references"):
         RuntimeGraphBuilder().build(compiled)
 
 
@@ -1318,14 +1322,15 @@ def test_api_aggregate_node_feeding_local_multi_row_upstream_fails_closed() -> N
     """An aggregate API op whose ``aggregate_table`` references a local upstream
     that produces multiple rows must fail closed: the aggregate branch rewrites
     the reference to ``items.0.output``, silently dropping every row but the
-    first."""
+    first. The upstream is wired via ``inputs`` so the aggregate guard itself
+    must raise rather than the structural guard preempting it."""
     stock = input_placeholder("Stock")
     local = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
     llm = LLMChatOp(
-        [OpMessage(role="user", content=local)],
+        [OpMessage(role="user", content=stock)],
         config=GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
@@ -1334,10 +1339,42 @@ def test_api_aggregate_node_feeding_local_multi_row_upstream_fails_closed() -> N
             {"label": "summary", "node": local.id, "path": "items.output"}
         ],
     )
+    llm.inputs.append(local)
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
-    with pytest.raises(ValueError, match="produces multiple rows"):
+    with pytest.raises(ValueError, match="aggregate column 'summary' references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_aggregate_node_feeding_multi_row_api_upstream_fails_closed() -> None:
+    """An aggregate API op whose ``aggregate_table`` references a fanned-out API
+    upstream (multiple rows) must fail closed too: the aggregate branch binds
+    only the unsuffixed row-0 node, silently dropping every row but the first.
+    The guard must cover API upstreams, not just local ones."""
+    stock = input_placeholder("Stock")
+    api_up = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[{"label": "summary", "node": api_up.id, "path": "text"}],
+    )
+    llm.inputs.append(api_up)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="aggregate column 'summary' references"):
         RuntimeGraphBuilder().build(compiled)
 
 

@@ -1241,8 +1241,9 @@ class RuntimeGraphBuilder:
         """Resolve an API-backed op's user message to a literal prior prompt
         (an API result carries no ``metadata.prompt``, so inline the message
         that was sent; only literal content can be inlined). Returns ``None``
-        when the prompt is runtime-derived, so the caller defers it via the
-        op's ``items.metadata.prompt`` at dispatch time."""
+        when the prompt is runtime-derived; the caller fails closed in that
+        case, because API mode cannot reconstruct the history at dispatch
+        time."""
         messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
         user_msgs = [m for m in messages if m.role == "user"]
         if not user_msgs:
@@ -1771,7 +1772,6 @@ class RuntimeGraphBuilder:
                 )
                 if (
                     isinstance(upstream, LLMOp)
-                    and upstream.config.api is None
                     and upstream_row_count is not None
                     and upstream_row_count > 1
                 ):
@@ -2094,7 +2094,6 @@ class RuntimeGraphBuilder:
             )
             if (
                 isinstance(upstream, LLMOp)
-                and upstream.config.api is None
                 and upstream_row_count is not None
                 and upstream_row_count > 1
             ):
