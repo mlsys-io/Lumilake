@@ -449,3 +449,145 @@ async def test_scheduler_inference_task_type_requests_gpu_even_without_backend(
     await server._scheduler_loop()
 
     assert captured_gpu_sizes == [2]
+
+
+class _FanoutBatchJobManager:
+    """Yields one batch with a 4-row fan-out then cancels."""
+
+    def __init__(self) -> None:
+        self._select_calls = 0
+
+    async def wait_for_work(self) -> None:
+        if self._select_calls >= 1:
+            raise asyncio.CancelledError
+
+    async def reserve_batch(self, batch_size: int) -> Any:
+        self._select_calls += 1
+        if self._select_calls == 1:
+            gpu_node = SimpleNamespace(
+                backend="vllm",
+                task_type="inference",
+                data_spec={"type": "list", "items": ["a", "b", "c", "d"]},
+            )
+            selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
+                workflows=[SimpleNamespace(request_id="req-fan", id="wf-fan")],
+                runtime_graphs={
+                    "g": SimpleNamespace(nodes={"n": gpu_node}),
+                },
+                name="fanout-batch",
+                clustering_seconds=0.0,
+            )
+            return SimpleNamespace(selection=selection)
+        return None
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        return
+
+    async def abort_reservation(self, reservation: Any) -> None:
+        return
+
+
+@pytest.mark.asyncio
+async def test_scheduler_sizes_worker_group_to_fanout_width(
+    server_factory,
+) -> None:
+    """A 4-row fan-out must request a worker group of at least 4, not the
+    configured size of 1."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 1
+    server.job_manager = cast(Any, _FanoutBatchJobManager())
+
+    captured_gpu_sizes: list[int] = []
+
+    async def _no_accumulation_wait() -> None:
+        return
+
+    async def _record_worker_group(
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
+    ) -> list[str]:
+        captured_gpu_sizes.append(gpu_group_size)
+        return ["gpu-0", "gpu-1", "gpu-2", "gpu-3"]
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        return
+
+    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+
+    assert captured_gpu_sizes == [4]
+
+
+class _CpuFanoutBatchJobManager:
+    """Yields one batch with a 4-row CPU fan-out then cancels."""
+
+    def __init__(self) -> None:
+        self._select_calls = 0
+
+    async def wait_for_work(self) -> None:
+        if self._select_calls >= 1:
+            raise asyncio.CancelledError
+
+    async def reserve_batch(self, batch_size: int) -> Any:
+        self._select_calls += 1
+        if self._select_calls == 1:
+            cpu_node = SimpleNamespace(
+                backend="data_retrieval",
+                task_type="data_retrieval",
+                data_spec={"type": "list", "items": ["a", "b", "c", "d"]},
+            )
+            selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
+                workflows=[SimpleNamespace(request_id="req-cpu-fan", id="wf-cpu-fan")],
+                runtime_graphs={
+                    "g": SimpleNamespace(nodes={"n": cpu_node}),
+                },
+                name="cpu-fanout-batch",
+                clustering_seconds=0.0,
+            )
+            return SimpleNamespace(selection=selection)
+        return None
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        return
+
+    async def abort_reservation(self, reservation: Any) -> None:
+        return
+
+
+@pytest.mark.asyncio
+async def test_scheduler_sizes_cpu_worker_group_to_fanout_width(
+    server_factory,
+) -> None:
+    """A 4-row CPU fan-out must request a CPU worker group of at least 4, not
+    the configured size of 1."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    server.job_manager = cast(Any, _CpuFanoutBatchJobManager())
+
+    captured_cpu_sizes: list[int] = []
+
+    async def _no_accumulation_wait() -> None:
+        return
+
+    async def _record_worker_group(
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
+    ) -> list[str]:
+        captured_cpu_sizes.append(cpu_group_size)
+        return ["cpu-0", "cpu-1", "cpu-2", "cpu-3"]
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        return
+
+    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+
+    assert captured_cpu_sizes == [4]
