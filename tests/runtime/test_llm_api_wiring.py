@@ -133,6 +133,18 @@ def test_api_untrusted_origin_with_caller_credential_passes_through() -> None:
     assert node.api_spec["headers"]["Authorization"] == "Bearer caller-key"
 
 
+def test_api_trusted_origin_ignores_caller_credential() -> None:
+    """For a trusted origin the server PAT always wins; a caller-supplied
+    config.api.authorization is not honored (common.py's ApiConfig
+    docstring and OPS.md both say the credential is resolved server-side
+    for a trusted origin, not supplied by the caller)."""
+    runtime_graph, llm_id = _build_api_graph(
+        api=ApiConfig(authorization="Bearer caller-key")
+    )
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+
+
 def test_api_untrusted_origin_without_credential_fails_closed() -> None:
     with pytest.raises(ValueError, match="untrusted endpoint"):
         _build_api_graph(
@@ -166,11 +178,7 @@ def test_yaml_api_llm_op_without_config_model_reaches_the_default() -> None:
     ``_emit_llm_like_op`` relaxation (the ``is_api_chat_op`` check) that
     lets ``config`` omit the ``model`` key when ``config.api`` is set;
     without it, ``parse_yaml_payload`` raises before this op ever reaches
-    the runtime graph. It does not separately pin runtime_graph.py's
-    ``_build_api_llm_op`` model-resolution line: the old
-    ``api_config.model or llm_op.config.model or _DEFAULT_API_MODEL`` chain
-    and the new ``llm_op.config.resolved_model()`` call compute the same
-    value here, since both defer to the same default model string."""
+    the runtime graph."""
     yaml_text = textwrap.dedent(
         """
         name: yaml-api-no-model

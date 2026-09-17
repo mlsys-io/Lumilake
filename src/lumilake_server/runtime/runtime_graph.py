@@ -1668,9 +1668,7 @@ class RuntimeGraphBuilder:
         model = llm_op.config.resolved_model()
         url = api_config.url or _DEFAULT_API_URL
         headers: dict[str, str] = {"Content-Type": "application/json"}
-        if api_config.authorization:
-            headers["Authorization"] = api_config.authorization
-        elif is_api_origin_trusted(url):
+        if is_api_origin_trusted(url):
             server_token = resolve_api_credential(url)
             if not server_token:
                 raise ValueError(
@@ -1678,6 +1676,8 @@ class RuntimeGraphBuilder:
                     f"{url} but no PAT is configured; set LUMILAKE_RUNTIME_TOKEN."
                 )
             headers["Authorization"] = f"Bearer {server_token}"
+        elif api_config.authorization:
+            headers["Authorization"] = api_config.authorization
         else:
             raise ValueError(
                 f"LLMChatOp '{llm_op_id}' API mode targets untrusted endpoint "
