@@ -1,0 +1,86 @@
+---
+name: api-chat-api
+
+# Demonstrates that an API-backed LLMChatOp and a locally-served
+# LLMChatOp are the same node to the user and compose in either
+# direction. Three LLMChatOps in a chain, each consuming the previous
+# node's output:
+#   Draft (API) -> Polish (local) -> Verdict (API)
+# The only difference between the three is `config.api`: node 1 and
+# node 3 route to an external OpenAI-style endpoint, node 2 runs against
+# a locally-served model. No data access — no DB / S3 retrievals, no
+# agent mode.
+#
+# Inputs:  Topic (one per slice)
+# Output:  result (final API-mode LLM response text)
+#
+# Runtime requirements:
+#   - A standard ``lumilake deploy up`` (server + a reachable FlowMesh
+#     orchestrator at ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL``).
+#   - Reachable lumid-data-app via ``LUMID_DATA_URL`` (and
+#     ``LUMID_DATA_TOKEN`` if the deployment is authenticated).
+#   - A FlowMesh worker that can serve the local model named in the
+#     middle node's ``config.model`` (``Qwen/Qwen2.5-0.5B-Instruct`` is a
+#     small cached text-demo model that fits a shared GPU).
+#   - For the API-backed nodes: a reachable ``config.api.url`` origin.
+#     The default ``https://lum.id`` is on the trusted-origin allowlist,
+#     so the server attaches its own bearer token; for any other origin
+#     set ``config.api.authorization`` explicitly.
+#
+# Each node references the previous node's output as a bare user-facing
+# id in ``messages:``; the parser wraps it in an implicit FormatOp, the
+# same relay the local backend uses. API mode renders such a reference
+# as a FlowMesh ``${node.path}`` dispatch-time placeholder and declares
+# the referenced node as a dependency, so dispatch waits for it.
+#
+# Submit:
+#   lumilake job submit examples/templates/yaml/api-chat-api.yaml \
+#       --format yaml --input 'Topic=a database index' \
+#       --output-prefix demo/api-chat-api --optimizer halo
+
+inputs:
+  Topic: ["a database index"]
+
+ops:
+  - id: "Draft"
+    op: LLMChatOp
+    inputs: [Topic]
+    messages:
+      - role: system
+        content: "Answer in one short sentence."
+      - role: user
+        content: "Topic"
+    config:
+      max_tokens: 256
+      temperature: 0.2
+      api: {}
+
+  - id: "Polish"
+    op: LLMChatOp
+    inputs: ["Draft"]
+    messages:
+      - role: system
+        content: "Rewrite the sentence to be more formal."
+      - role: user
+        content: "Draft"
+    config:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+      max_tokens: 128
+      temperature: 0.2
+
+  - id: "Verdict"
+    op: LLMChatOp
+    inputs: ["Polish"]
+    messages:
+      - role: system
+        content: "Reply with exactly one word: GOOD or BAD."
+      - role: user
+        content: "Polish"
+    config:
+      max_tokens: 256
+      temperature: 0.0
+      api: {}
+
+outputs:
+  - name: result
+    ref: "Verdict"

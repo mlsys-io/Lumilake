@@ -42,6 +42,11 @@ from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
 
+# FlowMesh dispatch-time stage reference, e.g. ``${node.path}``. ``with_node_prefix``
+# rewrites the node segment so it matches the prefixed graph node name the
+# dispatcher keys its stage context by.
+_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
+
 
 class RuntimeGraphSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeGraph``.
@@ -243,6 +248,13 @@ class RuntimeGraph:
 
         mapping = {node_id: f"{prefix}{separator}{node_id}" for node_id in self.nodes}
 
+        def _remap_placeholder(text: str) -> str:
+            def _sub(match: re.Match[str]) -> str:
+                node = match.group(1)
+                return f"${{{mapping.get(node, node)}.{match.group(2)}}}"
+
+            return _PLACEHOLDER_RE.sub(_sub, text)
+
         def remap(value: Any) -> Any:
             if isinstance(value, dict):
                 updated: dict[str, Any] = {}
@@ -256,6 +268,8 @@ class RuntimeGraph:
                 return [remap(item) for item in value]
             if isinstance(value, tuple):
                 return tuple(remap(item) for item in value)
+            if isinstance(value, str):
+                return _remap_placeholder(value)
             return value
 
         nodes: dict[str, RuntimeOp] = {}
@@ -1554,10 +1568,18 @@ class RuntimeGraphBuilder:
         """Build FlowMesh ``api`` tasks for an externally-hosted LLM.
 
         Renders resolved ``graph_template`` messages into flat OpenAI-style
-        chat bodies. Only literal (build-time) message content is supported; a
-        message referencing an upstream node's runtime output fails closed. A
-        literal column with more than one row fans out into one node per row,
-        each row keeping its position so a chain of API nodes stays aligned.
+        chat bodies. A message may reference an upstream node's runtime output;
+        that renders as a FlowMesh ``${node.path}`` dispatch-time placeholder
+        (see ``_resolve_stage_references`` in FlowMesh's dispatcher) instead of
+        a literal value, and the referenced node is added to this op's FlowMesh
+        dependencies so the dispatcher defers until it is done. A runtime
+        reference is always single-valued: an upstream LLMOp that itself fanned
+        out into multiple row-aligned nodes is rejected before reaching this
+        function (see ``_infer_structural_messages``), so the placeholder
+        broadcasts across every row exactly like a single-row literal column
+        would. A literal column with more than one row fans out into one node
+        per row, each row keeping its position so a chain of API nodes stays
+        aligned.
         """
         options = template_spec.get("options") or {}
         format_options = options.get("format") or {}
@@ -1575,13 +1597,31 @@ class RuntimeGraphBuilder:
             if isinstance(step, dict) and isinstance(step.get("label"), str):
                 step_by_label[step["label"]] = step
 
+        def _runtime_reference_placeholder(
+            label: str, column: dict[str, Any]
+        ) -> str | None:
+            node = column.get("node")
+            if not isinstance(node, str) or not node:
+                return None
+            path = column.get("path")
+            if not isinstance(path, str) or not path:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode column '{label}'"
+                    f" references node '{node}' without a result path."
+                )
+            if path == "items" or path.startswith("items."):
+                path = f"items.0{path[len('items'):]}"
+            return f"${{{node}.{path}}}"
+
         def _resolve_literal_column(label: str, column: dict[str, Any]) -> list[str]:
             data = column.get("data")
             if not isinstance(data, dict) or data.get("type") != "list":
+                placeholder = _runtime_reference_placeholder(label, column)
+                if placeholder is not None:
+                    return [placeholder]
                 raise ValueError(
-                    f"LLMChatOp '{llm_op_id}' API mode cannot render message"
-                    f" referencing column '{label}' from a runtime node; only"
-                    " literal inputs are supported."
+                    f"LLMChatOp '{llm_op_id}' API mode column '{label}' has"
+                    " neither literal data nor a node reference to render."
                 )
             items = data.get("items")
             if not isinstance(items, list) or not items:
@@ -1685,7 +1725,17 @@ class RuntimeGraphBuilder:
                 "LUMILAKE_API_TRUSTED_ORIGINS."
             )
 
-        dependencies = list(upstream_llm_ids) if upstream_llm_ids else None
+        merged_dependencies: list[str] = []
+        seen_deps: set[str] = set()
+        for dep in [
+            *upstream_llm_ids,
+            *self._collect_graph_template_dependencies(template_spec),
+        ]:
+            if dep in seen_deps:
+                continue
+            seen_deps.add(dep)
+            merged_dependencies.append(dep)
+        dependencies = merged_dependencies or None
         runtime_ops: list[RuntimeOp] = []
         for row_index in range(row_count):
             messages = [
@@ -1804,14 +1854,23 @@ class RuntimeGraphBuilder:
                     )
                 if op.id not in upstream_llm_ids:
                     upstream_llm_ids.add(op.id)
+                    is_api_ancestor = op.config.api is not None
                     if isinstance(op, LLMChatOp) and op.return_history:
+                        if is_api_ancestor:
+                            raise ValueError(
+                                f"LLMOp '{llm_op_id}' consumes '{op.id}', an"
+                                " API-backed op with return_history enabled;"
+                                " API results carry no per-item prompt"
+                                " metadata, so chat-history context columns"
+                                " are not supported across this edge."
+                            )
                         columns[f"{op.id}_context"] = {
                             "node": op.id,
                             "path": "items.metadata.prompt",
                         }
                     columns[f"{op.id}_output"] = {
                         "node": op.id,
-                        "path": "items.output",
+                        "path": "text" if is_api_ancestor else "items.output",
                     }
 
                 if isinstance(op, LLMChatOp) and op.return_history:

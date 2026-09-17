@@ -129,10 +129,27 @@ other origin the caller must set `config.api.authorization` explicitly, or
 the request is rejected before dispatch. This header does become part of
 the FlowMesh task spec that is actually submitted for execution — it is not
 kept out of the spec — but it is redacted (replaced with `***REDACTED***`)
-before the job is archived or an error body is logged. Only literal
-(build-time) message content is supported in API mode; a message that
-references an upstream node's runtime output fails closed rather than
-silently falling back to a local model.
+before the job is archived or an error body is logged.
+
+A message may also reference an upstream node's runtime output — the same
+way the local backend does, via `inputs:` plus that op's id in `messages:`
+(directly for a non-`LLMChatOp` upstream such as `DataRetrievalOp`, or
+through `FormatOp` when relaying another `LLMChatOp`'s output) — and API
+mode is not restricted to literal, build-time content. Such a reference
+renders as a FlowMesh `${node.path}` dispatch-time
+placeholder instead of a literal value: FlowMesh's dispatcher resolves it
+against the referenced node's real result immediately before the `api`
+executor runs, and the referenced node is added to this op's FlowMesh
+dependencies so dispatch waits for it. An upstream `LLMChatOp` (local or
+API-backed) renders as its text output; an upstream `DataRetrievalOp`
+renders per its mode (e.g. `sql` renders the retrieved table). A reference
+is always single-valued: an upstream `LLMChatOp` that itself fanned out
+into multiple row-aligned nodes (see below) cannot be referenced this way —
+building the graph rejects it up front, since only this op's own message
+columns can carry that per-row alignment. `return_history` also needs
+per-item prompt metadata that only a locally-run `LLMChatOp` carries, so an
+API-backed op with `return_history` enabled cannot be referenced by a
+downstream op's message either.
 
 When a message's literal content resolves to a multi-row input column
 (e.g. `Stock: ["NVDA", "AAPL"]`), the op fans out into one FlowMesh `api`

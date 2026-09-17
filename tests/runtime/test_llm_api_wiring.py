@@ -7,6 +7,7 @@ from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
+    FormatOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -249,9 +250,11 @@ def test_yaml_api_config_string_fails_at_graph_build_not_runtime_build() -> None
         Graph.from_json(spec["graph"])
 
 
-def test_api_dynamic_column_fails_closed() -> None:
-    """A message referencing an upstream node's runtime output cannot be
-    rendered at build time and must fail rather than silently fall back."""
+def test_api_dynamic_column_renders_as_dispatch_placeholder() -> None:
+    """A message referencing an upstream node's runtime output renders as a
+    FlowMesh ``${node.path}`` dispatch-time placeholder (resolved by
+    FlowMesh's dispatcher before the api executor runs), and the referenced
+    node is declared as a FlowMesh dependency."""
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
         data_spec={
@@ -271,7 +274,142 @@ def test_api_dynamic_column_fails_closed() -> None:
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
-    with pytest.raises(ValueError, match="cannot render message"):
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    node = runtime_graph.nodes[llm.id]
+    assert node.api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{retrieval.id}.items.0.table}}"}
+    ]
+    assert node.dependencies == (retrieval.id,)
+
+
+def test_api_node_downstream_of_api_node_receives_upstream_placeholder() -> None:
+    """An API-mode LLMChatOp consuming another API-mode LLMChatOp's output
+    (relayed through a ``FormatOp``, the same idiom ``hello-world.yaml`` uses
+    to carry an upstream op's output into a message) renders the FlowMesh
+    ``${node.text}`` placeholder that FlowMesh's dispatcher resolves against
+    the upstream node's real ``APIResult`` before dispatch, and declares
+    that upstream node as a dependency."""
+    stock = input_placeholder("Stock")
+    first = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    relay = FormatOp("{prior}", prior=first)
+    second = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", second)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (first_row_id,) = runtime_graph.dsl_to_runtime[first.id]
+    (second_row_id,) = runtime_graph.dsl_to_runtime[second.id]
+    second_node = runtime_graph.nodes[second_row_id]
+    assert second_node.api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{first_row_id}.text}}"}
+    ]
+    assert second_node.dependencies == (first_row_id,)
+
+
+def test_node_prefix_remaps_api_placeholder_stage_name() -> None:
+    """Real job dispatch renames every node via ``RuntimeGraph.with_node_prefix``;
+    the FlowMesh dispatcher keys its stage context by that prefixed graph node
+    name, so the ``${node.path}`` placeholder an API node emits for an upstream
+    runtime reference must be rewritten to the prefixed name too, or dispatch
+    fails with ``Unknown stage reference``."""
+    stock = input_placeholder("Stock")
+    first = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    relay = FormatOp("{prior}", prior=first)
+    second = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", second)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    unprefixed = RuntimeGraphBuilder().build(compiled)
+    prefix = make_node_prefix("job1")
+    prefixed = RuntimeGraphBuilder().build(compiled, node_prefix="job1")
+
+    (first_row_id,) = unprefixed.dsl_to_runtime[first.id]
+    (second_row_id,) = unprefixed.dsl_to_runtime[second.id]
+    prefixed_first = f"{prefix}__{first_row_id}"
+    prefixed_second = f"{prefix}__{second_row_id}"
+    assert prefixed.nodes[prefixed_second].api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{prefixed_first}.text}}"}
+    ]
+
+
+def test_local_node_downstream_of_api_node_uses_text_path() -> None:
+    """A local-backend LLMChatOp consuming an API-backed ancestor's output
+    (relayed through a ``FormatOp``) renders a ``text`` column (matching
+    ``APIResult``'s shape) instead of ``items.output`` (which only
+    ``InferenceResult`` carries), so the local worker's graph-template
+    renderer does not fail at execution time."""
+    stock = input_placeholder("Stock")
+    api_node = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    relay = FormatOp("{prior}", prior=api_node)
+    local_node = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", local_node)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
+    (local_row_id,) = runtime_graph.dsl_to_runtime[local_node.id]
+    columns = runtime_graph.nodes[local_row_id].data_spec["template"]["columns"]
+    upstream_columns = [col for col in columns if col.get("node") == api_row_id]
+    assert any(col.get("path") == "text" for col in upstream_columns)
+    assert all(col.get("path") != "items.output" for col in upstream_columns)
+
+
+def test_api_ancestor_with_return_history_fails_closed() -> None:
+    """``return_history`` needs each item's ``metadata.prompt``, which only
+    ``InferenceResult`` (local backend) carries; an API-backed ancestor with
+    ``return_history`` enabled must fail closed instead of silently omitting
+    chat-history context."""
+    stock = input_placeholder("Stock")
+    api_node = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        return_history=True,
+    )
+    relay = FormatOp("{prior}", prior=api_node)
+    downstream = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", downstream)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    with pytest.raises(ValueError, match="return_history"):
         RuntimeGraphBuilder().build(compiled)
 
 

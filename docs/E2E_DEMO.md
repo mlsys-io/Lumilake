@@ -26,6 +26,7 @@ independent steps**; skip any step you've already done.
 | trading-agent | `examples/templates/yaml/trading-agent.yaml` | `examples/templates/n8n/trading-agent.json` | 5 SQL pulls across `lumilake_demo.*` → bull / bear / risk synthesis → final verdict |
 | agent-retrieval | `examples/templates/yaml/agent-retrieval.yaml` | `examples/templates/n8n/agent-retrieval.json` | Five lumid.data agent retrievals → analyst LLMs → research summary (requires lumid.data) |
 | image-generation | `examples/templates/yaml/image-generation.yaml` | `examples/templates/n8n/image-generation.json` | SQL + S3 HTML fetch → digest → diffusion prompt → render → critic VLM → refined render |
+| api-chat-api | `examples/templates/yaml/api-chat-api.yaml` | – | API-mode LLMChatOp → local LLMChatOp → API-mode LLMChatOp, proving api/local are pure backend switches |
 
 All three read from the same `lumilake_demo.*` Postgres schema; the
 image-generation pair also reads HTML files from
