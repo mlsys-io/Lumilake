@@ -751,6 +751,87 @@ def test_api_aggregate_model_override_reaches_emitted_spec() -> None:
     assert node.model == "gpt-4o"
 
 
+def test_api_generic_op_emits_condition() -> None:
+    """A plain (non-rowwise, non-aggregate) API LLMChatOp must emit ``condition``
+    on its runtime node, matching the local builder."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": "gate", "expr": "gate == 'on'"},
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    assert runtime_graph.nodes[row_id].condition == {
+        "node": "gate",
+        "expr": "gate == 'on'",
+    }
+
+
+def test_api_rowwise_op_emits_condition() -> None:
+    """A rowwise API LLMChatOp must emit ``condition`` on every fanned-out
+    row, matching the local rowwise builder."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
+        ],
+        condition={"node": "gate", "expr": "gate == 'on'"},
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    for row_id in runtime_graph.dsl_to_runtime[llm.id]:
+        assert runtime_graph.nodes[row_id].condition == {
+            "node": "gate",
+            "expr": "gate == 'on'",
+        }
+
+
+def test_api_aggregate_op_emits_condition() -> None:
+    """An aggregate API LLMChatOp must emit ``condition`` on its runtime node,
+    matching the local aggregate builder."""
+    stock = input_placeholder("Stock")
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[{"label": "summary", "node": upstream.id, "path": "text"}],
+        condition={"node": "gate", "expr": "gate == 'on'"},
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    assert runtime_graph.nodes[row_id].condition == {
+        "node": "gate",
+        "expr": "gate == 'on'",
+    }
+
+
 def test_api_ancestor_with_return_history_feeds_local_downstream() -> None:
     """An API-backed ancestor with ``return_history`` feeding a local
     downstream must mirror the local history contract: the prior prompt is
@@ -811,6 +892,42 @@ def test_api_ancestor_with_return_history_feeds_api_downstream() -> None:
         {"role": "user", "content": "NVDA"},
         {"role": "assistant", "content": f"${{{api_row_id}.text}}"},
     ]
+
+
+def test_api_ancestor_return_history_defers_runtime_prior_prompt() -> None:
+    """An API-backed ancestor with ``return_history`` whose prior prompt is
+    runtime-derived (not a literal) must defer it via ``items.metadata.prompt``
+    like the local path, instead of failing to inline it at build time."""
+    stock = input_placeholder("Stock")
+    local = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    relay = FormatOp("{prior}", prior=local)
+    api_node = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        return_history=True,
+    )
+    downstream = LLMChatOp(
+        [OpMessage(role="user", content=api_node)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", downstream)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
+    (downstream_row_id,) = runtime_graph.dsl_to_runtime[downstream.id]
+    columns = runtime_graph.nodes[downstream_row_id].data_spec["template"]["columns"]
+    context_cols = [c for c in columns if c.get("label") == f"{api_row_id}_context"]
+    assert context_cols and context_cols[0]["node"] == api_row_id
+    assert context_cols[0]["path"] == "items.metadata.prompt"
+    output_cols = [c for c in columns if c.get("label") == f"{api_row_id}_output"]
+    assert output_cols and output_cols[0]["path"] == "text"
 
 
 def test_api_scheme_less_url_raises_clean_error() -> None:
@@ -1076,6 +1193,75 @@ def test_api_row_fanned_node_feeding_local_node_fails_closed() -> None:
 
     with pytest.raises(ValueError, match="fanned out into multiple row-aligned"):
         RuntimeGraphBuilder().build(compiled)
+
+
+_YAML_LOCAL_NODE_FEEDS_API_NODE = textwrap.dedent(
+    """
+    name: local-node-feeds-api-node
+
+    inputs:
+      Topic:
+        - "a database index"
+        - "a message queue"
+
+    ops:
+      - id: "Local"
+        op: LLMChatOp
+        inputs: [Topic]
+        messages:
+          - role: user
+            content: "Topic"
+        config:
+          model: model-a
+
+      - id: "Api"
+        op: LLMChatOp
+        inputs: [Local]
+        messages:
+          - role: user
+            content: "Local"
+        config:
+          model: model-b
+          api:
+            url: https://lum.id/llm/v1/chat/completions
+
+    outputs:
+      - name: result
+        ref: "Api"
+    """
+)
+
+
+def test_api_node_feeding_local_multi_row_upstream_fails_closed() -> None:
+    """An API node cannot consume a local upstream that produces multiple
+    rows: the structural-message wiring rewrites the reference to the single
+    unsuffixed output (``items.0.output``), which would silently drop every
+    row but the first. The graph build fails closed instead."""
+    specs = parse_yaml_payload(_YAML_LOCAL_NODE_FEEDS_API_NODE)
+    spec = specs["local-node-feeds-api-node"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_node_feeding_single_row_local_upstream_builds() -> None:
+    """An API node consuming a local upstream that produces a single row must
+    still build: the guard fires only for multi-row upstreams, never for a
+    single-row one."""
+    specs = parse_yaml_payload(_YAML_LOCAL_NODE_FEEDS_API_NODE)
+    spec = specs["local-node-feeds-api-node"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(Topic=["a database index"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    api_node = next(
+        node for node in runtime_graph.nodes.values() if node.task_type == "api"
+    )
+    assert api_node.api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{api_node.dependencies[0]}.items.0.output}}"}
+    ]
 
 
 def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:

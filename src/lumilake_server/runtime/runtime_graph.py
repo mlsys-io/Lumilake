@@ -1235,10 +1235,12 @@ class RuntimeGraphBuilder:
 
     def _api_prior_prompt(
         self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
-    ) -> list[str]:
+    ) -> list[str] | None:
         """Resolve an API-backed op's user message to a literal prior prompt
         (an API result carries no ``metadata.prompt``, so inline the message
-        that was sent; only literal content can be inlined)."""
+        that was sent; only literal content can be inlined). Returns ``None``
+        when the prompt is runtime-derived, so the caller defers it via the
+        op's ``items.metadata.prompt`` at dispatch time."""
         messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
         user_msgs = [m for m in messages if m.role == "user"]
         if not user_msgs:
@@ -1258,10 +1260,7 @@ class RuntimeGraphBuilder:
             return list(values)
         if isinstance(content, DataOp):
             return list(content.data)
-        raise ValueError(
-            f"LLMChatOp '{op.id}' return_history prior prompt references a"
-            " runtime node, which API mode cannot inline at build time."
-        )
+        return None
 
     def _build_node_from_embedding_op(
         self,
@@ -2212,6 +2211,33 @@ class RuntimeGraphBuilder:
             visit_column(column)
         return deps
 
+    def _static_output_row_count(
+        self, op: Op, inputs_dict: dict[str, list[str]]
+    ) -> int | None:
+        """Static row count of an op's output, or ``None`` when not knowable
+        at build time (e.g. a retrieval whose row count is only known at
+        execution)."""
+        if isinstance(op, InputOp):
+            values = inputs_dict.get(op.name)
+            return len(values) if values is not None else None
+        if isinstance(op, DataOp):
+            return len(op.data)
+        if isinstance(op, LLMChatOp):
+            messages = (
+                op.messages.messages if isinstance(op.messages, MessageOp) else []
+            )
+            for message in messages:
+                if message.role == "user" and isinstance(message.content, Op):
+                    return self._static_output_row_count(message.content, inputs_dict)
+            return None
+        if isinstance(op, FormatOp):
+            counts = [
+                self._static_output_row_count(inp, inputs_dict) for inp in op.inputs
+            ]
+            known = [c for c in counts if c is not None]
+            return max(known) if known else None
+        return None
+
     def _infer_structural_messages(
         self,
         llm_op_id: str,
@@ -2259,14 +2285,29 @@ class RuntimeGraphBuilder:
                 if op.id not in upstream_llm_ids:
                     upstream_llm_ids.add(op.id)
                     is_api_ancestor = op.config.api is not None
+                    if not is_api_ancestor:
+                        row_count = self._static_output_row_count(op, inputs_dict)
+                        if row_count is not None and row_count > 1:
+                            raise ValueError(
+                                f"LLMOp '{llm_op_id}' consumes '{op.id}', which"
+                                " produces multiple rows; API mode message columns"
+                                " can only carry one row per node reference, so"
+                                " wiring this downstream node to the single"
+                                " unsuffixed output would silently drop every row"
+                                " but the first."
+                            )
                     if isinstance(op, LLMChatOp) and op.return_history:
                         if is_api_ancestor:
-                            columns[f"{op.id}_context"] = {
-                                "data": {
-                                    "type": "list",
-                                    "items": self._api_prior_prompt(op, inputs_dict),
+                            prior = self._api_prior_prompt(op, inputs_dict)
+                            if prior is None:
+                                columns[f"{op.id}_context"] = {
+                                    "node": op.id,
+                                    "path": "items.metadata.prompt",
                                 }
-                            }
+                            else:
+                                columns[f"{op.id}_context"] = {
+                                    "data": {"type": "list", "items": prior},
+                                }
                         else:
                             columns[f"{op.id}_context"] = {
                                 "node": op.id,
