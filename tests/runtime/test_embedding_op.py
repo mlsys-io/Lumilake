@@ -405,6 +405,15 @@ def test_resolve_output_items_accepts_api_text_result() -> None:
     assert items == [{"output": "Hello from the API"}]
 
 
+def test_resolve_output_items_accepts_empty_api_text() -> None:
+    """An empty assistant response is valid locally (``_coerce_output_value``
+    preserves ``""``); API mode must not turn it into an execution failure."""
+    manager = FlowmeshRuntimeManager()
+    results_json = {"text": "", "status_code": 200}
+    items = manager._resolve_output_items(results_json, "Chat", task_type="api")
+    assert items == [{"output": ""}]
+
+
 def test_resolve_output_items_api_prefers_items_when_present() -> None:
     manager = FlowmeshRuntimeManager()
     results_json = {"items": [{"output": "x"}], "text": "y"}

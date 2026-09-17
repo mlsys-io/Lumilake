@@ -728,7 +728,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             return items
         if task_type == "api":
             text = results_json.get("text")
-            if isinstance(text, str) and text:
+            if isinstance(text, str):
                 item: dict[str, Any] = {"output": text}
                 if prompt is not None:
                     item["metadata"] = {"prompt": prompt}
