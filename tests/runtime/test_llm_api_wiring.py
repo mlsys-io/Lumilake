@@ -3,11 +3,14 @@ import textwrap
 import pytest
 from lumilake import envs
 
-from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
+    EmbeddingOp,
     FormatOp,
+    ImageGenerationOp,
+    LambdaOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -357,6 +360,53 @@ def test_node_prefix_remaps_api_placeholder_stage_name() -> None:
     ]
 
 
+def test_node_prefix_preserves_literal_placeholder_in_user_content() -> None:
+    """``with_node_prefix`` must rewrite only the ``${node.path}`` placeholders
+    Lumilake generated for upstream runtime references (which always point at a
+    dependency), never a user's literal ``${...}`` in message content. A literal
+    prompt that spells a runtime node id which is NOT a dependency of the node
+    must survive prefixing unchanged."""
+    stock = input_placeholder("Stock")
+    first = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    relay = FormatOp("{prior}", prior=first)
+    # A sibling runtime node that is not consumed by ``second``: a literal
+    # referencing it is user content, not a generated upstream reference.
+    sibling = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    sibling_literal = f"${{{sibling.id}.text}}"
+    second = LLMChatOp(
+        [
+            OpMessage(role="system", content=sibling_literal),
+            OpMessage(role="user", content=relay),
+        ],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", second)
+    compiled = Graph.from_ops([output, as_output("sib", sibling)]).compile(
+        Stock=["NVDA"]
+    )
+
+    prefixed = RuntimeGraphBuilder().build(compiled, node_prefix="job1")
+
+    (second_row_id,) = prefixed.dsl_to_runtime[second.id]
+    messages = prefixed.nodes[second_row_id].api_spec["json"]["messages"]
+    assert {"role": "system", "content": sibling_literal} in messages
+
+
 def test_local_node_downstream_of_api_node_uses_text_path() -> None:
     """A local-backend LLMChatOp consuming an API-backed ancestor's output
     (relayed through a ``FormatOp``) renders a ``text`` column (matching
@@ -388,11 +438,210 @@ def test_local_node_downstream_of_api_node_uses_text_path() -> None:
     assert all(col.get("path") != "items.output" for col in upstream_columns)
 
 
-def test_api_ancestor_with_return_history_fails_closed() -> None:
-    """``return_history`` needs each item's ``metadata.prompt``, which only
-    ``InferenceResult`` (local backend) carries; an API-backed ancestor with
-    ``return_history`` enabled must fail closed instead of silently omitting
-    chat-history context."""
+def test_api_structural_outputs_flow_into_request_body() -> None:
+    """A local LLMChatOp with ``structural_outputs`` emits them as
+    ``inference.templates``; an API-backed one must emit the same structured
+    output instructions into the request body, so switching only ``config.api``
+    does not drop the planner's structured-output contract."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        structural_outputs=[{"name": "code", "type": "string"}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    body = runtime_graph.nodes[llm.id].api_spec["json"]
+    assert body["templates"] == [{"name": "code", "type": "string"}]
+
+
+def test_embedding_op_downstream_of_api_node_uses_text_path() -> None:
+    """An EmbeddingOp consuming an API-backed ancestor's output must resolve
+    ``text`` (the ``APIResult`` shape) instead of ``items.output`` (which only
+    ``InferenceResult`` carries), so the embedding worker does not fail at
+    execution time."""
+    stock = input_placeholder("Stock")
+    api_node = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    embed = EmbeddingOp(api_node, config=GenerationConfig(model="embed-model"))
+    output = as_output("result", embed)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
+    (embed_row_id,) = runtime_graph.dsl_to_runtime[embed.id]
+    data_spec = runtime_graph.nodes[embed_row_id].data_spec
+    assert data_spec["node"] == api_row_id
+    assert data_spec["path"] == "text"
+
+
+def test_image_generation_op_downstream_of_api_node_uses_text_path() -> None:
+    """An ImageGenerationOp consuming an API-backed ancestor's output must
+    resolve ``text`` (the ``APIResult`` shape) instead of ``items.output``."""
+    stock = input_placeholder("Stock")
+    api_node = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    image = ImageGenerationOp(api_node, config=GenerationConfig(model="img-model"))
+    output = as_output("result", image)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
+    (image_row_id,) = runtime_graph.dsl_to_runtime[image.id]
+    data_spec = runtime_graph.nodes[image_row_id].data_spec
+    assert data_spec["node"] == api_row_id
+    assert data_spec["path"] == "text"
+
+
+def test_api_lambda_op_message_input_renders_literal() -> None:
+    """A LambdaOp message input (which local mode emits as a function step the
+    worker runs) must render in API mode too: the server evaluates the function
+    at build time when its inputs are literal, so switching only ``config.api``
+    does not turn a valid message reference into a build error."""
+    stock = input_placeholder("Stock")
+    greeting = FormatOp("Hello, {name}!", name=stock)
+
+    def _shout(inputs: tuple[str | list[Message], ...]) -> str:
+        (greeting_text,) = inputs
+        assert isinstance(greeting_text, str)
+        return greeting_text.upper()
+
+    shout = LambdaOp([greeting], fn=_shout)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    messages = runtime_graph.nodes[llm.id].api_spec["json"]["messages"]
+    assert messages == [{"role": "user", "content": "HELLO, NVDA!"}]
+
+
+def test_api_lambda_op_message_input_renders_literal_with_lambda() -> None:
+    """A LambdaOp whose function is a real ``lambda`` (not a named ``def``)
+    must render in API mode too. The server evaluates the callable directly
+    rather than recovering source text, so a lambda behaves identically to a
+    named def and switching only ``config.api`` does not turn a valid message
+    reference into a build error."""
+    stock = input_placeholder("Stock")
+    greeting = FormatOp("Hello, {name}!", name=stock)
+    shout = LambdaOp(
+        [greeting],
+        fn=lambda inputs: (
+            inputs[0].upper() if isinstance(inputs[0], str) else inputs[0][0].content
+        ),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    messages = runtime_graph.nodes[llm.id].api_spec["json"]["messages"]
+    assert messages == [{"role": "user", "content": "HELLO, NVDA!"}]
+
+
+def test_api_rowwise_template_fans_out_row_aligned_nodes() -> None:
+    """An API-backed LLMChatOp with ``rowwise_template``/``rowwise_columns``/
+    ``system_messages`` must mirror the local rowwise contract: the template is
+    formatted per row and the op fans out into one API task per row, so
+    switching only ``config.api`` does not change rowwise behaviour."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
+        ],
+        system_messages=["You are concise."],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    row_ids = runtime_graph.dsl_to_runtime[llm.id]
+    assert row_ids == [llm.id, f"{llm.id}__row1"]
+    assert runtime_graph.nodes[row_ids[0]].api_spec["json"]["messages"] == [
+        {"role": "system", "content": "You are concise."},
+        {"role": "user", "content": "Summarize NVDA."},
+    ]
+    assert runtime_graph.nodes[row_ids[1]].api_spec["json"]["messages"] == [
+        {"role": "system", "content": "You are concise."},
+        {"role": "user", "content": "Summarize AAPL."},
+    ]
+
+
+def test_api_aggregate_table_renders_df_column() -> None:
+    """An API-backed LLMChatOp with ``aggregate_table`` must mirror the local
+    aggregate contract: the base template columns are merged with a ``df``
+    dataframe column built from ``aggregate_table``, and the base message
+    renders against the merged columns."""
+    stock = input_placeholder("Stock")
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[{"label": "summary", "node": upstream.id, "path": "text"}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (llm_row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    node = runtime_graph.nodes[llm_row_id]
+    assert upstream.id in node.dependencies
+    template = node.data_spec["template"]
+    df_col = next(c for c in template["columns"] if c.get("label") == "df")
+    assert df_col["data"]["type"] == "dataframe"
+    assert df_col["data"]["columns"] == [
+        {"label": "summary", "node": upstream.id, "path": "text"}
+    ]
+
+
+def test_api_ancestor_with_return_history_feeds_local_downstream() -> None:
+    """An API-backed ancestor with ``return_history`` feeding a local
+    downstream must mirror the local history contract: the prior prompt is
+    inlined as a literal column (an API result carries no ``metadata.prompt``)
+    and the assistant output resolves ``text``. Switching only ``config.api``
+    must not turn a valid history edge into a build error."""
     stock = input_placeholder("Stock")
     api_node = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -402,15 +651,53 @@ def test_api_ancestor_with_return_history_fails_closed() -> None:
         ),
         return_history=True,
     )
-    relay = FormatOp("{prior}", prior=api_node)
     downstream = LLMChatOp(
-        [OpMessage(role="user", content=relay)],
+        [OpMessage(role="user", content=api_node)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
     output = as_output("result", downstream)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
-    with pytest.raises(ValueError, match="return_history"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
+    (downstream_row_id,) = runtime_graph.dsl_to_runtime[downstream.id]
+    columns = runtime_graph.nodes[downstream_row_id].data_spec["template"]["columns"]
+    context_cols = [c for c in columns if c.get("label") == f"{api_row_id}_context"]
+    assert context_cols and context_cols[0]["data"]["items"] == ["NVDA"]
+    output_cols = [c for c in columns if c.get("label") == f"{api_row_id}_output"]
+    assert output_cols and output_cols[0]["path"] == "text"
+
+
+def test_api_ancestor_with_return_history_feeds_api_downstream() -> None:
+    """The same history parity must hold for an API->API edge: the prior prompt
+    inlines as a literal and the assistant output renders ``${node.text}``."""
+    stock = input_placeholder("Stock")
+    api_node = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        return_history=True,
+    )
+    downstream = LLMChatOp(
+        [OpMessage(role="user", content=api_node)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", downstream)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
+    (downstream_row_id,) = runtime_graph.dsl_to_runtime[downstream.id]
+    messages = runtime_graph.nodes[downstream_row_id].api_spec["json"]["messages"]
+    assert messages == [
+        {"role": "user", "content": "NVDA"},
+        {"role": "assistant", "content": f"${{{api_row_id}.text}}"},
+    ]
 
 
 def test_api_scheme_less_url_raises_clean_error() -> None:

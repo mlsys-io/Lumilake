@@ -37,6 +37,7 @@ from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _type_default_sample,
 )
+from lumilake_server.utils.func_serialization import safe_materialize_function
 from lumilake_server.utils.graph import topological_sort
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
@@ -248,47 +249,63 @@ class RuntimeGraph:
 
         mapping = {node_id: f"{prefix}{separator}{node_id}" for node_id in self.nodes}
 
-        def _remap_placeholder(text: str) -> str:
+        def _remap_placeholder(text: str, rewritable: dict[str, str]) -> str:
             def _sub(match: re.Match[str]) -> str:
                 node = match.group(1)
-                return f"${{{mapping.get(node, node)}.{match.group(2)}}}"
+                prefixed = rewritable.get(node)
+                if prefixed is None:
+                    return match.group(0)
+                return f"${{{prefixed}.{match.group(2)}}}"
 
             return _PLACEHOLDER_RE.sub(_sub, text)
 
-        def remap(value: Any) -> Any:
+        def remap(value: Any, rewritable: dict[str, str]) -> Any:
             if isinstance(value, dict):
                 updated: dict[str, Any] = {}
                 for key, item in value.items():
                     if key == "node" and isinstance(item, str) and item in mapping:
                         updated[key] = mapping[item]
                     else:
-                        updated[key] = remap(item)
+                        updated[key] = remap(item, rewritable)
                 return updated
             if isinstance(value, list):
-                return [remap(item) for item in value]
+                return [remap(item, rewritable) for item in value]
             if isinstance(value, tuple):
-                return tuple(remap(item) for item in value)
+                return tuple(remap(item, rewritable) for item in value)
             if isinstance(value, str):
-                return _remap_placeholder(value)
+                return _remap_placeholder(value, rewritable)
             return value
 
         nodes: dict[str, RuntimeOp] = {}
         for old_id, op in self.nodes.items():
             new_id = mapping[old_id]
+            # Only rewrite ``${node.path}`` placeholders whose node is a
+            # dependency of this node: those are the references Lumilake
+            # generated for upstream runtime outputs. A user's literal
+            # ``${...}`` in message content is left untouched.
+            rewritable = {
+                dep: mapping[dep] for dep in op.dependencies if dep in mapping
+            }
             nodes[new_id] = RuntimeOp(
                 node_id=new_id,
                 task_type=op.task_type,
                 backend=op.backend,
                 model=op.model,
-                data_spec=remap(op.data_spec),
-                model_spec=remap(op.model_spec),
-                inference_spec=remap(op.inference_spec),
-                api_spec=remap(op.api_spec),
+                data_spec=remap(op.data_spec, rewritable),
+                model_spec=remap(op.model_spec, rewritable),
+                inference_spec=remap(op.inference_spec, rewritable),
+                api_spec=remap(op.api_spec, rewritable),
                 dependencies=tuple(mapping.get(dep, dep) for dep in op.dependencies),
                 output_spec=(
-                    remap(op.output_spec) if op.output_spec is not None else None
+                    remap(op.output_spec, rewritable)
+                    if op.output_spec is not None
+                    else None
                 ),
-                condition=(remap(op.condition) if op.condition is not None else None),
+                condition=(
+                    remap(op.condition, rewritable)
+                    if op.condition is not None
+                    else None
+                ),
             )
 
         node_order = [mapping[node_id] for node_id in self.node_order]
@@ -1215,6 +1232,55 @@ class RuntimeGraphBuilder:
                     f"string (got {text!r})"
                 )
 
+    @staticmethod
+    def _upstream_output_path(op: Op) -> str:
+        """Result path for an upstream op's text output.
+
+        An API-backed ``LLMOp`` produces an ``APIResult`` whose assistant text
+        lives at ``text``; every other upstream (local inference, retrieval)
+        produces ``items``-shaped results whose text is at ``items.output``.
+        Keeping the two distinct is what lets a downstream node reference an
+        API-backed upstream exactly like a local one.
+        """
+        if isinstance(op, LLMOp) and op.config.api is not None:
+            return "text"
+        return "items.output"
+
+    def _api_prior_prompt(
+        self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
+    ) -> list[str]:
+        """Resolve an API-backed op's user message to a literal prior prompt.
+
+        ``return_history`` needs the prompt that was sent to the upstream op.
+        A local op carries it as ``items.metadata.prompt``; an API op's result
+        does not, so the server inlines the user message it sent instead. Only
+        literal (string / ``InputOp`` / ``DataOp``) content is supported — a
+        prompt that itself references a runtime node cannot be inlined at build
+        time."""
+        messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
+        user_msgs = [m for m in messages if m.role == "user"]
+        if not user_msgs:
+            raise ValueError(
+                f"LLMChatOp '{op.id}' return_history needs a user message."
+            )
+        content = user_msgs[-1].content
+        if isinstance(content, str):
+            return [content]
+        if isinstance(content, InputOp):
+            values = inputs_dict.get(content.name)
+            if not values:
+                raise ValueError(
+                    f"LLMChatOp '{op.id}' return_history references InputOp"
+                    f" '{content.name}' with no values supplied."
+                )
+            return list(values)
+        if isinstance(content, DataOp):
+            return list(content.data)
+        raise ValueError(
+            f"LLMChatOp '{op.id}' return_history prior prompt references a"
+            " runtime node, which API mode cannot inline at build time."
+        )
+
     def _build_node_from_embedding_op(
         self,
         llm_op_id: str,
@@ -1246,7 +1312,7 @@ class RuntimeGraphBuilder:
             data_spec = {
                 "type": "list",
                 "node": content_op.id,
-                "path": "items.output",
+                "path": self._upstream_output_path(content_op),
             }
             dependencies = [content_op.id]
 
@@ -1320,7 +1386,7 @@ class RuntimeGraphBuilder:
                 content_data_spec = {
                     "type": "list",
                     "node": content_op.id,
-                    "path": "items.output",
+                    "path": self._upstream_output_path(content_op),
                 }
                 content_dependencies = [content_op.id]
             return self._create_runtime_op(
@@ -1554,6 +1620,28 @@ class RuntimeGraphBuilder:
             condition=llm_op.condition if isinstance(llm_op, LLMChatOp) else None,
         )
 
+    def _api_request_headers(
+        self, llm_op_id: str, api_config: ApiConfig, url: str
+    ) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if is_api_origin_trusted(url):
+            server_token = resolve_api_credential(url)
+            if not server_token:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode targets trusted endpoint "
+                    f"{url} but no PAT is configured; set LUMILAKE_RUNTIME_TOKEN."
+                )
+            headers["Authorization"] = f"Bearer {server_token}"
+        elif api_config.authorization:
+            headers["Authorization"] = api_config.authorization
+        else:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' API mode targets untrusted endpoint "
+                f"{url}; supply config.api.authorization or add its origin to "
+                "LUMILAKE_API_TRUSTED_ORIGINS."
+            )
+        return headers
+
     def _build_api_llm_op(
         self,
         *,
@@ -1581,6 +1669,196 @@ class RuntimeGraphBuilder:
         per row, each row keeping its position so a chain of API nodes stays
         aligned.
         """
+        if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
+            return self._build_api_rowwise_op(
+                llm_op_id=llm_op_id,
+                llm_op=llm_op,
+                api_config=api_config,
+                output_spec=output_spec,
+                condition=condition,
+            )
+        if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
+            return self._build_api_aggregate_op(
+                llm_op_id=llm_op_id,
+                llm_op=llm_op,
+                api_config=api_config,
+                template_spec=template_spec,
+                upstream_llm_ids=upstream_llm_ids,
+                output_spec=output_spec,
+                condition=condition,
+            )
+        resolved, row_count = self._resolve_api_messages(llm_op_id, template_spec)
+
+        model = llm_op.config.resolved_model()
+        url = api_config.url or _DEFAULT_API_URL
+        headers = self._api_request_headers(llm_op_id, api_config, url)
+
+        merged_dependencies: list[str] = []
+        seen_deps: set[str] = set()
+        for dep in [
+            *upstream_llm_ids,
+            *self._collect_graph_template_dependencies(template_spec),
+        ]:
+            if dep in seen_deps:
+                continue
+            seen_deps.add(dep)
+            merged_dependencies.append(dep)
+        dependencies = merged_dependencies or None
+        runtime_ops: list[RuntimeOp] = []
+        for row_index in range(row_count):
+            messages = [
+                {
+                    "role": role,
+                    "content": rows[row_index] if len(rows) > 1 else rows[0],
+                }
+                for role, rows in resolved
+            ]
+            body: dict[str, Any] = {"model": model, "messages": messages}
+            body.update(llm_op.config.inference_spec())
+            if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
+                body["templates"] = llm_op.structural_outputs
+            api_spec: dict[str, Any] = {
+                "method": "POST",
+                "url": url,
+                "headers": dict(headers),
+                "json": body,
+                "response": {
+                    "parse_json": True,
+                    "return_body": True,
+                    "raise_for_status": True,
+                },
+            }
+            node_id = llm_op_id if row_index == 0 else f"{llm_op_id}__row{row_index}"
+            runtime_ops.append(
+                self._create_runtime_op(
+                    name=node_id,
+                    task_type="api",
+                    data_spec={"type": "graph_template", "template": template_spec},
+                    model_spec={},
+                    inference_spec={},
+                    api_spec=api_spec,
+                    backend="api",
+                    model=model,
+                    dependencies=dependencies,
+                    output_spec=output_spec,
+                    condition=condition,
+                )
+            )
+        return runtime_ops
+
+    def _build_api_rowwise_op(
+        self,
+        *,
+        llm_op_id: str,
+        llm_op: LLMChatOp,
+        api_config: ApiConfig,
+        output_spec: dict[str, Any] | None,
+        condition: dict[str, str] | None,
+    ) -> list[RuntimeOp]:
+        """Build API tasks for a rowwise LLMChatOp, mirroring the local
+        dataframe contract: each ``rowwise_column`` resolves to a row of
+        values, the ``rowwise_template`` is formatted per row, and the op fans
+        out into one API task per row. A ``node``+``path`` column renders as a
+        single-valued ``${node.path}`` dispatch placeholder that broadcasts
+        across every row."""
+        template = llm_op.rowwise_template
+        assert template is not None
+        columns: list[dict[str, Any]] = []
+        dependencies: list[str] = []
+        for col in llm_op.rowwise_columns or []:
+            label = col.get("label")
+            data = col.get("data")
+            node_ref = col.get("node")
+            path = col.get("path")
+            if isinstance(label, str) and isinstance(data, dict):
+                items = data.get("items")
+                if not isinstance(items, list) or not items:
+                    raise ValueError(
+                        f"LLMChatOp {llm_op_id} rowwise column '{label}' has no"
+                        " literal items"
+                    )
+                columns.append({"label": label, "values": [str(i) for i in items]})
+            elif (
+                isinstance(label, str)
+                and isinstance(node_ref, str)
+                and isinstance(path, str)
+            ):
+                resolved_path = path
+                if resolved_path == "items" or resolved_path.startswith("items."):
+                    resolved_path = f"items.0{resolved_path[len('items'):]}"
+                columns.append(
+                    {"label": label, "values": [f"${{{node_ref}.{resolved_path}}}"]}
+                )
+                if node_ref not in dependencies:
+                    dependencies.append(node_ref)
+            else:
+                raise ValueError(
+                    f"LLMChatOp {llm_op_id} rowwise column '{label}' must have"
+                    " data or node+path"
+                )
+        if not columns:
+            raise ValueError(f"LLMChatOp {llm_op_id} has empty rowwise_columns")
+        row_count = max(len(c["values"]) for c in columns)
+        for c in columns:
+            if len(c["values"]) == 1 and row_count > 1:
+                c["values"] = c["values"] * row_count
+            elif len(c["values"]) != row_count:
+                raise ValueError(
+                    f"LLMChatOp {llm_op_id} rowwise columns have mismatched row"
+                    " counts"
+                )
+        system_messages = llm_op.system_messages or []
+        model = llm_op.config.resolved_model()
+        url = api_config.url or _DEFAULT_API_URL
+        headers = self._api_request_headers(llm_op_id, api_config, url)
+        runtime_ops: list[RuntimeOp] = []
+        for row_index in range(row_count):
+            row_values = {c["label"]: c["values"][row_index] for c in columns}
+            user_content = template.format(**row_values)
+            messages = [{"role": "system", "content": m} for m in system_messages] + [
+                {"role": "user", "content": user_content}
+            ]
+            body: dict[str, Any] = {"model": model, "messages": messages}
+            body.update(llm_op.config.inference_spec())
+            if llm_op.structural_outputs:
+                body["templates"] = llm_op.structural_outputs
+            api_spec: dict[str, Any] = {
+                "method": "POST",
+                "url": url,
+                "headers": dict(headers),
+                "json": body,
+                "response": {
+                    "parse_json": True,
+                    "return_body": True,
+                    "raise_for_status": True,
+                },
+            }
+            node_id = llm_op_id if row_index == 0 else f"{llm_op_id}__row{row_index}"
+            runtime_ops.append(
+                self._create_runtime_op(
+                    name=node_id,
+                    task_type="api",
+                    data_spec={"type": "graph_template", "template": {}},
+                    model_spec={},
+                    inference_spec={},
+                    api_spec=api_spec,
+                    backend="api",
+                    model=model,
+                    dependencies=dependencies or None,
+                    output_spec=output_spec,
+                    condition=condition,
+                )
+            )
+        return runtime_ops
+
+    def _resolve_api_messages(
+        self, llm_op_id: str, template_spec: dict[str, Any]
+    ) -> tuple[list[tuple[str, list[str]]], int]:
+        """Resolve a graph-template spec into per-row message content for API
+        mode. Columns resolve to literal rows or a single ``${node.path}``
+        dispatch placeholder; format/function steps render at build time when
+        their inputs are literal. Returns ``(resolved, row_count)`` where each
+        resolved entry is ``(role, rows)``."""
         options = template_spec.get("options") or {}
         format_options = options.get("format") or {}
         messages_spec = format_options.get("messages") or []
@@ -1613,8 +1891,44 @@ class RuntimeGraphBuilder:
                 path = f"items.0{path[len('items'):]}"
             return f"${{{node}.{path}}}"
 
+        def _resolve_dataframe_column(label: str, column: dict[str, Any]) -> list[str]:
+            nested = column.get("data", {}).get("columns") or []
+            if not isinstance(nested, list) or not nested:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode dataframe column"
+                    f" '{label}' has no nested columns."
+                )
+            resolved_cols: list[dict[str, Any]] = []
+            row_count = 1
+            for nested_col in nested:
+                if not isinstance(nested_col, dict):
+                    continue
+                nested_label = nested_col.get("label")
+                if not isinstance(nested_label, str):
+                    continue
+                rows = _resolve_literal_column(nested_label, nested_col)
+                if len(rows) > 1:
+                    if row_count != 1 and row_count != len(rows):
+                        raise ValueError(
+                            f"LLMChatOp '{llm_op_id}' API mode dataframe column"
+                            f" '{label}' has mismatched row counts."
+                        )
+                    row_count = len(rows)
+                resolved_cols.append({"label": nested_label, "rows": rows})
+            for rc in resolved_cols:
+                if len(rc["rows"]) == 1 and row_count > 1:
+                    rc["rows"] = rc["rows"] * row_count
+            header = " | ".join(rc["label"] for rc in resolved_cols)
+            sep = " | ".join("---" for _ in resolved_cols)
+            lines = [header, sep]
+            for i in range(row_count):
+                lines.append(" | ".join(rc["rows"][i] for rc in resolved_cols))
+            return ["\n".join(lines)]
+
         def _resolve_literal_column(label: str, column: dict[str, Any]) -> list[str]:
             data = column.get("data")
+            if isinstance(data, dict) and data.get("type") == "dataframe":
+                return _resolve_dataframe_column(label, column)
             if not isinstance(data, dict) or data.get("type") != "list":
                 placeholder = _runtime_reference_placeholder(label, column)
                 if placeholder is not None:
@@ -1639,11 +1953,7 @@ class RuntimeGraphBuilder:
 
             step = step_by_label[label]
             if "function" in step:
-                raise ValueError(
-                    f"LLMChatOp '{llm_op_id}' API mode cannot render message step"
-                    f" '{label}': function inputs are not supported; only literal"
-                    " inputs and format templates are."
-                )
+                return _resolve_function_step(label, step)
             template = step["template"]
             arguments = step.get("arguments") or []
             arg_rows: dict[str, list[str]] = {}
@@ -1666,6 +1976,43 @@ class RuntimeGraphBuilder:
                         arg_label: rows[index] if len(rows) > 1 else rows[0]
                         for arg_label, rows in arg_rows.items()
                     }
+                )
+                for index in range(step_row_count)
+            ]
+
+        def _resolve_function_step(label: str, step: dict[str, Any]) -> list[str]:
+            code = step["function"]
+            arguments = step.get("arguments") or []
+            arg_rows: list[list[str]] = []
+            step_row_count = 1
+            for argument in arguments:
+                rows = _resolve_label_rows(argument)
+                if len(rows) > 1:
+                    if step_row_count != 1 and step_row_count != len(rows):
+                        raise ValueError(
+                            f"LLMChatOp '{llm_op_id}' API mode step '{label}' has"
+                            " mismatched row counts across its arguments."
+                        )
+                    step_row_count = len(rows)
+                arg_rows.append(rows)
+            if any(
+                _PLACEHOLDER_RE.search(value) for rows in arg_rows for value in rows
+            ):
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode cannot render message step"
+                    f" '{label}': its function input references an upstream"
+                    " runtime output, which API mode cannot evaluate at build"
+                    " time; only literal function inputs are supported."
+                )
+            fn = safe_materialize_function(code)
+            return [
+                str(
+                    fn(
+                        tuple(
+                            rows[index] if len(rows) > 1 else rows[0]
+                            for rows in arg_rows
+                        )
+                    )
                 )
                 for index in range(step_row_count)
             ]
@@ -1704,38 +2051,72 @@ class RuntimeGraphBuilder:
 
         if not resolved:
             raise ValueError(f"LLMChatOp '{llm_op_id}' API mode requires messages.")
+        return resolved, row_count
+
+    def _build_api_aggregate_op(
+        self,
+        *,
+        llm_op_id: str,
+        llm_op: LLMChatOp,
+        api_config: ApiConfig,
+        template_spec: dict[str, Any],
+        upstream_llm_ids: list[str],
+        output_spec: dict[str, Any] | None,
+        condition: dict[str, str] | None,
+    ) -> list[RuntimeOp]:
+        """Build API tasks for an aggregate LLMChatOp, mirroring the local
+        aggregate contract: the base template columns are merged with a ``df``
+        dataframe column built from ``aggregate_table``, and the base messages
+        render against the merged columns."""
+        base_columns = template_spec.get("columns", [])
+        if not isinstance(base_columns, list):
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} aggregate template columns must be a list"
+            )
+        table_columns: list[dict[str, Any]] = []
+        aggregate_dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
+        for col in llm_op.aggregate_table or []:
+            label = col.get("label")
+            node_ref = col.get("node")
+            path = col.get("path")
+            if not (
+                isinstance(label, str)
+                and isinstance(node_ref, str)
+                and isinstance(path, str)
+            ):
+                continue
+            table_columns.append({"label": label, "node": node_ref, "path": path})
+            if node_ref not in aggregate_dependencies:
+                aggregate_dependencies.append(node_ref)
+        for dep in self._collect_graph_template_dependencies(template_spec):
+            if dep not in aggregate_dependencies:
+                aggregate_dependencies.append(dep)
+
+        merged_columns = [*base_columns]
+        merged_columns.append(
+            {
+                "label": "df",
+                "data": {"type": "dataframe", "columns": table_columns},
+            }
+        )
+        aggregate_template_spec: dict[str, Any] = {
+            "name": "format",
+            "columns": merged_columns,
+            "options": {
+                "format": {
+                    "messages": template_spec.get("options", {})
+                    .get("format", {})
+                    .get("messages", [])
+                }
+            },
+        }
+        resolved, row_count = self._resolve_api_messages(
+            llm_op_id, aggregate_template_spec
+        )
 
         model = llm_op.config.resolved_model()
         url = api_config.url or _DEFAULT_API_URL
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if is_api_origin_trusted(url):
-            server_token = resolve_api_credential(url)
-            if not server_token:
-                raise ValueError(
-                    f"LLMChatOp '{llm_op_id}' API mode targets trusted endpoint "
-                    f"{url} but no PAT is configured; set LUMILAKE_RUNTIME_TOKEN."
-                )
-            headers["Authorization"] = f"Bearer {server_token}"
-        elif api_config.authorization:
-            headers["Authorization"] = api_config.authorization
-        else:
-            raise ValueError(
-                f"LLMChatOp '{llm_op_id}' API mode targets untrusted endpoint "
-                f"{url}; supply config.api.authorization or add its origin to "
-                "LUMILAKE_API_TRUSTED_ORIGINS."
-            )
-
-        merged_dependencies: list[str] = []
-        seen_deps: set[str] = set()
-        for dep in [
-            *upstream_llm_ids,
-            *self._collect_graph_template_dependencies(template_spec),
-        ]:
-            if dep in seen_deps:
-                continue
-            seen_deps.add(dep)
-            merged_dependencies.append(dep)
-        dependencies = merged_dependencies or None
+        headers = self._api_request_headers(llm_op_id, api_config, url)
         runtime_ops: list[RuntimeOp] = []
         for row_index in range(row_count):
             messages = [
@@ -1747,6 +2128,8 @@ class RuntimeGraphBuilder:
             ]
             body: dict[str, Any] = {"model": model, "messages": messages}
             body.update(llm_op.config.inference_spec())
+            if llm_op.structural_outputs:
+                body["templates"] = llm_op.structural_outputs
             api_spec: dict[str, Any] = {
                 "method": "POST",
                 "url": url,
@@ -1763,13 +2146,16 @@ class RuntimeGraphBuilder:
                 self._create_runtime_op(
                     name=node_id,
                     task_type="api",
-                    data_spec={"type": "graph_template", "template": template_spec},
+                    data_spec={
+                        "type": "graph_template",
+                        "template": aggregate_template_spec,
+                    },
                     model_spec={},
                     inference_spec={},
                     api_spec=api_spec,
                     backend="api",
                     model=model,
-                    dependencies=dependencies,
+                    dependencies=aggregate_dependencies or None,
                     output_spec=output_spec,
                     condition=condition,
                 )
@@ -1857,17 +2243,17 @@ class RuntimeGraphBuilder:
                     is_api_ancestor = op.config.api is not None
                     if isinstance(op, LLMChatOp) and op.return_history:
                         if is_api_ancestor:
-                            raise ValueError(
-                                f"LLMOp '{llm_op_id}' consumes '{op.id}', an"
-                                " API-backed op with return_history enabled;"
-                                " API results carry no per-item prompt"
-                                " metadata, so chat-history context columns"
-                                " are not supported across this edge."
-                            )
-                        columns[f"{op.id}_context"] = {
-                            "node": op.id,
-                            "path": "items.metadata.prompt",
-                        }
+                            columns[f"{op.id}_context"] = {
+                                "data": {
+                                    "type": "list",
+                                    "items": self._api_prior_prompt(op, inputs_dict),
+                                }
+                            }
+                        else:
+                            columns[f"{op.id}_context"] = {
+                                "node": op.id,
+                                "path": "items.metadata.prompt",
+                            }
                     columns[f"{op.id}_output"] = {
                         "node": op.id,
                         "path": "text" if is_api_ancestor else "items.output",
@@ -1915,11 +2301,20 @@ class RuntimeGraphBuilder:
                         )
                     else:
                         input_messages = _trace_ancestors(message.content)
+                        preserve_roles = (
+                            isinstance(message.content, LLMChatOp)
+                            and message.content.return_history
+                        )
                         for packed_msg in input_messages:
-                            assert isinstance(
-                                packed_msg, tuple
-                            ), "MessageOp's messages must be context-free strings"
+                            if isinstance(packed_msg, str):
+                                ancestor_buffer[op.id].append(
+                                    (Roles(message.role), packed_msg)
+                                )
+                                continue
                             role, msg = packed_msg
+                            if preserve_roles:
+                                ancestor_buffer[op.id].append((role, msg))
+                                continue
                             assert role == Roles.USER, (
                                 "MessageOp overwrites messages whose role is not USER."
                                 " Please check if this is intended."
@@ -1953,24 +2348,75 @@ class RuntimeGraphBuilder:
                 message_labels = {
                     inp_op.id: _trace_ancestors(inp_op) for inp_op in op.inputs
                 }
-                fn_args = [
-                    [
-                        (
-                            {"role": message[0].value, "content": message[1]}
-                            if isinstance(message, tuple)
-                            else {"content": message}
-                        )
-                        for message in message_labels[inp_op.id]
+
+                def _resolve_literal_label(label: str) -> str | None:
+                    col = columns.get(label)
+                    if col is not None:
+                        data = col.get("data")
+                        if (
+                            isinstance(data, dict)
+                            and data.get("type") == "list"
+                            and isinstance(data.get("items"), list)
+                            and len(data["items"]) == 1
+                        ):
+                            return str(data["items"][0])
+                        return None
+                    step = steps.get(label)
+                    if step is None:
+                        return label
+                    template, kwargs, is_function = step
+                    if is_function:
+                        return None
+                    resolved_kwargs: dict[str, str] = {}
+                    for kwarg in kwargs:
+                        if not isinstance(kwarg, dict):
+                            return None
+                        value = _resolve_literal_label(kwarg["value"])
+                        if value is None:
+                            return None
+                        resolved_kwargs[kwarg["label"]] = value
+                    return template.format(**resolved_kwargs)
+
+                literal_args: list[str] = []
+                can_evaluate = True
+                for inp_op in op.inputs:
+                    msgs = message_labels[inp_op.id]
+                    if len(msgs) != 1:
+                        can_evaluate = False
+                        break
+                    value = _resolve_literal_label(_unwrap_msg(msgs[0]))
+                    if value is None:
+                        can_evaluate = False
+                        break
+                    literal_args.append(value)
+                if can_evaluate:
+                    label = f"lambda_{op.id}"
+                    columns[label] = {
+                        "data": {
+                            "type": "list",
+                            "items": [str(op.fn(tuple(literal_args)))],
+                        }
+                    }
+                    ancestor_buffer[op.id] = [(Roles.USER, label)]
+                else:
+                    fn_args = [
+                        [
+                            (
+                                {"role": message[0].value, "content": message[1]}
+                                if isinstance(message, tuple)
+                                else {"content": message}
+                            )
+                            for message in message_labels[inp_op.id]
+                        ]
+                        for inp_op in op.inputs
                     ]
-                    for inp_op in op.inputs
-                ]
-                fn_args_serialized = [
-                    fn_arg if len(fn_arg) > 1 else fn_arg[0]["content"]
-                    for fn_arg in fn_args
-                ]
-                label = f"lambda_{op.id}"
-                steps[label] = (op.code, fn_args_serialized, True)
-                ancestor_buffer[op.id] = [(Roles.USER, label)]
+                    fn_args_serialized = [
+                        fn_arg if len(fn_arg) > 1 else fn_arg[0]["content"]
+                        for fn_arg in fn_args
+                    ]
+                    label = f"lambda_{op.id}"
+                    steps[label] = (op.code, fn_args_serialized, True)
+                    ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             else:
                 raise NotImplementedError(
