@@ -1889,7 +1889,7 @@ def _parse_s3_folder_key(
             continue
 
         node_type = (node_map.get(ref_name) or {}).get("type")
-        path = _s3_param_path(node_type, ref_path)
+        path = _referenced_op_path(node_type, ref_path)
         key_params.append({"label": label, "node": node_id, "path": path})
         dependencies.append(node_id)
 
@@ -1917,10 +1917,6 @@ def _referenced_op_path(node_type: Any, ref_path: str | None) -> str:
         return retrieval_items_path("agent")
     runtime_path = _to_runtime_output_path(ref_path)
     return runtime_path or "items.output"
-
-
-def _s3_param_path(node_type: Any, ref_path: str | None) -> str:
-    return _referenced_op_path(node_type, ref_path)
 
 
 def _ensure_unique_label(label: str, seen: set[str]) -> str:
