@@ -4,14 +4,12 @@ ever assigned to CPU workers, same as "db"/data_retrieval). Otherwise an
 API-only or mixed preview can select a GPU-only worker (or no CPU worker at
 all), and HALO then rejects the node the preview approved."""
 
-from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
 
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.server import LumilakeServer
 
 
 def _profile(gpu_count: int) -> dict[str, Any]:
@@ -60,9 +58,7 @@ class _MultiWorkerRuntimeManager:
 
 
 @pytest.mark.asyncio
-async def test_api_only_preview_selects_a_cpu_worker(
-    server_factory: Callable[[], LumilakeServer],
-) -> None:
+async def test_api_only_preview_selects_a_cpu_worker(server_factory) -> None:
     server = server_factory()
     server.runtime_manager = cast(
         Any,
@@ -86,7 +82,7 @@ async def test_api_only_preview_selects_a_cpu_worker(
 
 @pytest.mark.asyncio
 async def test_api_only_preview_raises_when_only_gpu_workers_available(
-    server_factory: Callable[[], LumilakeServer],
+    server_factory,
 ) -> None:
     server = server_factory()
     server.runtime_manager = cast(
@@ -104,7 +100,7 @@ async def test_api_only_preview_raises_when_only_gpu_workers_available(
 
 @pytest.mark.asyncio
 async def test_mixed_gpu_and_api_preview_selects_both_worker_kinds(
-    server_factory: Callable[[], LumilakeServer],
+    server_factory,
 ) -> None:
     server = server_factory()
     server.runtime_manager = cast(
@@ -132,9 +128,7 @@ async def test_mixed_gpu_and_api_preview_selects_both_worker_kinds(
 
 
 @pytest.mark.asyncio
-async def test_gpu_only_preview_does_not_require_a_cpu_worker(
-    server_factory: Callable[[], LumilakeServer],
-) -> None:
+async def test_gpu_only_preview_does_not_require_a_cpu_worker(server_factory) -> None:
     server = server_factory()
     server.runtime_manager = cast(
         Any, _MultiWorkerRuntimeManager({"gpu-worker": _profile(gpu_count=1)})
