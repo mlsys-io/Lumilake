@@ -1380,7 +1380,7 @@ def _extract_rowwise_columns(
                 {
                     "label": label,
                     "node": op_ids[node_name],
-                    "path": "items.table",
+                    "path": retrieval_items_path("agent"),
                 }
             )
         else:
