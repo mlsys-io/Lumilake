@@ -1337,6 +1337,14 @@ class RuntimeGraphBuilder:
         )
         return {"label": label, "node": node_ref, "path": path}
 
+    def _rowwise_node_ref_column(self, op: Op) -> bool:
+        """Whether a rowwise LLMChatOp has a ``node:`` column. Such a column
+        emits one node regardless of its referenced input's row count, so the
+        static row count is unreliable for it."""
+        if not isinstance(op, LLMChatOp) or not op.rowwise_columns:
+            return False
+        return any(isinstance(col.get("node"), str) for col in op.rowwise_columns)
+
     def _source_row_ids(
         self,
         node: str,
@@ -1355,6 +1363,13 @@ class RuntimeGraphBuilder:
         if upstream is not None and self._is_api_task(upstream):
             count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
             if count is not None and count > 1:
+                if self._rowwise_node_ref_column(upstream):
+                    raise ValueError(
+                        f"Condition node '{node}' is a rowwise API task with a"
+                        " node: column whose runtime mapping is not built yet;"
+                        " its static row count is unreliable. Build the"
+                        " condition source before its consumer."
+                    )
                 return [node] + [f"{node}__row{i}" for i in range(1, count)]
         return [node]
 

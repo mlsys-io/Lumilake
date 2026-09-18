@@ -2207,6 +2207,42 @@ def test_condition_source_rowwise_node_ref_uses_runtime_mapping() -> None:
     }
 
 
+def test_condition_source_rowwise_node_ref_consumer_first_fails_closed() -> None:
+    """A consumer built before its rowwise API condition source must fail
+    closed rather than remap the condition onto a nonexistent ``__row1``. When
+    the source is not yet in ``dsl_to_runtime``, the static fallback counts the
+    node-ref column's input rows (N) even though the builder emits one node, so
+    a same-cardinality consumer would otherwise retain a condition targeting a
+    row that is never built."""
+    stock = input_placeholder("Stock")
+    gate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": "items.output"}],
+    )
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content="hi")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": gate.id, "expr": "gate == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("gate_out", gate), as_output("result", consumer)]
+    ).compile(Stock=["NVDA", "AAPL"])
+
+    graph_order = list(compiled.graph.as_dict().keys())
+    assert graph_order.index(consumer.id) < graph_order.index(gate.id)
+
+    with pytest.raises(ValueError, match="runtime mapping is not built yet"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_condition_source_fans_over_non_user_role_message() -> None:
     """A condition source whose fanout comes from a non-user-role message (a
     system message with a multi-row InputOp) must fan out over that message."""
