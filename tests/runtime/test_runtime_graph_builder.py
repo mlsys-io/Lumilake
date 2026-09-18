@@ -5,6 +5,7 @@ from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
+    EmbeddingOp,
     ImageGenerationOp,
     LLMChatOp,
     LLMVisionOp,
@@ -568,3 +569,92 @@ def test_image_gen_user_extras_override_defaults() -> None:
     assert spec["guidance_scale"] == 7.5
     assert spec["height"] == 768
     assert spec["width"] == 768
+
+
+def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
+        inputs=[stock],
+    )
+    emb = EmbeddingOp(content=retrieval, config=GenerationConfig(model="bge-small"))
+    output = as_output("vectors", emb)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    node = runtime_graph.nodes[emb.id]
+    assert node.data_spec["node"] == retrieval.id
+    assert node.data_spec["path"] == "items.table"
+
+
+def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
+        inputs=[stock],
+    )
+    img = ImageGenerationOp(
+        content=retrieval, config=GenerationConfig(model="stabilityai/sdxl")
+    )
+    output = as_output("result", img)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    node = runtime_graph.nodes[img.id]
+    assert node.data_spec["node"] == retrieval.id
+    assert node.data_spec["path"] == "items.table"
+
+
+def test_agent_retrieval_as_final_output_uses_table_path() -> None:
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
+        inputs=[stock],
+    )
+    output = as_output("result", retrieval)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert runtime_graph.output_paths[retrieval.id] == "items.table"
+
+
+def test_agent_retrieval_as_vlm_image_source_uses_table_path() -> None:
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
+        inputs=[stock],
+    )
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="Describe the image briefly.")],
+        image_source=retrieval.id,
+        image_source_op=retrieval,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+    )
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    embedding_id = f"{vision.id}_embedding"
+    embedding = runtime_graph.nodes[embedding_id]
+    assert embedding.data_spec["node"] == retrieval.id
+    assert embedding.data_spec["path"] == "items.table"

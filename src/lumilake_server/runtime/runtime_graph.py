@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlparse.sql import TokenList
 from sqlparse.tokens import Keyword
 
+from lumilake_server.common import retrieval_items_path
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.ops import (
     DataOp,
@@ -414,11 +415,7 @@ class RuntimeGraphBuilder:
                 mode = retrieval_op.data_spec["mode"]
                 # Mode-derived defaults match the FlowMesh executor's item
                 # shape; agent replays a SQL plan so it emits ``table`` too.
-                default_path = {
-                    "sql": "items.table",
-                    "s3": "items.content",
-                    "agent": "items.table",
-                }.get(mode, "items.table")
+                default_path = retrieval_items_path(mode)
                 output_paths[runtime_op.node_id] = path_override or default_path
 
         for llm_op_id, llm_op in llm_ops.items():
@@ -824,7 +821,9 @@ class RuntimeGraphBuilder:
 
         if isinstance(image_source_op, DataRetrievalOp):
             image_path = (
-                llm_op.image_path if llm_op.image_path != "images" else "items.content"
+                llm_op.image_path
+                if llm_op.image_path != "images"
+                else retrieval_items_path(image_source_op.data_spec["mode"])
             )
             embedding_data_spec = {
                 "type": "list",
@@ -1194,10 +1193,15 @@ class RuntimeGraphBuilder:
             data_spec = {"type": "list", "items": list(content_op.data)}
             dependencies = []
         else:
+            content_path = (
+                retrieval_items_path(content_op.data_spec["mode"])
+                if isinstance(content_op, DataRetrievalOp)
+                else "items.output"
+            )
             data_spec = {
                 "type": "list",
                 "node": content_op.id,
-                "path": "items.output",
+                "path": content_path,
             }
             dependencies = [content_op.id]
 
@@ -1268,10 +1272,15 @@ class RuntimeGraphBuilder:
                 }
                 content_dependencies: list[str] = []
             else:
+                content_path = (
+                    retrieval_items_path(content_op.data_spec["mode"])
+                    if isinstance(content_op, DataRetrievalOp)
+                    else "items.output"
+                )
                 content_data_spec = {
                     "type": "list",
                     "node": content_op.id,
-                    "path": "items.output",
+                    "path": content_path,
                 }
                 content_dependencies = [content_op.id]
             return self._create_runtime_op(
@@ -1603,14 +1612,7 @@ class RuntimeGraphBuilder:
 
             elif isinstance(op, DataRetrievalOp):
                 if op.id not in columns:
-                    data_spec = op.data_spec
-                    mode = data_spec.get("mode")
-                    if mode == "sql":
-                        path = "items.table"
-                    elif mode == "s3":
-                        path = "items.content"
-                    else:
-                        path = "items.table"
+                    path = retrieval_items_path(op.data_spec["mode"])
                     columns[op.id] = {"node": op.id, "path": path}
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
