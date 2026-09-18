@@ -100,3 +100,59 @@ def test_redact_sensitive_scrubs_bearer_token_under_unrecognized_key() -> None:
 
     assert "sk-live-secret" not in json.dumps(result)
     assert REDACTED_TOKEN_PLACEHOLDER in json.dumps(result)
+
+
+def test_redact_sensitive_matches_authorization_key_case_insensitively() -> None:
+    """Header names are case-insensitive, so a lower- or mixed-case
+    ``authorization`` key must be redacted exactly like ``Authorization``."""
+    for key in ("authorization", "AUTHORIZATION", "Authorization"):
+        result = redact_sensitive({key: "Basic dXNlcjpwYXNz"})
+        assert result[key] == REDACTED_TOKEN_PLACEHOLDER
+
+
+def test_redact_sensitive_scrubs_lowercase_auth_schemes_in_dict() -> None:
+    """A lower-case ``authorization`` value carrying Basic, Digest, or SigV4
+    credentials must be redacted in full, not left to leak."""
+    for secret in (
+        "Basic dXNlcjpwYXNz",
+        'Digest username="u", realm="r", nonce="n", uri="/x", response="deadbeef"',
+        "AWS4-HMAC-SHA256 Credential=AKIA123/x, Signature=SUPERSECRET",
+    ):
+        result = redact_sensitive({"authorization": secret})
+        assert result["authorization"] == REDACTED_TOKEN_PLACEHOLDER
+
+
+def test_redact_secrets_in_text_scrubs_lowercase_auth_header() -> None:
+    """A plain-text lower-case ``authorization:`` header carrying Basic,
+    Digest, or SigV4 credentials must be scrubbed, not just Bearer."""
+    for secret in (
+        "Basic dXNlcjpwYXNz",
+        'Digest username="u", realm="r", nonce="n", uri="/x", response="deadbeef"',
+        "AWS4-HMAC-SHA256 Credential=AKIA123/x, Signature=SUPERSECRET",
+    ):
+        value = f"rejected: authorization: {secret} is invalid"
+        result = redact_secrets_in_text(value)
+        assert secret not in result
+        assert REDACTED_TOKEN_PLACEHOLDER in result
+
+
+def test_redact_secrets_in_text_scrubs_lowercase_bearer_in_text() -> None:
+    """A lower-case ``bearer <token>`` embedded in a plain-text blob must be
+    scrubbed, not just the capitalized ``Bearer`` form."""
+    value = "token is bearer abc123SECRET here"
+
+    result = redact_secrets_in_text(value)
+
+    assert "abc123SECRET" not in result
+    assert REDACTED_TOKEN_PLACEHOLDER in result
+
+
+def test_redact_secrets_in_text_scrubs_lowercase_authorization_json_text() -> None:
+    """A lower-case ``"authorization": "..."`` JSON fragment embedded in a
+    larger text blob must be scrubbed, not just the capitalized form."""
+    value = 'error body: {"authorization": "Basic bWU6c2VjcmV0"} <- rejected'
+
+    result = redact_secrets_in_text(value)
+
+    assert "bWU6c2VjcmV0" not in result
+    assert REDACTED_TOKEN_PLACEHOLDER in result

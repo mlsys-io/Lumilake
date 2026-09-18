@@ -15,9 +15,17 @@ SENSITIVE_DATA_SPEC_KEYS: frozenset[str] = frozenset(
     {"lumid_data_token", "Authorization"}
 )
 
-_BEARER_TOKEN_RE = re.compile(r"Bearer\s+\S+")
-_AUTH_HEADER_RE = re.compile(r"(Authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+)[^\n]*")
-_AUTH_HEADER_JSON_RE = re.compile(r'("Authorization"\s*:\s*)"[^"]*"')
+_BEARER_TOKEN_RE = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
+_AUTH_HEADER_RE = re.compile(
+    r"(Authorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+)[^\n]*", re.IGNORECASE
+)
+_AUTH_HEADER_JSON_RE = re.compile(r'("Authorization"\s*:\s*)"[^"]*"', re.IGNORECASE)
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    return isinstance(key, str) and key.lower() in {
+        k.lower() for k in SENSITIVE_DATA_SPEC_KEYS
+    }
 
 
 def _redact_text(text: str) -> str:
@@ -37,7 +45,7 @@ def redact_sensitive(value: Any) -> Any:
         return {
             key: (
                 REDACTED_TOKEN_PLACEHOLDER
-                if key in SENSITIVE_DATA_SPEC_KEYS and isinstance(sub, str) and sub
+                if _is_sensitive_key(key) and isinstance(sub, str) and sub
                 else redact_sensitive(sub)
             )
             for key, sub in value.items()
