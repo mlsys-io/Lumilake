@@ -1341,10 +1341,15 @@ class RuntimeGraphBuilder:
         node: str,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None,
     ) -> list[str]:
-        """Row ids a condition source fanned into, from the static count. Only
-        an API task fans into multiple nodes; a local rowwise producer emits
-        items from one node."""
+        """Row ids a condition source fanned into. The actual runtime mapping
+        (``dsl_to_runtime``) is authoritative when the source is already built;
+        the static count is a fallback only when it is not. The two can
+        disagree (a rowwise node-ref column counts its input's rows statically
+        but emits one node), so the mapping must take precedence."""
+        if dsl_to_runtime is not None and node in dsl_to_runtime:
+            return self._fanout_row_ids(node, dsl_to_runtime)
         upstream = graph_dict.get(node)
         if upstream is not None and self._is_api_task(upstream):
             count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
@@ -1359,6 +1364,7 @@ class RuntimeGraphBuilder:
         consumer_row_count: int,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None,
     ) -> dict[str, str] | None:
         """Remap a condition's ``node`` to the matching source row, requiring
         equal consumer/source fanout (else fail closed)."""
@@ -1367,7 +1373,7 @@ class RuntimeGraphBuilder:
         node = condition.get("node")
         if node is None:
             return condition
-        row_ids = self._source_row_ids(node, graph_dict, inputs_dict)
+        row_ids = self._source_row_ids(node, graph_dict, inputs_dict, dsl_to_runtime)
         if len(row_ids) <= 1:
             return condition
         if len(row_ids) != consumer_row_count:
@@ -1644,6 +1650,7 @@ class RuntimeGraphBuilder:
                     1,
                     graph_dict,
                     inputs_dict,
+                    dsl_to_runtime,
                 ),
             )
 
@@ -1778,6 +1785,7 @@ class RuntimeGraphBuilder:
                     1,
                     graph_dict,
                     inputs_dict,
+                    dsl_to_runtime,
                 ),
             )
 
@@ -1813,6 +1821,7 @@ class RuntimeGraphBuilder:
                 1,
                 graph_dict,
                 inputs_dict,
+                dsl_to_runtime,
             ),
         )
 
@@ -1850,6 +1859,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build FlowMesh ``api`` tasks for an externally-hosted LLM: render
         resolved ``graph_template`` messages into flat OpenAI-style chat bodies,
@@ -1864,6 +1874,7 @@ class RuntimeGraphBuilder:
                 condition=condition,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                dsl_to_runtime=dsl_to_runtime,
             )
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
             return self._build_api_aggregate_op(
@@ -1876,6 +1887,7 @@ class RuntimeGraphBuilder:
                 condition=condition,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                dsl_to_runtime=dsl_to_runtime,
             )
         resolved, row_count = self._resolve_api_messages(llm_op_id, template_spec)
 
@@ -1939,6 +1951,7 @@ class RuntimeGraphBuilder:
                         row_count,
                         graph_dict,
                         inputs_dict,
+                        dsl_to_runtime,
                     ),
                 )
             )
@@ -1954,6 +1967,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build API tasks for a rowwise LLMChatOp: each ``rowwise_column``
         resolves to a row of values, the template is formatted per row, and the
@@ -2069,6 +2083,7 @@ class RuntimeGraphBuilder:
                         row_count,
                         graph_dict,
                         inputs_dict,
+                        dsl_to_runtime,
                     ),
                 )
             )
@@ -2288,6 +2303,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build API tasks for an aggregate LLMChatOp: merge the base template
         columns with a ``df`` dataframe column built from ``aggregate_table``."""
@@ -2453,6 +2469,7 @@ class RuntimeGraphBuilder:
                         row_count,
                         graph_dict,
                         inputs_dict,
+                        dsl_to_runtime,
                     ),
                 )
             )
