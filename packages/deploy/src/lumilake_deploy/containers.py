@@ -10,7 +10,7 @@ in the operator's deployment directory.
 from pathlib import Path
 
 from . import flowmesh as fm_mod
-from .env import FLOWMESH_ENV_FILE_NAME
+from .env import ENV_FILE_NAME, FLOWMESH_ENV_FILE_NAME, read_env_value
 
 SERVICE_NAMES: tuple[str, ...] = (
     "server",
@@ -25,12 +25,14 @@ def container_names(deploy_dir: Path) -> dict[str, str]:
 
     Looks up ``FLOWMESH_STACK_SLUG`` from ``deploy_dir/.env.flowmesh``
     when present; falls back to ``flowmesh_node`` so the SDK keeps
-    pre-init behavior intact.
+    pre-init behavior intact. The server container name carries the
+    ``LUMILAKE_DEPLOY_SUFFIX`` from ``deploy_dir/.env``.
     """
     env_fm = deploy_dir / FLOWMESH_ENV_FILE_NAME
     slug = fm_mod.stack_slug(env_fm) if env_fm.is_file() else "flowmesh_node"
+    suffix = read_env_value(deploy_dir / ENV_FILE_NAME, "LUMILAKE_DEPLOY_SUFFIX")
     return {
-        "server": "lumilake-server",
+        "server": f"lumilake-server{suffix}",
         "flowmesh": f"{slug}_server",
         "flowmesh-redis": f"{slug}_redis_control",
         "flowmesh-redis-telemetry": f"{slug}_redis_telemetry",

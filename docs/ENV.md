@@ -25,6 +25,7 @@ Run `lumilake deploy -C <deploy-dir> doctor` after editing `.env`.
 | `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` | FlowMesh server URL used for workflow dispatch. |
 | `LUMILAKE_IMAGE_TAG` | Docker image tag used by local deployment. Defaults to `dev` (the rolling main-built image). Pin to a `vX.Y.Z` semver tag for production. |
 | `LUMILAKE_REGISTRY` | Container registry the deploy CLI pulls the server image from. Defaults to `ghcr.io/mlsys-io`. **Trust-bearing**: setting this points `lumilake deploy pull` at a different host, so only override it to a registry you control. |
+| `LUMILAKE_DEPLOY_SUFFIX` | Suffix appended to every container and volume name the deploy stack creates, so multiple Lumilake stacks can coexist on one host. Empty by default, which keeps existing deployments byte-identical. Example: `-dyn` yields `lumilake-server-dyn`, `lumilake-postgres-data-dyn`, and so on for every service and volume. |
 
 ## Lumid.data routing
 

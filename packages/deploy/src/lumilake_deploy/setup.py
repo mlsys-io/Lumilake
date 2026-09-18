@@ -54,7 +54,9 @@ def load_project_env(project_root: Path) -> None:
 def _check_port_collisions(project_root: Path, layout: "_InfraLayout") -> None:
     """Pre-flight: surface any host-port conflicts before docker compose starts."""
     ports: dict[str, int] = {
-        "lumilake-server": int(envs.LUMILAKE_SERVER_PORT or 9000),
+        f"lumilake-server{envs.LUMILAKE_DEPLOY_SUFFIX}": int(
+            envs.LUMILAKE_SERVER_PORT or 9000
+        ),
     }
     if layout.deploy_fm:
         env_fm = project_root / FLOWMESH_ENV_FILE_NAME
@@ -178,7 +180,7 @@ def _start_server(
         ],
         cwd=project_root,
     )
-    wait_healthy("lumilake-server")
+    wait_healthy(f"lumilake-server{envs.LUMILAKE_DEPLOY_SUFFIX}")
 
 
 def _print_ready_summary() -> None:

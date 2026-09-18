@@ -2,15 +2,17 @@
 
 from pathlib import Path
 
+from lumilake import envs
+
 from . import docker_client
 from . import flowmesh as fm_impl
 from .assets import compose_path
 from .containers import flowmesh_state_volumes
 from .env import FLOWMESH_ENV_FILE_NAME
 from .errors import DeployError
+from .setup import load_project_env
 from .shell import info, run
 
-SERVER_CONTAINER = "lumilake-server"
 COMPOSE_PROFILES = (
     "postgres",
     "minio",
@@ -18,12 +20,19 @@ COMPOSE_PROFILES = (
 )
 
 
+def _server_container() -> str:
+    return f"lumilake-server{envs.LUMILAKE_DEPLOY_SUFFIX}"
+
+
 def _state_volumes(project_root: Path) -> tuple[str, ...]:
     """Volumes that ``--wipe-archive`` removes — local compute postgres
     plus the FlowMesh runtime state derived from the operator's
     ``.env.flowmesh`` slug. Touches no corpus / research-records data
     (those live under ``lumilake-minio-data``)."""
-    return ("lumilake-postgres-data", *flowmesh_state_volumes(project_root))
+    return (
+        f"lumilake-postgres-data{envs.LUMILAKE_DEPLOY_SUFFIX}",
+        *flowmesh_state_volumes(project_root),
+    )
 
 
 def _stop_flowmesh_stack(project_root: Path, *, purge: bool) -> None:
@@ -68,12 +77,14 @@ def run_stop(
     Pass ``wipe_archive=True`` (without ``purge``) to wipe just the
     state / runtime state that accumulates across deploy cycles.
     """
+    load_project_env(project_root)
+    server_container = _server_container()
     engine_up = docker_client.engine_is_up()
 
     if engine_up:
         try:
-            if docker_client.container_stop(SERVER_CONTAINER):
-                info(f"Stopped {SERVER_CONTAINER}")
+            if docker_client.container_stop(server_container):
+                info(f"Stopped {server_container}")
         except DeployError as exc:
             info(f"WARNING: {exc}")
     else:

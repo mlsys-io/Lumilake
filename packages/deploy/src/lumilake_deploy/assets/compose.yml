@@ -17,7 +17,7 @@ services:
     # build`` outputs are honored); ``lumilake deploy pull`` resolves
     # rolling :dev/:latest tags explicitly when an update is wanted.
     pull_policy: missing
-    container_name: lumilake-server
+    container_name: lumilake-server${LUMILAKE_DEPLOY_SUFFIX:-}
     profiles: ["server"]
     network_mode: host
     env_file: .env

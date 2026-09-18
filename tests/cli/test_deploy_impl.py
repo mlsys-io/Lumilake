@@ -13,10 +13,12 @@ from typing import Any
 import pytest
 from lumilake import envs
 from lumilake_cli.commands import deploy as deploy_cmd
+from lumilake_deploy import containers as containers_mod
 from lumilake_deploy import doctor as doctor_mod
 from lumilake_deploy import flowmesh as fm
 from lumilake_deploy import purge as purge_mod
 from lumilake_deploy import setup as setup_mod
+from lumilake_deploy import stop as stop_mod
 from lumilake_deploy.env import read_env_value
 from lumilake_deploy.errors import DeployError
 
@@ -636,3 +638,72 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
 
     assert destroy_kwargs == {"ignore_unreachable": True}
     assert compose_calls == [["--profile", "root", "down"]]
+
+
+def test_server_container_defaults_to_bare_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unset/empty suffix yields today's bare server container name."""
+    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "")
+    assert stop_mod._server_container() == "lumilake-server"
+
+
+def test_server_container_appends_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "-dyn")
+    assert stop_mod._server_container() == "lumilake-server-dyn"
+
+
+def test_state_volumes_default_to_bare_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty suffix keeps the historical postgres volume name."""
+    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "")
+    volumes = stop_mod._state_volumes(tmp_path)
+    assert volumes[0] == "lumilake-postgres-data"
+
+
+def test_state_volumes_append_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "-dyn")
+    volumes = stop_mod._state_volumes(tmp_path)
+    assert volumes[0] == "lumilake-postgres-data-dyn"
+
+
+def test_remove_state_volumes_targets_suffixed_volumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--wipe-archive`` removes the suffixed postgres volume, not the bare one."""
+    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "-dyn")
+    removed: list[str] = []
+    monkeypatch.setattr(
+        stop_mod.docker_client,
+        "volume_exists",
+        lambda name: name == "lumilake-postgres-data-dyn",
+    )
+
+    def _remove(name: str) -> bool:
+        removed.append(name)
+        return True
+
+    monkeypatch.setattr(stop_mod.docker_client, "volume_remove", _remove)
+    stop_mod._remove_state_volumes(tmp_path)
+
+    assert "lumilake-postgres-data-dyn" in removed
+    assert "lumilake-postgres-data" not in removed
+
+
+def test_container_names_server_appends_suffix(tmp_path: Path) -> None:
+    """The server container name carries the suffix from ``.env``."""
+    (tmp_path / ".env").write_text('LUMILAKE_DEPLOY_SUFFIX="-dyn"\n')
+    names = containers_mod.container_names(tmp_path)
+    assert names["server"] == "lumilake-server-dyn"
+
+
+def test_container_names_server_defaults_to_bare(tmp_path: Path) -> None:
+    """No suffix in ``.env`` keeps the bare server container name."""
+    (tmp_path / ".env").write_text("")
+    names = containers_mod.container_names(tmp_path)
+    assert names["server"] == "lumilake-server"
