@@ -306,11 +306,11 @@ def test_messages_ref_must_point_at_message_op() -> None:
 def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
     """A user-role message with content = bare upstream id auto-wraps into a FormatOp.
 
-    ``content: retrieve`` does NOT pass the literal string "retrieve" through
-    — it detects that "retrieve" is a user-facing op id and synthesizes an
-    implicit FormatOp whose ``_inputs`` point at that op. The MessageOp's
-    content then points at the FormatOp, not the original op or the literal
-    string.
+    Pins the behaviour the module docstring promises: ``content: retrieve``
+    does NOT pass the literal string "retrieve" through — it detects that
+    "retrieve" is a user-facing op id and synthesizes an implicit FormatOp
+    whose ``_inputs`` point at that op. The MessageOp's content then points
+    at the FormatOp, not the original op or the literal string.
     """
     _ensure_envs()
     yaml_text = textwrap.dedent(
