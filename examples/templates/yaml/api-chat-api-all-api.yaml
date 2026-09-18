@@ -1,0 +1,95 @@
+---
+name: api-chat-api-all-api
+
+# Demonstrates that API-backed LLMChatOps compose in a chain: three
+# LLMChatOps, each consuming the previous node's output, ALL routed to an
+# external OpenAI-style endpoint:
+#   Draft (API) -> Polish (API) -> Verdict (API)
+# This is the all-API variant of api-chat-api.yaml — the middle node is
+# API-backed too (no locally-served model), so the whole chain runs
+# without a local GPU. No data access — no DB / S3 retrievals, no agent
+# mode.
+#
+# Inputs:  Topic (one or more per slice; supplied at submission)
+# Output:  result (final API-mode LLM response text)
+#
+# Runtime requirements:
+#   - A standard ``lumilake deploy up`` (server + a reachable FlowMesh
+#     orchestrator at ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL``).
+#   - Reachable lumid-data-app via ``LUMID_DATA_URL`` (and
+#     ``LUMID_DATA_TOKEN`` if the deployment is authenticated).
+#   - For the API-backed nodes: a reachable ``config.api.url`` origin.
+#     The default ``https://lum.id`` is on the trusted-origin allowlist,
+#     so the server attaches its own bearer token; for any other origin
+#     set ``config.api.authorization`` explicitly.
+#
+# Each node references the previous node's output as a bare user-facing
+# id in ``messages:``; the parser wraps it in an implicit FormatOp, the
+# same relay the local backend uses. API mode renders such a reference
+# as a FlowMesh ``${node.path}`` dispatch-time placeholder and declares
+# the referenced node as a dependency, so dispatch waits for it.
+#
+# Note on ``max_tokens``: the API-served model here is a reasoning model.
+# Give each node enough ``max_tokens`` that it can emit content after its
+# reasoning budget; a node that exhausts its budget on reasoning returns
+# ``content: null`` and its downstream reference has no value to resolve.
+#
+# Submit (inputs are supplied at submission, not hardcoded here). See
+# docs/CLI.md for the full ``lumilake job submit`` usage; the inputs and
+# output prefix are supplied on the command line:
+#   lumilake job submit <this-file> \
+#       --format yaml --input 'Topic=a database index' \
+#       --output-prefix demo/api-chat-api-all-api --optimizer halo
+
+inputs:
+  Topic: []
+
+ops:
+  - id: "Draft"
+    op: LLMChatOp
+    inputs: [Topic]
+    messages:
+      - role: system
+        content: "Answer in one short sentence."
+      - role: user
+        content: "Topic"
+    config:
+      model: qwen3.8-27b
+      max_tokens: 1024
+      temperature: 0.2
+      api:
+        timeout_sec: 300
+
+  - id: "Polish"
+    op: LLMChatOp
+    inputs: ["Draft"]
+    messages:
+      - role: system
+        content: "Rewrite the sentence to be more formal."
+      - role: user
+        content: "Draft"
+    config:
+      model: qwen3.8-27b
+      max_tokens: 1024
+      temperature: 0.2
+      api:
+        timeout_sec: 300
+
+  - id: "Verdict"
+    op: LLMChatOp
+    inputs: ["Polish"]
+    messages:
+      - role: system
+        content: "Repeat the text you are given, unchanged."
+      - role: user
+        content: "Polish"
+    config:
+      model: qwen3.8-27b
+      max_tokens: 1024
+      temperature: 0.0
+      api:
+        timeout_sec: 300
+
+outputs:
+  - name: result
+    ref: "Verdict"

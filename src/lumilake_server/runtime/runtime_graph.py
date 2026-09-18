@@ -493,6 +493,7 @@ class RuntimeGraphBuilder:
                     ),
                     graph_dict=graph_dict,
                     inputs_dict=inputs_dict,
+                    dsl_to_runtime=dsl_to_runtime,
                 )
                 mapping = [runtime_op.node_id for runtime_op in runtime_ops]
                 output_node_ids = mapping
@@ -741,7 +742,19 @@ class RuntimeGraphBuilder:
                     and isinstance(node_ref, str)
                     and isinstance(path, str)
                 ):
-                    columns.append({"label": label, "node": node_ref, "path": path})
+                    columns.append(
+                        self._node_ref_column(
+                            consumer_id=llm_op_id,
+                            label=label,
+                            node_ref=node_ref,
+                            path=path,
+                            upstream=graph_dict.get(node_ref),
+                            inputs_dict=inputs_dict,
+                            graph_dict=graph_dict,
+                            dsl_to_runtime=dsl_to_runtime,
+                            kind="rowwise column",
+                        )
+                    )
             if not columns:
                 raise ValueError(f"LLMVisionOp {llm_op_id} has empty rowwise_columns")
 
@@ -1021,6 +1034,19 @@ class RuntimeGraphBuilder:
                     }
                     resolved_params.append(literal_param)
                     continue
+                if isinstance(upstream, LLMOp):
+                    row_count = self._static_output_row_count(
+                        upstream, inputs_dict, graph_dict
+                    )
+                    if row_count is not None and row_count > 1:
+                        raise ValueError(
+                            f"DataRetrievalOp '{op_id}' template param "
+                            f"{param.get('label')!r} references '{node}', which"
+                            " produces multiple rows; a retrieval param binds a"
+                            " single node reference, so wiring this to the"
+                            " unsuffixed output would silently drop every row"
+                            " but the first."
+                        )
                 if node not in seen:
                     seen.add(node)
                     dependencies.append(node)
@@ -1230,10 +1256,164 @@ class RuntimeGraphBuilder:
     @staticmethod
     def _upstream_output_path(op: Op) -> str:
         """Result path for an upstream op's text output: ``text`` for an
-        API-backed LLMOp, ``items.output`` otherwise."""
-        if isinstance(op, LLMOp) and op.config.api is not None:
+        API task, ``items.output`` otherwise."""
+        if RuntimeGraphBuilder._is_api_task(op):
             return "text"
         return "items.output"
+
+    @staticmethod
+    def _is_api_task(op: Op) -> bool:
+        """Whether an LLMOp is dispatched as an API task. ``config.api`` alone
+        does not decide this: ``LLMVisionOp`` is always built as a local
+        embedding + inference pair, even when ``config.api`` is set, so it is
+        never an API task."""
+        return (
+            isinstance(op, LLMOp)
+            and not isinstance(op, LLMVisionOp)
+            and (op.config.api is not None)
+        )
+
+    @staticmethod
+    def _fanout_row_ids(
+        op_id: str, dsl_to_runtime: dict[str, list[str]] | None
+    ) -> list[str]:
+        """Runtime node ids an op fanned out into, or ``[op_id]`` when it did
+        not fan out. The actual fanout (``dsl_to_runtime``) is authoritative:
+        a static row-count estimate misses API rowwise/aggregate fanout that
+        is driven by literal column values rather than the input row count.
+        Only a mapping that follows the ``<op_id>`` / ``<op_id>__row<i>`` shape
+        counts as row fanout; a VLM maps to ``[<id>_embedding, <id>]`` (two
+        implementation stages of one logical op), which is not row fanout."""
+        if dsl_to_runtime is not None:
+            row_ids = dsl_to_runtime.get(op_id)
+            if row_ids is not None and len(row_ids) > 1:
+                if row_ids == [op_id] + [
+                    f"{op_id}__row{i}" for i in range(1, len(row_ids))
+                ]:
+                    return list(row_ids)
+        return [op_id]
+
+    def _guard_single_row_node_ref(
+        self,
+        *,
+        consumer_id: str,
+        upstream_id: str,
+        upstream: Op | None,
+        inputs_dict: dict[str, list[str]],
+        graph_dict: dict[str, Op],
+        dsl_to_runtime: dict[str, list[str]] | None,
+        kind: str,
+    ) -> None:
+        """Fail closed when a consumer binds a single ``${node.path}`` reference
+        to an upstream that produces multiple rows — whether by fanning out into
+        several runtime nodes or by emitting several rows from one node (a
+        rowwise op). Binding only the unsuffixed row-0 node would silently drop
+        every row but the first."""
+        if not isinstance(upstream, LLMOp):
+            return
+        row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
+        fanned = len(self._fanout_row_ids(upstream_id, dsl_to_runtime)) > 1
+        if (row_count is not None and row_count > 1) or fanned:
+            raise ValueError(
+                f"Op '{consumer_id}' {kind} references '{upstream_id}',"
+                " which produces multiple rows; API mode can only carry one row"
+                " per node reference, so wiring this to the single unsuffixed"
+                " output would silently drop every row but the first."
+            )
+
+    def _node_ref_column(
+        self,
+        *,
+        consumer_id: str,
+        label: str,
+        node_ref: str,
+        path: str,
+        upstream: Op | None,
+        inputs_dict: dict[str, list[str]],
+        graph_dict: dict[str, Op],
+        dsl_to_runtime: dict[str, list[str]] | None,
+        kind: str,
+    ) -> dict[str, Any]:
+        """Shared helper for binding a user-supplied ``node:`` reference into a
+        spec column, guarding against a multi-row upstream. Used by the VLM,
+        local rowwise, and local aggregate column builders; the API rowwise,
+        API aggregate, retrieval-param, embedding, and image-generation paths
+        keep their own binding/guard implementations because they emit a
+        different spec shape. Not a single unbypassable chokepoint — a new
+        binding must call the guard itself."""
+        self._guard_single_row_node_ref(
+            consumer_id=consumer_id,
+            upstream_id=node_ref,
+            upstream=upstream,
+            inputs_dict=inputs_dict,
+            graph_dict=graph_dict,
+            dsl_to_runtime=dsl_to_runtime,
+            kind=kind,
+        )
+        return {"label": label, "node": node_ref, "path": path}
+
+    def _source_row_ids(
+        self,
+        node: str,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None,
+    ) -> list[str]:
+        """Runtime row ids a condition source fanned out into. Prefers the
+        actual fanout from ``dsl_to_runtime``, but falls back to the static row
+        count (which sees rowwise columns) when the source is not yet built —
+        the consumer may be built before its condition source, so the fanout
+        must be derivable without ``dsl_to_runtime``. Row ids follow the
+        deterministic ``<node>`` / ``<node>__row<i>`` pattern. Only an API task
+        fans out into multiple runtime nodes; a local rowwise producer emits
+        multiple items from a single node, so it has no ``__row<i>`` nodes to
+        gate on and is treated as unfanned (single node)."""
+        row_ids = self._fanout_row_ids(node, dsl_to_runtime)
+        if len(row_ids) > 1:
+            return row_ids
+        upstream = graph_dict.get(node)
+        if upstream is not None and self._is_api_task(upstream):
+            count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
+            if count is not None and count > 1:
+                return [node] + [f"{node}__row{i}" for i in range(1, count)]
+        return [node]
+
+    def _row_condition(
+        self,
+        condition: dict[str, str] | None,
+        row_index: int,
+        consumer_row_count: int,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None,
+    ) -> dict[str, str] | None:
+        """Remap a condition's ``node`` to the matching row of a fanned source.
+        A condition referencing a node that fanned out must gate row ``i`` of
+        the consumer against row ``i`` of the source; leaving it on the
+        unsuffixed row-0 node would gate every consumer row against row 0. The
+        consumer and source must fan out to the same number of rows — a
+        mismatch would silently gate some consumer rows on the wrong source row
+        (or escape as an IndexError), so it fails closed instead."""
+        if condition is None:
+            return None
+        node = condition.get("node")
+        if node is None:
+            return condition
+        row_ids = self._source_row_ids(node, graph_dict, inputs_dict, dsl_to_runtime)
+        if len(row_ids) <= 1:
+            return condition
+        if len(row_ids) != consumer_row_count:
+            raise ValueError(
+                f"Condition node '{node}' fanned out into {len(row_ids)} rows"
+                f" but the consumer has {consumer_row_count} rows; a condition"
+                " can only gate a fanned consumer when both fan out to the same"
+                " number of rows."
+            )
+        if row_index == 0:
+            return condition
+        remapped = dict(condition)
+        remapped["node"] = row_ids[row_index]
+        return remapped
 
     def _api_prior_prompt(
         self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
@@ -1271,6 +1451,8 @@ class RuntimeGraphBuilder:
         llm_op: EmbeddingOp,
         inputs_dict: dict[str, list[str]],
         visited_node_ids: set[str],
+        graph_dict: dict[str, Op] | None = None,
+        dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> RuntimeOp:
         visited_node_ids.add(llm_op_id)
         content_op = llm_op.content
@@ -1293,6 +1475,16 @@ class RuntimeGraphBuilder:
             data_spec = {"type": "list", "items": list(content_op.data)}
             dependencies = []
         else:
+            if graph_dict is not None:
+                self._guard_single_row_node_ref(
+                    consumer_id=llm_op_id,
+                    upstream_id=content_op.id,
+                    upstream=content_op,
+                    inputs_dict=inputs_dict,
+                    graph_dict=graph_dict,
+                    dsl_to_runtime=dsl_to_runtime,
+                    kind="content",
+                )
             data_spec = {
                 "type": "list",
                 "node": content_op.id,
@@ -1333,7 +1525,12 @@ class RuntimeGraphBuilder:
     ) -> RuntimeOp:
         if isinstance(llm_op, EmbeddingOp):
             return self._build_node_from_embedding_op(
-                llm_op_id, llm_op, inputs_dict, visited_node_ids
+                llm_op_id,
+                llm_op,
+                inputs_dict,
+                visited_node_ids,
+                graph_dict=graph_dict,
+                dsl_to_runtime=dsl_to_runtime,
             )
 
         if isinstance(llm_op, ImageGenerationOp):
@@ -1367,6 +1564,15 @@ class RuntimeGraphBuilder:
                 }
                 content_dependencies: list[str] = []
             else:
+                self._guard_single_row_node_ref(
+                    consumer_id=llm_op_id,
+                    upstream_id=content_op.id,
+                    upstream=content_op,
+                    inputs_dict=inputs_dict,
+                    graph_dict=graph_dict,
+                    dsl_to_runtime=dsl_to_runtime,
+                    kind="content",
+                )
                 content_data_spec = {
                     "type": "list",
                     "node": content_op.id,
@@ -1426,7 +1632,19 @@ class RuntimeGraphBuilder:
                     and isinstance(node_ref, str)
                     and isinstance(path, str)
                 ):
-                    columns.append({"label": label, "node": node_ref, "path": path})
+                    columns.append(
+                        self._node_ref_column(
+                            consumer_id=llm_op_id,
+                            label=label,
+                            node_ref=node_ref,
+                            path=path,
+                            upstream=graph_dict.get(node_ref),
+                            inputs_dict=inputs_dict,
+                            graph_dict=graph_dict,
+                            dsl_to_runtime=dsl_to_runtime,
+                            kind="rowwise column",
+                        )
+                    )
                     if node_ref not in row_dependencies:
                         row_dependencies.append(node_ref)
 
@@ -1452,7 +1670,14 @@ class RuntimeGraphBuilder:
                 model=llm_op.config.model,
                 dependencies=row_dependencies if row_dependencies else None,
                 output_spec=output_spec,
-                condition=llm_op.condition,
+                condition=self._row_condition(
+                    llm_op.condition,
+                    0,
+                    1,
+                    graph_dict,
+                    inputs_dict,
+                    dsl_to_runtime,
+                ),
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
@@ -1490,11 +1715,17 @@ class RuntimeGraphBuilder:
                 ):
                     continue
                 table_columns.append(
-                    {
-                        "label": label,
-                        "node": node_ref,
-                        "path": path,
-                    }
+                    self._node_ref_column(
+                        consumer_id=llm_op_id,
+                        label=label,
+                        node_ref=node_ref,
+                        path=path,
+                        upstream=graph_dict.get(node_ref),
+                        inputs_dict=inputs_dict,
+                        graph_dict=graph_dict,
+                        dsl_to_runtime=dsl_to_runtime,
+                        kind="aggregate column",
+                    )
                 )
                 if node_ref not in aggregate_dependencies:
                     aggregate_dependencies.append(node_ref)
@@ -1574,7 +1805,14 @@ class RuntimeGraphBuilder:
                 model=llm_op.config.model,
                 dependencies=aggregate_dependencies if aggregate_dependencies else None,
                 output_spec=output_spec,
-                condition=llm_op.condition,
+                condition=self._row_condition(
+                    llm_op.condition,
+                    0,
+                    1,
+                    graph_dict,
+                    inputs_dict,
+                    dsl_to_runtime,
+                ),
             )
 
         default_dependencies: list[str] | None = None
@@ -1603,7 +1841,14 @@ class RuntimeGraphBuilder:
             model=llm_op.config.model,
             dependencies=default_dependencies,
             output_spec=output_spec,
-            condition=llm_op.condition if isinstance(llm_op, LLMChatOp) else None,
+            condition=self._row_condition(
+                llm_op.condition if isinstance(llm_op, LLMChatOp) else None,
+                0,
+                1,
+                graph_dict,
+                inputs_dict,
+                dsl_to_runtime,
+            ),
         )
 
     def _api_request_headers(
@@ -1640,6 +1885,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build FlowMesh ``api`` tasks for an externally-hosted LLM: render
         resolved ``graph_template`` messages into flat OpenAI-style chat bodies,
@@ -1654,6 +1900,7 @@ class RuntimeGraphBuilder:
                 condition=condition,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                dsl_to_runtime=dsl_to_runtime,
             )
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
             return self._build_api_aggregate_op(
@@ -1666,6 +1913,7 @@ class RuntimeGraphBuilder:
                 condition=condition,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                dsl_to_runtime=dsl_to_runtime,
             )
         resolved, row_count = self._resolve_api_messages(llm_op_id, template_spec)
 
@@ -1723,7 +1971,14 @@ class RuntimeGraphBuilder:
                     model=model,
                     dependencies=dependencies,
                     output_spec=output_spec,
-                    condition=condition,
+                    condition=self._row_condition(
+                        condition,
+                        row_index,
+                        row_count,
+                        graph_dict,
+                        inputs_dict,
+                        dsl_to_runtime,
+                    ),
                 )
             )
         return runtime_ops
@@ -1738,6 +1993,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build API tasks for a rowwise LLMChatOp: each ``rowwise_column``
         resolves to a row of values, the template is formatted per row, and the
@@ -1766,14 +2022,13 @@ class RuntimeGraphBuilder:
             ):
                 upstream = graph_dict.get(node_ref)
                 upstream_row_count = (
-                    self._static_output_row_count(upstream, inputs_dict)
+                    self._static_output_row_count(upstream, inputs_dict, graph_dict)
                     if isinstance(upstream, LLMOp)
                     else None
                 )
-                if (
-                    isinstance(upstream, LLMOp)
-                    and upstream_row_count is not None
-                    and upstream_row_count > 1
+                if isinstance(upstream, LLMOp) and (
+                    (upstream_row_count is not None and upstream_row_count > 1)
+                    or len(self._fanout_row_ids(node_ref, dsl_to_runtime)) > 1
                 ):
                     raise ValueError(
                         f"LLMChatOp '{llm_op_id}' rowwise column '{label}'"
@@ -1847,7 +2102,14 @@ class RuntimeGraphBuilder:
                     model=model,
                     dependencies=dependencies or None,
                     output_spec=output_spec,
-                    condition=condition,
+                    condition=self._row_condition(
+                        condition,
+                        row_index,
+                        row_count,
+                        graph_dict,
+                        inputs_dict,
+                        dsl_to_runtime,
+                    ),
                 )
             )
         return runtime_ops
@@ -2066,6 +2328,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build API tasks for an aggregate LLMChatOp: merge the base template
         columns with a ``df`` dataframe column built from ``aggregate_table``."""
@@ -2088,14 +2351,13 @@ class RuntimeGraphBuilder:
                 continue
             upstream = graph_dict.get(node_ref)
             upstream_row_count = (
-                self._static_output_row_count(upstream, inputs_dict)
+                self._static_output_row_count(upstream, inputs_dict, graph_dict)
                 if isinstance(upstream, LLMOp)
                 else None
             )
-            if (
-                isinstance(upstream, LLMOp)
-                and upstream_row_count is not None
-                and upstream_row_count > 1
+            if isinstance(upstream, LLMOp) and (
+                (upstream_row_count is not None and upstream_row_count > 1)
+                or len(self._fanout_row_ids(node_ref, dsl_to_runtime)) > 1
             ):
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' aggregate column '{label}'"
@@ -2225,7 +2487,14 @@ class RuntimeGraphBuilder:
                     model=model,
                     dependencies=aggregate_dependencies or None,
                     output_spec=output_spec,
-                    condition=condition,
+                    condition=self._row_condition(
+                        condition,
+                        row_index,
+                        row_count,
+                        graph_dict,
+                        inputs_dict,
+                        dsl_to_runtime,
+                    ),
                 )
             )
         return runtime_ops
@@ -2263,29 +2532,66 @@ class RuntimeGraphBuilder:
         return deps
 
     def _static_output_row_count(
-        self, op: Op, inputs_dict: dict[str, list[str]]
+        self,
+        op: Op,
+        inputs_dict: dict[str, list[str]],
+        graph_dict: dict[str, Op] | None = None,
     ) -> int | None:
         """Static row count of an op's output, or ``None`` when not knowable
         at build time (e.g. a retrieval whose row count is only known at
-        execution)."""
+        execution). A rowwise op's row count is driven by its ``rowwise_columns``
+        (literal item counts, or the upstream row count for node-ref columns),
+        not by its message content."""
         if isinstance(op, InputOp):
             values = inputs_dict.get(op.name)
             return len(values) if values is not None else None
         if isinstance(op, DataOp):
             return len(op.data)
         if isinstance(op, LLMChatOp):
+            if op.rowwise_columns:
+                counts: list[int] = []
+                for col in op.rowwise_columns:
+                    data = col.get("data")
+                    if isinstance(data, dict):
+                        items = data.get("items")
+                        if isinstance(items, list):
+                            counts.append(len(items))
+                            continue
+                    node_ref = col.get("node")
+                    if isinstance(node_ref, str) and graph_dict is not None:
+                        upstream = graph_dict.get(node_ref)
+                        if upstream is not None:
+                            count = self._static_output_row_count(
+                                upstream, inputs_dict, graph_dict
+                            )
+                            if count is not None:
+                                counts.append(count)
+                return max(counts) if counts else None
             messages = (
                 op.messages.messages if isinstance(op.messages, MessageOp) else []
             )
+            op_counts: list[int] = []
             for message in messages:
-                if message.role == "user" and isinstance(message.content, Op):
-                    return self._static_output_row_count(message.content, inputs_dict)
-            return None
+                if isinstance(message.content, Op):
+                    count = self._static_output_row_count(
+                        message.content, inputs_dict, graph_dict
+                    )
+                    if count is not None:
+                        op_counts.append(count)
+            return max(op_counts) if op_counts else None
         if isinstance(op, FormatOp):
-            counts = [
-                self._static_output_row_count(inp, inputs_dict) for inp in op.inputs
+            format_counts = [
+                self._static_output_row_count(inp, inputs_dict, graph_dict)
+                for inp in op.inputs
             ]
-            known = [c for c in counts if c is not None]
+            known = [c for c in format_counts if c is not None]
+            return max(known) if known else None
+        if isinstance(op, LambdaOp):
+            lambda_counts = [
+                self._static_output_row_count(inp, inputs_dict, graph_dict)
+                for inp in op.inputs
+            ]
+            known = [c for c in lambda_counts if c is not None]
             return max(known) if known else None
         return None
 
@@ -2321,10 +2627,11 @@ class RuntimeGraphBuilder:
                 assert (
                     op.id != target_llm_op.id
                 ), "Encountered starting LLMOp again unexpectedly"
-                if (
-                    dsl_to_runtime is not None
-                    and len(dsl_to_runtime.get(op.id, [op.id])) > 1
-                ):
+                row_ids = self._fanout_row_ids(op.id, dsl_to_runtime)
+                is_api_ancestor = self._is_api_task(op)
+                target_is_api = self._is_api_task(target_llm_op)
+                fanned = len(row_ids) > 1
+                if fanned and (not is_api_ancestor or not target_is_api):
                     raise ValueError(
                         f"LLMOp '{llm_op_id}' consumes '{op.id}', which fanned"
                         " out into multiple row-aligned runtime nodes; only"
@@ -2334,10 +2641,11 @@ class RuntimeGraphBuilder:
                         " row but the first."
                     )
                 if op.id not in upstream_llm_ids:
-                    upstream_llm_ids.add(op.id)
-                    is_api_ancestor = op.config.api is not None
+                    upstream_llm_ids.update(row_ids)
                     if not is_api_ancestor:
-                        row_count = self._static_output_row_count(op, inputs_dict)
+                        row_count = self._static_output_row_count(
+                            op, inputs_dict, graph_dict
+                        )
                         if row_count is not None and row_count > 1:
                             raise ValueError(
                                 f"LLMOp '{llm_op_id}' consumes '{op.id}', which"
@@ -2348,6 +2656,15 @@ class RuntimeGraphBuilder:
                                 " but the first."
                             )
                     if isinstance(op, LLMChatOp) and op.return_history:
+                        if fanned:
+                            raise ValueError(
+                                f"LLMChatOp '{llm_op_id}' consumes '{op.id}',"
+                                " which fanned out into multiple row-aligned"
+                                " runtime nodes and has return_history. API mode"
+                                " cannot reconstruct per-row history for a"
+                                " fanned upstream, so this shape is not"
+                                " supported."
+                            )
                         if is_api_ancestor:
                             prior = self._api_prior_prompt(op, inputs_dict)
                             if prior is None:
@@ -2368,10 +2685,22 @@ class RuntimeGraphBuilder:
                                 "node": op.id,
                                 "path": "items.metadata.prompt",
                             }
-                    columns[f"{op.id}_output"] = {
-                        "node": op.id,
-                        "path": "text" if is_api_ancestor else "items.output",
-                    }
+                    if fanned:
+                        # This branch is API-only: the fanned guard above
+                        # requires both the ancestor and the consumer to be API
+                        # tasks, so every row's output path is the API task's
+                        # ``text`` (see _upstream_output_path).
+                        columns[f"{op.id}_output"] = {
+                            "data": {
+                                "type": "list",
+                                "items": [f"${{{rid}.text}}" for rid in row_ids],
+                            }
+                        }
+                    else:
+                        columns[f"{op.id}_output"] = {
+                            "node": op.id,
+                            "path": self._upstream_output_path(op),
+                        }
 
                 if isinstance(op, LLMChatOp) and op.return_history:
                     ancestor_buffer[op.id] = [
@@ -2402,7 +2731,9 @@ class RuntimeGraphBuilder:
                     elif mode == "s3":
                         path = "items.content"
                     else:
-                        path = "items.output"
+                        # Agent mode replays a SQL plan, so it emits ``table``
+                        # like SQL mode (see the output-path default in build).
+                        path = "items.table"
                     columns[op.id] = {"node": op.id, "path": path}
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 

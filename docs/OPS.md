@@ -150,14 +150,25 @@ executor runs, and the referenced node is added to this op's FlowMesh
 dependencies so dispatch waits for it. An upstream `LLMChatOp` (local or
 API-backed) renders as its text output; an upstream `DataRetrievalOp`
 renders per its mode (e.g. `sql` renders the retrieved table). A reference
-is always single-valued: an upstream `LLMChatOp` that itself fanned out
-into multiple row-aligned nodes (see below) cannot be referenced this way —
-building the graph rejects it up front, since only this op's own message
-columns can carry that per-row alignment. An upstream `LLMChatOp` with
-`return_history` enabled is referenced the same way whether it ran locally
-or against an API: the runtime synthesizes the prior prompt as
-`metadata.prompt` on the API result (the same field a local inference item
-carries), so history assembly works identically for both backends.
+is always single-valued: an upstream `LLMChatOp` that produces multiple
+rows — whether by fanning out into several row-aligned nodes (see below)
+or by emitting several rows from a single node (a local rowwise op) —
+cannot be referenced this way; building the graph rejects it up front,
+since only this op's own message columns can carry that per-row
+alignment. The one exception is an API-mode consumer of an API-mode
+upstream: both are dispatched as `api` tasks, so the consumer fans out
+one node per upstream row, each referencing its own upstream row node
+(`${<row>.text}`) and declaring every upstream row node as a dependency.
+This includes an API rowwise upstream, which fans out into one node per
+row and is consumed per-row like any other fanned API upstream. Any other
+multi-row shape — a local consumer, a local upstream, a local rowwise
+upstream, or a `return_history` upstream — still fails closed at build
+time, because API mode cannot carry per-row alignment (or reconstruct
+per-row history) for it. An upstream `LLMChatOp` with `return_history`
+enabled is referenced the same way whether it ran locally or against an
+API: an API result carries no `metadata.prompt`, so the runtime inlines
+the literal prior prompt (the user message that was sent) at build time;
+a runtime-derived prior prompt cannot be reconstructed and fails closed.
 
 When a message's literal content resolves to a multi-row input column
 (e.g. `Stock: ["NVDA", "AAPL"]`), the op fans out into one FlowMesh `api`

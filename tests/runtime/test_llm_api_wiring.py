@@ -1,4 +1,5 @@
 import textwrap
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from lumilake_server.ops import (
     ImageGenerationOp,
     LambdaOp,
     LLMChatOp,
+    LLMVisionOp,
     OpMessage,
     as_output,
     input_placeholder,
@@ -37,6 +39,32 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", _RUNTIME_TOKEN)
+
+
+_RUNTIME_GRAPH_SOURCE = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "lumilake_server"
+    / "runtime"
+    / "runtime_graph.py"
+)
+
+
+def test_upstream_output_path_fact_is_not_recomputed_inline() -> None:
+    """The upstream output-path fact (``text`` for an API task, ``items.output``
+    otherwise) must be owned by ``_upstream_output_path`` and not recomputed
+    inline anywhere else. This is a structural guard: the two forms are
+    behaviorally identical today, so only a source-level check can catch a
+    future re-inline that would silently diverge when the helper's definition
+    changes."""
+    text = _RUNTIME_GRAPH_SOURCE.read_text()
+    lines = text.splitlines()
+    for lineno, line in enumerate(lines, start=1):
+        if '"text" if' in line and "def _upstream_output_path" not in line:
+            raise AssertionError(
+                f"runtime_graph.py:{lineno} recomputes the upstream output-path"
+                " fact inline; route it through _upstream_output_path"
+            )
 
 
 def _build_api_graph(**config_kwargs: Any) -> tuple[RuntimeGraph, str]:
@@ -1021,6 +1049,222 @@ def test_api_multi_row_input_fans_out_row_aligned_nodes() -> None:
     assert runtime_graph.output_node_map[row1_id] == "result"
 
 
+def test_api_node_consuming_fanned_api_upstream_builds() -> None:
+    """An API-mode LLMChatOp consuming a row-fanned API upstream must build:
+    the structural guard permits a fanned upstream only when both the upstream
+    and the consumer are API mode, because API message columns can carry the
+    per-row alignment. The consumer fans out into one node per upstream row."""
+    stock = input_placeholder("Stock")
+    draft = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    relay = FormatOp("{prior}", prior=draft)
+    polish = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", polish)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    draft_row1 = f"{draft.id}__row1"
+    polish_row1 = f"{polish.id}__row1"
+    assert runtime_graph.dsl_to_runtime[draft.id] == [draft.id, draft_row1]
+    assert runtime_graph.dsl_to_runtime[polish.id] == [polish.id, polish_row1]
+
+
+def test_structural_consumer_of_unfanned_api_upstream_builds() -> None:
+    """An API-mode consumer of an unfanned API upstream must build: the
+    structural fanned-consumer guard must not over-reject a single-row
+    upstream."""
+    stock = input_placeholder("Stock")
+    draft = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    relay = FormatOp("{prior}", prior=draft)
+    polish = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", polish)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (draft_row,) = runtime_graph.dsl_to_runtime[draft.id]
+    (polish_row,) = runtime_graph.dsl_to_runtime[polish.id]
+    assert runtime_graph.nodes[polish_row].api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{draft_row}.text}}"}
+    ]
+
+
+def test_retrieval_param_referencing_single_row_node_builds() -> None:
+    """A DataRetrievalOp template param referencing a single-row upstream must
+    build: the retrieval param guard must not over-reject a single-row node."""
+    stock = input_placeholder("Stock")
+    single = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE x = :p",
+            "params": [{"name": "p", "node": single.id, "path": "items.output"}],
+        },
+        inputs=[single],
+    )
+    output = as_output("result", retrieval)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert runtime_graph.nodes[retrieval.id].task_type == "data_retrieval"
+
+
+def test_node_ref_to_single_row_producer_builds() -> None:
+    """A node reference to a genuinely single-row producer must build: the
+    multi-row node-ref guard must not over-reject a single-row upstream."""
+    stock = input_placeholder("Stock")
+    single = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    emb = EmbeddingOp(content=single, config=GenerationConfig(model="bge-m3"))
+    output = as_output("result", emb)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert runtime_graph.nodes[emb.id].task_type == "embedding"
+
+
+def test_condition_matching_cardinality_builds_and_remaps() -> None:
+    """A condition where the consumer and source fan out to the same number of
+    rows must build and remap each consumer row to the matching source row: the
+    condition cardinality guard must not over-reject a matching pair."""
+    stock = input_placeholder("Stock")
+    gate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {
+                "label": "Stock",
+                "data": {"type": "list", "items": ["x", "y"]},
+            }
+        ],
+        condition={"node": gate.id, "expr": "gate == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("gate_out", gate), as_output("result", consumer)]
+    ).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    gate_rows = runtime_graph.dsl_to_runtime[gate.id]
+    consumer_rows = runtime_graph.dsl_to_runtime[consumer.id]
+    assert len(gate_rows) == 2
+    assert len(consumer_rows) == 2
+    for row_index, consumer_row in enumerate(consumer_rows):
+        assert runtime_graph.nodes[consumer_row].condition == {
+            "node": gate_rows[row_index],
+            "expr": "gate == on",
+        }
+
+
+def test_api_node_consuming_fanned_api_upstream_emits_per_row_placeholders() -> None:
+    """An API-mode LLMChatOp consuming a row-fanned API upstream must emit one
+    ``${<row>.text}`` placeholder per upstream row node and declare every
+    upstream row node as a dependency. Row i's downstream node must consume
+    upstream row i."""
+    stock = input_placeholder("Stock")
+    draft = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    relay = FormatOp("{prior}", prior=draft)
+    polish = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", polish)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    draft_row1 = f"{draft.id}__row1"
+    polish_row1 = f"{polish.id}__row1"
+
+    # Row 0 of Polish consumes row 0 of Draft; row 1 consumes row 1.
+    assert runtime_graph.nodes[polish.id].api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{draft.id}.text}}"}
+    ]
+    assert runtime_graph.nodes[polish_row1].api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{draft_row1}.text}}"}
+    ]
+
+    # Every upstream row node must be a dependency, or dispatch would not wait
+    # for rows 1..N-1.
+    assert set(runtime_graph.nodes[polish.id].dependencies) == {
+        draft.id,
+        draft_row1,
+    }
+    assert set(runtime_graph.nodes[polish_row1].dependencies) == {
+        draft.id,
+        draft_row1,
+    }
+
+
+def test_api_node_consuming_fanned_return_history_upstream_fails_closed() -> None:
+    """An API-mode LLMChatOp with ``return_history`` cannot consume a row-fanned
+    API upstream: API mode cannot reconstruct per-row history for a fanned
+    upstream, so the graph build fails closed."""
+    stock = input_placeholder("Stock")
+    draft = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+        return_history=True,
+    )
+    polish = LLMChatOp(
+        [OpMessage(role="user", content=draft)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", polish)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="cannot reconstruct per-row history"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_node_prefix_preserves_api_spec_on_row_fanned_nodes() -> None:
     """``with_node_prefix`` must carry a row-fanned API node's api_spec through
     unchanged, or the prefixed node dispatches with no URL/headers/body."""
@@ -1408,6 +1652,768 @@ def test_api_aggregate_node_feeding_multi_row_api_upstream_fails_closed() -> Non
 
     with pytest.raises(ValueError, match="aggregate column 'summary' references"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_aggregate_node_feeding_fanned_api_upstream_fails_closed() -> None:
+    """An aggregate API op whose ``aggregate_table`` references a fanned-out API
+    upstream must fail closed even when the input is single-row: the fanout is
+    driven by the upstream's literal rowwise column values, not the input row
+    count, so the static row-count estimate misses it. The aggregate branch
+    binds only the unsuffixed row-0 node, silently dropping every row but the
+    first, so the actual fanout (``dsl_to_runtime``) must be consulted."""
+    stock = input_placeholder("Stock")
+    api_up = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Summarize the table.")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[{"label": "summary", "node": api_up.id, "path": "text"}],
+    )
+    llm.inputs.append(api_up)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="aggregate column 'summary' references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_rowwise_node_feeding_fanned_api_upstream_fails_closed() -> None:
+    """A rowwise API op whose node-ref column references a fanned-out API
+    upstream must fail closed even when the input is single-row: the fanout is
+    driven by the upstream's literal rowwise column values, not the input row
+    count, so the static row-count estimate misses it. The rowwise branch binds
+    only the unsuffixed row-0 node, silently dropping every row but the first."""
+    stock = input_placeholder("Stock")
+    api_up = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "text"}],
+    )
+    llm.inputs.append(api_up)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="rowwise column 'Prior' references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_node_consuming_fanned_upstream_feeding_local_vlm_fails_closed() -> None:
+    """A local VLM consumer cannot consume a row-fanned API upstream: a VLM op
+    is always built as a local embedding + inference pair even when
+    ``config.api`` is set, so it is not an API task and cannot carry the
+    per-row alignment. The structural guard must key on the actual runtime task
+    type, not on ``config.api`` alone."""
+    stock = input_placeholder("Stock")
+    draft = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    relay = FormatOp("{prior}", prior=draft)
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content=relay)],
+        image_source=stock.id,
+        image_source_op=stock,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf", api=ApiConfig()),
+    )
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="fanned out into multiple row-aligned"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_node_consuming_local_rowwise_literal_upstream_fails_closed() -> None:
+    """An API-mode consumer cannot reference a local rowwise LLMChatOp whose
+    literal ``rowwise_columns`` produce multiple rows from a single runtime
+    node: the structural wiring binds only the unsuffixed output, silently
+    dropping every row but the first. The static row-count estimate must see
+    the rowwise columns, not just the message content."""
+    stock = input_placeholder("Stock")
+    local_rw = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    relay = FormatOp("{prior}", prior=local_rw)
+    api = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", api)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_aggregate_node_feeding_local_rowwise_literal_upstream_fails_closed() -> (
+    None
+):
+    """An aggregate API op whose ``aggregate_table`` references a local rowwise
+    LLMChatOp fanned by literal ``rowwise_columns`` must fail closed: the
+    upstream emits multiple rows from one runtime node, so the static row-count
+    estimate must see the rowwise columns."""
+    stock = input_placeholder("Stock")
+    local_rw = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Summarize the table.")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[
+            {"label": "summary", "node": local_rw.id, "path": "items.output"}
+        ],
+    )
+    llm.inputs.append(local_rw)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="aggregate column 'summary' references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_rowwise_node_feeding_local_rowwise_literal_upstream_fails_closed() -> None:
+    """A rowwise API op whose node-ref column references a local rowwise
+    LLMChatOp fanned by literal ``rowwise_columns`` must fail closed: the
+    upstream emits multiple rows from one runtime node, so the static row-count
+    estimate must see the rowwise columns."""
+    stock = input_placeholder("Stock")
+    local_rw = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[
+            {"label": "Prior", "node": local_rw.id, "path": "items.output"}
+        ],
+    )
+    llm.inputs.append(local_rw)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="rowwise column 'Prior' references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_embedding_op_consuming_fanned_api_upstream_fails_closed() -> None:
+    """An EmbeddingOp consuming a fanned API producer must fail closed: it binds
+    a single ``${node.path}`` reference to the unsuffixed row-0 node, silently
+    dropping every row but the first."""
+    stock = input_placeholder("Stock")
+    draft = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    emb = EmbeddingOp(content=draft, config=GenerationConfig(model="bge-m3"))
+    output = as_output("result", emb)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_image_generation_op_consuming_fanned_api_upstream_fails_closed() -> None:
+    """An ImageGenerationOp consuming a fanned API producer must fail closed: it
+    binds a single ``${node.path}`` reference to the unsuffixed row-0 node,
+    silently dropping every row but the first."""
+    stock = input_placeholder("Stock")
+    draft = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    relay = FormatOp("{ref0}", draft)
+    img = ImageGenerationOp(content=relay, config=GenerationConfig(model="sdxl"))
+    output = as_output("result", img)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_fanned_consumer_condition_remaps_to_matching_source_row() -> None:
+    """A condition on a fanned consumer whose ``node`` is a fanned source must
+    gate each consumer row against the matching source row, not against row 0 of
+    the source."""
+    stock = input_placeholder("Stock")
+    gate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    relay = FormatOp("{prior}", prior=gate)
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": gate.id, "expr": "gate == on"},
+    )
+    output = as_output("result", consumer)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    gate_rows = runtime_graph.dsl_to_runtime[gate.id]
+    consumer_rows = runtime_graph.dsl_to_runtime[consumer.id]
+    assert len(gate_rows) == 2
+    assert len(consumer_rows) == 2
+    for row_index, consumer_row in enumerate(consumer_rows):
+        assert runtime_graph.nodes[consumer_row].condition == {
+            "node": gate_rows[row_index],
+            "expr": "gate == on",
+        }
+
+
+def test_local_rowwise_node_feeding_fanned_api_upstream_fails_closed() -> None:
+    """A local rowwise LLMChatOp whose node-ref column references a fanned API
+    producer must fail closed: the local rowwise branch binds a single
+    ``node:`` reference to the unsuffixed row-0 node, silently dropping every
+    row but the first."""
+    stock = input_placeholder("Stock")
+    api_up = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    local_rw = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "text"}],
+    )
+    local_rw.inputs.append(api_up)
+    output = as_output("result", local_rw)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="rowwise column references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_local_aggregate_node_feeding_fanned_api_upstream_fails_closed() -> None:
+    """A local aggregate LLMChatOp whose ``aggregate_table`` references a fanned
+    API producer must fail closed: the local aggregate branch binds a single
+    ``node:`` reference to the unsuffixed row-0 node, silently dropping every
+    row but the first."""
+    stock = input_placeholder("Stock")
+    api_up = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    local_agg = LLMChatOp(
+        [OpMessage(role="user", content="Summarize the table.")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[{"label": "summary", "node": api_up.id, "path": "text"}],
+    )
+    local_agg.inputs.append(api_up)
+    output = as_output("result", local_agg)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="aggregate column references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_vlm_rowwise_column_feeding_fanned_api_upstream_fails_closed() -> None:
+    """A VLM rowwise column referencing a fanned API producer must fail closed:
+    the VLM rowwise branch binds a single ``node:`` reference to the unsuffixed
+    row-0 node, silently dropping every row but the first."""
+    stock = input_placeholder("Stock")
+    api_up = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="ignored")],
+        image_source=stock.id,
+        image_source_op=stock,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "text"}],
+    )
+    vision.inputs.append(api_up)
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="rowwise column references"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
+    """A DataRetrievalOp template param referencing a multi-row upstream must
+    fail closed: a retrieval param binds a single node reference, so wiring it
+    to the unsuffixed output would silently drop every row but the first."""
+    stock = input_placeholder("Stock")
+    local_rw = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE x = :p",
+            "params": [{"name": "p", "node": local_rw.id, "path": "items.output"}],
+        },
+        inputs=[local_rw],
+    )
+    output = as_output("result", retrieval)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_fanned_condition_cardinality_mismatch_fails_closed() -> None:
+    """A condition on a fanned consumer whose ``node`` is a fanned source must
+    fail closed when the consumer and source fan out to different row counts —
+    in either direction — rather than silently gating on the wrong source row
+    or escaping as an IndexError."""
+    stock = input_placeholder("Stock")
+
+    def build(source_rows: int, consumer_rows: int) -> None:
+        gate = LLMChatOp(
+            [OpMessage(role="user", content=stock)],
+            config=GenerationConfig(
+                model="meta-llama/Llama-3.1-8B-Instruct",
+                api=ApiConfig(),
+            ),
+            rowwise_template="Summarize {S}.",
+            rowwise_columns=[
+                {
+                    "label": "S",
+                    "data": {
+                        "type": "list",
+                        "items": [str(i) for i in range(source_rows)],
+                    },
+                }
+            ],
+        )
+        consumer = LLMChatOp(
+            [OpMessage(role="user", content=stock)],
+            config=GenerationConfig(
+                model="meta-llama/Llama-3.1-8B-Instruct",
+                api=ApiConfig(),
+            ),
+            rowwise_template="Summarize {Stock}.",
+            rowwise_columns=[
+                {
+                    "label": "Stock",
+                    "data": {
+                        "type": "list",
+                        "items": [str(i) for i in range(consumer_rows)],
+                    },
+                }
+            ],
+            condition={"node": gate.id, "expr": "gate == on"},
+        )
+        gate_out = as_output("gate_out", gate)
+        consumer_out = as_output("result", consumer)
+        compiled = Graph.from_ops([gate_out, consumer_out]).compile(Stock=["NVDA"])
+        RuntimeGraphBuilder().build(compiled)
+
+    # Source longer than consumer.
+    with pytest.raises(ValueError, match="fanned out into"):
+        build(source_rows=3, consumer_rows=2)
+    # Consumer longer than source.
+    with pytest.raises(ValueError, match="fanned out into"):
+        build(source_rows=2, consumer_rows=3)
+
+
+def test_one_row_consumer_of_fanned_source_fails_closed() -> None:
+    """A one-row API consumer conditioned on a two-row API source must fail
+    closed: the cardinality check must run for row 0 too, not only for rows
+    after the first. A one-row consumer is entirely row 0, so skipping the
+    check there would silently gate it on source row 0 only."""
+    stock = input_placeholder("Stock")
+    gate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": gate.id, "expr": "gate == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("gate_out", gate), as_output("result", consumer)]
+    ).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="fanned out into"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_condition_source_max_cardinality_across_messages() -> None:
+    """A condition source whose user messages have different input lengths must
+    fan out over the maximum cardinality across all messages (mirroring
+    ``_resolve_api_messages``), and a matching consumer's conditions must be
+    remapped per row. The static row-count fallback must not stop at the first
+    user message. The consumer is created before the source so the source is
+    not yet built when the consumer's condition is resolved, forcing the
+    static fallback."""
+    stock = input_placeholder("Stock")
+    topic = input_placeholder("Topic")
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=topic)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": "gate", "expr": "gate == on"},
+    )
+    gate = LLMChatOp(
+        [
+            OpMessage(role="user", content=stock),
+            OpMessage(role="user", content=topic),
+        ],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    consumer.condition = {"node": gate.id, "expr": "gate == on"}
+    compiled = Graph.from_ops(
+        [as_output("gate_out", gate), as_output("result", consumer)]
+    ).compile(Stock=["NVDA"], Topic=["x", "y"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    gate_rows = runtime_graph.dsl_to_runtime[gate.id]
+    consumer_rows = runtime_graph.dsl_to_runtime[consumer.id]
+    assert len(gate_rows) == 2
+    assert len(consumer_rows) == 2
+    for row_index, consumer_row in enumerate(consumer_rows):
+        assert runtime_graph.nodes[consumer_row].condition == {
+            "node": gate_rows[row_index],
+            "expr": "gate == on",
+        }
+
+
+def test_condition_on_local_rowwise_source_broadcasts_single_node() -> None:
+    """A condition on a local rowwise producer must reference the producer's
+    single runtime node for every consumer row, not a synthesized
+    ``__rowN`` node: a local rowwise op emits multiple items from one node, so
+    it has no per-row nodes to gate on."""
+    stock = input_placeholder("Stock")
+    local_rw = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {
+                "label": "Stock",
+                "data": {"type": "list", "items": ["x", "y"]},
+            }
+        ],
+        condition={"node": local_rw.id, "expr": "gate == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("gate_out", local_rw), as_output("result", consumer)]
+    ).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (local_row,) = runtime_graph.dsl_to_runtime[local_rw.id]
+    for consumer_row in runtime_graph.dsl_to_runtime[consumer.id]:
+        assert runtime_graph.nodes[consumer_row].condition == {
+            "node": local_row,
+            "expr": "gate == on",
+        }
+
+
+def test_condition_source_fans_over_non_user_role_message() -> None:
+    """A condition source whose fanout comes from a non-user-role message (here
+    a system message whose content is a multi-row InputOp) must fan out over
+    that message's cardinality, mirroring ``_resolve_api_messages`` which
+    iterates every message role. A one-row consumer conditioned on such a
+    two-row source must fail closed rather than silently gate on source row 0.
+    A user-role-only row count would miss this and pass against the broken
+    code, so the source's fanout must come from a non-user message."""
+    sys_in = input_placeholder("Sys")
+    src = LLMChatOp(
+        [
+            OpMessage(role="system", content=sys_in),
+            OpMessage(role="user", content="hi"),
+        ],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content="hi")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": src.id, "expr": "src == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("src_out", src), as_output("result", consumer)]
+    ).compile(Sys=["a", "b"])
+
+    with pytest.raises(ValueError, match="fanned out into"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_local_consumer_of_fanned_source_fails_closed() -> None:
+    """A local (non-API) consumer conditioned on a fanned API source must fail
+    closed: the fail-closed condition invariant applies to local consumers too,
+    not just API consumers. A single-node local consumer gated on a two-row
+    source would otherwise gate only on source row 0."""
+    stock = input_placeholder("Stock")
+    gate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    local = LLMChatOp(
+        [OpMessage(role="user", content="hi")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        condition={"node": gate.id, "expr": "gate == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("gate_out", gate), as_output("result", local)]
+    ).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="fanned out into"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_local_rowwise_consumer_of_fanned_source_fails_closed() -> None:
+    """A local rowwise consumer conditioned on a fanned API source must fail
+    closed, matching the local generic consumer."""
+    stock = input_placeholder("Stock")
+    gate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+    )
+    local_rw = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["x"]}}],
+        condition={"node": gate.id, "expr": "gate == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("gate_out", gate), as_output("result", local_rw)]
+    ).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="fanned out into"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_condition_on_unfanned_vlm_source_builds() -> None:
+    """A condition on an unfanned VLM source must build successfully: a VLM
+    maps to ``[<id>_embedding, <id>]`` — two implementation stages of one
+    logical op, not fanned rows — so it must not be treated as a two-row
+    source. The consumer's condition references the VLM's logical node."""
+    stock = input_placeholder("Stock")
+    vlm = LLMVisionOp(
+        [OpMessage(role="user", content="Describe.")],
+        image_source=stock.id,
+        image_source_op=stock,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+    )
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content="hi")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": vlm.id, "expr": "vlm == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("vlm_out", vlm), as_output("result", consumer)]
+    ).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    # The VLM is a single logical node; the consumer's condition references it.
+    (consumer_row,) = runtime_graph.dsl_to_runtime[consumer.id]
+    assert runtime_graph.nodes[consumer_row].condition == {
+        "node": vlm.id,
+        "expr": "vlm == on",
+    }
+
+
+def test_vlm_through_format_op_feeds_api_llm() -> None:
+    """A VLM -> FormatOp -> API-LLM chain must build: the structural fanout
+    check must use the shape-aware helper so a VLM (which maps to
+    ``[<id>_embedding, <id>]``, two implementation stages) is not falsely
+    treated as a fanned source."""
+    stock = input_placeholder("Stock")
+    vlm = LLMVisionOp(
+        [OpMessage(role="user", content="Describe.")],
+        image_source=stock.id,
+        image_source_op=stock,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+    )
+    relay = FormatOp("{prior}", prior=vlm)
+    api = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", api)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert runtime_graph.nodes[api.id].task_type == "api"
+
+
+def test_condition_source_fanned_through_lambda_fails_closed() -> None:
+    """A one-row consumer conditioned on a source whose API fanout comes through
+    a LambdaOp over a multi-row input must fail closed: the static row-count
+    fallback must count a LambdaOp's inputs, so the consumer is not left gated
+    on source row 0 while the source subsequently builds multiple rows."""
+    stock = input_placeholder("Stock")
+
+    def _shout(inputs: tuple[str | list[Message], ...]) -> str:
+        (text,) = inputs
+        return str(text)
+
+    lam = LambdaOp([stock], fn=_shout)
+    src = LLMChatOp(
+        [OpMessage(role="user", content=lam)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content="hi")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": src.id, "expr": "src == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("src_out", src), as_output("result", consumer)]
+    ).compile(Stock=["a", "b"])
+
+    with pytest.raises(ValueError, match="fanned out into"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_node_consuming_agent_retrieval_uses_table_path() -> None:
+    """An API LLM consuming an agent-mode DataRetrievalOp must wire the
+    structural reference to ``items.table`` (the agent executor's declared
+    output), not ``items.output``."""
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
+        inputs=[stock],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=retrieval)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    node = runtime_graph.nodes[llm.id]
+    assert node.api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{retrieval.id}.items.0.table}}"}
+    ]
 
 
 def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
