@@ -956,6 +956,35 @@ def test_api_ancestor_return_history_runtime_prior_prompt_fails_closed() -> None
         RuntimeGraphBuilder().build(compiled)
 
 
+def test_api_ancestor_return_history_multi_message_prior_fails_closed() -> None:
+    """An API-backed ancestor with ``return_history`` whose prior prompt is
+    more than a single user message must fail closed: API mode cannot replay
+    system messages or earlier turns with their roles, so the history cannot
+    be reconstructed faithfully like the local ``metadata.prompt`` path."""
+    sys_in = input_placeholder("Sys")
+    stock = input_placeholder("Stock")
+    api_node = LLMChatOp(
+        [
+            OpMessage(role="system", content=sys_in),
+            OpMessage(role="user", content=stock),
+        ],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        return_history=True,
+    )
+    downstream = LLMChatOp(
+        [OpMessage(role="user", content=api_node)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", downstream)
+    compiled = Graph.from_ops([output]).compile(Sys=["sys1"], Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="single user message"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_api_scheme_less_url_raises_clean_error() -> None:
     with pytest.raises(ValueError, match="no host"):
         _build_api_graph(api=ApiConfig(url="lum.id/llm/v1/chat/completions"))

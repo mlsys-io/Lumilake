@@ -1415,12 +1415,14 @@ class RuntimeGraphBuilder:
         case, because API mode cannot reconstruct the history at dispatch
         time."""
         messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
-        user_msgs = [m for m in messages if m.role == "user"]
-        if not user_msgs:
+        if len(messages) != 1 or messages[0].role != "user":
             raise ValueError(
-                f"LLMChatOp '{op.id}' return_history needs a user message."
+                f"LLMChatOp '{op.id}' return_history prior prompt must be a"
+                " single user message; API mode cannot replay system messages"
+                " or earlier turns with their roles, so this shape is not"
+                " supported."
             )
-        content = user_msgs[-1].content
+        content = messages[0].content
         if isinstance(content, str):
             return [content]
         if isinstance(content, InputOp):
