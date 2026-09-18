@@ -2170,6 +2170,43 @@ def test_condition_on_local_rowwise_source_broadcasts_single_node() -> None:
         }
 
 
+def test_condition_source_rowwise_node_ref_uses_runtime_mapping() -> None:
+    """A condition on a rowwise API source whose ``node:`` column references a
+    multi-row InputOp must use the runtime mapping (one node), not the static
+    count (N rows): the builder emits one node for a node-ref column, so the
+    static fallback would remap the condition onto a nonexistent ``__row1``."""
+    stock = input_placeholder("Stock")
+    gate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": "items.output"}],
+    )
+    relay = FormatOp("{prior}", prior=gate)
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=relay)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        condition={"node": gate.id, "expr": "gate == on"},
+    )
+    compiled = Graph.from_ops(
+        [as_output("gate_out", gate), as_output("result", consumer)]
+    ).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (gate_row,) = runtime_graph.dsl_to_runtime[gate.id]
+    (consumer_row,) = runtime_graph.dsl_to_runtime[consumer.id]
+    assert runtime_graph.nodes[consumer_row].condition == {
+        "node": gate_row,
+        "expr": "gate == on",
+    }
+
+
 def test_condition_source_fans_over_non_user_role_message() -> None:
     """A condition source whose fanout comes from a non-user-role message (a
     system message with a multi-row InputOp) must fan out over that message."""

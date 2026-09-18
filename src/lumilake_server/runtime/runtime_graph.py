@@ -493,6 +493,7 @@ class RuntimeGraphBuilder:
                     ),
                     graph_dict=graph_dict,
                     inputs_dict=inputs_dict,
+                    dsl_to_runtime=dsl_to_runtime,
                 )
                 mapping = [runtime_op.node_id for runtime_op in runtime_ops]
                 output_node_ids = mapping
