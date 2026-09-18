@@ -1361,7 +1361,7 @@ def _extract_rowwise_columns(
                 {
                     "label": label,
                     "node": op_ids[node_name],
-                    "path": "items.content",
+                    "path": retrieval_items_path("s3"),
                 }
             )
         elif node_type == N8N_CHAT_TRIGGER:
