@@ -10,6 +10,8 @@ from lumilake_server.parser import parse_n8n_payload
 from lumilake_server.parser.n8n import (
     N8N_AGENT_NODE,
     N8N_CHAT_TRIGGER,
+    N8N_POSTGRES_NODE,
+    _build_aggregate_prompt_content,
     _extract_rowwise_columns,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -96,6 +98,23 @@ def test_rowwise_agent_reference_uses_table_path() -> None:
     assert any(
         col.get("node") == "op_agent" and col.get("path") == "items.table"
         for col in columns
+    )
+
+
+def test_aggregate_upstream_sql_reference_uses_table_path() -> None:
+    node_map = {
+        "SQL": {"type": N8N_POSTGRES_NODE},
+    }
+    op_ids = {"Main": "op_main"}
+    prompt = (
+        "Build a digest.\n" "```table\n" "summary: {{ $('SQL').item.synopsis }}\n" "```"
+    )
+    _, table_spec = _build_aggregate_prompt_content(
+        prompt, op_ids, upstream_main="Main", node_map=node_map
+    )
+    assert any(
+        col.get("node") == "op_main" and col.get("path") == "items.table.synopsis"
+        for col in table_spec
     )
 
 

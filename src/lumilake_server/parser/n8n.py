@@ -1353,7 +1353,7 @@ def _extract_rowwise_columns(
                 {
                     "label": label,
                     "node": op_ids[node_name],
-                    "path": f"items.table.{column}",
+                    "path": f"{retrieval_items_path('sql')}.{column}",
                 }
             )
         elif node_type == N8N_S3_NODE:
@@ -1445,7 +1445,9 @@ def _build_aggregate_prompt_content(
             ref_node = node_map.get(ref_node_name)
             ref_type = ref_node.get("type") if isinstance(ref_node, dict) else None
             if ref_type == N8N_POSTGRES_NODE:
-                item_path = f"items.table.{_path_to_label(path) or column}"
+                item_path = (
+                    f"{retrieval_items_path('sql')}.{_path_to_label(path) or column}"
+                )
             elif ref_type == N8N_AGENT_NODE:
                 item_path = retrieval_items_path("agent")
             else:
@@ -1463,11 +1465,12 @@ def _build_aggregate_prompt_content(
         if ref_node and ref_node.get("type") == N8N_POSTGRES_NODE and upstream_main:
             upstream_id = op_ids.get(upstream_main)
             if upstream_id:
+                suffix = _path_to_label(path) or column
                 table_spec.append(
                     {
                         "label": column,
                         "node": upstream_id,
-                        "path": f"items.table.{_path_to_label(path) or column}",
+                        "path": f"{retrieval_items_path('sql')}.{suffix}",
                     }
                 )
 
