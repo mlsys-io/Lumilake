@@ -157,3 +157,17 @@ def test_image_generation_digest_uses_row_summary_aggregate_table(
     assert summary_col["path"] == "items.output"
     assert summary_col["node"] == row_summary["_id"]
     assert row_summary["_id"] in digest_op["_inputs"]
+
+
+def test_referenced_op_path_agent_uses_table() -> None:
+    from lumilake_server.parser.n8n import (
+        N8N_AGENT_NODE,
+        N8N_POSTGRES_NODE,
+        N8N_S3_NODE,
+        _referenced_op_path,
+    )
+
+    assert _referenced_op_path(N8N_AGENT_NODE, None) == "items.table"
+    assert _referenced_op_path(N8N_POSTGRES_NODE, "symbol") == "items.table.symbol"
+    assert _referenced_op_path(N8N_S3_NODE, None) == "items.content"
+    assert _referenced_op_path(None, None) == "items.output"
