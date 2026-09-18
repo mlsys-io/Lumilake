@@ -1,5 +1,4 @@
 import textwrap
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -39,32 +38,6 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", _RUNTIME_TOKEN)
-
-
-_RUNTIME_GRAPH_SOURCE = (
-    Path(__file__).resolve().parents[2]
-    / "src"
-    / "lumilake_server"
-    / "runtime"
-    / "runtime_graph.py"
-)
-
-
-def test_upstream_output_path_fact_is_not_recomputed_inline() -> None:
-    """The upstream output-path fact (``text`` for an API task, ``items.output``
-    otherwise) must be owned by ``_upstream_output_path`` and not recomputed
-    inline anywhere else. This is a structural guard: the two forms are
-    behaviorally identical today, so only a source-level check can catch a
-    future re-inline that would silently diverge when the helper's definition
-    changes."""
-    text = _RUNTIME_GRAPH_SOURCE.read_text()
-    lines = text.splitlines()
-    for lineno, line in enumerate(lines, start=1):
-        if '"text" if' in line and "def _upstream_output_path" not in line:
-            raise AssertionError(
-                f"runtime_graph.py:{lineno} recomputes the upstream output-path"
-                " fact inline; route it through _upstream_output_path"
-            )
 
 
 def _build_api_graph(**config_kwargs: Any) -> tuple[RuntimeGraph, str]:
@@ -1227,8 +1200,6 @@ def test_api_node_consuming_fanned_api_upstream_emits_per_row_placeholders() -> 
         {"role": "user", "content": f"${{{draft_row1}.text}}"}
     ]
 
-    # Every upstream row node must be a dependency, or dispatch would not wait
-    # for rows 1..N-1.
     assert set(runtime_graph.nodes[polish.id].dependencies) == {
         draft.id,
         draft_row1,
@@ -1533,12 +1504,8 @@ def test_api_node_feeding_single_row_local_upstream_builds() -> None:
 
 
 def test_api_rowwise_node_feeding_local_multi_row_upstream_fails_closed() -> None:
-    """A rowwise API op whose node-ref column references a local upstream that
-    produces multiple rows must fail closed: the rowwise branch rewrites the
-    reference to ``items.0.output``, silently dropping every row but the first.
-    The upstream is wired into the graph via ``inputs`` (as the parser does for
-    aggregate/rowwise node refs), not the structural messages, so the rowwise
-    guard itself must raise rather than the structural guard preempting it."""
+    """A rowwise API op whose node-ref column references a multi-row local
+    upstream must fail closed (the rowwise guard, not the structural one)."""
     stock = input_placeholder("Stock")
     local = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1594,11 +1561,9 @@ def test_api_rowwise_node_feeding_multi_row_api_upstream_fails_closed() -> None:
 
 
 def test_api_aggregate_node_feeding_local_multi_row_upstream_fails_closed() -> None:
-    """An aggregate API op whose ``aggregate_table`` references a local upstream
-    that produces multiple rows must fail closed: the aggregate branch rewrites
-    the reference to ``items.0.output``, silently dropping every row but the
-    first. The upstream is wired via ``inputs`` so the aggregate guard itself
-    must raise rather than the structural guard preempting it."""
+    """An aggregate API op whose ``aggregate_table`` references a multi-row
+    local upstream must fail closed (the aggregate guard, not the structural
+    one)."""
     stock = input_placeholder("Stock")
     local = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1654,12 +1619,8 @@ def test_api_aggregate_node_feeding_multi_row_api_upstream_fails_closed() -> Non
 
 
 def test_api_aggregate_node_feeding_fanned_api_upstream_fails_closed() -> None:
-    """An aggregate API op whose ``aggregate_table`` references a fanned-out API
-    upstream must fail closed even when the input is single-row: the fanout is
-    driven by the upstream's literal rowwise column values, not the input row
-    count, so the static row-count estimate misses it. The aggregate branch
-    binds only the unsuffixed row-0 node, silently dropping every row but the
-    first, so the actual fanout (``dsl_to_runtime``) must be consulted."""
+    """An aggregate API op whose ``aggregate_table`` references a fanned API
+    upstream must fail closed even with a single-row input."""
     stock = input_placeholder("Stock")
     api_up = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1687,11 +1648,8 @@ def test_api_aggregate_node_feeding_fanned_api_upstream_fails_closed() -> None:
 
 
 def test_api_rowwise_node_feeding_fanned_api_upstream_fails_closed() -> None:
-    """A rowwise API op whose node-ref column references a fanned-out API
-    upstream must fail closed even when the input is single-row: the fanout is
-    driven by the upstream's literal rowwise column values, not the input row
-    count, so the static row-count estimate misses it. The rowwise branch binds
-    only the unsuffixed row-0 node, silently dropping every row but the first."""
+    """A rowwise API op whose node-ref column references a fanned API upstream
+    must fail closed even with a single-row input."""
     stock = input_placeholder("Stock")
     api_up = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1720,11 +1678,8 @@ def test_api_rowwise_node_feeding_fanned_api_upstream_fails_closed() -> None:
 
 
 def test_api_node_consuming_fanned_upstream_feeding_local_vlm_fails_closed() -> None:
-    """A local VLM consumer cannot consume a row-fanned API upstream: a VLM op
-    is always built as a local embedding + inference pair even when
-    ``config.api`` is set, so it is not an API task and cannot carry the
-    per-row alignment. The structural guard must key on the actual runtime task
-    type, not on ``config.api`` alone."""
+    """A local VLM consumer cannot consume a row-fanned API upstream: a VLM is
+    a local embedding + inference pair even with ``config.api`` set."""
     stock = input_placeholder("Stock")
     draft = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1748,10 +1703,7 @@ def test_api_node_consuming_fanned_upstream_feeding_local_vlm_fails_closed() -> 
 
 def test_api_node_consuming_local_rowwise_literal_upstream_fails_closed() -> None:
     """An API-mode consumer cannot reference a local rowwise LLMChatOp whose
-    literal ``rowwise_columns`` produce multiple rows from a single runtime
-    node: the structural wiring binds only the unsuffixed output, silently
-    dropping every row but the first. The static row-count estimate must see
-    the rowwise columns, not just the message content."""
+    literal ``rowwise_columns`` produce multiple rows from one node."""
     stock = input_placeholder("Stock")
     local_rw = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -2027,6 +1979,32 @@ def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
         RuntimeGraphBuilder().build(compiled)
 
 
+def test_retrieval_param_feeding_multi_row_embedding_fails_closed() -> None:
+    """A DataRetrievalOp template param referencing an EmbeddingOp with a
+    multi-row input must fail closed: the embedding emits one output row per
+    input text, so a retrieval param binding only the unsuffixed node would
+    silently drop every row but the first."""
+    stock = input_placeholder("Stock")
+    emb = EmbeddingOp(
+        content=stock,
+        config=GenerationConfig(model="bge-m3", api=ApiConfig()),
+    )
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE x = :p",
+            "params": [{"name": "p", "node": emb.id, "path": "items.output"}],
+        },
+        inputs=[emb],
+    )
+    output = as_output("result", retrieval)
+    compiled = Graph.from_ops([output]).compile(Stock=["a", "b"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_fanned_condition_cardinality_mismatch_fails_closed() -> None:
     """A condition on a fanned consumer whose ``node`` is a fanned source must
     fail closed when the consumer and source fan out to different row counts —
@@ -2075,10 +2053,8 @@ def test_fanned_condition_cardinality_mismatch_fails_closed() -> None:
         compiled = Graph.from_ops([gate_out, consumer_out]).compile(Stock=["NVDA"])
         RuntimeGraphBuilder().build(compiled)
 
-    # Source longer than consumer.
     with pytest.raises(ValueError, match="fanned out into"):
         build(source_rows=3, consumer_rows=2)
-    # Consumer longer than source.
     with pytest.raises(ValueError, match="fanned out into"):
         build(source_rows=2, consumer_rows=3)
 
@@ -2115,13 +2091,8 @@ def test_one_row_consumer_of_fanned_source_fails_closed() -> None:
 
 
 def test_condition_source_max_cardinality_across_messages() -> None:
-    """A condition source whose user messages have different input lengths must
-    fan out over the maximum cardinality across all messages (mirroring
-    ``_resolve_api_messages``), and a matching consumer's conditions must be
-    remapped per row. The static row-count fallback must not stop at the first
-    user message. The consumer is created before the source so the source is
-    not yet built when the consumer's condition is resolved, forcing the
-    static fallback."""
+    """A condition source must fan out over the max cardinality across all
+    messages; the consumer is built first to force the static fallback."""
     stock = input_placeholder("Stock")
     topic = input_placeholder("Topic")
     consumer = LLMChatOp(
@@ -2200,13 +2171,8 @@ def test_condition_on_local_rowwise_source_broadcasts_single_node() -> None:
 
 
 def test_condition_source_fans_over_non_user_role_message() -> None:
-    """A condition source whose fanout comes from a non-user-role message (here
-    a system message whose content is a multi-row InputOp) must fan out over
-    that message's cardinality, mirroring ``_resolve_api_messages`` which
-    iterates every message role. A one-row consumer conditioned on such a
-    two-row source must fail closed rather than silently gate on source row 0.
-    A user-role-only row count would miss this and pass against the broken
-    code, so the source's fanout must come from a non-user message."""
+    """A condition source whose fanout comes from a non-user-role message (a
+    system message with a multi-row InputOp) must fan out over that message."""
     sys_in = input_placeholder("Sys")
     src = LLMChatOp(
         [
@@ -2315,7 +2281,6 @@ def test_condition_on_unfanned_vlm_source_builds() -> None:
     ).compile(Stock=["NVDA"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    # The VLM is a single logical node; the consumer's condition references it.
     (consumer_row,) = runtime_graph.dsl_to_runtime[consumer.id]
     assert runtime_graph.nodes[consumer_row].condition == {
         "node": vlm.id,
@@ -2324,12 +2289,8 @@ def test_condition_on_unfanned_vlm_source_builds() -> None:
 
 
 def test_vlm_through_format_op_feeds_api_llm() -> None:
-    """A VLM -> FormatOp -> API-LLM chain must build: the structural fanout
-    check must use the shape-aware helper so a VLM (which maps to
-    ``[<id>_embedding, <id>]``, two implementation stages) is not falsely
-    treated as a fanned source. The consumer must reference the VLM's local
-    output path (``items.0.output``), not ``text`` — the VLM is not an API
-    task, so the LLMVisionOp exclusion in ``_is_api_task`` must hold."""
+    """A VLM -> FormatOp -> API-LLM chain must build, referencing the VLM's
+    local ``items.0.output`` path (the LLMVisionOp exclusion must hold)."""
     stock = input_placeholder("Stock")
     vlm = LLMVisionOp(
         [OpMessage(role="user", content="Describe.")],

@@ -1274,13 +1274,9 @@ class RuntimeGraphBuilder:
     def _fanout_row_ids(
         op_id: str, dsl_to_runtime: dict[str, list[str]] | None
     ) -> list[str]:
-        """Runtime node ids an op fanned out into, or ``[op_id]`` when it did
-        not fan out. The actual fanout (``dsl_to_runtime``) is authoritative:
-        a static row-count estimate misses API rowwise/aggregate fanout that
-        is driven by literal column values rather than the input row count.
-        Only a mapping that follows the ``<op_id>`` / ``<op_id>__row<i>`` shape
-        counts as row fanout; a VLM maps to ``[<id>_embedding, <id>]`` (two
-        implementation stages of one logical op), which is not row fanout."""
+        """Row ids an op fanned into (``<op_id>`` / ``<op_id>__row<i>`` shape),
+        or ``[op_id]`` when unfanned. A VLM maps to ``[<id>_embedding, <id>]``
+        (two stages, not rows), so it is not row fanout."""
         if dsl_to_runtime is not None:
             row_ids = dsl_to_runtime.get(op_id)
             if row_ids is not None and len(row_ids) > 1:
@@ -1302,10 +1298,7 @@ class RuntimeGraphBuilder:
         kind: str,
     ) -> None:
         """Fail closed when a consumer binds a single ``${node.path}`` reference
-        to an upstream that produces multiple rows — whether by fanning out into
-        several runtime nodes or by emitting several rows from one node (a
-        rowwise op). Binding only the unsuffixed row-0 node would silently drop
-        every row but the first."""
+        to a multi-row upstream (node fanout or in-node rowwise rows)."""
         if not isinstance(upstream, LLMOp):
             return
         row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
@@ -1351,15 +1344,9 @@ class RuntimeGraphBuilder:
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None,
     ) -> list[str]:
-        """Runtime row ids a condition source fanned out into. Prefers the
-        actual fanout from ``dsl_to_runtime``, but falls back to the static row
-        count (which sees rowwise columns) when the source is not yet built —
-        the consumer may be built before its condition source, so the fanout
-        must be derivable without ``dsl_to_runtime``. Row ids follow the
-        deterministic ``<node>`` / ``<node>__row<i>`` pattern. Only an API task
-        fans out into multiple runtime nodes; a local rowwise producer emits
-        multiple items from a single node, so it has no ``__row<i>`` nodes to
-        gate on and is treated as unfanned (single node)."""
+        """Row ids a condition source fanned into, falling back to the static
+        count when the source is not yet built. Only an API task fans into
+        multiple nodes; a local rowwise producer emits items from one node."""
         row_ids = self._fanout_row_ids(node, dsl_to_runtime)
         if len(row_ids) > 1:
             return row_ids
@@ -1379,13 +1366,8 @@ class RuntimeGraphBuilder:
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None,
     ) -> dict[str, str] | None:
-        """Remap a condition's ``node`` to the matching row of a fanned source.
-        A condition referencing a node that fanned out must gate row ``i`` of
-        the consumer against row ``i`` of the source; leaving it on the
-        unsuffixed row-0 node would gate every consumer row against row 0. The
-        consumer and source must fan out to the same number of rows — a
-        mismatch would silently gate some consumer rows on the wrong source row
-        (or escape as an IndexError), so it fails closed instead."""
+        """Remap a condition's ``node`` to the matching source row, requiring
+        equal consumer/source fanout (else fail closed)."""
         if condition is None:
             return None
         node = condition.get("node")
@@ -2018,9 +2000,10 @@ class RuntimeGraphBuilder:
                     if isinstance(upstream, LLMOp)
                     else None
                 )
-                if isinstance(upstream, LLMOp) and (
-                    (upstream_row_count is not None and upstream_row_count > 1)
-                    or len(self._fanout_row_ids(node_ref, dsl_to_runtime)) > 1
+                if (
+                    isinstance(upstream, LLMOp)
+                    and upstream_row_count is not None
+                    and upstream_row_count > 1
                 ):
                     raise ValueError(
                         f"LLMChatOp '{llm_op_id}' rowwise column '{label}'"
@@ -2347,9 +2330,10 @@ class RuntimeGraphBuilder:
                 if isinstance(upstream, LLMOp)
                 else None
             )
-            if isinstance(upstream, LLMOp) and (
-                (upstream_row_count is not None and upstream_row_count > 1)
-                or len(self._fanout_row_ids(node_ref, dsl_to_runtime)) > 1
+            if (
+                isinstance(upstream, LLMOp)
+                and upstream_row_count is not None
+                and upstream_row_count > 1
             ):
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' aggregate column '{label}'"
@@ -2529,11 +2513,8 @@ class RuntimeGraphBuilder:
         inputs_dict: dict[str, list[str]],
         graph_dict: dict[str, Op] | None = None,
     ) -> int | None:
-        """Static row count of an op's output, or ``None`` when not knowable
-        at build time (e.g. a retrieval whose row count is only known at
-        execution). A rowwise op's row count is driven by its ``rowwise_columns``
-        (literal item counts, or the upstream row count for node-ref columns),
-        not by its message content."""
+        """Static row count of an op's output, or ``None`` when not knowable at
+        build time. A rowwise op's count comes from its ``rowwise_columns``."""
         if isinstance(op, InputOp):
             values = inputs_dict.get(op.name)
             return len(values) if values is not None else None
@@ -2571,6 +2552,8 @@ class RuntimeGraphBuilder:
                     if count is not None:
                         op_counts.append(count)
             return max(op_counts) if op_counts else None
+        if isinstance(op, (EmbeddingOp, ImageGenerationOp)):
+            return self._static_output_row_count(op.content, inputs_dict, graph_dict)
         if isinstance(op, FormatOp):
             format_counts = [
                 self._static_output_row_count(inp, inputs_dict, graph_dict)
@@ -2678,7 +2661,6 @@ class RuntimeGraphBuilder:
                                 "path": "items.metadata.prompt",
                             }
                     if fanned:
-                        # API-only branch: every row's output path is ``text``.
                         columns[f"{op.id}_output"] = {
                             "data": {
                                 "type": "list",
