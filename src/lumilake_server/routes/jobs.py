@@ -573,6 +573,18 @@ class JobStatusPayload(BaseModel):
         default=None,
         description="Error message, if any.",
     )
+    parent_job_id: str | None = Field(
+        default=None,
+        description=(
+            "Job id of the parent dynamic run this job is one round of, if any."
+        ),
+    )
+    child_job_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Job ids of the rounds this dynamic run has created so far, in order."
+        ),
+    )
 
 
 class JobStatusResponse(BaseModel):

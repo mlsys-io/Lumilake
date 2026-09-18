@@ -263,6 +263,7 @@ class LumilakeServerConfig:
         queue_quantums: dict[Priority, int] | None = None,
         starvation_limit: int = envs.LUMILAKE_STARVATION_LIMIT,
         poll_interval_seconds: float = envs.LUMILAKE_POLL_INTERVAL_SECONDS,
+        capacity_aware_selection: bool = envs.LUMILAKE_CAPACITY_AWARE_SELECTION,
     ) -> None:
         self.is_local = is_local
         """Whether to use a local Lumilake server."""
@@ -287,6 +288,8 @@ class LumilakeServerConfig:
         """Number of candidate misses before forcing selection."""
         self.poll_interval_seconds = poll_interval_seconds
         """Bounded wait for capacity release / error-retry backoff."""
+        self.capacity_aware_selection = capacity_aware_selection
+        """Whether selection filters by free capacity (rollback lever)."""
 
         if is_local:
             self._host = self._port = None
@@ -777,7 +780,8 @@ class LumilakeServer:
                 await self._maybe_wait_for_batch_accumulation(free)
                 select_start = time.perf_counter()
                 reservation = await self.job_manager.reserve_batch(
-                    self.config.batch_size, capacity=free
+                    self.config.batch_size,
+                    capacity=free if self.config.capacity_aware_selection else None,
                 )
                 select_elapsed = time.perf_counter() - select_start
                 if reservation is None:

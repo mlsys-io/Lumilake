@@ -516,7 +516,6 @@ async def test_scheduler_does_not_spin_when_no_eligible_capacity(
     reserve_calls_at_wait = server.job_manager.reserve_calls
     await asyncio.sleep(0.01)
     assert server.job_manager.reserve_calls == reserve_calls_at_wait
-
     # The loop is genuinely suspended in the capacity wait (release is never
     # set), so cancellation must be deliverable.
     scheduler_task.cancel()
@@ -524,6 +523,82 @@ async def test_scheduler_does_not_spin_when_no_eligible_capacity(
         await scheduler_task
     except asyncio.CancelledError:
         pass
+
+
+class _CapacityRecordingJobManager:
+    """Records the capacity argument passed to each reserve_batch call."""
+
+    def __init__(self) -> None:
+        self.capacities: list[Any] = []
+        self._reserve_calls = 0
+
+    async def wait_for_work(self) -> None:
+        if self._reserve_calls >= 1:
+            raise asyncio.CancelledError
+
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
+        self._reserve_calls += 1
+        self.capacities.append(capacity)
+        selection = SimpleNamespace(
+            config=SimpleNamespace(hardware_requirements=None),
+            workflows=[SimpleNamespace(request_id="req", id="wf")],
+            runtime_graphs={},
+            clustering_seconds=0.0,
+            name="batch",
+        )
+        return SimpleNamespace(selection=selection)
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        return
+
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
+        return
+
+
+async def _run_capacity_recording_loop(
+    server: Any, job_manager: _CapacityRecordingJobManager
+) -> None:
+    server.job_manager = cast(Any, job_manager)
+
+    async def _no_accumulation_wait(free: Any = None) -> None:
+        return
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        return
+
+    _patch_capacity(server, ["cpu-0"], [])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_selection_flag_controls_capacity_passed(
+    server_factory,
+) -> None:
+    """LUMILAKE_CAPACITY_AWARE_SELECTION gates whether reserve_batch sees
+    capacity. On, selection is capacity-filtered; off, it is capacity-blind."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+
+    on_manager = _CapacityRecordingJobManager()
+    server.config.capacity_aware_selection = True
+    await _run_capacity_recording_loop(server, on_manager)
+    assert len(on_manager.capacities) == 1
+    assert on_manager.capacities[0] is not None
+
+    # The noop run never releases the claimed worker; reset busy state so the
+    # second loop sees idle capacity again.
+    server._busy_workers.clear()
+
+    off_manager = _CapacityRecordingJobManager()
+    server.config.capacity_aware_selection = False
+    await _run_capacity_recording_loop(server, off_manager)
+    assert len(off_manager.capacities) == 1
+    assert off_manager.capacities[0] is None
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from lumilake_server.schemas.progress import (
     ProgressDetails,
     ProgressStep,
 )
-from lumilake_server.schemas.worker import WorkerInfo
+from lumilake_server.schemas.worker import WorkerInfo, WorkerStatus
 
 __all__ = [
     "BatchProgress",
@@ -16,4 +16,5 @@ __all__ = [
     "ProgressStep",
     "S3Location",
     "WorkerInfo",
+    "WorkerStatus",
 ]

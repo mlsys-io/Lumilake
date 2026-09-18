@@ -411,6 +411,58 @@ async def test_dynamic_child_carries_chain_lineage(
 
 
 @pytest.mark.anyio
+async def test_dynamic_lineage_exposed_on_job_status(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """The job status API exposes dynamic lineage: the parent lists its rounds
+    in order, each child names the parent, and each child is fetchable by id
+    with its own timestamps."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
+    second_plan["ops"][0]["id"] = "q2"
+    fake_server.plans = [_SUBGRAPH_PLAN, second_plan, {"next": "STOP"}]
+    await _run_background(app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        parent_resp = await client.get(
+            f"/jobs/{job_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+    assert parent_resp.status_code == 200, parent_resp.text
+    parent = parent_resp.json()["data"]
+    # The parent is not a round of anything, and lists its rounds in order.
+    assert parent["parent_job_id"] is None
+    child_ids = parent["child_job_ids"]
+    assert len(child_ids) == 3
+    assert child_ids == list(job_routes.jobs[job_id].child_job_ids)
+
+    for child_id in child_ids:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            child_resp = await client.get(
+                f"/jobs/{child_id}",
+                headers={"Authorization": "Bearer token"},
+            )
+        assert child_resp.status_code == 200, child_resp.text
+        child = child_resp.json()["data"]
+        assert child["parent_job_id"] == job_id
+        assert child["child_job_ids"] == []
+        # Each child carries its own timestamps.
+        assert child["submitted_at"]
+        assert child["started_at"] or child["finished_at"]
+
+
+@pytest.mark.anyio
 async def test_dynamic_cancel_propagates_to_inflight_child(
     app: FastAPI, job_routes: Any, wait_for_inflight_child: Any
 ) -> None:
