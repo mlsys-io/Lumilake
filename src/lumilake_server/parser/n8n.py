@@ -1905,11 +1905,11 @@ def _referenced_op_path(node_type: Any, ref_path: str | None) -> str:
             raise ValueError(
                 "Query parameter references a SQL node without a field path"
             )
-        return f"items.table.{column}"
+        return f"{retrieval_items_path('sql')}.{column}"
     if node_type == N8N_S3_NODE:
         label = _path_to_label(ref_path)
         if label in {None, "content"}:
-            return "items.content"
+            return retrieval_items_path("s3")
     if node_type == N8N_AGENT_NODE:
         return retrieval_items_path("agent")
     runtime_path = _to_runtime_output_path(ref_path)
