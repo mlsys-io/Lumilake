@@ -73,6 +73,32 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     assert "connection_string" not in ds
 
 
+def test_agent_retrieval_structural_column_uses_table_path() -> None:
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
+        inputs=[stock],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=retrieval)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    llm_node = runtime_graph.nodes[llm.id]
+    columns = llm_node.data_spec["template"]["columns"]
+    retrieval_columns = [col for col in columns if col.get("node") == retrieval.id]
+    assert retrieval_columns
+    assert all(col.get("path") == "items.table" for col in retrieval_columns)
+
+
 def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
     stock = input_placeholder("Stock")
     planner = LLMChatOp(

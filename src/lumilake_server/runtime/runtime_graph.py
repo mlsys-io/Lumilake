@@ -1610,7 +1610,7 @@ class RuntimeGraphBuilder:
                     elif mode == "s3":
                         path = "items.content"
                     else:
-                        path = "items.output"
+                        path = "items.table"
                     columns[op.id] = {"node": op.id, "path": path}
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
