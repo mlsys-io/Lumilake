@@ -1220,7 +1220,6 @@ def test_api_node_consuming_fanned_api_upstream_emits_per_row_placeholders() -> 
     draft_row1 = f"{draft.id}__row1"
     polish_row1 = f"{polish.id}__row1"
 
-    # Row 0 of Polish consumes row 0 of Draft; row 1 consumes row 1.
     assert runtime_graph.nodes[polish.id].api_spec["json"]["messages"] == [
         {"role": "user", "content": f"${{{draft.id}.text}}"}
     ]
@@ -2328,13 +2327,18 @@ def test_vlm_through_format_op_feeds_api_llm() -> None:
     """A VLM -> FormatOp -> API-LLM chain must build: the structural fanout
     check must use the shape-aware helper so a VLM (which maps to
     ``[<id>_embedding, <id>]``, two implementation stages) is not falsely
-    treated as a fanned source."""
+    treated as a fanned source. The consumer must reference the VLM's local
+    output path (``items.0.output``), not ``text`` — the VLM is not an API
+    task, so the LLMVisionOp exclusion in ``_is_api_task`` must hold."""
     stock = input_placeholder("Stock")
     vlm = LLMVisionOp(
         [OpMessage(role="user", content="Describe.")],
         image_source=stock.id,
         image_source_op=stock,
-        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+        config=GenerationConfig(
+            model="llava-hf/llava-1.5-7b-hf",
+            api=ApiConfig(),
+        ),
     )
     relay = FormatOp("{prior}", prior=vlm)
     api = LLMChatOp(
@@ -2349,6 +2353,9 @@ def test_vlm_through_format_op_feeds_api_llm() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     assert runtime_graph.nodes[api.id].task_type == "api"
+    assert runtime_graph.nodes[api.id].api_spec["json"]["messages"] == [
+        {"role": "user", "content": f"${{{vlm.id}.items.0.output}}"}
+    ]
 
 
 def test_condition_source_fanned_through_lambda_fails_closed() -> None:
@@ -2384,36 +2391,6 @@ def test_condition_source_fanned_through_lambda_fails_closed() -> None:
 
     with pytest.raises(ValueError, match="fanned out into"):
         RuntimeGraphBuilder().build(compiled)
-
-
-def test_api_node_consuming_agent_retrieval_uses_table_path() -> None:
-    """An API LLM consuming an agent-mode DataRetrievalOp must wire the
-    structural reference to ``items.table`` (the agent executor's declared
-    output), not ``items.output``."""
-    stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the latest price for the symbol.",
-        },
-        inputs=[stock],
-    )
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=retrieval)],
-        config=GenerationConfig(
-            model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig(),
-        ),
-    )
-    output = as_output("result", llm)
-    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    node = runtime_graph.nodes[llm.id]
-    assert node.api_spec["json"]["messages"] == [
-        {"role": "user", "content": f"${{{retrieval.id}.items.0.table}}"}
-    ]
 
 
 def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:

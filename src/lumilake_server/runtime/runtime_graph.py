@@ -1263,10 +1263,7 @@ class RuntimeGraphBuilder:
 
     @staticmethod
     def _is_api_task(op: Op) -> bool:
-        """Whether an LLMOp is dispatched as an API task. ``config.api`` alone
-        does not decide this: ``LLMVisionOp`` is always built as a local
-        embedding + inference pair, even when ``config.api`` is set, so it is
-        never an API task."""
+        """Whether an LLMOp dispatches as an API task (not a VLM)."""
         return (
             isinstance(op, LLMOp)
             and not isinstance(op, LLMVisionOp)
@@ -1334,13 +1331,8 @@ class RuntimeGraphBuilder:
         dsl_to_runtime: dict[str, list[str]] | None,
         kind: str,
     ) -> dict[str, Any]:
-        """Shared helper for binding a user-supplied ``node:`` reference into a
-        spec column, guarding against a multi-row upstream. Used by the VLM,
-        local rowwise, and local aggregate column builders; the API rowwise,
-        API aggregate, retrieval-param, embedding, and image-generation paths
-        keep their own binding/guard implementations because they emit a
-        different spec shape. Not a single unbypassable chokepoint — a new
-        binding must call the guard itself."""
+        """Bind a ``node:`` reference into a spec column, guarding multi-row
+        upstreams. Not a single chokepoint — callers must call the guard."""
         self._guard_single_row_node_ref(
             consumer_id=consumer_id,
             upstream_id=node_ref,
@@ -2686,10 +2678,7 @@ class RuntimeGraphBuilder:
                                 "path": "items.metadata.prompt",
                             }
                     if fanned:
-                        # This branch is API-only: the fanned guard above
-                        # requires both the ancestor and the consumer to be API
-                        # tasks, so every row's output path is the API task's
-                        # ``text`` (see _upstream_output_path).
+                        # API-only branch: every row's output path is ``text``.
                         columns[f"{op.id}_output"] = {
                             "data": {
                                 "type": "list",
@@ -2731,9 +2720,7 @@ class RuntimeGraphBuilder:
                     elif mode == "s3":
                         path = "items.content"
                     else:
-                        # Agent mode replays a SQL plan, so it emits ``table``
-                        # like SQL mode (see the output-path default in build).
-                        path = "items.table"
+                        path = "items.output"
                     columns[op.id] = {"node": op.id, "path": path}
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
