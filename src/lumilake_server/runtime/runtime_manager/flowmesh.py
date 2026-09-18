@@ -237,14 +237,20 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self,
         task_id: str,
     ) -> str:
-        task_info = await self.fm.tasks.retrieve(task_id)
+        try:
+            task_info = await self.fm.tasks.retrieve(task_id)
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
         return task_info.status
 
     async def fetch_task_description(
         self,
         task_id: str,
     ) -> dict[str, Any]:
-        task_info = await self.fm.tasks.retrieve(task_id)
+        try:
+            task_info = await self.fm.tasks.retrieve(task_id)
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
 
     async def _resolve_task_node_maps(
@@ -700,11 +706,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                         request_id, filename, data, content_type
                     )
                 except Exception as e:
-                    self.logger.warning(
-                        f"Failed to archive artifact for {output_op_id}: {e}"
+                    sanitized = (
+                        _sanitize_flowmesh_api_error(e)
+                        if isinstance(e, APIError)
+                        else e
                     )
-                    error_by_path[path] = str(e)
-                    archived.append({"output": "", "error": str(e)})
+                    self.logger.warning(
+                        f"Failed to archive artifact for {output_op_id}: {sanitized}"
+                    )
+                    error_by_path[path] = str(sanitized)
+                    archived.append({"output": "", "error": str(sanitized)})
                     continue
             entry: dict[str, Any] = {"output": uri_by_path[path]}
             for field_name in extra_fields:
@@ -864,7 +875,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     ) -> str:
         """Fetch a task's raw FlowMesh response and archive it as a job
         artifact, redacting the untrusted body before persisting it."""
-        response_data = await self.fm.results.retrieve(tid)
+        try:
+            response_data = await self.fm.results.retrieve(tid)
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
         response_uri = self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1148,7 +1162,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     f"node={output_op_id}. Known nodes={sorted(node_task_map.keys())}"
                 )
 
-            results_json = await self.fm.results.retrieve(output_task_id)
+            try:
+                results_json = await self.fm.results.retrieve(output_task_id)
+            except APIError as e:
+                raise _sanitize_flowmesh_api_error(e) from None
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
             api_prompt = None
             if output_node is not None and output_node.task_type == "api":
@@ -2508,4 +2525,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 await fm.workflows.cancel(workflow_id)
                 self.logger.info(f"Successfully cancelled workflow {workflow_id}")
             except APIError as e:
-                self.logger.warning(f"Failed to cancel workflow {workflow_id}: {e}")
+                sanitized = _sanitize_flowmesh_api_error(e)
+                self.logger.warning(
+                    f"Failed to cancel workflow {workflow_id}: {sanitized}"
+                )

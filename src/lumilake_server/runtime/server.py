@@ -16,6 +16,7 @@ from typing import Any
 
 import lumid_hooks
 import yaml
+from flowmesh.exceptions import APIError
 from lumilake import envs
 from lumilake.log import (
     Logger,
@@ -64,6 +65,9 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     create_runtime_manager,
+)
+from lumilake_server.runtime.runtime_manager.flowmesh import (
+    _sanitize_flowmesh_api_error,
 )
 from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
@@ -1777,7 +1781,12 @@ class LumilakeServer:
                 execution_request_id=execution_request_id,
             )
         except Exception as exc:
-            self.logger.error("Batch %s failed", batch_id, exc_info=True)
+            sanitized_exc = (
+                _sanitize_flowmesh_api_error(exc) if isinstance(exc, APIError) else exc
+            )
+            self.logger.error(
+                "Batch %s failed: %s", batch_id, sanitized_exc, exc_info=True
+            )
             if active_workflows:
                 self.runtime_manager.mark_batch_failed(execution_request_id, batch_id)
             cancelled_requests = await self._collect_cancelled_requests(
@@ -1787,7 +1796,7 @@ class LumilakeServer:
                 batch,
                 {},
                 {},
-                exc,
+                sanitized_exc,
                 batch_id=batch_id,
                 cancelled_requests=cancelled_requests,
                 execution_request_id=execution_request_id,
