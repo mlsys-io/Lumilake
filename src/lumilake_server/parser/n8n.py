@@ -1447,7 +1447,7 @@ def _build_aggregate_prompt_content(
             if ref_type == N8N_POSTGRES_NODE:
                 item_path = f"items.table.{_path_to_label(path) or column}"
             elif ref_type == N8N_AGENT_NODE:
-                item_path = "items.table"
+                item_path = retrieval_items_path("agent")
             else:
                 item_path = _to_runtime_output_path(path) or "items.output"
             table_spec.append(
