@@ -10,6 +10,7 @@ import copy
 import heapq
 import json
 import mimetypes
+import re
 import tempfile
 import threading
 import time
@@ -133,6 +134,20 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
         url=e.url,
         body=body,
     )
+
+
+_AUTH_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+")
+
+
+def _with_auth_scheme(credential: str) -> str:
+    """Return ``credential`` prefixed with the ``Bearer`` auth scheme unless it
+    already carries one. Trusted-origin resolution yields a bare PAT that the
+    serving endpoint requires as ``Authorization: Bearer <token>``; a
+    caller-supplied credential may already include a scheme (``Bearer``,
+    ``Basic``, ...) and must be passed through unchanged."""
+    if _AUTH_SCHEME_RE.match(credential):
+        return credential
+    return f"Bearer {credential}"
 
 
 @dataclass(slots=True)
@@ -1406,7 +1421,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     None,
                 )
             if resolved:
-                headers["Authorization"] = resolved
+                headers["Authorization"] = _with_auth_scheme(resolved)
 
     def _apply_per_node_resource_hints(
         self,
