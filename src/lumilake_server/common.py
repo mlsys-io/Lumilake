@@ -12,12 +12,25 @@ class Message:
 
 
 @dataclass
-class GenerationConfig:
-    """LLM generation parameters. Add a typed field here and both the YAML
-    parser allowlist and the runtime inference_spec pick it up automatically;
-    use ``extra_sampling_params`` for vendor-specific keys not worth typing."""
+class ApiConfig:
+    """External OpenAI-compatible LLM API endpoint; ``url`` defaults to the
+    serving endpoint ``lum.id/llm``, ``authorization`` supplies a caller
+    credential for an untrusted origin, and ``model`` overrides the top-level
+    ``config.model`` for the request."""
 
-    model: str
+    url: str | None = None
+    model: str | None = None
+    authorization: str | None = None
+    timeout_sec: float | None = None
+
+
+@dataclass
+class GenerationConfig:
+    """LLM generation parameters; ``model`` is required in both local and API
+    mode, so ``config.api`` routes the op externally without relaxing it."""
+
+    model: str = ""
+    api: ApiConfig | None = None
     frequency_penalty: float | None = None
     logit_bias: dict[str, int] | None = None
     logprobs: int | None = None
@@ -47,6 +60,7 @@ class GenerationConfig:
 
     # Stripped by openai_kwargs() — OpenAI Chat API rejects these.
     _NON_OPENAI_FIELDS: ClassVar[tuple[str, ...]] = (
+        "api",
         "ignore_eos",
         "chat_template_kwargs",
         "repetition_penalty",
@@ -64,6 +78,7 @@ class GenerationConfig:
     _NON_SAMPLER_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
             "model",
+            "api",
             "stream",
             "stream_options",
             "extra_sampling_params",
@@ -81,6 +96,27 @@ class GenerationConfig:
         "tensor_parallel_size",
         "dtype",
     )
+
+    def __post_init__(self) -> None:
+        if isinstance(self.api, dict):
+            self.api = ApiConfig(**self.api)
+        elif self.api is not None and not isinstance(self.api, ApiConfig):
+            raise ValueError(
+                "GenerationConfig.api must be a mapping or ApiConfig, got "
+                f"{type(self.api).__name__}."
+            )
+        if not self.model:
+            raise ValueError(
+                "GenerationConfig.model is required in both local and API mode."
+            )
+
+    def resolved_model(self) -> str:
+        """The model name to submit. API mode prefers ``api.model``, then the
+        top-level ``model``; local mode returns ``model`` directly. ``model``
+        is required in both modes, so this never falls back to a default."""
+        if self.api is not None:
+            return self.api.model or self.model
+        return self.model
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

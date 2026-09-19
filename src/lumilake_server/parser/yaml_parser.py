@@ -652,9 +652,16 @@ def _emit_llm_like_op(
         asymmetry here.
       * Extra vision-only fields (``image_source``, ``image_path``) are set by
         the caller after this helper returns.
+      * ``model`` requirement: both op kinds require ``config.model``; setting
+        ``config.api`` routes the op to an external endpoint but does not relax
+        the model requirement, so the workflow spec reads the same either way.
     """
     config = entry.fields.get("config")
-    if not isinstance(config, dict) or "model" not in config:
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"{op_kind} '{entry.id}' requires 'config' with a 'model' field"
+        )
+    if "model" not in config:
         raise ValueError(
             f"{op_kind} '{entry.id}' requires 'config' with a 'model' field"
         )

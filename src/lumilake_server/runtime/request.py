@@ -37,6 +37,11 @@ class RequestInfo:
     ``LumilakeRequestConfig``. Batched items share the same hardware tuple
     because the job manager partitions by hardware."""
 
+    member_request_ids: set[str] = field(default_factory=set)
+    """The originating job (``req-*``) ids this execution batch belongs to.
+    API credentials are stored per job id, so dispatch resolves them through
+    these ids rather than the synthetic ``exec-*`` request id."""
+
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)
     data_profile_graph: RuntimeGraph = field(init=False)

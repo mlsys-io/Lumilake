@@ -26,22 +26,34 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
+    is_api_origin_trusted,
+    resolve_api_credential,
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import (
+    _API_CREDENTIAL_PLACEHOLDER,
     Roles,
     RuntimeGraph,
     RuntimeGraphBuilder,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.sensitive import redact_sensitive
+from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
 
 from .base import BaseRuntimeManager
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+
+
+@dataclass
+class DispatchCredentials:
+    """Per-request in-process credentials: the FlowMesh transport token and the
+    caller-supplied API credential, resolved at dispatch and never persisted."""
+
+    runtime_token: str | None = None
+    api_credential: str | None = None
 
 
 def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
@@ -107,6 +119,22 @@ def _runtime_output_destination() -> dict[str, Any]:
     return {"type": "local"}
 
 
+def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
+    """Redact any credential FlowMesh's rejection may echo back; callers must
+    raise this return value, not ``e``, which still carries the credential."""
+    body = redact_secrets_in_text(e.body if e.body is not None else str(e))
+    if len(body) > 2000:
+        body = body[:2000] + "...[truncated]"
+    message = redact_secrets_in_text(str(e))
+    return type(e)(
+        message,
+        status_code=e.status_code,
+        method=e.method,
+        url=e.url,
+        body=body,
+    )
+
+
 @dataclass(slots=True)
 class ShardRewriteResult:
     nodes: list[dict[str, Any]]
@@ -160,7 +188,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         # Cross-thread (FastAPI loop set/clear, _AsyncRunner loop get),
         # so threading lock, not asyncio.
-        self._dispatch_tokens: dict[str, str | None] = {}
+        self._dispatch_tokens: dict[str, DispatchCredentials] = {}
         self._dispatch_tokens_lock = threading.Lock()
 
     @property
@@ -169,11 +197,25 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     def set_dispatch_token(self, request_id: str, token: str | None) -> None:
         with self._dispatch_tokens_lock:
-            self._dispatch_tokens[request_id] = token
+            self._dispatch_tokens.setdefault(
+                request_id, DispatchCredentials()
+            ).runtime_token = token
 
     def get_dispatch_token(self, request_id: str) -> str | None:
         with self._dispatch_tokens_lock:
-            return self._dispatch_tokens.get(request_id)
+            entry = self._dispatch_tokens.get(request_id)
+            return entry.runtime_token if entry is not None else None
+
+    def set_api_credential(self, request_id: str, credential: str | None) -> None:
+        with self._dispatch_tokens_lock:
+            self._dispatch_tokens.setdefault(
+                request_id, DispatchCredentials()
+            ).api_credential = credential
+
+    def get_api_credential(self, request_id: str) -> str | None:
+        with self._dispatch_tokens_lock:
+            entry = self._dispatch_tokens.get(request_id)
+            return entry.api_credential if entry is not None else None
 
     def clear_dispatch_token(self, request_id: str) -> None:
         with self._dispatch_tokens_lock:
@@ -221,14 +263,20 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self,
         task_id: str,
     ) -> str:
-        task_info = await self.fm.tasks.retrieve(task_id)
+        try:
+            task_info = await self.fm.tasks.retrieve(task_id)
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
         return task_info.status
 
     async def fetch_task_description(
         self,
         task_id: str,
     ) -> dict[str, Any]:
-        task_info = await self.fm.tasks.retrieve(task_id)
+        try:
+            task_info = await self.fm.tasks.retrieve(task_id)
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
 
     async def _resolve_task_node_maps(
@@ -684,11 +732,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                         request_id, filename, data, content_type
                     )
                 except Exception as e:
-                    self.logger.warning(
-                        f"Failed to archive artifact for {output_op_id}: {e}"
+                    sanitized = (
+                        _sanitize_flowmesh_api_error(e)
+                        if isinstance(e, APIError)
+                        else e
                     )
-                    error_by_path[path] = str(e)
-                    archived.append({"output": "", "error": str(e)})
+                    self.logger.warning(
+                        f"Failed to archive artifact for {output_op_id}: {sanitized}"
+                    )
+                    error_by_path[path] = str(sanitized)
+                    archived.append({"output": "", "error": str(sanitized)})
                     continue
             entry: dict[str, Any] = {"output": uri_by_path[path]}
             for field_name in extra_fields:
@@ -697,16 +750,30 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return archived
 
     def _resolve_output_items(
-        self, results_json: dict[str, Any], output_op_id: str
+        self,
+        results_json: dict[str, Any],
+        output_op_id: str,
+        task_type: str | None = None,
+        prompt: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Normalize a retrieved result into an item list.
-
-        Inference tasks return ``items``; embedding tasks return a flat
-        result with no ``items`` key — treat that as a one-item batch.
-        """
+        """Normalize a retrieved result into an item list: inference returns
+        ``items``, embedding a flat one-item batch, and API wraps the assistant
+        ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
         items = results_json.get("items")
         if isinstance(items, list) and items:
             return items
+        if task_type == "api":
+            text = results_json.get("text")
+            if isinstance(text, str):
+                item: dict[str, Any] = {"output": text}
+                if prompt is not None:
+                    item["metadata"] = {"prompt": prompt}
+                return [item]
+            raise RuntimeError(
+                f"output {output_op_id} produced no API response text; the "
+                "model returned no content (a reasoning model may have spent "
+                "its whole token budget on reasoning — raise max_tokens)"
+            )
         embedding_file = results_json.get("embedding_file")
         if isinstance(embedding_file, dict) and embedding_file.get("path"):
             return [results_json]
@@ -826,6 +893,31 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             for item in items
         ]
 
+    async def _archive_task_response(
+        self,
+        request_info: RequestInfo,
+        tid: str,
+        node_id: str,
+    ) -> str:
+        """Fetch a task's raw FlowMesh response and archive it as a job
+        artifact, redacting the untrusted body before persisting it."""
+        try:
+            response_data = await self.fm.results.retrieve(tid)
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
+        response_uri = self._save_json_artifact(
+            request_info,
+            f"per-task-response/{tid}.json",
+            redact_sensitive(response_data),
+        )
+        self.logger.info(
+            "Archived response for task %s (%s) to %s",
+            tid,
+            node_id,
+            response_uri,
+        )
+        return response_uri
+
     async def process_request(
         self,
         request_info: RequestInfo,
@@ -881,6 +973,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             request_info.runtime_graph,
             schedule=schedule,
         )
+        self._resolve_api_credentials(request_info.member_request_ids, task_spec)
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
         task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
@@ -922,15 +1015,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         try:
             submit_resp = await self.fm.workflows.submit(task_yaml)
         except APIError as e:
-            body = str(e.body) if hasattr(e, "body") else str(e)
-            if len(body) > 2000:
-                body = body[:2000] + "...[truncated]"
+            sanitized = _sanitize_flowmesh_api_error(e)
             self.logger.error(
                 "Flowmesh request failed: %s. Body: %s",
-                e,
-                body,
+                sanitized,
+                sanitized.body,
             )
-            raise
+            raise sanitized from None
 
         task_ids = [t.task_id for t in submit_resp.tasks]
         self.logger.info(f"Flowmesh accepted {len(task_ids)} tasks: {task_ids}")
@@ -1017,18 +1108,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                             "Missing task->node mapping for task "
                             f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                         )
-                    response_data = await self.fm.results.retrieve(tid)
-                    response_uri = self._save_json_artifact(
-                        request_info,
-                        f"per-task-response/{tid}.json",
-                        response_data,
-                    )
-                    self.logger.info(
-                        "Archived response for task %s (%s) to %s",
-                        tid,
-                        node_id,
-                        response_uri,
-                    )
+                    await self._archive_task_response(request_info, tid, node_id)
                     downloaded_tasks.add(tid)
 
             # Count statuses for all nodes and output nodes
@@ -1109,8 +1189,22 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     f"node={output_op_id}. Known nodes={sorted(node_task_map.keys())}"
                 )
 
-            results_json = await self.fm.results.retrieve(output_task_id)
-            items = self._resolve_output_items(results_json, output_op_id)
+            try:
+                results_json = await self.fm.results.retrieve(output_task_id)
+            except APIError as e:
+                raise _sanitize_flowmesh_api_error(e) from None
+            output_node = request_info.runtime_graph.nodes.get(output_op_id)
+            api_prompt = None
+            if output_node is not None and output_node.task_type == "api":
+                api_messages = output_node.api_spec.get("json", {}).get("messages")
+                if isinstance(api_messages, list):
+                    api_prompt = api_messages
+            items = self._resolve_output_items(
+                results_json,
+                output_op_id,
+                task_type=output_node.task_type if output_node else None,
+                prompt=api_prompt,
+            )
 
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)
             outputs = await self._aggregate_output_node(
@@ -1273,6 +1367,47 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         return spec, output_node_indices, flowmesh_to_raw
 
+    def _resolve_api_credentials(
+        self, member_request_ids: set[str], task_spec: dict[str, Any]
+    ) -> None:
+        """Replace the constant API credential placeholder in each api node's
+        Authorization header with the real value at dispatch time. Trusted
+        origins re-resolve deterministically from server config; untrusted
+        origins use the caller-supplied credential from the dispatch-token
+        store, keyed by the originating job id (``member_request_ids``) rather
+        than the synthetic ``exec-*`` request id. If nothing resolves, the
+        placeholder is left in place so the endpoint fails loudly on auth
+        rather than sending an empty header."""
+        nodes = task_spec.get("spec", {}).get("graph", {}).get("nodes", [])
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            api_spec = node.get("spec", {}).get("api")
+            if not isinstance(api_spec, dict):
+                continue
+            headers = api_spec.get("headers")
+            if not isinstance(headers, dict):
+                continue
+            auth = headers.get("Authorization")
+            if auth != _API_CREDENTIAL_PLACEHOLDER:
+                continue
+            url = api_spec.get("url")
+            if isinstance(url, str) and is_api_origin_trusted(url):
+                resolved = resolve_api_credential(url)
+            else:
+                resolved = next(
+                    (
+                        self.get_api_credential(request_id)
+                        for request_id in member_request_ids
+                        if self.get_api_credential(request_id) is not None
+                    ),
+                    None,
+                )
+            if resolved:
+                headers["Authorization"] = resolved
+
     def _apply_per_node_resource_hints(
         self,
         nodes: list[dict[str, Any]],
@@ -1332,6 +1467,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             return True
         task_type = (runtime_op.task_type or "").strip().lower()
         return task_type in {"inference", "embedding", "diffusion"}
+
+    @staticmethod
+    def _runtime_op_requires_cpu(runtime_op: RuntimeOp) -> bool:
+        """Mirrors HaloOptimizer._map_engine's CPU-only engines
+        (data_retrieval, api) so schedule previews agree with dispatch."""
+        task_type = (runtime_op.task_type or "").strip().lower()
+        return task_type in {"data_retrieval", "api"}
 
     @staticmethod
     def _build_flat_schedule_hint(
@@ -2451,4 +2593,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 await fm.workflows.cancel(workflow_id)
                 self.logger.info(f"Successfully cancelled workflow {workflow_id}")
             except APIError as e:
-                self.logger.warning(f"Failed to cancel workflow {workflow_id}: {e}")
+                sanitized = _sanitize_flowmesh_api_error(e)
+                self.logger.warning(
+                    f"Failed to cancel workflow {workflow_id}: {sanitized}"
+                )

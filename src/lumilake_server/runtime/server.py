@@ -16,6 +16,7 @@ from typing import Any
 
 import lumid_hooks
 import yaml
+from flowmesh.exceptions import APIError
 from lumilake import envs
 from lumilake.log import (
     Logger,
@@ -67,6 +68,10 @@ from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     create_runtime_manager,
 )
+from lumilake_server.runtime.runtime_manager.flowmesh import (
+    _sanitize_flowmesh_api_error,
+)
+from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.schemas.progress import JobProgress
@@ -685,6 +690,13 @@ class LumilakeServer:
             return None
         return state.clustering_seconds
 
+    @staticmethod
+    def _api_credential_digest(credential: str | None) -> str | None:
+        """Hex digest of the caller-supplied API credential, never the secret."""
+        if credential is None:
+            return None
+        return hashlib.sha256(credential.encode("utf-8")).hexdigest()
+
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
         """
@@ -750,6 +762,9 @@ class LumilakeServer:
             workflow_slices=request.workflow_slices,
             config=config,
             dispatch_token=self.runtime_manager.get_dispatch_token(request.request_id),
+            api_credential_digest=self._api_credential_digest(
+                self.runtime_manager.get_api_credential(request.request_id)
+            ),
             requires_gpu={
                 graph_name: any(
                     self._requires_gpu(op) for op in runtime_graph.nodes.values()
@@ -895,6 +910,8 @@ class LumilakeServer:
             self.config.gpu_worker_group_size if self._batch_requires_gpu(batch) else 0
         )
         cpu_group_size = self.config.cpu_worker_group_size
+        if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
+            cpu_group_size = 1
         hardware = batch.config.hardware_requirements
         selected = free.eligible_workers(
             cpu_group_size=cpu_group_size,
@@ -974,7 +991,7 @@ class LumilakeServer:
             self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
         requires_cpu = any(
-            op.task_type == "data_retrieval" for op in runtime_graph.nodes.values()
+            self._requires_cpu(op) for op in runtime_graph.nodes.values()
         )
 
         gpu_workers: list[str] = []
@@ -1134,11 +1151,28 @@ class LumilakeServer:
         # and the dispatcher then stalls trying to route to one.
         return FlowmeshRuntimeManager._runtime_op_requires_gpu(op)
 
+    @staticmethod
+    def _requires_cpu(op: RuntimeOp) -> bool:
+        """Mirror the dispatcher's CPU-only engine list (see
+        FlowmeshRuntimeManager._runtime_op_requires_cpu)."""
+        return FlowmeshRuntimeManager._runtime_op_requires_cpu(op)
+
     @classmethod
     def _batch_requires_gpu(cls, batch: BatchSelection) -> bool:
         for runtime_graph in batch.runtime_graphs.values():
             for op in runtime_graph.nodes.values():
                 if cls._requires_gpu(op):
+                    return True
+        return False
+
+    @classmethod
+    def _batch_requires_cpu(cls, batch: BatchSelection) -> bool:
+        """A configured CPU group size of 0 is only valid alongside a nonzero
+        GPU group; a batch with a data_retrieval or api op still needs one CPU
+        worker (matching _select_preview_workers_and_profiles)."""
+        for runtime_graph in batch.runtime_graphs.values():
+            for op in runtime_graph.nodes.values():
+                if cls._requires_cpu(op):
                     return True
         return False
 
@@ -1817,7 +1851,12 @@ class LumilakeServer:
                 execution_request_id=execution_request_id,
             )
         except Exception as exc:
-            self.logger.error("Batch %s failed", batch_id, exc_info=True)
+            sanitized_exc = (
+                _sanitize_flowmesh_api_error(exc) if isinstance(exc, APIError) else exc
+            )
+            self.logger.error(
+                "Batch %s failed: %s", batch_id, sanitized_exc, exc_info=True
+            )
             if active_workflows:
                 self.runtime_manager.mark_batch_failed(execution_request_id, batch_id)
             cancelled_requests = await self._collect_cancelled_requests(
@@ -1827,7 +1866,7 @@ class LumilakeServer:
                 batch,
                 {},
                 {},
-                exc,
+                sanitized_exc,
                 batch_id=batch_id,
                 cancelled_requests=cancelled_requests,
                 execution_request_id=execution_request_id,
@@ -2113,7 +2152,7 @@ class LumilakeServer:
                 append_error(
                     state,
                     {
-                        "batch_error": str(error),
+                        "batch_error": redact_secrets_in_text(str(error)),
                         "execution_request_id": execution_request_id,
                         "graph": workflow.public_graph_name,
                         "slice_index": workflow.slice_index,
@@ -2405,6 +2444,7 @@ class LumilakeServer:
             data_profile_graphs=data_profile_graphs_by_name,
             data_profile_sources=data_profile_sources,
             hardware_requirements=batch.config.hardware_requirements,
+            member_request_ids=set(member_request_ids),
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph
@@ -3030,6 +3070,9 @@ class LumilakeServer:
             dsl_graphs=dict(graphs),
             workflow_slices=workflow_slices,
             config=resolved_config,
+            api_credential_digest=self._api_credential_digest(
+                self.runtime_manager.get_api_credential(resolved_request_id)
+            ),
         )
         await transient_jm.enqueue(job)
 

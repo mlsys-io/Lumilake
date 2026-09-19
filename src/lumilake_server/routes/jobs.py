@@ -75,6 +75,7 @@ from lumilake_server.runtime.protocol import (
     RequestCancelledError,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
+from lumilake_server.runtime.runtime_graph import _API_CREDENTIAL_PLACEHOLDER
 from lumilake_server.runtime.server import LumilakeServer
 from lumilake_server.schemas.io import DBLocation, IOLocation, S3Location
 from lumilake_server.schemas.progress import (
@@ -153,10 +154,27 @@ def _input_shape(inputs: dict[str, list[str]]) -> tuple[int, tuple[str, ...]]:
     return max_len, varying
 
 
+def _redact_api_credentials(value: Any) -> Any:
+    """Return a copy of ``value`` with every ``config.api.authorization``
+    credential replaced by a constant, so the template hash is insensitive to
+    the secret while remaining sensitive to every other workflow field."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "authorization" and isinstance(item, str):
+                redacted[key] = _API_CREDENTIAL_PLACEHOLDER
+            else:
+                redacted[key] = _redact_api_credentials(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_api_credentials(item) for item in value]
+    return value
+
+
 def _workflow_template_hash(workflow_payload: Any, workflow_format: str) -> str:
     payload = {
         "format": workflow_format,
-        "workflow": workflow_payload,
+        "workflow": _redact_api_credentials(workflow_payload),
     }
     # `default=str` is a defensive fallback: YAML (and n8n workflows that
     # were loaded through a permissive parser) can contain non-JSON-native
@@ -1922,6 +1940,32 @@ async def _run_dynamic_job(
         await _fire_parent_terminal_hooks(record, principal, parent_job_id)
 
 
+def _collect_api_credential(graph_specs: dict[str, dict[str, Any]]) -> str | None:
+    """Return the caller-supplied API credential for a job, if any. The
+    credential is stored in the in-process dispatch-token store keyed by job id
+    and resolved at dispatch time, so it never enters the persisted graph.
+
+    A job carrying two distinct untrusted API credentials is rejected: the
+    store holds one credential per job, so silently keeping only the first
+    would send one endpoint's secret to another."""
+    credential: str | None = None
+    for spec in graph_specs.values():
+        for op in spec["graph"].values():
+            if op.get("_op") != "LLMChatOp":
+                continue
+            api_config = op.get("config", {}).get("api")
+            if api_config is None or not api_config.get("authorization"):
+                continue
+            op_credential = api_config["authorization"]
+            if credential is not None and op_credential != credential:
+                raise ValueError(
+                    "job carries two distinct API credentials; a job may use "
+                    "only one caller-supplied credential"
+                )
+            credential = op_credential
+    return credential
+
+
 async def _run_job(
     job_id: str,
     graph_specs: dict[str, dict[str, Any]],
@@ -1962,6 +2006,8 @@ async def _run_job(
             if parsed_graphs is not None
             else server.parse_query(graph_specs)
         )
+        api_credential = _collect_api_credential(graph_specs)
+        server.runtime_manager.set_api_credential(job_id, api_credential)
         record.progress.query_parsing.completed = True
         if envs.LUMILAKE_DISABLE_DATA_PROFILE:
             logger.info(
