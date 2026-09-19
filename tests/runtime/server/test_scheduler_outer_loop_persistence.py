@@ -6,6 +6,21 @@ import pytest
 from lumilake import envs
 from support.runtime_server import attach_request_states
 
+from lumilake_server.runtime.capacity import FreeCapacity
+
+
+def _patch_capacity(server: Any, cpu_ids: list[str], gpu_ids: list[str]) -> None:
+    """Feed the scheduler a fixed idle-worker pool, minus whatever is busy."""
+
+    async def _snapshot() -> FreeCapacity:
+        busy = server._busy_workers
+        return FreeCapacity(
+            cpu_worker_ids=tuple(w for w in cpu_ids if w not in busy),
+            gpu_worker_ids=tuple(w for w in gpu_ids if w not in busy),
+        )
+
+    server._snapshot_free_capacity = _snapshot  # type: ignore[method-assign]
+
 
 class _FailThenCancelJobManager:
     def __init__(self) -> None:
@@ -36,7 +51,7 @@ async def test_scheduler_loop_continues_after_cycle_exception(
     await server._scheduler_loop()
 
     assert fake_job_manager.wait_calls == 2
-    assert sleep_calls == [envs.LUMILAKE_POLL_INTERVAL_SECONDS]
+    assert sleep_calls == [server.config.poll_interval_seconds]
 
 
 class _TwoBatchThenCancelJobManager:
@@ -51,7 +66,7 @@ class _TwoBatchThenCancelJobManager:
             await self._cancel_ready.wait()
             raise asyncio.CancelledError
 
-    async def reserve_batch(self, batch_size: int) -> Any:
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
             selection = SimpleNamespace(
@@ -76,7 +91,7 @@ class _TwoBatchThenCancelJobManager:
     async def commit_reservation(self, reservation: Any) -> None:
         self.committed_count += 1
 
-    async def abort_reservation(self, reservation: Any) -> None:
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
 
 
@@ -90,30 +105,19 @@ async def test_scheduler_loop_can_dispatch_multiple_batches_concurrently(
     fake_job_manager = _TwoBatchThenCancelJobManager(cancel_ready=cancel_scheduler)
     server.job_manager = cast(Any, fake_job_manager)
 
-    worker_calls = 0
     workers_used: list[list[str]] = []
     dispatched_batches: list[str] = []
     active_run_batch_tasks = 0
     max_active_run_batch_tasks = 0
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
 
-    async def _fake_wait_for_available_worker_group(
-        cpu_group_size: int,
-        gpu_group_size: int,
-        **_kw: Any,
-    ) -> list[str]:
-        nonlocal worker_calls
-        worker_calls += 1
-        if worker_calls == 1:
-            workers = ["gpu-0", "cpu-0"]
-        elif worker_calls == 2:
-            workers = ["gpu-1", "cpu-1"]
-        else:
-            workers = ["gpu-2", "cpu-2"]
-        workers_used.append(workers)
-        return workers
+    _patch_capacity(
+        server,
+        ["cpu-0", "cpu-1", "cpu-2"],
+        ["gpu-0", "gpu-1", "gpu-2"],
+    )
 
     async def _blocking_run_batch(workers: list[str], batch: Any) -> None:
         nonlocal active_run_batch_tasks, max_active_run_batch_tasks
@@ -122,16 +126,14 @@ async def test_scheduler_loop_can_dispatch_multiple_batches_concurrently(
             max_active_run_batch_tasks,
             active_run_batch_tasks,
         )
+        workers_used.append(list(workers))
         dispatched_batches.append(str(batch.name))
         if max_active_run_batch_tasks >= 2:
             cancel_scheduler.set()
         await release_batches.wait()
         active_run_batch_tasks -= 1
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = (  # type: ignore[method-assign]
-        _fake_wait_for_available_worker_group
-    )
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _blocking_run_batch  # type: ignore[method-assign]
 
     scheduler_task = asyncio.create_task(server._scheduler_loop())
@@ -141,7 +143,9 @@ async def test_scheduler_loop_can_dispatch_multiple_batches_concurrently(
 
     assert max_active_run_batch_tasks >= 2
     assert dispatched_batches == ["batch-1", "batch-2"]
-    assert workers_used[:2] == [["gpu-0", "cpu-0"], ["gpu-1", "cpu-1"]]
+    first, second = workers_used[0], workers_used[1]
+    assert first and second
+    assert not set(first) & set(second)
 
 
 class _CpuOnlyBatchJobManager:
@@ -156,7 +160,7 @@ class _CpuOnlyBatchJobManager:
         if self._select_calls >= 1:
             raise asyncio.CancelledError
 
-    async def reserve_batch(self, batch_size: int) -> Any:
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
             cpu_node = SimpleNamespace(
@@ -177,7 +181,7 @@ class _CpuOnlyBatchJobManager:
     async def commit_reservation(self, reservation: Any) -> None:
         self.committed_count += 1
 
-    async def abort_reservation(self, reservation: Any) -> None:
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
 
 
@@ -189,27 +193,22 @@ async def test_scheduler_cpu_only_batch_skips_gpu_wait(server_factory) -> None:
     server.config.cpu_worker_group_size = 1
     server.job_manager = cast(Any, _CpuOnlyBatchJobManager())
 
-    captured_gpu_sizes: list[int] = []
+    claimed: list[list[str]] = []
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
-
-    async def _record_worker_group(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> list[str]:
-        captured_gpu_sizes.append(gpu_group_size)
-        return ["cpu-0"]
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
-        return
+        claimed.append(list(workers))
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    _patch_capacity(server, ["cpu-0", "cpu-1"], ["gpu-0", "gpu-1"])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
+    await asyncio.sleep(0)
 
-    assert captured_gpu_sizes == [0]
+    assert claimed == [["cpu-0"]]
 
 
 @pytest.mark.asyncio
@@ -218,7 +217,7 @@ async def test_scheduler_cpu_batch_requests_a_cpu_worker_when_group_size_is_zero
 ) -> None:
     """LUMILAKE_CPU_WORKER_GROUP_SIZE=0 is only valid alongside a nonzero GPU
     group (envs.py), but a batch containing a CPU-only op (data_retrieval /
-    api) still needs one CPU worker to be requested — matching what
+    api) still needs one CPU worker to be claimed — matching what
     schedule preview (_select_preview_workers_and_profiles) already
     requires for the same graph. Without this, dispatch requests zero CPU
     workers for an API-mode graph and HALO later rejects the schedule."""
@@ -227,27 +226,24 @@ async def test_scheduler_cpu_batch_requests_a_cpu_worker_when_group_size_is_zero
     server.config.cpu_worker_group_size = 0
     server.job_manager = cast(Any, _CpuOnlyBatchJobManager())
 
-    captured_cpu_sizes: list[int] = []
+    claimed: list[list[str]] = []
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
-
-    async def _record_worker_group(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> list[str]:
-        captured_cpu_sizes.append(cpu_group_size)
-        return ["cpu-0"]
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
-        return
+        claimed.append(list(workers))
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    _patch_capacity(server, ["cpu-0", "cpu-1"], ["gpu-0", "gpu-1"])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
+    await asyncio.sleep(0)
 
-    assert captured_cpu_sizes == [1]
+    # cpu_worker_group_size=0 is floored to 1 for a CPU-only batch inside
+    # _try_claim_workers, so the dispatch still claims a CPU worker.
+    assert claimed == [["cpu-0"]]
 
 
 class _GpuBatchJobManager:
@@ -262,7 +258,7 @@ class _GpuBatchJobManager:
         if self._select_calls >= 1:
             raise asyncio.CancelledError
 
-    async def reserve_batch(self, batch_size: int) -> Any:
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
             gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
@@ -281,7 +277,7 @@ class _GpuBatchJobManager:
     async def commit_reservation(self, reservation: Any) -> None:
         self.committed_count += 1
 
-    async def abort_reservation(self, reservation: Any) -> None:
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
 
 
@@ -295,27 +291,22 @@ async def test_scheduler_gpu_batch_requests_configured_gpu_group(
     server.config.cpu_worker_group_size = 1
     server.job_manager = cast(Any, _GpuBatchJobManager())
 
-    captured_gpu_sizes: list[int] = []
+    claimed: list[list[str]] = []
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
-
-    async def _record_worker_group(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> list[str]:
-        captured_gpu_sizes.append(gpu_group_size)
-        return ["gpu-0", "gpu-1", "cpu-0"]
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
-        return
+        claimed.append(list(workers))
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    _patch_capacity(server, ["cpu-0", "cpu-1"], ["gpu-0", "gpu-1"])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
+    await asyncio.sleep(0)
 
-    assert captured_gpu_sizes == [2]
+    assert claimed == [["gpu-0", "gpu-1", "cpu-0"]]
 
 
 class _RecordingJobManager:
@@ -327,12 +318,13 @@ class _RecordingJobManager:
         self.commits: list[Any] = []
         self.aborts: list[Any] = []
         self.removed: list[Any] = []
+        self.abort_reasons: list[str | None] = []
 
     async def wait_for_work(self) -> None:
         if self._calls >= self._batches_to_yield:
             raise asyncio.CancelledError
 
-    async def reserve_batch(self, batch_size: int) -> Any:
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._calls += 1
         if self._calls > self._batches_to_yield:
             return None
@@ -356,8 +348,9 @@ class _RecordingJobManager:
     async def commit_reservation(self, reservation: Any) -> None:
         self.commits.append(reservation.id)
 
-    async def abort_reservation(self, reservation: Any) -> None:
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborts.append(reservation.id)
+        self.abort_reasons.append(None if reason is None else str(reason))
 
     async def remove_workflows(self, workflow_ids: Any) -> None:
         self.removed.append(list(workflow_ids))
@@ -367,34 +360,38 @@ class _RecordingJobManager:
 async def test_scheduler_aborts_reservation_when_workers_unavailable(
     server_factory,
 ) -> None:
-    """If worker acquisition times out, the reservation is aborted (not lost)."""
+    """A lost claim race aborts the reservation with the capacity reason.
+
+    The snapshot reports a worker idle, but it is claimed by another dispatch
+    before ``_try_claim_workers`` runs. The reservation must be released as a
+    capacity abort so ``miss_count`` is not inflated by capacity pressure.
+    """
     server = server_factory()
     server.config.gpu_worker_group_size = 0
     server.config.cpu_worker_group_size = 1
     job_manager = _RecordingJobManager(batches_to_yield=1)
     server.job_manager = cast(Any, job_manager)
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
 
-    async def _worker_acquisition_times_out(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> Any:
-        return None
+    async def _stale_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
         return
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = (  # type: ignore[method-assign]
-        _worker_acquisition_times_out
-    )
+    server._busy_workers.add("cpu-0")
+    server._snapshot_free_capacity = _stale_snapshot  # type: ignore[method-assign]
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
+    await asyncio.sleep(0)
 
     assert job_manager.aborts == [1]
     assert job_manager.commits == []
+    assert job_manager.abort_reasons == ["capacity"]
 
 
 @pytest.mark.asyncio
@@ -609,22 +606,18 @@ async def test_scheduler_commits_reservation_when_workers_acquired(
     job_manager = _RecordingJobManager(batches_to_yield=1)
     server.job_manager = cast(Any, job_manager)
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
-
-    async def _grant_workers(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> Any:
-        return ["cpu-0"]
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
         return
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = _grant_workers  # type: ignore[method-assign]
+    _patch_capacity(server, ["cpu-0", "cpu-1"], ["gpu-0", "gpu-1"])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
+    await asyncio.sleep(0)
 
     assert job_manager.commits == [1]
     assert job_manager.aborts == []
@@ -644,7 +637,7 @@ class _InferenceWithoutBackendBatchJobManager:
         if self._select_calls >= 1:
             raise asyncio.CancelledError
 
-    async def reserve_batch(self, batch_size: int) -> Any:
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
             mystery_op = SimpleNamespace(backend="", task_type="inference")
@@ -661,7 +654,7 @@ class _InferenceWithoutBackendBatchJobManager:
     async def commit_reservation(self, reservation: Any) -> None:
         self.committed_count += 1
 
-    async def abort_reservation(self, reservation: Any) -> None:
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
 
 
@@ -677,24 +670,280 @@ async def test_scheduler_inference_task_type_requests_gpu_even_without_backend(
     server.config.cpu_worker_group_size = 1
     server.job_manager = cast(Any, _InferenceWithoutBackendBatchJobManager())
 
-    captured_gpu_sizes: list[int] = []
+    claimed: list[list[str]] = []
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
 
-    async def _record_worker_group(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> list[str]:
-        captured_gpu_sizes.append(gpu_group_size)
-        return ["gpu-0", "gpu-1", "cpu-0"]
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        claimed.append(list(workers))
+
+    _patch_capacity(server, ["cpu-0", "cpu-1"], ["gpu-0", "gpu-1"])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+    await asyncio.sleep(0)
+
+    assert claimed == [["gpu-0", "gpu-1", "cpu-0"]]
+
+
+class _AlwaysReserveJobManager:
+    """Yields a reservation on every call; used to exercise capacity waits."""
+
+    def __init__(self) -> None:
+        self.reserve_calls = 0
+
+    async def wait_for_work(self) -> None:
+        return
+
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
+        self.reserve_calls += 1
+        selection = SimpleNamespace(
+            config=SimpleNamespace(hardware_requirements=None),
+            workflows=[SimpleNamespace(request_id="req", id="wf")],
+            runtime_graphs={},
+            clustering_seconds=0.0,
+            name="batch",
+        )
+        return SimpleNamespace(selection=selection)
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        return
+
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
+        return
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_spin_when_no_eligible_capacity(
+    server_factory,
+) -> None:
+    """Queue non-empty + no eligible capacity must block on the capacity wait,
+    not spin through snapshot -> reserve -> repeat."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    server.job_manager = cast(Any, _AlwaysReserveJobManager())
+
+    async def _no_accumulation_wait(free: Any = None) -> None:
+        return
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
         return
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    async def _always_fail_claim(batch: Any, free: Any) -> None:
+        return None
+
+    # Capacity is non-empty but the claim always fails (e.g. lost a race).
+    _patch_capacity(server, ["cpu-0"], [])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+    server._try_claim_workers = _always_fail_claim  # type: ignore[method-assign]
+
+    wait_calls = 0
+    release = asyncio.Event()
+
+    async def _blocking_wait_capacity() -> None:
+        nonlocal wait_calls
+        wait_calls += 1
+        await release.wait()
+
+    server._wait_capacity = _blocking_wait_capacity  # type: ignore[method-assign]
+
+    scheduler_task = asyncio.create_task(server._scheduler_loop())
+    # Let the loop reach the capacity wait. It must block there rather than
+    # spinning through reserve_batch repeatedly.
+    for _ in range(100):
+        if wait_calls >= 1:
+            break
+        await asyncio.sleep(0)
+    assert wait_calls == 1
+    # While blocked on the capacity wait, no further reservations are made.
+    reserve_calls_at_wait = server.job_manager.reserve_calls
+    await asyncio.sleep(0.01)
+    assert server.job_manager.reserve_calls == reserve_calls_at_wait
+    # The loop is genuinely suspended in the capacity wait (release is never
+    # set), so cancellation must be deliverable.
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
+
+
+class _CapacityRecordingJobManager:
+    """Records the capacity argument passed to each reserve_batch call."""
+
+    def __init__(self) -> None:
+        self.capacities: list[Any] = []
+        self._reserve_calls = 0
+
+    async def wait_for_work(self) -> None:
+        if self._reserve_calls >= 1:
+            raise asyncio.CancelledError
+
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
+        self._reserve_calls += 1
+        self.capacities.append(capacity)
+        selection = SimpleNamespace(
+            config=SimpleNamespace(hardware_requirements=None),
+            workflows=[SimpleNamespace(request_id="req", id="wf")],
+            runtime_graphs={},
+            clustering_seconds=0.0,
+            name="batch",
+        )
+        return SimpleNamespace(selection=selection)
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        return
+
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
+        return
+
+
+async def _run_capacity_recording_loop(
+    server: Any, job_manager: _CapacityRecordingJobManager
+) -> None:
+    server.job_manager = cast(Any, job_manager)
+
+    async def _no_accumulation_wait(free: Any = None) -> None:
+        return
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        return
+
+    _patch_capacity(server, ["cpu-0"], [])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     await server._scheduler_loop()
+    await asyncio.sleep(0)
 
-    assert captured_gpu_sizes == [2]
+
+@pytest.mark.asyncio
+async def test_capacity_aware_selection_flag_controls_capacity_passed(
+    server_factory,
+) -> None:
+    """LUMILAKE_CAPACITY_AWARE_SELECTION gates whether reserve_batch sees
+    capacity. On, selection is capacity-filtered; off, it is capacity-blind."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+
+    on_manager = _CapacityRecordingJobManager()
+    server.config.capacity_aware_selection = True
+    await _run_capacity_recording_loop(server, on_manager)
+    assert len(on_manager.capacities) == 1
+    assert on_manager.capacities[0] is not None
+
+    # The noop run never releases the claimed worker; reset busy state so the
+    # second loop sees idle capacity again.
+    server._busy_workers.clear()
+
+    off_manager = _CapacityRecordingJobManager()
+    server.config.capacity_aware_selection = False
+    await _run_capacity_recording_loop(server, off_manager)
+    assert len(off_manager.capacities) == 1
+    assert off_manager.capacities[0] is None
+
+
+@pytest.mark.asyncio
+async def test_release_workers_wakes_capacity_waiter(server_factory) -> None:
+    """The production release path frees workers and wakes a capacity waiter."""
+    server = server_factory()
+    server._busy_workers.add("cpu-0")
+
+    waiter = asyncio.create_task(server._capacity_changed.wait())
+    await server._release_workers(["cpu-0"])
+
+    assert "cpu-0" not in server._busy_workers
+    await asyncio.wait_for(waiter, timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_rejects_undersized_worker(server_factory) -> None:
+    """Hardware filtering rejects a worker that cannot meet the batch's
+    hardware requirements."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+
+    batch = SimpleNamespace(
+        config=SimpleNamespace(
+            hardware_requirements=SimpleNamespace(
+                cpu=8, memory=None, gpu=None, gpu_memory=None
+            )
+        ),
+        workflows=[SimpleNamespace(request_id="req", id="wf")],
+        runtime_graphs={},
+        clustering_seconds=0.0,
+    )
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-0",),
+        gpu_worker_ids=(),
+        profiles={"cpu-0": {"cpu": {"logical_cores": 4}}},
+    )
+    # 4 cores < required 8, so the claim must fail.
+    assert await server._try_claim_workers(batch, free) is None
+    assert server._busy_workers == set()
+
+
+class _CommitRaisesJobManager:
+    """Yields one reservation whose commit raises."""
+
+    def __init__(self) -> None:
+        self._select_calls = 0
+        self.aborted_count = 0
+
+    async def wait_for_work(self) -> None:
+        if self._select_calls >= 1:
+            raise asyncio.CancelledError
+
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
+        self._select_calls += 1
+        if self._select_calls == 1:
+            selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
+                workflows=[SimpleNamespace(request_id="req", id="wf")],
+                runtime_graphs={},
+                clustering_seconds=0.0,
+                name="batch",
+            )
+            return SimpleNamespace(selection=selection)
+        return None
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        raise RuntimeError("commit failed")
+
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
+        self.aborted_count += 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_releases_workers_when_commit_raises(server_factory) -> None:
+    """If commit_reservation raises after workers are claimed, the claimed
+    workers must be released so they do not stay busy forever."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    job_manager = _CommitRaisesJobManager()
+    server.job_manager = cast(Any, job_manager)
+
+    async def _no_accumulation_wait(free: Any = None) -> None:
+        return
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        return
+
+    _patch_capacity(server, ["cpu-0", "cpu-1"], [])
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+    await asyncio.sleep(0)
+
+    # The commit raised, so the batch was never dispatched; the claimed worker
+    # must have been released and the reservation aborted.
+    assert server._busy_workers == set()
+    assert job_manager.aborted_count == 1

@@ -251,6 +251,7 @@ def make_server() -> LumilakeServer:
             batch_size=4,
             cpu_worker_group_size=1,
             gpu_worker_group_size=0,
+            poll_interval_seconds=0.01,
         ),
     )
 
