@@ -29,6 +29,7 @@ class WorkflowItem:
     config: LumilakeRequestConfig
     enqueued_at: float
     dispatch_token: str | None = None
+    api_credential_digest: str | None = None
     miss_count: int = 0
 
 
@@ -69,6 +70,7 @@ class Job:
     workflow_slices: dict[str, WorkflowSliceMeta]
     config: LumilakeRequestConfig
     dispatch_token: str | None = None
+    api_credential_digest: str | None = None
 
 
 class BaseJobManager(ABC):
@@ -80,18 +82,22 @@ class BaseJobManager(ABC):
         job: Job,
     ) -> list[WorkflowItem]:
         """Enqueue multiple workflows and return their metadata."""
+        raise NotImplementedError
 
     @abstractmethod
     async def has_work(self) -> bool:
         """Return True if there are queued workflows."""
+        raise NotImplementedError
 
     @abstractmethod
     async def wait_for_work(self) -> None:
         """Block until there is queued work."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_pending_stats(self) -> tuple[int, float | None]:
         """Return (pending workflow count, oldest enqueue timestamp)."""
+        raise NotImplementedError
 
     @abstractmethod
     async def reserve_batch(self, batch_size: int) -> BatchReservation | None:
@@ -102,14 +108,17 @@ class BaseJobManager(ABC):
         released with ``abort_reservation`` (queue is unchanged).
         Overlapping reservations are not supported.
         """
+        raise NotImplementedError
 
     @abstractmethod
     async def commit_reservation(self, reservation: BatchReservation) -> None:
         """Apply the queue mutations associated with ``reservation``."""
+        raise NotImplementedError
 
     @abstractmethod
     async def abort_reservation(self, reservation: BatchReservation) -> None:
         """Discard the reservation; the queue is left exactly as it was."""
+        raise NotImplementedError
 
     async def select_batch(self, batch_size: int) -> BatchSelection | None:
         """Reserve + commit in one call. Convenience for callers that don't
@@ -123,7 +132,9 @@ class BaseJobManager(ABC):
     @abstractmethod
     def finalize_workflows(self, workflow_ids: Iterable[str]) -> None:
         """Drop metadata for completed workflows."""
+        raise NotImplementedError
 
     @abstractmethod
     def get_workflow(self, workflow_id: str) -> WorkflowItem:
         """Lookup workflow metadata by ID."""
+        raise NotImplementedError

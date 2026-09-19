@@ -116,6 +116,42 @@ def test_halo_optimizer_rejects_data_profiling_nodes() -> None:
         optimizer._validate_supported_runtime_nodes(graph)
 
 
+def _api_graph() -> RuntimeGraph:
+    return RuntimeGraph(
+        nodes={
+            "a1": RuntimeOp(
+                node_id="a1",
+                task_type="api",
+                backend="api",
+                model="meta-llama/Llama-3.1-8B-Instruct",
+                data_spec={"type": "graph_template", "template": {}},
+                model_spec={},
+                inference_spec={},
+            )
+        },
+        node_order=["a1"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+
+def test_halo_optimizer_places_api_node_on_cpu_worker() -> None:
+    optimizer = HaloOptimizer()
+    graph = _api_graph()
+    schedule = optimizer.generate_schedule(
+        graph=graph,
+        worker_names=["gpu-0", "cpu-0"],
+        worker_profiles={"gpu-0": {"has_gpu": True}, "cpu-0": {"has_gpu": False}},
+    )
+    scheduled = {
+        node_id
+        for worker_nodes in schedule.worker_assignment.values()
+        for node_id in worker_nodes
+    }
+    assert scheduled == {"a1"}
+    assert "a1" in schedule.worker_assignment["cpu-0"]
+
+
 def test_model_size_resolution_parses_suffix() -> None:
     optimizer = HaloOptimizer()
     size = optimizer._model_size_b(

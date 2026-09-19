@@ -73,6 +73,7 @@ async def test_finalize_skips_overwrite_when_cancel_won_during_unlocked_gap(
             (),
             {
                 "set_dispatch_token": staticmethod(lambda *a, **kw: None),
+                "set_api_credential": staticmethod(lambda *a, **kw: None),
             },
         )()
 

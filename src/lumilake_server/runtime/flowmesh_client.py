@@ -9,6 +9,7 @@ and the SDK's ``api_key`` argument carries it through the SSE streaming path.
 import asyncio
 import contextvars
 import threading
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Request
@@ -73,6 +74,46 @@ def flowmesh_for_server() -> AsyncFlowMesh:
     Scheduler-internal only — route handlers must not call this.
     """
     return flowmesh_for_token(envs.RUNTIME_TOKEN)
+
+
+_DEFAULT_API_ORIGIN = "https://lum.id"
+_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    host = parts.hostname
+    if not host:
+        raise ValueError(f"invalid API endpoint origin (no host): {url!r}")
+    port = parts.port
+    if port is None:
+        port = _DEFAULT_PORTS.get(parts.scheme.lower())
+    return parts.scheme.lower(), host.lower(), port
+
+
+def _trusted_origins() -> set[tuple[str, str, int | None]]:
+    origins = {_origin(_DEFAULT_API_ORIGIN)}
+    raw = envs.LUMILAKE_API_TRUSTED_ORIGINS.strip()
+    if raw:
+        origins.update(_origin(item.strip()) for item in raw.split(",") if item.strip())
+    return origins
+
+
+def is_api_origin_trusted(url: str) -> bool:
+    """Whether ``url``'s origin is in the API trusted-origins allowlist."""
+    return _origin(url) in _trusted_origins()
+
+
+def resolve_api_credential(url: str) -> str | None:
+    """Return the server PAT for a trusted API endpoint origin, else ``None``.
+
+    The scheduler credential is only ever attached to an allowlisted origin;
+    a caller-selected endpoint must carry its own credential. This is the only
+    place ``envs.RUNTIME_TOKEN`` is read for API-mode calls.
+    """
+    if is_api_origin_trusted(url):
+        return envs.RUNTIME_TOKEN
+    return None
 
 
 async def close_current_loop_http_client() -> None:

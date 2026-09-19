@@ -132,6 +132,9 @@ class _FakeRuntimeManager:
     def set_dispatch_token(self, job_id: str, token: str | None) -> None:
         return None
 
+    def set_api_credential(self, job_id: str, credential: str | None) -> None:
+        return None
+
 
 class _FakeRuntimeServer:
     is_started = True

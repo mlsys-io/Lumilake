@@ -211,6 +211,44 @@ async def test_scheduler_cpu_only_batch_skips_gpu_wait(server_factory) -> None:
     assert captured_gpu_sizes == [0]
 
 
+@pytest.mark.asyncio
+async def test_scheduler_cpu_batch_requests_a_cpu_worker_when_group_size_is_zero(
+    server_factory,
+) -> None:
+    """LUMILAKE_CPU_WORKER_GROUP_SIZE=0 is only valid alongside a nonzero GPU
+    group (envs.py), but a batch containing a CPU-only op (data_retrieval /
+    api) still needs one CPU worker to be requested — matching what
+    schedule preview (_select_preview_workers_and_profiles) already
+    requires for the same graph. Without this, dispatch requests zero CPU
+    workers for an API-mode graph and HALO later rejects the schedule."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 2
+    server.config.cpu_worker_group_size = 0
+    server.job_manager = cast(Any, _CpuOnlyBatchJobManager())
+
+    captured_cpu_sizes: list[int] = []
+
+    async def _no_accumulation_wait() -> None:
+        return
+
+    async def _record_worker_group(
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
+    ) -> list[str]:
+        captured_cpu_sizes.append(cpu_group_size)
+        return ["cpu-0"]
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        return
+
+    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._wait_for_available_worker_group = _record_worker_group  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+
+    assert captured_cpu_sizes == [1]
+
+
 class _GpuBatchJobManager:
     """Yields one batch containing a GPU-backend op then cancels."""
 

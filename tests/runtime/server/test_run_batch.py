@@ -12,6 +12,7 @@ from support.runtime_server import (
     make_batch,
     make_runtime_op,
     make_workflow,
+    make_workflow_slices_from_inputs,
 )
 
 import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
@@ -307,6 +308,43 @@ async def test_run_batch_failure_does_not_fetch_task_node_map(
 
 
 @pytest.mark.asyncio
+async def test_run_batch_failure_redacts_credential_from_batch_error(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch-processing exception can carry a credential FlowMesh echoed
+    back in a rejection body (e.g. the Authorization header from the task
+    spec we submitted). The persisted `batch_error` must not leak it."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        )
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    async def _fail_process_batch(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(
+            'submit rejected, echoed spec: {"Authorization": "Bearer sk-live-secret"}'
+        )
+
+    monkeypatch.setattr(server, "_process_batch", _fail_process_batch)
+    await server._run_batch(["worker-1"], batch)
+
+    errors = handlers["req-a"].results[0].error_info
+    assert errors is not None
+    serialized_errors = json.dumps(errors)
+    assert "sk-live-secret" not in serialized_errors
+    assert "***REDACTED***" in serialized_errors
+
+
+@pytest.mark.asyncio
 async def test_run_batch_tracks_success_only_completed_inputs(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -350,6 +388,51 @@ async def test_run_batch_tracks_success_only_completed_inputs(
     state = server._requests["req-a"]
     assert state.completed_input_items_success == 1
     assert state.successful_workflow_ids == {"wf-a"}
+
+
+@pytest.mark.asyncio
+async def test_run_batch_slice_failure_does_not_roll_back_other_slice_results(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Characterizes the documented cross-slice contract: a later slice's
+    failure does not erase an earlier slice's already-merged results."""
+    server = server_factory()
+    runtime_manager = RecordingRuntimeManager()
+    server.runtime_manager = cast(Any, runtime_manager)
+
+    slice0, slice1 = make_workflow_slices_from_inputs(
+        request_id="req-slices",
+        public_graph_name="shared",
+        entities=["NVDA", "AAPL"],
+    )
+    handlers = attach_request_states(server, [slice0, slice1])
+
+    async def _succeed_process_batch(
+        selected_batch: BatchSelection,
+        batch_id: str,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        *,
+        execution_request_id: str,
+        member_request_ids: set[str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return {slice0.workflow_id: {"result": ["nvda-reply"]}}, {}
+
+    monkeypatch.setattr(server, "_process_batch", _succeed_process_batch)
+    await server._run_batch(["worker-1"], make_batch([slice0]))
+
+    async def _fail_process_batch(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("api row failed for AAPL")
+
+    monkeypatch.setattr(server, "_process_batch", _fail_process_batch)
+    await server._run_batch(["worker-1"], make_batch([slice1]))
+
+    assert len(handlers["req-slices"].results) == 1
+    response = handlers["req-slices"].results[0]
+    assert response.outputs["shared"]["result"] == ["nvda-reply", ""]
+    assert response.error_info is not None
+    assert any("api row failed for AAPL" in str(item) for item in response.error_info)
 
 
 @pytest.mark.asyncio

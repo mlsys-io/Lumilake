@@ -57,6 +57,11 @@ Carries Lumilake's own identity for control-plane reads (worker enumeration,
 profile fetches the scheduler needs to plan dispatch). Never used by HTTP
 route handlers — those forward the per-request bearer.
 """
+LUMILAKE_API_TRUSTED_ORIGINS: str = os.environ.get("LUMILAKE_API_TRUSTED_ORIGINS", "")
+"""Comma-separated origins (scheme://host[:port]) the server may attach its
+own PAT to for API-mode LLMChatOp calls. Defaults to the lum.id/llm origin.
+A caller-selected endpoint outside this set must carry its own credential.
+"""
 LUMILAKE_REQUIRE_IDENTITY_PROVIDER: bool = os.environ.get(
     "LUMILAKE_REQUIRE_IDENTITY_PROVIDER", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
