@@ -156,13 +156,56 @@ async def test_dispatched_request_carries_resolved_caller_credential(
 def test_resolve_trusted_origin_uses_server_pat(
     flowmesh_manager: FlowmeshRuntimeManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A trusted-origin PAT is a bare token; the serving endpoint requires an
+    auth scheme, so it must be dispatched as ``Bearer <pat>``."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "server-pat")
     task_spec = _task_spec(_TRUSTED_URL)
 
     flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
 
     node = task_spec["spec"]["graph"]["nodes"][0]
-    assert node["spec"]["api"]["headers"]["Authorization"] == "server-pat"
+    assert node["spec"]["api"]["headers"]["Authorization"] == "Bearer server-pat"
+
+
+def test_resolve_trusted_origin_bare_pat_gains_single_bearer_prefix(
+    flowmesh_manager: FlowmeshRuntimeManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trusted path yields a bare PAT (no scheme); it must gain exactly one
+    ``Bearer `` prefix and never be double-prefixed."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "lm_pat_live_f")
+    task_spec = _task_spec(_TRUSTED_URL)
+
+    flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
+
+    node = task_spec["spec"]["graph"]["nodes"][0]
+    assert node["spec"]["api"]["headers"]["Authorization"] == "Bearer lm_pat_live_f"
+
+
+def test_resolve_untrusted_origin_schemed_credential_passes_through(
+    flowmesh_manager: FlowmeshRuntimeManager,
+) -> None:
+    """A caller-supplied credential that already carries an auth scheme must be
+    left unchanged, not double-prefixed into ``Bearer Bearer ...``."""
+    flowmesh_manager.set_api_credential("req-1", "Bearer caller-key")
+    task_spec = _task_spec(_UNTRUSTED_URL)
+
+    flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
+
+    node = task_spec["spec"]["graph"]["nodes"][0]
+    assert node["spec"]["api"]["headers"]["Authorization"] == "Bearer caller-key"
+
+
+def test_resolve_untrusted_origin_basic_scheme_passes_through(
+    flowmesh_manager: FlowmeshRuntimeManager,
+) -> None:
+    """A non-Bearer scheme (e.g. Basic) is also left unchanged."""
+    flowmesh_manager.set_api_credential("req-1", "Basic dXNlcjpwYXNz")
+    task_spec = _task_spec(_UNTRUSTED_URL)
+
+    flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
+
+    node = task_spec["spec"]["graph"]["nodes"][0]
+    assert node["spec"]["api"]["headers"]["Authorization"] == "Basic dXNlcjpwYXNz"
 
 
 def test_resolve_untrusted_origin_uses_caller_credential(
