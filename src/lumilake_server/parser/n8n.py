@@ -3,6 +3,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from lumilake_server.common import retrieval_items_path
+
 from .common import make_id as _make_id
 
 # n8n wire-format node type identifiers. Private to this module — anything
@@ -983,6 +985,7 @@ def _make_postgres_retrieval_op(
                 query=query,
                 op_ids=op_ids,
                 inputs=inputs,
+                node_map=node_map,
             )
         )
         dep_inputs = [
@@ -1034,6 +1037,7 @@ def _make_postgres_retrieval_op(
         limit=limit,
         op_ids=op_ids,
         inputs=inputs,
+        node_map=node_map,
     )
 
     dep_inputs = [
@@ -1125,7 +1129,7 @@ def _make_agent_retrieval_op(
         raise ValueError(f"n8n agent node '{node_name}' notes 'verify' must be a bool.")
 
     description, agent_params, extra_deps = _build_execute_query_template_and_params(
-        query=text, op_ids=op_ids, inputs=inputs
+        query=text, op_ids=op_ids, inputs=inputs, node_map=node_map
     )
 
     main_inputs = [
@@ -1349,7 +1353,7 @@ def _extract_rowwise_columns(
                 {
                     "label": label,
                     "node": op_ids[node_name],
-                    "path": f"items.table.{column}",
+                    "path": f"{retrieval_items_path('sql')}.{column}",
                 }
             )
         elif node_type == N8N_S3_NODE:
@@ -1357,7 +1361,7 @@ def _extract_rowwise_columns(
                 {
                     "label": label,
                     "node": op_ids[node_name],
-                    "path": "items.content",
+                    "path": retrieval_items_path("s3"),
                 }
             )
         elif node_type == N8N_CHAT_TRIGGER:
@@ -1376,7 +1380,7 @@ def _extract_rowwise_columns(
                 {
                     "label": label,
                     "node": op_ids[node_name],
-                    "path": "items.table",
+                    "path": retrieval_items_path("agent"),
                 }
             )
         else:
@@ -1441,9 +1445,11 @@ def _build_aggregate_prompt_content(
             ref_node = node_map.get(ref_node_name)
             ref_type = ref_node.get("type") if isinstance(ref_node, dict) else None
             if ref_type == N8N_POSTGRES_NODE:
-                item_path = f"items.table.{_path_to_label(path) or column}"
+                item_path = (
+                    f"{retrieval_items_path('sql')}.{_path_to_label(path) or column}"
+                )
             elif ref_type == N8N_AGENT_NODE:
-                item_path = "items.table"
+                item_path = retrieval_items_path("agent")
             else:
                 item_path = _to_runtime_output_path(path) or "items.output"
             table_spec.append(
@@ -1459,11 +1465,12 @@ def _build_aggregate_prompt_content(
         if ref_node and ref_node.get("type") == N8N_POSTGRES_NODE and upstream_main:
             upstream_id = op_ids.get(upstream_main)
             if upstream_id:
+                suffix = _path_to_label(path) or column
                 table_spec.append(
                     {
                         "label": column,
                         "node": upstream_id,
-                        "path": f"items.table.{_path_to_label(path) or column}",
+                        "path": f"{retrieval_items_path('sql')}.{suffix}",
                     }
                 )
 
@@ -1639,6 +1646,7 @@ def _build_sql_template_and_params(
     limit: int | str | None,
     op_ids: dict[str, str],
     inputs: dict[str, list[str]],
+    node_map: dict[str, dict[str, Any]],
 ) -> tuple[str, list[dict[str, Any]]]:
     select_cols = (
         ", ".join(_quote_column_ref(col) for col in locked_columns)
@@ -1650,6 +1658,9 @@ def _build_sql_template_and_params(
     seen_labels: set[str] = set()
     input_names_by_op_id = {
         op_id: name for name, op_id in op_ids.items() if name in inputs
+    }
+    op_type_by_id = {
+        op_id: (node_map.get(name) or {}).get("type") for name, op_id in op_ids.items()
     }
 
     def add_param(label: str, payload: dict[str, Any]) -> None:
@@ -1680,7 +1691,15 @@ def _build_sql_template_and_params(
                     {"data": {"type": "list", "items": inputs[input_name]}},
                 )
             else:
-                add_param(clause_label, {"node": resolved_val, "path": "items.output"})
+                add_param(
+                    clause_label,
+                    {
+                        "node": resolved_val,
+                        "path": _referenced_op_path(
+                            op_type_by_id.get(resolved_val), None
+                        ),
+                    },
+                )
             where_clauses.append(f"{_quote_column_ref(str(col))} {op} '{placeholder}'")
             continue
         if isinstance(resolved_val, (list, tuple)):
@@ -1706,7 +1725,13 @@ def _build_sql_template_and_params(
         if input_name:
             add_param("limit", {"data": {"type": "list", "items": inputs[input_name]}})
         else:
-            add_param("limit", {"node": limit, "path": "items.output"})
+            add_param(
+                "limit",
+                {
+                    "node": limit,
+                    "path": _referenced_op_path(op_type_by_id.get(limit), None),
+                },
+            )
         query += " LIMIT {limit}"
     elif limit is not None:
         query += f" LIMIT {_sql_literal(limit)}"
@@ -1715,7 +1740,10 @@ def _build_sql_template_and_params(
 
 
 def _build_execute_query_template_and_params(
-    query: str, op_ids: dict[str, str], inputs: dict[str, list[str]]
+    query: str,
+    op_ids: dict[str, str],
+    inputs: dict[str, list[str]],
+    node_map: dict[str, dict[str, Any]],
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     template = _strip_expr(query).strip()
     params: list[dict[str, Any]] = []
@@ -1723,6 +1751,9 @@ def _build_execute_query_template_and_params(
     dependencies: list[str] = []
     input_names_by_op_id = {
         op_id: name for name, op_id in op_ids.items() if name in inputs
+    }
+    op_type_by_id = {
+        op_id: (node_map.get(name) or {}).get("type") for name, op_id in op_ids.items()
     }
 
     def add_param(label: str, payload: dict[str, Any]) -> None:
@@ -1750,7 +1781,13 @@ def _build_execute_query_template_and_params(
                     label, {"data": {"type": "list", "items": inputs[input_name]}}
                 )
             else:
-                add_param(label, {"node": resolved, "path": "items.output"})
+                add_param(
+                    label,
+                    {
+                        "node": resolved,
+                        "path": _referenced_op_path(op_type_by_id.get(resolved), None),
+                    },
+                )
                 dependencies.append(resolved)
             return f"{{{label}}}"
         return _sql_literal(resolved)
@@ -1852,23 +1889,32 @@ def _parse_s3_folder_key(
             continue
 
         node_type = (node_map.get(ref_name) or {}).get("type")
-        path = _s3_param_path(node_type, ref_path)
+        path = _referenced_op_path(node_type, ref_path)
         key_params.append({"label": label, "node": node_id, "path": path})
         dependencies.append(node_id)
 
     return template.lstrip("/"), key_params, dependencies
 
 
-def _s3_param_path(node_type: Any, ref_path: str | None) -> str:
+def _referenced_op_path(node_type: Any, ref_path: str | None) -> str:
+    """Resolve the items path for a node referenced as a query parameter.
+
+    A retrieval node (postgres, s3, or agent) carries its rows on a
+    mode-derived path; any other node type is an LLM-style output.
+    """
     if node_type == N8N_POSTGRES_NODE:
         column = _path_to_label(ref_path)
         if not column:
-            raise ValueError("S3 folderKey references a SQL node without a field path")
-        return f"items.table.{column}"
+            raise ValueError(
+                "Query parameter references a SQL node without a field path"
+            )
+        return f"{retrieval_items_path('sql')}.{column}"
     if node_type == N8N_S3_NODE:
         label = _path_to_label(ref_path)
         if label in {None, "content"}:
-            return "items.content"
+            return retrieval_items_path("s3")
+    if node_type == N8N_AGENT_NODE:
+        return retrieval_items_path("agent")
     runtime_path = _to_runtime_output_path(ref_path)
     return runtime_path or "items.output"
 

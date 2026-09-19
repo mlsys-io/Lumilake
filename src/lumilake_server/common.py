@@ -1,6 +1,28 @@
 from dataclasses import asdict, dataclass, fields
 from typing import Any, ClassVar
 
+RETRIEVAL_MODES = ("sql", "s3", "agent")
+
+
+def retrieval_items_path(mode: str) -> str:
+    """Return the items path that carries a retrieval's rows for ``mode``.
+
+    An agent-mode retrieval replays a SQL plan, so its executor emits rows
+    under ``table`` like SQL mode; s3 emits ``content``. Any other mode is
+    rejected loudly rather than silently bound to a field the executor never
+    emits.
+    """
+    if mode == "sql":
+        return "items.table"
+    if mode == "s3":
+        return "items.content"
+    if mode == "agent":
+        return "items.table"
+    raise ValueError(
+        f"Unsupported retrieval mode {mode!r}; expected one of "
+        f"{', '.join(RETRIEVAL_MODES)}"
+    )
+
 
 @dataclass(slots=True)
 class Message:
