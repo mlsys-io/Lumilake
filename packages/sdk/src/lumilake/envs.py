@@ -122,6 +122,35 @@ LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
     "LUMILAKE_CAPACITY_AWARE_SELECTION", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
+# Scheduling policy. "legacy" reproduces today's selection exactly; "fair_index"
+# enables fair-weighted index ordering (w(user) / p_hat(item)) with a
+# least-attained-service fallback for unestimable items.
+LUMILAKE_SCHEDULER_POLICY: str = (
+    (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "legacy").strip().lower()
+)
+# Half-life (seconds) of the exponentially-decayed attained-service accounting.
+LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS: float = float(
+    os.environ.get("LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS") or "600"
+)
+# Fair-share target (dominant-resource area) at which a user's fairness weight
+# halves; the denominator of w(user) = 1 / (1 + attained / target).
+LUMILAKE_FAIR_SHARE_TARGET: float = float(
+    os.environ.get("LUMILAKE_FAIR_SHARE_TARGET") or "10"
+)
+# Analytic cost-model coefficients (see cost.py / docs/SCHEDULING.md S6).
+LUMILAKE_COST_DB_SEC_PER_QUERY: float = float(
+    os.environ.get("LUMILAKE_COST_DB_SEC_PER_QUERY") or "0.05"
+)
+LUMILAKE_COST_CPU_SEC_PER_NODE: float = float(
+    os.environ.get("LUMILAKE_COST_CPU_SEC_PER_NODE") or "0.1"
+)
+LUMILAKE_COST_DEFAULT_MODEL_SIZE_B: float = float(
+    os.environ.get("LUMILAKE_COST_DEFAULT_MODEL_SIZE_B") or "20"
+)
+LUMILAKE_COST_INPUT_QUERY_COUNT: int = int(
+    os.environ.get("LUMILAKE_COST_INPUT_QUERY_COUNT") or "1"
+)
+
 LUMILAKE_POLL_TIMEOUT_SECONDS: float = float(
     os.environ.get("LUMILAKE_POLL_TIMEOUT_SECONDS") or "inf"
 )
@@ -356,6 +385,20 @@ def validate() -> None:
 
     if LUMILAKE_JOB_MANAGER_TYPE not in ("priority",):
         raise ValueError("LUMILAKE_JOB_MANAGER_TYPE must be 'priority'")
+    if LUMILAKE_SCHEDULER_POLICY not in ("legacy", "fair_index"):
+        raise ValueError("LUMILAKE_SCHEDULER_POLICY must be 'legacy' or 'fair_index'")
+    if LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS <= 0:
+        raise ValueError("LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS must be > 0")
+    if LUMILAKE_FAIR_SHARE_TARGET <= 0:
+        raise ValueError("LUMILAKE_FAIR_SHARE_TARGET must be > 0")
+    if LUMILAKE_COST_DB_SEC_PER_QUERY <= 0:
+        raise ValueError("LUMILAKE_COST_DB_SEC_PER_QUERY must be > 0")
+    if LUMILAKE_COST_CPU_SEC_PER_NODE <= 0:
+        raise ValueError("LUMILAKE_COST_CPU_SEC_PER_NODE must be > 0")
+    if LUMILAKE_COST_DEFAULT_MODEL_SIZE_B <= 0:
+        raise ValueError("LUMILAKE_COST_DEFAULT_MODEL_SIZE_B must be > 0")
+    if LUMILAKE_COST_INPUT_QUERY_COUNT <= 0:
+        raise ValueError("LUMILAKE_COST_INPUT_QUERY_COUNT must be > 0")
     if LUMILAKE_RUNTIME_MANAGER_TYPE not in ("default", "flowmesh"):
         raise ValueError(
             "LUMILAKE_RUNTIME_MANAGER_TYPE must be 'default' or 'flowmesh'"
