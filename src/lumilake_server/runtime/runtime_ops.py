@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -21,6 +21,7 @@ class RuntimeOpSchema(BaseModel):
     data_spec: dict[str, Any] = Field(default_factory=dict)
     model_spec: dict[str, Any] = Field(default_factory=dict)
     inference_spec: dict[str, Any] = Field(default_factory=dict)
+    api_spec: dict[str, Any] = Field(default_factory=dict)
     dependencies: list[str] = Field(default_factory=list)
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
@@ -35,6 +36,7 @@ class RuntimeOp:
     data_spec: dict[str, Any]
     model_spec: dict[str, Any]
     inference_spec: dict[str, Any]
+    api_spec: dict[str, Any] = field(default_factory=dict)
     dependencies: tuple[str, ...] = ()
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
@@ -51,6 +53,7 @@ class RuntimeOp:
             data_spec=self.data_spec,
             model_spec=self.model_spec,
             inference_spec=self.inference_spec,
+            api_spec=self.api_spec,
             dependencies=list(self.dependencies),
             output_spec=self.output_spec,
             condition=self.condition,
@@ -66,6 +69,7 @@ class RuntimeOp:
             data_spec=schema.data_spec,
             model_spec=schema.model_spec,
             inference_spec=schema.inference_spec,
+            api_spec=schema.api_spec,
             dependencies=tuple(schema.dependencies),
             output_spec=schema.output_spec,
             condition=schema.condition,
@@ -76,11 +80,12 @@ class RuntimeOp:
         return cls.from_schema(node_id, RuntimeOpSchema.model_validate(payload))
 
     def to_flowmesh_node(self) -> dict[str, Any]:
-        spec_payload: dict[str, Any] = {
-            "taskType": self.task_type,
-            "data": self.data_spec,
-        }
-        if self.task_type in {
+        spec_payload: dict[str, Any] = {"taskType": self.task_type}
+        if self.task_type != "api":
+            spec_payload["data"] = self.data_spec
+        if self.task_type == "api":
+            spec_payload["api"] = self.api_spec
+        elif self.task_type in {
             "inference",
             "diffusion",
             "embedding",

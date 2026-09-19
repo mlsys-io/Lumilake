@@ -9,7 +9,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `DataOp` | Inline static data. |
 | `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
-| `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. |
+| `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
@@ -92,6 +92,102 @@ is the embedding of input text `i`. A downstream op therefore receives
 `slice_length` per-row vector inputs (one embedding per input doc), and a
 consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `row`.
+
+### LLMChatOp via external API
+
+By default `LLMChatOp` runs against a locally-loaded model (vLLM /
+transformers) on a FlowMesh worker. Setting `config.api` routes the op to
+an external LLM API endpoint instead: the runtime builds a FlowMesh `api`
+task whose body is an OpenAI-style `{model, messages, ...samplers}` chat
+completion request, and the worker's `api_executor` performs the HTTP call.
+
+```yaml
+ops:
+  - id: "Ask"
+    op: LLMChatOp
+    messages:
+      - role: user
+        content: "Summarize the latest news for {symbol}."
+    config:
+      model: Qwen/Qwen2.5-0.5B-Instruct
+      api: {}
+      max_tokens: 256
+```
+
+`config.api.url` is optional and defaults to the serving endpoint
+`https://lum.id/llm/v1/chat/completions`. `config.model` is required in both
+local and API mode — `config.api` is a backend switch and does not relax the
+model requirement, so the workflow spec reads the same either way. The request
+model resolves from `config.api.model`, then the top-level `config.model`.
+Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
+the request body.
+
+`config.api.timeout_sec` sets the per-request timeout for the API call,
+in seconds. When set, it is emitted into the FlowMesh `api` task spec and
+overrides the executor's default; when unset, no timeout key is emitted and
+the executor's own default applies. Use it for long-running extractions over
+large documents, which can exceed the executor's default.
+
+The credential is resolved server-side, not supplied by the caller. If
+`config.api.url`'s origin is on the trusted-origin allowlist (the default
+`https://lum.id`, extendable via `LUMILAKE_API_TRUSTED_ORIGINS`), the server
+attaches `Authorization: Bearer <LUMILAKE_RUNTIME_TOKEN>` itself; for any
+other origin the caller must set `config.api.authorization` explicitly, or
+the request is rejected before dispatch. This header does become part of
+the FlowMesh task spec that is actually submitted for execution — it is not
+kept out of the spec — but it is redacted (replaced with `***REDACTED***`)
+before the job is archived or an error body is logged.
+
+A message may also reference an upstream node's runtime output — the same
+way the local backend does, via `inputs:` plus that op's id in `messages:`
+(directly for a non-`LLMChatOp` upstream such as `DataRetrievalOp`, or
+through `FormatOp` when relaying another `LLMChatOp`'s output) — and API
+mode is not restricted to literal, build-time content. Such a reference
+renders as a FlowMesh `${node.path}` dispatch-time
+placeholder instead of a literal value: FlowMesh's dispatcher resolves it
+against the referenced node's real result immediately before the `api`
+executor runs, and the referenced node is added to this op's FlowMesh
+dependencies so dispatch waits for it. An upstream `LLMChatOp` (local or
+API-backed) renders as its text output; an upstream `DataRetrievalOp`
+renders per its mode (e.g. `sql` renders the retrieved table). A reference
+is always single-valued: an upstream `LLMChatOp` that produces multiple
+rows — whether by fanning out into several row-aligned nodes (see below)
+or by emitting several rows from a single node (a local rowwise op) —
+cannot be referenced this way; building the graph rejects it up front,
+since only this op's own message columns can carry that per-row
+alignment. The one exception is an API-mode consumer of an API-mode
+upstream: both are dispatched as `api` tasks, so the consumer fans out
+one node per upstream row, each referencing its own upstream row node
+(`${<row>.text}`) and declaring every upstream row node as a dependency.
+This includes an API rowwise upstream, which fans out into one node per
+row and is consumed per-row like any other fanned API upstream. Any other
+multi-row shape — a local consumer, a local upstream, a local rowwise
+upstream, or a `return_history` upstream — still fails closed at build
+time, because API mode cannot carry per-row alignment (or reconstruct
+per-row history) for it. An upstream `LLMChatOp` with `return_history`
+enabled is referenced the same way whether it ran locally or against an
+API: an API result carries no `metadata.prompt`, so the runtime inlines
+the literal prior prompt (the user message that was sent) at build time;
+a runtime-derived prior prompt cannot be reconstructed and fails closed.
+
+When a message's literal content resolves to a multi-row input column
+(e.g. `Stock: ["NVDA", "AAPL"]`), the op fans out into one FlowMesh `api`
+task per row instead of one aggregate call: row 0 keeps the op's own id,
+and row `i` (`i >= 1`) runs as `<op id>__row<i>`, each with that row's
+value substituted into the message content and each mapped back to the
+same declared output. Rows dispatch and complete independently, but
+within a single FlowMesh workflow request the failure semantics are
+all-or-nothing: if any row's task fails, that workflow request fails
+and no partial per-row results are returned for it, even for rows that
+already completed successfully.
+
+This guarantee holds per FlowMesh workflow request, not per job. A
+job's input rows can be split across multiple `input_batch_size`
+slices, each dispatched as its own independent workflow request; one
+slice's failure does not roll back another slice's already-merged
+results. The job's final response mixes the failed slice's rows (empty
+output plus an error entry) with the other slice's real per-row
+values.
 
 ### LambdaOp
 

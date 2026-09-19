@@ -398,6 +398,36 @@ def test_resolve_output_items_fails_fast_without_items_or_embedding_file() -> No
         manager._resolve_output_items({"ok": True}, "Embed")
 
 
+def test_resolve_output_items_accepts_api_text_result() -> None:
+    manager = FlowmeshRuntimeManager()
+    results_json = {"text": "Hello from the API", "status_code": 200}
+    items = manager._resolve_output_items(results_json, "Chat", task_type="api")
+    assert items == [{"output": "Hello from the API"}]
+
+
+def test_resolve_output_items_accepts_empty_api_text() -> None:
+    """An empty assistant response is valid locally (``_coerce_output_value``
+    preserves ``""``); API mode must not turn it into an execution failure."""
+    manager = FlowmeshRuntimeManager()
+    results_json = {"text": "", "status_code": 200}
+    items = manager._resolve_output_items(results_json, "Chat", task_type="api")
+    assert items == [{"output": ""}]
+
+
+def test_resolve_output_items_api_prefers_items_when_present() -> None:
+    manager = FlowmeshRuntimeManager()
+    results_json = {"items": [{"output": "x"}], "text": "y"}
+    assert manager._resolve_output_items(results_json, "Chat", task_type="api") == [
+        {"output": "x"}
+    ]
+
+
+def test_resolve_output_items_api_fails_without_text() -> None:
+    manager = FlowmeshRuntimeManager()
+    with pytest.raises(RuntimeError, match="no API response text"):
+        manager._resolve_output_items({"status_code": 500}, "Chat", task_type="api")
+
+
 @pytest.mark.asyncio
 async def test_flat_embedding_result_aggregates_to_artifact_ref(
     _archive_env: tuple[_StubFm, _StubStorage],

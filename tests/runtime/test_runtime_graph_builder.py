@@ -211,6 +211,58 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
     assert news_sql.id in vlm.dependencies
 
 
+def test_local_rowwise_op_emits_condition() -> None:
+    """A local rowwise LLMChatOp must emit ``condition`` on its runtime node,
+    matching the API rowwise builder; a condition must not become effective
+    only when the backend is switched to API."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
+        ],
+        condition={"node": "gate", "expr": "gate == 'on'"},
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    assert runtime_graph.nodes[row_id].condition == {
+        "node": "gate",
+        "expr": "gate == 'on'",
+    }
+
+
+def test_local_aggregate_op_emits_condition() -> None:
+    """A local aggregate LLMChatOp must emit ``condition`` on its runtime node,
+    matching the API aggregate builder."""
+    stock = input_placeholder("Stock")
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[
+            {"label": "summary", "node": upstream.id, "path": "items.output"}
+        ],
+        condition={"node": "gate", "expr": "gate == 'on'"},
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    assert runtime_graph.nodes[row_id].condition == {
+        "node": "gate",
+        "expr": "gate == 'on'",
+    }
+
+
 def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:
     workflow = {
         "nodes": [
