@@ -329,6 +329,10 @@ def _render_dynamic_round0(
             threshold=spec.driver.threshold,
             library=spec.library,
             chat_template_kwargs=spec.driver.chat_template_kwargs,
+            max_model_len=spec.driver.max_model_len,
+            gpu_memory_utilization=spec.driver.gpu_memory_utilization,
+            dtype=spec.driver.dtype,
+            extra_engine_kwargs=spec.driver.extra_engine_kwargs,
         )
         return round_build.graph, declared_output_location
     except Exception as exc:
@@ -590,6 +594,18 @@ class JobStatusPayload(BaseModel):
     error: str | None = Field(
         default=None,
         description="Error message, if any.",
+    )
+    parent_job_id: str | None = Field(
+        default=None,
+        description=(
+            "Job id of the parent dynamic run this job is one round of, if any."
+        ),
+    )
+    child_job_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Job ids of the rounds this dynamic run has created so far, in order."
+        ),
     )
 
 
@@ -1609,6 +1625,8 @@ async def _submit_dynamic_child(
             optimizer_type,
             hardware_requirements,
             suppress_hooks=True,
+            chain_id=parent_job_id,
+            chain_round=round_index,
         )
     )
     try:
@@ -1753,6 +1771,10 @@ async def _run_dynamic_job(
                     threshold=spec.driver.threshold,
                     library=spec.library,
                     chat_template_kwargs=spec.driver.chat_template_kwargs,
+                    max_model_len=spec.driver.max_model_len,
+                    gpu_memory_utilization=spec.driver.gpu_memory_utilization,
+                    dtype=spec.driver.dtype,
+                    extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -1957,6 +1979,8 @@ async def _run_job(
     hardware_requirements: HardwareRequirements | None = None,
     parsed_graphs: dict[str, CompiledGraph] | None = None,
     suppress_hooks: bool = False,
+    chain_id: str | None = None,
+    chain_round: int = 0,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -2016,6 +2040,8 @@ async def _run_job(
                 principal_id=principal.principal_id,
                 optimizer_type=optimizer_type,
                 hardware_requirements=hardware_requirements,
+                chain_id=chain_id,
+                chain_round=chain_round,
             ),
             workflow_slices=workflow_slices,
         )

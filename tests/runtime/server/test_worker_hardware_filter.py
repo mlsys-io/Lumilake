@@ -14,9 +14,12 @@ def _profile(
     mem_bytes: int | None = 64 * (1024**3),
     gpu_count: int = 0,
     gpu_mem_bytes: int | None = None,
+    gpu_names: list[str] | None = None,
 ) -> dict[str, Any]:
+    names = gpu_names or ["NVIDIA GeForce RTX 5080"] * gpu_count
     devices: list[dict[str, Any]] = [
-        {"memory_total_bytes": gpu_mem_bytes} for _ in range(gpu_count)
+        {"memory_total_bytes": gpu_mem_bytes, "name": names[i]}
+        for i in range(gpu_count)
     ]
     return {
         "cpu": {"logical_cores": cores},
@@ -130,3 +133,62 @@ def test_explicit_worker_has_gpu_hint_avoids_redundant_classification() -> None:
         LumilakeServer._worker_meets_hardware(cpu_only, hw, worker_has_gpu=False)
         is True
     )
+
+
+# ---------------------------------------------------------------------------
+# gpu_model: substring, case-insensitive, GPU-role-only
+# ---------------------------------------------------------------------------
+
+
+def test_unset_gpu_model_changes_nothing() -> None:
+    """Backward-compat guard: omitting ``gpu_model`` must not alter the
+    existing filter behavior."""
+    hw = HardwareRequirements(gpu=1, gpu_memory="24Gi")
+    profile = _profile(gpu_count=1, gpu_mem_bytes=24 * (1024**3))
+    assert LumilakeServer._worker_meets_hardware(profile, hw) is True
+
+
+def test_gpu_model_matches_device_name_substring() -> None:
+    hw = HardwareRequirements(gpu_model="RTX 5080")
+    profile = _profile(gpu_count=1, gpu_names=["NVIDIA GeForce RTX 5080"])
+    assert LumilakeServer._worker_meets_hardware(profile, hw) is True
+
+
+def test_gpu_model_matches_short_substring() -> None:
+    """``"5080"`` matches ``"NVIDIA GeForce RTX 5080"`` without the vendor's
+    exact string."""
+    hw = HardwareRequirements(gpu_model="5080")
+    profile = _profile(gpu_count=1, gpu_names=["NVIDIA GeForce RTX 5080"])
+    assert LumilakeServer._worker_meets_hardware(profile, hw) is True
+
+
+def test_gpu_model_matching_is_case_insensitive() -> None:
+    hw = HardwareRequirements(gpu_model="rtx 5080")
+    profile = _profile(gpu_count=1, gpu_names=["NVIDIA GeForce RTX 5080"])
+    assert LumilakeServer._worker_meets_hardware(profile, hw) is True
+
+
+def test_gpu_model_rejects_non_matching_device() -> None:
+    hw = HardwareRequirements(gpu_model="RTX 5090")
+    profile = _profile(gpu_count=1, gpu_names=["NVIDIA GeForce RTX 5080"])
+    assert LumilakeServer._worker_meets_hardware(profile, hw) is False
+
+
+def test_gpu_model_ignores_cpu_only_worker() -> None:
+    """A CPU-only worker is unaffected by ``gpu_model`` — the constraint only
+    applies to GPU-capable workers."""
+    hw = HardwareRequirements(gpu_model="RTX 5080")
+    cpu_only = _profile(gpu_count=0)
+    assert LumilakeServer._worker_meets_hardware(cpu_only, hw) is True
+
+
+def test_gpu_model_unknown_device_names_still_pass() -> None:
+    """A GPU worker whose devices report no ``name`` is treated as unknown and
+    passes (unknown-passes rule)."""
+    hw = HardwareRequirements(gpu_model="RTX 5080")
+    profile = {
+        "cpu": {"logical_cores": 16},
+        "memory": {"total_bytes": 64 * (1024**3)},
+        "gpu": {"devices": [{"memory_total_bytes": 24 * (1024**3)}]},
+    }
+    assert LumilakeServer._worker_meets_hardware(profile, hw) is True

@@ -198,7 +198,7 @@ def test_resolve_gpu_memory_uses_override(monkeypatch: pytest.MonkeyPatch) -> No
 def test_hardware_signature_none_collapses_to_all_none() -> None:
     """Two jobs with no override must produce the same signature so they
     co-batch (and so we don't split partitions on a no-op."""
-    assert _hardware_signature(None) == (None, None, None, None)
+    assert _hardware_signature(None) == (None, None, None, None, None)
 
 
 def test_hardware_signature_distinct_cpu_partitions_distinct() -> None:
@@ -221,6 +221,16 @@ def test_hardware_signature_equal_overrides_match() -> None:
         HardwareRequirements(cpu=8, memory="16Gi", gpu=1, gpu_memory="24Gi")
     )
     assert sig_a == sig_b
+
+
+def test_hardware_signature_gpu_model_distinct_partitions_distinct() -> None:
+    """Two requests differing only in ``gpu_model`` must land in distinct
+    partitions so they are never dispatched together to a worker that
+    satisfies only one of them."""
+    sig_a = _hardware_signature(HardwareRequirements(gpu_model="RTX 5080"))
+    sig_b = _hardware_signature(HardwareRequirements(gpu_model="RTX 5090"))
+    assert sig_a != sig_b
+    assert sig_a != _hardware_signature(None)
 
 
 # ---------------------------------------------------------------------------
