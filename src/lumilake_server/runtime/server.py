@@ -29,6 +29,7 @@ import lumilake_server.hooks as server_hooks
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
+from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
     collect_data_profile,
@@ -36,6 +37,7 @@ from lumilake_server.runtime.data_profile_utils import (
 from lumilake_server.runtime.flowmesh_client import close_current_loop_http_client
 from lumilake_server.runtime.job_manager import (
     DEFAULT_QUANTUMS,
+    AbortReason,
     BaseJobManager,
     BatchSelection,
     Job,
@@ -265,6 +267,8 @@ class LumilakeServerConfig:
         gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
         queue_quantums: dict[Priority, int] | None = None,
         starvation_limit: int = envs.LUMILAKE_STARVATION_LIMIT,
+        poll_interval_seconds: float = envs.LUMILAKE_POLL_INTERVAL_SECONDS,
+        capacity_aware_selection: bool = envs.LUMILAKE_CAPACITY_AWARE_SELECTION,
     ) -> None:
         self.is_local = is_local
         """Whether to use a local Lumilake server."""
@@ -287,6 +291,10 @@ class LumilakeServerConfig:
         """Queue quantums per priority (high/medium/low)."""
         self.starvation_limit = starvation_limit
         """Number of candidate misses before forcing selection."""
+        self.poll_interval_seconds = poll_interval_seconds
+        """Bounded wait for capacity release / error-retry backoff."""
+        self.capacity_aware_selection = capacity_aware_selection
+        """Whether selection filters by free capacity (rollback lever)."""
 
         if is_local:
             self._host = self._port = None
@@ -348,6 +356,9 @@ class LumilakeServer:
             optimizer=self.optimizer,
             quantums=self.config.queue_quantums,
             starvation_limit=self.config.starvation_limit,
+            cpu_worker_group_size=self.config.cpu_worker_group_size,
+            gpu_worker_group_size=self.config.gpu_worker_group_size,
+            worker_meets_hardware=self._worker_meets_hardware,
             logger=self.logger,
         )
         # FlowmeshRuntimeManager reads orchestrator URL + token from envs directly
@@ -362,6 +373,7 @@ class LumilakeServer:
         self._inflight_tasks: set[asyncio.Task[Any]] = set()
         self._worker_lock = asyncio.Lock()
         self._busy_workers: set[str] = set()
+        self._capacity_changed = asyncio.Event()
         self._optimizer_lock = asyncio.Lock()
 
         self._requests: dict[str, RequestState] = {}
@@ -753,6 +765,12 @@ class LumilakeServer:
             api_credential_digest=self._api_credential_digest(
                 self.runtime_manager.get_api_credential(request.request_id)
             ),
+            requires_gpu={
+                graph_name: any(
+                    self._requires_gpu(op) for op in runtime_graph.nodes.values()
+                )
+                for graph_name, runtime_graph in request.query.items()
+            },
         )
         enqueued = await self.job_manager.enqueue(job)
         for item in enqueued:
@@ -765,32 +783,44 @@ class LumilakeServer:
         while True:
             try:
                 await self.job_manager.wait_for_work()
-                await self._wait_for_batch_accumulation()
+                self._capacity_changed.clear()
+                free = await self._snapshot_free_capacity()
+                if free.is_empty():
+                    # No idle workers at all. `wait_for_work` above already
+                    # guarantees the queue is non-empty, so waiting on new work
+                    # would return instantly and spin. Wait on capacity release
+                    # (edge-triggered, bounded) instead.
+                    await self._wait_capacity()
+                    continue
+                await self._maybe_wait_for_batch_accumulation(free)
                 select_start = time.perf_counter()
                 reservation = await self.job_manager.reserve_batch(
-                    self.config.batch_size
+                    self.config.batch_size,
+                    capacity=free if self.config.capacity_aware_selection else None,
                 )
                 select_elapsed = time.perf_counter() - select_start
                 if reservation is None:
+                    # No eligible partition: work is queued but no capacity can
+                    # run it. Wait on capacity release (bounded), not on the
+                    # non-empty queue, so the loop does not spin.
+                    await self._wait_capacity()
                     continue
                 committed = False
+                released = False
+                claimed_workers: list[str] | None = None
                 try:
                     batch = reservation.selection
-                    gpu_group_size = (
-                        self.config.gpu_worker_group_size
-                        if self._batch_requires_gpu(batch)
-                        else 0
-                    )
-                    cpu_group_size = self.config.cpu_worker_group_size
-                    if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
-                        cpu_group_size = 1
-                    workers = await self._wait_for_available_worker_group(
-                        cpu_group_size=cpu_group_size,
-                        gpu_group_size=gpu_group_size,
-                        hardware=batch.config.hardware_requirements,
-                    )
+                    workers = await self._try_claim_workers(batch, free)
                     if workers is None:
+                        await self.job_manager.abort_reservation(
+                            reservation, reason=AbortReason.CAPACITY
+                        )
+                        released = True
+                        # Capacity was insufficient or the claim lost a race;
+                        # wait for a release rather than spinning.
+                        await self._wait_capacity()
                         continue
+                    claimed_workers = workers
                     await self.job_manager.commit_reservation(reservation)
                     committed = True
                     member_request_ids = {item.request_id for item in batch.workflows}
@@ -801,6 +831,11 @@ class LumilakeServer:
                         member_request_ids=member_request_ids,
                         selection_seconds=selection_only_elapsed,
                         clustering_seconds=batch.clustering_seconds,
+                    )
+                    gpu_group_size = (
+                        self.config.gpu_worker_group_size
+                        if self._batch_requires_gpu(batch)
+                        else 0
                     )
                     self.logger.info(
                         "Dispatching batch (size=%d) to workers %s "
@@ -814,7 +849,12 @@ class LumilakeServer:
                     self._inflight_tasks.add(task)
                     task.add_done_callback(self._inflight_tasks.discard)
                 finally:
-                    if not committed:
+                    if not committed and not released:
+                        # Either commit raised (workers claimed but never
+                        # dispatched) or an earlier step failed. Release any
+                        # claimed workers so they do not stay busy forever.
+                        if claimed_workers:
+                            await self._release_workers(claimed_workers)
                         try:
                             await self.job_manager.abort_reservation(reservation)
                         except Exception:
@@ -825,14 +865,104 @@ class LumilakeServer:
                 return
             except Exception:
                 self.logger.exception("Scheduler loop encountered an error")
-                await asyncio.sleep(envs.LUMILAKE_POLL_INTERVAL_SECONDS)
+                await asyncio.sleep(self.config.poll_interval_seconds)
 
-    async def _wait_for_batch_accumulation(self) -> None:
+    async def _snapshot_free_capacity(self) -> FreeCapacity:
+        """Snapshot currently idle workers, split by GPU class."""
+        workers = await self.runtime_manager.get_workers()
+        async with self._worker_lock:
+            available = [w for w in workers if w not in self._busy_workers]
+        cpu_worker_ids: list[str] = []
+        gpu_worker_ids: list[str] = []
+        profiles: dict[str, dict[str, Any]] = {}
+        for candidate in available:
+            try:
+                profile = await self.runtime_manager.get_worker_profile(candidate)
+            except Exception:
+                self.logger.warning(
+                    "Failed to fetch worker profile for %s; skipping",
+                    candidate,
+                    exc_info=True,
+                )
+                continue
+            profiles[candidate] = profile
+            if self._has_gpu(profile):
+                gpu_worker_ids.append(candidate)
+            else:
+                cpu_worker_ids.append(candidate)
+        return FreeCapacity(
+            cpu_worker_ids=tuple(cpu_worker_ids),
+            gpu_worker_ids=tuple(gpu_worker_ids),
+            profiles=profiles,
+        )
+
+    async def _try_claim_workers(
+        self, batch: BatchSelection, free: FreeCapacity
+    ) -> list[str] | None:
+        """One atomic non-blocking attempt to claim workers for ``batch``.
+
+        Returns the claimed worker ids, or ``None`` if the snapshot no longer
+        holds enough idle workers that meet the batch's hardware requirements
+        (e.g. another dispatch claimed them first). Never blocks waiting for
+        capacity.
+        """
+        gpu_group_size = (
+            self.config.gpu_worker_group_size if self._batch_requires_gpu(batch) else 0
+        )
+        cpu_group_size = self.config.cpu_worker_group_size
+        if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
+            cpu_group_size = 1
+        hardware = batch.config.hardware_requirements
+        selected = free.eligible_workers(
+            cpu_group_size=cpu_group_size,
+            gpu_group_size=gpu_group_size,
+            worker_meets_hardware=self._worker_meets_hardware,
+            hardware=hardware,
+        )
+        if selected is None:
+            return None
+        selected_cpu, selected_gpu = selected
+        selected_workers = selected_gpu + selected_cpu
+        if not selected_workers:
+            return None
+        async with self._worker_lock:
+            if any(worker in self._busy_workers for worker in selected_workers):
+                return None
+            self._busy_workers.update(selected_workers)
+        return selected_workers
+
+    async def _release_workers(self, workers: list[str]) -> None:
+        """Release claimed workers and wake any scheduler waiting on capacity."""
+        async with self._worker_lock:
+            self._busy_workers.difference_update(workers)
+        self._capacity_changed.set()
+
+    async def _wait_capacity(self) -> None:
+        """Wait for capacity to free up, bounded by the poll interval.
+
+        This does not treat a non-empty queue as a wakeup: when work is queued
+        but no capacity is eligible, the loop must not spin through snapshot ->
+        reserve -> repeat. It waits for a worker release (or the bounded
+        fallback timeout).
+        """
+        try:
+            await asyncio.wait_for(
+                self._capacity_changed.wait(),
+                timeout=self.config.poll_interval_seconds,
+            )
+        except TimeoutError:
+            return
+
+    async def _maybe_wait_for_batch_accumulation(self, free: FreeCapacity) -> None:
         wait_seconds = self.config.batch_accumulation_seconds
         if wait_seconds <= 0:
             return
         pending_count, oldest_enqueued_at = await self.job_manager.get_pending_stats()
         if pending_count <= 0 or oldest_enqueued_at is None:
+            return
+        # Accumulating while workers sit idle is a pure bubble: if free capacity
+        # already exceeds what the queue can consume, dispatch immediately.
+        if pending_count <= free.cpu_count + free.gpu_count:
             return
         elapsed = time.time() - oldest_enqueued_at
         remaining = wait_seconds - elapsed
@@ -847,90 +977,6 @@ class LumilakeServer:
             remaining,
         )
         await asyncio.sleep(remaining)
-
-    async def _wait_for_available_worker_group(
-        self,
-        cpu_group_size: int,
-        gpu_group_size: int,
-        hardware: HardwareRequirements | None = None,
-    ) -> list[str] | None:
-        start_time = time.perf_counter()
-        wait_warning_interval_s = max(30.0, envs.LUMILAKE_POLL_INTERVAL_SECONDS)
-        next_wait_warning_at = start_time + wait_warning_interval_s
-        required_cpu = max(0, cpu_group_size)
-        required_gpu = max(0, gpu_group_size)
-        if required_cpu == 0 and required_gpu == 0:
-            raise ValueError("CPU and GPU worker group sizes cannot both be zero")
-        while True:
-            workers = await self.runtime_manager.get_workers()
-            async with self._worker_lock:
-                busy_worker_count = len(self._busy_workers)
-                available_workers = [w for w in workers if w not in self._busy_workers]
-            available_gpu_workers: list[str] = []
-            available_cpu_workers: list[str] = []
-            for candidate in available_workers:
-                try:
-                    profile = await self.runtime_manager.get_worker_profile(candidate)
-                except Exception:
-                    self.logger.warning(
-                        "Failed to fetch worker profile for %s; skipping",
-                        candidate,
-                        exc_info=True,
-                    )
-                    continue
-                is_gpu = self._has_gpu(profile)
-                if not self._worker_meets_hardware(
-                    profile, hardware, worker_has_gpu=is_gpu
-                ):
-                    continue
-                if is_gpu:
-                    available_gpu_workers.append(candidate)
-                else:
-                    available_cpu_workers.append(candidate)
-
-            if (
-                len(available_cpu_workers) >= required_cpu
-                and len(available_gpu_workers) >= required_gpu
-            ):
-                selected_cpu_workers = available_cpu_workers[:required_cpu]
-                selected_gpu_workers = available_gpu_workers[:required_gpu]
-                selected_workers = selected_gpu_workers + selected_cpu_workers
-                async with self._worker_lock:
-                    if any(worker in self._busy_workers for worker in selected_workers):
-                        continue
-                    self._busy_workers.update(selected_workers)
-                self.logger.debug(
-                    "Workers available for dispatch: %s (available_cpu=%d"
-                    " required_cpu=%d available_gpu=%d required_gpu=%d)",
-                    selected_workers,
-                    len(available_cpu_workers),
-                    required_cpu,
-                    len(available_gpu_workers),
-                    required_gpu,
-                )
-                return selected_workers
-            now = time.perf_counter()
-            elapsed = now - start_time
-            if now >= next_wait_warning_at:
-                self.logger.warning(
-                    "Waiting for worker group (required_cpu=%d required_gpu=%d"
-                    " available_cpu=%d available_gpu=%d available_workers=%d"
-                    " busy_workers=%d elapsed=%.1fs)",
-                    required_cpu,
-                    required_gpu,
-                    len(available_cpu_workers),
-                    len(available_gpu_workers),
-                    len(available_workers),
-                    busy_worker_count,
-                    elapsed,
-                )
-                next_wait_warning_at = now + wait_warning_interval_s
-            if (
-                envs.LUMILAKE_POLL_TIMEOUT_SECONDS != float("inf")
-                and elapsed > envs.LUMILAKE_POLL_TIMEOUT_SECONDS
-            ):
-                return None
-            await asyncio.sleep(envs.LUMILAKE_POLL_INTERVAL_SECONDS)
 
     async def _select_preview_workers_and_profiles(
         self,
@@ -1856,8 +1902,7 @@ class LumilakeServer:
                         )
                     state.processing_runtime_nodes_optimized -= optimized_nodes
                     state.processed_runtime_nodes_optimized += optimized_nodes
-            async with self._worker_lock:
-                self._busy_workers.difference_update(workers)
+            await self._release_workers(workers)
             self.job_manager.finalize_workflows(
                 [workflow.workflow_id for workflow in batch.workflows]
             )
