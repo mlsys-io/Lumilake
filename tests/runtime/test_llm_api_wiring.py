@@ -2658,3 +2658,16 @@ def test_api_nodes_distinguished_by_timeout_sec_in_dedupe() -> None:
         for node_id in (row0.node_id, row1.node_id)
     )
     assert timeouts == [60.0, 300.0]
+
+
+def test_api_credential_placeholder_identity_is_constant() -> None:
+    """The placeholder's literal value is part of the contract: the
+    substitution point and the template-hash redaction both key off this exact
+    string, so a drift in its value would silently break credential
+    resolution. Pin the literal and that the emitted api node carries it."""
+    assert _API_CREDENTIAL_PLACEHOLDER == "${credential}"
+
+    runtime_graph, llm_id = _build_api_graph()
+    node = runtime_graph.nodes[llm_id]
+    api = node.to_flowmesh_node()["spec"]["api"]
+    assert api["headers"]["Authorization"] == "${credential}"

@@ -44,9 +44,6 @@ from lumilake_server.utils.lumid_data_client import (
 )
 
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
-# Constant marker placed in the scheduled api_spec Authorization header in place
-# of the real credential. It is resolved at dispatch time (never persisted or
-# hashed), so identical workflows with different secrets hash identically.
 _API_CREDENTIAL_PLACEHOLDER = "${credential}"
 
 
