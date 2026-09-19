@@ -36,6 +36,8 @@ class DriverSettings(BaseModel):
     threshold: StrictFloat | None = None
     chat_template_kwargs: dict[StrictStr, Any] | None = None
     output_location: dict[StrictStr, Any] | None = None
+    max_model_len: StrictInt | None = Field(default=None, gt=0)
+    gpu_memory_utilization: StrictFloat | None = Field(default=None, gt=0, le=1)
 
 
 class DynamicSpec(BaseModel):

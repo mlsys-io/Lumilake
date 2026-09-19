@@ -219,6 +219,12 @@ The `driver:` YAML settings the server accepts are:
   `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:
   `{enable_thinking: false}`), which otherwise consumes the token budget
   the plan has to fit behind.
+- `max_model_len` — proposer engine max model length, default `None` (the
+  server-wide `LUMILAKE_VLLM_MAX_MODEL_LEN` default applies). Must be a
+  positive integer when given. Sizes the planner's vLLM KV cache per job, so
+  one job does not dictate engine sizing for every other job on the deployment.
+- `gpu_memory_utilization` — proposer engine GPU memory utilization, default
+  `None`; must be in `(0, 1]` when given.
 - `output_location` — OPTIONAL S3 destination. When omitted, the envelope's
   item-level `output_location` is used. S3 outputs receive a unique
   run-and-round suffix. DB output locations are rejected: the server has no DB

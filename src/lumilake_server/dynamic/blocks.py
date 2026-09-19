@@ -56,6 +56,8 @@ def fused_round_graph(
     max_tokens: int = 768,
     temperature: float = 0.4,
     chat_template_kwargs: dict[str, Any] | None = None,
+    max_model_len: int | None = None,
+    gpu_memory_utilization: float | None = None,
 ) -> dict[str, Any]:
     """Assemble the native graph for one fused round.
 
@@ -125,6 +127,8 @@ def fused_round_graph(
             max_tokens=max_tokens,
             temperature=temperature,
             chat_template_kwargs=chat_template_kwargs,
+            max_model_len=max_model_len,
+            gpu_memory_utilization=gpu_memory_utilization,
         ),
         return_history=False,
         cacheable=False,
