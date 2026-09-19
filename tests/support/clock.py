@@ -1,8 +1,8 @@
-"""Deterministic virtual clock for the scheduling simulation.
+"""Deterministic virtual clock for scheduling tests.
 
 The clock never sleeps on wall time; it only advances by explicit ``advance``
-calls. All time in the harness is measured on this clock so runs are fully
-reproducible from a seed.
+calls. All time measured on this clock is fully reproducible from a seed,
+unlike ad hoc ``time.time`` / ``asyncio.sleep`` monkeypatching.
 """
 
 from dataclasses import dataclass

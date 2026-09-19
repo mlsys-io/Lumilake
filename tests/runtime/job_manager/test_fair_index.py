@@ -18,7 +18,7 @@ from lumilake_server.runtime.protocol import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support.schedsim.clock import VirtualClock
+from tests.support.clock import VirtualClock
 
 
 def _slice_meta(graph_name: str) -> WorkflowSliceMeta:
