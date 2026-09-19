@@ -8,6 +8,7 @@ and :func:`validate`; SDK / CLI / deploy consumers do not.
 import logging
 import math
 import os
+import re
 from collections.abc import Mapping
 from typing import overload
 
@@ -256,6 +257,10 @@ FLOWMESH_OUTPUT_DESTINATION: str = os.environ.get(
 
 LUMILAKE_REGISTRY: str = os.environ.get("LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
 LUMILAKE_IMAGE_TAG: str = os.environ.get("LUMILAKE_IMAGE_TAG", "")
+# Suffix appended to every container and volume name the deploy stack
+# creates, so multiple Lumilake stacks can coexist on one host. Empty by
+# default, which keeps existing deployments byte-identical.
+LUMILAKE_DEPLOY_SUFFIX: str = os.environ.get("LUMILAKE_DEPLOY_SUFFIX", "")
 
 REDIS_TLS_DIR: str = os.environ.get("REDIS_TLS_DIR", "")
 SERVER_TLS_DIR: str = os.environ.get("SERVER_TLS_DIR", "")
@@ -367,3 +372,12 @@ def validate() -> None:
             "Set LUMID_DATA_TOKEN explicitly when FlowMesh and lumid-data-app "
             "live at different trust boundaries."
         )
+    if LUMILAKE_DEPLOY_SUFFIX:
+        # Validate the concatenation, not the fragment in isolation: a
+        # leading ``-`` is fine when appended to an existing name.
+        candidate = f"lumilake{LUMILAKE_DEPLOY_SUFFIX}"
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", candidate):
+            raise ValueError(
+                "LUMILAKE_DEPLOY_SUFFIX must form a valid Docker object name "
+                "when appended to a container/volume name"
+            )
