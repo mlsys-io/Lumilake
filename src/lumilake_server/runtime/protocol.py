@@ -65,7 +65,9 @@ class LumilakeRequestConfig(BaseModel):
     dispatches (the job manager treats hardware as part of the partition key)."""
     chain_id: str | None = None
     """Parent job id when this request is one round of a dynamic chain; ``None``
-    for a standalone job. Chains are the fairness principal for scheduling."""
+    for a standalone job. Identifies which dynamic run this round belongs to so
+    the run's rounds can be traced; it is not an input to scheduling selection or
+    ordering."""
     chain_round: int = Field(default=0, ge=0)
     """Zero-based round index within the chain; ``0`` for a standalone job."""
 

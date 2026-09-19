@@ -199,11 +199,14 @@ unfair in resource.
 
 Fair share is therefore measured in area. Because demand is a vector, area is
 collapsed to a scalar by **dominant-resource share** — the largest of the
-request's per-resource fractions — which keeps the accounting consistent with
-Dominant Resource Fairness. DRF carries the properties worth claiming:
-sharing-incentive, envy-freeness and Pareto-efficiency. Strategy-proofness also
-holds, though it matters less in a cooperative deployment where principals are
-not adversarial.
+request's per-resource fractions against a per-worker env default denominator.
+This is a heuristic, not a global allocation: the ordering index is applied only
+within a partition that the outer round-robin has already selected, and
+`principal_id` is part of the partition key, so principals are separated before
+the index is consulted. It does not claim the properties of Dominant Resource
+Fairness (sharing-incentive, envy-freeness, Pareto-efficiency,
+strategy-proofness); those require a global allocation, a reconciled measure of
+service, and a cluster-wide denominator, none of which this implements.
 
 **The principal is `user_id`** — the level the queue already treats as the
 fairness key.
@@ -230,8 +233,11 @@ area of the batch; between charges the value halves every `tau`
 
 Decay is what makes the accounting stable across heterogeneous rounds. A chain
 that converges — rounds shrinking as it narrows — is not penalised forever for
-one expensive early round, and a chain cannot bank credit by idling. A plain
-cumulative sum has both failure modes.
+one expensive early round, because decay forgets old consumption. The same
+property has a deliberate cost: an idle principal's attained value decays toward
+zero, so idling restores priority over time. A plain cumulative sum has neither
+behaviour — it keeps the penalty forever and never lets an idle principal regain
+priority.
 
 Ordering then follows from a single index rather than a weighted-sum heuristic:
 
@@ -247,6 +253,16 @@ to least-attained-service rather than inventing a number.
 The index policy is opt-in. `LUMILAKE_SCHEDULER_POLICY` defaults to `legacy`,
 which keeps priority quantums, per-user round-robin, starvation pinning and
 affinity selection within a partition.
+
+The limitations are deliberate and worth stating. Attained service charges a
+**predicted** critical-path estimate at commit time; it is never reconciled
+against observed duration or the workers actually held, so a persistently wrong
+estimate distorts the index. The dominant-share denominator is a per-worker env
+default, not current cluster capacity, so the scalar is a fixed reference rather
+than a live share. And the index is **partition-local**: it orders items within a
+partition the outer round-robin already selected, so it cannot rebalance across
+principals or lanes. None of these is a defect to fix silently; each is a
+simplification that keeps the mechanism tractable.
 
 ## 7. Where cost estimation belongs
 
@@ -308,7 +324,7 @@ distribution is known*; none is, so none is claimed.
 | Question | Decision | Why |
 |---|---|---|
 | Fairness principal | `user_id` | The level the queue already keys on. |
-| Attained service | Exponentially-decayed area, half-life `tau` | Stable across heterogeneous rounds; no permanent penalty, no credit for idling. |
+| Attained service | Exponentially-decayed area, half-life `tau` | Stable across heterogeneous rounds; no permanent penalty, and idling restores priority over time. |
 | Area from a vector demand | Dominant-resource share | Keeps the scalar consistent with DRF. |
 | Preemption | Not allowed | A running batch holds whole workers; preempting wastes partial work and complicates the two-phase reserve/commit protocol. |
 | Cost model | Analytic, hyperparameter-first | No trace corpus exists; nothing may depend on a fitted distribution. |
