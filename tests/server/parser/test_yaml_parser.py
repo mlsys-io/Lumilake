@@ -512,12 +512,12 @@ def test_llm_config_rejects_unknown_field() -> None:
 
 
 def test_api_chat_api_template_names_a_model_on_every_llm_op() -> None:
-    """The committed api-chat-api.yaml example must parse under the parity
+    """The committed hybrid-api-chat-chain.yaml example must parse under the parity
     contract: every LLMChatOp - API-backed or local - names a ``config.model``,
     so the workflow spec reads the same regardless of ``config.api``."""
-    yaml_text = Path("examples/templates/yaml/api-chat-api.yaml").read_text()
+    yaml_text = Path("examples/templates/yaml/hybrid-api-chat-chain.yaml").read_text()
     specs = parse_yaml_payload(yaml_text)
-    spec = specs["api-chat-api"]
+    spec = specs["hybrid-api-chat-chain"]
     graph = Graph.from_json(spec["graph"])
     llm_ops = list(graph.iter_ops(LLMChatOp))
     assert len(llm_ops) == 3

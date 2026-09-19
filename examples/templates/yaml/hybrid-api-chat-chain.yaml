@@ -1,16 +1,17 @@
 ---
-name: api-chat-api-all-api
+name: hybrid-api-chat-chain
 
-# Demonstrates that API-backed LLMChatOps compose in a chain: three
-# LLMChatOps, each consuming the previous node's output, ALL routed to an
-# external OpenAI-style endpoint:
-#   Draft (API) -> Polish (API) -> Verdict (API)
-# This is the all-API variant of api-chat-api.yaml — the middle node is
-# API-backed too (no locally-served model), so the whole chain runs
-# without a local GPU. No data access — no DB / S3 retrievals, no agent
-# mode.
+# Demonstrates that an API-backed LLMChatOp and a locally-served
+# LLMChatOp are the same node to the user and compose in either
+# direction. Three LLMChatOps in a chain, each consuming the previous
+# node's output:
+#   Draft (API) -> Polish (local) -> Verdict (API)
+# The only difference between the three is `config.api`: node 1 and
+# node 3 route to an external OpenAI-style endpoint, node 2 runs against
+# a locally-served model. No data access — no DB / S3 retrievals, no
+# agent mode.
 #
-# Inputs:  Topic (one or more per slice; supplied at submission)
+# Inputs:  Topic (one per slice)
 # Output:  result (final API-mode LLM response text)
 #
 # Runtime requirements:
@@ -18,6 +19,9 @@ name: api-chat-api-all-api
 #     orchestrator at ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL``).
 #   - Reachable lumid-data-app via ``LUMID_DATA_URL`` (and
 #     ``LUMID_DATA_TOKEN`` if the deployment is authenticated).
+#   - A FlowMesh worker that can serve the local model named in the
+#     middle node's ``config.model`` (``Qwen/Qwen2.5-0.5B-Instruct`` is a
+#     small cached text-demo model that fits a shared GPU).
 #   - For the API-backed nodes: a reachable ``config.api.url`` origin.
 #     The default ``https://lum.id`` is on the trusted-origin allowlist,
 #     so the server attaches its own bearer token; for any other origin
@@ -29,20 +33,13 @@ name: api-chat-api-all-api
 # as a FlowMesh ``${node.path}`` dispatch-time placeholder and declares
 # the referenced node as a dependency, so dispatch waits for it.
 #
-# Note on ``max_tokens``: the API-served model here is a reasoning model.
-# Give each node enough ``max_tokens`` that it can emit content after its
-# reasoning budget; a node that exhausts its budget on reasoning returns
-# ``content: null`` and its downstream reference has no value to resolve.
-#
-# Submit (inputs are supplied at submission, not hardcoded here). See
-# docs/CLI.md for the full ``lumilake job submit`` usage; the inputs and
-# output prefix are supplied on the command line:
-#   lumilake job submit <this-file> \
+# Submit:
+#   lumilake job submit examples/templates/yaml/hybrid-api-chat-chain.yaml \
 #       --format yaml --input 'Topic=a database index' \
-#       --output-prefix demo/api-chat-api-all-api --optimizer halo
+#       --output-prefix demo/hybrid-api-chat-chain --optimizer halo
 
 inputs:
-  Topic: []
+  Topic: ["a database index"]
 
 ops:
   - id: "Draft"
@@ -55,7 +52,7 @@ ops:
         content: "Topic"
     config:
       model: qwen3.8-27b
-      max_tokens: 1024
+      max_tokens: 256
       temperature: 0.2
       api:
         timeout_sec: 300
@@ -69,23 +66,21 @@ ops:
       - role: user
         content: "Draft"
     config:
-      model: qwen3.8-27b
-      max_tokens: 1024
+      model: Qwen/Qwen2.5-0.5B-Instruct
+      max_tokens: 128
       temperature: 0.2
-      api:
-        timeout_sec: 300
 
   - id: "Verdict"
     op: LLMChatOp
     inputs: ["Polish"]
     messages:
       - role: system
-        content: "Repeat the text you are given, unchanged."
+        content: "Reply with exactly one word: GOOD or BAD."
       - role: user
         content: "Polish"
     config:
       model: qwen3.8-27b
-      max_tokens: 1024
+      max_tokens: 256
       temperature: 0.0
       api:
         timeout_sec: 300
