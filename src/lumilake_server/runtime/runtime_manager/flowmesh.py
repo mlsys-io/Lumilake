@@ -973,7 +973,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             request_info.runtime_graph,
             schedule=schedule,
         )
-        self._resolve_api_credentials(request_info.request_id, task_spec)
+        self._resolve_api_credentials(request_info.member_request_ids, task_spec)
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
         task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
@@ -1368,14 +1368,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return spec, output_node_indices, flowmesh_to_raw
 
     def _resolve_api_credentials(
-        self, request_id: str, task_spec: dict[str, Any]
+        self, member_request_ids: set[str], task_spec: dict[str, Any]
     ) -> None:
         """Replace the constant API credential placeholder in each api node's
         Authorization header with the real value at dispatch time. Trusted
         origins re-resolve deterministically from server config; untrusted
         origins use the caller-supplied credential from the dispatch-token
-        store. If nothing resolves, the placeholder is left in place so the
-        endpoint fails loudly on auth rather than sending an empty header."""
+        store, keyed by the originating job id (``member_request_ids``) rather
+        than the synthetic ``exec-*`` request id. If nothing resolves, the
+        placeholder is left in place so the endpoint fails loudly on auth
+        rather than sending an empty header."""
         nodes = task_spec.get("spec", {}).get("graph", {}).get("nodes", [])
         if not isinstance(nodes, list):
             return
@@ -1395,7 +1397,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             if isinstance(url, str) and is_api_origin_trusted(url):
                 resolved = resolve_api_credential(url)
             else:
-                resolved = self.get_api_credential(request_id)
+                resolved = next(
+                    (
+                        self.get_api_credential(request_id)
+                        for request_id in member_request_ids
+                        if self.get_api_credential(request_id) is not None
+                    ),
+                    None,
+                )
             if resolved:
                 headers["Authorization"] = resolved
 

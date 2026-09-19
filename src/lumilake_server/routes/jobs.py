@@ -1921,15 +1921,27 @@ async def _run_dynamic_job(
 def _collect_api_credential(graph_specs: dict[str, dict[str, Any]]) -> str | None:
     """Return the caller-supplied API credential for a job, if any. The
     credential is stored in the in-process dispatch-token store keyed by job id
-    and resolved at dispatch time, so it never enters the persisted graph."""
+    and resolved at dispatch time, so it never enters the persisted graph.
+
+    A job carrying two distinct untrusted API credentials is rejected: the
+    store holds one credential per job, so silently keeping only the first
+    would send one endpoint's secret to another."""
+    credential: str | None = None
     for spec in graph_specs.values():
         for op in spec["graph"].values():
             if op.get("_op") != "LLMChatOp":
                 continue
             api_config = op.get("config", {}).get("api")
-            if api_config is not None and api_config.get("authorization"):
-                return api_config["authorization"]
-    return None
+            if api_config is None or not api_config.get("authorization"):
+                continue
+            op_credential = api_config["authorization"]
+            if credential is not None and op_credential != credential:
+                raise ValueError(
+                    "job carries two distinct API credentials; a job may use "
+                    "only one caller-supplied credential"
+                )
+            credential = op_credential
+    return credential
 
 
 async def _run_job(

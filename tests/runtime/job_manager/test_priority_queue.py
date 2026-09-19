@@ -45,6 +45,7 @@ def _build_job(
     priority: Priority | None = None,
     principal_id: str = "p",
     dispatch_token: str | None = None,
+    api_credential_digest: str | None = None,
     optimizer_type: str | None = None,
     hardware_requirements: HardwareRequirements | None = None,
 ) -> Job:
@@ -65,6 +66,7 @@ def _build_job(
             hardware_requirements=hardware_requirements,
         ),
         dispatch_token=dispatch_token,
+        api_credential_digest=api_credential_digest,
     )
 
 
@@ -200,6 +202,91 @@ async def test_select_batch_partitions_same_principal_by_dispatch_token() -> Non
         "tok-old",
         "tok-new",
     }
+
+
+@pytest.mark.asyncio
+async def test_select_batch_partitions_same_principal_by_api_credential() -> None:
+    """Two jobs from the same principal+token with DIFFERENT API credentials must
+    land in separate batches — otherwise a batch could mix jobs whose caller
+    supplied different ``config.api.authorization`` values, and
+    ``_resolve_api_credentials`` would pick one credential for the whole batch,
+    leaking job A's secret to job B's endpoint."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+
+    await manager.enqueue(
+        _build_job(
+            "req-a",
+            "graph-a",
+            principal_id="p-1",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-a",
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-b",
+            "graph-b",
+            principal_id="p-1",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-b",
+        )
+    )
+
+    first = await manager.select_batch(2)
+    assert first is not None
+    assert len({item.api_credential_digest for item in first.workflows}) == 1
+
+    second = await manager.select_batch(2)
+    assert second is not None
+    assert len({item.api_credential_digest for item in second.workflows}) == 1
+
+    assert (
+        first.workflows[0].api_credential_digest
+        != second.workflows[0].api_credential_digest
+    )
+    assert {
+        first.workflows[0].api_credential_digest,
+        second.workflows[0].api_credential_digest,
+    } == {"cred-a", "cred-b"}
+
+
+@pytest.mark.asyncio
+async def test_select_batch_cobatches_same_principal_same_api_credential() -> None:
+    """Two jobs from the same principal+token with the SAME API credential must
+    share a batch — the digest is part of the partition key, so identical
+    credentials co-batch just like identical dispatch tokens."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+
+    await manager.enqueue(
+        _build_job(
+            "req-a",
+            "graph-a",
+            principal_id="p-1",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-same",
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-b",
+            "graph-b",
+            principal_id="p-1",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-same",
+        )
+    )
+
+    batch = await manager.select_batch(2)
+    assert batch is not None
+    assert len(batch.workflows) == 2
+    assert {item.request_id for item in batch.workflows} == {"req-a", "req-b"}
+    assert {item.api_credential_digest for item in batch.workflows} == {"cred-same"}
 
 
 @pytest.mark.asyncio

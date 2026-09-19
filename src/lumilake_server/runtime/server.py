@@ -673,6 +673,13 @@ class LumilakeServer:
             return None
         return state.clustering_seconds
 
+    @staticmethod
+    def _api_credential_digest(credential: str | None) -> str | None:
+        """Hex digest of the caller-supplied API credential, never the secret."""
+        if credential is None:
+            return None
+        return hashlib.sha256(credential.encode("utf-8")).hexdigest()
+
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
         """
@@ -738,6 +745,9 @@ class LumilakeServer:
             workflow_slices=request.workflow_slices,
             config=config,
             dispatch_token=self.runtime_manager.get_dispatch_token(request.request_id),
+            api_credential_digest=self._api_credential_digest(
+                self.runtime_manager.get_api_credential(request.request_id)
+            ),
         )
         enqueued = await self.job_manager.enqueue(job)
         for item in enqueued:
@@ -2375,6 +2385,7 @@ class LumilakeServer:
             data_profile_graphs=data_profile_graphs_by_name,
             data_profile_sources=data_profile_sources,
             hardware_requirements=batch.config.hardware_requirements,
+            member_request_ids=set(member_request_ids),
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph
@@ -3000,6 +3011,9 @@ class LumilakeServer:
             dsl_graphs=dict(graphs),
             workflow_slices=workflow_slices,
             config=resolved_config,
+            api_credential_digest=self._api_credential_digest(
+                self.runtime_manager.get_api_credential(resolved_request_id)
+            ),
         )
         await transient_jm.enqueue(job)
 

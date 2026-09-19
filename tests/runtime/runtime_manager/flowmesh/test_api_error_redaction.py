@@ -90,7 +90,6 @@ async def test_fetch_task_status_sanitizes_api_error_before_reraising(
     task spec, Authorization header included. fetch_task_status must re-raise
     a sanitized APIError so the credential never reaches the caller, the
     log, or the persisted job error record."""
-    from flowmesh.exceptions import APIError
 
     class _FakeTasks:
         async def retrieve(self, task_id: str) -> Any:
@@ -157,7 +156,6 @@ async def test_archive_task_response_sanitizes_api_error_before_reraising(
     submitted task spec, Authorization header included. _archive_task_response
     must re-raise a sanitized APIError so the credential never reaches the
     caller, the log, or the persisted job error record."""
-    from lumilake_server.runtime.request import RequestInfo
 
     class _FakeResults:
         async def retrieve(self, task_id: str) -> Any:

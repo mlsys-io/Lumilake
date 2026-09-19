@@ -526,6 +526,94 @@ async def test_submit_collects_caller_api_credential_into_dispatch_store(
     assert (job_id, "Bearer caller-key") in runtime_manager.api_credential_sets
 
 
+def _two_credential_payload() -> dict[str, Any]:
+    """A native workflow with two untrusted API ops carrying distinct
+    caller-supplied credentials; the submit path must reject it rather than
+    silently send one endpoint's secret to the other."""
+    return {
+        "data": [
+            {
+                "name": "demo",
+                "workflow": json.dumps(
+                    {
+                        "ask_a": {
+                            "_op": "LLMChatOp",
+                            "_id": "ask_a",
+                            "_max_iter": None,
+                            "_inputs": ["msg_a"],
+                            "messages": "msg_a",
+                            "config": {
+                                "model": "dummy-model",
+                                "api": {
+                                    "url": "https://api-a.example.com/v1/chat/completions",
+                                    "authorization": "Bearer secret-a",
+                                },
+                            },
+                            "return_history": False,
+                            "cacheable": False,
+                        },
+                        "msg_a": {
+                            "_op": "MessageOp",
+                            "_id": "msg_a",
+                            "_max_iter": None,
+                            "_inputs": ["inp"],
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                        "ask_b": {
+                            "_op": "LLMChatOp",
+                            "_id": "ask_b",
+                            "_max_iter": None,
+                            "_inputs": ["msg_b"],
+                            "messages": "msg_b",
+                            "config": {
+                                "model": "dummy-model",
+                                "api": {
+                                    "url": "https://api-b.example.com/v1/chat/completions",
+                                    "authorization": "Bearer secret-b",
+                                },
+                            },
+                            "return_history": False,
+                            "cacheable": False,
+                        },
+                        "msg_b": {
+                            "_op": "MessageOp",
+                            "_id": "msg_b",
+                            "_max_iter": None,
+                            "_inputs": ["inp"],
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                        "inp": {
+                            "_op": "InputOp",
+                            "_id": "inp",
+                            "_max_iter": None,
+                            "_inputs": [],
+                            "name": "input",
+                        },
+                    }
+                ),
+                "inputs": {"input": ["hello"]},
+                "output_location": {"type": "s3", "prefix": "demo/output.txt"},
+            }
+        ]
+    }
+
+
+@pytest.mark.anyio
+async def test_submit_rejects_two_distinct_api_credentials(
+    app: FastAPI,
+    job_routes: Any,
+) -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        submit = await client.post("/jobs", json=_two_credential_payload())
+        assert submit.status_code == 200
+        job_id = submit.json()["data"]["job_id"]
+        await _wait_for_failed_job(job_routes, job_id)
+
+    record = await job_routes._load_job_record(job_id)
+    assert "two distinct API credentials" in (record.error or "")
+
+
 async def _wait_for_failed_job(job_routes: Any, job_id: str) -> None:
     for _ in range(100):
         record = await job_routes._load_job_record(job_id)

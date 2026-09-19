@@ -95,16 +95,16 @@ class BaseRuntimeManager(ABC):
         return False
 
     def set_dispatch_token(self, request_id: str, token: str | None) -> None:
-        return None
+        raise NotImplementedError
 
     def get_dispatch_token(self, request_id: str) -> str | None:
-        return None
+        raise NotImplementedError
 
     def set_api_credential(self, request_id: str, credential: str | None) -> None:
-        return None
+        raise NotImplementedError
 
     def get_api_credential(self, request_id: str) -> str | None:
-        return None
+        raise NotImplementedError
 
     def clear_dispatch_token(self, request_id: str) -> None:
-        return None
+        raise NotImplementedError

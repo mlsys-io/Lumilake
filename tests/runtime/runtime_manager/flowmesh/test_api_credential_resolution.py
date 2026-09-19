@@ -39,7 +39,7 @@ def test_resolve_trusted_origin_uses_server_pat(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "server-pat")
     task_spec = _task_spec(_TRUSTED_URL)
 
-    flowmesh_manager._resolve_api_credentials("req-1", task_spec)
+    flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
 
     node = task_spec["spec"]["graph"]["nodes"][0]
     assert node["spec"]["api"]["headers"]["Authorization"] == "server-pat"
@@ -51,7 +51,7 @@ def test_resolve_untrusted_origin_uses_caller_credential(
     flowmesh_manager.set_api_credential("req-1", "Bearer caller-key")
     task_spec = _task_spec(_UNTRUSTED_URL)
 
-    flowmesh_manager._resolve_api_credentials("req-1", task_spec)
+    flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
 
     node = task_spec["spec"]["graph"]["nodes"][0]
     assert node["spec"]["api"]["headers"]["Authorization"] == "Bearer caller-key"
@@ -62,7 +62,7 @@ def test_resolve_untrusted_origin_without_credential_leaves_placeholder(
 ) -> None:
     task_spec = _task_spec(_UNTRUSTED_URL)
 
-    flowmesh_manager._resolve_api_credentials("req-1", task_spec)
+    flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
 
     node = task_spec["spec"]["graph"]["nodes"][0]
     assert (
@@ -90,7 +90,7 @@ def test_resolve_skips_non_placeholder_headers(
         }
     }
 
-    flowmesh_manager._resolve_api_credentials("req-1", task_spec)
+    flowmesh_manager._resolve_api_credentials({"req-1"}, task_spec)
 
     node = task_spec["spec"]["graph"]["nodes"][0]
     assert node["spec"]["api"]["headers"]["Authorization"] == "Bearer already-set"

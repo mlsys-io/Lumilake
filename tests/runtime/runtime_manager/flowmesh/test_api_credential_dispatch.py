@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 from lumilake import envs
 
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -36,9 +37,10 @@ def _build_api_request(url: str) -> tuple[RequestInfo, str]:
     (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
 
     request_info = RequestInfo(
-        request_id="req-cred",
+        request_id="exec-cred",
         runtime_graphs={"g": runtime_graph},
         data_profile_graphs={},
+        member_request_ids={"req-cred"},
     )
     request_info.batch_id = "batch-1"
     request_info.runtime_graph = runtime_graph
@@ -55,7 +57,10 @@ async def test_dispatched_request_carries_resolved_caller_credential(
     """The placeholder in the graph must be replaced with the real caller
     credential before the task spec is submitted to FlowMesh. If the
     substitution point breaks, the dispatched Authorization header would be
-    the literal placeholder."""
+    the literal placeholder. The request reproduces production's id flow: the
+    credential is stored under the job id (req-*), while dispatch runs under a
+    distinct synthetic exec-* id, so the two must be reconciled via
+    member_request_ids."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
@@ -108,8 +113,6 @@ async def test_dispatched_request_carries_resolved_caller_credential(
         Schedule(worker_assignment={"worker-1": [row_id]}),
         worker_ids=["worker-1"],
     )
-
-    import yaml
 
     task_spec = yaml.safe_load(submitted["yaml"])
     node = task_spec["spec"]["graph"]["nodes"][0]
