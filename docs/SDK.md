@@ -113,6 +113,8 @@ client.jobs.preview({"data": [...]}, workflow_format="yaml")
 client.jobs.preview({"data": [...], "optimizer": "topological-sort"}, workflow_format="yaml")
 # Preview accepts the same "hardware" object as submit; unset fields fall back to HARDWARE_* env defaults.
 client.jobs.preview({"data": [...], "hardware": {"gpu": 1, "gpu_memory": "24Gi"}}, workflow_format="yaml")
+# "gpu_model" targets a GPU class by substring (case-insensitive) of a device name:
+client.jobs.submit({"data": [...], "hardware": {"gpu_model": "RTX 5080"}}, workflow_format="yaml")
 client.jobs.list(status="completed", limit=20)
 client.jobs.get(job_id)
 client.jobs.progress(job_id)

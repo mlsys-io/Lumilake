@@ -28,7 +28,7 @@ def _unwrap(response_json: dict[str, Any]) -> dict[str, Any]:
     return response_json.get("data", response_json)
 
 
-_HARDWARE_FIELDS = ("cpu", "memory", "gpu", "gpu_memory")
+_HARDWARE_FIELDS = ("cpu", "memory", "gpu", "gpu_memory", "gpu_model")
 
 
 def _build_hardware_payload(
@@ -36,6 +36,7 @@ def _build_hardware_payload(
     memory: str | None,
     gpu: int | None,
     gpu_memory: str | None,
+    gpu_model: str | None,
     hardware_json: Path | None,
 ) -> dict[str, Any] | None:
     """Merge ``--hardware-json`` with individual ``--cpu`` etc. flags.
@@ -70,6 +71,7 @@ def _build_hardware_payload(
         "memory": memory,
         "gpu": gpu,
         "gpu_memory": gpu_memory,
+        "gpu_model": gpu_model,
     }
     for key, value in overrides.items():
         if value is not None:
@@ -247,13 +249,22 @@ def submit(
             "HARDWARE_GPU_MEMORY_REQUIREMENT."
         ),
     ),
+    gpu_model: str | None = typer.Option(
+        None,
+        "--gpu-model",
+        help=(
+            "Per-job GPU model substring override (e.g. `RTX 5080`). A GPU "
+            "worker matches only if the string appears case-insensitively in "
+            "one of its device names."
+        ),
+    ),
     hardware_json: Path | None = typer.Option(
         None,
         "--hardware-json",
         help=(
             "JSON file with the full hardware override (keys: cpu, memory, gpu, "
-            "gpu_memory). Merged with `--cpu`/`--memory`/`--gpu`/`--gpu-memory`; "
-            "flag values win on conflict."
+            "gpu_memory, gpu_model). Merged with `--cpu`/`--memory`/`--gpu`/"
+            "`--gpu-memory`/`--gpu-model`; flag values win on conflict."
         ),
     ),
 ) -> None:
@@ -309,7 +320,7 @@ def submit(
     if optimizer is not None:
         payload["optimizer"] = optimizer
     hardware_payload = _build_hardware_payload(
-        cpu, memory, gpu, gpu_memory, hardware_json
+        cpu, memory, gpu, gpu_memory, gpu_model, hardware_json
     )
     if hardware_payload is not None:
         payload["hardware"] = hardware_payload
@@ -803,12 +814,18 @@ def preview(
     gpu_memory: str | None = typer.Option(
         None, "--gpu-memory", help="Per-job GPU memory override (e.g. `24Gi`)."
     ),
+    gpu_model: str | None = typer.Option(
+        None,
+        "--gpu-model",
+        help="Per-job GPU model substring override (e.g. `RTX 5080`).",
+    ),
     hardware_json: Path | None = typer.Option(
         None,
         "--hardware-json",
         help=(
             "JSON file with the full hardware override; merged with `--cpu` / "
-            "`--memory` / `--gpu` / `--gpu-memory` (flags win on conflict)."
+            "`--memory` / `--gpu` / `--gpu-memory` / `--gpu-model` (flags win "
+            "on conflict)."
         ),
     ),
 ) -> None:
@@ -836,7 +853,7 @@ def preview(
     if optimizer is not None:
         payload["optimizer"] = optimizer
     hardware_payload = _build_hardware_payload(
-        cpu, memory, gpu, gpu_memory, hardware_json
+        cpu, memory, gpu, gpu_memory, gpu_model, hardware_json
     )
     if hardware_payload is not None:
         payload["hardware"] = hardware_payload

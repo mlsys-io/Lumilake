@@ -1065,10 +1065,11 @@ class LumilakeServer:
     ) -> bool:
         """Compare a raw FlowMesh worker profile to a per-job requirement.
 
-        GPU-specific constraints (``hardware.gpu``, ``hardware.gpu_memory``)
-        only apply to GPU-capable workers; CPU workers are evaluated by
-        ``cpu`` + ``memory`` alone. Without that role split, ``hardware.gpu=1``
-        would reject every CPU worker and stall any mixed CPU/GPU graph.
+        GPU-specific constraints (``hardware.gpu``, ``hardware.gpu_memory``,
+        ``hardware.gpu_model``) only apply to GPU-capable workers; CPU workers
+        are evaluated by ``cpu`` + ``memory`` alone. Without that role split,
+        ``hardware.gpu=1`` would reject every CPU worker and stall any mixed
+        CPU/GPU graph.
 
         Pass ``worker_has_gpu`` to skip an internal ``_has_gpu`` call when
         the caller has already classified the worker; default delegates to
@@ -1110,6 +1111,20 @@ class LumilakeServer:
                     vram = device.get("memory_total_bytes")
                     if isinstance(vram, int) and vram < required_vram:
                         return False
+        if hardware.gpu_model is not None and gpu_devices:
+            wanted = hardware.gpu_model.lower()
+            saw_name = False
+            for device in gpu_devices:
+                if not isinstance(device, dict):
+                    continue
+                name = device.get("name")
+                if not isinstance(name, str):
+                    continue
+                saw_name = True
+                if wanted in name.lower():
+                    return True
+            if saw_name:
+                return False
         return True
 
     @staticmethod

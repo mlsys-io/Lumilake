@@ -33,6 +33,10 @@ class HardwareRequirements(BaseModel):
         default=None, max_length=6, pattern=r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$"
     )
     """GPU memory per worker (e.g. ``"24Gi"``)."""
+    gpu_model: str | None = Field(default=None, max_length=128)
+    """GPU model substring per worker (e.g. ``"RTX 5080"``). When set, a GPU
+    worker matches only if the string appears case-insensitively as a substring
+    of any of its GPU device names."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

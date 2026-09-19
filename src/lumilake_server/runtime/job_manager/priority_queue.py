@@ -29,11 +29,11 @@ from .base import (
 from .cluster_algo.clustering import select_affinity_batch_ids
 from .cost import CostParams, estimate_area
 
-HardwareSignature = tuple[int | None, str | None, int | None, str | None]
+HardwareSignature = tuple[int | None, str | None, int | None, str | None, str | None]
 """Stable tuple form of ``HardwareRequirements`` used inside the partition key.
 
-``(None, None, None, None)`` represents "use env defaults" so jobs that omit
-the override co-batch with each other.
+``(None, None, None, None, None)`` represents "use env defaults" so jobs that
+omit the override co-batch with each other.
 """
 
 PartitionKey = tuple[str, str | None, str, HardwareSignature, bool]
@@ -47,8 +47,8 @@ principal/token/optimizer/hardware class.
 
 def _hardware_signature(hw: HardwareRequirements | None) -> HardwareSignature:
     if hw is None:
-        return (None, None, None, None)
-    return (hw.cpu, hw.memory, hw.gpu, hw.gpu_memory)
+        return (None, None, None, None, None)
+    return (hw.cpu, hw.memory, hw.gpu, hw.gpu_memory, hw.gpu_model)
 
 
 @dataclass(slots=True, frozen=True)
@@ -192,17 +192,24 @@ class PriorityJobManager(BaseJobManager):
     ) -> HardwareRequirements | None:
         """Rebuild a :class:`HardwareRequirements` from a partition signature.
 
-        ``(None, None, None, None)`` means "use env defaults" and maps to
+        ``(None, None, None, None, None)`` means "use env defaults" and maps to
         ``None`` so the hardware filter degrades to "no constraint".
         """
-        cpu, memory, gpu, gpu_memory = signature
-        if cpu is None and memory is None and gpu is None and gpu_memory is None:
+        cpu, memory, gpu, gpu_memory, gpu_model = signature
+        if (
+            cpu is None
+            and memory is None
+            and gpu is None
+            and gpu_memory is None
+            and gpu_model is None
+        ):
             return None
         return HardwareRequirements(
             cpu=cpu,
             memory=memory,
             gpu=gpu,
             gpu_memory=gpu_memory,
+            gpu_model=gpu_model,
         )
 
     @staticmethod
