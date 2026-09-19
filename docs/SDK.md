@@ -113,6 +113,8 @@ client.jobs.preview({"data": [...]}, workflow_format="yaml")
 client.jobs.preview({"data": [...], "optimizer": "topological-sort"}, workflow_format="yaml")
 # Preview accepts the same "hardware" object as submit; unset fields fall back to HARDWARE_* env defaults.
 client.jobs.preview({"data": [...], "hardware": {"gpu": 1, "gpu_memory": "24Gi"}}, workflow_format="yaml")
+# "gpu_model" targets a GPU class by substring (case-insensitive) of a device name:
+client.jobs.submit({"data": [...], "hardware": {"gpu_model": "RTX 5080"}}, workflow_format="yaml")
 client.jobs.list(status="completed", limit=20)
 client.jobs.get(job_id)
 client.jobs.progress(job_id)
@@ -219,6 +221,18 @@ The `driver:` YAML settings the server accepts are:
   `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:
   `{enable_thinking: false}`), which otherwise consumes the token budget
   the plan has to fit behind.
+- `max_model_len` — proposer engine max model length, default `None` (the
+  server-wide `LUMILAKE_VLLM_MAX_MODEL_LEN` default applies). Must be a
+  positive integer when given. Sizes the planner's vLLM KV cache per job, so
+  one job does not dictate engine sizing for every other job on the deployment.
+- `gpu_memory_utilization` — proposer engine GPU memory utilization, default
+  `None`; must be in `(0, 1]` when given.
+- `dtype` — proposer engine data type, default `None` (the model's native dtype
+  applies). Must be a non-empty string when given; the backend rejects values it
+  does not support.
+- `extra_engine_kwargs` — extra proposer engine options with no typed field,
+  default `None`. This is the route for `quantization` (e.g. `{quantization:
+  fp8}` or `{quantization: awq}`) to serve a quantized model.
 - `output_location` — OPTIONAL S3 destination. When omitted, the envelope's
   item-level `output_location` is used. S3 outputs receive a unique
   run-and-round suffix. DB output locations are rejected: the server has no DB

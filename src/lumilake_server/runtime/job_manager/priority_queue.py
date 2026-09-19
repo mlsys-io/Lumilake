@@ -24,11 +24,11 @@ from .base import (
 )
 from .cluster_algo.clustering import select_affinity_batch_ids
 
-HardwareSignature = tuple[int | None, str | None, int | None, str | None]
+HardwareSignature = tuple[int | None, str | None, int | None, str | None, str | None]
 """Stable tuple form of ``HardwareRequirements`` used inside the partition key.
 
-``(None, None, None, None)`` represents "use env defaults" so jobs that omit
-the override co-batch with each other.
+``(None, None, None, None, None)`` represents "use env defaults" so jobs that
+omit the override co-batch with each other.
 """
 
 PartitionKey = tuple[str, str | None, str | None, str, HardwareSignature]
@@ -41,8 +41,8 @@ never mixes jobs with different caller-supplied credentials.
 
 def _hardware_signature(hw: HardwareRequirements | None) -> HardwareSignature:
     if hw is None:
-        return (None, None, None, None)
-    return (hw.cpu, hw.memory, hw.gpu, hw.gpu_memory)
+        return (None, None, None, None, None)
+    return (hw.cpu, hw.memory, hw.gpu, hw.gpu_memory, hw.gpu_model)
 
 
 @dataclass(slots=True, frozen=True)
@@ -139,7 +139,8 @@ class PriorityJobManager(BaseJobManager):
             f"{item.workflow_id}"
             f"(req={item.request_id},user={item.config.user_id},pri={item.config.priority.value},"
             f"graph={item.graph_name},public={item.public_graph_name},"
-            f"slice={item.slice_index},miss={item.miss_count})"
+            f"slice={item.slice_index},miss={item.miss_count},"
+            f"chain={item.config.chain_id},round={item.config.chain_round})"
         )
 
     @staticmethod

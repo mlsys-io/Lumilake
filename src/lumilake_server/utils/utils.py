@@ -12,6 +12,19 @@ def unique_id() -> str:
     return str(shortuuid.uuid())
 
 
+def parse_memory_to_bytes(value: str) -> int | None:
+    """Parse Kubernetes-style memory strings (matches the
+    ``HardwareRequirements`` regex). Returns ``None`` on malformed input
+    so callers degrade to "no constraint" rather than raising."""
+    units = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+    for suffix, multiplier in units.items():
+        if value.endswith(suffix):
+            head = value[: -len(suffix)]
+            if head.isdigit():
+                return int(head) * multiplier
+    return None
+
+
 def check_and_cast_list[T, V](t: type[T], lst: Sequence[V]) -> list[T]:
     if not isinstance(lst, list):
         raise ValueError(f"Expected a list, got {type(lst)}")
