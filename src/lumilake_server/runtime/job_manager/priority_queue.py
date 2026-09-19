@@ -17,6 +17,7 @@ from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.utils.utils import unique_id
 
+from .attained import AttainedService
 from .base import (
     AbortReason,
     BaseJobManager,
@@ -26,6 +27,7 @@ from .base import (
     WorkflowItem,
 )
 from .cluster_algo.clustering import select_affinity_batch_ids
+from .cost import CostParams, estimate_area
 
 HardwareSignature = tuple[int | None, str | None, int | None, str | None, str | None]
 """Stable tuple form of ``HardwareRequirements`` used inside the partition key.
@@ -83,6 +85,11 @@ class PriorityJobManager(BaseJobManager):
         default_optimizer_type: str = envs.LUMILAKE_DEFAULT_OPTIMIZER,
         cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
         gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
+        policy: str = envs.LUMILAKE_SCHEDULER_POLICY,
+        fair_share_target: float = envs.LUMILAKE_FAIR_SHARE_TARGET,
+        fairness_half_life_seconds: float = envs.LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS,
+        cost_params: CostParams | None = None,
+        clock: Callable[[], float] = time.monotonic,
         worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
         unsatisfiable_dwell_observations: int = (
             envs.LUMILAKE_UNSATISFIABLE_DWELL_OBSERVATIONS
@@ -131,6 +138,10 @@ class PriorityJobManager(BaseJobManager):
         # CPU and GPU items in the same principal/token/credential/optimizer/
         # hardware class share a partition (head-of-line behaviour returns).
         self._capacity_aware_selection = capacity_aware_selection
+        self._policy = policy
+        self._fair_share_target = fair_share_target
+        self._cost_params = cost_params or CostParams()
+        self._attained = AttainedService(fairness_half_life_seconds, clock=clock)
         # Callable ``(worker_profile, HardwareRequirements) -> bool`` used to
         # filter candidate workers by hardware when capacity is supplied.
         # Defaults to accepting every worker so selection is unconstrained when
@@ -641,11 +652,18 @@ class PriorityJobManager(BaseJobManager):
                 candidates, base_batch_ids, batch_size
             )
             if not starved:
-                selected_ids = self._apply_user_fairness(
-                    candidates,
-                    selected_ids,
-                    batch_size,
-                )
+                if self._policy == "fair_index":
+                    selected_ids = self._apply_fair_index(
+                        candidates,
+                        selected_ids,
+                        batch_size,
+                    )
+                else:
+                    selected_ids = self._apply_user_fairness(
+                        candidates,
+                        selected_ids,
+                        batch_size,
+                    )
             if starved:
                 self.logger.info(
                     "Starvation override: forced=%d selected=%d forced_items=%s",
@@ -706,6 +724,13 @@ class PriorityJobManager(BaseJobManager):
                 )
             payload: _ReservationPayload = reservation._payload
             selected_set = payload.selected_workflow_ids
+            # 0. Charge attained service for committed items (not on selection,
+            # so aborted reservations do not corrupt the accounting).
+            if self._policy == "fair_index":
+                for charged in reservation.selection.workflows:
+                    area = estimate_area(charged, self._cost_params)
+                    if area is not None and area > 0:
+                        self._attained.charge(self._queue_owner_id(charged), area)
             # 1. Bump miss counters for non-selected candidates.
             for workflow_id in payload.miss_increment_targets:
                 item = self._items.get(workflow_id)
@@ -1003,3 +1028,40 @@ class PriorityJobManager(BaseJobManager):
             if len(final_ids) >= batch_size:
                 break
         return final_ids[:batch_size]
+
+    def _apply_fair_index(
+        self,
+        candidates: list[WorkflowItem],
+        selected_ids: list[str],
+        batch_size: int,
+    ) -> list[str]:
+        """Select the batch by the fair-weighted index ``w(user) / p_hat(item)``.
+
+        ``w(user) = 1 / (1 + attained(user) / fair_share_target)``; higher index
+        first (Smith's rule with a fairness weight). Items the cost model cannot
+        estimate fall back to least-attained-service (ranked as if ``p_hat`` were
+        the user's current decayed attained area). Affinity's ``selected_ids``
+        order breaks ties so clustering still shapes the batch.
+        """
+        affinity_rank = {wid: i for i, wid in enumerate(selected_ids)}
+        rank: dict[str, float] = {}
+        for item in candidates:
+            user_id = self._queue_owner_id(item)
+            attained = self._attained.get(user_id)
+            weight = 1.0 / (1.0 + attained / self._fair_share_target)
+            p_hat = estimate_area(item, self._cost_params)
+            if p_hat is None or p_hat <= 0:
+                # LAS fallback: treat p_hat as the user's attained area.
+                index = weight / max(attained, 1e-9)
+            else:
+                index = weight / p_hat
+            rank[item.workflow_id] = index
+
+        ordered = sorted(
+            candidates,
+            key=lambda item: (
+                -rank[item.workflow_id],
+                affinity_rank.get(item.workflow_id, len(selected_ids)),
+            ),
+        )
+        return [item.workflow_id for item in ordered[:batch_size]]
