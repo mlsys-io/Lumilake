@@ -227,6 +227,12 @@ The `driver:` YAML settings the server accepts are:
   one job does not dictate engine sizing for every other job on the deployment.
 - `gpu_memory_utilization` — proposer engine GPU memory utilization, default
   `None`; must be in `(0, 1]` when given.
+- `dtype` — proposer engine data type, default `None` (the model's native dtype
+  applies). Must be a non-empty string when given; the backend rejects values it
+  does not support.
+- `extra_engine_kwargs` — extra proposer engine options with no typed field,
+  default `None`. This is the route for `quantization` (e.g. `{quantization:
+  fp8}` or `{quantization: awq}`) to serve a quantized model.
 - `output_location` — OPTIONAL S3 destination. When omitted, the envelope's
   item-level `output_location` is used. S3 outputs receive a unique
   run-and-round suffix. DB output locations are rejected: the server has no DB

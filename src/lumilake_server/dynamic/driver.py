@@ -766,6 +766,8 @@ def build_round(
     chat_template_kwargs: dict[str, Any] | None = None,
     max_model_len: int | None = None,
     gpu_memory_utilization: float | None = None,
+    dtype: str | None = None,
+    extra_engine_kwargs: dict[str, Any] | None = None,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
@@ -809,6 +811,8 @@ def build_round(
         chat_template_kwargs=chat_template_kwargs,
         max_model_len=max_model_len,
         gpu_memory_utilization=gpu_memory_utilization,
+        dtype=dtype,
+        extra_engine_kwargs=extra_engine_kwargs,
     )
     return RoundBuild(
         graph=graph,

@@ -19,11 +19,15 @@ def _proposer_config(
     *,
     max_model_len: int | None = None,
     gpu_memory_utilization: float | None = None,
+    dtype: str | None = None,
+    extra_engine_kwargs: dict[str, object] | None = None,
 ) -> dict[str, object]:
     driver = DriverSettings(
         model="Qwen/Qwen3-8B",
         max_model_len=max_model_len,
         gpu_memory_utilization=gpu_memory_utilization,
+        dtype=dtype,
+        extra_engine_kwargs=extra_engine_kwargs,
     )
     round_build = build_round(
         [],
@@ -41,6 +45,8 @@ def _proposer_config(
         chat_template_kwargs=driver.chat_template_kwargs,
         max_model_len=driver.max_model_len,
         gpu_memory_utilization=driver.gpu_memory_utilization,
+        dtype=driver.dtype,
+        extra_engine_kwargs=driver.extra_engine_kwargs,
     )
     return round_build.graph[PROPOSER_NODE_ID]["config"]
 
@@ -58,6 +64,8 @@ def test_no_engine_opts_matches_default_proposer() -> None:
     assert config == default
     assert config["max_model_len"] is None
     assert config["gpu_memory_utilization"] is None
+    assert config["dtype"] is None
+    assert config["extra_engine_kwargs"] is None
 
 
 def test_max_model_len_lands_on_proposer() -> None:
@@ -87,3 +95,21 @@ def test_gpu_memory_utilization_must_be_in_open_unit_interval(bad: float) -> Non
 def test_gpu_memory_utilization_upper_bound_inclusive() -> None:
     driver = DriverSettings(model="Qwen/Qwen3-8B", gpu_memory_utilization=1.0)
     assert driver.gpu_memory_utilization == 1.0
+
+
+def test_dtype_lands_on_proposer() -> None:
+    config = _proposer_config(dtype="fp8")
+    assert config["dtype"] == "fp8"
+    assert config["extra_engine_kwargs"] is None
+
+
+def test_extra_engine_kwargs_lands_on_proposer() -> None:
+    config = _proposer_config(extra_engine_kwargs={"quantization": "fp8"})
+    assert config["extra_engine_kwargs"] == {"quantization": "fp8"}
+    assert config["dtype"] is None
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "\t"])
+def test_dtype_must_not_be_blank(bad: str) -> None:
+    with pytest.raises(ValidationError):
+        DriverSettings(model="Qwen/Qwen3-8B", dtype=bad)

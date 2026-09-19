@@ -313,6 +313,8 @@ def _render_dynamic_round0(
             chat_template_kwargs=spec.driver.chat_template_kwargs,
             max_model_len=spec.driver.max_model_len,
             gpu_memory_utilization=spec.driver.gpu_memory_utilization,
+            dtype=spec.driver.dtype,
+            extra_engine_kwargs=spec.driver.extra_engine_kwargs,
         )
         return round_build.graph, declared_output_location
     except Exception as exc:
@@ -1753,6 +1755,8 @@ async def _run_dynamic_job(
                     chat_template_kwargs=spec.driver.chat_template_kwargs,
                     max_model_len=spec.driver.max_model_len,
                     gpu_memory_utilization=spec.driver.gpu_memory_utilization,
+                    dtype=spec.driver.dtype,
+                    extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
