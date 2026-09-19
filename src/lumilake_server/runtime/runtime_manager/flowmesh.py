@@ -26,11 +26,14 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
+    is_api_origin_trusted,
+    resolve_api_credential,
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import (
+    _API_CREDENTIAL_PLACEHOLDER,
     Roles,
     RuntimeGraph,
     RuntimeGraphBuilder,
@@ -42,6 +45,15 @@ from lumilake_server.utils.job_storage import get_job_storage
 from .base import BaseRuntimeManager
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+
+
+@dataclass
+class DispatchCredentials:
+    """Per-request in-process credentials: the FlowMesh transport token and the
+    caller-supplied API credential, resolved at dispatch and never persisted."""
+
+    runtime_token: str | None = None
+    api_credential: str | None = None
 
 
 def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
@@ -176,7 +188,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         # Cross-thread (FastAPI loop set/clear, _AsyncRunner loop get),
         # so threading lock, not asyncio.
-        self._dispatch_tokens: dict[str, str | None] = {}
+        self._dispatch_tokens: dict[str, DispatchCredentials] = {}
         self._dispatch_tokens_lock = threading.Lock()
 
     @property
@@ -185,11 +197,25 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     def set_dispatch_token(self, request_id: str, token: str | None) -> None:
         with self._dispatch_tokens_lock:
-            self._dispatch_tokens[request_id] = token
+            self._dispatch_tokens.setdefault(
+                request_id, DispatchCredentials()
+            ).runtime_token = token
 
     def get_dispatch_token(self, request_id: str) -> str | None:
         with self._dispatch_tokens_lock:
-            return self._dispatch_tokens.get(request_id)
+            entry = self._dispatch_tokens.get(request_id)
+            return entry.runtime_token if entry is not None else None
+
+    def set_api_credential(self, request_id: str, credential: str | None) -> None:
+        with self._dispatch_tokens_lock:
+            self._dispatch_tokens.setdefault(
+                request_id, DispatchCredentials()
+            ).api_credential = credential
+
+    def get_api_credential(self, request_id: str) -> str | None:
+        with self._dispatch_tokens_lock:
+            entry = self._dispatch_tokens.get(request_id)
+            return entry.api_credential if entry is not None else None
 
     def clear_dispatch_token(self, request_id: str) -> None:
         with self._dispatch_tokens_lock:
@@ -947,6 +973,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             request_info.runtime_graph,
             schedule=schedule,
         )
+        self._resolve_api_credentials(request_info.request_id, task_spec)
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
         task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
@@ -1339,6 +1366,38 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             spec["metadata"]["annotations"]["schedule_hint"] = schedule_hint_annotation
 
         return spec, output_node_indices, flowmesh_to_raw
+
+    def _resolve_api_credentials(
+        self, request_id: str, task_spec: dict[str, Any]
+    ) -> None:
+        """Replace the constant API credential placeholder in each api node's
+        Authorization header with the real value at dispatch time. Trusted
+        origins re-resolve deterministically from server config; untrusted
+        origins use the caller-supplied credential from the dispatch-token
+        store. If nothing resolves, the placeholder is left in place so the
+        endpoint fails loudly on auth rather than sending an empty header."""
+        nodes = task_spec.get("spec", {}).get("graph", {}).get("nodes", [])
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            api_spec = node.get("spec", {}).get("api")
+            if not isinstance(api_spec, dict):
+                continue
+            headers = api_spec.get("headers")
+            if not isinstance(headers, dict):
+                continue
+            auth = headers.get("Authorization")
+            if auth != _API_CREDENTIAL_PLACEHOLDER:
+                continue
+            url = api_spec.get("url")
+            if isinstance(url, str) and is_api_origin_trusted(url):
+                resolved = resolve_api_credential(url)
+            else:
+                resolved = self.get_api_credential(request_id)
+            if resolved:
+                headers["Authorization"] = resolved
 
     def _apply_per_node_resource_hints(
         self,

@@ -21,6 +21,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import (
+    _API_CREDENTIAL_PLACEHOLDER,
     RuntimeGraph,
     RuntimeGraphBuilder,
     make_node_prefix,
@@ -70,7 +71,7 @@ def test_api_config_emits_api_task_type() -> None:
     assert api["method"] == "POST"
     assert api["url"] == _DEFAULT_API_URL
     assert "auth" not in api
-    assert api["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+    assert api["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
     body = api["json"]
     assert body["model"] == "meta-llama/Llama-3.1-8B-Instruct"
     assert body["messages"] == [{"role": "user", "content": "NVDA"}]
@@ -125,12 +126,12 @@ def test_api_samplers_flow_into_body() -> None:
 
 
 def test_api_key_redacted_on_serialization() -> None:
-    """The Authorization header is redacted from graph-level serialize() (the
-    stored form) but kept at op level, which graph building reads from."""
+    """The Authorization header carries only the constant placeholder in the
+    graph; the real credential never appears in the serialized spec."""
     runtime_graph, llm_id = _build_api_graph()
     node = runtime_graph.nodes[llm_id]
 
-    assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+    assert node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
 
     assert _RUNTIME_TOKEN not in str(runtime_graph.serialize())
     assert "Bearer" not in str(runtime_graph.serialize())
@@ -151,17 +152,19 @@ def test_api_untrusted_origin_with_caller_credential_passes_through() -> None:
         )
     )
     node = runtime_graph.nodes[llm_id]
-    assert node.api_spec["headers"]["Authorization"] == "Bearer caller-key"
+    assert node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
+    assert "caller-key" not in str(runtime_graph.serialize())
 
 
 def test_api_trusted_origin_ignores_caller_credential() -> None:
     """For a trusted origin the server PAT always wins; a caller-supplied
-    config.api.authorization is not honored."""
+    config.api.authorization is not honored. Both paths carry the constant
+    placeholder in the graph and resolve at dispatch."""
     runtime_graph, llm_id = _build_api_graph(
         api=ApiConfig(authorization="Bearer caller-key")
     )
     node = runtime_graph.nodes[llm_id]
-    assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+    assert node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
 
 
 def test_api_untrusted_origin_without_credential_fails_closed() -> None:
@@ -996,7 +999,7 @@ def test_api_explicit_default_port_is_trusted(monkeypatch: pytest.MonkeyPatch) -
         api=ApiConfig(url="https://lum.id:443/v1/chat/completions")
     )
     node = runtime_graph.nodes[llm_id]
-    assert node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+    assert node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
 
 
 def test_api_trusted_origins_env_var_is_additive_to_default(
@@ -1011,7 +1014,7 @@ def test_api_trusted_origins_env_var_is_additive_to_default(
     default_graph, default_llm_id = _build_api_graph(api=ApiConfig())
     default_node = default_graph.nodes[default_llm_id]
     assert (
-        default_node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+        default_node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
     )
 
     vendor_graph, vendor_llm_id = _build_api_graph(
@@ -1019,7 +1022,7 @@ def test_api_trusted_origins_env_var_is_additive_to_default(
     )
     vendor_node = vendor_graph.nodes[vendor_llm_id]
     assert (
-        vendor_node.api_spec["headers"]["Authorization"] == f"Bearer {_RUNTIME_TOKEN}"
+        vendor_node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
     )
 
 
@@ -1704,6 +1707,83 @@ def test_api_rowwise_node_feeding_fanned_api_upstream_fails_closed() -> None:
 
     with pytest.raises(ValueError, match="rowwise column 'Prior' references"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_rowwise_node_ref_source_mapping_is_authoritative() -> None:
+    """A rowwise API consumer whose node-ref column references an already-built
+    API source with a ``node:`` column must use the runtime mapping (one node),
+    not the static count (N rows): the source emits one node, so the static
+    fallback would wrongly reject a legitimate single-node reference."""
+    stock = input_placeholder("Stock")
+    src = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": "items.output"}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": src.id, "path": "text"}],
+    )
+    llm.inputs.append(src)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (src_row,) = runtime_graph.dsl_to_runtime[src.id]
+    (llm_row,) = runtime_graph.dsl_to_runtime[llm.id]
+    messages = runtime_graph.nodes[llm_row].api_spec["json"]["messages"]
+    assert messages == [{"role": "user", "content": f"Summarize ${{{src_row}.text}}."}]
+    assert src_row == src.id
+
+
+def test_api_aggregate_node_ref_source_mapping_is_authoritative() -> None:
+    """An aggregate API consumer whose ``aggregate_table`` references an
+    already-built API source with a ``node:`` column must use the runtime
+    mapping (one node), not the static count (N rows): the source emits one
+    node, so the static fallback would wrongly reject a legitimate single-node
+    reference."""
+    stock = input_placeholder("Stock")
+    src = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {Prior}.",
+        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": "items.output"}],
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Summarize the table.")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        aggregate_table=[{"label": "summary", "node": src.id, "path": "text"}],
+    )
+    llm.inputs.append(src)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (src_row,) = runtime_graph.dsl_to_runtime[src.id]
+    (llm_row,) = runtime_graph.dsl_to_runtime[llm.id]
+    columns = runtime_graph.nodes[llm_row].data_spec["template"]["columns"]
+    df_cols = [c for c in columns if c.get("label") == "df"]
+    assert df_cols and df_cols[0]["data"]["columns"] == [
+        {"label": "summary", "node": src_row, "path": "text"}
+    ]
+    assert src_row == src.id
 
 
 def test_api_node_consuming_fanned_upstream_feeding_local_vlm_fails_closed() -> None:

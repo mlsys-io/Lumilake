@@ -100,5 +100,11 @@ class BaseRuntimeManager(ABC):
     def get_dispatch_token(self, request_id: str) -> str | None:
         return None
 
+    def set_api_credential(self, request_id: str, credential: str | None) -> None:
+        return None
+
+    def get_api_credential(self, request_id: str) -> str | None:
+        return None
+
     def clear_dispatch_token(self, request_id: str) -> None:
         return None

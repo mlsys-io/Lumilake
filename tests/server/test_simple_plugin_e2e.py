@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections.abc import Iterator
 from typing import Any, cast
@@ -31,9 +32,13 @@ class _RecordingRuntimeManager:
     def __init__(self) -> None:
         self.dispatch_token_sets: list[tuple[str, str | None]] = []
         self.dispatch_token_clears: list[str] = []
+        self.api_credential_sets: list[tuple[str, str | None]] = []
 
     def set_dispatch_token(self, request_id: str, token: str | None) -> None:
         self.dispatch_token_sets.append((request_id, token))
+
+    def set_api_credential(self, request_id: str, credential: str | None) -> None:
+        self.api_credential_sets.append((request_id, credential))
 
     def get_dispatch_token(self, request_id: str) -> str | None:
         return None
@@ -50,6 +55,7 @@ class _FakeRuntimeServer:
 
     def __init__(self) -> None:
         self.cancel_calls: list[str] = []
+        self.fail_execute = False
         self.runtime_manager = _RecordingRuntimeManager()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -62,6 +68,8 @@ class _FakeRuntimeServer:
         config: Any | None = None,
         workflow_slices: dict[str, Any] | None = None,
     ) -> LumilakeResponse:
+        if self.fail_execute:
+            raise RuntimeError("execute failed")
         return LumilakeResponse(
             outputs={
                 "demo": {
@@ -449,6 +457,107 @@ async def test_submit_without_bearer_dispatches_with_no_token(
         await _wait_for_completed_job(job_routes, job_id)
 
     assert (job_id, None) in runtime_manager.dispatch_token_sets
+
+
+def _api_credential_payload() -> dict[str, Any]:
+    """A native workflow whose LLMChatOp carries a caller-supplied API
+    credential, so the submit path must collect it into the dispatch store."""
+    return {
+        "data": [
+            {
+                "name": "demo",
+                "workflow": json.dumps(
+                    {
+                        "ask": {
+                            "_op": "LLMChatOp",
+                            "_id": "ask",
+                            "_max_iter": None,
+                            "_inputs": ["msg"],
+                            "messages": "msg",
+                            "config": {
+                                "model": "dummy-model",
+                                "api": {
+                                    "url": "https://api.example.com/v1/chat/completions",
+                                    "authorization": "Bearer caller-key",
+                                },
+                            },
+                            "return_history": False,
+                            "cacheable": False,
+                        },
+                        "msg": {
+                            "_op": "MessageOp",
+                            "_id": "msg",
+                            "_max_iter": None,
+                            "_inputs": ["inp"],
+                            "messages": [{"role": "user", "content": "hello"}],
+                        },
+                        "inp": {
+                            "_op": "InputOp",
+                            "_id": "inp",
+                            "_max_iter": None,
+                            "_inputs": [],
+                            "name": "input",
+                        },
+                    }
+                ),
+                "inputs": {"input": ["hello"]},
+                "output_location": {"type": "s3", "prefix": "demo/output.txt"},
+            }
+        ]
+    }
+
+
+@pytest.mark.anyio
+async def test_submit_collects_caller_api_credential_into_dispatch_store(
+    app: FastAPI,
+    job_routes: Any,
+) -> None:
+    runtime_manager = cast(
+        _RecordingRuntimeManager,
+        job_routes_module.LumilakeServer.get_started_instance().runtime_manager,
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        submit = await client.post("/jobs", json=_api_credential_payload())
+        assert submit.status_code == 200
+        job_id = submit.json()["data"]["job_id"]
+        await _wait_for_completed_job(job_routes, job_id)
+
+    assert (job_id, "Bearer caller-key") in runtime_manager.api_credential_sets
+
+
+async def _wait_for_failed_job(job_routes: Any, job_id: str) -> None:
+    for _ in range(100):
+        record = await job_routes._load_job_record(job_id)
+        if record is not None and record.status == "failed":
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"job {job_id} did not fail")
+
+
+@pytest.mark.anyio
+async def test_dispatch_token_cleared_on_failure_path(
+    app: FastAPI,
+    job_routes: Any,
+) -> None:
+    fake_server = cast(
+        _FakeRuntimeServer,
+        job_routes_module.LumilakeServer.get_started_instance(),
+    )
+    fake_server.fail_execute = True
+    runtime_manager = fake_server.runtime_manager
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        submit = await client.post(
+            "/jobs",
+            json=_submit_payload(),
+            headers={"Authorization": "Bearer demo-user"},
+        )
+        assert submit.status_code == 200
+        job_id = submit.json()["data"]["job_id"]
+        await _wait_for_failed_job(job_routes, job_id)
+
+    assert job_id in runtime_manager.dispatch_token_clears
 
 
 @pytest.mark.anyio

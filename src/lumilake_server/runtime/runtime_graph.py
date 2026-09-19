@@ -44,6 +44,10 @@ from lumilake_server.utils.lumid_data_client import (
 )
 
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
+# Constant marker placed in the scheduled api_spec Authorization header in place
+# of the real credential. It is resolved at dispatch time (never persisted or
+# hashed), so identical workflows with different secrets hash identically.
+_API_CREDENTIAL_PLACEHOLDER = "${credential}"
 
 
 class RuntimeGraphSchema(BaseModel):
@@ -1286,6 +1290,33 @@ class RuntimeGraphBuilder:
                     return list(row_ids)
         return [op_id]
 
+    def _node_ref_multi_row(
+        self,
+        *,
+        upstream_id: str,
+        upstream: Op | None,
+        inputs_dict: dict[str, list[str]],
+        graph_dict: dict[str, Op],
+        dsl_to_runtime: dict[str, list[str]] | None,
+    ) -> bool:
+        """Whether an upstream produces multiple rows for a single node
+        reference. For an API source already in ``dsl_to_runtime`` the runtime
+        mapping is authoritative (a rowwise node-ref column emits one node even
+        when its input's static count is N); the static count is a fallback only
+        for sources not yet built and for local single-node multi-item
+        producers."""
+        if not isinstance(upstream, LLMOp):
+            return False
+        if (
+            dsl_to_runtime is not None
+            and upstream_id in dsl_to_runtime
+            and self._is_api_task(upstream)
+        ):
+            return len(self._fanout_row_ids(upstream_id, dsl_to_runtime)) > 1
+        row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
+        fanned = len(self._fanout_row_ids(upstream_id, dsl_to_runtime)) > 1
+        return (row_count is not None and row_count > 1) or fanned
+
     def _guard_single_row_node_ref(
         self,
         *,
@@ -1301,9 +1332,13 @@ class RuntimeGraphBuilder:
         to a multi-row upstream (node fanout or in-node rowwise rows)."""
         if not isinstance(upstream, LLMOp):
             return
-        row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
-        fanned = len(self._fanout_row_ids(upstream_id, dsl_to_runtime)) > 1
-        if (row_count is not None and row_count > 1) or fanned:
+        if self._node_ref_multi_row(
+            upstream_id=upstream_id,
+            upstream=upstream,
+            inputs_dict=inputs_dict,
+            graph_dict=graph_dict,
+            dsl_to_runtime=dsl_to_runtime,
+        ):
             raise ValueError(
                 f"Op '{consumer_id}' {kind} references '{upstream_id}',"
                 " which produces multiple rows; API mode can only carry one row"
@@ -1854,9 +1889,9 @@ class RuntimeGraphBuilder:
                     f"LLMChatOp '{llm_op_id}' API mode targets trusted endpoint "
                     f"{url} but no PAT is configured; set LUMILAKE_RUNTIME_TOKEN."
                 )
-            headers["Authorization"] = f"Bearer {server_token}"
+            headers["Authorization"] = _API_CREDENTIAL_PLACEHOLDER
         elif api_config.authorization:
-            headers["Authorization"] = api_config.authorization
+            headers["Authorization"] = _API_CREDENTIAL_PLACEHOLDER
         else:
             raise ValueError(
                 f"LLMChatOp '{llm_op_id}' API mode targets untrusted endpoint "
@@ -2013,15 +2048,12 @@ class RuntimeGraphBuilder:
                 and isinstance(path, str)
             ):
                 upstream = graph_dict.get(node_ref)
-                upstream_row_count = (
-                    self._static_output_row_count(upstream, inputs_dict, graph_dict)
-                    if isinstance(upstream, LLMOp)
-                    else None
-                )
-                if (
-                    isinstance(upstream, LLMOp)
-                    and upstream_row_count is not None
-                    and upstream_row_count > 1
+                if self._node_ref_multi_row(
+                    upstream_id=node_ref,
+                    upstream=upstream,
+                    inputs_dict=inputs_dict,
+                    graph_dict=graph_dict,
+                    dsl_to_runtime=dsl_to_runtime,
                 ):
                     raise ValueError(
                         f"LLMChatOp '{llm_op_id}' rowwise column '{label}'"
@@ -2343,15 +2375,12 @@ class RuntimeGraphBuilder:
             ):
                 continue
             upstream = graph_dict.get(node_ref)
-            upstream_row_count = (
-                self._static_output_row_count(upstream, inputs_dict, graph_dict)
-                if isinstance(upstream, LLMOp)
-                else None
-            )
-            if (
-                isinstance(upstream, LLMOp)
-                and upstream_row_count is not None
-                and upstream_row_count > 1
+            if self._node_ref_multi_row(
+                upstream_id=node_ref,
+                upstream=upstream,
+                inputs_dict=inputs_dict,
+                graph_dict=graph_dict,
+                dsl_to_runtime=dsl_to_runtime,
             ):
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' aggregate column '{label}'"
