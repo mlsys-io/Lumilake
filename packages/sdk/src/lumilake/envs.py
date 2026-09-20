@@ -137,6 +137,13 @@ LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS: float = float(
 LUMILAKE_FAIR_SHARE_TARGET: float = float(
     os.environ.get("LUMILAKE_FAIR_SHARE_TARGET") or "10"
 )
+# Per-model setup cost (resource-area units) charged once per distinct model in
+# a batch not already resident on the group. Measured ~1 min vLLM restart
+# against a 5-10 min block, i.e. ~0.1-0.2 x base; 60.0 is ~1 min of a
+# full-worker block.
+LUMILAKE_SETUP_COST_SIGMA: float = float(
+    os.environ.get("LUMILAKE_SETUP_COST_SIGMA") or "60"
+)
 # Analytic cost-model coefficients (see cost.py / docs/SCHEDULING.md S6).
 LUMILAKE_COST_DB_SEC_PER_QUERY: float = float(
     os.environ.get("LUMILAKE_COST_DB_SEC_PER_QUERY") or "0.05"
@@ -414,6 +421,8 @@ def validate() -> None:
         raise ValueError("LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS must be > 0")
     if LUMILAKE_FAIR_SHARE_TARGET <= 0:
         raise ValueError("LUMILAKE_FAIR_SHARE_TARGET must be > 0")
+    if LUMILAKE_SETUP_COST_SIGMA < 0:
+        raise ValueError("LUMILAKE_SETUP_COST_SIGMA must be >= 0")
     if LUMILAKE_COST_DB_SEC_PER_QUERY <= 0:
         raise ValueError("LUMILAKE_COST_DB_SEC_PER_QUERY must be > 0")
     if LUMILAKE_COST_CPU_SEC_PER_NODE <= 0:
