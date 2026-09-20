@@ -11,6 +11,7 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -138,6 +139,7 @@ class _FakePreviewServer:
 
     def __init__(self, capture: _PreviewCapture) -> None:
         self._capture = capture
+        self._runtime_builder = Mock()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return graph_specs
