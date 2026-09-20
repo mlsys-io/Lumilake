@@ -181,6 +181,11 @@ class PriorityJobManager(BaseJobManager):
         # reserve_batch calls raise until commit/abort releases this slot.
         self._active_reservation: BatchReservation | None = None
         self.logger = init_child_logger("JobManager", logger, log_level)
+        self.logger.info(
+            "Scheduling policy active: %s (resolved to %s)",
+            self._policy,
+            type(self._policy_impl).__name__,
+        )
 
     @staticmethod
     def _redact_partition(
