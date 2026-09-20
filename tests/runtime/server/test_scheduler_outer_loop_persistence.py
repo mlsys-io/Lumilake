@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import pytest
 from lumilake import envs
+from support.runtime_server import attach_request_states
 
 
 class _FailThenCancelJobManager:
@@ -325,6 +326,7 @@ class _RecordingJobManager:
         self._calls = 0
         self.commits: list[Any] = []
         self.aborts: list[Any] = []
+        self.removed: list[Any] = []
 
     async def wait_for_work(self) -> None:
         if self._calls >= self._batches_to_yield:
@@ -338,7 +340,12 @@ class _RecordingJobManager:
         selection = SimpleNamespace(
             config=SimpleNamespace(hardware_requirements=None),
             workflows=[
-                SimpleNamespace(request_id=f"req-{self._calls}", id=f"wf-{self._calls}")
+                SimpleNamespace(
+                    request_id=f"req-{self._calls}",
+                    workflow_id=f"wf-{self._calls}",
+                    public_graph_name="g",
+                    slice_index=0,
+                )
             ],
             runtime_graphs={"g": SimpleNamespace(nodes={"n": cpu_node})},
             name=f"batch-{self._calls}",
@@ -351,6 +358,9 @@ class _RecordingJobManager:
 
     async def abort_reservation(self, reservation: Any) -> None:
         self.aborts.append(reservation.id)
+
+    async def remove_workflows(self, workflow_ids: Any) -> None:
+        self.removed.append(list(workflow_ids))
 
 
 @pytest.mark.asyncio
@@ -385,6 +395,84 @@ async def test_scheduler_aborts_reservation_when_workers_unavailable(
 
     assert job_manager.aborts == [1]
     assert job_manager.commits == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
+    """When worker acquisition gives up, the batch's jobs are failed with a
+    clear reason and removed from the queue so they do not re-select."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    job_manager = _RecordingJobManager(batches_to_yield=1)
+    server.job_manager = cast(Any, job_manager)
+
+    async def _no_accumulation_wait() -> None:
+        return
+
+    async def _worker_acquisition_times_out(
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
+    ) -> Any:
+        return None
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        return
+
+    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._wait_for_available_worker_group = (  # type: ignore[method-assign]
+        _worker_acquisition_times_out
+    )
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    # Attach a real request state so _fail_unplaceable_batch can finalize it.
+    handlers = attach_request_states(
+        server,
+        [
+            SimpleNamespace(
+                request_id="req-1",
+                workflow_id="wf-1",
+                public_graph_name="g",
+                slice_index=0,
+                runtime_graph=SimpleNamespace(node_count=1),
+            )
+        ],
+    )
+
+    await server._scheduler_loop()
+
+    assert job_manager.aborts == [1]
+    assert job_manager.commits == []
+    assert job_manager.removed == [["wf-1"]]
+    handler = handlers["req-1"]
+    assert len(handler.results) == 1
+    result = handler.results[0]
+    assert result.error_info is not None
+    assert any("placement_failed" in err for err in result.error_info)
+
+
+@pytest.mark.asyncio
+async def test_worker_group_wait_returns_none_after_bound(
+    server_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_wait_for_available_worker_group returns None once the admission wait
+    bound elapses instead of looping forever."""
+    monkeypatch.setattr(envs, "LUMILAKE_WORKER_GROUP_WAIT_SECONDS", 0.0)
+    server = server_factory()
+
+    async def _no_workers() -> list[Any]:
+        return []
+
+    async def _no_profile(worker: str) -> Any:
+        raise RuntimeError("no profile")
+
+    server.runtime_manager.get_workers = _no_workers  # type: ignore[method-assign]
+    server.runtime_manager.get_worker_profile = _no_profile  # type: ignore[method-assign]
+
+    result = await server._wait_for_available_worker_group(
+        cpu_group_size=1, gpu_group_size=0
+    )
+
+    assert result is None
 
 
 @pytest.mark.asyncio

@@ -120,6 +120,14 @@ LUMILAKE_POLL_TIMEOUT_SECONDS: float = float(
 LUMILAKE_POLL_INTERVAL_SECONDS: float = float(
     os.environ.get("LUMILAKE_POLL_INTERVAL_SECONDS") or "5"
 )
+# How long the scheduler waits for a worker group to become available before
+# giving up on a batch. Distinct from LUMILAKE_POLL_TIMEOUT_SECONDS, which
+# bounds the completion poll for an already-running batch. A finite bound here
+# stops an unfulfillable batch (e.g. a GPU batch with no GPU worker) from
+# wedging the scheduler forever and starving every batch behind it.
+LUMILAKE_WORKER_GROUP_WAIT_SECONDS: float = float(
+    os.environ.get("LUMILAKE_WORKER_GROUP_WAIT_SECONDS") or "300"
+)
 LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS: float = float(
     os.environ.get("LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS") or "60"
 )

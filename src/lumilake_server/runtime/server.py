@@ -785,6 +785,7 @@ class LumilakeServer:
                         hardware=batch.config.hardware_requirements,
                     )
                     if workers is None:
+                        await self._fail_unplaceable_batch(batch)
                         continue
                     await self.job_manager.commit_reservation(reservation)
                     committed = True
@@ -920,12 +921,51 @@ class LumilakeServer:
                     elapsed,
                 )
                 next_wait_warning_at = now + wait_warning_interval_s
-            if (
-                envs.LUMILAKE_POLL_TIMEOUT_SECONDS != float("inf")
-                and elapsed > envs.LUMILAKE_POLL_TIMEOUT_SECONDS
-            ):
+            if elapsed > envs.LUMILAKE_WORKER_GROUP_WAIT_SECONDS:
                 return None
             await asyncio.sleep(envs.LUMILAKE_POLL_INTERVAL_SECONDS)
+
+    async def _fail_unplaceable_batch(self, batch: BatchSelection) -> None:
+        """Fail every workflow in a batch that could not be placed on a worker.
+
+        Called when the worker-group admission wait gives up. Marks each
+        affected request with a clear error, finalizes any request that has no
+        remaining pending workflows, and drops the workflows from the job
+        manager so the batch does not re-select and keep starving the queue.
+        """
+        workflow_ids: list[str] = []
+        for workflow in batch.workflows:
+            workflow_ids.append(workflow.workflow_id)
+            state = self._requests.get(workflow.request_id)
+            if state is None:
+                continue
+            if state.error_info is None:
+                state.error_info = []
+            state.error_info.append(
+                {
+                    "placement_failed": workflow.workflow_id,
+                    "graph": workflow.public_graph_name,
+                    "slice_index": workflow.slice_index,
+                    "error": (
+                        "no worker group available within "
+                        f"{envs.LUMILAKE_WORKER_GROUP_WAIT_SECONDS:.0f}s "
+                        f"(required_cpu={self.config.cpu_worker_group_size} "
+                        f"required_gpu={self.config.gpu_worker_group_size})"
+                    ),
+                }
+            )
+            state.pending_workflows.discard(workflow.workflow_id)
+        for workflow in batch.workflows:
+            state = self._requests.get(workflow.request_id)
+            if state is None or state.pending_workflows or not state.ready:
+                continue
+            response = LumilakeResponse(
+                outputs=state.outputs,
+                error_info=state.error_info,
+                chat_histories=state.chat_histories,
+            )
+            await state.handler.put_result(response)
+        await self.job_manager.remove_workflows(workflow_ids)
 
     async def _select_preview_workers_and_profiles(
         self,
