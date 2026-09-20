@@ -80,6 +80,12 @@ class PriorityJobManager(BaseJobManager):
         cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
         gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
         worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
+        unsatisfiable_dwell_observations: int = (
+            envs.LUMILAKE_UNSATISFIABLE_DWELL_OBSERVATIONS
+        ),
+        unsatisfiable_dwell_seconds: float = (
+            envs.LUMILAKE_UNSATISFIABLE_DWELL_SECONDS
+        ),
         logger: Logger | None = None,
         log_level: LogLevel | None = None,
     ) -> None:
@@ -92,6 +98,28 @@ class PriorityJobManager(BaseJobManager):
         self._starvation_limit = starvation_limit
         self._cpu_worker_group_size = max(0, cpu_worker_group_size)
         self._gpu_worker_group_size = max(0, gpu_worker_group_size)
+        # A partition must be observed unsatisfiable against total capacity
+        # across this many consecutive scheduler iterations before it is
+        # failed as permanently unsatisfiable. Guards against transient fleet
+        # blips (workers briefly deregistered) being mistaken for impossible
+        # requirements.
+        self._unsatisfiable_dwell_observations = max(
+            1, unsatisfiable_dwell_observations
+        )
+        # The partition must also have been continuously unsatisfiable for at
+        # least this many seconds. The observation count alone is not a dwell
+        # in time: when there is queued work and some free capacity the
+        # scheduler loop can iterate in milliseconds, so a count-only guard
+        # would let a fleet blip that outlasts a few fast iterations destroy
+        # queued work. The elapsed time is what actually survives a blip.
+        self._unsatisfiable_dwell_seconds = max(0.0, unsatisfiable_dwell_seconds)
+        # Consecutive observations each present partition has been
+        # unsatisfiable against total capacity, keyed by the wall-clock time
+        # the current unsatisfiable run began. Reset whenever a partition
+        # becomes satisfiable again. The count stops a single stale snapshot
+        # from arming the timer; the elapsed time is what survives a blip.
+        self._unsatisfiable_since: dict[PartitionKey, float] = {}
+        self._unsatisfiable_count: dict[PartitionKey, int] = {}
         # Callable ``(worker_profile, HardwareRequirements) -> bool`` used to
         # filter candidate workers by hardware when capacity is supplied.
         # Defaults to accepting every worker so selection is unconstrained when
@@ -387,6 +415,64 @@ class PriorityJobManager(BaseJobManager):
                 self._priority_queue_size(priority) > 0 for priority in self._queues
             ):
                 self._not_empty.clear()
+
+    async def permanently_unsatisfiable(
+        self, total_capacity: FreeCapacity
+    ) -> list[WorkflowItem]:
+        """Return queued items whose partition no worker can ever satisfy.
+
+        ``total_capacity`` must describe every registered worker (busy or
+        idle). A partition is only reported once it has been observed
+        unsatisfiable against total capacity across
+        ``_unsatisfiable_dwell_observations`` consecutive scheduler
+        iterations AND for at least ``_unsatisfiable_dwell_seconds``, so a
+        transient fleet blip (workers briefly deregistered) is not mistaken
+        for an impossible requirement. A genuinely impossible partition (e.g.
+        a ``gpu_model`` no worker has) is unsatisfiable on every observation
+        and fails after the dwell. The caller should fail the returned items
+        loudly and drop them from the queue rather than leaving them to sit
+        silently forever.
+        """
+        async with self._lock:
+            present_partitions: set[PartitionKey] = set()
+            for priority in Priority:
+                for queue in self._queues[priority].values():
+                    for item in queue:
+                        present_partitions.add(self._partition_of(item))
+            # Advance the dwell for every present partition: record the start
+            # of an unsatisfiable run and count it, reset both when
+            # satisfiable. Partitions that drained from the queue are
+            # forgotten.
+            for partition in list(self._unsatisfiable_since):
+                if partition not in present_partitions:
+                    del self._unsatisfiable_since[partition]
+                    del self._unsatisfiable_count[partition]
+            now = time.monotonic()
+            for partition in present_partitions:
+                if self._partition_eligible(partition, total_capacity):
+                    self._unsatisfiable_since.pop(partition, None)
+                    self._unsatisfiable_count.pop(partition, None)
+                    continue
+                self._unsatisfiable_since.setdefault(partition, now)
+                self._unsatisfiable_count[partition] = (
+                    self._unsatisfiable_count.get(partition, 0) + 1
+                )
+            doomed_partitions = {
+                partition
+                for partition, since in self._unsatisfiable_since.items()
+                if now - since >= self._unsatisfiable_dwell_seconds
+                and self._unsatisfiable_count[partition]
+                >= self._unsatisfiable_dwell_observations
+            }
+            if not doomed_partitions:
+                return []
+            return [
+                item
+                for priority in Priority
+                for queue in self._queues[priority].values()
+                for item in queue
+                if self._partition_of(item) in doomed_partitions
+            ]
 
     async def reserve_batch(
         self,

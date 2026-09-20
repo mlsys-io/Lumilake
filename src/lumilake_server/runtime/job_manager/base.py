@@ -161,6 +161,17 @@ class BaseJobManager(ABC):
         """Drop workflows from the queue entirely (queues and metadata)."""
         raise NotImplementedError
 
+    async def permanently_unsatisfiable(
+        self, total_capacity: FreeCapacity
+    ) -> list[WorkflowItem]:
+        """Return queued items no worker can ever satisfy.
+
+        ``total_capacity`` describes every registered worker (busy or idle).
+        The default returns nothing; capacity-aware implementations override
+        this to let the scheduler fail permanently-unsatisfiable work loudly.
+        """
+        return []
+
     @abstractmethod
     def get_workflow(self, workflow_id: str) -> WorkflowItem:
         """Lookup workflow metadata by ID."""

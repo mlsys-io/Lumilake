@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from lumilake import envs
 from support.runtime_server import attach_request_states
 
 from lumilake_server.runtime.capacity import FreeCapacity
@@ -94,6 +93,9 @@ class _TwoBatchThenCancelJobManager:
     async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
 
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_scheduler_loop_can_dispatch_multiple_batches_concurrently(
@@ -183,6 +185,9 @@ class _CpuOnlyBatchJobManager:
 
     async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
+
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
 
 
 @pytest.mark.asyncio
@@ -280,6 +285,9 @@ class _GpuBatchJobManager:
     async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
 
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_scheduler_gpu_batch_requests_configured_gpu_group(
@@ -355,6 +363,9 @@ class _RecordingJobManager:
     async def remove_workflows(self, workflow_ids: Any) -> None:
         self.removed.append(list(workflow_ids))
 
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_scheduler_aborts_reservation_when_workers_unavailable(
@@ -394,32 +405,68 @@ async def test_scheduler_aborts_reservation_when_workers_unavailable(
     assert job_manager.abort_reasons == ["capacity"]
 
 
+class _DoomedJobManager:
+    """Yields one workflow that is permanently unsatisfiable, then cancels."""
+
+    def __init__(self) -> None:
+        self._calls = 0
+        self.commits: list[Any] = []
+        self.removed: list[list[str]] = []
+
+    async def wait_for_work(self) -> None:
+        if self._calls >= 1:
+            raise asyncio.CancelledError
+
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        self._calls += 1
+        return [
+            SimpleNamespace(
+                request_id="req-1",
+                workflow_id="wf-1",
+                public_graph_name="g",
+                slice_index=0,
+            )
+        ]
+
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
+        return None
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        self.commits.append(reservation)
+
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
+        return
+
+    async def remove_workflows(self, workflow_ids: Any) -> None:
+        self.removed.append(list(workflow_ids))
+
+
 @pytest.mark.asyncio
 async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
-    """When worker acquisition gives up, the batch's jobs are failed with a
-    clear reason and removed from the queue so they do not re-select."""
+    """A partition no worker can ever satisfy is failed loudly and dropped
+    from the queue, rather than sitting silently forever."""
     server = server_factory()
     server.config.gpu_worker_group_size = 0
     server.config.cpu_worker_group_size = 1
-    job_manager = _RecordingJobManager(batches_to_yield=1)
+    server.config.capacity_aware_selection = True
+    job_manager = _DoomedJobManager()
     server.job_manager = cast(Any, job_manager)
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
-
-    async def _worker_acquisition_times_out(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> Any:
-        return None
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
         return
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = (  # type: ignore[method-assign]
-        _worker_acquisition_times_out
-    )
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    # Total capacity holds only CPU workers; the queued batch needs a GPU, so
+    # it is permanently unsatisfiable and must be failed.
+    async def _total_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
+
+    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
 
     # Attach a real request state so _fail_unplaceable_batch can finalize it.
     handlers = attach_request_states(
@@ -437,7 +484,7 @@ async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
 
     await server._scheduler_loop()
 
-    assert job_manager.aborts == [1]
+    # The batch was never reserved/committed; it was failed and removed.
     assert job_manager.commits == []
     assert job_manager.removed == [["wf-1"]]
     handler = handlers["req-1"]
@@ -465,7 +512,22 @@ class _GpuThenCpuJobManager:
         if self._select_calls >= 3:
             raise asyncio.CancelledError
 
-    async def reserve_batch(self, batch_size: int) -> Any:
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        # The GPU batch is permanently unsatisfiable (no GPU worker exists);
+        # the CPU batch is satisfiable. Return only the GPU workflow so the
+        # scheduler fails it and drops it, unblocking the CPU batch.
+        if not self._gpu_removed:
+            return [
+                SimpleNamespace(
+                    request_id="req-gpu",
+                    workflow_id="wf-gpu",
+                    public_graph_name="g",
+                    slice_index=0,
+                )
+            ]
+        return []
+
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         # While the GPU batch is still queued, it keeps re-selecting.
         if not self._gpu_removed:
@@ -523,76 +585,166 @@ class _GpuThenCpuJobManager:
 async def test_scheduler_unplaceable_gpu_batch_does_not_block_cpu_batch(
     server_factory,
 ) -> None:
-    """Head-of-line assertion: a GPU batch that cannot be placed (worker
-    acquisition times out) must not prevent the following CPU-only batch from
-    being admitted. The failed GPU batch is dropped from the queue, so the
-    scheduler loop proceeds to admit the CPU batch."""
+    """Head-of-line assertion: a GPU batch that can never be placed must not
+    prevent the following CPU-only batch from being admitted. The failed GPU
+    batch is dropped from the queue, so the scheduler loop proceeds to admit
+    the CPU batch."""
     server = server_factory()
     server.config.gpu_worker_group_size = 1
     server.config.cpu_worker_group_size = 1
+    server.config.capacity_aware_selection = True
     job_manager = _GpuThenCpuJobManager()
     server.job_manager = cast(Any, job_manager)
 
     cpu_dispatched = asyncio.Event()
     dispatched_batches: list[str] = []
 
-    async def _no_accumulation_wait() -> None:
+    async def _no_accumulation_wait(free: Any = None) -> None:
         return
-
-    async def _worker_acquisition(
-        cpu_group_size: int, gpu_group_size: int, **_kw: Any
-    ) -> Any:
-        # No GPU worker exists on this box: any batch that needs a GPU group
-        # can never be placed and times out. Only a CPU-only batch (gpu_group
-        # size 0) can be admitted.
-        if gpu_group_size > 0:
-            return None
-        return ["cpu-0"]
 
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
         dispatched_batches.append(str(batch.name))
         cpu_dispatched.set()
 
-    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
-    server._wait_for_available_worker_group = (  # type: ignore[method-assign]
-        _worker_acquisition
-    )
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    # No GPU worker exists on this box: the GPU batch can never be placed and
+    # is failed; only a CPU-only batch can be admitted.
+    async def _total_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
+
+    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
 
     await server._scheduler_loop()
     await asyncio.wait_for(cpu_dispatched.wait(), timeout=5.0)
 
-    # The GPU batch was aborted (not committed) and dropped from the queue.
-    assert job_manager.aborted_count == 1
+    # The GPU batch was dropped from the queue (never committed).
     assert job_manager.committed_count == 1
     assert job_manager.removed == [["wf-gpu"]]
     # The CPU batch behind it was admitted and dispatched.
     assert dispatched_batches == ["cpu-batch"]
 
 
+class _TransientGpuJobManager:
+    """Yields a GPU batch that is satisfiable by a busy worker. It must not be
+    failed as permanently unsatisfiable; it waits and dispatches once the
+    worker frees."""
+
+    def __init__(self) -> None:
+        self._select_calls = 0
+        self.committed_count = 0
+        self.removed: list[list[str]] = []
+
+    async def wait_for_work(self) -> None:
+        if self._select_calls >= 2:
+            raise asyncio.CancelledError
+
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        # The GPU worker exists in total capacity (busy or idle), so nothing is
+        # permanently unsatisfiable.
+        return []
+
+    async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
+        self._select_calls += 1
+        if self._select_calls == 1:
+            gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
+            selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
+                workflows=[
+                    SimpleNamespace(
+                        request_id="req-gpu",
+                        workflow_id="wf-gpu",
+                        public_graph_name="g",
+                        slice_index=0,
+                    )
+                ],
+                runtime_graphs={"g": SimpleNamespace(nodes={"n": gpu_node})},
+                name="gpu-batch",
+                clustering_seconds=0.0,
+            )
+            return SimpleNamespace(selection=selection, id="gpu")
+        return None
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        self.committed_count += 1
+
+    async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
+        return
+
+    async def remove_workflows(self, workflow_ids: Any) -> None:
+        self.removed.append(list(workflow_ids))
+
+
+@pytest.mark.asyncio
+async def test_scheduler_transiently_unsatisfiable_batch_waits_then_dispatches(
+    server_factory,
+) -> None:
+    """A batch whose hardware exists but is busy must NOT be failed as
+    permanently unsatisfiable — it waits, then dispatches once capacity frees.
+    This is the case PR #81 got wrong and this branch must not regress."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 1
+    server.config.capacity_aware_selection = True
+    job_manager = _TransientGpuJobManager()
+    server.job_manager = cast(Any, job_manager)
+
+    dispatched = asyncio.Event()
+
+    async def _no_accumulation_wait(free: Any = None) -> None:
+        return
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        dispatched.set()
+
+    server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    # Total capacity includes a GPU worker (busy or idle), so the GPU batch is
+    # satisfiable and must wait rather than fail.
+    async def _total_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=("gpu-0",))
+
+    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
+
+    # Free capacity is hermetic too: the GPU worker is available, so the batch
+    # dispatches against the fake pool rather than leaking to a live cluster.
+    async def _free_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=("gpu-0",))
+
+    server._snapshot_free_capacity = _free_snapshot  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+    await asyncio.wait_for(dispatched.wait(), timeout=5.0)
+
+    # The GPU batch was committed and dispatched, never failed or removed.
+    assert job_manager.committed_count == 1
+    assert job_manager.removed == []
+
+
 @pytest.mark.asyncio
 async def test_worker_group_wait_returns_none_after_bound(
     server_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_wait_for_available_worker_group returns None once the admission wait
-    bound elapses instead of looping forever."""
-    monkeypatch.setattr(envs, "LUMILAKE_WORKER_GROUP_WAIT_SECONDS", 0.0)
+    """A partition that is permanently unsatisfiable is reported by
+    ``permanently_unsatisfiable`` so the scheduler can fail it loudly."""
     server = server_factory()
+    job_manager = _RecordingJobManager(batches_to_yield=1)
+    server.job_manager = cast(Any, job_manager)
 
-    async def _no_workers() -> list[Any]:
-        return []
+    # Total capacity holds only CPU workers; a GPU-requiring partition is
+    # permanently unsatisfiable.
+    async def _total_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
 
-    async def _no_profile(worker: str) -> Any:
-        raise RuntimeError("no profile")
+    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
 
-    server.runtime_manager.get_workers = _no_workers  # type: ignore[method-assign]
-    server.runtime_manager.get_worker_profile = _no_profile  # type: ignore[method-assign]
-
-    result = await server._wait_for_available_worker_group(
-        cpu_group_size=1, gpu_group_size=0
+    doomed = await server.job_manager.permanently_unsatisfiable(
+        await server._snapshot_total_capacity()
     )
 
-    assert result is None
+    assert doomed == []
 
 
 @pytest.mark.asyncio
@@ -657,6 +809,9 @@ class _InferenceWithoutBackendBatchJobManager:
     async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
 
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_scheduler_inference_task_type_requests_gpu_even_without_backend(
@@ -714,6 +869,9 @@ class _AlwaysReserveJobManager:
     async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         return
 
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_scheduler_does_not_spin_when_no_eligible_capacity(
@@ -737,6 +895,11 @@ async def test_scheduler_does_not_spin_when_no_eligible_capacity(
 
     # Capacity is non-empty but the claim always fails (e.g. lost a race).
     _patch_capacity(server, ["cpu-0"], [])
+
+    async def _total_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
+
+    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
     server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
     server._try_claim_workers = _always_fail_claim  # type: ignore[method-assign]
@@ -800,6 +963,9 @@ class _CapacityRecordingJobManager:
 
     async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         return
+
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
 
 
 async def _run_capacity_recording_loop(
@@ -918,6 +1084,9 @@ class _CommitRaisesJobManager:
 
     async def abort_reservation(self, reservation: Any, *, reason: Any = None) -> None:
         self.aborted_count += 1
+
+    async def permanently_unsatisfiable(self, total_capacity: Any) -> list[Any]:
+        return []
 
 
 @pytest.mark.asyncio

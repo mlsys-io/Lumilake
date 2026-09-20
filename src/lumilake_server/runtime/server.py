@@ -42,6 +42,7 @@ from lumilake_server.runtime.job_manager import (
     BatchSelection,
     Job,
     PriorityJobManager,
+    WorkflowItem,
     create_job_manager,
 )
 from lumilake_server.runtime.optimizer import create_optimizer
@@ -793,6 +794,14 @@ class LumilakeServer:
                     await self._wait_capacity()
                     continue
                 await self._maybe_wait_for_batch_accumulation(free)
+                if self.config.capacity_aware_selection:
+                    total = await self._snapshot_total_capacity()
+                    doomed = await self.job_manager.permanently_unsatisfiable(total)
+                    if doomed:
+                        await self._fail_unplaceable_batch(doomed)
+                        # The queue may now be empty; loop back to wait for work
+                        # or re-snapshot rather than proceeding to select.
+                        continue
                 select_start = time.perf_counter()
                 reservation = await self.job_manager.reserve_batch(
                     self.config.batch_size,
@@ -896,6 +905,78 @@ class LumilakeServer:
             profiles=profiles,
         )
 
+    async def _snapshot_total_capacity(self) -> FreeCapacity:
+        """Snapshot every registered worker, busy or idle, split by GPU class.
+
+        Used to answer "can this partition *ever* run?" — a partition that is
+        not eligible against the whole cluster is permanently unsatisfiable,
+        so it should be failed rather than left to wait forever.
+        """
+        workers = await self.runtime_manager.get_all_workers()
+        cpu_worker_ids: list[str] = []
+        gpu_worker_ids: list[str] = []
+        profiles: dict[str, dict[str, Any]] = {}
+        for candidate in workers:
+            try:
+                profile = await self.runtime_manager.get_worker_profile(candidate)
+            except Exception:
+                self.logger.warning(
+                    "Failed to fetch worker profile for %s; skipping",
+                    candidate,
+                    exc_info=True,
+                )
+                continue
+            profiles[candidate] = profile
+            if self._has_gpu(profile):
+                gpu_worker_ids.append(candidate)
+            else:
+                cpu_worker_ids.append(candidate)
+        return FreeCapacity(
+            cpu_worker_ids=tuple(cpu_worker_ids),
+            gpu_worker_ids=tuple(gpu_worker_ids),
+            profiles=profiles,
+        )
+
+    async def _fail_unplaceable_batch(self, workflows: list[WorkflowItem]) -> None:
+        """Fail workflows no worker can ever satisfy, loudly and immediately.
+
+        Marks each affected request with an error naming the unsatisfiable
+        requirement, finalizes any request that has no remaining pending
+        workflows, and drops the workflows from the job manager so they cannot
+        re-select and keep starving the queue.
+        """
+        workflow_ids = [workflow.workflow_id for workflow in workflows]
+        for workflow in workflows:
+            state = self._requests.get(workflow.request_id)
+            if state is None:
+                continue
+            if state.error_info is None:
+                state.error_info = []
+            state.error_info.append(
+                {
+                    "placement_failed": workflow.workflow_id,
+                    "graph": workflow.public_graph_name,
+                    "slice_index": workflow.slice_index,
+                    "error": (
+                        "no worker in the cluster can satisfy this request "
+                        f"(required_cpu={self.config.cpu_worker_group_size} "
+                        f"required_gpu={self.config.gpu_worker_group_size})"
+                    ),
+                }
+            )
+            state.pending_workflows.discard(workflow.workflow_id)
+        for workflow in workflows:
+            state = self._requests.get(workflow.request_id)
+            if state is None or state.pending_workflows or not state.ready:
+                continue
+            response = LumilakeResponse(
+                outputs=state.outputs,
+                error_info=state.error_info,
+                chat_histories=state.chat_histories,
+            )
+            await state.handler.put_result(response)
+        await self.job_manager.remove_workflows(workflow_ids)
+
     async def _try_claim_workers(
         self, batch: BatchSelection, free: FreeCapacity
     ) -> list[str] | None:
@@ -977,7 +1058,6 @@ class LumilakeServer:
             remaining,
         )
         await asyncio.sleep(remaining)
-
 
     async def _select_preview_workers_and_profiles(
         self,
