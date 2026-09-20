@@ -7,13 +7,18 @@ is the optimal sequencing key for the batched weighted-completion-time
 objective; model affinity enters through the setup term rather than a
 hand-tuned distance.
 
-Tractability follows Theorem B: for a fixed distinct-model set ``M`` and
-fixed batch size, ``T`` is constant, so the best batch is the top-``B`` by
-weight among items wanting a model in ``M``. We enumerate small model sets
-(resident alone, resident plus one other) — never item subsets.
+A batch executes concurrently on a worker group, so ``base(S) = max`` of the
+member service times (not the sum) — the harness models it this way
+(``runner.py``: ``block_base = max(meta.service ...)``). Corrected Theorem B
+then fixes a model set ``M`` *and* a service threshold ``p*``: among items with
+``mu(i) in M`` and ``p_i <= p*`` the batch cost ``T = p* + sigma*|M \\ {m_g}|``
+is constant, so the top-``B`` by weight is optimal for that ``(M, p*)`` pair.
+We enumerate ``(M, p*)`` pairs — model sets, never item subsets — and keep the
+best ``rho`` overall.
 """
 
 from collections.abc import Callable
+from itertools import combinations
 from typing import Any
 
 from lumilake_server.runtime.job_manager.attained import AttainedService
@@ -59,6 +64,7 @@ class SetIndexSchedulingPolicy(BaseSchedulingPolicy):
         cost_params: CostParams | None = None,
         resident_model: str | None = None,
         weight_fn: Callable[[WorkflowItem], float] | None = None,
+        service_fn: Callable[[WorkflowItem], float] | None = None,
         model_set_cap: int = MODEL_SET_CAP,
         **kwargs: Any,
     ) -> None:
@@ -74,11 +80,18 @@ class SetIndexSchedulingPolicy(BaseSchedulingPolicy):
         self._fair_share_target = fair_share_target
         self._attained = AttainedService(fairness_half_life_seconds, clock=self._clock)
         self._weight_fn = weight_fn or self._default_weight
+        self._service_fn = service_fn or self._default_service
 
     def _default_weight(self, item: WorkflowItem) -> float:
         """Urgency weight from attained service: ``1 / (1 + attained / target)``."""
         attained = self._attained.get(item.config.user_id)
         return 1.0 / (1.0 + attained / self._fair_share_target)
+
+    def _default_service(self, item: WorkflowItem) -> float:
+        """Estimated service time (resource-area). Unestimable items never set
+        the block length, so they get 0.0 and stay admissible."""
+        area = estimate_area(item, self._cost_params)
+        return area if area is not None and area > 0 else 0.0
 
     def select_batch(
         self,
@@ -98,19 +111,22 @@ class SetIndexSchedulingPolicy(BaseSchedulingPolicy):
         # setup charge and can join any model set.
         agnostic = by_model.pop(None, [])
 
-        # Enumerate small distinct-model sets: the resident model alone, and
-        # the resident model plus one other. Never item subsets (Theorem B).
+        # Enumerate small distinct-model sets M (|M| <= cap) over the models
+        # present in the candidate pool plus the resident model. For a fixed M
+        # and batch size T is constant (Theorem B), so the best batch is the
+        # top-B by weight among items wanting a model in M. We enumerate model
+        # sets, never item subsets. Non-resident pairs (e.g. {B, C} with A
+        # resident) are included: they pay two setup charges, but a
+        # weight-heavy pair can beat a resident-containing pair, so excluding
+        # them would be a silent restriction.
         resident = self._resident_model
-        model_sets: list[set[str]] = []
+        universe = {m for m in by_model if m is not None}
         if resident is not None:
-            model_sets.append({resident})
-        for model in by_model:
-            if model is None:
-                continue
-            base = {resident} if resident is not None else set()
-            base.add(model)
-            if len(base) <= self._model_set_cap:
-                model_sets.append(base)
+            universe.add(resident)
+        model_sets: list[set[str]] = []
+        for size in range(1, min(self._model_set_cap, len(universe)) + 1):
+            for combo in combinations(sorted(universe), size):
+                model_sets.append(set(combo))
 
         best_ids: list[str] = []
         best_rho = -1.0
@@ -120,29 +136,50 @@ class SetIndexSchedulingPolicy(BaseSchedulingPolicy):
                 pool.extend(by_model.get(model, []))
             if not pool:
                 continue
-            pool.sort(key=lambda item: -self._weight_fn(item))
-            chosen = pool[:batch_size]
-            rho = self._rho(chosen, model_set)
+            rho, ids = self._best_for_model_set(pool, model_set, batch_size)
             if rho > best_rho:
                 best_rho = rho
-                best_ids = [item.workflow_id for item in chosen]
+                best_ids = ids
 
         return best_ids
 
-    def _rho(self, batch: list[WorkflowItem], model_set: set[str]) -> float:
-        """``rho = W(S) / T(S)`` for a batch whose distinct model set is ``M``."""
-        weight = sum(self._weight_fn(item) for item in batch)
-        base = 0.0
-        for item in batch:
-            area = estimate_area(item, self._cost_params)
-            base += area if area is not None and area > 0 else 0.0
-        setup_models = model_set - (
-            {self._resident_model} if self._resident_model else set()
+    def _best_for_model_set(
+        self,
+        pool: list[WorkflowItem],
+        model_set: set[str],
+        batch_size: int,
+    ) -> tuple[float, list[str]]:
+        """Best ``(rho, ids)`` over ``(M, p*)`` pairs for a fixed model set.
+
+        Corrected Theorem B: sort by service ascending and walk the distinct
+        service values as the threshold ``p*``; under each, the batch cost is
+        ``p* + setup`` (constant), so the top-``B`` by weight among items with
+        ``service <= p*`` is optimal for that pair.
+        """
+        setup = self._sigma * len(
+            model_set - ({self._resident_model} if self._resident_model else set())
         )
-        total = base + self._sigma * len(setup_models)
-        if total <= 0:
-            return 0.0
-        return weight / total
+        pool.sort(key=self._service_fn)
+        admissible: list[WorkflowItem] = []
+        best_ids: list[str] = []
+        best_rho = -1.0
+        i = 0
+        while i < len(pool):
+            p_star = self._service_fn(pool[i])
+            while i < len(pool) and self._service_fn(pool[i]) == p_star:
+                admissible.append(pool[i])
+                i += 1
+            top = sorted(admissible, key=lambda item: -self._weight_fn(item))[
+                :batch_size
+            ]
+            weight = sum(self._weight_fn(item) for item in top)
+            total = p_star + setup
+            if total > 0:
+                rho = weight / total
+                if rho > best_rho:
+                    best_rho = rho
+                    best_ids = [item.workflow_id for item in top]
+        return best_rho, best_ids
 
     def on_commit(self, workflows: list[WorkflowItem]) -> None:
         for charged in workflows:
