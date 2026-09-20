@@ -450,6 +450,129 @@ async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
     assert any("placement_failed" in err for err in result.error_info)
 
 
+class _GpuThenCpuJobManager:
+    """Yields a GPU batch first (which cannot be placed), then a CPU batch
+    (which can). If the GPU batch is not removed from the queue, it re-selects
+    forever and the CPU batch behind it is never admitted — the head-of-line
+    assertion."""
+
+    def __init__(self) -> None:
+        self._select_calls = 0
+        self._gpu_removed = False
+        self._cpu_committed = False
+        self.aborted_count = 0
+        self.committed_count = 0
+        self.removed: list[list[str]] = []
+
+    async def wait_for_work(self) -> None:
+        if self._select_calls >= 3:
+            raise asyncio.CancelledError
+
+    async def reserve_batch(self, batch_size: int) -> Any:
+        self._select_calls += 1
+        # While the GPU batch is still queued, it keeps re-selecting.
+        if not self._gpu_removed:
+            gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
+            selection = SimpleNamespace(
+                config=SimpleNamespace(hardware_requirements=None),
+                workflows=[
+                    SimpleNamespace(
+                        request_id="req-gpu",
+                        workflow_id="wf-gpu",
+                        public_graph_name="g",
+                        slice_index=0,
+                    )
+                ],
+                runtime_graphs={"g": SimpleNamespace(nodes={"n": gpu_node})},
+                name="gpu-batch",
+                clustering_seconds=0.0,
+            )
+            return SimpleNamespace(selection=selection, id="gpu")
+        if self._cpu_committed:
+            return None
+        cpu_node = SimpleNamespace(backend="data_retrieval", task_type="data_retrieval")
+        selection = SimpleNamespace(
+            config=SimpleNamespace(hardware_requirements=None),
+            workflows=[
+                SimpleNamespace(
+                    request_id="req-cpu",
+                    workflow_id="wf-cpu",
+                    public_graph_name="g",
+                    slice_index=0,
+                )
+            ],
+            runtime_graphs={"g": SimpleNamespace(nodes={"n": cpu_node})},
+            name="cpu-batch",
+            clustering_seconds=0.0,
+        )
+        return SimpleNamespace(selection=selection, id="cpu")
+
+    async def commit_reservation(self, reservation: Any) -> None:
+        self.committed_count += 1
+        if getattr(reservation, "id", None) == "cpu":
+            self._cpu_committed = True
+
+    async def abort_reservation(self, reservation: Any) -> None:
+        self.aborted_count += 1
+
+    async def remove_workflows(self, workflow_ids: Any) -> None:
+        ids = list(workflow_ids)
+        self.removed.append(ids)
+        if "wf-gpu" in ids:
+            self._gpu_removed = True
+
+
+@pytest.mark.asyncio
+async def test_scheduler_unplaceable_gpu_batch_does_not_block_cpu_batch(
+    server_factory,
+) -> None:
+    """Head-of-line assertion: a GPU batch that cannot be placed (worker
+    acquisition times out) must not prevent the following CPU-only batch from
+    being admitted. The failed GPU batch is dropped from the queue, so the
+    scheduler loop proceeds to admit the CPU batch."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 1
+    job_manager = _GpuThenCpuJobManager()
+    server.job_manager = cast(Any, job_manager)
+
+    cpu_dispatched = asyncio.Event()
+    dispatched_batches: list[str] = []
+
+    async def _no_accumulation_wait() -> None:
+        return
+
+    async def _worker_acquisition(
+        cpu_group_size: int, gpu_group_size: int, **_kw: Any
+    ) -> Any:
+        # No GPU worker exists on this box: any batch that needs a GPU group
+        # can never be placed and times out. Only a CPU-only batch (gpu_group
+        # size 0) can be admitted.
+        if gpu_group_size > 0:
+            return None
+        return ["cpu-0"]
+
+    async def _noop_run_batch(workers: list[str], batch: Any) -> None:
+        dispatched_batches.append(str(batch.name))
+        cpu_dispatched.set()
+
+    server._wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
+    server._wait_for_available_worker_group = (  # type: ignore[method-assign]
+        _worker_acquisition
+    )
+    server._run_batch = _noop_run_batch  # type: ignore[method-assign]
+
+    await server._scheduler_loop()
+    await asyncio.wait_for(cpu_dispatched.wait(), timeout=5.0)
+
+    # The GPU batch was aborted (not committed) and dropped from the queue.
+    assert job_manager.aborted_count == 1
+    assert job_manager.committed_count == 1
+    assert job_manager.removed == [["wf-gpu"]]
+    # The CPU batch behind it was admitted and dispatched.
+    assert dispatched_batches == ["cpu-batch"]
+
+
 @pytest.mark.asyncio
 async def test_worker_group_wait_returns_none_after_bound(
     server_factory, monkeypatch: pytest.MonkeyPatch
