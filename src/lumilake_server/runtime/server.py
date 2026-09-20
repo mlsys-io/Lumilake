@@ -74,7 +74,12 @@ from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.utils import async_runner, stop_async_runner, unique_id
+from lumilake_server.utils.utils import (
+    async_runner,
+    parse_memory_to_bytes,
+    stop_async_runner,
+    unique_id,
+)
 
 
 def _empty_runtime_graph() -> RuntimeGraph:
@@ -1059,13 +1064,7 @@ class LumilakeServer:
         """Parse Kubernetes-style memory strings (matches the
         ``HardwareRequirements`` regex). Returns ``None`` on malformed input
         so the filter degrades to "no constraint" rather than raising."""
-        units = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
-        for suffix, multiplier in units.items():
-            if value.endswith(suffix):
-                head = value[: -len(suffix)]
-                if head.isdigit():
-                    return int(head) * multiplier
-        return None
+        return parse_memory_to_bytes(value)
 
     @classmethod
     def _worker_meets_hardware(
@@ -1077,10 +1076,11 @@ class LumilakeServer:
     ) -> bool:
         """Compare a raw FlowMesh worker profile to a per-job requirement.
 
-        GPU-specific constraints (``hardware.gpu``, ``hardware.gpu_memory``)
-        only apply to GPU-capable workers; CPU workers are evaluated by
-        ``cpu`` + ``memory`` alone. Without that role split, ``hardware.gpu=1``
-        would reject every CPU worker and stall any mixed CPU/GPU graph.
+        GPU-specific constraints (``hardware.gpu``, ``hardware.gpu_memory``,
+        ``hardware.gpu_model``) only apply to GPU-capable workers; CPU workers
+        are evaluated by ``cpu`` + ``memory`` alone. Without that role split,
+        ``hardware.gpu=1`` would reject every CPU worker and stall any mixed
+        CPU/GPU graph.
 
         Pass ``worker_has_gpu`` to skip an internal ``_has_gpu`` call when
         the caller has already classified the worker; default delegates to
@@ -1122,6 +1122,20 @@ class LumilakeServer:
                     vram = device.get("memory_total_bytes")
                     if isinstance(vram, int) and vram < required_vram:
                         return False
+        if hardware.gpu_model is not None and gpu_devices:
+            wanted = hardware.gpu_model.lower()
+            saw_name = False
+            for device in gpu_devices:
+                if not isinstance(device, dict):
+                    continue
+                name = device.get("name")
+                if not isinstance(name, str):
+                    continue
+                saw_name = True
+                if wanted in name.lower():
+                    return True
+            if saw_name:
+                return False
         return True
 
     @staticmethod

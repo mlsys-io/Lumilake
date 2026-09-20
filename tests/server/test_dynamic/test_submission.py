@@ -145,6 +145,7 @@ class _FakeRuntimeServer:
         self.parse_query_calls: list[dict[str, dict[str, Any]]] = []
         self.execute_calls: list[str] = []
         self.executed_graphs: list[dict[str, Any]] = []
+        self.configs: list[Any] = []
         self.plans: list[dict[str, Any]] | None = None
         self.fail_rounds: set[int] = set()
         self.hang_rounds: set[int] = set()
@@ -176,6 +177,7 @@ class _FakeRuntimeServer:
     ) -> LumilakeResponse:
         self.execute_calls.append(request_id or "")
         self.executed_graphs.append(graphs)
+        self.configs.append(config)
         if request_id:
             self._traces[request_id] = [f"trace-{request_id}"]
         round_index = len(self.execute_calls) - 1
@@ -379,6 +381,90 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
     subgraph_leaf = round_outputs["results"][1]
     assert len(subgraph_leaf) == 1
     assert list(subgraph_leaf.values())[0] == [{"market_cap": 10}]
+
+
+@pytest.mark.anyio
+async def test_dynamic_child_carries_chain_lineage(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """Each dynamic round's child job carries the parent's id as ``chain_id``
+    and a strictly increasing zero-based ``chain_round``."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    # Each round must emit a distinct node id (nodes are immutable).
+    second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
+    second_plan["ops"][0]["id"] = "q2"
+    fake_server.plans = [_SUBGRAPH_PLAN, second_plan, {"next": "STOP"}]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed"
+    # Three child rounds ran; each config must name the parent as its chain and
+    # carry its own zero-based round index.
+    assert len(fake_server.configs) == 3
+    for round_index, config in enumerate(fake_server.configs):
+        assert config.chain_id == job_id
+        assert config.chain_round == round_index
+    assert [c.chain_round for c in fake_server.configs] == [0, 1, 2]
+
+
+@pytest.mark.anyio
+async def test_dynamic_lineage_exposed_on_job_status(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """The job status API exposes dynamic lineage: the parent lists its rounds
+    in order, each child names the parent, and each child is fetchable by id
+    with its own timestamps."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
+    second_plan["ops"][0]["id"] = "q2"
+    fake_server.plans = [_SUBGRAPH_PLAN, second_plan, {"next": "STOP"}]
+    await _run_background(app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        parent_resp = await client.get(
+            f"/jobs/{job_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+    assert parent_resp.status_code == 200, parent_resp.text
+    parent = parent_resp.json()["data"]
+    # The parent is not a round of anything, and lists its rounds in order.
+    assert parent["parent_job_id"] is None
+    child_ids = parent["child_job_ids"]
+    assert len(child_ids) == 3
+    assert child_ids == list(job_routes.jobs[job_id].child_job_ids)
+
+    for child_id in child_ids:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            child_resp = await client.get(
+                f"/jobs/{child_id}",
+                headers={"Authorization": "Bearer token"},
+            )
+        assert child_resp.status_code == 200, child_resp.text
+        child = child_resp.json()["data"]
+        assert child["parent_job_id"] == job_id
+        assert child["child_job_ids"] == []
+        # Each child carries its own timestamps.
+        assert child["submitted_at"]
+        assert child["started_at"] or child["finished_at"]
 
 
 @pytest.mark.anyio

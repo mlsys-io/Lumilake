@@ -17,6 +17,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     ValidationError,
+    field_validator,
 )
 
 
@@ -36,6 +37,17 @@ class DriverSettings(BaseModel):
     threshold: StrictFloat | None = None
     chat_template_kwargs: dict[StrictStr, Any] | None = None
     output_location: dict[StrictStr, Any] | None = None
+    max_model_len: StrictInt | None = Field(default=None, gt=0)
+    gpu_memory_utilization: StrictFloat | None = Field(default=None, gt=0, le=1)
+    dtype: StrictStr | None = None
+    extra_engine_kwargs: dict[StrictStr, Any] | None = None
+
+    @field_validator("dtype")
+    @classmethod
+    def _dtype_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("dtype must not be empty or whitespace-only")
+        return value
 
 
 class DynamicSpec(BaseModel):

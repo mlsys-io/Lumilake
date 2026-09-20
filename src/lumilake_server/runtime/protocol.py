@@ -33,6 +33,10 @@ class HardwareRequirements(BaseModel):
         default=None, max_length=6, pattern=r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$"
     )
     """GPU memory per worker (e.g. ``"24Gi"``)."""
+    gpu_model: str | None = Field(default=None, max_length=128)
+    """GPU model substring per worker (e.g. ``"RTX 5080"``). When set, a GPU
+    worker matches only if the string appears case-insensitively as a substring
+    of any of its GPU device names."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -59,6 +63,13 @@ class LumilakeRequestConfig(BaseModel):
     """Per-job hardware overrides. Unset fields fall back to ``HARDWARE_*``
     env defaults. Different hardware tuples land in distinct FlowMesh
     dispatches (the job manager treats hardware as part of the partition key)."""
+    chain_id: str | None = None
+    """Parent job id when this request is one round of a dynamic chain; ``None``
+    for a standalone job. Identifies which dynamic run this round belongs to so
+    the run's rounds can be traced; it is not an input to scheduling selection or
+    ordering."""
+    chain_round: int = Field(default=0, ge=0)
+    """Zero-based round index within the chain; ``0`` for a standalone job."""
 
 
 class LumilakeRequest(BaseModel):

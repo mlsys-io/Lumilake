@@ -11,7 +11,8 @@ from lumilake_server.hooks.security import (
     resolve_accessible_ids,
 )
 from lumilake_server.runtime.flowmesh_client import flowmesh_for
-from lumilake_server.schemas.worker import WorkerInfo
+from lumilake_server.runtime.server import LumilakeServer
+from lumilake_server.schemas.worker import WorkerStatus
 
 router = APIRouter(prefix="/workers", tags=["Workers"])
 
@@ -62,7 +63,7 @@ def _split_list_params(
     summary="List workers",
     description="List all registered workers with optional filtering.",
     response_description="List of workers",
-    response_model=list[WorkerInfo],
+    response_model=list[WorkerStatus],
 )
 async def list_workers(
     request: Request,
@@ -95,7 +96,8 @@ async def list_workers(
         ) from exc
     if readable_worker_ids is not None:
         workers = [worker for worker in workers if worker.id in readable_worker_ids]
-    return [w.model_dump() for w in workers]
+    busy_workers = LumilakeServer.get_instance()._busy_workers
+    return [WorkerStatus(**w.model_dump(), busy=w.id in busy_workers) for w in workers]
 
 
 @router.get(
@@ -103,7 +105,7 @@ async def list_workers(
     summary="Get a worker",
     description="Get worker information by ID.",
     response_description="Worker information",
-    response_model=WorkerInfo,
+    response_model=WorkerStatus,
 )
 async def get_worker(
     worker_id: str,
@@ -127,4 +129,5 @@ async def get_worker(
         raise HTTPException(
             status_code=502, detail="upstream worker retrieve failed"
         ) from exc
-    return worker.model_dump()
+    busy_workers = LumilakeServer.get_instance()._busy_workers
+    return WorkerStatus(**worker.model_dump(), busy=worker.id in busy_workers)
