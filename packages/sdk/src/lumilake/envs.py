@@ -137,10 +137,12 @@ LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS: float = float(
 LUMILAKE_FAIR_SHARE_TARGET: float = float(
     os.environ.get("LUMILAKE_FAIR_SHARE_TARGET") or "10"
 )
-# Per-model setup cost (resource-area units) charged once per distinct model in
-# a batch not already resident on the group. Measured ~1 min vLLM restart
-# against a 5-10 min block, i.e. ~0.1-0.2 x base; 60.0 is ~1 min of a
-# full-worker block.
+# Per-model setup cost (resource-area units: seconds x dominant-resource share)
+# charged once per distinct model in a batch not already resident on the group.
+# The setup is a fixed wall-clock vLLM engine restart (~1 min) that does not
+# scale with block size, so an absolute value is more faithful than a ratio of
+# the block cost. 60.0 = ~60s of a full-worker block (share 1.0), i.e. ~0.1-0.2
+# x base for a typical 5-10 min block.
 LUMILAKE_SETUP_COST_SIGMA: float = float(
     os.environ.get("LUMILAKE_SETUP_COST_SIGMA") or "60"
 )
