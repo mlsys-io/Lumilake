@@ -135,6 +135,11 @@ class BaseJobManager(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def remove_workflows(self, workflow_ids: Iterable[str]) -> None:
+        """Drop workflows from the queue entirely (queues and metadata)."""
+        raise NotImplementedError
+
+    @abstractmethod
     def get_workflow(self, workflow_id: str) -> WorkflowItem:
         """Lookup workflow metadata by ID."""
         raise NotImplementedError

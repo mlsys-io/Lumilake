@@ -253,6 +253,57 @@ class PriorityJobManager(BaseJobManager):
         for workflow_id in workflow_ids:
             self._items.pop(workflow_id, None)
 
+    async def remove_workflows(self, workflow_ids: Iterable[str]) -> None:
+        """Drop workflows from the queue entirely (queues and metadata).
+
+        Used when a batch is abandoned without committing — e.g. the worker
+        admission wait gave up — so the workflows do not re-select and keep
+        starving the queue behind them.
+        """
+        remove_set = set(workflow_ids)
+        if not remove_set:
+            return
+        async with self._lock:
+            for priority, user_queues in self._queues.items():
+                if not user_queues:
+                    continue
+                for user_id in list(user_queues.keys()):
+                    queue = user_queues[user_id]
+                    filtered = deque(
+                        item for item in queue if item.workflow_id not in remove_set
+                    )
+                    if filtered:
+                        user_queues[user_id] = filtered
+                    else:
+                        del user_queues[user_id]
+                self._prune_empty_user_queues_locked(priority)
+            for workflow_id in remove_set:
+                self._items.pop(workflow_id, None)
+            remaining_partitions = {
+                (
+                    item.config.principal_id,
+                    item.dispatch_token,
+                    item.api_credential_digest,
+                    item.config.optimizer_type or self._default_optimizer_type,
+                    _hardware_signature(item.config.hardware_requirements),
+                )
+                for priority in Priority
+                for queue in self._queues[priority].values()
+                for item in queue
+            }
+            stale_partitions = self._rr_partition_members - remaining_partitions
+            if stale_partitions:
+                self._rr_partition_members -= stale_partitions
+                self._rr_partition_order = deque(
+                    partition
+                    for partition in self._rr_partition_order
+                    if partition not in stale_partitions
+                )
+            if not any(
+                self._priority_queue_size(priority) > 0 for priority in self._queues
+            ):
+                self._not_empty.clear()
+
     async def reserve_batch(self, batch_size: int) -> BatchReservation | None:
         """Compute the next batch without mutating queue state.
 
