@@ -49,16 +49,16 @@ def _required_model(item: WorkflowItem) -> str | None:
 class SetIndexSchedulingPolicy(BaseSchedulingPolicy):
     """Select the batch maximising ``rho = W(S) / T(S)`` over small model sets.
 
-    ``sigma`` is the per-model setup cost: one charge per distinct required
-    model not already resident on the group. ``resident_model`` is the model
-    last served (``None`` for a fresh group, where every model is charged);
-    it is updated on commit to the last model served.
+    ``setup_cost_sigma`` is the per-model setup cost: one charge per distinct
+    required model not already resident on the group. ``resident_model`` is the
+    model last served (``None`` for a fresh group, where every model is
+    charged); it is updated on commit to the last model served.
     """
 
     def __init__(
         self,
         *,
-        sigma: float,
+        setup_cost_sigma: float,
         fair_share_target: float,
         fairness_half_life_seconds: float,
         cost_params: CostParams | None = None,
@@ -69,11 +69,11 @@ class SetIndexSchedulingPolicy(BaseSchedulingPolicy):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        if sigma < 0:
-            raise ValueError("sigma must be >= 0")
+        if setup_cost_sigma < 0:
+            raise ValueError("setup_cost_sigma must be >= 0")
         if model_set_cap < 1:
             raise ValueError("model_set_cap must be >= 1")
-        self._sigma = sigma
+        self._sigma = setup_cost_sigma
         self._cost_params = cost_params or CostParams()
         self._resident_model = resident_model
         self._model_set_cap = model_set_cap

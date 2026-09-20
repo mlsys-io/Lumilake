@@ -1,8 +1,11 @@
 """Tests for the set_index scheduling policy."""
 
 from typing import Any, cast
+from unittest.mock import MagicMock
 
-from lumilake_server.runtime.job_manager.base import WorkflowItem
+import pytest
+
+from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.policies import (
     SCHEDULING_POLICIES,
     create_scheduling_policy,
@@ -11,7 +14,10 @@ from lumilake_server.runtime.job_manager.policies.set_index import (
     MODEL_SET_CAP,
     SetIndexSchedulingPolicy,
 )
+from lumilake_server.runtime.job_manager.priority_queue import PriorityJobManager
+from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
+from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
@@ -62,14 +68,14 @@ def _item(wid: str, model: str, weight: float) -> WorkflowItem:
 
 
 def _policy(
-    sigma: float,
+    setup_cost_sigma: float,
     *,
     resident_model: str | None = None,
     model_set_cap: int = MODEL_SET_CAP,
     service_fn: Any = None,
 ) -> SetIndexSchedulingPolicy:
     return SetIndexSchedulingPolicy(
-        sigma=sigma,
+        setup_cost_sigma=setup_cost_sigma,
         fair_share_target=10.0,
         fairness_half_life_seconds=600.0,
         resident_model=resident_model,
@@ -93,7 +99,7 @@ def test_prefers_same_model_when_setup_outweighs_weight() -> None:
     # Resident model "A". Two A items (weights 5, 4) and one B item (weight 9).
     # batch_size=2. Same-model batch: W=9, T=base+0. Off-model batch (A+B):
     # W=14, T=base+sigma. With sigma large, same-model wins.
-    policy = _policy(sigma=100.0, resident_model="A")
+    policy = _policy(setup_cost_sigma=100.0, resident_model="A")
     items = [
         _item("w-5", "A", 5.0),
         _item("w-4", "A", 4.0),
@@ -106,7 +112,7 @@ def test_prefers_same_model_when_setup_outweighs_weight() -> None:
 def test_prefers_off_model_when_weight_outweighs_setup() -> None:
     """The reverse: with a small setup charge, the higher-weight off-model
     batch wins."""
-    policy = _policy(sigma=0.1, resident_model="A")
+    policy = _policy(setup_cost_sigma=0.1, resident_model="A")
     items = [
         _item("w-5", "A", 5.0),
         _item("w-4", "A", 4.0),
@@ -118,7 +124,7 @@ def test_prefers_off_model_when_weight_outweighs_setup() -> None:
 
 def test_sigma_zero_reduces_to_weight_ranked_selection() -> None:
     """With sigma=0 the setup term vanishes; selection is purely by weight."""
-    policy = _policy(sigma=0.0, resident_model="A")
+    policy = _policy(setup_cost_sigma=0.0, resident_model="A")
     items = [
         _item("w-1", "B", 1.0),
         _item("w-9", "C", 9.0),
@@ -138,9 +144,9 @@ def test_model_set_enumeration_cap_is_respected() -> None:
         _item("w-5", "B", 5.0),
         _item("w-4", "C", 4.0),
     ]
-    capped = _policy(sigma=0.0, resident_model="A", model_set_cap=1)
+    capped = _policy(setup_cost_sigma=0.0, resident_model="A", model_set_cap=1)
     assert len(_select(capped, items, 2)) == 1
-    uncapped = _policy(sigma=0.0, resident_model="A", model_set_cap=2)
+    uncapped = _policy(setup_cost_sigma=0.0, resident_model="A", model_set_cap=2)
     assert set(_select(uncapped, items, 2)) == {"w-5", "w-4"}
 
 
@@ -148,7 +154,7 @@ def test_registered_as_set_index() -> None:
     assert "set_index" in SCHEDULING_POLICIES
     policy = create_scheduling_policy(
         "set_index",
-        sigma=1.0,
+        setup_cost_sigma=1.0,
         fair_share_target=10.0,
         fairness_half_life_seconds=600.0,
     )
@@ -157,7 +163,7 @@ def test_registered_as_set_index() -> None:
 
 def test_fresh_group_charges_every_model() -> None:
     """With no resident model, every distinct model in the batch is charged."""
-    policy = _policy(sigma=1000.0, resident_model=None)
+    policy = _policy(setup_cost_sigma=1000.0, resident_model=None)
     items = [
         _item("w-15", "A", 15.0),
         _item("w-14", "A", 14.0),
@@ -186,7 +192,7 @@ def test_high_weight_long_service_excluded_when_not_worth_it() -> None:
     # Excluding w-9: block = 1,   W = 5+4 = 9,  rho = 9/1   = 9.0.
     # The long item is excluded.
     policy = _policy(
-        sigma=0.0,
+        setup_cost_sigma=0.0,
         resident_model="A",
         service_fn=lambda item: {
             "w-9": 100.0,
@@ -214,7 +220,7 @@ def test_high_weight_long_service_included_when_worth_it() -> None:
     # Excluding w-90: block = 1,  W = 5+4 = 9,  rho = 9/1  = 9.0.
     # Including wins.
     policy = _policy(
-        sigma=0.0,
+        setup_cost_sigma=0.0,
         resident_model="A",
         service_fn=lambda item: {
             "w-90": 10.0,
@@ -232,3 +238,62 @@ def test_high_weight_long_service_included_when_worth_it() -> None:
     # Including wins.
     picked = _select(policy, items, 2)
     assert set(picked) == {"w-90", "w-5"}
+
+
+def _job(wid: str, model: str) -> Job:
+    graph = _graph(model)
+    return Job(
+        request_id=wid,
+        runtime_graphs={"g": graph},
+        data_profile_graphs={"g": graph},
+        dsl_graphs={"g": cast(Any, object())},
+        workflow_slices={
+            "g": WorkflowSliceMeta(
+                public_graph_name="g",
+                slice_index=0,
+                slice_start=0,
+                slice_length=1,
+                total_length=1,
+                template_hash="h",
+                varying_input_keys=(),
+            )
+        },
+        config=LumilakeRequestConfig(
+            priority=Priority.MEDIUM,
+            user_id="u",
+            principal_id="u",
+        ),
+    )
+
+
+def _manager(policy: str) -> PriorityJobManager:
+    return PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        policy=policy,
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_index_constructs_and_selects_via_manager() -> None:
+    """The production construction path: PriorityJobManager(policy='set_index')
+    must come up and select a batch. This is the path the matrix run found
+    broken — the manager passes setup_cost_sigma=, which the policy must
+    accept."""
+    manager = _manager("set_index")
+    await manager.enqueue(_job("r1", "A"))
+    batch = await manager.select_batch(1)
+    assert batch is not None
+    assert batch.workflows[0].request_id == "r1"
+
+
+@pytest.mark.asyncio
+async def test_legacy_and_fair_index_construct_via_manager() -> None:
+    """legacy and fair_index must also be constructible through the manager's
+    parameter names, so a mismatch like set_index's is caught for all
+    policies."""
+    for policy in ("legacy", "fair_index"):
+        manager = _manager(policy)
+        await manager.enqueue(_job("r1", "A"))
+        batch = await manager.select_batch(1)
+        assert batch is not None
+        assert batch.workflows[0].request_id == "r1"
