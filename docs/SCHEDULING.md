@@ -262,6 +262,13 @@ The index policy is opt-in. `LUMILAKE_SCHEDULER_POLICY` defaults to `legacy`,
 which keeps priority quantums, per-user round-robin, starvation pinning and
 affinity selection within a partition.
 
+Policies are registered in `SCHEDULING_POLICIES` (mirroring the optimizer's
+`OPTIMIZER_TYPES`): a new policy is a `BaseSchedulingPolicy` subclass plus one
+registry entry, resolved by `create_scheduling_policy`. The interface takes the
+candidate *set* and returns the batch subset, so a policy can score sets rather
+than individual items — batch execution cost is not separable over its members
+(a model swap is charged once per distinct model in the batch, not per item).
+
 The limitations are deliberate and worth stating. Attained service charges a
 **predicted** critical-path estimate at commit time; it is never reconciled
 against observed duration or the workers actually held, so a persistently wrong

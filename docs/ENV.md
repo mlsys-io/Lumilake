@@ -81,7 +81,7 @@ analytic cost model cannot estimate.
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy: `legacy` (default) or `fair_index`. Defaults to `legacy` so existing deployments are byte-identical until they opt in. |
+| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `legacy` (default) or `fair_index`. Defaults to `legacy` so existing deployments are byte-identical until they opt in. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
 | `LUMILAKE_CAPACITY_AWARE_SELECTION` | Rollback lever for capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work. Set to `0` to restore capacity-blind selection, which reintroduces head-of-line blocking where a batch that no worker can run stalls dispatch until capacity frees. |
 | `LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS` | Half-life (seconds) of the exponentially-decayed attained-service accounting. Defaults to `600` — a few multiples of a typical round duration, so a chain's attained area decays over the timescale of a few rounds rather than persisting forever. |
 | `LUMILAKE_FAIR_SHARE_TARGET` | Fair-share target (dominant-resource area) at which a user's fairness weight halves; the denominator of `w(user) = 1 / (1 + attained / target)`. Defaults to `10` — roughly the area of a handful of default-size rounds, so a user is throttled only after consuming several rounds' worth of resource. |

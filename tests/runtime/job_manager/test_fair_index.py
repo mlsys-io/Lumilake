@@ -8,6 +8,10 @@ import pytest
 from lumilake_server.runtime.job_manager.attained import AttainedService
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.cost import CostParams, estimate_area
+from lumilake_server.runtime.job_manager.policies import (
+    SCHEDULING_POLICIES,
+    BaseSchedulingPolicy,
+)
 from lumilake_server.runtime.job_manager.priority_queue import PriorityJobManager
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import (
@@ -301,6 +305,54 @@ def test_attained_decay_is_lazy_and_accumulates() -> None:
 def test_legacy_policy_is_default() -> None:
     manager = _manager()
     assert manager._policy == "legacy"
+
+
+# -- registry extension point ------------------------------------------------
+
+
+class _ReversePolicy(BaseSchedulingPolicy):
+    """Test-only policy: select the batch in reverse candidate order."""
+
+    def select_batch(
+        self,
+        candidates: list[WorkflowItem],
+        affinity_rank: dict[str, int],
+        batch_size: int,
+    ) -> list[str]:
+        return [item.workflow_id for item in reversed(candidates)][:batch_size]
+
+
+@pytest.mark.asyncio
+async def test_registered_policy_is_used_by_manager() -> None:
+    """Registering a policy is a class plus one registry entry; the manager
+    resolves it by name and uses it."""
+    SCHEDULING_POLICIES["reverse"] = _ReversePolicy
+    try:
+        manager = _manager(policy="reverse")
+        await manager.enqueue(
+            _build_job(
+                "r1",
+                "g1",
+                _graph_with_ops("g1", [_cpu_op("a")]),
+                "u1",
+                principal_id="shared",
+            )
+        )
+        await manager.enqueue(
+            _build_job(
+                "r2",
+                "g2",
+                _graph_with_ops("g2", [_cpu_op("b")]),
+                "u2",
+                principal_id="shared",
+            )
+        )
+        batch = await manager.select_batch(2)
+        assert batch is not None
+        # Reverse order: r2 (u2) before r1 (u1).
+        assert [i.request_id for i in batch.workflows] == ["r2", "r1"]
+    finally:
+        del SCHEDULING_POLICIES["reverse"]
 
 
 @pytest.mark.asyncio

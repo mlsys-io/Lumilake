@@ -410,8 +410,6 @@ def validate() -> None:
 
     if LUMILAKE_JOB_MANAGER_TYPE not in ("priority",):
         raise ValueError("LUMILAKE_JOB_MANAGER_TYPE must be 'priority'")
-    if LUMILAKE_SCHEDULER_POLICY not in ("legacy", "fair_index"):
-        raise ValueError("LUMILAKE_SCHEDULER_POLICY must be 'legacy' or 'fair_index'")
     if LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS <= 0:
         raise ValueError("LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS must be > 0")
     if LUMILAKE_FAIR_SHARE_TARGET <= 0:
