@@ -119,11 +119,18 @@ class SetIndexSchedulingPolicy(BaseSchedulingPolicy):
         # resident) are included: they pay two setup charges, but a
         # weight-heavy pair can beat a resident-containing pair, so excluding
         # them would be a silent restriction.
+        #
+        # The empty model set is always enumerated: its pool is the agnostic
+        # items alone, with zero setup charge. This keeps an all-agnostic batch
+        # reachable even when models are present (it pays no setup and can beat
+        # a model-set batch that does), and is what lets a CPU/DB-only partition
+        # dispatch at all — without it, an empty universe yields no model sets
+        # and select_batch would return [] and starve the partition.
         resident = self._resident_model
         universe = {m for m in by_model if m is not None}
         if resident is not None:
             universe.add(resident)
-        model_sets: list[set[str]] = []
+        model_sets: list[set[str]] = [set()]
         for size in range(1, min(self._model_set_cap, len(universe)) + 1):
             for combo in combinations(sorted(universe), size):
                 model_sets.append(set(combo))

@@ -43,6 +43,23 @@ def _graph(model: str) -> RuntimeGraph:
     )
 
 
+def _cpu_graph() -> RuntimeGraph:
+    op = RuntimeOp(
+        node_id="a",
+        task_type="http",
+        backend="http",
+        model="http",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+    )
+    return RuntimeGraph(
+        nodes={"a": op},
+        node_order=["a"],
+        output_node_map={"a": "output"},
+    )
+
+
 def _item(wid: str, model: str, weight: float) -> WorkflowItem:
     return WorkflowItem(
         workflow_id=wid,
@@ -57,6 +74,32 @@ def _item(wid: str, model: str, weight: float) -> WorkflowItem:
         varying_input_keys=(),
         runtime_graph=_graph(model),
         data_profile_graph=_graph(model),
+        dsl_graph=cast(Any, object()),
+        config=LumilakeRequestConfig(
+            priority=Priority.MEDIUM,
+            user_id="u",
+            principal_id="u",
+        ),
+        enqueued_at=0.0,
+    )
+
+
+def _cpu_item(wid: str, weight: float) -> WorkflowItem:
+    """A model-agnostic item (CPU/DB backend): no required model."""
+    graph = _cpu_graph()
+    return WorkflowItem(
+        workflow_id=wid,
+        request_id=wid,
+        graph_name="g",
+        public_graph_name="g",
+        slice_index=0,
+        slice_start=0,
+        slice_length=1,
+        total_length=1,
+        template_hash="h",
+        varying_input_keys=(),
+        runtime_graph=graph,
+        data_profile_graph=graph,
         dsl_graph=cast(Any, object()),
         config=LumilakeRequestConfig(
             priority=Priority.MEDIUM,
@@ -297,3 +340,45 @@ async def test_legacy_and_fair_index_construct_via_manager() -> None:
         batch = await manager.select_batch(1)
         assert batch is not None
         assert batch.workflows[0].request_id == "r1"
+
+
+def test_agnostic_only_pool_returns_nonempty_batch() -> None:
+    """A candidate pool of only model-agnostic items dispatches: the empty
+    model set is always enumerated, so the agnostic items form a batch with
+    zero setup charge."""
+    policy = _policy(setup_cost_sigma=1.0, resident_model="A")
+    items = [
+        _cpu_item("c-5", 5.0),
+        _cpu_item("c-4", 4.0),
+    ]
+    picked = _select(policy, items, 2)
+    assert set(picked) == {"c-5", "c-4"}
+
+
+def test_agnostic_only_pool_with_no_resident_model() -> None:
+    """The exact path that produced the empty universe: no resident model and
+    only agnostic candidates. Must still dispatch."""
+    policy = _policy(setup_cost_sigma=1.0, resident_model=None)
+    items = [
+        _cpu_item("c-5", 5.0),
+        _cpu_item("c-4", 4.0),
+    ]
+    picked = _select(policy, items, 2)
+    assert set(picked) == {"c-5", "c-4"}
+
+
+def test_all_agnostic_batch_beats_model_set_batch() -> None:
+    """An all-agnostic batch pays no setup, so it can beat a model-set batch
+    that does. With a large sigma, the agnostic batch is selected over a
+    same-model batch."""
+    policy = _policy(setup_cost_sigma=1000.0, resident_model="A")
+    items = [
+        _cpu_item("c-5", 5.0),
+        _cpu_item("c-4", 4.0),
+        _item("w-9", "A", 9.0),
+        _item("w-8", "A", 8.0),
+    ]
+    # Agnostic pair: W=9, T=base+0. Same-model A pair: W=17, T=base+sigma.
+    # With sigma large the agnostic pair wins despite the lower weight.
+    picked = _select(policy, items, 2)
+    assert set(picked) == {"c-5", "c-4"}
