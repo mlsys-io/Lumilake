@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -155,6 +156,7 @@ class _FakeRuntimeServer:
         self.hanging_requests: set[str] = set()
         self._traces: dict[str, list[str]] = {}
         self.runtime_manager = _FakeRuntimeManager()
+        self._runtime_builder = Mock()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         self.parse_query_calls.append(graph_specs)

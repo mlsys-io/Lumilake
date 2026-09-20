@@ -1009,30 +1009,8 @@ def _now() -> str:
 def _validate_runtime_graphs(
     server: LumilakeServer, graphs: dict[str, CompiledGraph]
 ) -> None:
-    """Reject a workflow the runtime cannot build, at the API boundary.
-
-    ``RuntimeGraphBuilder.build`` is what the executor itself runs, so a graph
-    that fails here fails later regardless -- the only question is whether the
-    caller learns now, with a 422 naming the problem, or after the job has been
-    accepted, queued, optimized and dispatched.
-
-    It used to be the latter. ``/jobs/preview`` rejected a workflow whose
-    OutputOp sourced a FormatOp, while ``/jobs`` accepted the identical body,
-    returned a job id, and only then failed asynchronously with the same
-    message. The check already existed and simply was not on this path: it runs
-    inside ``build``, which either route reached only via
-    ``_any_graph_requires_gpu`` -- and that is gated on ``hardware.gpu == 0``,
-    so a request with no hardware override skipped it entirely.
-
-    Uses the default ``task_type_override`` so only the structural prologue
-    runs; the data-profile branches, which sample upstream values, stay off.
-    """
-    builder = getattr(server, "_runtime_builder", None)
-    if builder is None:
-        # No builder to validate with (test doubles, and any future server that
-        # does not construct one). Skipping restores the previous behaviour for
-        # that caller rather than failing a submit on a missing internal.
-        return
+    """Reject compiled graphs that cannot be transformed into runtime graphs."""
+    builder = server._runtime_builder
     for name, compiled in graphs.items():
         try:
             builder.build(compiled, node_prefix=name)
