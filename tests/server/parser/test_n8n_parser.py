@@ -7,7 +7,15 @@ from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import OutputOp
 from lumilake_server.parser import parse_n8n_payload
-from lumilake_server.parser.n8n import N8N_CHAT_TRIGGER
+from lumilake_server.parser.n8n import (
+    N8N_AGENT_NODE,
+    N8N_CHAT_TRIGGER,
+    N8N_POSTGRES_NODE,
+    N8N_S3_NODE,
+    _build_aggregate_prompt_content,
+    _extract_rowwise_columns,
+    _referenced_op_path,
+)
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "examples" / "templates" / "n8n"
@@ -76,6 +84,40 @@ def test_parse_n8n_templates(template_path: Path, monkeypatch: pytest.MonkeyPatc
             "agent",
         }, f"op {op.id} has unknown mode {ds.get('mode')!r}"
         assert "connection_string" not in ds
+
+
+def test_rowwise_agent_reference_uses_table_path() -> None:
+    node_map = {
+        "Agent": {"type": N8N_AGENT_NODE},
+    }
+    op_ids = {"Agent": "op_agent"}
+    columns = _extract_rowwise_columns(
+        "Summarize {{ $('Agent') }}",
+        node_map,
+        op_ids,
+        inputs={},
+    )
+    assert any(
+        col.get("node") == "op_agent" and col.get("path") == "items.table"
+        for col in columns
+    )
+
+
+def test_aggregate_upstream_sql_reference_uses_table_path() -> None:
+    node_map = {
+        "SQL": {"type": N8N_POSTGRES_NODE},
+    }
+    op_ids = {"Main": "op_main"}
+    prompt = (
+        "Build a digest.\n" "```table\n" "summary: {{ $('SQL').item.synopsis }}\n" "```"
+    )
+    _, table_spec = _build_aggregate_prompt_content(
+        prompt, op_ids, upstream_main="Main", node_map=node_map
+    )
+    assert any(
+        col.get("node") == "op_main" and col.get("path") == "items.table.synopsis"
+        for col in table_spec
+    )
 
 
 def test_parse_n8n_templates_agent_missing_lumid_data_url_raises(
@@ -157,3 +199,10 @@ def test_image_generation_digest_uses_row_summary_aggregate_table(
     assert summary_col["path"] == "items.output"
     assert summary_col["node"] == row_summary["_id"]
     assert row_summary["_id"] in digest_op["_inputs"]
+
+
+def test_referenced_op_path_agent_uses_table() -> None:
+    assert _referenced_op_path(N8N_AGENT_NODE, None) == "items.table"
+    assert _referenced_op_path(N8N_POSTGRES_NODE, "symbol") == "items.table.symbol"
+    assert _referenced_op_path(N8N_S3_NODE, None) == "items.content"
+    assert _referenced_op_path(None, None) == "items.output"
