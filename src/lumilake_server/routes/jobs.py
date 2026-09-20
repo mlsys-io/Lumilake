@@ -1006,6 +1006,21 @@ def _now() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
 
 
+def _validate_runtime_graphs(
+    server: LumilakeServer, graphs: dict[str, CompiledGraph]
+) -> None:
+    """Reject compiled graphs that cannot be transformed into runtime graphs."""
+    builder = server._runtime_builder
+    for name, compiled in graphs.items():
+        try:
+            builder.build(compiled, node_prefix=name)
+        except (ValueError, KeyError, AssertionError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Workflow is not runnable: {exc}",
+            ) from exc
+
+
 def _any_graph_requires_gpu(
     server: LumilakeServer, graphs: dict[str, CompiledGraph]
 ) -> bool:
@@ -2436,6 +2451,7 @@ async def preview_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
+    _validate_runtime_graphs(server, graphs)
     if (
         preview_hardware is not None
         and preview_hardware.gpu == 0
@@ -2825,6 +2841,7 @@ async def submit_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
+    _validate_runtime_graphs(server, graphs)
     if (
         hardware is not None
         and hardware.gpu == 0

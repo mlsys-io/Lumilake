@@ -3,6 +3,7 @@ import json
 import logging
 from collections.abc import Iterator
 from typing import Any, cast
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -57,6 +58,7 @@ class _FakeRuntimeServer:
         self.cancel_calls: list[str] = []
         self.fail_execute = False
         self.runtime_manager = _RecordingRuntimeManager()
+        self._runtime_builder = Mock()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return graph_specs

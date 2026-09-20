@@ -8,6 +8,7 @@ fails seconds later is the bug the guard exists to prevent.
 import logging
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -75,6 +76,9 @@ class _PreviewResult:
 
 class _FakeRuntimeServer:
     is_started = True
+
+    def __init__(self) -> None:
+        self._runtime_builder = Mock()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return graph_specs
