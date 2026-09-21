@@ -26,6 +26,8 @@ from .base import (
     WorkflowItem,
 )
 from .cluster_algo.clustering import select_affinity_batch_ids
+from .cost import CostParams
+from .policies import create_scheduling_policy
 
 HardwareSignature = tuple[int | None, str | None, int | None, str | None, str | None]
 """Stable tuple form of ``HardwareRequirements`` used inside the partition key.
@@ -83,6 +85,11 @@ class PriorityJobManager(BaseJobManager):
         default_optimizer_type: str = envs.LUMILAKE_DEFAULT_OPTIMIZER,
         cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
         gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
+        policy: str = envs.LUMILAKE_SCHEDULER_POLICY,
+        fair_share_target: float = envs.LUMILAKE_FAIR_SHARE_TARGET,
+        fairness_half_life_seconds: float = envs.LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS,
+        cost_params: CostParams | None = None,
+        clock: Callable[[], float] = time.monotonic,
         worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
         unsatisfiable_dwell_observations: int = (
             envs.LUMILAKE_UNSATISFIABLE_DWELL_OBSERVATIONS
@@ -131,6 +138,14 @@ class PriorityJobManager(BaseJobManager):
         # CPU and GPU items in the same principal/token/credential/optimizer/
         # hardware class share a partition (head-of-line behaviour returns).
         self._capacity_aware_selection = capacity_aware_selection
+        self._policy = policy
+        self._policy_impl = create_scheduling_policy(
+            policy,
+            fair_share_target=fair_share_target,
+            fairness_half_life_seconds=fairness_half_life_seconds,
+            cost_params=cost_params,
+            clock=clock,
+        )
         # Callable ``(worker_profile, HardwareRequirements) -> bool`` used to
         # filter candidate workers by hardware when capacity is supplied.
         # Defaults to accepting every worker so selection is unconstrained when
@@ -166,6 +181,11 @@ class PriorityJobManager(BaseJobManager):
         # reserve_batch calls raise until commit/abort releases this slot.
         self._active_reservation: BatchReservation | None = None
         self.logger = init_child_logger("JobManager", logger, log_level)
+        self.logger.info(
+            "Scheduling policy active: %s (resolved to %s)",
+            self._policy,
+            type(self._policy_impl).__name__,
+        )
 
     @staticmethod
     def _redact_partition(
@@ -641,9 +661,9 @@ class PriorityJobManager(BaseJobManager):
                 candidates, base_batch_ids, batch_size
             )
             if not starved:
-                selected_ids = self._apply_user_fairness(
+                selected_ids = self._policy_impl.select_batch(
                     candidates,
-                    selected_ids,
+                    {wid: i for i, wid in enumerate(base_batch_ids[:batch_size])},
                     batch_size,
                 )
             if starved:
@@ -706,6 +726,9 @@ class PriorityJobManager(BaseJobManager):
                 )
             payload: _ReservationPayload = reservation._payload
             selected_set = payload.selected_workflow_ids
+            # 0. Charge attained service for committed items (not on selection,
+            # so aborted reservations do not corrupt the accounting).
+            self._policy_impl.on_commit(reservation.selection.workflows)
             # 1. Bump miss counters for non-selected candidates.
             for workflow_id in payload.miss_increment_targets:
                 item = self._items.get(workflow_id)
@@ -950,56 +973,3 @@ class PriorityJobManager(BaseJobManager):
                     selected_ids.append(item.workflow_id)
 
         return selected_ids
-
-    def _apply_user_fairness(
-        self,
-        candidates: list[WorkflowItem],
-        selected_ids: list[str],
-        batch_size: int,
-    ) -> list[str]:
-        if batch_size <= 1:
-            return selected_ids[:batch_size]
-        candidate_map = {item.workflow_id: item for item in candidates}
-        selected_ids = [wid for wid in selected_ids if wid in candidate_map]
-        if not selected_ids:
-            return []
-
-        user_order: list[str] = []
-        user_to_ids: dict[str, list[str]] = {}
-        for item in candidates:
-            owner_id = self._queue_owner_id(item)
-            if owner_id not in user_to_ids:
-                user_to_ids[owner_id] = []
-                user_order.append(owner_id)
-            user_to_ids[owner_id].append(item.workflow_id)
-        if len(user_order) <= 1:
-            return selected_ids[:batch_size]
-
-        selected_set = set(selected_ids)
-        fair_seed: list[str] = []
-        for user_id in user_order:
-            preferred = next(
-                (wid for wid in user_to_ids[user_id] if wid in selected_set),
-                None,
-            )
-            picked = preferred or user_to_ids[user_id][0]
-            if picked in fair_seed:
-                continue
-            fair_seed.append(picked)
-            if len(fair_seed) >= batch_size:
-                return fair_seed[:batch_size]
-
-        final_ids: list[str] = list(fair_seed)
-        for workflow_id in selected_ids:
-            if workflow_id in final_ids:
-                continue
-            final_ids.append(workflow_id)
-            if len(final_ids) >= batch_size:
-                return final_ids[:batch_size]
-        for item in candidates:
-            if item.workflow_id in final_ids:
-                continue
-            final_ids.append(item.workflow_id)
-            if len(final_ids) >= batch_size:
-                break
-        return final_ids[:batch_size]

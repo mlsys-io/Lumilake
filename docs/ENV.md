@@ -71,6 +71,25 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_CAPACITY_AWARE_SELECTION` | Rollback lever for capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. Set to `0` to revert the whole change set: selection becomes capacity-blind AND the partition key drops `requires_gpu`, so CPU and GPU items in the same class share a partition again and the old head-of-line blocking returns. |
 | `LUMILAKE_FLOWMESH_OUTPUT_DESTINATION` | FlowMesh result delivery mode. `local` (default) or `http`. |
 
+### Fair-weighted scheduling policy
+
+The scheduler policy is switchable so the fair-weighted index can be A/B'd
+against the legacy selection on identical seeds. `legacy` (the default)
+reproduces today's selection exactly; `fair_index` orders candidates by
+`w(user) / p_hat(item)` with a least-attained-service fallback for items the
+analytic cost model cannot estimate.
+
+| Key | Purpose |
+|-----|---------|
+| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `legacy` (default) or `fair_index`. Defaults to `legacy` so existing deployments are byte-identical until they opt in. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
+| `LUMILAKE_CAPACITY_AWARE_SELECTION` | Rollback lever for capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work. Set to `0` to restore capacity-blind selection, which reintroduces head-of-line blocking where a batch that no worker can run stalls dispatch until capacity frees. |
+| `LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS` | Half-life (seconds) of the exponentially-decayed attained-service accounting. Defaults to `600` — a few multiples of a typical round duration, so a chain's attained area decays over the timescale of a few rounds rather than persisting forever. |
+| `LUMILAKE_FAIR_SHARE_TARGET` | Fair-share target (dominant-resource area) at which a user's fairness weight halves; the denominator of `w(user) = 1 / (1 + attained / target)`. Defaults to `10` — roughly the area of a handful of default-size rounds, so a user is throttled only after consuming several rounds' worth of resource. |
+| `LUMILAKE_COST_DB_SEC_PER_QUERY` | Estimated seconds per data-retrieval query in the analytic cost model. Defaults to `0.05`, mirroring HALO's `_db_input_sec`. |
+| `LUMILAKE_COST_CPU_SEC_PER_NODE` | Estimated seconds per pure-CPU node in the analytic cost model. Defaults to `0.1` — a small constant for non-GPU, non-DB work whose duration is otherwise unmodeled. |
+| `LUMILAKE_COST_DEFAULT_MODEL_SIZE_B` | Fallback model size (billions of parameters) when a GPU op's model name carries no inferable size. Defaults to `20`, matching HALO's `_default_model_size_b`. |
+| `LUMILAKE_COST_INPUT_QUERY_COUNT` | Assumed input query count per graph for cost estimation. Defaults to `1`, matching HALO's `_input_query_count_default`. |
+
 ## Worker Groups
 
 | Key | Purpose |
