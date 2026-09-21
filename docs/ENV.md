@@ -68,7 +68,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_QUEUE_QUANTUM_LOW` | Low-priority queue quantum. Defaults to `5`. |
 | `LUMILAKE_POLL_TIMEOUT_SECONDS` | Overall timeout for runtime polling. Defaults to `inf`. |
 | `LUMILAKE_POLL_INTERVAL_SECONDS` | Interval between runtime status polls. Defaults to `5`. |
-| `LUMILAKE_CAPACITY_AWARE_SELECTION` | Rollback lever for capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work. Set to `0` to restore capacity-blind selection, which reintroduces head-of-line blocking where a batch that no worker can run stalls dispatch until capacity frees. |
+| `LUMILAKE_CAPACITY_AWARE_SELECTION` | Rollback lever for capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. Set to `0` to revert the whole change set: selection becomes capacity-blind AND the partition key drops `requires_gpu`, so CPU and GPU items in the same class share a partition again and the old head-of-line blocking returns. |
 | `LUMILAKE_FLOWMESH_OUTPUT_DESTINATION` | FlowMesh result delivery mode. `local` (default) or `http`. |
 
 ## Worker Groups

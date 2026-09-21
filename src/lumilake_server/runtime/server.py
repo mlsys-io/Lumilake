@@ -360,6 +360,7 @@ class LumilakeServer:
             cpu_worker_group_size=self.config.cpu_worker_group_size,
             gpu_worker_group_size=self.config.gpu_worker_group_size,
             worker_meets_hardware=self._worker_meets_hardware,
+            capacity_aware_selection=self.config.capacity_aware_selection,
             logger=self.logger,
         )
         # FlowmeshRuntimeManager reads orchestrator URL + token from envs directly
@@ -3142,6 +3143,7 @@ class LumilakeServer:
             quantums=preview_quantums,
             starvation_limit=self.config.starvation_limit,
             default_optimizer_type=self._optimizer_type,
+            capacity_aware_selection=self.config.capacity_aware_selection,
             logger=self.logger,
         )
         job = Job(

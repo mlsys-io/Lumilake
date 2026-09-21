@@ -34,14 +34,18 @@ HardwareSignature = tuple[int | None, str | None, int | None, str | None, str | 
 omit the override co-batch with each other.
 """
 
-PartitionKey = tuple[str, str | None, str | None, str, HardwareSignature, bool]
+PartitionKey = (
+    tuple[str, str | None, str | None, str, HardwareSignature]
+    | tuple[str, str | None, str | None, str, HardwareSignature, bool]
+)
 """``(principal_id, dispatch_token, api_credential_digest, optimizer_type,
-hardware_signature, requires_gpu)`` — two requests share a FlowMesh dispatch iff
-their partition keys are equal. The API credential digest is included so a batch
-never mixes jobs with different caller-supplied credentials; ``requires_gpu``
-splits CPU and GPU items into different partitions so a busy GPU group never
-suppresses CPU-only items in the same principal/token/credential/optimizer/
-hardware class.
+hardware_signature[, requires_gpu])`` — two requests share a FlowMesh dispatch
+iff their partition keys are equal. The API credential digest is included so a
+batch never mixes jobs with different caller-supplied credentials. When
+capacity-aware selection is on, ``requires_gpu`` is appended so a busy GPU group
+never suppresses CPU-only items in the same principal/token/credential/
+optimizer/hardware class; with the rollback lever off the key drops it and
+returns to its pre-change shape, so CPU and GPU items share a partition again.
 """
 
 
@@ -86,6 +90,7 @@ class PriorityJobManager(BaseJobManager):
         unsatisfiable_dwell_seconds: float = (
             envs.LUMILAKE_UNSATISFIABLE_DWELL_SECONDS
         ),
+        capacity_aware_selection: bool = envs.LUMILAKE_CAPACITY_AWARE_SELECTION,
         logger: Logger | None = None,
         log_level: LogLevel | None = None,
     ) -> None:
@@ -120,6 +125,12 @@ class PriorityJobManager(BaseJobManager):
         # from arming the timer; the elapsed time is what survives a blip.
         self._unsatisfiable_since: dict[PartitionKey, float] = {}
         self._unsatisfiable_count: dict[PartitionKey, int] = {}
+        # Whether the partition key carries the ``requires_gpu`` split. Mirrors
+        # the server's capacity-aware-selection lever: when off, the key drops
+        # ``requires_gpu`` so partitioning returns to its pre-change shape and
+        # CPU and GPU items in the same principal/token/credential/optimizer/
+        # hardware class share a partition (head-of-line behaviour returns).
+        self._capacity_aware_selection = capacity_aware_selection
         # Callable ``(worker_profile, HardwareRequirements) -> bool`` used to
         # filter candidate workers by hardware when capacity is supplied.
         # Defaults to accepting every worker so selection is unconstrained when
@@ -159,7 +170,10 @@ class PriorityJobManager(BaseJobManager):
     @staticmethod
     def _redact_partition(
         partition: PartitionKey,
-    ) -> tuple[str, str, str, str, HardwareSignature, bool]:
+    ) -> (
+        tuple[str, str, str, str, HardwareSignature]
+        | tuple[str, str, str, str, HardwareSignature, bool]
+    ):
         """Render a partition for logs without leaking the bearer token or the
         API credential digest."""
         (
@@ -168,7 +182,7 @@ class PriorityJobManager(BaseJobManager):
             credential_digest,
             optimizer_type,
             hardware,
-            requires_gpu,
+            *rest,
         ) = partition
         if token is None:
             token_rendered = "no-token"
@@ -179,24 +193,28 @@ class PriorityJobManager(BaseJobManager):
             credential_rendered = "no-credential"
         else:
             credential_rendered = f"cred:{credential_digest[:8]}"
-        return (
+        redacted: tuple[str, str, str, str, HardwareSignature] = (
             principal_id,
             token_rendered,
             credential_rendered,
             optimizer_type,
             hardware,
-            requires_gpu,
         )
+        if rest:
+            return (*redacted, rest[0])
+        return redacted
 
     def _partition_of(self, item: WorkflowItem) -> PartitionKey:
-        return (
+        base = (
             item.config.principal_id,
             item.dispatch_token,
             item.api_credential_digest,
             item.config.optimizer_type or self._default_optimizer_type,
             _hardware_signature(item.config.hardware_requirements),
-            item.requires_gpu,
         )
+        if not self._capacity_aware_selection:
+            return base
+        return (*base, item.requires_gpu)
 
     def _partition_eligible(
         self,
@@ -212,7 +230,7 @@ class PriorityJobManager(BaseJobManager):
         the partition's hardware signature, so selection never picks a
         partition that cannot be claimed.
         """
-        requires_gpu = partition[5]
+        requires_gpu = partition[5] if len(partition) > 5 else False
         cpu_group_size = self._cpu_worker_group_size
         gpu_group_size = self._gpu_worker_group_size if requires_gpu else 0
         if not capacity.can_satisfy(
@@ -547,7 +565,7 @@ class PriorityJobManager(BaseJobManager):
                             p[2] or "",
                             p[3],
                             tuple("" if v is None else str(v) for v in p[4]),
-                            p[5],
+                            p[5] if len(p) > 5 else False,
                         ),
                     ):
                         if partition not in self._rr_partition_members:
@@ -853,8 +871,9 @@ class PriorityJobManager(BaseJobManager):
             api_credential_digest,
             optimizer_type,
             hardware_signature,
-            requires_gpu,
+            *rest,
         ) = partition
+        requires_gpu = rest[0] if rest else None
         filtered: dict[str, list[WorkflowItem]] = {}
         for user_id in rr_order:
             queue = user_queues.get(user_id)
@@ -870,7 +889,7 @@ class PriorityJobManager(BaseJobManager):
                 == optimizer_type
                 and _hardware_signature(item.config.hardware_requirements)
                 == hardware_signature
-                and item.requires_gpu == requires_gpu
+                and (requires_gpu is None or item.requires_gpu == requires_gpu)
             ]
             if user_items:
                 filtered[user_id] = user_items

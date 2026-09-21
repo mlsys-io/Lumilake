@@ -155,6 +155,14 @@ unschedulable. Eligibility is computed per partition, so without the split one
 GPU item would suppress every CPU item sharing its principal, token, optimizer
 and hardware — reintroducing head-of-line blocking inside the partition.
 
+The split is conditional on the capacity-aware-selection lever
+(`LUMILAKE_CAPACITY_AWARE_SELECTION`). With the lever on (default) the key
+carries `requires_gpu`, so CPU and GPU items in the same class land in separate
+partitions. With the lever off the key drops `requires_gpu` and returns to its
+pre-change shape, so those items share a partition again and the old
+head-of-line behaviour genuinely returns — the lever reverts the whole change
+set, not just the capacity filter.
+
 That has a cost, stated plainly: CPU-only and GPU-requiring items that would
 otherwise share a partition can no longer co-batch, which loses some affinity.
 Correct eligibility was judged worth more than that co-batching.

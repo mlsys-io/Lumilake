@@ -1104,3 +1104,158 @@ async def test_permanently_unsatisfiable_resets_streak_on_recovery() -> None:
     assert await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",))) == []
     doomed = await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",)))
     assert [item.request_id for item in doomed] == ["req-gpu"]
+
+
+def _item_by_request_id(manager: PriorityJobManager, request_id: str) -> Any:
+    return next(
+        item for item in manager._items.values() if item.request_id == request_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_partition_splits_cpu_and_gpu() -> None:
+    """With the lever ON (default), a GPU item and a CPU item sharing
+    principal/token/credential/optimizer/hardware land in DIFFERENT partitions,
+    and the CPU item dispatches while the GPU item is unrunnable."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        default_optimizer_type="halo",
+        capacity_aware_selection=True,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-cpu",
+            "graph-cpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-cpu": False},
+        )
+    )
+
+    # The two items land in different partitions (the requires_gpu split).
+    gpu_item = _item_by_request_id(manager, "req-gpu")
+    cpu_item = _item_by_request_id(manager, "req-cpu")
+    assert manager._partition_of(gpu_item) != manager._partition_of(cpu_item)
+
+    # With only a CPU worker free, the GPU partition is unrunnable but the CPU
+    # partition dispatches.
+    reservation = await manager.reserve_batch(
+        2, capacity=_free_capacity(cpu=("cpu-0",))
+    )
+    assert reservation is not None
+    assert [item.request_id for item in reservation.selection.workflows] == ["req-cpu"]
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_off_restores_shared_partition() -> None:
+    """With the lever OFF, the same two items land in the SAME partition, and
+    the CPU item is blocked behind the unrunnable GPU item — the pre-change
+    head-of-line behaviour, demonstrated not assumed."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        default_optimizer_type="halo",
+        capacity_aware_selection=False,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-cpu",
+            "graph-cpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-cpu": False},
+        )
+    )
+
+    # The two items land in the SAME partition (requires_gpu dropped from key).
+    gpu_item = _item_by_request_id(manager, "req-gpu")
+    cpu_item = _item_by_request_id(manager, "req-cpu")
+    assert manager._partition_of(gpu_item) == manager._partition_of(cpu_item)
+
+    # With the lever off the server passes no capacity, so selection is
+    # capacity-blind: both items co-batch in the single shared partition. The
+    # CPU item cannot run ahead of the GPU item — the pre-change head-of-line
+    # coupling, demonstrated not assumed.
+    reservation = await manager.reserve_batch(2)
+    assert reservation is not None
+    assert {item.request_id for item in reservation.selection.workflows} == {
+        "req-gpu",
+        "req-cpu",
+    }
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_lever_changes_partition_key_shape() -> None:
+    """The partition key shape itself differs between the two modes: with the
+    lever on it carries ``requires_gpu`` as a sixth element, with it off the key
+    returns to the pre-change five-element shape."""
+    on_manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type="halo",
+        capacity_aware_selection=True,
+    )
+    off_manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type="halo",
+        capacity_aware_selection=False,
+    )
+    job = _build_job(
+        "req-gpu",
+        "graph-gpu",
+        principal_id="p-shared",
+        dispatch_token="tok-shared",
+        api_credential_digest="cred-shared",
+        optimizer_type="halo",
+        requires_gpu={"graph-gpu": True},
+    )
+    await on_manager.enqueue(job)
+    await off_manager.enqueue(job)
+
+    on_item = _item_by_request_id(on_manager, "req-gpu")
+    off_item = _item_by_request_id(off_manager, "req-gpu")
+    on_key = on_manager._partition_of(on_item)
+    off_key = off_manager._partition_of(off_item)
+
+    # The on-mode key carries requires_gpu (6 elements); the off-mode key does
+    # not (5 elements), so the two keys differ in shape.
+    assert len(on_key) == 6
+    assert len(off_key) == 5
+    assert on_key[:5] == off_key[:5]
+    assert on_key != off_key
