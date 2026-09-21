@@ -28,6 +28,7 @@ jobs:
   unit-tests:
     name: Unit tests
     runs-on: ${{ github.event_name == 'push' && vars.NUS_RUNNERS == 'on' && 'nus-lumilake' || 'ubuntu-latest' }}
+    timeout-minutes: 20
 
     steps:
       - name: Checkout

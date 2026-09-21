@@ -9,7 +9,12 @@ from lumilake_server.runtime.capacity import FreeCapacity
 
 
 def _patch_capacity(server: Any, cpu_ids: list[str], gpu_ids: list[str]) -> None:
-    """Feed the scheduler a fixed idle-worker pool, minus whatever is busy."""
+    """Feed the scheduler a fixed worker pool.
+
+    Free capacity is the pool minus whatever is busy; total capacity is the
+    whole pool. Both snapshots are patched so the loop never reaches the
+    runtime manager over HTTP.
+    """
 
     async def _snapshot() -> FreeCapacity:
         busy = server._busy_workers
@@ -18,7 +23,14 @@ def _patch_capacity(server: Any, cpu_ids: list[str], gpu_ids: list[str]) -> None
             gpu_worker_ids=tuple(w for w in gpu_ids if w not in busy),
         )
 
+    async def _total_snapshot() -> FreeCapacity:
+        return FreeCapacity(
+            cpu_worker_ids=tuple(cpu_ids),
+            gpu_worker_ids=tuple(gpu_ids),
+        )
+
     server._snapshot_free_capacity = _snapshot  # type: ignore[method-assign]
+    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
 
 
 class _FailThenCancelJobManager:
@@ -392,8 +404,12 @@ async def test_scheduler_aborts_reservation_when_workers_unavailable(
     async def _noop_run_batch(workers: list[str], batch: Any) -> None:
         return
 
+    async def _total_snapshot() -> FreeCapacity:
+        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
+
     server._busy_workers.add("cpu-0")
     server._snapshot_free_capacity = _stale_snapshot  # type: ignore[method-assign]
+    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
     server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
@@ -461,12 +477,9 @@ async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
     server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
-    # Total capacity holds only CPU workers; the queued batch needs a GPU, so
-    # it is permanently unsatisfiable and must be failed.
-    async def _total_snapshot() -> FreeCapacity:
-        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
-
-    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
+    # Capacity holds only CPU workers; the queued batch needs a GPU, so it is
+    # permanently unsatisfiable and must be failed.
+    _patch_capacity(server, ["cpu-0"], [])
 
     # Attach a real request state so _fail_unplaceable_batch can finalize it.
     handlers = attach_request_states(
@@ -610,11 +623,10 @@ async def test_scheduler_unplaceable_gpu_batch_does_not_block_cpu_batch(
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
 
     # No GPU worker exists on this box: the GPU batch can never be placed and
-    # is failed; only a CPU-only batch can be admitted.
-    async def _total_snapshot() -> FreeCapacity:
-        return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
-
-    server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
+    # is failed; only a CPU-only batch can be admitted. The pool holds a spare
+    # CPU worker so the loop keeps making progress after the CPU batch claims
+    # one, rather than stalling on an empty snapshot.
+    _patch_capacity(server, ["cpu-0", "cpu-1"], [])
 
     await server._scheduler_loop()
     await asyncio.wait_for(cpu_dispatched.wait(), timeout=5.0)
