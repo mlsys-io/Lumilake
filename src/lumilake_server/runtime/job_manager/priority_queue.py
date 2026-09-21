@@ -5,17 +5,20 @@ import hashlib
 import logging
 import time
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 
+from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.utils.utils import unique_id
 
 from .base import (
+    AbortReason,
     BaseJobManager,
     BatchReservation,
     BatchSelection,
@@ -31,11 +34,18 @@ HardwareSignature = tuple[int | None, str | None, int | None, str | None, str | 
 omit the override co-batch with each other.
 """
 
-PartitionKey = tuple[str, str | None, str | None, str, HardwareSignature]
+PartitionKey = (
+    tuple[str, str | None, str | None, str, HardwareSignature]
+    | tuple[str, str | None, str | None, str, HardwareSignature, bool]
+)
 """``(principal_id, dispatch_token, api_credential_digest, optimizer_type,
-hardware_signature)`` — two requests share a FlowMesh dispatch iff their
-partition keys are equal. The API credential digest is included so a batch
-never mixes jobs with different caller-supplied credentials.
+hardware_signature[, requires_gpu])`` — two requests share a FlowMesh dispatch
+iff their partition keys are equal. The API credential digest is included so a
+batch never mixes jobs with different caller-supplied credentials. When
+capacity-aware selection is on, ``requires_gpu`` is appended so a busy GPU group
+never suppresses CPU-only items in the same principal/token/credential/
+optimizer/hardware class; with the rollback lever off the key drops it and
+returns to its pre-change shape, so CPU and GPU items share a partition again.
 """
 
 
@@ -71,6 +81,16 @@ class PriorityJobManager(BaseJobManager):
         quantums: dict[Priority, int] | None = None,
         starvation_limit: int = envs.LUMILAKE_STARVATION_LIMIT,
         default_optimizer_type: str = envs.LUMILAKE_DEFAULT_OPTIMIZER,
+        cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
+        gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
+        worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
+        unsatisfiable_dwell_observations: int = (
+            envs.LUMILAKE_UNSATISFIABLE_DWELL_OBSERVATIONS
+        ),
+        unsatisfiable_dwell_seconds: float = (
+            envs.LUMILAKE_UNSATISFIABLE_DWELL_SECONDS
+        ),
+        capacity_aware_selection: bool = envs.LUMILAKE_CAPACITY_AWARE_SELECTION,
         logger: Logger | None = None,
         log_level: LogLevel | None = None,
     ) -> None:
@@ -81,6 +101,43 @@ class PriorityJobManager(BaseJobManager):
         for priority in Priority:
             self._quantums.setdefault(priority, 1)
         self._starvation_limit = starvation_limit
+        self._cpu_worker_group_size = max(0, cpu_worker_group_size)
+        self._gpu_worker_group_size = max(0, gpu_worker_group_size)
+        # A partition must be observed unsatisfiable against total capacity
+        # across this many consecutive scheduler iterations before it is
+        # failed as permanently unsatisfiable. Guards against transient fleet
+        # blips (workers briefly deregistered) being mistaken for impossible
+        # requirements.
+        self._unsatisfiable_dwell_observations = max(
+            1, unsatisfiable_dwell_observations
+        )
+        # The partition must also have been continuously unsatisfiable for at
+        # least this many seconds. The observation count alone is not a dwell
+        # in time: when there is queued work and some free capacity the
+        # scheduler loop can iterate in milliseconds, so a count-only guard
+        # would let a fleet blip that outlasts a few fast iterations destroy
+        # queued work. The elapsed time is what actually survives a blip.
+        self._unsatisfiable_dwell_seconds = max(0.0, unsatisfiable_dwell_seconds)
+        # Consecutive observations each present partition has been
+        # unsatisfiable against total capacity, keyed by the wall-clock time
+        # the current unsatisfiable run began. Reset whenever a partition
+        # becomes satisfiable again. The count stops a single stale snapshot
+        # from arming the timer; the elapsed time is what survives a blip.
+        self._unsatisfiable_since: dict[PartitionKey, float] = {}
+        self._unsatisfiable_count: dict[PartitionKey, int] = {}
+        # Whether the partition key carries the ``requires_gpu`` split. Mirrors
+        # the server's capacity-aware-selection lever: when off, the key drops
+        # ``requires_gpu`` so partitioning returns to its pre-change shape and
+        # CPU and GPU items in the same principal/token/credential/optimizer/
+        # hardware class share a partition (head-of-line behaviour returns).
+        self._capacity_aware_selection = capacity_aware_selection
+        # Callable ``(worker_profile, HardwareRequirements) -> bool`` used to
+        # filter candidate workers by hardware when capacity is supplied.
+        # Defaults to accepting every worker so selection is unconstrained when
+        # the server does not wire a checker.
+        self._worker_meets_hardware = worker_meets_hardware or (
+            lambda _profile, _hw: True
+        )
         # Normalize None optimizer_type to this default before partitioning so
         # two requests that are semantically equivalent (both fall back to the
         # server default) are co-batched rather than split into separate batches.
@@ -94,10 +151,11 @@ class PriorityJobManager(BaseJobManager):
             priority: deque() for priority in Priority
         }
         # Round-robin order of (principal_id, dispatch_token,
-        # api_credential_digest, optimizer_type, hardware_signature) partitions
-        # across all priorities. select_batch picks one partition per round so a
-        # single FlowMesh dispatch never spans principals, tokens, API
-        # credentials, optimizer types, or hardware requirements.
+        # api_credential_digest, optimizer_type, hardware_signature,
+        # requires_gpu) partitions across all priorities. select_batch picks one
+        # partition per round so a single FlowMesh dispatch never spans
+        # principals, tokens, API credentials, optimizer types, hardware
+        # requirements, or CPU/GPU class.
         # Set mirrors the deque for O(1) membership.
         self._rr_partition_order: deque[PartitionKey] = deque()
         self._rr_partition_members: set[PartitionKey] = set()
@@ -112,10 +170,20 @@ class PriorityJobManager(BaseJobManager):
     @staticmethod
     def _redact_partition(
         partition: PartitionKey,
-    ) -> tuple[str, str, str, str, HardwareSignature]:
+    ) -> (
+        tuple[str, str, str, str, HardwareSignature]
+        | tuple[str, str, str, str, HardwareSignature, bool]
+    ):
         """Render a partition for logs without leaking the bearer token or the
         API credential digest."""
-        principal_id, token, credential_digest, optimizer_type, hardware = partition
+        (
+            principal_id,
+            token,
+            credential_digest,
+            optimizer_type,
+            hardware,
+            *rest,
+        ) = partition
         if token is None:
             token_rendered = "no-token"
         else:
@@ -125,12 +193,84 @@ class PriorityJobManager(BaseJobManager):
             credential_rendered = "no-credential"
         else:
             credential_rendered = f"cred:{credential_digest[:8]}"
-        return (
+        redacted: tuple[str, str, str, str, HardwareSignature] = (
             principal_id,
             token_rendered,
             credential_rendered,
             optimizer_type,
             hardware,
+        )
+        if rest:
+            return (*redacted, rest[0])
+        return redacted
+
+    def _partition_of(self, item: WorkflowItem) -> PartitionKey:
+        base = (
+            item.config.principal_id,
+            item.dispatch_token,
+            item.api_credential_digest,
+            item.config.optimizer_type or self._default_optimizer_type,
+            _hardware_signature(item.config.hardware_requirements),
+        )
+        if not self._capacity_aware_selection:
+            return base
+        return (*base, item.requires_gpu)
+
+    def _partition_eligible(
+        self,
+        partition: PartitionKey,
+        capacity: FreeCapacity,
+    ) -> bool:
+        """True when ``capacity`` holds enough idle workers to run ``partition``.
+
+        A GPU-requiring partition needs both the CPU and GPU group sizes (the
+        dispatch path always claims a CPU group alongside a GPU group); a
+        CPU-only partition needs only the CPU group size. When the capacity
+        snapshot carries worker profiles, the candidate workers must also meet
+        the partition's hardware signature, so selection never picks a
+        partition that cannot be claimed.
+        """
+        requires_gpu = partition[5] if len(partition) > 5 else False
+        cpu_group_size = self._cpu_worker_group_size
+        gpu_group_size = self._gpu_worker_group_size if requires_gpu else 0
+        if not capacity.can_satisfy(
+            cpu_group_size=cpu_group_size, gpu_group_size=gpu_group_size
+        ):
+            return False
+        if not capacity.profiles:
+            return True
+        hardware = self._hardware_from_signature(partition[4])
+        return capacity.can_satisfy_hardware(
+            cpu_group_size=cpu_group_size,
+            gpu_group_size=gpu_group_size,
+            worker_meets_hardware=self._worker_meets_hardware,
+            hardware=hardware,
+        )
+
+    @staticmethod
+    def _hardware_from_signature(
+        signature: HardwareSignature,
+    ) -> HardwareRequirements | None:
+        """Rebuild a :class:`HardwareRequirements` from a partition signature.
+
+        ``(None, None, None, None, None)`` means "use env defaults" and maps to
+        ``None`` so the hardware filter degrades to "no constraint".
+        """
+        cpu, memory, gpu, gpu_memory, gpu_model = signature
+        if (
+            cpu is None
+            and memory is None
+            and gpu is None
+            and gpu_memory is None
+            and gpu_model is None
+        ):
+            return None
+        return HardwareRequirements(
+            cpu=cpu,
+            memory=memory,
+            gpu=gpu,
+            gpu_memory=gpu_memory,
+            gpu_model=gpu_model,
         )
 
     @staticmethod
@@ -185,6 +325,7 @@ class PriorityJobManager(BaseJobManager):
                     enqueued_at=now,
                     dispatch_token=job.dispatch_token,
                     api_credential_digest=job.api_credential_digest,
+                    requires_gpu=job.requires_gpu.get(graph_name, False),
                 )
             )
         async with self._lock:
@@ -196,13 +337,7 @@ class PriorityJobManager(BaseJobManager):
                     self._rr_user_order[job.config.priority].append(owner_id)
                 user_queues[owner_id].append(item)
                 self._items[item.workflow_id] = item
-                partition: PartitionKey = (
-                    item.config.principal_id,
-                    item.dispatch_token,
-                    item.api_credential_digest,
-                    item.config.optimizer_type or self._default_optimizer_type,
-                    _hardware_signature(item.config.hardware_requirements),
-                )
+                partition: PartitionKey = self._partition_of(item)
                 if partition not in self._rr_partition_members:
                     self._rr_partition_members.add(partition)
                     self._rr_partition_order.append(partition)
@@ -281,13 +416,7 @@ class PriorityJobManager(BaseJobManager):
             for workflow_id in remove_set:
                 self._items.pop(workflow_id, None)
             remaining_partitions = {
-                (
-                    item.config.principal_id,
-                    item.dispatch_token,
-                    item.api_credential_digest,
-                    item.config.optimizer_type or self._default_optimizer_type,
-                    _hardware_signature(item.config.hardware_requirements),
-                )
+                self._partition_of(item)
                 for priority in Priority
                 for queue in self._queues[priority].values()
                 for item in queue
@@ -305,11 +434,78 @@ class PriorityJobManager(BaseJobManager):
             ):
                 self._not_empty.clear()
 
-    async def reserve_batch(self, batch_size: int) -> BatchReservation | None:
+    async def permanently_unsatisfiable(
+        self, total_capacity: FreeCapacity
+    ) -> list[WorkflowItem]:
+        """Return queued items whose partition no worker can ever satisfy.
+
+        ``total_capacity`` must describe every registered worker (busy or
+        idle). A partition is only reported once it has been observed
+        unsatisfiable against total capacity across
+        ``_unsatisfiable_dwell_observations`` consecutive scheduler
+        iterations AND for at least ``_unsatisfiable_dwell_seconds``, so a
+        transient fleet blip (workers briefly deregistered) is not mistaken
+        for an impossible requirement. A genuinely impossible partition (e.g.
+        a ``gpu_model`` no worker has) is unsatisfiable on every observation
+        and fails after the dwell. The caller should fail the returned items
+        loudly and drop them from the queue rather than leaving them to sit
+        silently forever.
+        """
+        async with self._lock:
+            present_partitions: set[PartitionKey] = set()
+            for priority in Priority:
+                for queue in self._queues[priority].values():
+                    for item in queue:
+                        present_partitions.add(self._partition_of(item))
+            # Advance the dwell for every present partition: record the start
+            # of an unsatisfiable run and count it, reset both when
+            # satisfiable. Partitions that drained from the queue are
+            # forgotten.
+            for partition in list(self._unsatisfiable_since):
+                if partition not in present_partitions:
+                    del self._unsatisfiable_since[partition]
+                    del self._unsatisfiable_count[partition]
+            now = time.monotonic()
+            for partition in present_partitions:
+                if self._partition_eligible(partition, total_capacity):
+                    self._unsatisfiable_since.pop(partition, None)
+                    self._unsatisfiable_count.pop(partition, None)
+                    continue
+                self._unsatisfiable_since.setdefault(partition, now)
+                self._unsatisfiable_count[partition] = (
+                    self._unsatisfiable_count.get(partition, 0) + 1
+                )
+            doomed_partitions = {
+                partition
+                for partition, since in self._unsatisfiable_since.items()
+                if now - since >= self._unsatisfiable_dwell_seconds
+                and self._unsatisfiable_count[partition]
+                >= self._unsatisfiable_dwell_observations
+            }
+            if not doomed_partitions:
+                return []
+            return [
+                item
+                for priority in Priority
+                for queue in self._queues[priority].values()
+                for item in queue
+                if self._partition_of(item) in doomed_partitions
+            ]
+
+    async def reserve_batch(
+        self,
+        batch_size: int,
+        *,
+        capacity: FreeCapacity | None = None,
+    ) -> BatchReservation | None:
         """Compute the next batch without mutating queue state.
 
         See :class:`BatchReservation` — the returned handle must be either
         committed (``commit_reservation``) or aborted (``abort_reservation``).
+
+        When ``capacity`` is given, partitions the current free capacity cannot
+        run are excluded from selection before the round-robin pick and before
+        starvation pinning.
         """
         if batch_size <= 0:
             batch_size = 1
@@ -326,19 +522,26 @@ class PriorityJobManager(BaseJobManager):
             for priority in Priority:
                 for queue in self._queues[priority].values():
                     for item in queue:
-                        partition: PartitionKey = (
-                            item.config.principal_id,
-                            item.dispatch_token,
-                            item.api_credential_digest,
-                            item.config.optimizer_type or self._default_optimizer_type,
-                            _hardware_signature(item.config.hardware_requirements),
-                        )
+                        partition: PartitionKey = self._partition_of(item)
                         present_partitions.add(partition)
                         items_by_partition[partition] = (
                             items_by_partition.get(partition, 0) + 1
                         )
                         if item.miss_count >= self._starvation_limit:
                             starved_global.append(item)
+
+            if capacity is not None:
+                eligible = {
+                    partition
+                    for partition in present_partitions
+                    if self._partition_eligible(partition, capacity)
+                }
+                starved_global = [
+                    item
+                    for item in starved_global
+                    if self._partition_of(item) in eligible
+                ]
+                present_partitions = eligible
 
             if not present_partitions:
                 self._not_empty.clear()
@@ -348,13 +551,7 @@ class PriorityJobManager(BaseJobManager):
             rr_partition_to_advance: PartitionKey | None = None
             if starved_global:
                 head = starved_global[0]
-                anchor_partition = (
-                    head.config.principal_id,
-                    head.dispatch_token,
-                    head.api_credential_digest,
-                    head.config.optimizer_type or self._default_optimizer_type,
-                    _hardware_signature(head.config.hardware_requirements),
-                )
+                anchor_partition = self._partition_of(head)
             else:
                 picked = self._pick_partition_round_robin_locked(present_partitions)
                 if picked is None:
@@ -368,6 +565,7 @@ class PriorityJobManager(BaseJobManager):
                             p[2] or "",
                             p[3],
                             tuple("" if v is None else str(v) for v in p[4]),
+                            p[5] if len(p) > 5 else False,
                         ),
                     ):
                         if partition not in self._rr_partition_members:
@@ -529,13 +727,7 @@ class PriorityJobManager(BaseJobManager):
                 self._prune_empty_user_queues_locked(priority)
             # 3. Drop RR partitions whose queues drained completely.
             remaining_partitions = {
-                (
-                    item.config.principal_id,
-                    item.dispatch_token,
-                    item.api_credential_digest,
-                    item.config.optimizer_type or self._default_optimizer_type,
-                    _hardware_signature(item.config.hardware_requirements),
-                )
+                self._partition_of(item)
                 for priority in Priority
                 for queue in self._queues[priority].values()
                 for item in queue
@@ -567,13 +759,23 @@ class PriorityJobManager(BaseJobManager):
                 self._not_empty.clear()
             self._active_reservation = None
 
-    async def abort_reservation(self, reservation: BatchReservation) -> None:
+    async def abort_reservation(
+        self,
+        reservation: BatchReservation,
+        *,
+        reason: AbortReason = AbortReason.POLICY,
+    ) -> None:
         async with self._lock:
             if self._active_reservation is not reservation:
                 raise RuntimeError(
                     "abort_reservation: reservation is not the active one"
                 )
             self._active_reservation = None
+            if reason == AbortReason.CAPACITY:
+                self.logger.debug(
+                    "Aborted reservation for capacity (selected=%d)",
+                    len(reservation.selection.workflows),
+                )
 
     def _build_candidate_pool_for_partition_locked(
         self, partition: PartitionKey
@@ -669,7 +871,9 @@ class PriorityJobManager(BaseJobManager):
             api_credential_digest,
             optimizer_type,
             hardware_signature,
+            *rest,
         ) = partition
+        requires_gpu = rest[0] if rest else None
         filtered: dict[str, list[WorkflowItem]] = {}
         for user_id in rr_order:
             queue = user_queues.get(user_id)
@@ -685,6 +889,7 @@ class PriorityJobManager(BaseJobManager):
                 == optimizer_type
                 and _hardware_signature(item.config.hardware_requirements)
                 == hardware_signature
+                and (requires_gpu is None or item.requires_gpu == requires_gpu)
             ]
             if user_items:
                 filtered[user_id] = user_items

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from support.runtime_graphs import build_dummy_runtime_graph
 
+from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job
 from lumilake_server.runtime.job_manager.priority_queue import PriorityJobManager
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
@@ -48,6 +49,7 @@ def _build_job(
     api_credential_digest: str | None = None,
     optimizer_type: str | None = None,
     hardware_requirements: HardwareRequirements | None = None,
+    requires_gpu: dict[str, bool] | None = None,
 ) -> Job:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     owner = request_id if user_id is None else user_id
@@ -67,6 +69,7 @@ def _build_job(
         ),
         dispatch_token=dispatch_token,
         api_credential_digest=api_credential_digest,
+        requires_gpu=requires_gpu or {},
     )
 
 
@@ -884,3 +887,375 @@ def test_chain_round_rejects_negative_values() -> None:
             principal_id="p",
             chain_round=-1,
         )
+
+
+def _free_capacity(
+    cpu: tuple[str, ...] = (),
+    gpu: tuple[str, ...] = (),
+    profiles: dict[str, Any] | None = None,
+) -> FreeCapacity:
+    return FreeCapacity(
+        cpu_worker_ids=cpu,
+        gpu_worker_ids=gpu,
+        profiles=profiles or {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_reports_unplaceable_partition() -> None:
+    """A partition no worker can ever satisfy is reported so the scheduler can
+    fail it loudly, while a satisfiable partition is left alone."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=1,
+        unsatisfiable_dwell_seconds=0,
+    )
+    # GPU-requiring partition: no GPU worker exists anywhere.
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+    # CPU-only partition: satisfiable by the CPU worker.
+    await manager.enqueue(_build_job("req-cpu", "graph-cpu"))
+
+    doomed = await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",)))
+
+    assert [item.request_id for item in doomed] == ["req-gpu"]
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_empty_when_total_capacity_satisfies() -> None:
+    """When total cluster capacity can satisfy every partition, nothing is
+    reported as permanently unsatisfiable."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=1,
+        unsatisfiable_dwell_seconds=0,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            hardware_requirements=HardwareRequirements(gpu=1),
+        )
+    )
+
+    doomed = await manager.permanently_unsatisfiable(
+        _free_capacity(cpu=("cpu-0",), gpu=("gpu-0",))
+    )
+
+    assert doomed == []
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_ignores_busy_workers() -> None:
+    """A partition that is satisfiable by a busy worker is NOT permanently
+    unsatisfiable — it is transiently blocked and must wait, not fail."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=1,
+        unsatisfiable_dwell_seconds=0,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            hardware_requirements=HardwareRequirements(gpu=1),
+        )
+    )
+
+    # Total capacity includes the GPU worker (busy or idle); the partition can
+    # run once it frees, so it must not be reported as permanently unsatisfiable.
+    doomed = await manager.permanently_unsatisfiable(
+        _free_capacity(cpu=("cpu-0",), gpu=("gpu-0",))
+    )
+
+    assert doomed == []
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_requires_dwell() -> None:
+    """A partition must be observed unsatisfiable across the dwell before it is
+    failed, so a transient fleet blip is not mistaken for an impossible
+    requirement."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=3,
+        unsatisfiable_dwell_seconds=0,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+
+    # First two observations: GPU worker missing, so unsatisfiable — but the
+    # dwell has not elapsed, so nothing is reported yet.
+    assert await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",))) == []
+    assert await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",))) == []
+
+    # Third consecutive observation: dwell elapsed, partition is failed.
+    doomed = await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",)))
+    assert [item.request_id for item in doomed] == ["req-gpu"]
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_requires_elapsed_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partition unsatisfiable across many rapid observations within the
+    dwell window must NOT be failed — the observation count alone is not a
+    dwell in time, and only elapsed time survives a fleet blip."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=1,
+        unsatisfiable_dwell_seconds=30,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+
+    clock = 0.0
+
+    def _fake_monotonic() -> float:
+        return clock
+
+    monkeypatch.setattr(
+        "lumilake_server.runtime.job_manager.priority_queue.time.monotonic",
+        _fake_monotonic,
+    )
+
+    # Many rapid observations all within the 30s dwell window: the count is
+    # satisfied immediately, but the elapsed time has not, so nothing fails.
+    for _ in range(10):
+        assert (
+            await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",)))
+            == []
+        )
+
+    # Once the dwell window has elapsed, the partition is failed.
+    clock = 31.0
+    doomed = await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",)))
+    assert [item.request_id for item in doomed] == ["req-gpu"]
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_resets_streak_on_recovery() -> None:
+    """A partition unsatisfiable in one observation but satisfiable in the next
+    must NOT be failed — a transient blip must not become permanent loss."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=3,
+        unsatisfiable_dwell_seconds=0,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+
+    # One unsatisfiable observation (GPU worker briefly deregistered).
+    assert await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",))) == []
+
+    # Next observation: GPU worker is back, partition is satisfiable again.
+    assert (
+        await manager.permanently_unsatisfiable(
+            _free_capacity(cpu=("cpu-0",), gpu=("gpu-0",))
+        )
+        == []
+    )
+
+    # Even after more unsatisfiable observations, the streak was reset by the
+    # recovery, so the partition must not be failed until the dwell re-elapses.
+    assert await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",))) == []
+    assert await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",))) == []
+    doomed = await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",)))
+    assert [item.request_id for item in doomed] == ["req-gpu"]
+
+
+def _item_by_request_id(manager: PriorityJobManager, request_id: str) -> Any:
+    return next(
+        item for item in manager._items.values() if item.request_id == request_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_partition_splits_cpu_and_gpu() -> None:
+    """With the lever ON (default), a GPU item and a CPU item sharing
+    principal/token/credential/optimizer/hardware land in DIFFERENT partitions,
+    and the CPU item dispatches while the GPU item is unrunnable."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        default_optimizer_type="halo",
+        capacity_aware_selection=True,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-cpu",
+            "graph-cpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-cpu": False},
+        )
+    )
+
+    # The two items land in different partitions (the requires_gpu split).
+    gpu_item = _item_by_request_id(manager, "req-gpu")
+    cpu_item = _item_by_request_id(manager, "req-cpu")
+    assert manager._partition_of(gpu_item) != manager._partition_of(cpu_item)
+
+    # With only a CPU worker free, the GPU partition is unrunnable but the CPU
+    # partition dispatches.
+    reservation = await manager.reserve_batch(
+        2, capacity=_free_capacity(cpu=("cpu-0",))
+    )
+    assert reservation is not None
+    assert [item.request_id for item in reservation.selection.workflows] == ["req-cpu"]
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_off_restores_shared_partition() -> None:
+    """With the lever OFF, the same two items land in the SAME partition, and
+    the CPU item is blocked behind the unrunnable GPU item — the pre-change
+    head-of-line behaviour, demonstrated not assumed."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        default_optimizer_type="halo",
+        capacity_aware_selection=False,
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-gpu",
+            "graph-gpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-gpu": True},
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-cpu",
+            "graph-cpu",
+            principal_id="p-shared",
+            dispatch_token="tok-shared",
+            api_credential_digest="cred-shared",
+            optimizer_type="halo",
+            hardware_requirements=HardwareRequirements(gpu=1),
+            requires_gpu={"graph-cpu": False},
+        )
+    )
+
+    # The two items land in the SAME partition (requires_gpu dropped from key).
+    gpu_item = _item_by_request_id(manager, "req-gpu")
+    cpu_item = _item_by_request_id(manager, "req-cpu")
+    assert manager._partition_of(gpu_item) == manager._partition_of(cpu_item)
+
+    # With the lever off the server passes no capacity, so selection is
+    # capacity-blind: both items co-batch in the single shared partition. The
+    # CPU item cannot run ahead of the GPU item — the pre-change head-of-line
+    # coupling, demonstrated not assumed.
+    reservation = await manager.reserve_batch(2)
+    assert reservation is not None
+    assert {item.request_id for item in reservation.selection.workflows} == {
+        "req-gpu",
+        "req-cpu",
+    }
+
+
+@pytest.mark.asyncio
+async def test_capacity_aware_lever_changes_partition_key_shape() -> None:
+    """The partition key shape itself differs between the two modes: with the
+    lever on it carries ``requires_gpu`` as a sixth element, with it off the key
+    returns to the pre-change five-element shape."""
+    on_manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type="halo",
+        capacity_aware_selection=True,
+    )
+    off_manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        default_optimizer_type="halo",
+        capacity_aware_selection=False,
+    )
+    job = _build_job(
+        "req-gpu",
+        "graph-gpu",
+        principal_id="p-shared",
+        dispatch_token="tok-shared",
+        api_credential_digest="cred-shared",
+        optimizer_type="halo",
+        requires_gpu={"graph-gpu": True},
+    )
+    await on_manager.enqueue(job)
+    await off_manager.enqueue(job)
+
+    on_item = _item_by_request_id(on_manager, "req-gpu")
+    off_item = _item_by_request_id(off_manager, "req-gpu")
+    on_key = on_manager._partition_of(on_item)
+    off_key = off_manager._partition_of(off_item)
+
+    # The on-mode key carries requires_gpu (6 elements); the off-mode key does
+    # not (5 elements), so the two keys differ in shape.
+    assert len(on_key) == 6
+    assert len(off_key) == 5
+    assert on_key[:5] == off_key[:5]
+    assert on_key != off_key

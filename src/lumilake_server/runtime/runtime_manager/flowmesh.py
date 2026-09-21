@@ -591,6 +591,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         workers = await flowmesh_for_server().workers.list(status="IDLE")
         return [w.id for w in workers if not w.stale]
 
+    async def get_all_workers(self) -> list[str]:
+        """Return every registered worker ID, busy or idle.
+
+        Unlike ``get_workers`` (which filters to IDLE), this lists the full
+        pool so the scheduler can tell a busy-but-existing worker from one
+        that does not exist at all.
+        """
+        workers = await flowmesh_for_server().workers.list()
+        return [w.id for w in workers if not w.stale]
+
     def count_runtime_nodes(self, graphs: dict[str, RuntimeGraph]) -> int:
         return sum(graph.node_count for graph in graphs.values())
 

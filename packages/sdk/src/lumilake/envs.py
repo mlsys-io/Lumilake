@@ -113,6 +113,14 @@ LUMILAKE_CPU_WORKER_GROUP_SIZE: int = int(
 LUMILAKE_GPU_WORKER_GROUP_SIZE: int = int(
     os.environ.get("LUMILAKE_GPU_WORKER_GROUP_SIZE") or "0"
 )
+# Whether dispatch filters selection by free capacity. Default on: an unrunnable
+# batch is skipped in favour of runnable work. Set to ``0`` to restore the
+# capacity-blind behaviour where a batch that no worker can run stalls dispatch
+# (head-of-line blocking) until capacity frees. A rollback lever for the
+# capacity-aware selection path.
+LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
+    "LUMILAKE_CAPACITY_AWARE_SELECTION", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 LUMILAKE_POLL_TIMEOUT_SECONDS: float = float(
     os.environ.get("LUMILAKE_POLL_TIMEOUT_SECONDS") or "inf"
@@ -127,6 +135,23 @@ LUMILAKE_POLL_INTERVAL_SECONDS: float = float(
 # wedging the scheduler forever and starving every batch behind it.
 LUMILAKE_WORKER_GROUP_WAIT_SECONDS: float = float(
     os.environ.get("LUMILAKE_WORKER_GROUP_WAIT_SECONDS") or "300"
+)
+# How many consecutive scheduler observations a partition must be
+# A partition must be observed unsatisfiable against total cluster capacity
+# across this many consecutive scheduler iterations AND for at least
+# LUMILAKE_UNSATISFIABLE_DWELL_SECONDS before it is failed as permanently
+# unsatisfiable. The observation count stops a single stale snapshot from
+# arming the timer; the elapsed time is what actually survives a fleet blip
+# (workers briefly deregistered), which can outlast many fast scheduler
+# iterations. A genuinely impossible requirement (e.g. a gpu_model no worker
+# has) is unsatisfiable on every observation and fails after the dwell.
+# ~30s keeps the failure an order of magnitude faster than the pre-capacity
+# worker-group wait while surviving a realistic deregistration.
+LUMILAKE_UNSATISFIABLE_DWELL_OBSERVATIONS: int = int(
+    os.environ.get("LUMILAKE_UNSATISFIABLE_DWELL_OBSERVATIONS") or "3"
+)
+LUMILAKE_UNSATISFIABLE_DWELL_SECONDS: float = float(
+    os.environ.get("LUMILAKE_UNSATISFIABLE_DWELL_SECONDS") or "30"
 )
 LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS: float = float(
     os.environ.get("LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS") or "60"

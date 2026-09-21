@@ -35,6 +35,16 @@ class BaseRuntimeManager(ABC):
     async def get_workers(self) -> list[str]:
         """Return available worker IDs."""
 
+    async def get_all_workers(self) -> list[str]:
+        """Return every registered worker ID, busy or idle.
+
+        Defaults to ``get_workers``; backends that can enumerate the full
+        pool (including busy workers) override this so the scheduler can
+        distinguish "hardware exists but is busy" from "no worker can ever
+        satisfy this".
+        """
+        return await self.get_workers()
+
     @abstractmethod
     async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
         """Return hardware profile for a worker."""
