@@ -330,11 +330,11 @@ async def test_set_index_constructs_and_selects_via_manager() -> None:
 
 
 @pytest.mark.asyncio
-async def test_legacy_and_fair_index_construct_via_manager() -> None:
-    """legacy and fair_index must also be constructible through the manager's
+async def test_legacy_constructs_via_manager() -> None:
+    """legacy must also be constructible through the manager's
     parameter names, so a mismatch like set_index's is caught for all
     policies."""
-    for policy in ("legacy", "fair_index"):
+    for policy in ("legacy",):
         manager = _manager(policy)
         await manager.enqueue(_job("r1", "A"))
         batch = await manager.select_batch(1)

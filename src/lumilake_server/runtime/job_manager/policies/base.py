@@ -54,7 +54,7 @@ class BaseSchedulingPolicy(ABC):
     def on_commit(self, workflows: list[WorkflowItem]) -> None:
         """Hook invoked after a batch is committed.
 
-        The default is a no-op. A policy that tracks attained service (e.g.
-        fair_index) charges it here, on commit rather than on selection so an
-        aborted reservation does not corrupt the accounting.
+        The default is a no-op. A policy that tracks attained service charges
+        it here, on commit rather than on selection so an aborted reservation
+        does not corrupt the accounting.
         """

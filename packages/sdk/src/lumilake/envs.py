@@ -122,9 +122,8 @@ LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
     "LUMILAKE_CAPACITY_AWARE_SELECTION", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
-# Scheduling policy. "legacy" reproduces today's selection exactly; "fair_index"
-# enables fair-weighted index ordering (w(user) / p_hat(item)) with a
-# least-attained-service fallback for unestimable items.
+# Scheduling policy. "legacy" reproduces today's selection exactly; "set_index"
+# scores a candidate batch as a set, by W(S) / T(S).
 LUMILAKE_SCHEDULER_POLICY: str = (
     (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "legacy").strip().lower()
 )
