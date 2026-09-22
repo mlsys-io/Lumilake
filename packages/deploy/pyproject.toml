@@ -13,9 +13,9 @@ dependencies = [
     "lumilake-sdk==0.1.6",
     "docker>=7.1.0",
     "pyyaml>=6.0",
-    "flowmesh-sdk-stack==0.1.1",
-    "flowmesh-cli==0.1.1",
-    "flowmesh-cli-stack==0.1.1",
+    "flowmesh-sdk-stack==0.1.9",
+    "flowmesh-cli==0.1.9",
+    "flowmesh-cli-stack==0.1.9",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
