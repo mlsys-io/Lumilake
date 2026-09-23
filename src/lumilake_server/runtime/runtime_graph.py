@@ -1990,6 +1990,8 @@ class RuntimeGraphBuilder:
             }
             if api_config.timeout_sec is not None:
                 api_spec["timeout_sec"] = api_config.timeout_sec
+            if api_config.retries is not None:
+                api_spec["retries"] = api_config.retries
             node_id = llm_op_id if row_index == 0 else f"{llm_op_id}__row{row_index}"
             runtime_ops.append(
                 self._create_runtime_op(
@@ -2119,6 +2121,8 @@ class RuntimeGraphBuilder:
             }
             if api_config.timeout_sec is not None:
                 api_spec["timeout_sec"] = api_config.timeout_sec
+            if api_config.retries is not None:
+                api_spec["retries"] = api_config.retries
             node_id = llm_op_id if row_index == 0 else f"{llm_op_id}__row{row_index}"
             runtime_ops.append(
                 self._create_runtime_op(
@@ -2499,6 +2503,8 @@ class RuntimeGraphBuilder:
             }
             if api_config.timeout_sec is not None:
                 api_spec["timeout_sec"] = api_config.timeout_sec
+            if api_config.retries is not None:
+                api_spec["retries"] = api_config.retries
             node_id = llm_op_id if row_index == 0 else f"{llm_op_id}__row{row_index}"
             runtime_ops.append(
                 self._create_runtime_op(

@@ -44,6 +44,7 @@ class ApiConfig:
     model: str | None = None
     authorization: str | None = None
     timeout_sec: float | None = None
+    retries: int | None = None
 
 
 @dataclass
