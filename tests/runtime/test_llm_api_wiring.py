@@ -345,8 +345,43 @@ def test_local_node_downstream_of_api_node_uses_text_path() -> None:
 
 
 def test_api_structural_outputs_flow_into_request_body() -> None:
-    """An API-backed LLMChatOp must emit ``structural_outputs`` into the request
-    body, matching the local backend's ``inference.templates``."""
+    """An API-backed LLMChatOp must emit a raw ``structural_outputs`` schema as
+    ``response_format``, never as FlowMesh's local ``templates`` field."""
+    stock = input_placeholder("Stock")
+    schema = {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+            "kind": {"type": "string", "enum": ["none", "observation", "claim"]}
+        },
+    }
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        structural_outputs=schema,
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    body = runtime_graph.nodes[llm.id].api_spec["json"]
+    assert "templates" not in body
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "structural_outputs",
+            "schema": schema,
+            "strict": True,
+        },
+    }
+
+
+def test_api_structural_outputs_list_form_fails_closed() -> None:
+    """An API-backed LLMChatOp with the named-fields list form must fail at
+    graph build, since api mode only accepts a raw JSON-schema object."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -358,10 +393,8 @@ def test_api_structural_outputs_flow_into_request_body() -> None:
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    body = runtime_graph.nodes[llm.id].api_spec["json"]
-    assert body["templates"] == [{"name": "code", "type": "string"}]
+    with pytest.raises(ValueError, match="JSON-schema object"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_embedding_op_downstream_of_api_node_uses_text_path() -> None:

@@ -1859,8 +1859,21 @@ class RuntimeGraphBuilder:
         headers = self._api_request_headers(llm_op_id, api_config, url)
         body: dict[str, Any] = {"model": model, "messages": "{{prompt}}"}
         body.update(llm_op.config.inference_spec())
-        if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
-            body["templates"] = llm_op.structural_outputs
+        if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs is not None:
+            if isinstance(llm_op.structural_outputs, dict):
+                body["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "structural_outputs",
+                        "schema": llm_op.structural_outputs,
+                        "strict": True,
+                    },
+                }
+            else:
+                raise ValueError(
+                    "api mode takes structural_outputs as a JSON-schema object; "
+                    f"got {type(llm_op.structural_outputs).__name__}"
+                )
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,
