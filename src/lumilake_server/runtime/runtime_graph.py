@@ -1788,9 +1788,7 @@ class RuntimeGraphBuilder:
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
-        """Build the single FlowMesh ``api`` task for an externally-hosted LLM:
-        the data_spec matches the local path, and the executor substitutes each
-        row's rendered messages into the ``{{prompt}}`` body placeholder."""
+        """Dispatch an API LLM op to its row-wise, aggregate or plain builder."""
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             return self._build_api_rowwise_op(
                 llm_op_id=llm_op_id,
