@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import InputOp, LLMChatOp, MessageOp, OutputOp
+from lumilake_server.ops import InputOp, LambdaOp, LLMChatOp, MessageOp, OutputOp
 from lumilake_server.parser import parse_yaml_payload
 
 
@@ -529,3 +529,55 @@ def test_api_chat_api_template_names_a_model_on_every_llm_op() -> None:
         api = op.config.api
         assert api is not None
         assert api.timeout_sec == 300.0
+
+
+def test_lambda_op_mode_round_trip() -> None:
+    """``mode: list`` on a LambdaOp survives the YAML -> graph round trip, and
+    an unknown mode is rejected."""
+    yaml_text = textwrap.dedent(
+        """
+        name: lambda_mode
+        inputs:
+          stock: ["NVDA"]
+        ops:
+          - id: explode
+            op: LambdaOp
+            inputs: [stock]
+            fn_name: explode
+            code: |
+              def explode(items):
+                  return [{"value": v} for v in items[0]]
+            mode: list
+        outputs:
+          - { name: out, ref: explode }
+        """
+    )
+    specs = parse_yaml_payload(yaml_text)
+    spec = specs["lambda_mode"]
+    graph = Graph.from_json(spec["graph"])
+    lambda_ops = [op for op in graph.iter_ops() if isinstance(op, LambdaOp)]
+    assert len(lambda_ops) == 1
+    assert lambda_ops[0].mode == "list"
+
+
+def test_lambda_op_unknown_mode_rejected() -> None:
+    yaml_text = textwrap.dedent(
+        """
+        name: lambda_bad_mode
+        inputs:
+          stock: ["NVDA"]
+        ops:
+          - id: explode
+            op: LambdaOp
+            inputs: [stock]
+            fn_name: explode
+            code: |
+              def explode(items):
+                  return [{"value": v} for v in items[0]]
+            mode: bogus
+        outputs:
+          - { name: out, ref: explode }
+        """
+    )
+    with pytest.raises(ValueError, match="mode"):
+        parse_yaml_payload(yaml_text)

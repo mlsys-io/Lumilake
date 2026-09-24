@@ -89,6 +89,7 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
 
@@ -1007,8 +1008,15 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         raise ValueError(f"LambdaOp '{entry.id}' requires 'fn_name: str'")
     if not isinstance(code, str):
         raise ValueError(f"LambdaOp '{entry.id}' requires 'code: str'")
+    mode = entry.fields.get("mode", "row")
+    if mode not in LambdaOp.LAMBDA_MODES:
+        raise ValueError(
+            f"LambdaOp '{entry.id}' mode must be one of {LambdaOp.LAMBDA_MODES} "
+            f"(got {mode!r})"
+        )
     op_dict["fn_name"] = fn_name
     op_dict["_code"] = code
+    op_dict["mode"] = mode
 
 
 def _build_generation_config(

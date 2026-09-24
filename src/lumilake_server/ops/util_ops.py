@@ -75,12 +75,19 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 class LambdaOp(Op):
     fn: Callable[[tuple[SingleDtype, ...]], str]
 
+    LAMBDA_MODES = ("row", "list")
+
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
         fn: Callable[[tuple[SingleDtype, ...]], str],
         code: str | None = None,
+        mode: str = "row",
     ) -> None:
+        if mode not in self.LAMBDA_MODES:
+            raise ValueError(
+                f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
+            )
         input_ops: list[Op] = []
         for inp in inputs:
             if isinstance(inp, Op):
@@ -89,6 +96,7 @@ class LambdaOp(Op):
                 input_ops.append(DataOp(inp))
         super().__init__(input_ops)
         self.fn = fn
+        self.mode = mode
         if code:
             self.code: str = code
         else:
@@ -126,6 +134,7 @@ class LambdaOp(Op):
             "fn_name": self.fn.__name__,
             "_code": self.code,
             "_inputs": [inp.id for inp in self.inputs],
+            "mode": self.mode,
         }
 
     @classmethod
@@ -145,7 +154,7 @@ class LambdaOp(Op):
             raise ValueError(f"Failed to deserialize LambdaOp function '{fn_name}'")
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
-        return cls(inputs=input_ops, fn=fn, code=code)
+        return cls(inputs=input_ops, fn=fn, code=code, mode=data.get("mode", "row"))
 
 
 def lambda_op(
