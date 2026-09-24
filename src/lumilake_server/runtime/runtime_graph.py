@@ -2385,7 +2385,10 @@ class RuntimeGraphBuilder:
                             ancestor_buffer[op.id].append((Roles(message.role), msg))
 
             elif isinstance(op, FormatOp):
-                assert len(op.inputs) >= 1, "FormatOp should have at least one input"
+                if op.format_kwargs:
+                    assert (
+                        len(op.inputs) >= 1
+                    ), "FormatOp should have at least one input"
                 message_labels = {
                     inp_op.id: _trace_ancestors(inp_op) for inp_op in op.inputs
                 }
