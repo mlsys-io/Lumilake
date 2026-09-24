@@ -21,6 +21,7 @@ WORKDIR /app
 # Install deps first for layer caching. requirements.txt is generated
 # from uv.lock by scripts/dev/sync_requirements.py.
 COPY src/lumilake_server/requirements.txt ./requirements.txt
+COPY flowmesh-sdk ./flowmesh-sdk
 RUN pip install -r requirements.txt
 
 COPY LICENSE ./LICENSE

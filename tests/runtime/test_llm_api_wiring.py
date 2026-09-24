@@ -2186,3 +2186,48 @@ def test_api_rowwise_data_spec_matches_local_path() -> None:
     local_data, local_deps = build(api=False)
     assert api_data == local_data
     assert api_deps == local_deps
+
+
+def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
+    """``ApiConfig.retries`` must reach the emitted api_spec for both a row-wise
+    and an aggregate API op, next to ``timeout_sec``."""
+    stock = input_placeholder("Stock")
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+
+    rowwise = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(retries=3, timeout_sec=120.0),
+        ),
+        rowwise_template="Summarize {S}.",
+        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a"]}}],
+    )
+    aggregate = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(retries=3, timeout_sec=120.0),
+        ),
+        aggregate_table=[
+            {"label": "summary", "node": upstream.id, "path": "items.output"}
+        ],
+    )
+    aggregate.inputs.append(upstream)
+    output = as_output("result", rowwise)
+    output2 = as_output("result2", aggregate)
+    compiled = Graph.from_ops([output, output2]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (rowwise_row,) = runtime_graph.dsl_to_runtime[rowwise.id]
+    (aggregate_row,) = runtime_graph.dsl_to_runtime[aggregate.id]
+    for row in (rowwise_row, aggregate_row):
+        node = runtime_graph.nodes[row]
+        assert node.api_spec["retries"] == 3
+        assert node.api_spec["timeout_sec"] == 120.0

@@ -1796,6 +1796,8 @@ class RuntimeGraphBuilder:
         }
         if api_config.timeout_sec is not None:
             api_spec["timeout_sec"] = api_config.timeout_sec
+        if api_config.retries is not None:
+            api_spec["retries"] = api_config.retries
         return [
             self._create_runtime_op(
                 name=llm_op_id,
