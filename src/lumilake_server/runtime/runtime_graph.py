@@ -390,6 +390,7 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str] = set()
         llm_ops: dict[str, LLMOp] = {}
         retrieval_ops: dict[str, DataRetrievalOp] = {}
+        list_lambda_ops: dict[str, LambdaOp] = {}
         output_source_to_outputop: dict[str, tuple[str, str | None]] = {}
         for op_id, op in graph_dict.items():
             if isinstance(op, LLMOp):
@@ -398,19 +399,28 @@ class RuntimeGraphBuilder:
             elif isinstance(op, DataRetrievalOp):
                 retrieval_ops[op_id] = op
                 visited_node_ids.add(op_id)
+            elif isinstance(op, LambdaOp) and op.mode == "list":
+                list_lambda_ops[op_id] = op
+                visited_node_ids.add(op_id)
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
-                if not isinstance(source, (LLMOp, DataRetrievalOp)):
+                if not isinstance(source, (LLMOp, DataRetrievalOp)) and not (
+                    isinstance(source, LambdaOp) and source.mode == "list"
+                ):
                     raise ValueError(
-                        f"OutputOp '{op.name}' input must be an LLMOp or "
-                        f"DataRetrievalOp (got {type(source).__name__})"
+                        f"OutputOp '{op.name}' input must be an LLMOp, "
+                        f"DataRetrievalOp, or list-mode LambdaOp "
+                        f"(got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
                 output_source_to_outputop[source.id] = (op.name, op.path)
 
-        if not llm_ops and not retrieval_ops:
-            raise ValueError("Graph must contain at least one LLMOp or DataRetrievalOp")
+        if not llm_ops and not retrieval_ops and not list_lambda_ops:
+            raise ValueError(
+                "Graph must contain at least one LLMOp, DataRetrievalOp, "
+                "or list-mode LambdaOp"
+            )
 
         nodes: dict[str, RuntimeOp] = {}
         node_order: list[str] = []
@@ -452,6 +462,26 @@ class RuntimeGraphBuilder:
                 # shape; agent replays a SQL plan so it emits ``table`` too.
                 default_path = retrieval_items_path(mode)
                 output_paths[runtime_op.node_id] = path_override or default_path
+
+        for lambda_op_id, lambda_op in list_lambda_ops.items():
+            if task_type_override == "data_profile":
+                continue
+            for input_op in lambda_op.inputs:
+                visited_node_ids.add(input_op.id)
+            runtime_op = self._build_node_from_list_lambda_op(
+                lambda_op_id,
+                lambda_op,
+                graph_dict,
+                inputs_dict,
+            )
+            nodes[runtime_op.node_id] = runtime_op
+            node_order.append(runtime_op.node_id)
+            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
+
+            if lambda_op_id in output_source_to_outputop:
+                output_name, path_override = output_source_to_outputop[lambda_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items.output"
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -1098,6 +1128,56 @@ class RuntimeGraphBuilder:
             inference_spec={},
             backend="data_retrieval",
             model="data_retrieval",
+            dependencies=dependencies if dependencies else None,
+        )
+
+    def _build_node_from_list_lambda_op(
+        self,
+        op_id: str,
+        op: LambdaOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+    ) -> RuntimeOp:
+        """Compile a list-mode LambdaOp to one FlowMesh ``echo`` task."""
+        arguments: list[dict[str, Any]] = []
+        dependencies: list[str] = []
+        for inp in op.inputs:
+            if isinstance(inp, LambdaOp) and inp.mode == "list":
+                arguments.append({"node": inp.id, "path": "items.output"})
+                dependencies.append(inp.id)
+            elif isinstance(inp, LLMOp):
+                arguments.append(
+                    {"node": inp.id, "path": self._upstream_output_path(inp)}
+                )
+                dependencies.append(inp.id)
+            elif isinstance(inp, (InputOp, DataOp)):
+                values = (
+                    inputs_dict.get(inp.name) if isinstance(inp, InputOp) else inp.data
+                )
+                if values is None:
+                    raise ValueError(
+                        f"LambdaOp '{op_id}' input '{inp.id}' has no values supplied."
+                    )
+                arguments.append({"items": list(values)})
+            else:
+                raise ValueError(
+                    f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
+                    f"list-mode LambdaOp, InputOp, or DataOp "
+                    f"(got {type(inp).__name__})"
+                )
+        data_spec: dict[str, Any] = {
+            "type": "function",
+            "function": op.code,
+            "arguments": arguments,
+        }
+        return self._create_runtime_op(
+            name=op_id,
+            task_type="echo",
+            data_spec=data_spec,
+            model_spec={},
+            inference_spec={},
+            backend="echo",
+            model="echo",
             dependencies=dependencies if dependencies else None,
         )
 
@@ -2167,6 +2247,8 @@ class RuntimeGraphBuilder:
             known = [c for c in format_counts if c is not None]
             return max(known) if known else None
         if isinstance(op, LambdaOp):
+            if op.mode == "list":
+                return None
             lambda_counts = [
                 self._static_output_row_count(inp, inputs_dict, graph_dict)
                 for inp in op.inputs
@@ -2328,6 +2410,12 @@ class RuntimeGraphBuilder:
                 ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             elif isinstance(op, LambdaOp):
+                if op.mode == "list":
+                    raise ValueError(
+                        f"LLMOp '{llm_op_id}' consumes list-mode LambdaOp '{op.id}' "
+                        "through its message chain; a list Lambda must be read "
+                        "through a node column (rowwise_columns / aggregate_table)."
+                    )
                 message_labels = {
                     inp_op.id: _trace_ancestors(inp_op) for inp_op in op.inputs
                 }

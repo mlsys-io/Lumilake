@@ -94,3 +94,26 @@ def test_condition_node_already_in_dependencies_is_not_duplicated() -> None:
     deps = node["dependsOn"]
     assert deps.count("classifier-op") == 1
     assert "other-upstream" in deps
+
+
+def test_echo_function_serialises_data_spec_unchanged() -> None:
+    data_spec = {
+        "type": "function",
+        "function": "def f(items):\n    return items[0]",
+        "arguments": [{"items": ["a", "b"]}],
+    }
+    node = RuntimeOp(
+        node_id="explode",
+        task_type="echo",
+        backend="echo",
+        model="echo",
+        data_spec=data_spec,
+        model_spec={},
+        inference_spec={},
+    ).to_flowmesh_node()
+
+    spec = node["spec"]
+    assert spec["taskType"] == "echo"
+    assert spec["data"] == data_spec
+    assert "model" not in spec
+    assert "inference" not in spec
