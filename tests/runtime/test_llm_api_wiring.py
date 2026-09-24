@@ -66,7 +66,8 @@ def test_api_config_emits_api_task_type() -> None:
     assert spec["taskType"] == "api"
     assert "model" not in spec
     assert "inference" not in spec
-    assert "data" not in spec
+    assert spec["data"] == node.data_spec
+    assert spec["data"]["type"] == "graph_template"
     api = spec["api"]
     assert api["method"] == "POST"
     assert api["url"] == _DEFAULT_API_URL
@@ -511,6 +512,8 @@ def test_api_rowwise_template_emits_single_task() -> None:
     assert node.api_spec["timeout_sec"] == 300.0
     assert node.api_spec["json"]["model"] == "gpt-4o"
     assert node.model == "gpt-4o"
+    assert node.to_flowmesh_node()["spec"]["data"] == node.data_spec
+    assert node.to_flowmesh_node()["spec"]["data"]["type"] == "dataframe"
 
 
 def test_api_aggregate_table_renders_df_column() -> None:
