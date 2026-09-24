@@ -12,6 +12,8 @@ from lumilake_server.utils.job_storage import get_job_storage
 
 @runtime_checkable
 class ReconcilingRegistrar(Protocol):
+    name: str
+
     async def reconcile(
         self,
         refs: list[ResourceRef],
