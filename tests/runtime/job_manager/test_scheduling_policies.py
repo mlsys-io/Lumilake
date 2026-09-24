@@ -1,4 +1,4 @@
-"""Tests for the analytic cost model, attained service, and fair_index policy."""
+"""Tests for the analytic cost model, attained service, and the policy registry."""
 
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -299,7 +299,7 @@ def test_attained_decay_is_lazy_and_accumulates() -> None:
     assert service.get("u1") == pytest.approx(6.0)
 
 
-# -- fair_index policy -------------------------------------------------------
+# -- policy default ----------------------------------------------------------
 
 
 def test_legacy_policy_is_default() -> None:
@@ -467,132 +467,3 @@ async def test_legacy_selection_pins_starvation() -> None:
 
     assert starved_items[0].workflow_id in captured["pinned_ids"]
     assert batch.workflows[0].workflow_id == starved_items[0].workflow_id
-
-
-@pytest.mark.asyncio
-async def test_fair_index_heavy_user_selected_less() -> None:
-    """Two users with equal item counts but 10x different area: the heavy user
-    is selected less often over many rounds."""
-    clock = VirtualClock()
-    manager = _manager(
-        policy="fair_index",
-        fair_share_target=10.0,
-        fairness_half_life_seconds=600.0,
-        clock=clock.now,
-        starvation_limit=1000,
-    )
-    # Heavy user: GPU ops (large area). Light user: CPU ops (small area).
-    # Both share a principal so they land in the same partition / candidate pool.
-    # Equal item counts (10 each) so the difference is purely area.
-    for i in range(10):
-        await manager.enqueue(
-            _build_job(
-                f"heavy-{i}",
-                f"h-{i}",
-                _graph_with_ops(f"h-{i}", [_gpu_op("a")]),
-                "heavy",
-                principal_id="shared",
-            )
-        )
-        await manager.enqueue(
-            _build_job(
-                f"light-{i}",
-                f"l-{i}",
-                _graph_with_ops(f"l-{i}", [_cpu_op("a")]),
-                "light",
-                principal_id="shared",
-            )
-        )
-
-    heavy_picks = 0
-    light_picks = 0
-    # Only the first 10 rounds matter: both users have 10 items, so after the
-    # light user's items are consumed first the remaining picks are all heavy.
-    for _ in range(10):
-        batch = await manager.select_batch(1)
-        assert batch is not None
-        if batch.workflows[0].config.user_id == "heavy":
-            heavy_picks += 1
-        else:
-            light_picks += 1
-        clock.advance(1.0)
-    assert light_picks > heavy_picks
-
-
-@pytest.mark.asyncio
-async def test_fair_index_las_fallback_does_not_crash() -> None:
-    """An unestimable item (agent-mode retrieval) engages the LAS fallback
-    rather than crashing."""
-    clock = VirtualClock()
-    manager = _manager(
-        policy="fair_index",
-        fair_share_target=10.0,
-        fairness_half_life_seconds=600.0,
-        clock=clock.now,
-    )
-    agent_graph = _graph_with_ops("a", [_db_op("a", mode="agent")])
-    await manager.enqueue(_build_job("agent", "a", agent_graph, "u1"))
-    batch = await manager.select_batch(1)
-    assert batch is not None
-    assert len(batch.workflows) == 1
-
-
-@pytest.mark.asyncio
-async def test_fair_index_starvation_pinning_still_fires() -> None:
-    """Starvation pinning must still fire under fair_index."""
-    quantums = {priority: 0 for priority in Priority}
-    quantums[Priority.HIGH] = 1
-    quantums[Priority.LOW] = 1
-    clock = VirtualClock()
-    manager = _manager(
-        policy="fair_index",
-        fair_share_target=10.0,
-        fairness_half_life_seconds=600.0,
-        clock=clock.now,
-        quantums=quantums,
-        starvation_limit=2,
-    )
-    await manager.enqueue(
-        _build_job(
-            "high",
-            "h",
-            _graph_with_ops("h", [_gpu_op("a")]),
-            "u-high",
-            principal_id="shared",
-            priority=Priority.HIGH,
-        )
-    )
-    low_items = await manager.enqueue(
-        _build_job(
-            "low",
-            "l",
-            _graph_with_ops("l", [_cpu_op("a")]),
-            "u-low",
-            principal_id="shared",
-            priority=Priority.LOW,
-        )
-    )
-    low_items[0].miss_count = 2
-
-    captured: dict[str, list[str]] = {}
-
-    def _capture_pins(
-        runtime_graphs: dict[str, RuntimeGraph],
-        _enqueued_at: dict[str, float],
-        _batch_size: int,
-        *,
-        pinned_ids: list[str] | None = None,
-        **_kwargs: Any,
-    ) -> list[str]:
-        captured["pinned_ids"] = [] if pinned_ids is None else list(pinned_ids)
-        return [next(iter(runtime_graphs))]
-
-    with patch(
-        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
-        side_effect=_capture_pins,
-    ):
-        batch = await manager.select_batch(1)
-        assert batch is not None
-
-    assert low_items[0].workflow_id in captured["pinned_ids"]
-    assert batch.workflows[0].workflow_id == low_items[0].workflow_id

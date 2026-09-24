@@ -88,6 +88,7 @@ class PriorityJobManager(BaseJobManager):
         policy: str = envs.LUMILAKE_SCHEDULER_POLICY,
         fair_share_target: float = envs.LUMILAKE_FAIR_SHARE_TARGET,
         fairness_half_life_seconds: float = envs.LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS,
+        setup_cost_sigma: float = envs.LUMILAKE_SETUP_COST_SIGMA,
         cost_params: CostParams | None = None,
         clock: Callable[[], float] = time.monotonic,
         worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
@@ -143,6 +144,7 @@ class PriorityJobManager(BaseJobManager):
             policy,
             fair_share_target=fair_share_target,
             fairness_half_life_seconds=fairness_half_life_seconds,
+            setup_cost_sigma=setup_cost_sigma,
             cost_params=cost_params,
             clock=clock,
         )

@@ -122,9 +122,8 @@ LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
     "LUMILAKE_CAPACITY_AWARE_SELECTION", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
-# Scheduling policy. "legacy" reproduces today's selection exactly; "fair_index"
-# enables fair-weighted index ordering (w(user) / p_hat(item)) with a
-# least-attained-service fallback for unestimable items.
+# Scheduling policy. "legacy" reproduces today's selection exactly; "set_index"
+# scores a candidate batch as a set, by W(S) / T(S).
 LUMILAKE_SCHEDULER_POLICY: str = (
     (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "legacy").strip().lower()
 )
@@ -136,6 +135,15 @@ LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS: float = float(
 # halves; the denominator of w(user) = 1 / (1 + attained / target).
 LUMILAKE_FAIR_SHARE_TARGET: float = float(
     os.environ.get("LUMILAKE_FAIR_SHARE_TARGET") or "10"
+)
+# Per-model setup cost (resource-area units: seconds x dominant-resource share)
+# charged once per distinct model in a batch not already resident on the group.
+# The setup is a fixed wall-clock vLLM engine restart (~1 min) that does not
+# scale with block size, so an absolute value is more faithful than a ratio of
+# the block cost. 60.0 = ~60s of a full-worker block (share 1.0), i.e. ~0.1-0.2
+# x base for a typical 5-10 min block.
+LUMILAKE_SETUP_COST_SIGMA: float = float(
+    os.environ.get("LUMILAKE_SETUP_COST_SIGMA") or "60"
 )
 # Analytic cost-model coefficients (see cost.py / docs/SCHEDULING.md S6).
 LUMILAKE_COST_DB_SEC_PER_QUERY: float = float(
@@ -414,6 +422,8 @@ def validate() -> None:
         raise ValueError("LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS must be > 0")
     if LUMILAKE_FAIR_SHARE_TARGET <= 0:
         raise ValueError("LUMILAKE_FAIR_SHARE_TARGET must be > 0")
+    if LUMILAKE_SETUP_COST_SIGMA < 0:
+        raise ValueError("LUMILAKE_SETUP_COST_SIGMA must be >= 0")
     if LUMILAKE_COST_DB_SEC_PER_QUERY <= 0:
         raise ValueError("LUMILAKE_COST_DB_SEC_PER_QUERY must be > 0")
     if LUMILAKE_COST_CPU_SEC_PER_NODE <= 0:
