@@ -407,6 +407,8 @@ class HaloOptimizer(BaseOptimizer):
                 eligible = cpu_workers
             elif node.engine == "http":
                 eligible = cpu_workers
+            elif node.engine == "echo":
+                eligible = cpu_workers
             else:
                 raise ValueError(
                     "Unsupported node for Halo worker assignment: "
@@ -941,6 +943,8 @@ class HaloOptimizer(BaseOptimizer):
             return "vllm"
         if normalized_backend == "http":
             return "http"
+        if normalized_backend == "echo":
+            return "echo"
         if normalized_backend == "api":
             return "http"
         if normalized_backend == "data_retrieval":
@@ -977,6 +981,12 @@ class HaloOptimizer(BaseOptimizer):
             )
         if node.engine == "http":
             return self._http_exec_cost(node)
+        if node.engine == "echo":
+            return self._echo_exec_cost(node)
+        return self._db_input_sec * self._input_query_count
+
+    def _echo_exec_cost(self, node: Node) -> float:
+        # An echo task runs a small function on a CPU worker, like other non-GPU nodes.
         return self._db_input_sec * self._input_query_count
 
     def _http_exec_cost(self, node: Node) -> float:

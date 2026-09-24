@@ -255,3 +255,59 @@ def test_disable_data_profile_drops_supplied_results(
 
     assert parse_calls == []
     assert build_calls == [{}]
+
+
+def _echo_aggregate_graph() -> RuntimeGraph:
+    """A list-mode Lambda (echo) feeding an LLMChatOp aggregate_table."""
+    nodes = {
+        "echo1": RuntimeOp(
+            node_id="echo1",
+            task_type="echo",
+            backend="echo",
+            model="echo",
+            data_spec={
+                "type": "function",
+                "function": "def f(inputs): return [{'fid': '1'}]",
+                "arguments": [],
+            },
+            model_spec={},
+            inference_spec={},
+        ),
+        "llm1": RuntimeOp(
+            node_id="llm1",
+            task_type="inference",
+            backend="vllm",
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            data_spec={
+                "type": "graph_template",
+                "template": {
+                    "name": "format",
+                    "columns": [
+                        {"label": "df", "data": {"type": "dataframe", "columns": []}}
+                    ],
+                    "options": {"format": {"template": "{df}"}},
+                },
+            },
+            model_spec={},
+            inference_spec={"max_tokens": 16},
+            dependencies=("echo1",),
+        ),
+    }
+    return RuntimeGraph(
+        nodes=nodes,
+        node_order=["echo1", "llm1"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+
+def test_halo_optimizer_places_echo_node_on_a_cpu_worker() -> None:
+    optimizer = HaloOptimizer()
+    graph = _echo_aggregate_graph()
+    schedule = optimizer.generate_schedule(
+        graph=graph,
+        worker_names=["gpu-0", "cpu-0"],
+        worker_profiles={"gpu-0": {"has_gpu": True}, "cpu-0": {"has_gpu": False}},
+    )
+    assert "echo1" in schedule.worker_assignment["cpu-0"]
+    assert "llm1" in schedule.worker_assignment["gpu-0"]
