@@ -158,3 +158,29 @@ class RagQuery(StrictModel):
 
 class EchoItem(StrictModel):
     output: JsonValue = None
+
+
+class APIItem(StrictModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    index: int
+    url: str
+    status_code: int
+    truncated: bool = False
+    headers: dict[str, str] | None = None
+    response_json: Any = Field(default=None, alias="json")
+    usage: dict[str, Any] | None = None
+    text: str | None = None
+    prompt: str | None = None
+
+
+class APIGroupItem(StrictModel):
+    """One group's row responses in a batched API task over grouped data.
+
+    ``rows`` holds the group's row responses in order. A group is one
+    dataframe table (one claim), so a downstream column reads ``rows`` as a
+    per-group list.
+    """
+
+    index: int
+    rows: list[APIItem]

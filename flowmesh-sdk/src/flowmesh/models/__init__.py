@@ -28,6 +28,8 @@ from .result import (
     AgentResult,
     AgentUsage,
     AnyExecutorResult,
+    APIGroupItem,
+    APIItem,
     APIResult,
     BaseExecutorResult,
     CostEstimates,
@@ -102,6 +104,8 @@ from .workflows import (
 )
 
 __all__ = [
+    "APIGroupItem",
+    "APIItem",
     "APIResult",
     "ActiveWaitBreakdown",
     "AgentBatchSummary",

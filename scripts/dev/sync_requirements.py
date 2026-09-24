@@ -54,6 +54,8 @@ def _uv_export(groups: list[str]) -> list[str]:
         line = raw.strip()
         if not line or line.startswith("#") or line.startswith("-e "):
             continue
+        if line == "./flowmesh-sdk":
+            line = "flowmesh-sdk @ file:///app/flowmesh-sdk"
         pins.append(line)
     return pins
 

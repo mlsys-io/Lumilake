@@ -412,7 +412,7 @@ wheels = [
 
 [[package]]
 name = "flowmesh-cli"
-version = "0.1.9"
+version = "0.1.10rc1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "flowmesh-sdk" },
@@ -421,14 +421,14 @@ dependencies = [
     { name = "typer" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9d/f4/45fb2ffd4e9380b54dbb3928decd0851fa67cb7909260ec8f03682b5ff05/flowmesh_cli-0.1.9.tar.gz", hash = "sha256:83df55b1e3187803e9c02b987b85f0449139fb61bef409aee1f6e4e1ee7fd691", size = 21501, upload-time = "2026-09-13T19:55:18.149Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/bc/f46b0093d5b9e178f3036956413b4b235dff306fb7f49e56bd2213567abb/flowmesh_cli-0.1.10rc1.tar.gz", hash = "sha256:28d559f83a16950f3203f596ddc00f169a934f6fb2ad41733cb4cbca5d320ce2", size = 21522, upload-time = "2026-09-17T16:16:03.481Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4c/5e/92625bcf8e537a76202bc685499cf59fc3fb8f1f0230978cfe7dfeefbad7/flowmesh_cli-0.1.9-py3-none-any.whl", hash = "sha256:a894060a1219f53541c43f55c5ad022eb28789bc3e8c156bae389f4474e9fa4f", size = 29081, upload-time = "2026-09-13T19:55:11.693Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/4f/c3352353e554d5c83828c89104db67fb6fe88db85402bc71e23676450896/flowmesh_cli-0.1.10rc1-py3-none-any.whl", hash = "sha256:37c4a501788a7e7eac218caad4a753c4bbb9a75edb11b3da1700034ea139f09d", size = 29137, upload-time = "2026-09-17T16:15:56.59Z" },
 ]
 
 [[package]]
 name = "flowmesh-cli-stack"
-version = "0.1.9"
+version = "0.1.10rc1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docker" },
@@ -437,29 +437,33 @@ dependencies = [
     { name = "packaging" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/cd/e7bd6a18cb7bcf90cf2b5dce2f5148a5637d437215958095cbb08b227289/flowmesh_cli_stack-0.1.9.tar.gz", hash = "sha256:9c4624203eddca8e9556eebd0a9553157a63d491b2bb72a76406e9004601f0f7", size = 31578, upload-time = "2026-09-13T19:55:19.07Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/bb/2d80f8874068eaba2dae2aabfebf89cffc9c7997484332f28dac93cd6ae3/flowmesh_cli_stack-0.1.10rc1.tar.gz", hash = "sha256:9575dc6a57f0963fce71c942b4655bf8f1e2a8484ea201296df461d100cad4ba", size = 31617, upload-time = "2026-09-17T16:16:04.447Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/ac/bc4d4f46d926f6955f9ac0d6282f75863fb5415aad2767e2e291e15b0fa1/flowmesh_cli_stack-0.1.9-py3-none-any.whl", hash = "sha256:e77981debec076a1bdc908233e18a5b27d15d8609f36661d486ebd3fcd1b9f84", size = 35669, upload-time = "2026-09-13T19:55:12.802Z" },
+    { url = "https://files.pythonhosted.org/packages/39/97/89fbec6eecc161a59781e9b4b06524db6cfbad0285b32e1b53cc9a9cbeab/flowmesh_cli_stack-0.1.10rc1-py3-none-any.whl", hash = "sha256:6195ba118920dcb15a0add13fc3749d1b374dd1fb5336acbd21f9a5b72f7fd64", size = 35715, upload-time = "2026-09-17T16:15:57.909Z" },
 ]
 
 [[package]]
 name = "flowmesh-sdk"
-version = "0.1.9"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.10rc1"
+source = { directory = "flowmesh-sdk" }
 dependencies = [
     { name = "httpx" },
     { name = "pandas" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/58/7c39328702a10b2dc88c8546703c0a5696f7305728ec91f860e78a2d70c3/flowmesh_sdk-0.1.9.tar.gz", hash = "sha256:1282ca0c3259e962ba89067e4881cb9ae153b4196351e31714da2ddbc2fd1054", size = 28891, upload-time = "2026-09-13T19:55:21.022Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/ef/9be3c9ae0e6a9dc90bea0cb6d9e91b53e2fd87f4e264b9938116c6fda5ce/flowmesh_sdk-0.1.9-py3-none-any.whl", hash = "sha256:295131ef76f2b9b7e1e49117c80e00003e37dad2e63b656b38ce83d441cd41d9", size = 40775, upload-time = "2026-09-13T19:55:15.07Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pydantic", specifier = ">=2.12.3" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
 ]
 
 [[package]]
 name = "flowmesh-sdk-stack"
-version = "0.1.9"
+version = "0.1.10rc1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docker" },
@@ -467,9 +471,9 @@ dependencies = [
     { name = "httpx" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bd/9b/8d8f9bbd91e8bb863312328c2257c125168c1b62b57d5d1488db034c99fe/flowmesh_sdk_stack-0.1.9.tar.gz", hash = "sha256:83623cf8519aa911793fcf221b93b5b14abdd16532744afc99e11eb1c9655848", size = 22665, upload-time = "2026-09-13T19:55:22.031Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/3c/6afbc4f9b3dd85a92b0b87f484645112188d8313c1899e17ac8db5624961/flowmesh_sdk_stack-0.1.10rc1.tar.gz", hash = "sha256:2f9787ddd25bab6984355105c64a0e40a8f531fb78ebe68bfee05ff08af8f699", size = 22693, upload-time = "2026-09-17T16:16:07.05Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/f1/e26f2a5b9a9c06782ab125e57262cd7bfad1e8c2cc848251c80f0764a1cf/flowmesh_sdk_stack-0.1.9-py3-none-any.whl", hash = "sha256:69b2c05fa00d14d44a7aab0492e465b2b31bdb0e9b3c4fc8a35fdb7ff9f03d81", size = 26460, upload-time = "2026-09-13T19:55:16.201Z" },
+    { url = "https://files.pythonhosted.org/packages/53/db/a999497bba81c88c93af8bf88ff191b0b0160932f9f22a148430199e7812/flowmesh_sdk_stack-0.1.10rc1-py3-none-any.whl", hash = "sha256:176c19259f3799fd74716e51b0b43222c7d254da3ef557fcb1d0657e4e1d5b6b", size = 26509, upload-time = "2026-09-17T16:16:01.488Z" },
 ]
 
 [[package]]
@@ -848,7 +852,7 @@ server-runtime = [
     { name = "aiohttp", specifier = "==3.14.3" },
     { name = "dill", specifier = "==0.4.1" },
     { name = "fastapi", specifier = "==0.137.1" },
-    { name = "flowmesh-sdk", specifier = "==0.1.9" },
+    { name = "flowmesh-sdk", directory = "flowmesh-sdk" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "lumid-hooks", specifier = "==0.1.0" },
     { name = "pandas", specifier = "==3.0.3" },
@@ -885,7 +889,7 @@ deploy = [
 
 [package.metadata]
 requires-dist = [
-    { name = "flowmesh-sdk", specifier = ">=0.1.9" },
+    { name = "flowmesh-sdk", directory = "flowmesh-sdk" },
     { name = "lumilake-deploy", marker = "extra == 'deploy'", editable = "packages/deploy" },
     { name = "lumilake-sdk", editable = "packages/sdk" },
     { name = "requests", specifier = ">=2.32.3" },
@@ -909,9 +913,9 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "docker", specifier = ">=7.1.0" },
-    { name = "flowmesh-cli", specifier = "==0.1.9" },
-    { name = "flowmesh-cli-stack", specifier = "==0.1.9" },
-    { name = "flowmesh-sdk-stack", specifier = "==0.1.9" },
+    { name = "flowmesh-cli", specifier = "==0.1.10rc1" },
+    { name = "flowmesh-cli-stack", specifier = "==0.1.10rc1" },
+    { name = "flowmesh-sdk-stack", specifier = "==0.1.10rc1" },
     { name = "lumilake-sdk", editable = "packages/sdk" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]

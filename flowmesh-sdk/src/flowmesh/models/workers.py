@@ -24,6 +24,8 @@ class GpuInfo(BaseModel):
     name: str | None = None
     uuid: str | None = None
     memory_total_bytes: int | None = None
+    memory_free_bytes: int | None = None
+    gpu_available: bool | None = None
 
 
 class GpuPlatformInfo(BaseModel):

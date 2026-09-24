@@ -396,3 +396,81 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
     assert "sk-live-leaked-secret" not in str(saved["data"])
+
+
+@pytest.mark.asyncio
+async def test_archive_task_response_archives_grouped_api_result(
+    flowmesh_manager: FlowmeshRuntimeManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A grouped APIResult (items[].rows[]) must validate through the SDK's
+    result adapter and archive with both rows intact."""
+    from flowmesh.resources.results import _RESULT_ADAPTER
+
+    grouped_payload = {
+        "task_type": "api",
+        "executor": "api",
+        "method": "POST",
+        "url": "https://lum.id/llm/v1/chat/completions",
+        "status_code": 200,
+        "truncated": False,
+        "items": [
+            {
+                "index": 0,
+                "rows": [
+                    {
+                        "index": 0,
+                        "url": "https://lum.id/llm/v1/chat/completions",
+                        "status_code": 200,
+                        "truncated": False,
+                        "json": {
+                            "choices": [{"message": {"content": '{"kind": "none"}'}}]
+                        },
+                        "text": '{"kind": "none"}',
+                        "prompt": "[...]",
+                    },
+                    {
+                        "index": 1,
+                        "url": "https://lum.id/llm/v1/chat/completions",
+                        "status_code": 200,
+                        "truncated": False,
+                        "json": {
+                            "choices": [{"message": {"content": '{"kind": "second"}'}}]
+                        },
+                        "text": '{"kind": "second"}',
+                        "prompt": "[...]",
+                    },
+                ],
+            }
+        ],
+    }
+    validated = _RESULT_ADAPTER.validate_python(grouped_payload)
+
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_context",
+        lambda: _FakeFlowMeshClient(validated),
+    )
+    saved: dict[str, Any] = {}
+
+    def _fake_save_json_artifact(
+        _self: FlowmeshRuntimeManager,
+        _request_info: Any,
+        _filename: str,
+        data: Any,
+    ) -> str:
+        saved["data"] = data
+        return "memory://archived.json"
+
+    monkeypatch.setattr(
+        flowmesh_manager,
+        "_save_json_artifact",
+        types.MethodType(_fake_save_json_artifact, flowmesh_manager),
+    )
+    request_info = RequestInfo(
+        request_id="req-1", runtime_graphs={}, data_profile_graphs={}
+    )
+    request_info.batch_id = "batch-1"
+
+    await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
+
+    assert saved["data"]["items"][0]["rows"][1]["text"] == '{"kind": "second"}'

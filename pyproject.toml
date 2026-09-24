@@ -66,6 +66,7 @@ lumilake-sdk = { workspace = true }
 lumilake-cli = { workspace = true }
 lumilake-deploy = { workspace = true }
 lumilake-hook = { workspace = true }
+flowmesh-sdk = { path = "flowmesh-sdk" }
 
 [tool.uv]
 default-groups = []
@@ -110,7 +111,7 @@ server-runtime = [
     "dill==0.4.1",
     "sqlparse==0.6.0",
     "lumid-hooks==0.1.0",
-    "flowmesh-sdk==0.1.9",
+    "flowmesh-sdk==0.1.10rc1",
 ]
 
 [tool.isort]

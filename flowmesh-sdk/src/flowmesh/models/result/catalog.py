@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     SerializeAsAny,
     Tag,
+    field_validator,
 )
 
 from ..artifacts import ArtifactRef
@@ -18,6 +19,8 @@ from .payloads import (
     AgentItem,
     AgentMetadata,
     AgentUsage,
+    APIGroupItem,
+    APIItem,
     CostEstimates,
     DataRetrievalItem,
     EchoItem,
@@ -212,6 +215,24 @@ class APIResult(StrictExecutorResult):
     response_json: Any = Field(default=None, alias="json")
     usage: dict[str, Any] | None = None
     text: str | None = None
+    items: list[APIItem | APIGroupItem] = Field(default_factory=list)
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def _route_group_items(cls, value: Any) -> Any:
+        """Route a dict carrying ``rows`` to APIGroupItem before the union runs,
+        since a group dict also satisfies APIItem's required fields."""
+        if not isinstance(value, list):
+            return value
+        routed: list[Any] = []
+        for item in value:
+            if isinstance(item, dict) and "rows" in item:
+                routed.append(APIGroupItem.model_validate(item))
+            elif isinstance(item, dict):
+                routed.append(APIItem.model_validate(item))
+            else:
+                routed.append(item)
+        return routed
 
 
 class SSHResult(StrictExecutorResult):
