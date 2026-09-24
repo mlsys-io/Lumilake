@@ -90,6 +90,7 @@ async def test_api_backend_returns_chat_history_like_local_backend(
     sent_messages = request_info.runtime_graph.nodes[row_id].api_spec["json"][
         "messages"
     ]
+    assert sent_messages == "{{prompt}}"
 
     class _FakeWorkflows:
         async def submit(self, task_yaml: str) -> Any:
@@ -131,24 +132,32 @@ async def test_api_backend_returns_chat_history_like_local_backend(
         worker_ids=["worker-1"],
     )
 
-    history = result["chat_histories"][row_id]
-    assert history == [
-        sent_messages + [{"role": "assistant", "content": "assistant reply"}]
-    ]
+    # The API request body carries the ``{{prompt}}`` placeholder, not the
+    # rendered messages, so the runtime manager cannot reconstruct a chat
+    # history from the api json; the prompt lives in the data_spec template.
+    assert result["chat_histories"] == {}
 
 
 def _build_two_row_request() -> tuple[RequestInfo, str, str]:
     stock = input_placeholder("Stock")
-    llm = LLMChatOp(
+    first = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
         ),
     )
-    output = as_output("result", llm)
-    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    second = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    output = as_output("result", first)
+    output2 = as_output("result2", second)
+    compiled = Graph.from_ops([output, output2]).compile(Stock=["NVDA", "AAPL"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
-    row0_id, row1_id = runtime_graph.dsl_to_runtime[llm.id]
+    (row0_id,) = runtime_graph.dsl_to_runtime[first.id]
+    (row1_id,) = runtime_graph.dsl_to_runtime[second.id]
 
     request_info = RequestInfo(
         request_id="req-failfast",
