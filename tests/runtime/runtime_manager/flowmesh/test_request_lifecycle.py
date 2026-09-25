@@ -84,6 +84,21 @@ def test_api_reasoning_present_still_raises_clear_error() -> None:
         )
 
 
+def test_resolve_output_items_accepts_empty_items_list() -> None:
+    """A result whose ``items`` list is empty is a valid empty output (e.g. a
+    list-mode Lambda that selected no observations), not a failure."""
+    manager = FlowmeshRuntimeManager()
+    assert manager._resolve_output_items({"items": []}, "out-1") == []
+
+
+def test_resolve_output_items_still_raises_without_items_key() -> None:
+    """A result with no ``items`` list at all still fails; only an explicit
+    empty list is treated as an empty output."""
+    manager = FlowmeshRuntimeManager()
+    with pytest.raises(RuntimeError, match="produced no items"):
+        manager._resolve_output_items({"ok": True}, "out-1")
+
+
 @pytest.mark.asyncio
 async def test_api_backend_returns_chat_history_like_local_backend(
     monkeypatch: pytest.MonkeyPatch,
@@ -498,3 +513,63 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
         {"fid": "f2", "statement": "s2", "quote": "q2"},
         {"fid": "f3", "statement": "s3", "quote": "q3"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_empty_list_lambda_output_archives_as_empty_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A list-mode Lambda that selects no observations returns ``items: []``;
+    that is a valid empty output (one whole-list value holding ``[]``), not a
+    failure."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
+    manager = FlowmeshRuntimeManager()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        lambda: InMemoryJobStorage(),
+    )
+
+    request_info, row_id = _build_list_lambda_output_request()
+
+    class _FakeWorkflows:
+        async def submit(self, task_yaml: str) -> Any:
+            return SimpleNamespace(
+                tasks=[SimpleNamespace(task_id="task-row0")], workflow_id="wf-1"
+            )
+
+    class _FakeResults:
+        async def retrieve(self, task_id: str) -> dict[str, Any]:
+            return {"items": []}
+
+    class _FakeFm:
+        def __init__(self) -> None:
+            self.workflows = _FakeWorkflows()
+            self.results = _FakeResults()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+
+    async def _fetch_task_status(_self: FlowmeshRuntimeManager, task_id: str) -> str:
+        return "DONE"
+
+    async def _fetch_task_description(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> dict[str, Any]:
+        return {"graph_node_name": row_id}
+
+    monkeypatch.setattr(
+        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+    )
+    monkeypatch.setattr(
+        manager,
+        "fetch_task_description",
+        types.MethodType(_fetch_task_description, manager),
+    )
+
+    result_ = await manager.process_request(
+        request_info,
+        Schedule(worker_assignment={"worker-1": [row_id]}),
+        worker_ids=["worker-1"],
+    )
+    flat = result_["flat_outputs"][row_id]
+    assert len(flat) == 1
+    assert json.loads(flat[0]) == []

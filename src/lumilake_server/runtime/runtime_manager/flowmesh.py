@@ -824,7 +824,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         ``items``, embedding a flat one-item batch, and API wraps the assistant
         ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
         items = results_json.get("items")
-        if isinstance(items, list) and items:
+        if isinstance(items, list):
+            # An empty list is a valid empty output (e.g. a list-mode Lambda
+            # that selected no observations); return it as-is rather than
+            # falling through to the api/embedding fallbacks and failing.
             return items
         if task_type == "api":
             text = results_json.get("text")
