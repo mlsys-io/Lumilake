@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from flowmesh.models.result import APIResult
 from lumilake import envs
 
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -98,8 +99,14 @@ async def test_api_backend_returns_chat_history_like_local_backend(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {"text": "assistant reply"}
+        async def retrieve(self, task_id: str) -> Any:
+            return APIResult(
+                executor="api",
+                method="POST",
+                url="https://api.example.com/v1/chat",
+                status_code=200,
+                text="assistant reply",
+            )
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -194,8 +201,14 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {"output": "row0-response"}
+        async def retrieve(self, task_id: str) -> Any:
+            return APIResult(
+                executor="api",
+                method="POST",
+                url="https://api.example.com/v1/chat",
+                status_code=200,
+                text="row0-response",
+            )
 
     class _FakeFm:
         def __init__(self) -> None:

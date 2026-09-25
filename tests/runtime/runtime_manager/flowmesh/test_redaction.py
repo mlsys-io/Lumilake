@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from flowmesh.exceptions import APIError
+from flowmesh.models.result import APIResult
 from lumilake import envs
 
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -250,7 +251,13 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
         async def retrieve(self, task_id: str) -> Any:
             self.calls += 1
             if self.calls == 1:
-                return {"text": "assistant reply"}
+                return APIResult(
+                    executor="api",
+                    method="POST",
+                    url="https://api.example.com/v1/chat",
+                    status_code=200,
+                    text="assistant reply",
+                )
             raise APIError(
                 "task spec invalid",
                 status_code=422,
@@ -343,15 +350,15 @@ async def test_workflow_submit_sanitizes_api_error_before_reraising(
 
 
 class _FakeResults:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: Any) -> None:
         self._payload = payload
 
-    async def retrieve(self, task_id: str) -> dict[str, Any]:
+    async def retrieve(self, task_id: str) -> Any:
         return self._payload
 
 
 class _FakeFlowMeshClient:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: Any) -> None:
         self.results = _FakeResults(payload)
 
 
@@ -364,10 +371,13 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
     job artifact and reachable through the artifact API. A credential the
     remote endpoint reflects back under a key that isn't one of the
     recognized sensitive keys must still be scrubbed before archival."""
-    leaking_payload = {
-        "text": "call failed",
-        "debug": {"request_headers": "Authorization: Bearer sk-live-leaked-secret"},
-    }
+    leaking_payload = APIResult(
+        executor="api",
+        method="POST",
+        url="https://api.example.com/v1/chat",
+        status_code=200,
+        text="call failed: Authorization: Bearer sk-live-leaked-secret",
+    )
     monkeypatch.setattr(
         "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_context",
         lambda: _FakeFlowMeshClient(leaking_payload),
@@ -396,3 +406,63 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
     assert "sk-live-leaked-secret" not in str(saved["data"])
+
+
+@pytest.mark.asyncio
+async def test_archive_task_response_serializes_sdk_result_model(
+    flowmesh_manager: FlowmeshRuntimeManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """results.retrieve returns a pydantic result model (AnyExecutorResult),
+    not a plain dict. _archive_task_response must coerce it to a dict before
+    redaction and JSON serialization, or archiving fails with
+    "Object of type APIResult is not JSON serializable"."""
+    result = APIResult(
+        executor="api",
+        method="POST",
+        url="https://api.example.com/v1/chat",
+        status_code=200,
+        headers={"Authorization": "Bearer sk-live-secret"},
+        json={"choices": [{"text": "hi"}]},
+        text="ok",
+    )
+
+    class _FakeResults:
+        async def retrieve(self, task_id: str) -> Any:
+            return result
+
+    class _FakeFm:
+        def __init__(self) -> None:
+            self.results = _FakeResults()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+    saved: dict[str, Any] = {}
+
+    def _fake_save_json_artifact(
+        _self: FlowmeshRuntimeManager,
+        _request_info: Any,
+        _filename: str,
+        data: Any,
+    ) -> str:
+        saved["data"] = data
+        return "memory://archived.json"
+
+    monkeypatch.setattr(
+        flowmesh_manager,
+        "_save_json_artifact",
+        types.MethodType(_fake_save_json_artifact, flowmesh_manager),
+    )
+    request_info = RequestInfo(
+        request_id="req-1", runtime_graphs={}, data_profile_graphs={}
+    )
+    request_info.batch_id = "batch-1"
+
+    await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
+
+    assert isinstance(saved["data"], dict)
+    assert saved["data"]["task_type"] == "api"
+    assert saved["data"]["status_code"] == 200
+    assert saved["data"]["json"] == {"choices": [{"text": "hi"}]}
+    # The Authorization header must be redacted in the archived artifact.
+    assert saved["data"]["headers"]["Authorization"] == "***REDACTED***"
+    assert "sk-live-secret" not in str(saved["data"])
