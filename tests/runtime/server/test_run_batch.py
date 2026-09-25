@@ -858,6 +858,7 @@ class _EmbeddingRuntimeManager(RecordingRuntimeManager):
                 items=items,
                 output_path=None,
                 expected_row_count=self._row_count,
+                list_lambda=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
