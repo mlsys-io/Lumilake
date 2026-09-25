@@ -250,7 +250,18 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
         async def retrieve(self, task_id: str) -> Any:
             self.calls += 1
             if self.calls == 1:
-                return {"text": "assistant reply"}
+                return {
+                    "items": [
+                        {
+                            "index": 0,
+                            "json": {
+                                "choices": [{"message": {"content": "assistant reply"}}]
+                            },
+                            "text": "assistant reply",
+                            "prompt": "{{prompt}}",
+                        }
+                    ]
+                }
             raise APIError(
                 "task spec invalid",
                 status_code=422,

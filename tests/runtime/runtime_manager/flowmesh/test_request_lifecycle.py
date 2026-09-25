@@ -100,7 +100,18 @@ async def test_api_backend_returns_chat_history_like_local_backend(
 
     class _FakeResults:
         async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {"text": "assistant reply"}
+            return {
+                "items": [
+                    {
+                        "index": 0,
+                        "json": {
+                            "choices": [{"message": {"content": "assistant reply"}}]
+                        },
+                        "text": "assistant reply",
+                        "prompt": "{{prompt}}",
+                    }
+                ]
+            }
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -240,3 +251,147 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     batch_key = ("req-failfast", "batch-1")
     assert manager._execution_task_status[batch_key]["task-row0"] == "PENDING"
     assert manager._execution_task_status[batch_key]["task-row1"] == "FAILED"
+
+
+def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, str]:
+    """Build a request whose output node is an api-mode LLMChatOp (plain or
+    row-wise), with no path override on the OutputOp."""
+    stock = input_placeholder("Stock")
+    kwargs: dict[str, Any] = {}
+    if rowwise:
+        kwargs = {
+            "rowwise_template": "Summarize {Stock}.",
+            "rowwise_columns": [
+                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}
+            ],
+        }
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+        **kwargs,
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+
+    request_info = RequestInfo(
+        request_id=f"req-api-{'rowwise' if rowwise else 'plain'}",
+        runtime_graphs={"g": runtime_graph},
+        data_profile_graphs={},
+    )
+    request_info.batch_id = "batch-1"
+    request_info.runtime_graph = runtime_graph
+    request_info.data_profile_graph = RuntimeGraph(
+        nodes={}, node_order=[], output_node_map={}
+    )
+    return request_info, row_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rowwise", "result", "expected"),
+    [
+        (
+            False,
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "json": {
+                            "choices": [{"message": {"content": '{"keep": [1, 2]}'}}]
+                        },
+                        "text": '{"keep": [1, 2]}',
+                        "prompt": "p",
+                    }
+                ]
+            },
+            ['{"keep": [1, 2]}'],
+        ),
+        (
+            True,
+            {
+                "items": [
+                    {
+                        "index": 0,
+                        "rows": [
+                            {
+                                "index": 0,
+                                "json": {"choices": [{"message": {"content": "r0"}}]},
+                                "text": "r0",
+                                "prompt": "p",
+                            },
+                            {
+                                "index": 1,
+                                "json": {"choices": [{"message": {"content": "r1"}}]},
+                                "text": "r1",
+                                "prompt": "p",
+                            },
+                        ],
+                    }
+                ]
+            },
+            ['["r0", "r1"]'],
+        ),
+    ],
+)
+async def test_api_output_node_reads_content(
+    monkeypatch: pytest.MonkeyPatch,
+    rowwise: bool,
+    result: dict[str, Any],
+    expected: list[str],
+) -> None:
+    """An api-mode LLM op as the output node must surface its model content
+    (the api item path), not fail on a missing ``items.output``. Row-wise api
+    tasks fan out over ``items.rows``."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
+    manager = FlowmeshRuntimeManager()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        lambda: InMemoryJobStorage(),
+    )
+
+    request_info, row_id = _build_api_output_request(rowwise=rowwise)
+
+    class _FakeWorkflows:
+        async def submit(self, task_yaml: str) -> Any:
+            return SimpleNamespace(
+                tasks=[SimpleNamespace(task_id="task-row0")], workflow_id="wf-1"
+            )
+
+    class _FakeResults:
+        async def retrieve(self, task_id: str) -> dict[str, Any]:
+            return result
+
+    class _FakeFm:
+        def __init__(self) -> None:
+            self.workflows = _FakeWorkflows()
+            self.results = _FakeResults()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+
+    async def _fetch_task_status(_self: FlowmeshRuntimeManager, task_id: str) -> str:
+        return "DONE"
+
+    async def _fetch_task_description(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> dict[str, Any]:
+        return {"graph_node_name": row_id}
+
+    monkeypatch.setattr(
+        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+    )
+    monkeypatch.setattr(
+        manager,
+        "fetch_task_description",
+        types.MethodType(_fetch_task_description, manager),
+    )
+
+    result_ = await manager.process_request(
+        request_info,
+        Schedule(worker_assignment={"worker-1": [row_id]}),
+        worker_ids=["worker-1"],
+    )
+    assert result_["flat_outputs"][row_id] == expected

@@ -86,7 +86,8 @@ def _walk_output_path(
 ) -> Any:
     """Walk a dotted ``items.<a>.<b>.<c>`` path through a result item;
     JSON-decode intermediate string fields so DataFrame-serialized columns
-    (e.g. ``items.table.symbol``) traverse cleanly."""
+    (e.g. ``items.table.symbol``) traverse cleanly. A part may carry a list
+    index (``choices[0]``) for the api item path; anything else fails closed."""
     value: Any = item
     walked: list[str] = []
     for part in parts:
@@ -99,13 +100,51 @@ def _walk_output_path(
                     f"output node {output_op_id} cannot descend into non-JSON "
                     f"string at path 'items.{'.'.join(walked)}': {value!r}"
                 ) from exc
-        if not isinstance(value, Mapping) or part not in value:
-            raise RuntimeError(
-                f"output node {output_op_id} item missing field at path "
-                f"'items.{'.'.join(walked)}': {item}"
-            )
-        value = value[part]
+        attr, index = _split_walk_part(part)
+        if attr:
+            if isinstance(value, list) and all(isinstance(v, Mapping) for v in value):
+                # Map the attribute over a list of items (e.g. ``rows.json``
+                # descends into each row of a grouped api result), matching
+                # FlowMesh's own path resolution.
+                value = [_walk_output_path(v, (attr,), output_op_id) for v in value]
+            else:
+                if not isinstance(value, Mapping) or attr not in value:
+                    raise RuntimeError(
+                        f"output node {output_op_id} item missing field at path "
+                        f"'items.{'.'.join(walked)}': {item}"
+                    )
+                value = value[attr]
+        if index is not None:
+            if isinstance(value, list) and all(isinstance(v, list) for v in value):
+                # Index each fanned-out row (e.g. ``choices[0]`` after
+                # ``rows.json`` mapped over the group), matching FlowMesh's
+                # own path resolution.
+                value = [
+                    _walk_output_path(v, (f"[{index}]",), output_op_id) for v in value
+                ]
+            elif not isinstance(value, list) or not -len(value) <= index < len(value):
+                raise RuntimeError(
+                    f"output node {output_op_id} item missing index at path "
+                    f"'items.{'.'.join(walked)}': {item}"
+                )
+            else:
+                value = value[index]
     return value
+
+
+def _split_walk_part(part: str) -> tuple[str, int | None]:
+    """Split a walk part like ``choices[0]`` into its attribute and list index;
+    reject any other bracketed form so the walker fails closed on unknown
+    shapes."""
+    if "[" not in part:
+        return part, None
+    if not part.endswith("]"):
+        raise RuntimeError(f"malformed output path part {part!r}")
+    attr, _, rest = part.partition("[")
+    suffix = rest[:-1]
+    if not suffix.isdigit():
+        raise RuntimeError(f"malformed output path index in {part!r}")
+    return attr, int(suffix)
 
 
 def _coerce_output_value(value: Any) -> str:

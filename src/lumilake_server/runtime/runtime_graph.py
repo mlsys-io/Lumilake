@@ -555,6 +555,15 @@ class RuntimeGraphBuilder:
                     output_node_map[output_node_id] = output_name
                     if path_override:
                         output_paths[output_node_id] = path_override
+                    elif self._is_api_task(llm_op):
+                        # An api-mode LLM output node has no ``items.output``;
+                        # its content lives under the api item path (row-wise
+                        # tasks nest rows under ``items.rows``). Default the
+                        # read path from the same source the builder uses for
+                        # intermediate reads so the reader stays single-path.
+                        output_paths[output_node_id] = self._upstream_output_path(
+                            llm_op
+                        )
 
         all_node_ids = set(graph_dict.keys())
         unvisited_node_ids = all_node_ids - visited_node_ids

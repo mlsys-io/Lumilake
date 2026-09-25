@@ -115,7 +115,18 @@ async def test_dispatched_request_carries_resolved_caller_credential(
 
     class _FakeResults:
         async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {"text": "assistant reply"}
+            return {
+                "items": [
+                    {
+                        "index": 0,
+                        "json": {
+                            "choices": [{"message": {"content": "assistant reply"}}]
+                        },
+                        "text": "assistant reply",
+                        "prompt": "{{prompt}}",
+                    }
+                ]
+            }
 
     class _FakeFm:
         def __init__(self) -> None:

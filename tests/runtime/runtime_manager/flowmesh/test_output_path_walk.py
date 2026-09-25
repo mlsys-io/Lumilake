@@ -40,6 +40,50 @@ def test_walk_raises_on_non_dict_descent():
         _walk_output_path({"output": 42}, ("output", "nested"), "node-4")
 
 
+def test_walk_api_item_path_with_index():
+    # The api item path ``items.json.choices[0].message.content`` carries a
+    # list index; the walker must descend into it.
+    item = {
+        "index": 0,
+        "json": {"choices": [{"message": {"content": '{"keep": [1, 2]}'}}]},
+        "text": '{"keep": [1, 2]}',
+        "prompt": "p",
+    }
+    parts = ("json", "choices[0]", "message", "content")
+    assert _walk_output_path(item, parts, "node-api") == '{"keep": [1, 2]}'
+
+
+def test_walk_rowwise_api_path_maps_over_rows():
+    # The rowwise api path ``items.rows.json.choices[0].message.content``
+    # fans out over each row of a grouped result, yielding one content per row.
+    item = {
+        "index": 0,
+        "rows": [
+            {
+                "index": 0,
+                "json": {"choices": [{"message": {"content": "r0"}}]},
+                "text": "r0",
+                "prompt": "p",
+            },
+            {
+                "index": 1,
+                "json": {"choices": [{"message": {"content": "r1"}}]},
+                "text": "r1",
+                "prompt": "p",
+            },
+        ],
+    }
+    parts = ("rows", "json", "choices[0]", "message", "content")
+    assert _walk_output_path(item, parts, "node-rowwise") == ["r0", "r1"]
+
+
+def test_walk_rejects_malformed_index():
+    with pytest.raises(RuntimeError, match="malformed output path index"):
+        _walk_output_path(
+            {"json": {"choices": [1]}}, ("json", "choices[abc]"), "node-bad"
+        )
+
+
 def test_walk_raises_on_undecodable_string():
     with pytest.raises(RuntimeError, match="non-JSON string"):
         _walk_output_path({"table": "not-json"}, ("table", "col"), "node-5")
