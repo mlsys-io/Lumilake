@@ -21,6 +21,7 @@ from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils.job_storage import get_job_storage
 
 
@@ -1037,3 +1038,165 @@ def test_relocate_artifacts_rewrites_nested_uri_in_json_encoded_output(
     # Bytes must actually be copied to target, not just the uri string.
     data, _ = storage.get_artifact(target_id, filename)
     assert data == payload_bytes
+
+
+class _ListLambdaRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch but runs the real list-Lambda aggregation,
+    proving the whole-list output satisfies `_process_batch`'s demux."""
+
+    def __init__(self, *, items: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._items = items
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        flowmesh_manager = FlowmeshRuntimeManager()
+        flat_outputs: dict[str, list[str]] = {}
+        for node_id in request_info.output_node_map:
+            flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
+                output_op_id=node_id,
+                output_task_id="task-1",
+                request_id=request_info.request_id,
+                items=self._items,
+                output_path="items.output",
+                list_lambda=True,
+            )
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+def _install_echo_build_and_schedule(server: Any, output_name: str) -> None:
+    """Fake build/schedule that marks the output node as a list-Lambda (echo)."""
+
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
+        node_id = f"{node_prefix}__{suffix}"
+        op = RuntimeOp(
+            node_id=node_id,
+            task_type="echo",
+            backend="echo",
+            model="echo",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+        )
+        output_node_map = (
+            {} if task_type_override == "data_profile" else {node_id: output_name}
+        )
+        return RuntimeGraph(
+            nodes={node_id: op}, node_order=[node_id], output_node_map=output_node_map
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_list_lambda_output_single_slice_demux_accepts_one_value(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A one-row request whose list-Lambda output echoes several items must
+    surface ONE output value holding the whole list, and the merged-workflow
+    demux must accept it for the single slice."""
+    whole_list = [
+        {"fid": "f1", "statement": "s1", "quote": "q1"},
+        {"fid": "f2", "statement": "s2", "quote": "q2"},
+        {"fid": "f3", "statement": "s3", "quote": "q3"},
+    ]
+    server = server_factory()
+    server.runtime_manager = cast(
+        Any, _ListLambdaRuntimeManager(items=[{"output": it} for it in whole_list])
+    )
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-list",
+            request_id="req-list",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=1,
+            total_length=1,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_echo_build_and_schedule(server, "observations")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-list"].results[0]
+    assert resp.error_info is None
+    observations = resp.outputs["shared"]["observations"]
+    assert len(observations) == 1
+    assert json.loads(observations[0]) == whole_list
+
+
+@pytest.mark.asyncio
+async def test_list_lambda_output_multi_slice_run_fails_closed(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A list-mode Lambda runs once over the whole input lists of one run, so
+    its single whole-list result cannot be split across slices; a multi-slice
+    run must fail closed with a clear error naming the output and slice count."""
+    server = server_factory()
+    server.runtime_manager = cast(
+        Any, _ListLambdaRuntimeManager(items=[{"output": {"fid": "f1"}}])
+    )
+
+    slice0, slice1 = make_workflow_slices_from_inputs(
+        request_id="req-slices",
+        public_graph_name="shared",
+        entities=["NVDA", "AAPL"],
+    )
+    handlers = attach_request_states(server, [slice0, slice1])
+    batch = make_batch([slice0, slice1])
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_echo_build_and_schedule(server, "observations")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-slices"].results[0]
+    assert resp.error_info is not None
+    assert any(
+        "List-Lambda output cannot be split across slices" in str(item)
+        for item in resp.error_info
+    )

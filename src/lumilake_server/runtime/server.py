@@ -2735,6 +2735,16 @@ class LumilakeServer:
                     return workflow
             return None
 
+        # A list-mode Lambda runs once over the whole input lists of one
+        # workflow run, so its output is ONE value per run (the list of every
+        # item's walked output), not one value per input row or per slice.
+        list_lambda_outputs = {
+            (group_key, output_name)
+            for node_id, (group_key, output_name) in output_mapping.items()
+            if batch_request_info.runtime_graph.nodes.get(node_id) is not None
+            and batch_request_info.runtime_graph.nodes[node_id].task_type == "echo"
+        }
+
         for node_id, outputs in flat_outputs.items():
             mapping = output_mapping.get(node_id)
             if mapping is None:
@@ -2746,6 +2756,26 @@ class LumilakeServer:
                     f" {type(outputs).__name__}"
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
+            if (group_key, output_name) in list_lambda_outputs:
+                # A list-mode Lambda runs once over the whole input lists of
+                # one workflow run, so its output is ONE value per run (the
+                # list of every item's walked output), not one per input row
+                # or per slice. A single whole-list result cannot be split
+                # across slices, so a multi-slice run fails closed.
+                group_slices = grouped_workflows.get(group_key, [])
+                if len(group_slices) != 1:
+                    raise ValueError(
+                        "List-Lambda output cannot be split across slices: "
+                        f"{output_name} covers {len(group_slices)} slice(s) in "
+                        f"group {group_key}. A list-mode Lambda runs once per "
+                        "run and its single whole-list result cannot be "
+                        "partitioned per slice."
+                    )
+                (single_workflow,) = group_slices
+                direct_outputs.setdefault(single_workflow.workflow_id, {})[
+                    output_name
+                ] = outputs
+                continue
             if matched_workflow is not None:
                 if len(outputs) != matched_workflow.slice_length:
                     raise ValueError(

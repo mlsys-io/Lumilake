@@ -903,6 +903,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         items: list[dict[str, Any]],
         output_path: str | None,
         expected_row_count: int | None = None,
+        list_lambda: bool = False,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
             items = await self._archive_artifact_items(
@@ -950,6 +951,18 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                         f"{output_path!r}"
                     )
                 output_field_parts = parts
+        if list_lambda:
+            # A list-mode Lambda runs once over the whole input lists of one
+            # workflow run, so its output is ONE value per run: the list of
+            # every item's walked output, not one entry per item.
+            return [
+                _coerce_output_value(
+                    [
+                        _walk_output_path(item, output_field_parts, output_op_id)
+                        for item in items
+                    ]
+                )
+            ]
         return [
             _coerce_output_value(
                 _walk_output_path(item, output_field_parts, output_op_id)
@@ -1288,6 +1301,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 expected_row_count=self._embedding_row_count(
                     request_info.runtime_graph, output_op_id
                 ),
+                list_lambda=output_node is not None and output_node.task_type == "echo",
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
