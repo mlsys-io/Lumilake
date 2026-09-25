@@ -825,9 +825,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
         items = results_json.get("items")
         if isinstance(items, list):
-            # An empty list is a valid empty output (e.g. a list-mode Lambda
-            # that selected no observations); return it as-is rather than
-            # falling through to the api/embedding fallbacks and failing.
+            # An empty list is a valid empty output, not a missing result.
             return items
         if task_type == "api":
             text = results_json.get("text")
