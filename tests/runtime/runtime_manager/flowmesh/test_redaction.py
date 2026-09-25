@@ -485,3 +485,37 @@ async def test_archive_task_response_archives_grouped_api_result(
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
     assert saved["data"]["items"][0]["rows"][1]["text"] == '{"kind": "second"}'
+
+
+def test_api_result_dump_keeps_json_row_key() -> None:
+    """A grouped API result validated by the vendored flowmesh APIResult and
+    dumped with model_dump(mode="json") must keep the row key ``json``, not
+    rename it to ``response_json`` (serialize_by_alias)."""
+    from flowmesh.models.result.catalog import APIResult
+
+    payload = {
+        "ok": True,
+        "executor": "api",
+        "method": "POST",
+        "url": "u",
+        "status_code": 200,
+        "items": [
+            {
+                "index": 0,
+                "rows": [
+                    {
+                        "index": 0,
+                        "url": "u",
+                        "status_code": 200,
+                        "json": {"a": 1},
+                    }
+                ],
+            }
+        ],
+    }
+    validated = APIResult.model_validate(payload)
+    dumped = validated.model_dump(mode="json")
+    row = dumped["items"][0]["rows"][0]
+    assert "json" in row
+    assert row["json"] == {"a": 1}
+    assert "response_json" not in row
