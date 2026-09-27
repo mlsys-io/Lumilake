@@ -930,6 +930,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             response_data = await self.fm.results.retrieve(tid)
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
+        # results.retrieve returns a pydantic AnyExecutorResult; dump it for redaction.
+        response_data = response_data.model_dump(mode="json")
         response_uri = self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1218,6 +1220,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 results_json = await self.fm.results.retrieve(output_task_id)
             except APIError as e:
                 raise _sanitize_flowmesh_api_error(e) from None
+            # results.retrieve returns a pydantic AnyExecutorResult; dump it.
+            results_json = results_json.model_dump(mode="json")
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
             api_prompt = None
             if output_node is not None and output_node.task_type == "api":

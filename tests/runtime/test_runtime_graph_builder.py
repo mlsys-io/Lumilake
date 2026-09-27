@@ -1,3 +1,5 @@
+import textwrap
+
 import pytest
 from lumilake import envs
 
@@ -13,6 +15,7 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
+from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
@@ -710,3 +713,71 @@ def test_agent_retrieval_as_vlm_image_source_uses_table_path() -> None:
     embedding = runtime_graph.nodes[embedding_id]
     assert embedding.data_spec["node"] == retrieval.id
     assert embedding.data_spec["path"] == "items.table"
+
+
+def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
+    """A prompt whose only placeholder is ``{df}`` builds without format_kwargs.
+
+    The parser emits an implicit FormatOp with no inputs for such a prompt;
+    the runtime graph builder must accept it (the ``{df}`` placeholder is
+    filled from the aggregate columns, not from a format_kwargs ref)."""
+    workflow = textwrap.dedent(
+        """
+        name: df_only
+        inputs:
+          Stock: ["NVDA"]
+        ops:
+          - id: Retrieval
+            op: DataRetrievalOp
+            inputs: [Stock]
+            data_spec:
+              type: lumid
+              mode: sql
+              template: "SELECT * FROM t WHERE symbol = :symbol"
+              params:
+                - name: symbol
+                  node: Stock
+          - id: Select
+            op: LLMChatOp
+            inputs: [Stock, Retrieval]
+            config:
+              model: dummy-model
+            prompt:
+              template: |
+                Pick the best rows.
+
+                {df}
+
+                Return the ids.
+            messages:
+              - role: system
+                content: You select rows.
+              - role: user
+                content: ""
+            aggregate_table:
+              - label: fid
+                node: Retrieval
+                path: items.table
+        outputs:
+          - name: result
+            ref: Select
+        """
+    )
+    specs = parse_yaml_payload(workflow)
+    spec = specs["df_only"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (row_id,) = runtime_graph.dsl_to_runtime[list(runtime_graph.dsl_to_runtime)[-1]]
+    node = runtime_graph.nodes[row_id]
+    template = node.data_spec["template"]
+    columns = template["columns"]
+    df_col = next(col for col in columns if col.get("label") == "df")
+    assert df_col["data"]["type"] == "dataframe"
+    assert [col["label"] for col in df_col["data"]["columns"]] == ["fid"]
+    steps = template["options"]["format"]["steps"]
+    assert any(
+        "{df}" in step.get("template", "")
+        and {"label": "df", "value": "df"} in step.get("arguments", [])
+        for step in steps
+    )
