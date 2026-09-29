@@ -27,6 +27,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
     resolve_api_credential,
@@ -399,16 +400,19 @@ class RuntimeGraphBuilder:
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
-                if not isinstance(source, (LLMOp, DataRetrievalOp)):
+                if not isinstance(source, (LLMOp, DataRetrievalOp, LambdaOp)):
                     raise ValueError(
-                        f"OutputOp '{op.name}' input must be an LLMOp or "
-                        f"DataRetrievalOp (got {type(source).__name__})"
+                        f"OutputOp '{op.name}' input must be an LLMOp, "
+                        f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
                 output_source_to_outputop[source.id] = (op.name, op.path)
 
-        if not llm_ops and not retrieval_ops:
-            raise ValueError("Graph must contain at least one LLMOp or DataRetrievalOp")
+        has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
+        if not llm_ops and not retrieval_ops and not has_lambda:
+            raise ValueError(
+                "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
+            )
 
         nodes: dict[str, RuntimeOp] = {}
         node_order: list[str] = []
@@ -524,6 +528,34 @@ class RuntimeGraphBuilder:
                     if path_override:
                         output_paths[output_node_id] = path_override
 
+        if task_type_override != "data_profile":
+            # A LambdaOp is inlined into the LLM that consumes it (traced above).
+            # One that is an output, or that no LLM reached, runs on its own as
+            # a python step — see runtime/python_step.py.
+            standalone = [
+                op_id
+                for op_id, op in graph_dict.items()
+                if isinstance(op, LambdaOp)
+                and (
+                    op_id not in visited_node_ids or op_id in output_source_to_outputop
+                )
+            ]
+            for lambda_id in standalone:
+                self._build_python_step(
+                    lambda_id,
+                    graph_dict,
+                    inputs_dict,
+                    visited_node_ids,
+                    nodes,
+                    node_order,
+                    dsl_to_runtime,
+                )
+                if lambda_id in output_source_to_outputop:
+                    output_name, path_override = output_source_to_outputop[lambda_id]
+                    output_node_map[lambda_id] = output_name
+                    if path_override:
+                        output_paths[lambda_id] = path_override
+
         all_node_ids = set(graph_dict.keys())
         unvisited_node_ids = all_node_ids - visited_node_ids
 
@@ -547,6 +579,82 @@ class RuntimeGraphBuilder:
                 make_node_prefix(node_prefix)
             )
         return runtime_graph
+
+    def _build_python_step(
+        self,
+        op_id: str,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
+        nodes: dict[str, RuntimeOp],
+        node_order: list[str],
+        dsl_to_runtime: dict[str, list[str]],
+    ) -> str:
+        """Compile one standalone LambdaOp (and any LambdaOp it reads) into a
+        FlowMesh python task. Returns its runtime node id."""
+        if op_id in nodes:
+            return op_id
+        op = graph_dict[op_id]
+        assert isinstance(op, LambdaOp)
+        visited_node_ids.add(op_id)
+
+        plan: python_step.ColumnPlan = []
+        dependencies: list[str] = []
+        for inp in op.inputs:
+            if isinstance(inp, LambdaOp):
+                dep = self._build_python_step(
+                    inp.id,
+                    graph_dict,
+                    inputs_dict,
+                    visited_node_ids,
+                    nodes,
+                    node_order,
+                    dsl_to_runtime,
+                )
+            elif isinstance(inp, (LLMOp, DataRetrievalOp)):
+                runtime_ids = dsl_to_runtime.get(inp.id, [])
+                if len(runtime_ids) != 1:
+                    raise ValueError(
+                        f"LambdaOp '{op_id}' reads '{inp.id}', which compiled to"
+                        f" {len(runtime_ids)} runtime nodes; a standalone Python"
+                        " step can read one upstream node per input"
+                    )
+                dep = runtime_ids[0]
+            elif isinstance(inp, InputOp):
+                visited_node_ids.add(inp.id)
+                plan.append({"kind": "literal", "values": inputs_dict[inp.name]})
+                continue
+            elif isinstance(inp, DataOp):
+                visited_node_ids.add(inp.id)
+                plan.append({"kind": "literal", "values": list(inp.data)})
+                continue
+            else:
+                raise ValueError(
+                    f"LambdaOp '{op_id}' reads a {type(inp).__name__}; a standalone"
+                    " Python step reads LLM, data-retrieval, Lambda, input or data"
+                    " ops"
+                )
+            plan.append({"kind": "stage", "name": dep})
+            if dep not in dependencies:
+                dependencies.append(dep)
+
+        runtime_op = self._create_runtime_op(
+            name=op_id,
+            task_type=python_step.TASK_TYPE,
+            data_spec={
+                "code": python_step.wrapper_source(op_id, op.code, plan),
+                "stages": dependencies,
+            },
+            model_spec={},
+            inference_spec={},
+            backend=python_step.BACKEND,
+            model="",
+            dependencies=dependencies,
+        )
+        nodes[op_id] = runtime_op
+        node_order.append(op_id)
+        dsl_to_runtime[op_id] = [op_id]
+        return op_id
 
     def _mark_retrieval_upstream_nodes_visited(
         self,
