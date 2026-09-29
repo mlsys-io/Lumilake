@@ -215,6 +215,18 @@ outputs:
     ref: "Lowercase"
 ```
 
+Where the function runs depends on what reads it:
+
+- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
+  task as a template function step.
+- **An output, or read only by other `LambdaOp`s** (as above): compiled to its
+  own FlowMesh `python` task. The code runs in a per-task container with no
+  network, as an unprivileged user, with a 600 s timeout. Its inputs may be
+  LLM or data-retrieval ops, other `LambdaOp`s, workflow inputs or literal
+  data; the function is applied once per row (length-1 inputs broadcast) and
+  the step emits `items[].output` like any other items-producing op. The
+  FlowMesh site must run a worker version that supports the `python` task type.
+
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see
 `src/lumilake_server/ops/util_ops.py` for the closure-capture rules.

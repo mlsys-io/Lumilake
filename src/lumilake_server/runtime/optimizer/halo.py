@@ -407,6 +407,10 @@ class HaloOptimizer(BaseOptimizer):
                 eligible = cpu_workers
             elif node.engine == "http":
                 eligible = cpu_workers
+            elif node.engine == "python":
+                # CPU work in its own container; any worker can run it, but a
+                # GPU worker only when there is no CPU worker to spare it.
+                eligible = cpu_workers or gpu_workers
             else:
                 raise ValueError(
                     "Unsupported node for Halo worker assignment: "
@@ -945,6 +949,8 @@ class HaloOptimizer(BaseOptimizer):
             return "http"
         if normalized_backend == "data_retrieval":
             return "db"
+        if normalized_backend == "python":
+            return "python"
         if normalized_backend == "data_profiling":
             raise ValueError(
                 "Halo optimizer does not support data_profiling nodes in optimized"
@@ -952,7 +958,8 @@ class HaloOptimizer(BaseOptimizer):
             )
         raise ValueError(
             "Halo optimizer only supports backends in "
-            "{'vllm','transformers','diffusers','omni','data_retrieval','http'}. "
+            "{'vllm','transformers','diffusers','omni','data_retrieval','http',"
+            "'python'}. "
             f"Got backend={backend!r} task_type={normalized_task_type!r}"
         )
 
@@ -977,7 +984,18 @@ class HaloOptimizer(BaseOptimizer):
             )
         if node.engine == "http":
             return self._http_exec_cost(node)
+        if node.engine == "python":
+            return self._python_exec_cost(node)
         return self._db_input_sec * self._input_query_count
+
+    @staticmethod
+    def _python_exec_cost(node: Node) -> float:
+        """A python step's run time is unknown before it runs; cost it at a
+        small fraction of its timeout so it neither dominates the plan nor
+        looks free next to an LLM call."""
+        raw = node.raw if isinstance(node.raw, dict) else {}
+        timeout = raw.get("timeout_s")
+        return 0.05 * float(timeout) if isinstance(timeout, (int, float)) else 5.0
 
     def _http_exec_cost(self, node: Node) -> float:
         raw = node.raw if isinstance(node.raw, dict) else {}
