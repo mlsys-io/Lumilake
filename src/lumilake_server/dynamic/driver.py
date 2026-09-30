@@ -621,7 +621,7 @@ def compute_observation(leaf_outputs: dict[str, list[str]], preview_width: int) 
     """
     source = observation_lambda(preview_width=preview_width)
     namespace: dict[str, Any] = {"json": json}
-    exec(source, namespace)  # noqa: S102 - sandbox-safe aggregation template
+    exec(source, namespace)  # noqa: S102 - server-authored template
     observe = namespace["observe"]
     per_leaf: list[Any] = [leaf_outputs[leaf_id] for leaf_id in sorted(leaf_outputs)]
     return observe(per_leaf)

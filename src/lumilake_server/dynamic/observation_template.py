@@ -1,13 +1,13 @@
 """Source template for the observation LambdaOp.
 
-This file is the literal source of the observation function that runs inside
-the server's restricted Lambda sandbox. It is loaded as text and interpolated
-(the ``{width}`` placeholder becomes the preview character budget) before being
-embedded in the round graph's ``LambdaOp._code``.
+This file is the literal source of the observation function that runs in the
+LambdaOp namespace (``utils/lambda_runtime.py``). It is loaded as text and
+interpolated (the ``{width}`` placeholder becomes the preview character budget)
+before being embedded in the round graph's ``LambdaOp._code``.
 
-The sandbox injects ``json`` as a global (never imported) and whitelists only a
-few builtins. ``json.JSONDecodeError`` is attribute access on the whitelisted
-``json`` module, so it is catchable inside the sandbox; malformed or plain-text
+The namespace provides ``json`` as a global (never imported) and whitelists only
+a few builtins. ``json.JSONDecodeError`` is attribute access on the whitelisted
+``json`` module, so it is catchable inside the function; malformed or plain-text
 input is caught and treated as text rather than raising.
 """
 

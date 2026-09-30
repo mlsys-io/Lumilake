@@ -1067,6 +1067,81 @@ async def test_try_claim_workers_rejects_undersized_worker(server_factory) -> No
     assert server._busy_workers == set()
 
 
+def _python_batch() -> Any:
+    python_op = SimpleNamespace(task_type="python", backend="python")
+    return SimpleNamespace(
+        config=SimpleNamespace(hardware_requirements=None),
+        workflows=[SimpleNamespace(request_id="req", id="wf")],
+        runtime_graphs={"g": SimpleNamespace(nodes={"p": python_op})},
+        clustering_seconds=0.0,
+    )
+
+
+def _cluster(server: Any, profiles: dict[str, dict[str, Any]]) -> None:
+    async def total() -> FreeCapacity:
+        return FreeCapacity(
+            cpu_worker_ids=tuple(profiles), gpu_worker_ids=(), profiles=profiles
+        )
+
+    server._snapshot_total_capacity = total
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_waits_for_a_busy_python_worker(
+    server_factory,
+) -> None:
+    """The only python-capable worker is busy: an idle plain worker must not be
+    claimed (the batch would fail after dispatch); the claim returns None so the
+    scheduler waits for capacity."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    plain = {"supported_task_types": ["echo"]}
+    _cluster(
+        server, {"cpu-plain": plain, "cpu-python": {"supported_task_types": ["python"]}}
+    )
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-plain",), gpu_worker_ids=(), profiles={"cpu-plain": plain}
+    )
+
+    assert await server._try_claim_workers(_python_batch(), free) is None
+    assert server._busy_workers == set()
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_claims_the_idle_python_worker(server_factory) -> None:
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    profiles = {
+        "cpu-plain": {"supported_task_types": ["echo"]},
+        "cpu-python": {"supported_task_types": ["python"]},
+    }
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-plain", "cpu-python"), gpu_worker_ids=(), profiles=profiles
+    )
+
+    assert await server._try_claim_workers(_python_batch(), free) == ["cpu-python"]
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_lets_the_optimizer_fail_when_no_worker_can_run_python(
+    server_factory,
+) -> None:
+    """No worker in the whole cluster advertises python: waiting would never
+    end, so the claim proceeds and the optimizer fails the batch before dispatch."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 0
+    server.config.cpu_worker_group_size = 1
+    plain = {"supported_task_types": ["echo"]}
+    _cluster(server, {"cpu-plain": plain})
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-plain",), gpu_worker_ids=(), profiles={"cpu-plain": plain}
+    )
+
+    assert await server._try_claim_workers(_python_batch(), free) == ["cpu-plain"]
+
+
 class _CommitRaisesJobManager:
     """Yields one reservation whose commit raises."""
 
