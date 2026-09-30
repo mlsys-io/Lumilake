@@ -21,8 +21,10 @@ from typing import Any
 
 import yaml
 from flowmesh.exceptions import APIError
+from flowmesh.models.tasks import TaskInfo
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
+from pydantic import ValidationError
 
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
@@ -274,24 +276,44 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             "application/json",
         )
 
+    async def _retrieve_task(self, task_id: str) -> TaskInfo:
+        """``fm.tasks.retrieve`` that accepts both FlowMesh task shapes.
+
+        FlowMesh 0.1.10 servers send the task source as ``source``; the pinned
+        ``flowmesh-sdk==0.1.9`` requires ``raw_yaml`` and fails validation on
+        every task a 0.1.10 server returns. That failed each request right after
+        submit ("Failed to fetch FlowMesh task description"), for every job on
+        every site running v0.1.10-rc.2. The SDK on FlowMesh main accepts both
+        names; drop this once an SDK release with it is pinned here.
+        """
+        try:
+            return await self.fm.tasks.retrieve(task_id)
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
+        except ValidationError as e:
+            if not any(err.get("loc") == ("raw_yaml",) for err in e.errors()):
+                raise
+        # A 0.1.10 server: re-read the raw body and supply the old key.
+        try:
+            data = await self.fm.tasks._client._request("GET", f"/tasks/{task_id}")
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
+        if isinstance(data, dict) and "raw_yaml" not in data and "source" in data:
+            data = {**data, "raw_yaml": data["source"]}
+        return TaskInfo.model_validate(data)
+
     async def fetch_task_status(
         self,
         task_id: str,
     ) -> str:
-        try:
-            task_info = await self.fm.tasks.retrieve(task_id)
-        except APIError as e:
-            raise _sanitize_flowmesh_api_error(e) from None
+        task_info = await self._retrieve_task(task_id)
         return task_info.status
 
     async def fetch_task_description(
         self,
         task_id: str,
     ) -> dict[str, Any]:
-        try:
-            task_info = await self.fm.tasks.retrieve(task_id)
-        except APIError as e:
-            raise _sanitize_flowmesh_api_error(e) from None
+        task_info = await self._retrieve_task(task_id)
         return task_info.model_dump()
 
     async def _resolve_task_node_maps(
