@@ -27,6 +27,8 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
+from lumilake_server.ops.util_ops import SubmittedFunction
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
     resolve_api_credential,
@@ -405,21 +407,19 @@ class RuntimeGraphBuilder:
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
-                if not isinstance(source, (LLMOp, DataRetrievalOp)) and not (
-                    isinstance(source, LambdaOp) and source.mode == "list"
-                ):
+                if not isinstance(source, (LLMOp, DataRetrievalOp, LambdaOp)):
                     raise ValueError(
                         f"OutputOp '{op.name}' input must be an LLMOp, "
-                        f"DataRetrievalOp, or list-mode LambdaOp "
+                        f"DataRetrievalOp, or LambdaOp "
                         f"(got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
                 output_source_to_outputop[source.id] = (op.name, op.path)
 
-        if not llm_ops and not retrieval_ops and not list_lambda_ops:
+        has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
+        if not llm_ops and not retrieval_ops and not has_lambda:
             raise ValueError(
-                "Graph must contain at least one LLMOp, DataRetrievalOp, "
-                "or list-mode LambdaOp"
+                "Graph must contain at least one LLMOp, DataRetrievalOp, " "or LambdaOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
@@ -509,6 +509,7 @@ class RuntimeGraphBuilder:
                     visited_node_ids,
                     dsl_to_runtime=dsl_to_runtime,
                     runtime_nodes=nodes,
+                    api_mode=True,
                 )
                 runtime_ops = self._build_api_llm_op(
                     llm_op_id=llm_op_id,
@@ -565,6 +566,35 @@ class RuntimeGraphBuilder:
                             llm_op
                         )
 
+        if task_type_override != "data_profile":
+            # A LambdaOp is inlined into the LLM that consumes it (traced above).
+            # One that is an output, or that no LLM reached, runs on its own as
+            # a python step — see runtime/python_step.py.
+            standalone = [
+                op_id
+                for op_id, op in graph_dict.items()
+                if isinstance(op, LambdaOp)
+                and op.mode != "list"
+                and (
+                    op_id not in visited_node_ids or op_id in output_source_to_outputop
+                )
+            ]
+            for lambda_id in standalone:
+                self._build_python_step(
+                    lambda_id,
+                    graph_dict,
+                    inputs_dict,
+                    visited_node_ids,
+                    nodes,
+                    node_order,
+                    dsl_to_runtime,
+                )
+                if lambda_id in output_source_to_outputop:
+                    output_name, path_override = output_source_to_outputop[lambda_id]
+                    output_node_map[lambda_id] = output_name
+                    if path_override:
+                        output_paths[lambda_id] = path_override
+
         all_node_ids = set(graph_dict.keys())
         unvisited_node_ids = all_node_ids - visited_node_ids
 
@@ -588,6 +618,91 @@ class RuntimeGraphBuilder:
                 make_node_prefix(node_prefix)
             )
         return runtime_graph
+
+    def _build_python_step(
+        self,
+        op_id: str,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
+        nodes: dict[str, RuntimeOp],
+        node_order: list[str],
+        dsl_to_runtime: dict[str, list[str]],
+    ) -> str:
+        """Compile one standalone LambdaOp (and any LambdaOp it reads) into a
+        FlowMesh python task. Returns its runtime node id."""
+        if op_id in nodes:
+            return op_id
+        op = graph_dict[op_id]
+        assert isinstance(op, LambdaOp)
+        visited_node_ids.add(op_id)
+
+        plan: python_step.ColumnPlan = []
+        dependencies: list[str] = []
+        for inp in op.inputs:
+            if isinstance(inp, LambdaOp):
+                dep = self._build_python_step(
+                    inp.id,
+                    graph_dict,
+                    inputs_dict,
+                    visited_node_ids,
+                    nodes,
+                    node_order,
+                    dsl_to_runtime,
+                )
+            elif isinstance(inp, (LLMOp, DataRetrievalOp)):
+                runtime_ids = dsl_to_runtime.get(inp.id, [])
+                if len(runtime_ids) != 1:
+                    raise ValueError(
+                        f"LambdaOp '{op_id}' reads '{inp.id}', which compiled to"
+                        f" {len(runtime_ids)} runtime nodes; a standalone Python"
+                        " step can read one upstream node per input"
+                    )
+                dep = runtime_ids[0]
+            elif isinstance(inp, InputOp):
+                visited_node_ids.add(inp.id)
+                plan.append({"kind": "literal", "values": inputs_dict[inp.name]})
+                continue
+            elif isinstance(inp, DataOp):
+                visited_node_ids.add(inp.id)
+                plan.append({"kind": "literal", "values": list(inp.data)})
+                continue
+            else:
+                raise ValueError(
+                    f"LambdaOp '{op_id}' reads a {type(inp).__name__}; a standalone"
+                    " Python step reads LLM, data-retrieval, Lambda, input or data"
+                    " ops"
+                )
+            plan.append({"kind": "stage", "node": dep})
+            if dep not in dependencies:
+                dependencies.append(dep)
+
+        data_spec: dict[str, Any] = {
+            "code": op.code,
+            "fn_name": op.fn.__name__,
+            "plan": plan,
+            "timeout_s": (
+                python_step.DEFAULT_TIMEOUT_SECONDS
+                if op.timeout_s is None
+                else op.timeout_s
+            ),
+        }
+        if op.memory_mb is not None:
+            data_spec["memory_mb"] = op.memory_mb
+        runtime_op = self._create_runtime_op(
+            name=op_id,
+            task_type=python_step.TASK_TYPE,
+            data_spec=data_spec,
+            model_spec={},
+            inference_spec={},
+            backend=python_step.BACKEND,
+            model="",
+            dependencies=dependencies,
+        )
+        nodes[op_id] = runtime_op
+        node_order.append(op_id)
+        dsl_to_runtime[op_id] = [op_id]
+        return op_id
 
     def _mark_retrieval_upstream_nodes_visited(
         self,
@@ -2285,6 +2400,7 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None = None,
         runtime_nodes: dict[str, RuntimeOp] | None = None,
+        api_mode: bool = False,
     ) -> tuple[list[str], dict[str, Any]]:
         target_llm_op = graph_dict[llm_op_id]
         assert isinstance(target_llm_op, LLMOp), "Target op must be an LLMOp"
@@ -2472,7 +2588,8 @@ class RuntimeGraphBuilder:
                     return template.format(**resolved_kwargs)
 
                 literal_args: list[str] = []
-                can_evaluate = True
+                # Submitted code is never called here; it stays a function step.
+                can_evaluate = not isinstance(op.fn, SubmittedFunction)
                 for inp_op in op.inputs:
                     msgs = message_labels[inp_op.id]
                     if len(msgs) != 1:
@@ -2493,6 +2610,16 @@ class RuntimeGraphBuilder:
                     }
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
                 else:
+                    if api_mode:
+                        raise ValueError(
+                            f"LLMChatOp '{llm_op_id}' API mode cannot render message"
+                            f" step '{op.id}': a Lambda message transform is not"
+                            " supported in API mode. The server does not execute"
+                            " LambdaOp code, and an API request body cannot carry a"
+                            " graph_template function step. Make the LambdaOp a"
+                            " workflow output (it runs as an isolated FlowMesh python"
+                            " task) or use a non-API LLMChatOp."
+                        )
                     fn_args = [
                         [
                             (

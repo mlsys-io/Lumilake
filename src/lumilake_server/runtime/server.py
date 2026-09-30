@@ -75,6 +75,10 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
 from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
+from lumilake_server.runtime.worker_capability import (
+    advertised_task_types,
+    required_task_types,
+)
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.utils import (
@@ -985,7 +989,8 @@ class LumilakeServer:
 
         Returns the claimed worker ids, or ``None`` if the snapshot no longer
         holds enough idle workers that meet the batch's hardware requirements
-        (e.g. another dispatch claimed them first). Never blocks waiting for
+        (e.g. another dispatch claimed them first), or if the batch needs a
+        task type that only busy workers advertise. Never blocks waiting for
         capacity.
         """
         gpu_group_size = (
@@ -995,12 +1000,26 @@ class LumilakeServer:
         if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
             cpu_group_size = 1
         hardware = batch.config.hardware_requirements
+        required = self._batch_required_task_types(batch)
         selected = free.eligible_workers(
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=self._worker_meets_hardware,
             hardware=hardware,
+            required_task_types=required,
         )
+        if selected is None and required:
+            total = await self._snapshot_total_capacity()
+            if not total.has_cpu_worker_advertising(required):
+                # No worker in the cluster can ever run this batch: claim as if
+                # unconstrained so the optimizer fails it with a clear error
+                # instead of leaving it waiting for capacity that never appears.
+                selected = free.eligible_workers(
+                    cpu_group_size=cpu_group_size,
+                    gpu_group_size=gpu_group_size,
+                    worker_meets_hardware=self._worker_meets_hardware,
+                    hardware=hardware,
+                )
         if selected is None:
             return None
         selected_cpu, selected_gpu = selected
@@ -1075,6 +1094,9 @@ class LumilakeServer:
         requires_cpu = any(
             self._requires_cpu(op) for op in runtime_graph.nodes.values()
         )
+        needed_task_types = required_task_types(
+            op.task_type for op in runtime_graph.nodes.values()
+        )
 
         gpu_workers: list[str] = []
         cpu_workers: list[str] = []
@@ -1107,6 +1129,20 @@ class LumilakeServer:
                     "No CPU worker meets the requested hardware for schedule "
                     "preview, but graph contains data-retrieval nodes"
                 )
+            if needed_task_types:
+                cpu_workers = [
+                    worker
+                    for worker in cpu_workers
+                    if needed_task_types
+                    <= advertised_task_types(normalized_profiles[worker])
+                ]
+                if not cpu_workers:
+                    raise RuntimeError(
+                        "No CPU worker that advertises the "
+                        f"{' and '.join(sorted(needed_task_types))} task type "
+                        "meets the requested hardware for schedule preview, but "
+                        "graph contains nodes of that type"
+                    )
             selected_workers.append(cpu_workers[0])
         if not selected_workers:
             if not normalized_profiles:
@@ -1247,6 +1283,14 @@ class LumilakeServer:
                     return True
         return False
 
+    @staticmethod
+    def _batch_required_task_types(batch: BatchSelection) -> frozenset[str]:
+        return required_task_types(
+            op.task_type
+            for runtime_graph in batch.runtime_graphs.values()
+            for op in runtime_graph.nodes.values()
+        )
+
     @classmethod
     def _batch_requires_cpu(cls, batch: BatchSelection) -> bool:
         """A configured CPU group size of 0 is only valid alongside a nonzero
@@ -1263,10 +1307,13 @@ class LumilakeServer:
         cls, worker_profile: dict[str, Any]
     ) -> dict[str, Any]:
         has_gpu = worker_profile.get("has_gpu")
-        if isinstance(has_gpu, bool):
-            return {"has_gpu": has_gpu}
+        if not isinstance(has_gpu, bool):
+            has_gpu = cls._has_gpu(worker_profile)
         return {
-            "has_gpu": cls._has_gpu(worker_profile),
+            "has_gpu": has_gpu,
+            "supported_task_types": list(
+                worker_profile.get("supported_task_types", ())
+            ),
         }
 
     @staticmethod

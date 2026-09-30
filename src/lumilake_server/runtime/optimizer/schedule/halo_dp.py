@@ -1335,8 +1335,11 @@ class DPSolver:
             return []
         seq: list[tuple[str, str]] = []
         for idx, node_id in enumerate(cpu_nodes):
-            wid = workers[idx % len(workers)]
-            seq.append((wid, node_id))
+            allowed = self.node_worker_options[node_id]
+            pool = [wid for wid in workers if wid in allowed] or list(allowed)
+            if not pool:
+                pool = list(workers)
+            seq.append((pool[idx % len(pool)], node_id))
         return seq
 
     def _naive_cpu_cost(self, gpu_nodes: Sequence[str]) -> float:

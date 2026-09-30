@@ -655,11 +655,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         Returns
         -------
         dict[str, Any]
-            The worker profile including capabilities and current load.
+            The worker's hardware sections plus ``supported_task_types``, the
+            sorted task types its executors advertise.
         """
         worker = await flowmesh_for_server().workers.retrieve(worker_id)
         assert worker.id == worker_id
-        return worker.hardware.model_dump() if worker.hardware else {}
+        profile = worker.hardware.model_dump() if worker.hardware else {}
+        profile["supported_task_types"] = sorted(
+            str(task_type) for task_type in worker.capabilities.supported_task_types
+        )
+        return profile
 
     async def get_request_status(
         self,
@@ -827,6 +832,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         if isinstance(items, list):
             # An empty list is a valid empty output, not a missing result.
             return items
+        if task_type == "python":
+            # A python step returns {"items": [...]} as its value
+            # (runtime/python_step.py); PythonResult carries it under "value".
+            value = results_json.get("value")
+            value_items = value.get("items") if isinstance(value, dict) else None
+            if isinstance(value_items, list) and value_items:
+                return value_items
+            raise RuntimeError(f"python step {output_op_id} returned no items")
         if task_type == "api":
             text = results_json.get("text")
             if isinstance(text, str):
@@ -1558,7 +1571,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         """Mirrors HaloOptimizer._map_engine's CPU-only engines
         (data_retrieval, api) so schedule previews agree with dispatch."""
         task_type = (runtime_op.task_type or "").strip().lower()
-        return task_type in {"data_retrieval", "api"}
+        return task_type in {"data_retrieval", "api", "python"}
 
     @staticmethod
     def _build_flat_schedule_hint(

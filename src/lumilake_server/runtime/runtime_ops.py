@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lumilake_server.runtime import python_step
+
 
 class RuntimeOpSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeOp``.
@@ -81,7 +83,10 @@ class RuntimeOp:
 
     def to_flowmesh_node(self) -> dict[str, Any]:
         spec_payload: dict[str, Any] = {"taskType": self.task_type}
-        spec_payload["data"] = self.data_spec
+        if self.task_type == python_step.TASK_TYPE:
+            spec_payload = python_step.flowmesh_spec(self.node_id, self.data_spec)
+        else:
+            spec_payload["data"] = self.data_spec
         if self.task_type == "api":
             spec_payload["api"] = self.api_spec
         elif self.task_type in {

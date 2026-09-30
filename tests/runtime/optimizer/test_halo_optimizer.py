@@ -6,9 +6,11 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import LambdaOp, as_output, input_placeholder
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
@@ -152,6 +154,122 @@ def test_halo_optimizer_places_api_node_on_cpu_worker() -> None:
     assert "a1" in schedule.worker_assignment["cpu-0"]
 
 
+def _python_graph() -> RuntimeGraph:
+    return RuntimeGraph(
+        nodes={
+            "p1": RuntimeOp(
+                node_id="p1",
+                task_type="python",
+                backend="python",
+                model="",
+                data_spec={"code": "lambda a: a[0]", "plan": [], "timeout_s": 600},
+                model_spec={},
+                inference_spec={},
+            )
+        },
+        node_order=["p1"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+
+def test_halo_optimizer_places_python_node_on_a_python_worker() -> None:
+    schedule = HaloOptimizer().generate_schedule(
+        graph=_python_graph(),
+        worker_names=["cpu-plain", "cpu-python"],
+        worker_profiles={
+            "cpu-plain": {"has_gpu": False, "supported_task_types": ["echo"]},
+            "cpu-python": {
+                "has_gpu": False,
+                "supported_task_types": ["echo", "python"],
+            },
+        },
+    )
+    assert schedule.worker_assignment["cpu-python"] == ["p1"]
+    assert schedule.worker_assignment["cpu-plain"] == []
+
+
+def test_halo_optimizer_prefers_a_cpu_python_worker_over_a_gpu_one() -> None:
+    schedule = HaloOptimizer().generate_schedule(
+        graph=_python_graph(),
+        worker_names=["gpu-python", "cpu-python"],
+        worker_profiles={
+            "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
+            "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+        },
+    )
+    assert schedule.worker_assignment["cpu-python"] == ["p1"]
+
+
+def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
+    with pytest.raises(ValueError, match="selected CPU workers"):
+        HaloOptimizer().generate_schedule(
+            graph=_python_graph(),
+            worker_names=["gpu-python", "cpu-plain"],
+            worker_profiles={
+                "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
+                "cpu-plain": {"has_gpu": False, "supported_task_types": []},
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"has_gpu": False, "supported_task_types": ["echo", "ssh"]},
+        {"has_gpu": False},
+    ],
+)
+def test_halo_optimizer_fails_before_scheduling_without_a_python_worker(
+    profile: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="advertises the 'python' task type"):
+        HaloOptimizer().generate_schedule(
+            graph=_python_graph(),
+            worker_names=["cpu-plain"],
+            worker_profiles={"cpu-plain": profile},
+        )
+
+
+def test_halo_dp_places_generated_python_steps_on_the_advertising_worker() -> None:
+    """Runtime graphs the builder generates: several standalone python steps and
+    plain CPU workers ahead of the one that advertises python, so the DP's CPU
+    assignment would spread them over the plain workers if it ignored each
+    node's eligible workers."""
+    stock = input_placeholder("Stock")
+    steps = [
+        as_output(f"out{i}", LambdaOp([stock], fn=lambda inputs: str(inputs[0])))
+        for i in range(4)
+    ]
+    compiled = Graph.from_ops(steps).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+    python_nodes = {n for n, op in graph.nodes.items() if op.task_type == "python"}
+    assert len(python_nodes) == 4
+
+    schedule = HaloOptimizer().generate_schedule(
+        graph=graph,
+        worker_names=["cpu-a", "cpu-b", "cpu-python"],
+        worker_profiles={
+            "cpu-a": {"has_gpu": False, "supported_task_types": []},
+            "cpu-b": {"has_gpu": False, "supported_task_types": ["echo"]},
+            "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+        },
+    )
+
+    assert schedule.worker_assignment["cpu-a"] == []
+    assert schedule.worker_assignment["cpu-b"] == []
+    assert set(schedule.worker_assignment["cpu-python"]) == python_nodes
+
+
+def test_halo_optimizer_does_not_filter_other_task_types_by_capability() -> None:
+    schedule = HaloOptimizer().generate_schedule(
+        graph=_api_graph(),
+        worker_names=["cpu-plain"],
+        worker_profiles={"cpu-plain": {"has_gpu": False}},
+    )
+    assert schedule.worker_assignment["cpu-plain"] == ["a1"]
+
+
 def test_model_size_resolution_parses_suffix() -> None:
     optimizer = HaloOptimizer()
     size = optimizer._model_size_b(
@@ -255,59 +373,3 @@ def test_disable_data_profile_drops_supplied_results(
 
     assert parse_calls == []
     assert build_calls == [{}]
-
-
-def _echo_aggregate_graph() -> RuntimeGraph:
-    """A list-mode Lambda (echo) feeding an LLMChatOp aggregate_table."""
-    nodes = {
-        "echo1": RuntimeOp(
-            node_id="echo1",
-            task_type="echo",
-            backend="echo",
-            model="echo",
-            data_spec={
-                "type": "function",
-                "function": "def f(inputs): return [{'fid': '1'}]",
-                "arguments": [],
-            },
-            model_spec={},
-            inference_spec={},
-        ),
-        "llm1": RuntimeOp(
-            node_id="llm1",
-            task_type="inference",
-            backend="vllm",
-            model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={
-                "type": "graph_template",
-                "template": {
-                    "name": "format",
-                    "columns": [
-                        {"label": "df", "data": {"type": "dataframe", "columns": []}}
-                    ],
-                    "options": {"format": {"template": "{df}"}},
-                },
-            },
-            model_spec={},
-            inference_spec={"max_tokens": 16},
-            dependencies=("echo1",),
-        ),
-    }
-    return RuntimeGraph(
-        nodes=nodes,
-        node_order=["echo1", "llm1"],
-        output_node_map={},
-        dsl_to_runtime={},
-    )
-
-
-def test_halo_optimizer_places_echo_node_on_a_cpu_worker() -> None:
-    optimizer = HaloOptimizer()
-    graph = _echo_aggregate_graph()
-    schedule = optimizer.generate_schedule(
-        graph=graph,
-        worker_names=["gpu-0", "cpu-0"],
-        worker_profiles={"gpu-0": {"has_gpu": True}, "cpu-0": {"has_gpu": False}},
-    )
-    assert "echo1" in schedule.worker_assignment["cpu-0"]
-    assert "llm1" in schedule.worker_assignment["gpu-0"]

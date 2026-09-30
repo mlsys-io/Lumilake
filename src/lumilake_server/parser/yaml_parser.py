@@ -1017,6 +1017,15 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
     op_dict["fn_name"] = fn_name
     op_dict["_code"] = code
     op_dict["mode"] = mode
+    # Optional limits for the FlowMesh python task the op compiles to; bounds
+    # are checked when the op is built.
+    for key, kind in (("timeout_s", (int, float)), ("memory_mb", int)):
+        value = entry.fields.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, kind):
+            raise ValueError(f"LambdaOp '{entry.id}' '{key}' must be a number")
+        op_dict[key] = value
 
 
 def _build_generation_config(

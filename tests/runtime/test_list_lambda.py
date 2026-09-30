@@ -219,12 +219,13 @@ def test_per_row_lambda_behaviour_unchanged() -> None:
     runtime_graph = _build(yaml_text)
 
     assert not any(n.task_type == "echo" for n in runtime_graph.nodes.values())
+    assert not any(n.task_type == "python" for n in runtime_graph.nodes.values())
     summarize_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "inference"
     )
     template = summarize_node.data_spec["template"]
-    columns = template["columns"]
-    assert any(col.get("data", {}).get("items") == ["tagged:NVDA"] for col in columns)
+    steps = template["options"]["format"]["steps"]
+    assert any(step.get("function") is not None for step in steps)
 
 
 def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:

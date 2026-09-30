@@ -64,9 +64,15 @@ class GraphSpec:
 
 @dataclass(frozen=True, slots=True)
 class Worker:
-    """Describes an execution worker (GPU or CPU)."""
+    """Describes an execution worker (GPU or CPU).
+
+    ``task_types`` holds the FlowMesh task types its executors advertise; a node
+    whose task type needs an executor only some workers run is placed on a
+    worker that lists it.
+    """
 
     id: str
     kind: str  # "gpu" or "cpu"
     device: str
     capacity: float = 1.0
+    task_types: frozenset[str] = frozenset()

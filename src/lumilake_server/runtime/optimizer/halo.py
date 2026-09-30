@@ -10,6 +10,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
     data_profile_key_for_node_query,
@@ -18,6 +19,11 @@ from lumilake_server.runtime.data_profile_utils import (
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.worker_capability import (
+    CAPABILITY_GATED_TASK_TYPES,
+    advertised_task_types,
+    required_task_types,
+)
 
 from .multimodal_cost import MultimodalCostCoefficients, compute_gpu_exec_cost
 from .schedule.halo_dp import DPSolver, QuerySignature, WorkerState
@@ -144,6 +150,7 @@ class HaloOptimizer(BaseOptimizer):
             return Schedule(worker_assignment={worker: [] for worker in workers_input})
         self._assert_no_http_nodes(graph)
         self._validate_supported_runtime_nodes(graph)
+        self._validate_task_type_workers(graph, workers_input, worker_profiles)
 
         resolved_query_count = self._resolve_input_query_count(graph)
         self._input_query_count = resolved_query_count
@@ -377,6 +384,7 @@ class HaloOptimizer(BaseOptimizer):
                 kind=worker_kind,
                 device="cuda:0" if worker_kind == "gpu" else "cpu",
                 capacity=1.0,
+                task_types=advertised_task_types(worker_profile),
             )
 
         if requires_gpu and not any(w.kind == "gpu" for w in workers.values()):
@@ -401,19 +409,28 @@ class HaloOptimizer(BaseOptimizer):
 
         options: dict[str, tuple[str, ...]] = {}
         for node_id, node in graph.nodes.items():
+            # Candidate worker tiers, tried in order; the first tier that still
+            # has a worker after the task-type filter is the eligible set.
+            tiers: tuple[tuple[str, ...], ...]
             if node.engine == "vllm":
-                eligible = gpu_workers
+                tiers = (gpu_workers,)
             elif node.engine == "db" and node.type == "data_retrieval":
-                eligible = cpu_workers
+                tiers = (cpu_workers,)
             elif node.engine == "http":
-                eligible = cpu_workers
-            elif node.engine == "echo":
-                eligible = cpu_workers
+                tiers = (cpu_workers,)
+            elif node.engine == "python":
+                tiers = (cpu_workers,)
             else:
                 raise ValueError(
                     "Unsupported node for Halo worker assignment: "
                     f"node='{node_id}' engine={node.engine!r} type={node.type!r}"
                 )
+            if node.type in CAPABILITY_GATED_TASK_TYPES:
+                tiers = tuple(
+                    tuple(w for w in tier if node.type in workers[w].task_types)
+                    for tier in tiers
+                )
+            eligible = next((tier for tier in tiers if tier), ())
             if not eligible:
                 raise ValueError(
                     f"No compatible workers for node '{node_id}' (engine={node.engine},"
@@ -936,6 +953,39 @@ class HaloOptimizer(BaseOptimizer):
             "omni",
         }
 
+    @staticmethod
+    def _validate_task_type_workers(
+        graph: RuntimeGraph,
+        worker_names: Sequence[str],
+        worker_profiles: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Fail before scheduling when a node's task type has no executor.
+
+        Gated task types run on CPU workers, so only CPU workers count. Only
+        task types in ``CAPABILITY_GATED_TASK_TYPES`` are checked; other nodes
+        are placed by engine alone.
+        """
+        cpu_names = [
+            name
+            for name in worker_names
+            if not worker_profiles.get(name, {}).get("has_gpu")
+        ]
+        advertised: set[str] = set()
+        for name in cpu_names:
+            advertised |= advertised_task_types(worker_profiles.get(name, {}))
+        needed = required_task_types(op.task_type for op in graph.nodes.values())
+        for task_type in sorted(needed - advertised):
+            nodes = sorted(
+                node_id
+                for node_id, op in graph.nodes.items()
+                if op.task_type == task_type
+            )
+            raise ValueError(
+                f"Graph has {task_type!r} task node(s) {nodes}, but none of the"
+                f" selected CPU workers {cpu_names} advertises the {task_type!r}"
+                " task type."
+            )
+
     def _map_engine(self, backend: str, task_type: str) -> str:
         normalized_backend = str(backend).strip().lower()
         normalized_task_type = str(task_type).strip().lower()
@@ -943,12 +993,12 @@ class HaloOptimizer(BaseOptimizer):
             return "vllm"
         if normalized_backend == "http":
             return "http"
-        if normalized_backend == "echo":
-            return "echo"
         if normalized_backend == "api":
             return "http"
         if normalized_backend == "data_retrieval":
             return "db"
+        if normalized_backend == "python":
+            return "python"
         if normalized_backend == "data_profiling":
             raise ValueError(
                 "Halo optimizer does not support data_profiling nodes in optimized"
@@ -956,7 +1006,8 @@ class HaloOptimizer(BaseOptimizer):
             )
         raise ValueError(
             "Halo optimizer only supports backends in "
-            "{'vllm','transformers','diffusers','omni','data_retrieval','http'}. "
+            "{'vllm','transformers','diffusers','omni','data_retrieval','http',"
+            "'python'}. "
             f"Got backend={backend!r} task_type={normalized_task_type!r}"
         )
 
@@ -981,13 +1032,20 @@ class HaloOptimizer(BaseOptimizer):
             )
         if node.engine == "http":
             return self._http_exec_cost(node)
-        if node.engine == "echo":
-            return self._echo_exec_cost(node)
+        if node.engine == "python":
+            return self._python_exec_cost(node)
         return self._db_input_sec * self._input_query_count
 
-    def _echo_exec_cost(self, node: Node) -> float:
-        # An echo task runs a small function on a CPU worker, like other non-GPU nodes.
-        return self._db_input_sec * self._input_query_count
+    @staticmethod
+    def _python_exec_cost(node: Node) -> float:
+        """A python step's run time is unknown before it runs; cost it at a
+        small fraction of its timeout so it neither dominates the plan nor
+        looks free next to an LLM call."""
+        raw = node.raw if isinstance(node.raw, dict) else {}
+        timeout = raw.get("timeout_s")
+        if not isinstance(timeout, (int, float)):
+            timeout = python_step.DEFAULT_TIMEOUT_SECONDS
+        return 0.05 * float(timeout)
 
     def _http_exec_cost(self, node: Node) -> float:
         raw = node.raw if isinstance(node.raw, dict) else {}

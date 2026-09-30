@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from flowmesh.exceptions import APIError
+from flowmesh.models.result import APIResult
 from lumilake import envs
 
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -354,15 +355,15 @@ async def test_workflow_submit_sanitizes_api_error_before_reraising(
 
 
 class _FakeResults:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: Any) -> None:
         self._payload = payload
 
-    async def retrieve(self, task_id: str) -> dict[str, Any]:
+    async def retrieve(self, task_id: str) -> Any:
         return self._payload
 
 
 class _FakeFlowMeshClient:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: Any) -> None:
         self.results = _FakeResults(payload)
 
 
@@ -375,10 +376,13 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
     job artifact and reachable through the artifact API. A credential the
     remote endpoint reflects back under a key that isn't one of the
     recognized sensitive keys must still be scrubbed before archival."""
-    leaking_payload = {
-        "text": "call failed",
-        "debug": {"request_headers": "Authorization: Bearer sk-live-leaked-secret"},
-    }
+    leaking_payload = APIResult(
+        executor="api",
+        method="POST",
+        url="https://api.example.com/v1/chat",
+        status_code=200,
+        text="call failed: Authorization: Bearer sk-live-leaked-secret",
+    )
     monkeypatch.setattr(
         "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_context",
         lambda: _FakeFlowMeshClient(leaking_payload),

@@ -473,10 +473,12 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
     assert lambda_cols and lambda_cols[0]["data"]["items"] == ["HELLO, NVDA!"]
 
 
-def test_api_lambda_over_runtime_output_builds() -> None:
-    """A Lambda message transform over a runtime output must build in API mode:
-    the transform renders as a graph_template function step in the data_spec,
-    and the executor substitutes the rendered messages into ``{{prompt}}``."""
+def test_api_lambda_over_runtime_output_fails_closed() -> None:
+    """A Lambda message transform over a runtime output must fail closed in API
+    mode with a self-explaining error: the API request body cannot carry a
+    graph_template function step, and the server does not execute LambdaOp code
+    to render it. This pins the rejection so it cannot silently become a
+    wrong-answer path."""
     stock = input_placeholder("Stock")
     local = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -496,13 +498,9 @@ def test_api_lambda_over_runtime_output_builds() -> None:
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    node = runtime_graph.nodes[llm.id]
-    assert node.api_spec["json"]["messages"] == "{{prompt}}"
-    assert node.dependencies == (local.id,)
-    steps = node.data_spec["template"]["options"]["format"]["steps"]
-    assert any("function" in step for step in steps)
+    with pytest.raises(ValueError, match="Lambda message transform is not supported"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_api_rowwise_template_emits_single_task() -> None:
@@ -1908,10 +1906,10 @@ def test_vlm_through_format_op_feeds_api_llm() -> None:
     assert upstream_cols and upstream_cols[0]["path"] == "items.output"
 
 
-def test_condition_source_fanned_through_lambda_builds() -> None:
-    """A single-row consumer conditioned on a source whose multi-row input comes
-    through a LambdaOp must build: the consumer is not multi-row, so the
-    fail-closed condition does not fire."""
+def test_api_lambda_over_multi_row_input_fails_closed() -> None:
+    """A Lambda message transform over a multi-row literal input cannot be
+    folded into one constant, so in API mode it must fail closed rather than
+    have the server evaluate the function per row."""
     stock = input_placeholder("Stock")
 
     def _shout(inputs: tuple[str | list[Message], ...]) -> str:
@@ -1926,25 +1924,10 @@ def test_condition_source_fanned_through_lambda_builds() -> None:
             api=ApiConfig(),
         ),
     )
-    consumer = LLMChatOp(
-        [OpMessage(role="user", content="hi")],
-        config=GenerationConfig(
-            model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig(),
-        ),
-        condition={"node": src.id, "expr": "src == on"},
-    )
-    compiled = Graph.from_ops(
-        [as_output("src_out", src), as_output("result", consumer)]
-    ).compile(Stock=["a", "b"])
+    compiled = Graph.from_ops([as_output("src_out", src)]).compile(Stock=["a", "b"])
 
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    (src_row,) = runtime_graph.dsl_to_runtime[src.id]
-    (consumer_row,) = runtime_graph.dsl_to_runtime[consumer.id]
-    assert runtime_graph.nodes[consumer_row].condition == {
-        "node": src_row,
-        "expr": "src == on",
-    }
+    with pytest.raises(ValueError, match="Lambda message transform is not supported"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
