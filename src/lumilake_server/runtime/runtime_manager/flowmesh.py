@@ -616,11 +616,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         Returns
         -------
         dict[str, Any]
-            The worker profile including capabilities and current load.
+            The worker's hardware sections plus ``supported_task_types``, the
+            sorted task types its executors advertise.
         """
         worker = await flowmesh_for_server().workers.retrieve(worker_id)
         assert worker.id == worker_id
-        return worker.hardware.model_dump() if worker.hardware else {}
+        profile = worker.hardware.model_dump() if worker.hardware else {}
+        profile["supported_task_types"] = sorted(
+            str(task_type) for task_type in worker.capabilities.supported_task_types
+        )
+        return profile
 
     async def get_request_status(
         self,

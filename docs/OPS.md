@@ -226,9 +226,11 @@ Where the function runs depends on what reads it:
   and the Lumilake server never executes it. Its inputs may be LLM or
   data-retrieval ops, other `LambdaOp`s, workflow inputs or literal data; the
   function is applied once per row (length-1 inputs broadcast) and the step
-  emits `items[].output` like any other items-producing op. The FlowMesh site
-  must run a worker version that supports the `python` task type; without one
-  the step does not run.
+  emits `items[].output` like any other items-producing op. The step is placed
+  only on a CPU worker that advertises the `python` task type (a Docker-backed
+  worker on a FlowMesh version that supports it). While every such worker is
+  busy the batch waits for capacity; with no such worker in the cluster the
+  schedule fails before dispatch.
 - **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the

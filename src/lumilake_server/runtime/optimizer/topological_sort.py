@@ -1,15 +1,20 @@
 """Topological-sort baseline optimizer.
 
-Assigns every GPU-backend node to the first GPU worker and every CPU
-node to the first CPU worker, in topological order. Serves as the
-naive baseline against which cost-aware optimizers (HALO, HALO+Helium)
-are measured.
+Assigns every GPU-backend node to the first GPU worker and every CPU node to the
+first CPU worker, in topological order. A node of a capability-gated task type
+goes to the first CPU worker that advertises it. Serves as
+the naive baseline against which cost-aware optimizers (HALO, HALO+Helium) are
+measured.
 """
 
 from typing import Any
 
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.worker_capability import (
+    CAPABILITY_GATED_TASK_TYPES,
+    advertised_task_types,
+)
 
 _GPU_BACKENDS = {"vllm", "transformers", "diffusers", "omni"}
 
@@ -39,7 +44,22 @@ class TopologicalSortOptimizer(BaseOptimizer):
         assignment: dict[str, list[str]] = {w: [] for w in worker_names}
         for node_id in graph.topological_order():
             op = graph.nodes[node_id]
-            if op.backend in _GPU_BACKENDS:
+            if op.task_type in CAPABILITY_GATED_TASK_TYPES:
+                candidates = [
+                    w
+                    for w in worker_names
+                    if not worker_profiles.get(w, {}).get("has_gpu")
+                    and op.task_type
+                    in advertised_task_types(worker_profiles.get(w, {}))
+                ]
+                if not candidates:
+                    raise ValueError(
+                        f"Node '{node_id}' has task type {op.task_type!r}, but none"
+                        f" of the selected CPU workers in {list(worker_names)}"
+                        " advertises it."
+                    )
+                assignment[candidates[0]].append(node_id)
+            elif op.backend in _GPU_BACKENDS:
                 assignment[gpu_workers[0]].append(node_id)
             else:
                 assignment[cpu_workers[0]].append(node_id)
