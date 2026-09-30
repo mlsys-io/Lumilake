@@ -1064,14 +1064,14 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
                 output_task_id="task-1",
                 request_id=request_info.request_id,
                 items=self._items,
-                output_path="items.output",
+                output_path="value.items.output",
                 list_lambda=True,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
 
-def _install_echo_build_and_schedule(server: Any, output_name: str) -> None:
-    """Fake build/schedule that marks the output node as a list-Lambda (echo)."""
+def _install_list_lambda_build_and_schedule(server: Any, output_name: str) -> None:
+    """Fake build/schedule that marks the output node as a list-mode python step."""
 
     def _fake_build(
         compiled_graph: Any,
@@ -1083,10 +1083,10 @@ def _install_echo_build_and_schedule(server: Any, output_name: str) -> None:
         node_id = f"{node_prefix}__{suffix}"
         op = RuntimeOp(
             node_id=node_id,
-            task_type="echo",
-            backend="echo",
-            model="echo",
-            data_spec={},
+            task_type="python",
+            backend="python",
+            model="",
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
@@ -1154,7 +1154,7 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
         "_merge_group_compiled_graph",
         lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
     )
-    _install_echo_build_and_schedule(server, "observations")
+    _install_list_lambda_build_and_schedule(server, "observations")
 
     await server._run_batch(["worker-1"], batch)
 
@@ -1191,7 +1191,7 @@ async def test_list_lambda_output_multi_slice_run_fails_closed(
         "_merge_group_compiled_graph",
         lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
     )
-    _install_echo_build_and_schedule(server, "observations")
+    _install_list_lambda_build_and_schedule(server, "observations")
 
     await server._run_batch(["worker-1"], batch)
 
