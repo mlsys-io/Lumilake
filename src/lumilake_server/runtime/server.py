@@ -29,6 +29,7 @@ import lumilake_server.hooks as server_hooks
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
@@ -2787,7 +2788,10 @@ class LumilakeServer:
             (group_key, output_name)
             for node_id, (group_key, output_name) in output_mapping.items()
             if batch_request_info.runtime_graph.nodes.get(node_id) is not None
-            and batch_request_info.runtime_graph.nodes[node_id].task_type == "echo"
+            and batch_request_info.runtime_graph.nodes[node_id].task_type
+            == python_step.TASK_TYPE
+            and batch_request_info.runtime_graph.nodes[node_id].data_spec.get("mode")
+            == "list"
         }
 
         for node_id, outputs in flat_outputs.items():

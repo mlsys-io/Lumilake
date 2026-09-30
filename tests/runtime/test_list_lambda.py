@@ -3,19 +3,29 @@ import textwrap
 import pytest
 from lumilake import envs
 
+from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LambdaOp, as_output, data
+from lumilake_server.ops import (
+    LambdaOp,
+    LLMChatOp,
+    OpMessage,
+    as_output,
+    data,
+    input_placeholder,
+)
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
+_RUNTIME_TOKEN = "test" + "-pat"
 
 
 @pytest.fixture(autouse=True)
 def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", _RUNTIME_TOKEN)
 
 
 def _build(yaml_text: str) -> RuntimeGraph:
@@ -61,10 +71,12 @@ def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
     runtime_graph = _build(yaml_text)
 
     explode_node = next(
-        n for n in runtime_graph.nodes.values() if n.task_type == "echo"
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert explode_node.data_spec["type"] == "function"
-    assert explode_node.data_spec["arguments"] == [{"items": ["NVDA", "AAPL"]}]
+    assert explode_node.data_spec["mode"] == "list"
+    assert explode_node.data_spec["plan"] == [
+        {"kind": "literal", "values": ["NVDA", "AAPL"]}
+    ]
 
     summarize_node = next(
         n
@@ -76,7 +88,7 @@ def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
     assert {
         "label": "value",
         "node": explode_node.node_id,
-        "path": "items.output.value",
+        "path": "value.items.output.value",
     } in columns
 
 
@@ -119,18 +131,22 @@ def test_list_lambda_groups_then_collapses() -> None:
     )
     runtime_graph = _build(yaml_text)
 
-    echo_nodes = [n for n in runtime_graph.nodes.values() if n.task_type == "echo"]
-    assert len(echo_nodes) == 2
+    python_nodes = [n for n in runtime_graph.nodes.values() if n.task_type == "python"]
+    assert len(python_nodes) == 2
     group_node = next(
         n
-        for n in echo_nodes
-        if n.data_spec["arguments"] == [{"items": ["NVDA", "AAPL"]}]
+        for n in python_nodes
+        if n.data_spec["plan"] == [{"kind": "literal", "values": ["NVDA", "AAPL"]}]
     )
-    collapse_node = next(n for n in echo_nodes if n is not group_node)
-    (collapse_arg,) = collapse_node.data_spec["arguments"]
-    assert collapse_arg["path"] == "items.output"
-    assert collapse_arg["node"] in runtime_graph.nodes
-    assert collapse_arg["node"] in collapse_node.dependencies
+    collapse_node = next(n for n in python_nodes if n is not group_node)
+    summarize_node = next(
+        n
+        for n in runtime_graph.nodes.values()
+        if n.task_type == "inference" and "columns" in n.data_spec
+    )
+    (collapse_plan,) = collapse_node.data_spec["plan"]
+    assert collapse_plan == {"kind": "stage", "node": summarize_node.node_id}
+    assert summarize_node.node_id in collapse_node.dependencies
     assert collapse_node.node_id in runtime_graph.output_node_map
 
 
@@ -155,10 +171,12 @@ def test_list_lambda_as_workflow_output() -> None:
     )
     runtime_graph = _build(yaml_text)
 
-    (explode_node,) = [n for n in runtime_graph.nodes.values() if n.task_type == "echo"]
-    assert explode_node.data_spec["type"] == "function"
+    (explode_node,) = [
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
+    ]
+    assert explode_node.data_spec["mode"] == "list"
     assert explode_node.node_id in runtime_graph.output_node_map
-    assert runtime_graph.output_paths[explode_node.node_id] == "items.output"
+    assert runtime_graph.output_paths[explode_node.node_id] == "value.items.output"
 
 
 def test_list_lambda_in_message_chain_raises() -> None:
@@ -267,13 +285,17 @@ def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
     runtime_graph = _build(yaml_text)
 
     explode_node = next(
-        n for n in runtime_graph.nodes.values() if n.task_type == "echo"
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert explode_node.data_spec["type"] == "function"
-    (extract_arg,) = explode_node.data_spec["arguments"]
-    assert extract_arg["path"] == "items.output"
-    assert extract_arg["node"] in runtime_graph.nodes
-    assert extract_arg["node"] in explode_node.dependencies
+    assert explode_node.data_spec["mode"] == "list"
+    extract_node = next(
+        n
+        for n in runtime_graph.nodes.values()
+        if n.task_type == "inference" and "columns" not in n.data_spec
+    )
+    (extract_plan,) = explode_node.data_spec["plan"]
+    assert extract_plan == {"kind": "stage", "node": extract_node.node_id}
+    assert extract_node.node_id in explode_node.dependencies
 
     summarize_node = next(
         n
@@ -285,11 +307,11 @@ def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
     assert {
         "label": "value",
         "node": explode_node.node_id,
-        "path": "items.output.value",
+        "path": "value.items.output.value",
     } in columns
 
     order = {node_id: idx for idx, node_id in enumerate(runtime_graph.node_order)}
-    assert order[extract_arg["node"]] < order[explode_node.node_id]
+    assert order[extract_node.node_id] < order[explode_node.node_id]
     assert order[explode_node.node_id] < order[summarize_node.node_id]
 
 
@@ -301,5 +323,43 @@ def test_list_lambda_data_op_input_compiles() -> None:
 
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    (explode_node,) = [n for n in runtime_graph.nodes.values() if n.task_type == "echo"]
-    assert explode_node.data_spec["arguments"] == [{"items": ["NVDA", "AAPL"]}]
+    (explode_node,) = [
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
+    ]
+    assert explode_node.data_spec["plan"] == [
+        {"kind": "literal", "values": ["NVDA", "AAPL"]}
+    ]
+
+
+def test_api_op_reads_list_lambda_at_value_items_output() -> None:
+    """An API-backed rowwise LLMChatOp reading a list-mode Lambda must bind the
+    column to the python stage at ``value.items.output``."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")  # type: ignore[arg-type]
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Summarize the rows.")],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_template="Summarize {value}.",
+        rowwise_columns=[
+            {"label": "value", "node": explode.id, "path": "items.output.value"}
+        ],
+    )
+    llm.inputs.append(explode)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (explode_node,) = [
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
+    ]
+    assert explode_node.data_spec["mode"] == "list"
+    (llm_node,) = runtime_graph.dsl_to_runtime[llm.id]
+    node = runtime_graph.nodes[llm_node]
+    assert node.data_spec["columns"][0] == {
+        "label": "value",
+        "node": explode_node.node_id,
+        "path": "value.items.output.value",
+    }

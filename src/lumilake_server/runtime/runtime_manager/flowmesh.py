@@ -24,6 +24,7 @@ from flowmesh.exceptions import APIError
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
@@ -947,24 +948,32 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         else:
             output_field_parts = ("output",)
             if output_path is not None:
-                if (
-                    not isinstance(output_path, str)
-                    or not output_path.startswith("items.")
-                    or output_path == "items."
-                ):
-                    raise RuntimeError(
-                        f"OutputOp {output_op_id!r} has malformed path "
-                        f"{output_path!r}"
+                if list_lambda:
+                    # A list-mode python step's output is read at value.items.output.
+                    if output_path != "value.items.output":
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                else:
+                    if (
+                        not isinstance(output_path, str)
+                        or not output_path.startswith("items.")
+                        or output_path == "items."
+                    ):
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    parts = tuple(
+                        part for part in output_path[len("items.") :].split(".") if part
                     )
-                parts = tuple(
-                    part for part in output_path[len("items.") :].split(".") if part
-                )
-                if not parts:
-                    raise RuntimeError(
-                        f"OutputOp {output_op_id!r} has malformed path "
-                        f"{output_path!r}"
-                    )
-                output_field_parts = parts
+                    if not parts:
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    output_field_parts = parts
         if list_lambda:
             # A list-mode Lambda runs once per run over whole input lists: one output.
             return [
@@ -1313,7 +1322,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 expected_row_count=self._embedding_row_count(
                     request_info.runtime_graph, output_op_id
                 ),
-                list_lambda=output_node is not None and output_node.task_type == "echo",
+                list_lambda=output_node is not None
+                and output_node.task_type == python_step.TASK_TYPE
+                and output_node.data_spec.get("mode") == "list",
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []

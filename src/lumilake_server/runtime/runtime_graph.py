@@ -481,7 +481,7 @@ class RuntimeGraphBuilder:
             if lambda_op_id in output_source_to_outputop:
                 output_name, path_override = output_source_to_outputop[lambda_op_id]
                 output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items.output"
+                output_paths[runtime_op.node_id] = path_override or "value.items.output"
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -1262,27 +1262,25 @@ class RuntimeGraphBuilder:
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
     ) -> RuntimeOp:
-        """Compile a list-mode LambdaOp to one FlowMesh ``echo`` task."""
-        arguments: list[dict[str, Any]] = []
+        """Compile a list-mode LambdaOp to one FlowMesh ``python`` task."""
+        plan: python_step.ColumnPlan = []
         dependencies: list[str] = []
         for inp in op.inputs:
             if isinstance(inp, LambdaOp) and inp.mode == "list":
-                arguments.append({"node": inp.id, "path": "items.output"})
+                plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
-                arguments.append(
-                    {"node": inp.id, "path": self._upstream_output_path(inp)}
-                )
+                plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
-            elif isinstance(inp, (InputOp, DataOp)):
-                values = (
-                    inputs_dict.get(inp.name) if isinstance(inp, InputOp) else inp.data
-                )
+            elif isinstance(inp, InputOp):
+                values = inputs_dict.get(inp.name)
                 if values is None:
                     raise ValueError(
                         f"LambdaOp '{op_id}' input '{inp.id}' has no values supplied."
                     )
-                arguments.append({"items": list(values)})
+                plan.append({"kind": "literal", "values": list(values)})
+            elif isinstance(inp, DataOp):
+                plan.append({"kind": "literal", "values": list(inp.data)})
             else:
                 raise ValueError(
                     f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
@@ -1290,18 +1288,26 @@ class RuntimeGraphBuilder:
                     f"(got {type(inp).__name__})"
                 )
         data_spec: dict[str, Any] = {
-            "type": "function",
-            "function": op.code,
-            "arguments": arguments,
+            "code": op.code,
+            "fn_name": op.fn.__name__,
+            "plan": plan,
+            "mode": "list",
+            "timeout_s": (
+                python_step.DEFAULT_TIMEOUT_SECONDS
+                if op.timeout_s is None
+                else op.timeout_s
+            ),
         }
+        if op.memory_mb is not None:
+            data_spec["memory_mb"] = op.memory_mb
         return self._create_runtime_op(
             name=op_id,
-            task_type="echo",
+            task_type=python_step.TASK_TYPE,
             data_spec=data_spec,
             model_spec={},
             inference_spec={},
-            backend="echo",
-            model="echo",
+            backend=python_step.BACKEND,
+            model="",
             dependencies=dependencies if dependencies else None,
         )
 
@@ -1535,6 +1541,14 @@ class RuntimeGraphBuilder:
                     " 'items.output' (the whole output) is supported."
                 )
             path = self._upstream_output_path(upstream)
+        elif isinstance(upstream, LambdaOp) and upstream.mode == "list":
+            if not path.startswith("items.output"):
+                raise ValueError(
+                    f"Column '{label}' of consumer '{consumer_id}' reads"
+                    f" '{path}' from list-mode Lambda '{node_ref}'; only"
+                    " 'items.output' (the whole output) is supported."
+                )
+            path = "value." + path
         return {"label": label, "node": node_ref, "path": path}
 
     def _row_condition(
