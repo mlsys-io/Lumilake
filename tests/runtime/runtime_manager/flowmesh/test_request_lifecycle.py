@@ -456,7 +456,7 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A list-mode Lambda output node runs once over the whole input lists,
-    so its echo result's several items must collapse into ONE output value
+    so its python step's several items must collapse into ONE output value
     holding the whole list, not one output per item."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
