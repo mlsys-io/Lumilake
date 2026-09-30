@@ -102,18 +102,18 @@ class Nodes(SyncResource):
         )
         return WorkerRegisterResponse.model_validate(data)
 
-    def start_worker(self, node_id: str, worker_name: str) -> None:
+    def start_worker(self, node_id: str, alias: str) -> None:
         """Start a worker on a node."""
         self._client._request(
             "POST",
-            f"/nodes/{node_id}/workers/{worker_name}/start",
+            f"/nodes/{node_id}/workers/{alias}/start",
         )
 
-    def stop_worker(self, node_id: str, worker_name: str) -> None:
+    def stop_worker(self, node_id: str, alias: str) -> None:
         """Stop a worker on a node."""
         self._client._request(
             "POST",
-            f"/nodes/{node_id}/workers/{worker_name}/stop",
+            f"/nodes/{node_id}/workers/{alias}/stop",
         )
 
 
@@ -206,16 +206,16 @@ class AsyncNodes(AsyncResource):
         )
         return WorkerRegisterResponse.model_validate(data)
 
-    async def start_worker(self, node_id: str, worker_name: str) -> None:
+    async def start_worker(self, node_id: str, alias: str) -> None:
         """Start a worker on a node."""
         await self._client._request(
             "POST",
-            f"/nodes/{node_id}/workers/{worker_name}/start",
+            f"/nodes/{node_id}/workers/{alias}/start",
         )
 
-    async def stop_worker(self, node_id: str, worker_name: str) -> None:
+    async def stop_worker(self, node_id: str, alias: str) -> None:
         """Stop a worker on a node."""
         await self._client._request(
             "POST",
-            f"/nodes/{node_id}/workers/{worker_name}/stop",
+            f"/nodes/{node_id}/workers/{alias}/stop",
         )

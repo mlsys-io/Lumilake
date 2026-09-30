@@ -28,6 +28,7 @@ from .catalog import (
     OmniText2ImageResult,
     OmniText2SpeechResult,
     PPOResult,
+    PythonResult,
     RAGResult,
     ResultEnvelope,
     ServeResult,
@@ -84,6 +85,7 @@ _RESULT_MODELS: tuple[type[BaseModel], ...] = (
     EchoResult,
     APIResult,
     SSHResult,
+    PythonResult,
     ResultEnvelope,
 )
 for _model in _RESULT_MODELS:
@@ -136,5 +138,6 @@ __all__ = [
     "ResultEnvelope",
     "SFTResult",
     "SSHResult",
+    "PythonResult",
     "ServeResult",
 ]

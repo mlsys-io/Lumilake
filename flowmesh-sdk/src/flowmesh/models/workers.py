@@ -121,3 +121,15 @@ class Worker(BaseModel):
 
 class WorkerInfo(Worker):
     stale: bool = False
+    cordoned: bool = False
+
+
+class WorkerCordon(BaseModel):
+    node_alias: str
+    alias: str
+
+
+class WorkerCordonResult(WorkerCordon):
+    cordoned: bool
+    changed: bool
+    worker_ids: list[str] = Field(default_factory=list)

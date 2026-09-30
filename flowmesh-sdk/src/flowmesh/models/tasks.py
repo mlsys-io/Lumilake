@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from .common import TaskStatus
 
@@ -27,7 +27,9 @@ class TaskInfo(BaseModel):
     owner_id: str
     org_id: str
     supplier_id: str
-    source: str
+    # TODO(deprecate): `raw_yaml` is for servers before 0.1.10, which send `source`
+    # under that key; remove in the next minor release.
+    source: str = Field(validation_alias=AliasChoices("source", "raw_yaml"))
     task: dict[str, Any]
     status: TaskStatus
     task_type: str | None = None
