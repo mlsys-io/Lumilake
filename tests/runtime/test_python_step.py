@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from lumilake import envs
 
-from lumilake_server.common import GenerationConfig
+from lumilake_server.common import GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     FormatOp,
@@ -23,6 +23,7 @@ from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.utils import lambda_runtime
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -129,9 +130,16 @@ outputs:
 # ------------------------------------------------------------------ #
 
 
-def _run_wrapper(code: str, plan: python_step.ColumnPlan, inputs: dict[str, str]):
+def _run_wrapper(
+    code: str,
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    fn_name: str | None = None,
+):
+    """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
+    declared = fn_name or lambda_runtime.validate_source(code)
     namespace: dict[str, Any] = {}
-    exec(python_step.wrapper_source("op-1", code, plan), namespace)
+    exec(python_step.wrapper_source("op-1", declared, code, plan), namespace)
     return namespace["main"](inputs)
 
 
@@ -173,6 +181,20 @@ def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
             ],
             {},
         )
+
+
+def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
+    code = "def a(inputs):\n    return 'a'\n"
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
+    assert _run_wrapper(code, plan, {}, fn_name="a") == {"items": [{"output": "a"}]}
+    with pytest.raises(ValueError, match="does not match"):
+        _run_wrapper(code, plan, {}, fn_name="b")
+
+
+def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
+    out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
+    assert out == {"items": [{"output": "x"}]}
 
 
 def test_wrapper_requires_a_function_first() -> None:
@@ -238,6 +260,22 @@ def test_prefixed_python_step_mounts_the_prefixed_stage() -> None:
     code = fm["spec"]["code"]
     assert llm_id in code
     assert llm.id not in code.replace(llm_id, "")
+
+
+def test_python_step_carries_the_declared_fn_name() -> None:
+    def shout(inputs: tuple[str | list[Message], ...]) -> str:
+        return str(inputs[0]).upper()
+
+    stock = input_placeholder("Stock")
+    op = LambdaOp([stock], fn=shout)
+    compiled = Graph.from_ops([as_output("shouted", op)]).compile(Stock=["NVDA"])
+    node = RuntimeGraphBuilder().build(compiled).nodes[op.id]
+
+    assert node.data_spec["fn_name"] == "shout"
+    code = node.to_flowmesh_node()["spec"]["code"]
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
+    assert namespace["main"]({}) == {"items": [{"output": "NVDA"}]}
 
 
 def test_python_step_timeout_and_memory_reach_the_task() -> None:

@@ -194,7 +194,10 @@ values.
 `LambdaOp` runs a serialized Python function against the listed
 upstream values. YAML carries the function as source code (`code`) plus
 a `fn_name`. The function must accept the input tuple in the same
-order as `inputs:` and return a string.
+order as `inputs:` and return a string. For `def` source, `fn_name` must be the
+function the code defines first; a different name is rejected rather than
+running some other function. For a `lambda` expression `fn_name` is only a
+label.
 
 ```yaml
 inputs:

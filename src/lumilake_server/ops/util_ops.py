@@ -41,7 +41,7 @@ class SubmittedFunction:
     """
 
     def __init__(self, code: str, fn_name: str) -> None:
-        validate_source(code)
+        validate_source(code, fn_name)
         self.code = code
         self.__name__ = fn_name
 

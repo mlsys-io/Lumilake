@@ -640,6 +640,7 @@ class RuntimeGraphBuilder:
 
         data_spec: dict[str, Any] = {
             "code": op.code,
+            "fn_name": op.fn.__name__,
             "plan": plan,
             "timeout_s": (
                 python_step.DEFAULT_TIMEOUT_SECONDS

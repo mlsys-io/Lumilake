@@ -43,6 +43,7 @@ _WRAPPER = """\
 import os
 
 _USER_CODE = {code!r}
+_FN_NAME = {fn_name!r}
 _PLAN = json.loads({plan!r})
 
 
@@ -68,7 +69,7 @@ def _column(entry, inputs):
 
 
 def main(inputs):
-    fn = materialize(_USER_CODE)
+    fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs) for entry in _PLAN]
     n = max((len(c) for c in columns), default=1)
     for entry, col in zip(_PLAN, columns):
@@ -82,12 +83,13 @@ def main(inputs):
 """
 
 
-def wrapper_source(op_id: str, user_code: str, plan: ColumnPlan) -> str:
+def wrapper_source(op_id: str, fn_name: str, user_code: str, plan: ColumnPlan) -> str:
     """The python-task code for one standalone LambdaOp."""
     return _WRAPPER.format(
         op_id=op_id,
         runtime=inspect.getsource(lambda_runtime),
         code=user_code,
+        fn_name=fn_name,
         plan=json.dumps(plan),
     )
 
@@ -97,7 +99,7 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
     plan: ColumnPlan = data_spec["plan"]
     spec: dict[str, Any] = {
         "taskType": TASK_TYPE,
-        "code": wrapper_source(node_id, data_spec["code"], plan),
+        "code": wrapper_source(node_id, data_spec["fn_name"], data_spec["code"], plan),
         "entrypoint": "main",
         "timeoutSeconds": data_spec["timeout_s"],
     }

@@ -43,6 +43,27 @@ def test_validation_parses_but_never_executes() -> None:
         lambda_runtime.materialize(code)
 
 
+def test_declared_fn_name_must_match_the_first_function() -> None:
+    assert lambda_runtime.validate_source(_SHOUT, "shout") == "shout"
+    assert lambda_runtime.materialize(_SHOUT, "shout")(("hi",)) == "HI"
+    with pytest.raises(ValueError, match="does not match"):
+        lambda_runtime.validate_source(_SHOUT, "other")
+    with pytest.raises(ValueError, match="does not match"):
+        lambda_runtime.materialize(_SHOUT, "other")
+
+
+def test_declared_fn_name_only_labels_a_lambda() -> None:
+    assert lambda_runtime.validate_source("lambda a: a[0]", "label") == "<lambda>"
+    assert lambda_runtime.materialize("lambda a: a[0]", "label")(("x",)) == "x"
+
+
+def test_the_first_function_binding_grammar_is_unchanged() -> None:
+    code = "def other(a):\n    return 'other'\ndef wanted(a):\n    return 'wanted'"
+    assert lambda_runtime.validate_source(code) == "other"
+    with pytest.raises(ValueError, match="does not match"):
+        lambda_runtime.validate_source(code, "wanted")
+
+
 @pytest.mark.parametrize(
     "code, message",
     [
@@ -68,6 +89,21 @@ def test_deserialized_lambda_op_never_runs_its_code() -> None:
     assert op._serialize()["timeout_s"] == 5
     with pytest.raises(RuntimeError, match="does not execute submitted code"):
         op.fn(("x",))
+
+
+def test_deserialize_rejects_a_fn_name_the_code_does_not_define() -> None:
+    with pytest.raises(ValueError, match="does not match"):
+        LambdaOp._from_json({"fn_name": "other", "_code": _SHOUT, "_inputs": []}, {})
+    op = LambdaOp._from_json(
+        {"fn_name": "label", "_code": "lambda a: a[0]", "_inputs": []}, {}
+    )
+    assert op._serialize()["fn_name"] == "label"
+
+
+def test_yaml_fn_name_that_the_code_does_not_define_is_rejected() -> None:
+    payload = _CHAIN.replace("fn_name: shout", "fn_name: whisper")
+    with pytest.raises(ValueError, match="does not match"):
+        _build(payload)
 
 
 def test_deserialize_rejects_bad_source_and_limits() -> None:
