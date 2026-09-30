@@ -439,8 +439,8 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
 def test_api_lambda_over_runtime_output_fails_closed() -> None:
     """A Lambda message transform over a runtime output must fail closed in API
     mode with a self-explaining error: the API request body cannot carry a
-    graph_template function step, so the transform cannot be evaluated at
-    dispatch time. This pins the rejection so it cannot silently become a
+    graph_template function step, and the server does not execute LambdaOp code
+    to render it. This pins the rejection so it cannot silently become a
     wrong-answer path."""
     stock = input_placeholder("Stock")
     local = LLMChatOp(
@@ -462,7 +462,7 @@ def test_api_lambda_over_runtime_output_fails_closed() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
 
-    with pytest.raises(ValueError, match="Lambda message transform over a runtime"):
+    with pytest.raises(ValueError, match="Lambda message transform is not supported"):
         RuntimeGraphBuilder().build(compiled)
 
 
@@ -1870,6 +1870,30 @@ def test_condition_source_fanned_through_lambda_fails_closed() -> None:
     ).compile(Stock=["a", "b"])
 
     with pytest.raises(ValueError, match="fanned out into"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_api_lambda_over_multi_row_input_fails_closed() -> None:
+    """A Lambda message transform over a multi-row literal input cannot be
+    folded into one constant, so in API mode it must fail closed rather than
+    have the server evaluate the function per row."""
+    stock = input_placeholder("Stock")
+
+    def _shout(inputs: tuple[str | list[Message], ...]) -> str:
+        (text,) = inputs
+        return str(text)
+
+    lam = LambdaOp([stock], fn=_shout)
+    src = LLMChatOp(
+        [OpMessage(role="user", content=lam)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    compiled = Graph.from_ops([as_output("src_out", src)]).compile(Stock=["a", "b"])
+
+    with pytest.raises(ValueError, match="Lambda message transform is not supported"):
         RuntimeGraphBuilder().build(compiled)
 
 

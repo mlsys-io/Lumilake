@@ -217,30 +217,51 @@ outputs:
 
 Where the function runs depends on what reads it:
 
-- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
-  task as a template function step.
 - **An output, or read only by other `LambdaOp`s** (as above): compiled to its
-  own FlowMesh `python` task. The code runs in a per-task container with no
-  network, as an unprivileged user, with a 600 s timeout. Its inputs may be
-  LLM or data-retrieval ops, other `LambdaOp`s, workflow inputs or literal
-  data; the function is applied once per row (length-1 inputs broadcast) and
-  the step emits `items[].output` like any other items-producing op. The
-  FlowMesh site must run a worker version that supports the `python` task type.
-- **Evaluated by the server at build time**: a `LambdaOp` whose inputs are all
-  literal (workflow inputs, `DataOp`s, `FormatOp`s over them) is folded into a
-  constant, and an API-mode `LLMChatOp` renders its function steps into the
-  request body. The server never runs your code in its own process: it
-  evaluates it in a separate, isolated Python child with an empty environment,
-  a throwaway working directory and resource limits, one child per op for all
-  of its rows. The function sees the same restricted namespace in every case
-  (a small set of builtins plus `json`, `re`, `math`, `np`, `pd`).
+  own FlowMesh `python` task. This is the isolated path for submitted code: the
+  code runs in a per-task container with no network, as an unprivileged user,
+  and the Lumilake server never executes it. Its inputs may be LLM or
+  data-retrieval ops, other `LambdaOp`s, workflow inputs or literal data; the
+  function is applied once per row (length-1 inputs broadcast) and the step
+  emits `items[].output` like any other items-producing op. The FlowMesh site
+  must run a worker version that supports the `python` task type; without one
+  the step does not run.
+- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
+  task as a template function step, and evaluated by the FlowMesh worker that
+  runs the task. This is not a Lumilake-provided isolation boundary; use the
+  standalone form above for code that should run in its own container.
+- **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
+  server does not run `LambdaOp` code to render an API request body, and the
+  request body cannot carry a function step, so the build fails with an error
+  naming the step. Make the `LambdaOp` a workflow output, or use a non-API
+  `LLMChatOp`.
 
-Optional per-op limits for that build-time evaluation:
+The server never executes submitted `LambdaOp` code in its own process or in a
+child of it. Submitted source is only parsed (it must be a lambda, or source
+whose first binding is a one-parameter `def`), and a `LambdaOp` whose inputs are
+all literal is not folded into a constant when its code was submitted. Code
+authored through the Python SDK in the same process (`LambdaOp(fn=...)` with a
+real callable, as used by library callers of the graph builder) is the caller's
+own trusted code and may be called in-process.
+
+In every location the function sees the same namespace: a small set of builtins
+(`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`, `sum`,
+`max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`, `map`,
+`filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`, `np`
+and `pd`. The standalone task embeds the same materializer the server validates
+against. This namespace fixes which names resolve; it is **not** a security
+boundary. In the standalone task the container is the boundary, and `np` / `pd`
+resolve only if the task image provides them.
+
+Optional per-op limits for the standalone `python` task:
 
 | Field | Default | Bounds | Meaning |
 |---|---|---|---|
-| `timeout_s` | 30 | (0, 600] | Wall-clock limit; the child is killed after it. Also the standalone `python` task's timeout. |
-| `memory_mb` | 1024 | [128, 8192] | Address-space limit for the child. |
+| `timeout_s` | 600 | (0, 600] | Task timeout in seconds (`timeoutSeconds`). |
+| `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
+
+The limits apply only to the standalone `python` task; they have no effect on a
+`LambdaOp` that an LLM op inlines.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see

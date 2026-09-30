@@ -84,9 +84,7 @@ class RuntimeOp:
     def to_flowmesh_node(self) -> dict[str, Any]:
         spec_payload: dict[str, Any] = {"taskType": self.task_type}
         if self.task_type == python_step.TASK_TYPE:
-            spec_payload = python_step.flowmesh_spec(
-                self.data_spec, list(self.dependencies)
-            )
+            spec_payload = python_step.flowmesh_spec(self.node_id, self.data_spec)
         if self.task_type not in {"api", python_step.TASK_TYPE}:
             spec_payload["data"] = self.data_spec
         if self.task_type == "api":

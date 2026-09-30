@@ -1009,8 +1009,8 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         raise ValueError(f"LambdaOp '{entry.id}' requires 'code: str'")
     op_dict["fn_name"] = fn_name
     op_dict["_code"] = code
-    # Optional sandbox limits for evaluating the code on the server
-    # (utils/sandbox_exec); bounds are checked when the op is built.
+    # Optional limits for the FlowMesh python task the op compiles to; bounds
+    # are checked when the op is built.
     for key, kind in (("timeout_s", (int, float)), ("memory_mb", int)):
         value = entry.fields.get(key)
         if value is None:

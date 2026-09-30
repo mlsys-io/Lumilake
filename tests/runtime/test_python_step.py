@@ -20,6 +20,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
+from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 
@@ -145,7 +146,7 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
     out = _run_wrapper(
         "def join(inputs):\n    return '-'.join(inputs)\n",
-        [{"kind": "stage", "name": "llm"}, {"kind": "literal", "values": ["x"]}],
+        [{"kind": "stage", "node": "llm"}, {"kind": "literal", "values": ["x"]}],
         {"llm": llm_dir},
     )
     assert out == {"items": [{"output": "a-x"}, {"output": "b-x"}]}
@@ -156,7 +157,7 @@ def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     api_dir = _stage(tmp_path, "api", {"text": "t"})
     out = _run_wrapper(
         "lambda inputs: inputs[0] + inputs[1]",
-        [{"kind": "stage", "name": "py"}, {"kind": "stage", "name": "api"}],
+        [{"kind": "stage", "node": "py"}, {"kind": "stage", "node": "api"}],
         {"py": py_dir, "api": api_dir},
     )
     assert out == {"items": [{"output": "pt"}]}
@@ -174,14 +175,105 @@ def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
         )
 
 
-def test_wrapper_requires_one_function() -> None:
-    with pytest.raises(ValueError, match="exactly one function"):
-        _run_wrapper("def a(x):\n    return x\ndef b(x):\n    return x\n", [], {})
+def test_wrapper_requires_a_function_first() -> None:
+    with pytest.raises(ValueError, match="first binding"):
+        _run_wrapper("X = 1\ndef a(x):\n    return x\n", [], {})
+
+
+def test_wrapper_keeps_the_restricted_namespace() -> None:
+    out = _run_wrapper(
+        "def f(inputs):\n    return json.dumps([math.floor(2.5), len(inputs)])",
+        [{"kind": "literal", "values": ["x"]}],
+        {},
+    )
+    assert out == {"items": [{"output": "[2, 1]"}]}
+    with pytest.raises(NameError, match="open"):
+        _run_wrapper("def f(inputs):\n    return open('/etc/passwd').read()", [], {})
+    with pytest.raises(NameError, match="__import__"):
+        _run_wrapper("def f(inputs):\n    return __import__('os').name", [], {})
+
+
+def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
+    out = _run_wrapper(
+        "def f(inputs):\n    return str(np.array([1, 2]).sum() + len(pd.Series([1])))",
+        [],
+        {},
+    )
+    assert out == {"items": [{"output": "4"}]}
 
 
 # ------------------------------------------------------------------ #
-# Scheduling and result collection
+# Node prefixes, limits and scheduling
 # ------------------------------------------------------------------ #
+
+
+def _llm_then_lambda(**lambda_kwargs: Any) -> Any:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model=_MODEL),
+    )
+    shout = LambdaOp(
+        [llm, stock], fn=lambda inputs: str(inputs[0]).upper(), **lambda_kwargs
+    )
+    compiled = Graph.from_ops([as_output("shouted", shout)]).compile(Stock=["NVDA"])
+    return llm, shout, compiled
+
+
+def test_prefixed_python_step_mounts_the_prefixed_stage() -> None:
+    llm, shout, compiled = _llm_then_lambda()
+    graph = RuntimeGraphBuilder().build(compiled, node_prefix="job1")
+
+    (llm_id,) = graph.dsl_to_runtime[llm.id]
+    (py_id,) = graph.dsl_to_runtime[shout.id]
+    assert llm_id != llm.id and py_id != shout.id
+    node = graph.nodes[py_id]
+    assert node.dependencies == (llm_id,)
+
+    fm = node.to_flowmesh_node()
+    assert fm["dependsOn"] == [llm_id]
+    assert fm["spec"]["inputs"] == [{"stage": llm_id}]
+    code = fm["spec"]["code"]
+    assert llm_id in code
+    assert llm.id not in code.replace(llm_id, "")
+
+
+def test_python_step_timeout_and_memory_reach_the_task() -> None:
+    _, shout, compiled = _llm_then_lambda(timeout_s=45, memory_mb=512)
+    graph = RuntimeGraphBuilder().build(compiled)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["timeoutSeconds"] == 45
+    assert spec["resources"] == {"hardware": {"memory": "512Mi"}}
+
+
+def test_python_step_defaults_carry_the_default_timeout() -> None:
+    _, shout, compiled = _llm_then_lambda()
+    node = RuntimeGraphBuilder().build(compiled).nodes[shout.id]
+    assert node.data_spec["timeout_s"] == python_step.DEFAULT_TIMEOUT_SECONDS
+    spec = node.to_flowmesh_node()["spec"]
+    assert spec["timeoutSeconds"] == python_step.DEFAULT_TIMEOUT_SECONDS
+    assert "resources" not in spec
+
+
+@pytest.mark.parametrize("kwargs", [{"timeout_s": 0}, {"timeout_s": 601}])
+def test_lambda_op_rejects_a_bad_timeout(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="timeout_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), **kwargs)
+
+
+@pytest.mark.parametrize("value", [1, 10**9, True])
+def test_lambda_op_rejects_a_bad_memory_limit(value: Any) -> None:
+    with pytest.raises(ValueError, match="memory_mb"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), memory_mb=value)
+
+
+def test_halo_costs_a_default_python_step_at_five_percent_of_its_timeout() -> None:
+    def cost(raw: dict[str, Any]) -> float:
+        node = Node(id="n", type="python", engine="python", model="", raw=raw)
+        return HaloOptimizer._python_exec_cost(node)
+
+    assert cost({}) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
+    assert cost({"timeout_s": 100}) == 5.0
 
 
 def test_halo_maps_python_to_its_own_cpu_engine() -> None:

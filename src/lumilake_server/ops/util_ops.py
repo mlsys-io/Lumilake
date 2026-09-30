@@ -6,7 +6,50 @@ import dill
 
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
-from lumilake_server.utils.sandbox_exec import SandboxedFunction, resolve_limits
+from lumilake_server.utils.lambda_runtime import validate_source
+
+MAX_TIMEOUT_S = 600.0
+MIN_MEMORY_MB = 128
+MAX_MEMORY_MB = 8192
+
+
+def _validate_limits(timeout_s: float | None, memory_mb: int | None) -> None:
+    if timeout_s is not None:
+        if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+            raise ValueError(f"timeout_s must be a number, got {timeout_s!r}")
+        if not 0 < timeout_s <= MAX_TIMEOUT_S:
+            raise ValueError(
+                f"timeout_s must be in (0, {MAX_TIMEOUT_S:g}], got {timeout_s}"
+            )
+    if memory_mb is not None:
+        if isinstance(memory_mb, bool) or not isinstance(memory_mb, int):
+            raise ValueError(f"memory_mb must be an integer, got {memory_mb!r}")
+        if not MIN_MEMORY_MB <= memory_mb <= MAX_MEMORY_MB:
+            raise ValueError(
+                f"memory_mb must be in [{MIN_MEMORY_MB}, {MAX_MEMORY_MB}],"
+                f" got {memory_mb}"
+            )
+
+
+class SubmittedFunction:
+    """Stand-in for a LambdaOp function that arrived as source text.
+
+    A submitted graph carries caller-supplied code, which the server never
+    executes in its own process: this holds the parse-validated source and
+    refuses to be called. The code runs only as a FlowMesh ``python`` task
+    (``runtime/python_step.py``).
+    """
+
+    def __init__(self, code: str, fn_name: str) -> None:
+        validate_source(code)
+        self.code = code
+        self.__name__ = fn_name
+
+    def __call__(self, args: tuple[SingleDtype, ...]) -> str:
+        raise RuntimeError(
+            f"LambdaOp function '{self.__name__}' was submitted as source; the"
+            " server does not execute submitted code"
+        )
 
 
 @Op.registry.register("FormatOp")
@@ -81,7 +124,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
     ) -> None:
-        resolve_limits(timeout_s, memory_mb)  # fail at definition, not at run
+        _validate_limits(timeout_s, memory_mb)
         input_ops: list[Op] = []
         for inp in inputs:
             if isinstance(inp, Op):
@@ -90,7 +133,7 @@ class LambdaOp(Op):
                 input_ops.append(DataOp(inp))
         super().__init__(input_ops)
         self.fn = fn
-        # Sandbox limits for evaluating `code` on the server (utils/sandbox_exec).
+        # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
         if code:
@@ -146,13 +189,9 @@ class LambdaOp(Op):
 
         timeout_s = data.get("timeout_s")
         memory_mb = data.get("memory_mb")
-        # Caller-supplied code: never exec'd here. The stand-in validates it by
-        # parsing only and evaluates it in a sandboxed child when called.
         try:
-            fn = SandboxedFunction(
-                code, fn_name, timeout_s=timeout_s, memory_mb=memory_mb
-            )
-        except (RuntimeError, ValueError) as exc:
+            fn = SubmittedFunction(code, fn_name)
+        except ValueError as exc:
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]

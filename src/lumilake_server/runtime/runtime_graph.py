@@ -27,6 +27,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
+from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
@@ -41,11 +42,6 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.graph import topological_sort
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
-)
-from lumilake_server.utils.sandbox_exec import (
-    SandboxedFunction,
-    SandboxError,
-    run_lambda,
 )
 
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
@@ -148,28 +144,6 @@ def _inline_single_value_list_params(
         value = str(items[0]).replace("'", "''")
         rendered = rendered.replace(placeholder, value)
     return rendered, remaining
-
-
-def _fold_lambda(op: LambdaOp, literal_args: list[str]) -> list[str]:
-    """Fold a LambdaOp whose inputs are all literal into its one output row.
-
-    A LambdaOp that arrived in a submitted graph (``Graph.from_json``, the only
-    way a caller's op reaches the server) holds a ``SandboxedFunction``: its
-    code is evaluated in a sandboxed child (utils/sandbox_exec), never in this
-    process. Any other ``fn`` is a Python callable constructed in this process
-    — the SDK used as a library, or the server's own ops — and is called as is.
-    """
-    if not isinstance(op.fn, SandboxedFunction):
-        return [str(op.fn(tuple(literal_args)))]
-    try:
-        return run_lambda(
-            op.code,
-            [tuple(literal_args)],
-            timeout_s=getattr(op, "timeout_s", None),
-            memory_mb=getattr(op, "memory_mb", None),
-        )
-    except SandboxError as exc:
-        raise ValueError(f"LambdaOp '{op.id}' failed: {exc}") from exc
 
 
 @dataclass
@@ -660,16 +634,21 @@ class RuntimeGraphBuilder:
                     " Python step reads LLM, data-retrieval, Lambda, input or data"
                     " ops"
                 )
-            plan.append({"kind": "stage", "name": dep})
+            plan.append({"kind": "stage", "node": dep})
             if dep not in dependencies:
                 dependencies.append(dep)
 
         data_spec: dict[str, Any] = {
-            "code": python_step.wrapper_source(op_id, op.code, plan),
-            "stages": dependencies,
+            "code": op.code,
+            "plan": plan,
+            "timeout_s": (
+                python_step.DEFAULT_TIMEOUT_SECONDS
+                if op.timeout_s is None
+                else op.timeout_s
+            ),
         }
-        if getattr(op, "timeout_s", None) is not None:
-            data_spec["timeout_s"] = op.timeout_s
+        if op.memory_mb is not None:
+            data_spec["memory_mb"] = op.memory_mb
         runtime_op = self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
@@ -2381,7 +2360,14 @@ class RuntimeGraphBuilder:
 
             step = step_by_label[label]
             if "function" in step:
-                return _resolve_function_step(label, step)
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode cannot render message step"
+                    f" '{label}': a Lambda message transform is not supported in"
+                    " API mode. The server does not execute LambdaOp code, and an"
+                    " API request body cannot carry a graph_template function"
+                    " step. Make the LambdaOp a workflow output (it runs as an"
+                    " isolated FlowMesh python task) or use a non-API LLMChatOp."
+                )
             template = step["template"]
             arguments = step.get("arguments") or []
             arg_rows: dict[str, list[str]] = {}
@@ -2407,50 +2393,6 @@ class RuntimeGraphBuilder:
                 )
                 for index in range(step_row_count)
             ]
-
-        def _resolve_function_step(label: str, step: dict[str, Any]) -> list[str]:
-            code = step["function"]
-            arguments = step.get("arguments") or []
-            arg_rows: list[list[str]] = []
-            step_row_count = 1
-            for argument in arguments:
-                rows = _resolve_label_rows(argument)
-                if len(rows) > 1:
-                    if step_row_count != 1 and step_row_count != len(rows):
-                        raise ValueError(
-                            f"LLMChatOp '{llm_op_id}' API mode step '{label}' has"
-                            " mismatched row counts across its arguments."
-                        )
-                    step_row_count = len(rows)
-                arg_rows.append(rows)
-            if any(
-                _PLACEHOLDER_RE.search(value) for rows in arg_rows for value in rows
-            ):
-                raise ValueError(
-                    f"LLMChatOp '{llm_op_id}' API mode cannot render message step"
-                    f" '{label}': a Lambda message transform over a runtime output"
-                    " is not supported in API mode. The API request body cannot"
-                    " carry a graph_template function step, so the transform"
-                    " cannot be evaluated at dispatch time. Apply the transform"
-                    " in a separate local op, or keep this op local."
-                )
-            # Caller-supplied code: evaluated in a sandboxed child, all rows in one.
-            try:
-                return run_lambda(
-                    code,
-                    [
-                        tuple(
-                            rows[index] if len(rows) > 1 else rows[0]
-                            for rows in arg_rows
-                        )
-                        for index in range(step_row_count)
-                    ],
-                )
-            except SandboxError as exc:
-                raise ValueError(
-                    f"LLMChatOp '{llm_op_id}' API mode could not evaluate message"
-                    f" step '{label}': {exc}"
-                ) from exc
 
         def _resolve_content_rows(content: Any) -> list[str]:
             if not isinstance(content, str):
@@ -2982,7 +2924,8 @@ class RuntimeGraphBuilder:
                     return template.format(**resolved_kwargs)
 
                 literal_args: list[str] = []
-                can_evaluate = True
+                # Submitted code is never called here; it stays a function step.
+                can_evaluate = not isinstance(op.fn, SubmittedFunction)
                 for inp_op in op.inputs:
                     msgs = message_labels[inp_op.id]
                     if len(msgs) != 1:
@@ -2998,7 +2941,7 @@ class RuntimeGraphBuilder:
                     columns[label] = {
                         "data": {
                             "type": "list",
-                            "items": _fold_lambda(op, literal_args),
+                            "items": [str(op.fn(tuple(literal_args)))],
                         }
                     }
                     ancestor_buffer[op.id] = [(Roles.USER, label)]

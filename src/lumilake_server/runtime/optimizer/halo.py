@@ -10,6 +10,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
     data_profile_key_for_node_query,
@@ -995,7 +996,9 @@ class HaloOptimizer(BaseOptimizer):
         looks free next to an LLM call."""
         raw = node.raw if isinstance(node.raw, dict) else {}
         timeout = raw.get("timeout_s")
-        return 0.05 * float(timeout) if isinstance(timeout, (int, float)) else 5.0
+        if not isinstance(timeout, (int, float)):
+            timeout = python_step.DEFAULT_TIMEOUT_SECONDS
+        return 0.05 * float(timeout)
 
     def _http_exec_cost(self, node: Node) -> float:
         raw = node.raw if isinstance(node.raw, dict) else {}
