@@ -200,6 +200,8 @@ def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
         {},
     )
     assert out == {"items": [{"output": "4"}]}
+    with pytest.raises(ImportError, match="'os'"):
+        _run_wrapper("def f(inputs):\n    np\n    return __import__('os').name", [], {})
 
 
 # ------------------------------------------------------------------ #

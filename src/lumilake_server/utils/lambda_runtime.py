@@ -3,7 +3,8 @@
 A LambdaOp function is ``fn(row: tuple[str, ...]) -> str``, written as a lambda
 or as source whose first binding is a one-parameter ``def``. It sees a fixed
 namespace: a small set of builtins plus ``json``, ``re``, ``math``, ``np`` and
-``pd``. ``np`` and ``pd`` are imported only when the code names them.
+``pd``. ``np`` and ``pd`` are imported only when the code names them, and then the
+function can import only those two packages.
 
 The namespace fixes what names resolve; it is not a security boundary, because
 the object graph reaches every class without a single builtin. Caller-supplied
@@ -53,6 +54,25 @@ SAFE_BUILTIN_NAMES = (
 )
 
 _SOURCE_NAME = "<lambda_op>"
+_IMPORTABLE_ROOTS = ("numpy", "pandas")
+
+
+def _library_import(
+    name: str,
+    globals: Any = None,
+    locals: Any = None,
+    fromlist: Any = (),
+    level: int = 0,
+) -> Any:
+    """``__import__`` for a function that names ``np`` or ``pd``.
+
+    numpy and pandas import their own internals lazily from C, and CPython
+    resolves ``__import__`` in the calling frame's builtins, which are
+    restricted here. Only those two packages are importable through this hook.
+    """
+    if level != 0 or name.partition(".")[0] not in _IMPORTABLE_ROOTS:
+        raise ImportError(f"import of {name!r} is not available in a LambdaOp function")
+    return builtins.__import__(name, globals, locals, fromlist, level)
 
 
 def _param_count(args: ast.arguments) -> int:
@@ -122,6 +142,8 @@ def materialize(code: str) -> Callable[[tuple[Any, ...]], Any]:
         import pandas
 
         namespace["pd"] = pandas
+    if "np" in used or "pd" in used:
+        namespace["__builtins__"]["__import__"] = _library_import
     if src.startswith("lambda"):
         return eval(compile(src, _SOURCE_NAME, "eval"), namespace)
     exec(compile(src, _SOURCE_NAME, "exec"), namespace)
