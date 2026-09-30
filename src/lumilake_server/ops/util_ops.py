@@ -4,11 +4,9 @@ from typing import Any
 
 import dill
 
-from lumilake_server.common import Message
-from lumilake_server.ops import ops
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
-from lumilake_server.utils.func_serialization import safe_materialize_function
+from lumilake_server.utils.sandbox_exec import SandboxedFunction, resolve_limits
 
 
 @Op.registry.register("FormatOp")
@@ -80,7 +78,10 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: Callable[[tuple[SingleDtype, ...]], str],
         code: str | None = None,
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
     ) -> None:
+        resolve_limits(timeout_s, memory_mb)  # fail at definition, not at run
         input_ops: list[Op] = []
         for inp in inputs:
             if isinstance(inp, Op):
@@ -89,6 +90,9 @@ class LambdaOp(Op):
                 input_ops.append(DataOp(inp))
         super().__init__(input_ops)
         self.fn = fn
+        # Sandbox limits for evaluating `code` on the server (utils/sandbox_exec).
+        self.timeout_s = timeout_s
+        self.memory_mb = memory_mb
         if code:
             self.code: str = code
         else:
@@ -122,11 +126,16 @@ class LambdaOp(Op):
             self.code = fn_serialized
 
     def _serialize(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "fn_name": self.fn.__name__,
             "_code": self.code,
             "_inputs": [inp.id for inp in self.inputs],
         }
+        if self.timeout_s is not None:
+            data["timeout_s"] = self.timeout_s
+        if self.memory_mb is not None:
+            data["memory_mb"] = self.memory_mb
+        return data
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "LambdaOp":
@@ -135,17 +144,25 @@ class LambdaOp(Op):
         if not fn_name or not code:
             raise ValueError("LambdaOp serialization missing function code or name")
 
-        extra_globals: dict[str, Any] = {
-            "ops": ops,
-            "Message": Message,
-        }
-
-        fn = safe_materialize_function(code, extra_globals)
-        if not callable(fn):
-            raise ValueError(f"Failed to deserialize LambdaOp function '{fn_name}'")
+        timeout_s = data.get("timeout_s")
+        memory_mb = data.get("memory_mb")
+        # Caller-supplied code: never exec'd here. The stand-in validates it by
+        # parsing only and evaluates it in a sandboxed child when called.
+        try:
+            fn = SandboxedFunction(
+                code, fn_name, timeout_s=timeout_s, memory_mb=memory_mb
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
-        return cls(inputs=input_ops, fn=fn, code=code)
+        return cls(
+            inputs=input_ops,
+            fn=fn,
+            code=code,
+            timeout_s=timeout_s,
+            memory_mb=memory_mb,
+        )
 
 
 def lambda_op(

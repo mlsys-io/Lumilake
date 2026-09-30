@@ -226,6 +226,21 @@ Where the function runs depends on what reads it:
   data; the function is applied once per row (length-1 inputs broadcast) and
   the step emits `items[].output` like any other items-producing op. The
   FlowMesh site must run a worker version that supports the `python` task type.
+- **Evaluated by the server at build time**: a `LambdaOp` whose inputs are all
+  literal (workflow inputs, `DataOp`s, `FormatOp`s over them) is folded into a
+  constant, and an API-mode `LLMChatOp` renders its function steps into the
+  request body. The server never runs your code in its own process: it
+  evaluates it in a separate, isolated Python child with an empty environment,
+  a throwaway working directory and resource limits, one child per op for all
+  of its rows. The function sees the same restricted namespace in every case
+  (a small set of builtins plus `json`, `re`, `math`, `np`, `pd`).
+
+Optional per-op limits for that build-time evaluation:
+
+| Field | Default | Bounds | Meaning |
+|---|---|---|---|
+| `timeout_s` | 30 | (0, 600] | Wall-clock limit; the child is killed after it. Also the standalone `python` task's timeout. |
+| `memory_mb` | 1024 | [128, 8192] | Address-space limit for the child. |
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see

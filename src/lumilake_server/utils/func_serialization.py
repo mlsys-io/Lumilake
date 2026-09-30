@@ -12,6 +12,12 @@ Security model:
 - Type validation: enforces Callable[[tuple[str, ...]], str] signature
 - Isolated execution: exec() with explicit safe_globals/safe_locals
 
+NOT a security boundary. The restricted namespace is escapable, so the server
+never uses this for caller-supplied code: a submitted LambdaOp is evaluated in
+a sandboxed child process by ``utils/sandbox_exec.py``, which keeps the same
+``SAFE_BUILTINS``/``SAFE_MODULES`` contract. This module remains for trusted,
+in-process use.
+
 Typical usage:
     fn_obj = safe_materialize_function("lambda args: args[0].upper()")
     result = safe_execute_function(fn_obj, ("hello",))  # Returns "HELLO"

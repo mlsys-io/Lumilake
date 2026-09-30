@@ -38,10 +38,14 @@ from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _type_default_sample,
 )
-from lumilake_server.utils.func_serialization import safe_materialize_function
 from lumilake_server.utils.graph import topological_sort
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
+)
+from lumilake_server.utils.sandbox_exec import (
+    SandboxedFunction,
+    SandboxError,
+    run_lambda,
 )
 
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
@@ -144,6 +148,28 @@ def _inline_single_value_list_params(
         value = str(items[0]).replace("'", "''")
         rendered = rendered.replace(placeholder, value)
     return rendered, remaining
+
+
+def _fold_lambda(op: LambdaOp, literal_args: list[str]) -> list[str]:
+    """Fold a LambdaOp whose inputs are all literal into its one output row.
+
+    A LambdaOp that arrived in a submitted graph (``Graph.from_json``, the only
+    way a caller's op reaches the server) holds a ``SandboxedFunction``: its
+    code is evaluated in a sandboxed child (utils/sandbox_exec), never in this
+    process. Any other ``fn`` is a Python callable constructed in this process
+    — the SDK used as a library, or the server's own ops — and is called as is.
+    """
+    if not isinstance(op.fn, SandboxedFunction):
+        return [str(op.fn(tuple(literal_args)))]
+    try:
+        return run_lambda(
+            op.code,
+            [tuple(literal_args)],
+            timeout_s=getattr(op, "timeout_s", None),
+            memory_mb=getattr(op, "memory_mb", None),
+        )
+    except SandboxError as exc:
+        raise ValueError(f"LambdaOp '{op.id}' failed: {exc}") from exc
 
 
 @dataclass
@@ -638,13 +664,16 @@ class RuntimeGraphBuilder:
             if dep not in dependencies:
                 dependencies.append(dep)
 
+        data_spec: dict[str, Any] = {
+            "code": python_step.wrapper_source(op_id, op.code, plan),
+            "stages": dependencies,
+        }
+        if getattr(op, "timeout_s", None) is not None:
+            data_spec["timeout_s"] = op.timeout_s
         runtime_op = self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
-            data_spec={
-                "code": python_step.wrapper_source(op_id, op.code, plan),
-                "stages": dependencies,
-            },
+            data_spec=data_spec,
             model_spec={},
             inference_spec={},
             backend=python_step.BACKEND,
@@ -2405,18 +2434,23 @@ class RuntimeGraphBuilder:
                     " cannot be evaluated at dispatch time. Apply the transform"
                     " in a separate local op, or keep this op local."
                 )
-            fn = safe_materialize_function(code)
-            return [
-                str(
-                    fn(
+            # Caller-supplied code: evaluated in a sandboxed child, all rows in one.
+            try:
+                return run_lambda(
+                    code,
+                    [
                         tuple(
                             rows[index] if len(rows) > 1 else rows[0]
                             for rows in arg_rows
                         )
-                    )
+                        for index in range(step_row_count)
+                    ],
                 )
-                for index in range(step_row_count)
-            ]
+            except SandboxError as exc:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' API mode could not evaluate message"
+                    f" step '{label}': {exc}"
+                ) from exc
 
         def _resolve_content_rows(content: Any) -> list[str]:
             if not isinstance(content, str):
@@ -2964,7 +2998,7 @@ class RuntimeGraphBuilder:
                     columns[label] = {
                         "data": {
                             "type": "list",
-                            "items": [str(op.fn(tuple(literal_args)))],
+                            "items": _fold_lambda(op, literal_args),
                         }
                     }
                     ancestor_buffer[op.id] = [(Roles.USER, label)]

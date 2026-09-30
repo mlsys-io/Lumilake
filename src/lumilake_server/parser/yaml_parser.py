@@ -1009,6 +1009,15 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         raise ValueError(f"LambdaOp '{entry.id}' requires 'code: str'")
     op_dict["fn_name"] = fn_name
     op_dict["_code"] = code
+    # Optional sandbox limits for evaluating the code on the server
+    # (utils/sandbox_exec); bounds are checked when the op is built.
+    for key, kind in (("timeout_s", (int, float)), ("memory_mb", int)):
+        value = entry.fields.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, kind):
+            raise ValueError(f"LambdaOp '{entry.id}' '{key}' must be a number")
+        op_dict[key] = value
 
 
 def _build_generation_config(
