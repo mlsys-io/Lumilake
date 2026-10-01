@@ -127,7 +127,6 @@ ignore = ["I001"]
 
 [tool.mypy]
 python_version = "3.12"
-ignore_missing_imports = true
 files = [
     "packages/sdk/src",
     "packages/cli/src",
@@ -137,6 +136,23 @@ files = [
     "scripts",
     "tests",
 ]
+
+[[tool.mypy.overrides]]
+# flowmesh*, pandas, dill ship without type stubs or py.typed markers.
+module = [
+    "flowmesh",
+    "flowmesh.*",
+    "flowmesh_cli_stack.*",
+    "flowmesh_stack.*",
+    "pandas",
+    "dill",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Test helpers imported as top-level `support.*` from tests/support/.
+module = ["support.*"]
+ignore_missing_imports = true
 
 [tool.bandit]
 skips = [
