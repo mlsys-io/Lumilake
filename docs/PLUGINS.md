@@ -9,7 +9,7 @@ Lumilake uses `lumid-hooks` for shared extension points that can also be reused 
 | `IdentityProvider` | Resolve a request into a `PrincipalContext`. |
 | `SubmissionGuard` | Allow or deny job submission before work is queued. |
 | `PermissionChecker` | Authorize actions on resource kinds and resource IDs. |
-| `ResourceRegistrar` | Register or deregister resource ownership/lifecycle records; `reconcile` is called once at startup with the full set of live resources. |
+| `ResourceRegistrar` | Register or deregister resource ownership/lifecycle records. |
 | `UsageSink` | Receive usage rows emitted by the server. |
 
 Lumilake resource kinds and actions live under `lumilake_hook` so hook implementations can avoid hard-coded strings.
