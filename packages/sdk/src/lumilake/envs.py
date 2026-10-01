@@ -122,7 +122,7 @@ LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 # Scheduling policy: "default" (per-user round-robin with affinity clustering),
-# "fifo", "spt", "lpt", "affinity", or "plas".
+# "fifo", "spt", "lpt", or "plas".
 LUMILAKE_SCHEDULER_POLICY: str = (
     (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "default").strip().lower()
 )

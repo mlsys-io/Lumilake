@@ -219,9 +219,6 @@ the future. The policies:
   all estimated ones; ties by enqueue order.
 - **`lpt`**: largest `estimate_area` first; items without an estimate after
   all estimated ones; ties by enqueue order.
-- **`affinity`**: pure affinity clustering order (the ids in `affinity_rank`,
-  in order), then fill up to `batch_size` with remaining candidates in enqueue
-  order. This is `default` without the per-user round-robin seed.
 - **`plas`**: program-level least attained service (Autellix). Keyed by the
   item's chain (`chain_id`, else the request id), lowest attained service
   first; ties by enqueue order. Each committed item charges its `estimate_area`

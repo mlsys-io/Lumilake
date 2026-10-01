@@ -151,8 +151,6 @@ EXPECTED = {
     # Smallest area first; the cpu tie breaks by enqueue order; no estimate last.
     "spt": ["cpu1", "cpu0", "gpu", "gpu2", "agent"],
     "lpt": ["gpu2", "gpu", "cpu1", "cpu0", "agent"],
-    # Affinity picks, then the rest in enqueue order.
-    "affinity": ["gpu2", "cpu1", "agent", "gpu", "cpu0"],
     # Chain c1 has attained service; c2's only round charged nothing, so it
     # ties with the standalone jobs at zero and sorts by enqueue order.
     "plas": ["agent", "gpu2", "cpu1", "cpu0", "gpu"],
