@@ -1,8 +1,8 @@
 import textwrap
 
 import pytest
-from lumilake import envs
 
+from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -40,8 +40,7 @@ def _explode_fn(items: tuple[str, ...]) -> list[dict[str, str]]:
 
 
 def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: list_lambda_rowwise
         inputs:
           stock: ["NVDA", "AAPL"]
@@ -66,8 +65,7 @@ def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
             config: { model: meta-llama/Llama-3.1-8B-Instruct }
         outputs:
           - { name: out, ref: summarize }
-        """
-    )
+        """)
     runtime_graph = _build(yaml_text)
 
     explode_node = next(
@@ -93,8 +91,7 @@ def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
 
 
 def test_list_lambda_groups_then_collapses() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: list_lambda_groups_collapse
         inputs:
           stock: ["NVDA", "AAPL"]
@@ -127,8 +124,7 @@ def test_list_lambda_groups_then_collapses() -> None:
             mode: list
         outputs:
           - { name: out, ref: collapse }
-        """
-    )
+        """)
     runtime_graph = _build(yaml_text)
 
     python_nodes = [n for n in runtime_graph.nodes.values() if n.task_type == "python"]
@@ -151,8 +147,7 @@ def test_list_lambda_groups_then_collapses() -> None:
 
 
 def test_list_lambda_as_workflow_output() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: list_lambda_output
         inputs:
           stock: ["NVDA", "AAPL"]
@@ -167,8 +162,7 @@ def test_list_lambda_as_workflow_output() -> None:
             mode: list
         outputs:
           - { name: out, ref: explode }
-        """
-    )
+        """)
     runtime_graph = _build(yaml_text)
 
     (explode_node,) = [
@@ -180,8 +174,7 @@ def test_list_lambda_as_workflow_output() -> None:
 
 
 def test_list_lambda_in_message_chain_raises() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: list_lambda_in_chain
         inputs:
           stock: ["NVDA"]
@@ -203,15 +196,13 @@ def test_list_lambda_in_message_chain_raises() -> None:
             config: { model: meta-llama/Llama-3.1-8B-Instruct }
         outputs:
           - { name: out, ref: summarize }
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="node column"):
         _build(yaml_text)
 
 
 def test_per_row_lambda_behaviour_unchanged() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: per_row_lambda
         inputs:
           stock: ["NVDA"]
@@ -232,8 +223,7 @@ def test_per_row_lambda_behaviour_unchanged() -> None:
             config: { model: meta-llama/Llama-3.1-8B-Instruct }
         outputs:
           - { name: out, ref: summarize }
-        """
-    )
+        """)
     runtime_graph = _build(yaml_text)
 
     assert not any(n.task_type == "echo" for n in runtime_graph.nodes.values())
@@ -247,8 +237,7 @@ def test_per_row_lambda_behaviour_unchanged() -> None:
 
 
 def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: list_lambda_over_llm
         inputs:
           stock: ["NVDA"]
@@ -280,8 +269,7 @@ def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
             config: { model: meta-llama/Llama-3.1-8B-Instruct }
         outputs:
           - { name: out, ref: summarize }
-        """
-    )
+        """)
     runtime_graph = _build(yaml_text)
 
     explode_node = next(
