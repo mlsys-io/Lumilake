@@ -55,6 +55,6 @@ class BaseSchedulingPolicy(ABC):
         """Hook invoked after a batch is committed.
 
         The default is a no-op. A policy that tracks attained service (e.g.
-        fair_index) charges it here, on commit rather than on selection so an
+        plas) charges it here, on commit rather than on selection so an
         aborted reservation does not corrupt the accounting.
         """

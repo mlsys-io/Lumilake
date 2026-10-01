@@ -8,12 +8,10 @@ one registry entry — no branches in the job manager.
 from lumilake import envs
 
 from .base import BaseSchedulingPolicy
-from .fair_index import FairIndexSchedulingPolicy
 from .legacy import LegacySchedulingPolicy
 
 SCHEDULING_POLICIES: dict[str, type[BaseSchedulingPolicy]] = {
     "legacy": LegacySchedulingPolicy,
-    "fair_index": FairIndexSchedulingPolicy,
 }
 
 
@@ -38,7 +36,6 @@ def create_scheduling_policy(
 
 __all__ = [
     "BaseSchedulingPolicy",
-    "FairIndexSchedulingPolicy",
     "LegacySchedulingPolicy",
     "SCHEDULING_POLICIES",
     "create_scheduling_policy",

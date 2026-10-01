@@ -85,8 +85,6 @@ class PriorityJobManager(BaseJobManager):
         cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
         gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
         policy: str = envs.LUMILAKE_SCHEDULER_POLICY,
-        fair_share_target: float = envs.LUMILAKE_FAIR_SHARE_TARGET,
-        fairness_half_life_seconds: float = envs.LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS,
         cost_params: CostParams | None = None,
         clock: Callable[[], float] = time.monotonic,
         worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
@@ -140,8 +138,6 @@ class PriorityJobManager(BaseJobManager):
         self._policy = policy
         self._policy_impl = create_scheduling_policy(
             policy,
-            fair_share_target=fair_share_target,
-            fairness_half_life_seconds=fairness_half_life_seconds,
             cost_params=cost_params,
             clock=clock,
         )
