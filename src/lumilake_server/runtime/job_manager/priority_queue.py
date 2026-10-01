@@ -131,9 +131,9 @@ class PriorityJobManager(BaseJobManager):
         self._unsatisfiable_count: dict[PartitionKey, int] = {}
         # Whether the partition key carries the ``requires_gpu`` split. Mirrors
         # the server's capacity-aware-selection lever: when off, the key drops
-        # ``requires_gpu`` so partitioning returns to its pre-change shape and
-        # CPU and GPU items in the same principal/token/credential/optimizer/
-        # hardware class share a partition (head-of-line behaviour returns).
+        # ``requires_gpu`` so CPU and GPU items in the same principal/token/
+        # credential/optimizer/hardware class share a partition (head-of-line
+        # blocking applies within it).
         self._capacity_aware_selection = capacity_aware_selection
         self._policy = policy
         self._policy_impl = create_scheduling_policy(
