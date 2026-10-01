@@ -80,6 +80,7 @@ lint = [
     "types-requests==2.33.0.20260906",
     "types-pyyaml==6.0.12.20260906",
     "types-docker==7.2.0.20260923",
+    "pandas-stubs==3.0.5.260914",
     "pre-commit==4.6.2",
 ]
 dev = [
@@ -139,13 +140,12 @@ files = [
 ]
 
 [[tool.mypy.overrides]]
-# flowmesh*, pandas, dill ship without type stubs or py.typed markers.
+# flowmesh* and dill ship without type stubs or py.typed markers.
 module = [
     "flowmesh",
     "flowmesh.*",
     "flowmesh_cli_stack.*",
     "flowmesh_stack.*",
-    "pandas",
     "dill",
 ]
 ignore_missing_imports = true
