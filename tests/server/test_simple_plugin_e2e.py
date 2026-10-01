@@ -9,11 +9,11 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from lumid_hooks import PrincipalContext, ResourceRef
-from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 
 import lumilake_server.utils.job_storage as job_storage_module
 from examples.plugins import simple_plugin
 from examples.plugins.simple_plugin import state as simple_plugin_state
+from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from lumilake_server import hooks
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes import trace as trace_routes

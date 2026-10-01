@@ -5,7 +5,6 @@ from contextlib import AbstractAsyncContextManager
 from typing import TypeVar
 
 from lumilake.log import log_on_exception_async
-
 from lumilake_server.runtime.utils.queue import AIOQueue, AsyncQueue
 
 E = TypeVar("E")

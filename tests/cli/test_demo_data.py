@@ -1,6 +1,7 @@
 """Unit tests for _demo_data helpers: lumid_config_from_env, compose_key_prefix."""
 
 import pytest
+
 from lumilake_deploy._demo_data import (
     compose_key_prefix,
     lumid_config_from_env,

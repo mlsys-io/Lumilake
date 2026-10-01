@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 import urllib3
+
 from lumilake_deploy._demo_data import (
     LumidBlobClient,
     compose_key_prefix,

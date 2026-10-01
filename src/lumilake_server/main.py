@@ -12,9 +12,9 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+
 from lumilake import envs
 from lumilake.log import configure_default_logger, init_child_logger
-
 from lumilake_server import __version__
 from lumilake_server.hooks import register
 from lumilake_server.middleware import TraceIdMiddleware

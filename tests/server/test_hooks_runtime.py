@@ -3,8 +3,8 @@ from collections.abc import Sequence
 
 import pytest
 from lumid_hooks import BaseBindings, PrincipalContext, ResourceRef
-from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 
+from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from lumilake_server import hooks
 from lumilake_server.hooks.security import emit_usage, resolve_accessible_ids
 

@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from lumilake import envs
 
+from lumilake import envs
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.parser.n8n import N8N_CHAT_TRIGGER
 

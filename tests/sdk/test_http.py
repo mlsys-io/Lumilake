@@ -6,6 +6,7 @@ Uses respx to mock httpx without a real server.
 import httpx
 import pytest
 import respx
+
 from lumilake import (
     BaseAsyncClient,
     BaseClient,

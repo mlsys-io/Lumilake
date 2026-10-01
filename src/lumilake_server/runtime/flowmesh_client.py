@@ -14,8 +14,8 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import Request
 from flowmesh import AsyncFlowMesh
-from lumilake import envs
 
+from lumilake import envs
 from lumilake_server.hooks.security import get_runtime_token, runtime_token_var
 
 _outgoing_token_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(

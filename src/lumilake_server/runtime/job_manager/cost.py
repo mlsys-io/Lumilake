@@ -8,7 +8,6 @@ nothing here fits, learns, or requires historical data.
 from dataclasses import dataclass, field
 
 from lumilake import envs
-
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.optimizer.multimodal_cost import (
     MultimodalCostCoefficients,

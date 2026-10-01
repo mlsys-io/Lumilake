@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from lumilake import envs
 
 import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
+from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (

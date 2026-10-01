@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+
 from lumilake import SERVICE_NAMES, AsyncDeploy, Deploy, DeployError
 from lumilake_deploy.errors import DeployError as _CLIDeployError
 

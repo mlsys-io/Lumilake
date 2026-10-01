@@ -2,8 +2,8 @@ import textwrap
 from typing import Any
 
 import pytest
-from lumilake import envs
 
+from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (

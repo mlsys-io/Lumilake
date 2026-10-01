@@ -6,10 +6,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from typer.testing import CliRunner
+
 from lumilake.config import LumilakeConfig
 from lumilake_cli.commands.base import _redact_api_key, app
 from lumilake_cli.core import http
-from typer.testing import CliRunner
 
 
 @pytest.fixture(autouse=True)

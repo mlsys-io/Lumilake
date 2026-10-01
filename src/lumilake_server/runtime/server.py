@@ -17,6 +17,8 @@ from typing import Any
 import lumid_hooks
 import yaml
 from flowmesh.exceptions import APIError
+
+import lumilake_server.hooks as server_hooks
 from lumilake import envs
 from lumilake.log import (
     Logger,
@@ -24,8 +26,6 @@ from lumilake.log import (
     init_child_logger,
     log_on_exception_async,
 )
-
-import lumilake_server.hooks as server_hooks
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
