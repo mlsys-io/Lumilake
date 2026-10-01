@@ -3,7 +3,7 @@
 A worker profile lists the task types its executors advertise under
 ``supported_task_types``. A node whose task type is gated here is placed only on
 a CPU worker that advertises it; every other node is placed by engine alone.
-python runs only on Docker-backed workers, so it is the gated type today.
+python runs only on Docker-backed workers, so it is the one gated type.
 """
 
 from collections.abc import Iterable, Mapping
