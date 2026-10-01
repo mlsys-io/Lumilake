@@ -128,9 +128,9 @@ def test_embedding_op_builds_from_valid_input_values() -> None:
 
 
 def _worker_response() -> dict:
-    # Merged FlowMesh contract: the result carries `embedding_file` + a
-    # `usage` block (num_requests/embedding_dim replace the old top-level
-    # count/dim), and the framework stamps `_artifacts`. No prompts_file.
+    # FlowMesh contract: the result carries `embedding_file` + a `usage`
+    # block (num_requests/embedding_dim), and the framework stamps
+    # `_artifacts`. No prompts_file.
     return {
         "ok": True,
         "model": _MODEL,
@@ -312,8 +312,7 @@ async def test_aggregation_surfaces_artifact_uri_and_metadata(
     rows = [json.loads(o) for o in outputs]
     for idx, obj in enumerate(rows):
         # The archived entry surfaces the artifact uri + model ident +
-        # row index. Redundant count/dim are no longer copied onto the
-        # archive surface.
+        # row index, without count/dim.
         assert obj["model"] == _MODEL
         assert obj["row"] == idx
         assert "count" not in obj

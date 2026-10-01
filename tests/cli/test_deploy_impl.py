@@ -644,7 +644,7 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
 def test_server_container_defaults_to_bare_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unset/empty suffix yields today's bare server container name."""
+    """Unset/empty suffix yields the bare server container name."""
     monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "")
     assert stop_mod._server_container() == "lumilake-server"
 

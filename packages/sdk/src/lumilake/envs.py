@@ -315,7 +315,7 @@ LUMILAKE_REGISTRY: str = os.environ.get("LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
 LUMILAKE_IMAGE_TAG: str = os.environ.get("LUMILAKE_IMAGE_TAG", "")
 # Suffix appended to every container and volume name the deploy stack
 # creates, so multiple Lumilake stacks can coexist on one host. Empty by
-# default, which keeps existing deployments byte-identical.
+# default, giving the bare names (``lumilake-server``, ...).
 LUMILAKE_DEPLOY_SUFFIX: str = os.environ.get("LUMILAKE_DEPLOY_SUFFIX", "")
 
 REDIS_TLS_DIR: str = os.environ.get("REDIS_TLS_DIR", "")

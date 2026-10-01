@@ -2,8 +2,8 @@
 
 A dynamic spec may size the planner's vLLM engine per job via
 ``driver.max_model_len`` and ``driver.gpu_memory_utilization``. When unset the
-proposer op's config must be byte-identical to today (the fields stay ``None``
-and the server-wide env default still applies); when set they land on the
+proposer op's config equals the default proposer config (the fields stay
+``None`` and the server-wide env default applies); when set they land on the
 proposer ``LLMChatOp``'s ``config``.
 """
 
@@ -52,7 +52,7 @@ def _proposer_config(
 
 
 def test_no_engine_opts_matches_default_proposer() -> None:
-    """A spec with no engine options produces the same proposer config as today."""
+    """A spec with no engine options produces the default proposer config."""
     default = fused_round_graph(
         {},
         leaf_ids=[],

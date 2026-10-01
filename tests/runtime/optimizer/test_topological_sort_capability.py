@@ -1,5 +1,5 @@
 """TopologicalSortOptimizer places a capability-gated node only on a worker that
-advertises its task type; every other node is placed as before."""
+advertises its task type; every other node is placed by engine alone."""
 
 import pytest
 
