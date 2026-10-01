@@ -237,12 +237,12 @@ def _decode_dynamic_spec(raw: str, idx: int) -> DynamicSpec:
         data = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid dynamic workflow YAML for index {idx}: {exc}",
         ) from exc
     if not isinstance(data, dict):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"Dynamic workflow for index {idx} must contain a mapping at "
                 "the top level"
@@ -252,7 +252,7 @@ def _decode_dynamic_spec(raw: str, idx: int) -> DynamicSpec:
         return DynamicSpec.model_validate(data)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid dynamic workflow spec for index {idx}: {exc}",
         ) from exc
 
@@ -275,7 +275,7 @@ def _effective_dynamic_output_location(
             )
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Invalid dynamic workflow driver output_location: {exc}",
             ) from exc
     else:
@@ -283,12 +283,12 @@ def _effective_dynamic_output_location(
             location = _resolve_output_location(entry_output_location)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
     if isinstance(location, DBLocation):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="DBLocation output is not supported",
         )
     return location
@@ -306,7 +306,7 @@ def _render_dynamic_round0(
     """
     if spec.driver.poll_interval != 2.0:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "dynamic workflow poll_interval is not supported server-side; "
                 "omit it or use the default"
@@ -337,7 +337,7 @@ def _render_dynamic_round0(
         return round_build.graph, declared_output_location
     except Exception as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid dynamic workflow spec for index: {exc}",
         ) from exc
 
@@ -354,7 +354,7 @@ def _validate_dynamic_submission(
     symbols = list(resolved_inputs[name].get(INPUT_NODE_ID, []))
     if len(symbols) != 1 or not symbols[0].strip():
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "dynamic workflow requires exactly one non-empty symbol per "
                 f"run; got {len(symbols)}"
@@ -467,13 +467,13 @@ def _dispatch_workflow_to_graph_specs(
             parsed_graphs = parse_n8n_payload(payload)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
         overlap = set(parsed_graphs).intersection(graph_specs)
         if overlap:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"duplicate graph names after parsing: {sorted(overlap)}",
             )
         graph_specs.update(parsed_graphs)
@@ -481,7 +481,7 @@ def _dispatch_workflow_to_graph_specs(
     if workflow_format == "yaml":
         if not isinstance(workflow_payload, dict):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     f"YAML workflow at index {idx} must be a mapping at the top level"
                 ),
@@ -495,13 +495,13 @@ def _dispatch_workflow_to_graph_specs(
             parsed_graphs = parse_yaml_payload(yaml_dict)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
         overlap = set(parsed_graphs).intersection(graph_specs)
         if overlap:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"duplicate graph names after parsing: {sorted(overlap)}",
             )
         graph_specs.update(parsed_graphs)
@@ -509,7 +509,7 @@ def _dispatch_workflow_to_graph_specs(
     # native
     if not isinstance(workflow_payload, dict):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"workflow payload at index {idx} must be an object",
         )
     graph_payload = (
@@ -710,7 +710,7 @@ def _validate_optimizer_type(optimizer_type: str) -> None:
     for p in OPTIMIZER_PROVIDERS:
         provider_types.extend(p.list_optimizers())
     raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=(
             f"Unknown optimizer type '{optimizer_type}'. "
             f"Local: {sorted(OPTIMIZER_TYPES)}. "
@@ -1032,7 +1032,7 @@ def _validate_runtime_graphs(
             builder.build(compiled, node_prefix=name)
         except (ValueError, KeyError, AssertionError) as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Workflow is not runnable: {exc}",
             ) from exc
 
@@ -1258,7 +1258,7 @@ def _normalize_artifact_path(path: str) -> str:
     cleaned = path.strip()
     if not cleaned:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="artifact path is required",
         )
     return cleaned
@@ -1413,19 +1413,19 @@ async def _validate_db_location_live(location: DBLocation) -> DBLocation:
     column = location.column.strip()
     if not column:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="column is required",
         )
     try:
         found = await acatalog_column_exists(schema, table, column)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
     if not found:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"column {column} not found on {schema}.{table} (compute DB)",
         )
     return DBLocation(type="db", table=f"{schema}.{table}", column=column)
@@ -1455,7 +1455,7 @@ async def _validate_s3_location_live(
     keys = await alist_blob_keys(prefix=blob_prefix, recursive=False)
     if not keys:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"s3 prefix {normalized} missing on compute S3",
         )
     return location.model_copy(update={"prefix": normalized})
@@ -1485,7 +1485,7 @@ async def _resolve_s3_input_values(
     literal = location.prefix.strip()
     if not literal:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"s3 input {input_name!r} prefix is required",
         )
     normalized = normalize_s3_literal(literal)
@@ -1493,7 +1493,7 @@ async def _resolve_s3_input_values(
     keys = await alist_blob_keys(prefix=blob_prefix, recursive=True)
     if not keys:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"s3 resolve returned no files for input {input_name!r}",
         )
     bucket, _ = split_bucket_prefix(blob_prefix)
@@ -1520,7 +1520,7 @@ async def _resolve_input_values(
     )
     if not values:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=EmptyInputsErrorDetail(
                 message=f"input {input_name!r} resolved to an empty value list",
                 parsed_input_names=[input_name],
@@ -1558,7 +1558,7 @@ async def _resolve_input_values_raw(
             location=location,
         )
     raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail=f"unsupported input location type for {input_name!r}",
     )
 
@@ -2350,7 +2350,7 @@ async def preview_job(
     workflow_format = workflow_format.lower()
     if workflow_format not in {"native", "n8n", "yaml"}:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Workflow-Format must be 'native', 'n8n', or 'yaml'",
         )
 
@@ -2358,7 +2358,7 @@ async def preview_job(
         preview_request = JobPreviewRequest.model_validate(json_body)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=_format_validation_errors(exc),
         ) from exc
     optimizer = preview_request.optimizer
@@ -2369,7 +2369,7 @@ async def preview_job(
     entries = preview_request.data
     if not entries:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="data must contain at least one entry",
         )
     graph_specs: dict[str, dict[str, Any]] = {}
@@ -2386,7 +2386,7 @@ async def preview_job(
         )
         if is_dynamic and len(entries) != 1:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="dynamic workflow requires exactly one entry per submission",
             )
         if is_dynamic:
@@ -2401,7 +2401,7 @@ async def preview_job(
         name = entry.name or f"graph_{idx}"
         if name in seen_public_names:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"duplicate workflow name: {name}",
             )
         seen_public_names.add(name)
@@ -2419,7 +2419,7 @@ async def preview_job(
             total_length, varying_input_keys = _input_shape(inputs)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
 
@@ -2429,7 +2429,7 @@ async def preview_job(
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="input_batch_size must be a positive integer",
             )
         # Preview uses only the first batch per entry — enough to generate
@@ -2439,7 +2439,7 @@ async def preview_job(
             input_batches = _chunk_inputs(inputs, effective_batch_size)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
 
@@ -2447,7 +2447,7 @@ async def preview_job(
         graph_name = name
         if graph_name in graph_specs:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"duplicate internal graph name: {graph_name}",
             )
         _dispatch_workflow_to_graph_specs(
@@ -2474,7 +2474,7 @@ async def preview_job(
         graphs = server.parse_query(graph_specs)
     except (ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
     _validate_runtime_graphs(server, graphs)
@@ -2484,7 +2484,7 @@ async def preview_job(
         and _any_graph_requires_gpu(server, graphs)
     ):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "hardware.gpu=0 conflicts with workflow: this graph contains "
                 "ops that require a GPU worker (vLLM / transformers / "
@@ -2712,7 +2712,7 @@ async def submit_job(
     workflow_format = workflow_format.lower()
     if workflow_format not in {"native", "n8n", "yaml"}:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Workflow-Format must be 'native', 'n8n', or 'yaml'",
         )
 
@@ -2720,7 +2720,7 @@ async def submit_job(
         submit_request = JobSubmitRequest.model_validate(json_body)
     except ValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=_format_validation_errors(exc),
         ) from exc
     entries = submit_request.data
@@ -2732,7 +2732,7 @@ async def submit_job(
     hardware = submit_request.hardware
     if not entries:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="data must contain at least one entry",
         )
     job_id = f"req-{unique_id()}"
@@ -2752,7 +2752,7 @@ async def submit_job(
         )
         if is_dynamic and len(entries) != 1:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="dynamic workflow requires exactly one entry per submission",
             )
         if is_dynamic:
@@ -2764,7 +2764,7 @@ async def submit_job(
         name = entry.name or f"graph_{idx}"
         if name in seen_public_names:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"duplicate workflow name: {name}",
             )
         seen_public_names.add(name)
@@ -2793,14 +2793,14 @@ async def submit_job(
             total_length, varying_input_keys = _input_shape(inputs)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
 
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="input_batch_size must be a positive integer",
             )
         effective_batch_size = input_batch_size or 1
@@ -2808,7 +2808,7 @@ async def submit_job(
             input_batches = _chunk_inputs(inputs, effective_batch_size)
         except ValueError as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
 
@@ -2823,7 +2823,7 @@ async def submit_job(
             )
             if graph_name in graph_specs:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"duplicate internal graph name: {graph_name}",
                 )
             slice_length, _ = _input_shape(batch_inputs)
@@ -2864,7 +2864,7 @@ async def submit_job(
         graphs = server.parse_query(graph_specs)
     except (ValueError, KeyError, RuntimeError) as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Graph compilation failed: {exc}",
         ) from exc
     _validate_runtime_graphs(server, graphs)
@@ -2874,7 +2874,7 @@ async def submit_job(
         and _any_graph_requires_gpu(server, graphs)
     ):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "hardware.gpu=0 conflicts with workflow: this graph contains "
                 "ops that require a GPU worker (vLLM / transformers / "
@@ -2975,7 +2975,7 @@ async def list_jobs(
     invalid = sorted(status for status in statuses if status not in allowed)
     if invalid:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"invalid status filters: {', '.join(invalid)}",
         )
 
@@ -3329,7 +3329,7 @@ async def get_job_artifact(
     filename = _artifact_name_from_uri(requested_path)
     if not filename:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="artifact path is invalid",
         )
     await require_permission(
