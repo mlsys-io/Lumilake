@@ -11,7 +11,7 @@ import time
 import traceback
 from collections.abc import Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import lumid_hooks
@@ -255,6 +255,19 @@ def _optimizer_subprocess_entry(
 
 class LumilakeServerError(Exception):
     pass
+
+
+class RuntimeExecutionError(Exception):
+    """The runtime backend failed while executing a batch.
+
+    Raised only for the backend execution itself, so failures in the work
+    around it (planning, result handling, bookkeeping) are told apart from
+    runtime work that may be partly or fully done.
+    """
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
 
 
 class LumilakeServerConfig:
@@ -1881,15 +1894,54 @@ class LumilakeServer:
         # hand them to another batch while this one is still running.
         try:
             for retry_batch in retry_batches:
-                await self._run_batch(
-                    workers,
-                    retry_batch,
-                    isolate_failures=False,
-                    release_workers=False,
-                )
+                try:
+                    await self._run_batch(
+                        workers,
+                        retry_batch,
+                        isolate_failures=False,
+                        release_workers=False,
+                    )
+                except Exception as exc:
+                    self.logger.exception(
+                        "Isolated re-run of request(s) %s failed unexpectedly",
+                        sorted({item.request_id for item in retry_batch.workflows}),
+                    )
+                    await self._fail_unrecorded_workflows(retry_batch, exc)
         finally:
             if release_workers:
                 await self._release_workers(workers)
+
+    async def _fail_unrecorded_workflows(
+        self, batch: BatchSelection, error: Exception
+    ) -> None:
+        """Record ``error`` for workflows of ``batch`` that never got a result.
+
+        Used when a run raised past its own error handling, so these workflows
+        would otherwise stay pending and queued forever.
+        """
+        try:
+            unrecorded = [
+                workflow
+                for workflow in batch.workflows
+                if (state := self._requests.get(workflow.request_id)) is not None
+                and workflow.workflow_id in state.pending_workflows
+            ]
+            if unrecorded:
+                await self._handle_batch_results(
+                    replace(batch, workflows=unrecorded),
+                    {},
+                    {},
+                    error,
+                )
+        except Exception:
+            self.logger.exception(
+                "Failed to record error for workflows %s",
+                [workflow.workflow_id for workflow in batch.workflows],
+            )
+        finally:
+            self.job_manager.finalize_workflows(
+                [workflow.workflow_id for workflow in batch.workflows]
+            )
 
     async def _run_batch_inner(
         self,
@@ -2031,15 +2083,22 @@ class LumilakeServer:
                 execution_request_id=execution_request_id,
             )
         except Exception as exc:
+            failure = exc.cause if isinstance(exc, RuntimeExecutionError) else exc
             sanitized_exc = (
-                _sanitize_flowmesh_api_error(exc) if isinstance(exc, APIError) else exc
+                _sanitize_flowmesh_api_error(failure)
+                if isinstance(failure, APIError)
+                else failure
             )
             self.logger.error(
                 "Batch %s failed: %s", batch_id, sanitized_exc, exc_info=True
             )
             if active_workflows:
                 self.runtime_manager.mark_batch_failed(execution_request_id, batch_id)
-            if isolate_failures and len(active_request_ids) > 1:
+            if (
+                isinstance(exc, RuntimeExecutionError)
+                and isolate_failures
+                and len(active_request_ids) > 1
+            ):
                 # Do not record the error against every member: re-run each
                 # request alone so only the one that failed reports failure.
                 retry_batches = self._split_batch_by_request(batch)
@@ -2114,22 +2173,18 @@ class LumilakeServer:
     @staticmethod
     def _split_batch_by_request(batch: BatchSelection) -> list[BatchSelection]:
         """One batch per request, keeping each request's workflows in order."""
-        by_request: dict[str, list[Any]] = {}
+        by_request: dict[str, list[WorkflowItem]] = {}
         for workflow in batch.workflows:
             by_request.setdefault(workflow.request_id, []).append(workflow)
         return [
             BatchSelection(
                 workflows=workflows,
                 runtime_graphs={
-                    item.workflow_id: batch.runtime_graphs.get(
-                        item.workflow_id, item.runtime_graph
-                    )
+                    item.workflow_id: batch.runtime_graphs[item.workflow_id]
                     for item in workflows
                 },
                 data_profile_graphs={
-                    item.workflow_id: batch.data_profile_graphs.get(
-                        item.workflow_id, item.data_profile_graph
-                    )
+                    item.workflow_id: batch.data_profile_graphs[item.workflow_id]
                     for item in workflows
                 },
                 config=batch.config,
@@ -2841,12 +2896,17 @@ class LumilakeServer:
             batch_id,
             selected_workers,
         )
-        connector_result = await self.runtime_manager.process_request(
-            batch_request_info,
-            schedule,
-            selected_workers,
-            normalized_data_profile_results,
-        )
+        try:
+            connector_result = await self.runtime_manager.process_request(
+                batch_request_info,
+                schedule,
+                selected_workers,
+                normalized_data_profile_results,
+            )
+        except RequestCancelledError:
+            raise
+        except Exception as exc:
+            raise RuntimeExecutionError(exc) from exc
         flat_outputs = connector_result["flat_outputs"]
         chat_histories = connector_result["chat_histories"]
         task_node_map = connector_result.get("task_node_map")
