@@ -123,8 +123,6 @@ target-version = "py312"
 select = ["E", "F", "UP", "I"]
 ignore = ["I001"]
 
-[tool.black]
-
 [tool.mypy]
 python_version = "3.12"
 files = [
@@ -172,8 +170,6 @@ skips = [
     "B608",  # SQL string interpolation: identifiers come from module-level constants
              # and validated quote helpers; values bind via %s.
 ]
-
-[tool.codespell]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
