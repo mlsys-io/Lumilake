@@ -7,6 +7,7 @@ records from every workspace package render with the CLI colour palette.
 import logging
 
 import typer
+
 from lumilake.log import ColorFormatter, get_default_logger
 
 from .commands import register

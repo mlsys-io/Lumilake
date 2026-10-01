@@ -9,9 +9,9 @@ at plugin-load time. URL must use ``https://``; ``http://`` only for loopback
 from typing import Any
 
 import httpx
+
 from lumilake import envs
 from lumilake_hook import validate_remote_url
-
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse

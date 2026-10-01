@@ -23,9 +23,9 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+
 from lumilake import envs
 from lumilake.log import trace_id_var
-
 from lumilake_server.utils.http_client import aget_json, arequest, get, post_json
 
 logger = logging.getLogger(__name__)

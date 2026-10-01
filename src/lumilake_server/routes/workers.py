@@ -3,8 +3,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from flowmesh.exceptions import APIError, AuthenticationError, NotFoundError
 from lumid_hooks import PrincipalContext
-from lumilake_hook import ResourceAction, ResourceKind
 
+from lumilake_hook import ResourceAction, ResourceKind
 from lumilake_server.hooks.security import (
     authenticate_request,
     require_permission,

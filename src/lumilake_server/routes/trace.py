@@ -13,9 +13,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from flowmesh.models.traces import ProfileSummary
 from lumid_hooks import PrincipalContext
-from lumilake_hook import ResourceAction, ResourceKind
 from pydantic import BaseModel, Field
 
+from lumilake_hook import ResourceAction, ResourceKind
 from lumilake_server.hooks.security import (
     authenticate_request,
     require_permission,

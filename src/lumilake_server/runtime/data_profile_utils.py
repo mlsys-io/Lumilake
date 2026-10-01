@@ -7,9 +7,9 @@ from string import Formatter
 from typing import Any
 
 import yaml
-from lumilake import envs
 from pydantic import BaseModel, ConfigDict, Field
 
+from lumilake import envs
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,

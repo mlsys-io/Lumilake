@@ -1167,8 +1167,8 @@ async def test_capacity_aware_partition_splits_cpu_and_gpu() -> None:
 @pytest.mark.asyncio
 async def test_capacity_aware_off_restores_shared_partition() -> None:
     """With the lever OFF, the same two items land in the SAME partition, and
-    the CPU item is blocked behind the unrunnable GPU item — the pre-change
-    head-of-line behaviour, demonstrated not assumed."""
+    the CPU item is blocked behind the unrunnable GPU item (head-of-line
+    blocking)."""
     manager = PriorityJobManager(
         optimizer=MagicMock(spec=BaseOptimizer),
         quantums=_priority_quantums(8),
@@ -1209,8 +1209,7 @@ async def test_capacity_aware_off_restores_shared_partition() -> None:
 
     # With the lever off the server passes no capacity, so selection is
     # capacity-blind: both items co-batch in the single shared partition. The
-    # CPU item cannot run ahead of the GPU item — the pre-change head-of-line
-    # coupling, demonstrated not assumed.
+    # CPU item cannot run ahead of the GPU item.
     reservation = await manager.reserve_batch(2)
     assert reservation is not None
     assert {item.request_id for item in reservation.selection.workflows} == {
@@ -1223,7 +1222,7 @@ async def test_capacity_aware_off_restores_shared_partition() -> None:
 async def test_capacity_aware_lever_changes_partition_key_shape() -> None:
     """The partition key shape itself differs between the two modes: with the
     lever on it carries ``requires_gpu`` as a sixth element, with it off the key
-    returns to the pre-change five-element shape."""
+    has five elements."""
     on_manager = PriorityJobManager(
         optimizer=MagicMock(spec=BaseOptimizer),
         quantums=_priority_quantums(8),

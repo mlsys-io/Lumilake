@@ -1,6 +1,6 @@
 [project]
 name = "lumilake-hook"
-version = "0.1.9rc1"
+version = "0.1.9rc2"
 description = "Lumilake hook bindings"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
@@ -10,7 +10,7 @@ authors = [
     {name = "Lumilake contributors"},
 ]
 dependencies = [
-    "lumid-hooks>=0.1.0",
+    "lumid-hooks>=0.2.0",
     "httpx>=0.27.0",
 ]
 classifiers = [

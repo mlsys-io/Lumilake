@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Collection
 
 from lumid_hooks import PrincipalContext, ResourceRef
 
@@ -35,3 +36,10 @@ class SimpleResourceRegistrar:
             return
         state.OWNERSHIP.pop((resource.kind, resource.id), None)
         logger.info("%s: deregistered %s/%s", self.name, resource.kind, resource.id)
+
+    async def reconcile(
+        self,
+        resources: Collection[ResourceRef],
+        logger: logging.Logger,
+    ) -> None:
+        return None

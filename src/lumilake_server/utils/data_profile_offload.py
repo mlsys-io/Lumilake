@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from string import Formatter
 from typing import TYPE_CHECKING, Any
 
-from lumilake import envs
 from pydantic import BaseModel, ConfigDict, Field
 
+from lumilake import envs
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,

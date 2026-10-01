@@ -18,9 +18,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from lumid_hooks import PrincipalContext, ResourceRef
-from lumilake.log import trace_id_var
 
 import lumilake_server.utils.job_storage as job_storage_module
+from lumilake.log import trace_id_var
 from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.parser import YamlParseError, parse_yaml_payload

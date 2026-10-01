@@ -8,7 +8,6 @@ nothing here fits, learns, or requires historical data.
 from dataclasses import dataclass, field
 
 from lumilake import envs
-
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.optimizer.multimodal_cost import (
     MultimodalCostCoefficients,
@@ -117,7 +116,7 @@ def estimate_area(item: WorkflowItem, params: CostParams | None = None) -> float
 
     Returns ``None`` when the graph cannot be estimated (e.g. agent-mode
     retrieval, whose duration is not predictable from graph shape) — callers
-    fall back to least-attained-service rather than guessing a number.
+    treat the item as unestimated rather than guessing a number.
     """
     params = params or CostParams()
     graph = item.runtime_graph

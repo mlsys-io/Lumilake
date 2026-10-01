@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 import yaml
-from lumilake import envs
 
+from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placeholder

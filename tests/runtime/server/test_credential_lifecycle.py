@@ -8,7 +8,6 @@ import time
 from typing import Any, cast
 
 import pytest
-from lumilake import envs
 from support.runtime_graphs import build_dummy_runtime_graph
 from support.runtime_server import (
     RecordingRuntimeManager,
@@ -17,6 +16,7 @@ from support.runtime_server import (
     make_server,
 )
 
+from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placeholder

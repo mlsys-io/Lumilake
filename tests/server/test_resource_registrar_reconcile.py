@@ -58,26 +58,6 @@ class _RecordingRegistrar:
         self.reconciled.append(list(resources))
 
 
-class _RegistrarWithoutReconcile:
-    name = "no-reconcile"
-
-    async def register(
-        self,
-        principal: PrincipalContext,
-        resource: ResourceRef,
-        logger: logging.Logger,
-    ) -> None:
-        pass
-
-    async def deregister(
-        self,
-        principal: PrincipalContext,
-        resource: ResourceRef,
-        logger: logging.Logger,
-    ) -> None:
-        pass
-
-
 @pytest.mark.asyncio
 async def test_reconcile_calls_registrars_with_job_ids(
     monkeypatch: pytest.MonkeyPatch,
@@ -96,23 +76,6 @@ async def test_reconcile_calls_registrars_with_job_ids(
     reconciled_ids = {r.id for r in refs}
     assert reconciled_ids == {"job-1", "job-2"}
     assert all(r.kind == "job" for r in refs)
-
-
-@pytest.mark.asyncio
-async def test_reconcile_skips_registrar_without_reconcile_method(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    storage = _make_storage_with_jobs(["job-1"])
-    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
-
-    no_reconcile = _RegistrarWithoutReconcile()
-    recording = _RecordingRegistrar()
-    monkeypatch.setattr(hooks, "RESOURCE_REGISTRARS", [no_reconcile, recording])
-
-    logger = logging.getLogger("test.reconcile")
-    await reconcile_registrars(logger)
-
-    assert len(recording.reconciled) == 1
 
 
 @pytest.mark.asyncio

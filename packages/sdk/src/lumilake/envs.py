@@ -114,28 +114,17 @@ LUMILAKE_GPU_WORKER_GROUP_SIZE: int = int(
     os.environ.get("LUMILAKE_GPU_WORKER_GROUP_SIZE") or "0"
 )
 # Whether dispatch filters selection by free capacity. Default on: an unrunnable
-# batch is skipped in favour of runnable work. Set to ``0`` to restore the
-# capacity-blind behaviour where a batch that no worker can run stalls dispatch
-# (head-of-line blocking) until capacity frees. A rollback lever for the
-# capacity-aware selection path.
+# batch is skipped in favour of runnable work. With ``0`` selection is
+# capacity-blind, so a batch that no worker can run stalls dispatch
+# (head-of-line blocking) until capacity frees.
 LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
     "LUMILAKE_CAPACITY_AWARE_SELECTION", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
-# Scheduling policy. "legacy" reproduces today's selection exactly; "fair_index"
-# enables fair-weighted index ordering (w(user) / p_hat(item)) with a
-# least-attained-service fallback for unestimable items.
+# Scheduling policy: "default" (per-user round-robin with affinity clustering),
+# "fifo", "spt", "lpt", or "plas".
 LUMILAKE_SCHEDULER_POLICY: str = (
-    (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "legacy").strip().lower()
-)
-# Half-life (seconds) of the exponentially-decayed attained-service accounting.
-LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS: float = float(
-    os.environ.get("LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS") or "600"
-)
-# Fair-share target (dominant-resource area) at which a user's fairness weight
-# halves; the denominator of w(user) = 1 / (1 + attained / target).
-LUMILAKE_FAIR_SHARE_TARGET: float = float(
-    os.environ.get("LUMILAKE_FAIR_SHARE_TARGET") or "10"
+    (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "default").strip().lower()
 )
 # Analytic cost-model coefficients (see cost.py / docs/SCHEDULING.md S6).
 LUMILAKE_COST_DB_SEC_PER_QUERY: float = float(
@@ -410,10 +399,6 @@ def validate() -> None:
 
     if LUMILAKE_JOB_MANAGER_TYPE not in ("priority",):
         raise ValueError("LUMILAKE_JOB_MANAGER_TYPE must be 'priority'")
-    if LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS <= 0:
-        raise ValueError("LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS must be > 0")
-    if LUMILAKE_FAIR_SHARE_TARGET <= 0:
-        raise ValueError("LUMILAKE_FAIR_SHARE_TARGET must be > 0")
     if LUMILAKE_COST_DB_SEC_PER_QUERY <= 0:
         raise ValueError("LUMILAKE_COST_DB_SEC_PER_QUERY must be > 0")
     if LUMILAKE_COST_CPU_SEC_PER_NODE <= 0:

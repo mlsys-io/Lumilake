@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from lumilake import LumilakeConfig
 from lumilake._base_client import DEFAULT_BASE_URL, resolve_config
 from lumilake.errors import ConfigInvalidError, ConfigNotFoundError

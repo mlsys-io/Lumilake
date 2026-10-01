@@ -158,10 +158,9 @@ and hardware — reintroducing head-of-line blocking inside the partition.
 The split is conditional on the capacity-aware-selection lever
 (`LUMILAKE_CAPACITY_AWARE_SELECTION`). With the lever on (default) the key
 carries `requires_gpu`, so CPU and GPU items in the same class land in separate
-partitions. With the lever off the key drops `requires_gpu` and returns to its
-pre-change shape, so those items share a partition again and the old
-head-of-line behaviour genuinely returns — the lever reverts the whole change
-set, not just the capacity filter.
+partitions. With the lever off the key drops `requires_gpu`, so those items
+share a partition and head-of-line blocking applies within it — the lever
+controls both the partition key and the capacity filter.
 
 That has a cost, stated plainly: CPU-only and GPU-requiring items that would
 otherwise share a partition can no longer co-batch, which loses some affinity.
@@ -197,87 +196,40 @@ group of four cannot be assembled from three free workers whose combined capacit
 would suffice. Vector capacity and demand-sized groups would recover that, at the
 cost of a substantially more complex claim path.
 
-## 6. Fairness: area, not item counts
+## 6. Scheduling policies
 
-The original mechanism counted **items** — equal turns per user, item-count
-quantums, one miss counter per item. The resource is consumed in **area**:
-demand × duration. A user whose graphs are a hundred times larger gets a hundred
-times the resource-time at nominally equal fairness. That is fair in turns and
-unfair in resource.
+`LUMILAKE_SCHEDULER_POLICY` selects the policy. Policies are registered in
+`SCHEDULING_POLICIES` (mirroring the optimizer's `OPTIMIZER_TYPES`): a new
+policy is a `BaseSchedulingPolicy` subclass plus one registry entry, resolved
+by `create_scheduling_policy`. The interface takes the candidate *set* and
+returns the batch subset, so a policy can score sets rather than individual
+items — batch execution cost is not separable over its members (a model swap
+is charged once per distinct model in the batch, not per item).
 
-Fair share is therefore measured in area. Because demand is a vector, area is
-collapsed to a scalar by **dominant-resource share** — the largest of the
-request's per-resource fractions against a per-worker env default denominator.
-This is a heuristic, not a global allocation: the ordering index is applied only
-within a partition that the outer round-robin has already selected, and
-`principal_id` is part of the partition key, so principals are separated before
-the index is consulted. It does not claim the properties of Dominant Resource
-Fairness (sharing-incentive, envy-freeness, Pareto-efficiency,
-strategy-proofness); those require a global allocation, a reconciled measure of
-service, and a cluster-wide denominator, none of which this implements.
+Each policy returns at most `batch_size` ids, a subset of the candidates, and
+may use only the queued items, their graphs, and what has already run — never
+the future. The policies:
 
-**The principal is `user_id`** — the level the queue already treats as the
-fairness key.
+- **`default`**: per-user round-robin fairness within a partition,
+  keeping one item per user in round-robin order, then filling the batch in
+  affinity clustering order.
+- **`fifo`**: enqueue order (`enqueued_at`, then `workflow_id`).
+- **`spt`**: smallest `estimate_area` first; items without an estimate after
+  all estimated ones; ties by enqueue order.
+- **`lpt`**: largest `estimate_area` first; items without an estimate after
+  all estimated ones; ties by enqueue order.
+- **`plas`**: program-level least attained service (Autellix). Keyed by the
+  item's chain (`chain_id`, else the request id), lowest attained service
+  first; ties by enqueue order. Each committed item charges its `estimate_area`
+  to the chain.
 
-Attained service **decays exponentially**. On each commit a user is charged the
-area of the batch; between charges the value halves every `tau`
-(`AttainedService` in `runtime/job_manager/attained.py`, decayed lazily on read).
-
-```text
- A(user)
-  2.0 |*
-      | *
-  1.5 |  *                    *
-      |   *                  * *
-  1.0 |    *  *             *   *
-      |     **  *          *     *
-  0.5 |          *  *  *  *       *  *  *
-  0.0 +-------------------------------------------> t
-      ^                     ^
-      charge 2.0            charge 1.0
-      |<----- tau ----->|
-        value halves every tau with no new charge
-```
-
-Decay is what makes the accounting stable across heterogeneous rounds. A chain
-that converges — rounds shrinking as it narrows — is not penalised forever for
-one expensive early round, because decay forgets old consumption. The same
-property has a deliberate cost: an idle principal's attained value decays toward
-zero, so idling restores priority over time. A plain cumulative sum has neither
-behaviour — it keeps the penalty forever and never lets an idle principal regain
-priority.
-
-Ordering then follows from a single index rather than a weighted-sum heuristic:
-
-```text
-  index(item) = w(user) / p_hat(item)
-  w(user)     = 1 / (1 + attained(user) / fair_share_target)
-```
-
-Higher index first. This is Smith's rule with a fairness weight: prefer cheap,
-under-served work. For items the cost model cannot estimate, ranking falls back
-to least-attained-service rather than inventing a number.
-
-The index policy is opt-in. `LUMILAKE_SCHEDULER_POLICY` defaults to `legacy`,
-which keeps priority quantums, per-user round-robin, starvation pinning and
-affinity selection within a partition.
-
-Policies are registered in `SCHEDULING_POLICIES` (mirroring the optimizer's
-`OPTIMIZER_TYPES`): a new policy is a `BaseSchedulingPolicy` subclass plus one
-registry entry, resolved by `create_scheduling_policy`. The interface takes the
-candidate *set* and returns the batch subset, so a policy can score sets rather
-than individual items — batch execution cost is not separable over its members
-(a model swap is charged once per distinct model in the batch, not per item).
-
-The limitations are deliberate and worth stating. Attained service charges a
-**predicted** critical-path estimate at commit time; it is never reconciled
-against observed duration or the workers actually held, so a persistently wrong
-estimate distorts the index. The dominant-share denominator is a per-worker env
-default, not current cluster capacity, so the scalar is a fixed reference rather
-than a live share. And the index is **partition-local**: it orders items within a
-partition the outer round-robin already selected, so it cannot rebalance across
-principals or lanes. None of these is a defect to fix silently; each is a
-simplification that keeps the mechanism tractable.
+The size-based policies (`spt`, `lpt`) and the attained-service policy
+(`plas`) use the analytic cost model of §7. `estimate_area` is a predicted
+critical-path estimate charged at commit time; it is never reconciled against
+observed duration, so a persistently wrong estimate distorts the ordering.
+The ordering is **partition-local**: it orders items within a partition the
+outer round-robin already selected, so it cannot rebalance across principals
+or lanes.
 
 ## 7. Where cost estimation belongs
 
@@ -320,7 +272,7 @@ chain-length prior**, not on the scheduler:
 
 | Prior | Hazard rate | What size-aware ordering buys |
 |---|---|---|
-| Geometric (independent stop decision each round) | constant — memoryless | **Nothing.** Attained service carries no information about remaining service; the Gittins index is constant and the policy degenerates to the size-blind baseline. |
+| Geometric (independent stop decision each round) | constant — memoryless | **Nothing.** Attained service carries no information about remaining service; the Gittins index is constant and the policy degenerates to a size-blind ordering. |
 | Decreasing hazard (long chains tend to continue) | decreasing | Least-attained-service ordering wins. |
 | Increasing hazard (chains converge toward a cap) | increasing | SRPT-like ordering wins. |
 
@@ -330,28 +282,24 @@ is provably worthless and the honest result is a negative one. Any claim that it
 helps rests on the distribution being non-memoryless — which only measurement can
 establish.
 
-This is why the implemented policy is the estimate-driven index of §6 rather than
-a bandit policy. A Gittins-index policy is the principled form *when a
-distribution is known*; none is, so none is claimed.
+This is why none of the policies of §6 is a bandit policy. A Gittins-index
+policy is the principled form *when a distribution is known*; none is, so none
+is claimed.
 
 ## 9. Design decisions
 
 | Question | Decision | Why |
 |---|---|---|
-| Fairness principal | `user_id` | The level the queue already keys on. |
-| Attained service | Exponentially-decayed area, half-life `tau` | Stable across heterogeneous rounds; no permanent penalty, and idling restores priority over time. |
 | Area from a vector demand | Dominant-resource share | Keeps the scalar consistent with DRF. |
 | Preemption | Not allowed | A running batch holds whole workers; preempting wastes partial work and complicates the two-phase reserve/commit protocol. |
 | Cost model | Analytic, hyperparameter-first | No trace corpus exists; nothing may depend on a fitted distribution. |
 | GPU-ness in the partition key | Yes | Prevents a GPU item suppressing CPU siblings, at the cost of mixed co-batching. |
-| Index policy default | `legacy` | The new ordering must be switchable to be evaluable. |
+| Policy default | `default` | Co-batches similar workflows by affinity clustering and needs no cost estimate, so it orders every workload, including ones `estimate_area` cannot estimate. |
 
 ## 10. Open questions
 
 - **Is the chain-length prior memoryless?** Per §8 this decides whether
   chain-aware ordering has any value at all. Unanswerable without measurement.
-- **What is a defensible default for `tau`?** Expressed as a multiple of a
-  typical round duration, which is itself unmeasured.
 - **Dominant share against which denominator?** Cluster capacity shifts as
   workers join and leave; the share needs a defined snapshot or a smoothed
   estimate.

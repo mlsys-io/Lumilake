@@ -13,8 +13,7 @@ def _ensure_envs() -> None:
 
 
 def test_single_data_op_compiles() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: single_data
         ops:
           - id: constant
@@ -23,8 +22,7 @@ def test_single_data_op_compiles() -> None:
         outputs:
           - name: out
             ref: constant
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     assert set(specs) == {"single_data"}
     spec = specs["single_data"]
@@ -33,8 +31,7 @@ def test_single_data_op_compiles() -> None:
 
 
 def test_inputs_and_outputs_wiring() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: echo
         inputs:
           query: ["NVDA"]
@@ -48,8 +45,7 @@ def test_inputs_and_outputs_wiring() -> None:
         outputs:
           - name: result
             ref: formatted
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     spec = specs["echo"]
     graph = Graph.from_json(spec["graph"])
@@ -66,8 +62,7 @@ def test_inputs_and_outputs_wiring() -> None:
 
 
 def test_multi_op_topology_inputs() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: multi
         inputs:
           q: ["x"]
@@ -90,8 +85,7 @@ def test_multi_op_topology_inputs() -> None:
         outputs:
           - name: answer
             ref: summarize
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     spec = specs["multi"]
 
@@ -123,8 +117,7 @@ def test_multi_op_topology_inputs() -> None:
 
 def test_data_retrieval_op_resolves_node_refs() -> None:
     _ensure_envs()
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: retrieve
         inputs:
           entity: ["NVDA"]
@@ -144,8 +137,7 @@ def test_data_retrieval_op_resolves_node_refs() -> None:
         outputs:
           - name: docs
             ref: retrieval
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     spec = specs["retrieve"]
     graph_dict = spec["graph"]
@@ -164,21 +156,18 @@ def test_data_retrieval_op_resolves_node_refs() -> None:
 
 
 def test_unknown_op_type_raises() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: bad
         ops:
           - id: wat
             op: NoSuchOp
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="unsupported op type"):
         parse_yaml_payload(yaml_text)
 
 
 def test_dangling_reference_raises() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: dangling
         ops:
           - id: fmt
@@ -187,15 +176,13 @@ def test_dangling_reference_raises() -> None:
             template: "{v}"
             format_kwargs:
               v: missing
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="unknown id"):
         parse_yaml_payload(yaml_text)
 
 
 def test_duplicate_id_raises() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: dup
         ops:
           - id: same
@@ -204,15 +191,13 @@ def test_duplicate_id_raises() -> None:
           - id: same
             op: DataOp
             data: ["b"]
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="duplicate id"):
         parse_yaml_payload(yaml_text)
 
 
 def test_duplicate_id_across_input_and_op_raises() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: collision
         inputs:
           shared: ["a"]
@@ -220,8 +205,7 @@ def test_duplicate_id_across_input_and_op_raises() -> None:
           - id: shared
             op: DataOp
             data: ["b"]
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="duplicate id"):
         parse_yaml_payload(yaml_text)
 
@@ -239,8 +223,7 @@ def test_accepts_dict_payload() -> None:
 
 
 def test_output_refers_unknown_id_raises() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: out_bad
         ops:
           - id: d
@@ -249,8 +232,7 @@ def test_output_refers_unknown_id_raises() -> None:
         outputs:
           - name: out
             ref: nope
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="output .* unknown id"):
         parse_yaml_payload(yaml_text)
 
@@ -258,8 +240,7 @@ def test_output_refers_unknown_id_raises() -> None:
 def test_data_spec_param_node_must_reference_known_id() -> None:
     """A dangling ``data_spec.params[*].node`` ref raises loudly, not silently."""
     _ensure_envs()
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: bad_param
         inputs:
           query: ["x"]
@@ -273,8 +254,7 @@ def test_data_spec_param_node_must_reference_known_id() -> None:
               template: docs/{entity}.json
               params:
                 - { label: entity, node: does_not_exist, path: data }
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="references unknown input/op id"):
         parse_yaml_payload(yaml_text)
 
@@ -282,8 +262,7 @@ def test_data_spec_param_node_must_reference_known_id() -> None:
 def test_messages_ref_must_point_at_message_op() -> None:
     """``messages_ref`` pointing at a non-MessageOp must raise."""
     _ensure_envs()
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: wrong_ref_type
         inputs:
           q: ["hi"]
@@ -297,8 +276,7 @@ def test_messages_ref_must_point_at_message_op() -> None:
             messages_ref: not_a_message
             config:
               model: meta-llama/Llama-3.1-8B-Instruct
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="must reference a MessageOp"):
         parse_yaml_payload(yaml_text)
 
@@ -313,8 +291,7 @@ def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
     at the FormatOp, not the original op or the literal string.
     """
     _ensure_envs()
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: ex
         inputs:
           query: ["NVDA"]
@@ -337,8 +314,7 @@ def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
             config: { model: meta-llama/Llama-3.1-8B-Instruct }
         outputs:
           - { name: out, ref: summarize }
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     graph = specs["ex"]["graph"]
     op_types = {op["_op"] for op in graph.values()}
@@ -367,8 +343,7 @@ def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
 def test_llm_config_accepts_extended_sampler_fields() -> None:
     """Every typed GenerationConfig field is accepted by the YAML parser and
     persisted on the op spec; the allowlist is derived from the dataclass."""
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: extended_sampler
         ops:
           - id: ask
@@ -392,8 +367,7 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
         outputs:
           - name: out
             ref: ask
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     graph_dict = specs["extended_sampler"]["graph"]
     llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
@@ -408,8 +382,7 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
 
 def test_llm_config_accepts_api_block() -> None:
     """An ``api`` block on the config is accepted and persisted on the op."""
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: api_llm
         ops:
           - id: ask
@@ -425,8 +398,7 @@ def test_llm_config_accepts_api_block() -> None:
         outputs:
           - name: out
             ref: ask
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     graph_dict = specs["api_llm"]["graph"]
     llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
@@ -440,8 +412,7 @@ def test_llm_chat_config_requires_model_even_with_api_set() -> None:
     """API-mode LLMChatOp still requires a top-level ``config.model`` -
     ``config.api`` is a backend switch and must not relax the model
     requirement, so the workflow spec reads the same either way."""
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: api_llm_no_model
         ops:
           - id: ask
@@ -454,8 +425,7 @@ def test_llm_chat_config_requires_model_even_with_api_set() -> None:
         outputs:
           - name: out
             ref: ask
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="requires 'config' with a 'model' field"):
         parse_yaml_payload(yaml_text)
 
@@ -463,8 +433,7 @@ def test_llm_chat_config_requires_model_even_with_api_set() -> None:
 def test_llm_vision_config_still_requires_model_even_with_api_set() -> None:
     """LLMVisionOp requires ``config.model`` even when ``config.api`` is set,
     matching the parity contract that applies to every LLM op."""
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: vision_no_model
         ops:
           - id: img
@@ -481,8 +450,7 @@ def test_llm_vision_config_still_requires_model_even_with_api_set() -> None:
         outputs:
           - name: out
             ref: describe
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="requires 'config' with a 'model' field"):
         parse_yaml_payload(yaml_text)
 
@@ -490,8 +458,7 @@ def test_llm_vision_config_still_requires_model_even_with_api_set() -> None:
 def test_llm_config_rejects_unknown_field() -> None:
     """Unknown top-level keys still fail — extra_sampling_params is the
     escape hatch for vendor-specific samplers."""
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: bad_field
         ops:
           - id: ask
@@ -505,8 +472,7 @@ def test_llm_config_rejects_unknown_field() -> None:
         outputs:
           - name: out
             ref: ask
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="unknown fields"):
         parse_yaml_payload(yaml_text)
 
@@ -534,8 +500,7 @@ def test_api_chat_api_template_names_a_model_on_every_llm_op() -> None:
 def test_lambda_op_mode_round_trip() -> None:
     """``mode: list`` on a LambdaOp survives the YAML -> graph round trip, and
     an unknown mode is rejected."""
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: lambda_mode
         inputs:
           stock: ["NVDA"]
@@ -550,8 +515,7 @@ def test_lambda_op_mode_round_trip() -> None:
             mode: list
         outputs:
           - { name: out, ref: explode }
-        """
-    )
+        """)
     specs = parse_yaml_payload(yaml_text)
     spec = specs["lambda_mode"]
     graph = Graph.from_json(spec["graph"])
@@ -561,8 +525,7 @@ def test_lambda_op_mode_round_trip() -> None:
 
 
 def test_lambda_op_unknown_mode_rejected() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: lambda_bad_mode
         inputs:
           stock: ["NVDA"]
@@ -577,7 +540,6 @@ def test_lambda_op_unknown_mode_rejected() -> None:
             mode: bogus
         outputs:
           - { name: out, ref: explode }
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="mode"):
         parse_yaml_payload(yaml_text)

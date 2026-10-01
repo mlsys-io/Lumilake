@@ -14,9 +14,9 @@ Covers:
 from typing import Any
 
 import pytest
-from lumilake import envs
 from pydantic import ValidationError
 
+from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (

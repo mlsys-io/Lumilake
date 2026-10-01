@@ -7,7 +7,6 @@ back to ``LUMILAKE_DEFAULT_OPTIMIZER``. Plugins extend via
 
 from lumilake import envs
 from lumilake_hook import OptimizerHandle, OptimizerProvider
-
 from lumilake_server.hooks.optimizer_providers import OPTIMIZER_PROVIDERS
 
 from .base import BaseOptimizer
