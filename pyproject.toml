@@ -175,13 +175,6 @@ skips = [
 
 [tool.codespell]
 
-[tool.pyright]
-exclude = ["**/__pycache__", "**/.*"]
-extraPaths = []
-deprecateTypingAliases = true
-reportDeprecated = "warning"
-reportPrivateImportUsage = "none"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
