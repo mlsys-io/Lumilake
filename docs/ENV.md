@@ -72,10 +72,9 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 
 ### Scheduling policy
 
-The scheduler policy is switchable so policies can be compared on identical
-seeds. `default` is per-user round-robin with affinity
-clustering; the baselines are `fifo`, `spt`, `lpt`, and `plas`
-(see `docs/SCHEDULING.md`).
+`LUMILAKE_SCHEDULER_POLICY` selects how the scheduler orders a batch:
+`default` (per-user round-robin with affinity clustering), `fifo`, `spt`,
+`lpt`, or `plas` (see `docs/SCHEDULING.md`).
 
 | Key | Purpose |
 |-----|---------|

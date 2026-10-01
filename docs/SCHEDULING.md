@@ -196,10 +196,9 @@ group of four cannot be assembled from three free workers whose combined capacit
 would suffice. Vector capacity and demand-sized groups would recover that, at the
 cost of a substantially more complex claim path.
 
-## 6. Baseline scheduling policies
+## 6. Scheduling policies
 
-The scheduler policy is switchable so policies can be compared on identical
-seeds. Policies are registered in
+`LUMILAKE_SCHEDULER_POLICY` selects the policy. Policies are registered in
 `SCHEDULING_POLICIES` (mirroring the optimizer's `OPTIMIZER_TYPES`): a new
 policy is a `BaseSchedulingPolicy` subclass plus one registry entry, resolved
 by `create_scheduling_policy`. The interface takes the candidate *set* and
@@ -273,7 +272,7 @@ chain-length prior**, not on the scheduler:
 
 | Prior | Hazard rate | What size-aware ordering buys |
 |---|---|---|
-| Geometric (independent stop decision each round) | constant — memoryless | **Nothing.** Attained service carries no information about remaining service; the Gittins index is constant and the policy degenerates to the size-blind baseline. |
+| Geometric (independent stop decision each round) | constant — memoryless | **Nothing.** Attained service carries no information about remaining service; the Gittins index is constant and the policy degenerates to a size-blind ordering. |
 | Decreasing hazard (long chains tend to continue) | decreasing | Least-attained-service ordering wins. |
 | Increasing hazard (chains converge toward a cap) | increasing | SRPT-like ordering wins. |
 
@@ -283,9 +282,9 @@ is provably worthless and the honest result is a negative one. Any claim that it
 helps rests on the distribution being non-memoryless — which only measurement can
 establish.
 
-This is why the implemented policies are the baselines of §6 rather than a
-bandit policy. A Gittins-index policy is the principled form *when a
-distribution is known*; none is, so none is claimed.
+This is why none of the policies of §6 is a bandit policy. A Gittins-index
+policy is the principled form *when a distribution is known*; none is, so none
+is claimed.
 
 ## 9. Design decisions
 
@@ -295,7 +294,7 @@ distribution is known*; none is, so none is claimed.
 | Preemption | Not allowed | A running batch holds whole workers; preempting wastes partial work and complicates the two-phase reserve/commit protocol. |
 | Cost model | Analytic, hyperparameter-first | No trace corpus exists; nothing may depend on a fitted distribution. |
 | GPU-ness in the partition key | Yes | Prevents a GPU item suppressing CPU siblings, at the cost of mixed co-batching. |
-| Policy default | `default` | The new orderings must be switchable to be evaluable. |
+| Policy default | `default` | Co-batches similar workflows by affinity clustering and needs no cost estimate, so it orders every workload, including ones `estimate_area` cannot estimate. |
 
 ## 10. Open questions
 
