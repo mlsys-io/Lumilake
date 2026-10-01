@@ -1037,3 +1037,139 @@ def test_relocate_artifacts_rewrites_nested_uri_in_json_encoded_output(
     # Bytes must actually be copied to target, not just the uri string.
     data, _ = storage.get_artifact(target_id, filename)
     assert data == payload_bytes
+
+
+def _two_request_batch(server: Any) -> tuple[dict[str, Any], BatchSelection]:
+    workflows = [
+        make_workflow(
+            workflow_id="wf-good",
+            request_id="req-good",
+            graph_name="g-good",
+            public_graph_name="shared",
+        ),
+        make_workflow(
+            workflow_id="wf-bad",
+            request_id="req-bad",
+            graph_name="g-bad",
+            public_graph_name="shared",
+        ),
+    ]
+    return attach_request_states(server, workflows), make_batch(workflows)
+
+
+@pytest.mark.asyncio
+async def test_run_batch_failure_in_one_request_does_not_fail_the_other(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A coalesced batch fails as a whole when any member's task fails (FlowMesh
+    aborts the execution). The members are then re-run alone, so the good
+    request succeeds and only the bad one reports — with its own error."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    handlers, batch = _two_request_batch(server)
+    calls: list[set[str]] = []
+    released: list[list[str]] = []
+
+    async def _process_batch(
+        selected_batch: BatchSelection, *args: Any, **kwargs: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        members = {item.request_id for item in selected_batch.workflows}
+        calls.append(members)
+        if "req-bad" in members:
+            raise RuntimeError("Task tsk-bad failed; aborting workflow")
+        return {
+            item.workflow_id: {"output": [f"value-{item.request_id}"]}
+            for item in selected_batch.workflows
+        }, {}
+
+    async def _release(workers: list[str]) -> None:
+        released.append(list(workers))
+
+    monkeypatch.setattr(server, "_process_batch", _process_batch)
+    monkeypatch.setattr(server, "_release_workers", _release)
+    await server._run_batch(["worker-1"], batch)
+
+    # One coalesced attempt, then one run per request.
+    assert calls == [{"req-good", "req-bad"}, {"req-good"}, {"req-bad"}]
+    good = handlers["req-good"].results
+    assert len(good) == 1
+    assert good[0].error_info is None
+    assert good[0].outputs["shared"]["output"] == ["value-req-good"]
+    bad = handlers["req-bad"].results
+    assert len(bad) == 1
+    assert bad[0].error_info is not None
+    assert any("tsk-bad" in str(item) for item in bad[0].error_info)
+    # Workers stay claimed through the retries and are released exactly once.
+    assert released == [["worker-1"]]
+    # Node accounting counts each request's nodes once, not once per attempt.
+    for request_id in ("req-good", "req-bad"):
+        state = server._requests[request_id]
+        assert state.pending_runtime_nodes_raw == 0
+        assert state.processing_runtime_nodes_raw == 0
+        assert state.processed_runtime_nodes_raw > 0
+        assert not state.batch_node_counts
+
+
+@pytest.mark.asyncio
+async def test_run_batch_failure_of_a_single_request_is_not_retried(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        )
+    ]
+    handlers = attach_request_states(server, workflows)
+    calls = 0
+
+    async def _fail(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("only member failed")
+
+    monkeypatch.setattr(server, "_process_batch", _fail)
+    await server._run_batch(["worker-1"], make_batch(workflows))
+
+    assert calls == 1
+    errors = handlers["req-a"].results[0].error_info
+    assert errors is not None
+    assert any("only member failed" in str(item) for item in errors)
+
+
+@pytest.mark.asyncio
+async def test_run_batch_isolated_retries_do_not_recurse(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every member also fails alone, each gets its own error and the
+    retries stop there: a per-request run is never split again."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    handlers, batch = _two_request_batch(server)
+    calls = 0
+
+    async def _fail(selected_batch: BatchSelection, *args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        members = sorted({item.request_id for item in selected_batch.workflows})
+        raise RuntimeError(f"failed: {','.join(members)}")
+
+    monkeypatch.setattr(server, "_process_batch", _fail)
+    await server._run_batch(["worker-1"], batch)
+
+    assert calls == 3
+    assert any(
+        "failed: req-good" == str(e.get("batch_error"))
+        for e in handlers["req-good"].results[0].error_info
+    )
+    assert any(
+        "failed: req-bad" == str(e.get("batch_error"))
+        for e in handlers["req-bad"].results[0].error_info
+    )

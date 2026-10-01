@@ -1824,7 +1824,25 @@ class LumilakeServer:
         compiled_graph._coalesce_rewrite_skipped = False
         return compiled_graph
 
-    async def _run_batch(self, workers: list[str], batch: BatchSelection) -> None:
+    async def _run_batch(
+        self,
+        workers: list[str],
+        batch: BatchSelection,
+        *,
+        isolate_failures: bool = True,
+        release_workers: bool = True,
+    ) -> None:
+        """Run one batch, isolating a failure to the request that caused it.
+
+        Requests from one principal are coalesced into a single execution, and
+        FlowMesh aborts that whole execution on any task failure (see
+        ``FlowmeshRuntimeManager`` "Fail fast"). Coalescing can also merge ops
+        of different requests into one task, so the failure cannot be pinned on
+        a member afterwards. When a batch spanning several requests fails, each
+        request is therefore re-run on its own: a good request then succeeds
+        and a bad one fails with its own error, instead of every member sharing
+        the batch's. The success path is unchanged and keeps its batching.
+        """
         batch_id = f"batch-{unique_id()}"
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
@@ -1843,12 +1861,35 @@ class LumilakeServer:
             self._request_execution_history_ids.setdefault(request_id, set()).add(
                 execution_request_id
             )
+        retry_batches: list[BatchSelection] = []
         try:
-            await self._run_batch_inner(
-                workers, batch, batch_id, request_ids, execution_request_id
+            retry_batches = await self._run_batch_inner(
+                workers,
+                batch,
+                batch_id,
+                request_ids,
+                execution_request_id,
+                isolate_failures=isolate_failures,
+                release_workers=release_workers,
             )
         finally:
             self._cleanup_execution_tracking(execution_request_id, request_ids)
+        if not retry_batches:
+            return
+        # The workers stay claimed across the retries and are released once,
+        # after the last one: releasing between them would let the scheduler
+        # hand them to another batch while this one is still running.
+        try:
+            for retry_batch in retry_batches:
+                await self._run_batch(
+                    workers,
+                    retry_batch,
+                    isolate_failures=False,
+                    release_workers=False,
+                )
+        finally:
+            if release_workers:
+                await self._release_workers(workers)
 
     async def _run_batch_inner(
         self,
@@ -1857,7 +1898,17 @@ class LumilakeServer:
         batch_id: str,
         request_ids: tuple[str, ...],
         execution_request_id: str,
-    ) -> None:
+        *,
+        isolate_failures: bool = True,
+        release_workers: bool = True,
+    ) -> list[BatchSelection]:
+        """Execute ``batch``; return per-request batches to re-run, if any.
+
+        A non-empty return means the batch failed while spanning more than one
+        request and nothing was recorded for its members: the caller re-runs
+        each returned batch on its own (see ``_run_batch``).
+        """
+        retry_batches: list[BatchSelection] = []
         cancelled_requests = await self._collect_cancelled_requests(set(request_ids))
         active_workflows = [
             workflow
@@ -1988,18 +2039,30 @@ class LumilakeServer:
             )
             if active_workflows:
                 self.runtime_manager.mark_batch_failed(execution_request_id, batch_id)
-            cancelled_requests = await self._collect_cancelled_requests(
-                set(request_ids)
-            )
-            await self._handle_batch_results(
-                batch,
-                {},
-                {},
-                sanitized_exc,
-                batch_id=batch_id,
-                cancelled_requests=cancelled_requests,
-                execution_request_id=execution_request_id,
-            )
+            if isolate_failures and len(active_request_ids) > 1:
+                # Do not record the error against every member: re-run each
+                # request alone so only the one that failed reports failure.
+                retry_batches = self._split_batch_by_request(batch)
+                self.logger.warning(
+                    "Batch %s (execution %s) failed across %d requests; re-running"
+                    " each request alone so the failure stays with its own request",
+                    batch_id,
+                    execution_request_id,
+                    len(retry_batches),
+                )
+            else:
+                cancelled_requests = await self._collect_cancelled_requests(
+                    set(request_ids)
+                )
+                await self._handle_batch_results(
+                    batch,
+                    {},
+                    {},
+                    sanitized_exc,
+                    batch_id=batch_id,
+                    cancelled_requests=cancelled_requests,
+                    execution_request_id=execution_request_id,
+                )
         finally:
             runtime_token_var.reset(runtime_token_handle)
             for request_id in request_raw_nodes:
@@ -2011,6 +2074,13 @@ class LumilakeServer:
                     continue
                 raw_nodes = counts.get("raw", 0)
                 optimized_nodes = counts.get("optimized", 0)
+                if retry_batches:
+                    # Nothing was processed: hand the nodes back to pending so
+                    # the per-request re-run accounts for them exactly once.
+                    state.processing_runtime_nodes_raw -= raw_nodes
+                    state.pending_runtime_nodes_raw += raw_nodes
+                    state.processing_runtime_nodes_optimized -= optimized_nodes
+                    continue
                 if raw_nodes:
                     if state.processing_runtime_nodes_raw < raw_nodes:
                         raise RuntimeError(
@@ -2031,10 +2101,42 @@ class LumilakeServer:
                         )
                     state.processing_runtime_nodes_optimized -= optimized_nodes
                     state.processed_runtime_nodes_optimized += optimized_nodes
-            await self._release_workers(workers)
-            self.job_manager.finalize_workflows(
-                [workflow.workflow_id for workflow in batch.workflows]
+            if not retry_batches:
+                # On a retry the re-runs release the workers and finalize
+                # these workflows themselves.
+                if release_workers:
+                    await self._release_workers(workers)
+                self.job_manager.finalize_workflows(
+                    [workflow.workflow_id for workflow in batch.workflows]
+                )
+        return retry_batches
+
+    @staticmethod
+    def _split_batch_by_request(batch: BatchSelection) -> list[BatchSelection]:
+        """One batch per request, keeping each request's workflows in order."""
+        by_request: dict[str, list[Any]] = {}
+        for workflow in batch.workflows:
+            by_request.setdefault(workflow.request_id, []).append(workflow)
+        return [
+            BatchSelection(
+                workflows=workflows,
+                runtime_graphs={
+                    item.workflow_id: batch.runtime_graphs.get(
+                        item.workflow_id, item.runtime_graph
+                    )
+                    for item in workflows
+                },
+                data_profile_graphs={
+                    item.workflow_id: batch.data_profile_graphs.get(
+                        item.workflow_id, item.data_profile_graph
+                    )
+                    for item in workflows
+                },
+                config=batch.config,
+                clustering_seconds=0.0,
             )
+            for workflows in by_request.values()
+        ]
 
     def _cleanup_execution_tracking(
         self,
