@@ -115,7 +115,6 @@ server-runtime = [
 
 [tool.isort]
 profile = "black"
-skip = [".venv"]
 
 [tool.ruff]
 target-version = "py312"
@@ -125,7 +124,6 @@ select = ["E", "F", "UP", "I"]
 ignore = ["I001"]
 
 [tool.black]
-force-exclude = "\\.venv"
 
 [tool.mypy]
 python_version = "3.12"
