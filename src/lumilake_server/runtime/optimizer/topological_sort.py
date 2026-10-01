@@ -1,10 +1,8 @@
-"""Topological-sort baseline optimizer.
+"""Topological-sort optimizer.
 
 Assigns every GPU-backend node to the first GPU worker and every CPU node to the
 first CPU worker, in topological order. A node of a capability-gated task type
-goes to the first CPU worker that advertises it. Serves as
-the naive baseline against which cost-aware optimizers (HALO, HALO+Helium) are
-measured.
+goes to the first CPU worker that advertises it. It uses no cost model.
 """
 
 from typing import Any
