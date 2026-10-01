@@ -193,8 +193,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
 
     @app.get("/docs", include_in_schema=False)
     async def api_documentation(request: Request):
-        return HTMLResponse(
-            """
+        return HTMLResponse("""
             <!doctype html>
             <html lang="en">
             <head>
@@ -214,8 +213,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
                 />
 
             </body>
-            </html>"""
-        )
+            </html>""")
 
     return app
 

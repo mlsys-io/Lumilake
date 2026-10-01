@@ -191,8 +191,7 @@ def test_parse_response_fails_when_usage_missing() -> None:
 
 
 def test_embedding_op_yaml_end_to_end() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: embed_docs
         inputs:
           Docs: ["hello", "world"]
@@ -206,8 +205,7 @@ def test_embedding_op_yaml_end_to_end() -> None:
         outputs:
           - name: vectors
             ref: Embed
-        """
-    )
+        """)
     spec = parse_yaml_payload(yaml_text)["embed_docs"]
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
@@ -222,8 +220,7 @@ def test_embedding_op_yaml_end_to_end() -> None:
 
 
 def test_embedding_op_yaml_requires_model() -> None:
-    yaml_text = textwrap.dedent(
-        """
+    yaml_text = textwrap.dedent("""
         name: embed_docs
         inputs:
           Docs: ["hello"]
@@ -236,8 +233,7 @@ def test_embedding_op_yaml_requires_model() -> None:
         outputs:
           - name: vectors
             ref: Embed
-        """
-    )
+        """)
     with pytest.raises(ValueError, match="requires 'config' with a 'model'"):
         parse_yaml_payload(yaml_text)
 

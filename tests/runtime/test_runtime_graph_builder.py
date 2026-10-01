@@ -721,8 +721,7 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
     The parser emits an implicit FormatOp with no inputs for such a prompt;
     the runtime graph builder must accept it (the ``{df}`` placeholder is
     filled from the aggregate columns, not from a format_kwargs ref)."""
-    workflow = textwrap.dedent(
-        """
+    workflow = textwrap.dedent("""
         name: df_only
         inputs:
           Stock: ["NVDA"]
@@ -761,8 +760,7 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
         outputs:
           - name: result
             ref: Select
-        """
-    )
+        """)
     specs = parse_yaml_payload(workflow)
     spec = specs["df_only"]
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
