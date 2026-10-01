@@ -18,7 +18,7 @@ h11==0.16.0
 httpcore==1.0.9
 httpx==0.28.1
 idna==3.20
-lumid-hooks==0.1.0
+lumid-hooks==0.2.0
 multidict==6.9.1
 numpy==2.5.3
 opentelemetry-api==1.45.0

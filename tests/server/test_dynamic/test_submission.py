@@ -14,7 +14,7 @@ a terminal state, leaf-output integrity, and the static-workflow regression.
 import asyncio
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from typing import Any
 from unittest.mock import Mock
 
@@ -117,6 +117,13 @@ class _AllowAllRegistrar:
         self,
         principal: PrincipalContext,
         resource: ResourceRef,
+        logger: logging.Logger,
+    ) -> None:
+        return None
+
+    async def reconcile(
+        self,
+        resources: Collection[ResourceRef],
         logger: logging.Logger,
     ) -> None:
         return None

@@ -756,14 +756,14 @@ wheels = [
 
 [[package]]
 name = "lumid-hooks"
-version = "0.1.0"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/b4/d660b386d13051669eae4c9056154c638302a1eea39fccb569075ed07243/lumid_hooks-0.1.0.tar.gz", hash = "sha256:0ae85cef586645391f21ea3d912de1bf2be77b6b6dd0690f3841bb238fa0315a", size = 11269, upload-time = "2026-05-12T09:07:16.782Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/b7/f2c4544b4df91ce80908f17cd5645611ec2538ddc6444bc00ad8e5961531/lumid_hooks-0.2.0.tar.gz", hash = "sha256:3c33d067c238337c16be88708d674448d83642e767bc0724e0ab1b5f6122010d", size = 11655, upload-time = "2026-05-22T03:49:57.706Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/85/70/84678eb357151f84fd78e6ce8270a42180a2605a3a3168492201feed76bf/lumid_hooks-0.1.0-py3-none-any.whl", hash = "sha256:8cfd8f3ed36001711b70290a5043a213322deaced1046d4583a4739f11cb00a6", size = 12796, upload-time = "2026-05-12T09:07:15.629Z" },
+    { url = "https://files.pythonhosted.org/packages/67/ac/1b39a49650a27f012b847b6be939866cec39d4aea96d50177ec8861d21ea/lumid_hooks-0.2.0-py3-none-any.whl", hash = "sha256:a3e471ee38cfe83eb46199a64c269bc0ad9f81154d820e68d45c604a16e1f2e7", size = 13002, upload-time = "2026-05-22T03:49:56.281Z" },
 ]
 
 [[package]]
@@ -869,7 +869,7 @@ server-runtime = [
     { name = "fastapi", specifier = "==0.142.2" },
     { name = "flowmesh-sdk", specifier = "==0.1.10" },
     { name = "httpx", specifier = "==0.28.1" },
-    { name = "lumid-hooks", specifier = "==0.1.0" },
+    { name = "lumid-hooks", specifier = "==0.2.0" },
     { name = "pandas", specifier = "==3.0.6" },
     { name = "python-dotenv", specifier = "==1.2.4" },
     { name = "requests", specifier = "==2.34.2" },
@@ -947,7 +947,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "lumid-hooks", specifier = ">=0.1.0" },
+    { name = "lumid-hooks", specifier = ">=0.2.0" },
 ]
 
 [[package]]
