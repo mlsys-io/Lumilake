@@ -160,7 +160,6 @@ skips = [
     "B102",  # exec: agent Python executor sandbox feature
     "B104",  # 0.0.0.0 bind: containerized; exposure controlled at orchestration
     "B105",  # hardcoded password string: false positives on path / hash-name literals
-    "B107",  # password default: placeholder, not a real credential
     "B110",  # try/except/pass: best-effort cleanup paths
     "B112",  # try/except/continue: iteration over partially-bad inputs
     "B307",  # eval: agent Python executor sandbox feature
