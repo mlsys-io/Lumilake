@@ -1,6 +1,6 @@
 [project]
 name = "lumilake"
-version = "0.1.9rc1"
+version = "0.1.9rc2"
 description = "Data analytics engine for agentic workflows"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
@@ -33,16 +33,16 @@ Repository = "https://github.com/mlsys-io/lumilake_OSS"
 Issues = "https://github.com/mlsys-io/lumilake_OSS/issues"
 
 [project.optional-dependencies]
-sdk = ["lumilake-sdk==0.1.9rc1"]
+sdk = ["lumilake-sdk==0.1.9rc2"]
 # Full CLI; pin lumilake-cli alone for the thin variant.
-cli = ["lumilake-cli==0.1.9rc1", "lumilake-deploy==0.1.9rc1"]
-deploy = ["lumilake-deploy==0.1.9rc1"]
-hook = ["lumilake-hook==0.1.9rc1"]
+cli = ["lumilake-cli==0.1.9rc2", "lumilake-deploy==0.1.9rc2"]
+deploy = ["lumilake-deploy==0.1.9rc2"]
+hook = ["lumilake-hook==0.1.9rc2"]
 all = [
-    "lumilake-sdk==0.1.9rc1",
-    "lumilake-cli==0.1.9rc1",
-    "lumilake-deploy==0.1.9rc1",
-    "lumilake-hook==0.1.9rc1",
+    "lumilake-sdk==0.1.9rc2",
+    "lumilake-cli==0.1.9rc2",
+    "lumilake-deploy==0.1.9rc2",
+    "lumilake-hook==0.1.9rc2",
 ]
 
 [build-system]
@@ -103,7 +103,7 @@ server-runtime = [
     "httpx==0.28.1",
     "python-dotenv==1.2.2",
     "requests==2.34.2",
-    "urllib3==2.7.0",
+    "urllib3==2.8.0",
     "aiohttp==3.14.3",
     "shortuuid==1.0.13",
     "pandas==3.0.3",
