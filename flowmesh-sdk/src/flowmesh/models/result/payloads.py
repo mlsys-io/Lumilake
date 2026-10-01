@@ -21,6 +21,17 @@ class GenerationUsage(StrictModel):
     latency_sec: float
 
 
+class APIUsage(StrictModel):
+    prompt_tokens: int
+    completion_tokens: int
+    reasoning_tokens: int
+    calls: int
+    failures: int
+    retries: int
+    truncated_calls: int
+    wall_sec: float
+
+
 class EmbeddingUsage(StrictModel):
     prompt_tokens: int
     total_tokens: int
@@ -177,12 +188,8 @@ class APIItem(StrictModel):
 
 
 class APIGroupItem(StrictModel):
-    """One group's row responses in a batched API task over grouped data.
-
-    ``rows`` holds the group's row responses in order. A group is one
-    dataframe table (one claim), so a downstream column reads ``rows`` as a
-    per-group list.
-    """
+    """One group's row responses in a batched API task over grouped data; ``rows``
+    holds the group's row responses in order."""
 
     index: int
     rows: list[APIItem]

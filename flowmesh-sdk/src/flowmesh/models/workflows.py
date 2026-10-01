@@ -3,6 +3,7 @@
 from pydantic import BaseModel
 
 from .common import TaskStatus, WorkflowStatus
+from .result import APIUsage
 
 
 class WorkflowSubmitTaskEntry(BaseModel):
@@ -46,3 +47,4 @@ class Workflow(BaseModel):
     completed_tasks: list[str]
     failed_tasks: list[str]
     cancelled_tasks: list[str]
+    usage: APIUsage | None = None
