@@ -45,8 +45,8 @@ iff their partition keys are equal. The API credential digest is included so a
 batch never mixes jobs with different caller-supplied credentials. When
 capacity-aware selection is on, ``requires_gpu`` is appended so a busy GPU group
 never suppresses CPU-only items in the same principal/token/credential/
-optimizer/hardware class; with the rollback lever off the key drops it and
-returns to its pre-change shape, so CPU and GPU items share a partition again.
+optimizer/hardware class; with it off the key omits ``requires_gpu``, so CPU
+and GPU items share a partition.
 """
 
 
@@ -85,8 +85,6 @@ class PriorityJobManager(BaseJobManager):
         cpu_worker_group_size: int = envs.LUMILAKE_CPU_WORKER_GROUP_SIZE,
         gpu_worker_group_size: int = envs.LUMILAKE_GPU_WORKER_GROUP_SIZE,
         policy: str = envs.LUMILAKE_SCHEDULER_POLICY,
-        fair_share_target: float = envs.LUMILAKE_FAIR_SHARE_TARGET,
-        fairness_half_life_seconds: float = envs.LUMILAKE_FAIRNESS_HALF_LIFE_SECONDS,
         cost_params: CostParams | None = None,
         clock: Callable[[], float] = time.monotonic,
         worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
@@ -133,15 +131,13 @@ class PriorityJobManager(BaseJobManager):
         self._unsatisfiable_count: dict[PartitionKey, int] = {}
         # Whether the partition key carries the ``requires_gpu`` split. Mirrors
         # the server's capacity-aware-selection lever: when off, the key drops
-        # ``requires_gpu`` so partitioning returns to its pre-change shape and
-        # CPU and GPU items in the same principal/token/credential/optimizer/
-        # hardware class share a partition (head-of-line behaviour returns).
+        # ``requires_gpu`` so CPU and GPU items in the same principal/token/
+        # credential/optimizer/hardware class share a partition (head-of-line
+        # blocking applies within it).
         self._capacity_aware_selection = capacity_aware_selection
         self._policy = policy
         self._policy_impl = create_scheduling_policy(
             policy,
-            fair_share_target=fair_share_target,
-            fairness_half_life_seconds=fairness_half_life_seconds,
             cost_params=cost_params,
             clock=clock,
         )
