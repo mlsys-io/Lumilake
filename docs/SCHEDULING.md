@@ -211,7 +211,7 @@ Each policy returns at most `batch_size` ids, a subset of the candidates, and
 may use only the queued items, their graphs, and what has already run — never
 the future. The policies:
 
-- **`legacy`** (default): per-user round-robin fairness within a partition,
+- **`default`**: per-user round-robin fairness within a partition,
   keeping one item per user in round-robin order, then filling the batch in
   affinity clustering order.
 - **`fifo`**: enqueue order (`enqueued_at`, then `workflow_id`).
@@ -221,7 +221,7 @@ the future. The policies:
   all estimated ones; ties by enqueue order.
 - **`affinity`**: pure affinity clustering order (the ids in `affinity_rank`,
   in order), then fill up to `batch_size` with remaining candidates in enqueue
-  order. This is `legacy` without the per-user round-robin seed.
+  order. This is `default` without the per-user round-robin seed.
 - **`plas`**: program-level least attained service (Autellix). Keyed by the
   item's chain (`chain_id`, else the request id), lowest attained service
   first; ties by enqueue order. Each committed item charges its `estimate_area`
@@ -298,7 +298,7 @@ distribution is known*; none is, so none is claimed.
 | Preemption | Not allowed | A running batch holds whole workers; preempting wastes partial work and complicates the two-phase reserve/commit protocol. |
 | Cost model | Analytic, hyperparameter-first | No trace corpus exists; nothing may depend on a fitted distribution. |
 | GPU-ness in the partition key | Yes | Prevents a GPU item suppressing CPU siblings, at the cost of mixed co-batching. |
-| Policy default | `legacy` | The new orderings must be switchable to be evaluable. |
+| Policy default | `default` | The new orderings must be switchable to be evaluable. |
 
 ## 10. Open questions
 

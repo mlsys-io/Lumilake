@@ -121,10 +121,10 @@ LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
     "LUMILAKE_CAPACITY_AWARE_SELECTION", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
-# Scheduling policy: "legacy" (per-user round-robin with affinity clustering),
+# Scheduling policy: "default" (per-user round-robin with affinity clustering),
 # "fifo", "spt", "lpt", "affinity", or "plas".
 LUMILAKE_SCHEDULER_POLICY: str = (
-    (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "legacy").strip().lower()
+    (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "default").strip().lower()
 )
 # Analytic cost-model coefficients (see cost.py / docs/SCHEDULING.md S6).
 LUMILAKE_COST_DB_SEC_PER_QUERY: float = float(

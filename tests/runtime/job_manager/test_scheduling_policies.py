@@ -145,7 +145,7 @@ AFFINITY_RANK = {"wf-gpu2": 0, "wf-cpu1": 1}
 EXPECTED = {
     # One item per user in round-robin order (preferring affinity picks),
     # then the rest in candidate order.
-    "legacy": ["cpu1", "gpu2", "gpu", "agent", "cpu0"],
+    "default": ["cpu1", "gpu2", "gpu", "agent", "cpu0"],
     # Enqueue order; the gpu/gpu2 tie breaks by workflow id.
     "fifo": ["agent", "gpu", "gpu2", "cpu1", "cpu0"],
     # Smallest area first; the cpu tie breaks by enqueue order; no estimate last.

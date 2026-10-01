@@ -11,7 +11,7 @@ class AffinitySchedulingPolicy(BaseSchedulingPolicy):
     """Select the batch in pure affinity clustering order.
 
     The ids in ``affinity_rank`` (in order) come first, then the remaining
-    candidates fill up to ``batch_size`` in enqueue order. This is ``legacy``
+    candidates fill up to ``batch_size`` in enqueue order. This is ``default``
     without the per-user round-robin seed.
     """
 

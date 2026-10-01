@@ -73,13 +73,13 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 ### Scheduling policy
 
 The scheduler policy is switchable so policies can be compared on identical
-seeds. `legacy` (the default) is per-user round-robin with affinity
+seeds. `default` is per-user round-robin with affinity
 clustering; the baselines are `fifo`, `spt`, `lpt`, `affinity`, and `plas`
 (see `docs/SCHEDULING.md`).
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `legacy` (default), `fifo`, `spt`, `lpt`, `affinity`, or `plas`. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
+| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `default`, `fifo`, `spt`, `lpt`, `affinity`, or `plas`; defaults to `default`. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
 | `LUMILAKE_CAPACITY_AWARE_SELECTION` | Capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. `0` makes selection capacity-blind and drops `requires_gpu` from the partition key: CPU and GPU items in the same class share a partition, and a batch no worker can run blocks dispatch until capacity frees. |
 | `LUMILAKE_COST_DB_SEC_PER_QUERY` | Estimated seconds per data-retrieval query in the analytic cost model. Defaults to `0.05`, mirroring HALO's `_db_input_sec`. |
 | `LUMILAKE_COST_CPU_SEC_PER_NODE` | Estimated seconds per pure-CPU node in the analytic cost model. Defaults to `0.1` — a small constant for non-GPU, non-DB work whose duration is otherwise unmodeled. |

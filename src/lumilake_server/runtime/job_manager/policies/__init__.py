@@ -9,14 +9,14 @@ from lumilake import envs
 
 from .affinity import AffinitySchedulingPolicy
 from .base import BaseSchedulingPolicy
+from .default import DefaultSchedulingPolicy
 from .fifo import FifoSchedulingPolicy
-from .legacy import LegacySchedulingPolicy
 from .lpt import LptSchedulingPolicy
 from .plas import PlasSchedulingPolicy
 from .spt import SptSchedulingPolicy
 
 SCHEDULING_POLICIES: dict[str, type[BaseSchedulingPolicy]] = {
-    "legacy": LegacySchedulingPolicy,
+    "default": DefaultSchedulingPolicy,
     "fifo": FifoSchedulingPolicy,
     "spt": SptSchedulingPolicy,
     "lpt": LptSchedulingPolicy,
@@ -47,8 +47,8 @@ def create_scheduling_policy(
 __all__ = [
     "AffinitySchedulingPolicy",
     "BaseSchedulingPolicy",
+    "DefaultSchedulingPolicy",
     "FifoSchedulingPolicy",
-    "LegacySchedulingPolicy",
     "LptSchedulingPolicy",
     "PlasSchedulingPolicy",
     "SCHEDULING_POLICIES",
