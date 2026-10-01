@@ -4,8 +4,8 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from lumid_hooks import PrincipalContext
-from lumilake_hook import ResourceAction, ResourceKind
 
+from lumilake_hook import ResourceAction, ResourceKind
 from lumilake_server.hooks.security import (
     authenticate_request,
     require_permission,

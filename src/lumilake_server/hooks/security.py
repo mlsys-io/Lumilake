@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request, status
 from lumid_hooks import PrincipalContext, ResourceRef
+
 from lumilake import envs
 from lumilake_hook import (
     ResourceAction,

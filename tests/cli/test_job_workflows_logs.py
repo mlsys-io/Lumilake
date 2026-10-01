@@ -9,10 +9,11 @@ from typing import Any
 
 import pytest
 import requests as _requests_mod
+from typer.testing import CliRunner
+
 from lumilake_cli.commands import job as job_cmd
 from lumilake_cli.commands.job import app
 from lumilake_cli.core.http import HttpClient
-from typer.testing import CliRunner
 
 
 class _StubResponse:

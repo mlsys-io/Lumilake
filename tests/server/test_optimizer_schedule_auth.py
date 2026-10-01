@@ -13,8 +13,8 @@ import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 from lumid_hooks import PrincipalContext, ResourceRef
-from lumilake import envs
 
+from lumilake import envs
 from lumilake_server import hooks
 from lumilake_server.routes import optimizer as optimizer_routes
 from lumilake_server.runtime.optimizer.base import Schedule

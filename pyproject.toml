@@ -72,15 +72,16 @@ default-groups = []
 
 [dependency-groups]
 lint = [
-    "black==25.12.0",
-    "ruff==0.14.10",
-    "mypy==1.20.2",
-    "codespell==2.4.2",
-    "isort==8.0.1",
-    "types-requests==2.33.0.20260503",
-    "types-pyyaml==6.0.12.20260408",
-    "types-docker==7.1.0.20260409",
-    "pre-commit==4.6.0",
+    "black==26.5.1",
+    "ruff==0.16.9",
+    "mypy==2.3.1",
+    "codespell==2.4.3",
+    "isort==9.0.2",
+    "types-requests==2.33.0.20260906",
+    "types-pyyaml==6.0.12.20260906",
+    "types-docker==7.2.0.20260923",
+    "pandas-stubs==3.0.5.260914",
+    "pre-commit==4.6.2",
 ]
 dev = [
     "ipywidgets>=8.1.5,<9.0.0",
@@ -115,22 +116,19 @@ server-runtime = [
 
 [tool.isort]
 profile = "black"
-skip = [".venv"]
+known_first_party = ["lumilake", "lumilake_cli", "lumilake_deploy", "lumilake_hook", "lumilake_server"]
 
 [tool.ruff]
 target-version = "py312"
-exclude = [".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "I"]
-ignore = ["I001"]
 
-[tool.black]
-force-exclude = "\\.venv"
+[tool.ruff.lint.isort]
+known-first-party = ["lumilake", "lumilake_cli", "lumilake_deploy", "lumilake_hook", "lumilake_server"]
 
 [tool.mypy]
 python_version = "3.12"
-ignore_missing_imports = true
 files = [
     "packages/sdk/src",
     "packages/cli/src",
@@ -141,13 +139,28 @@ files = [
     "tests",
 ]
 
+[[tool.mypy.overrides]]
+# flowmesh* and dill ship without type stubs or py.typed markers.
+module = [
+    "flowmesh",
+    "flowmesh.*",
+    "flowmesh_cli_stack.*",
+    "flowmesh_stack.*",
+    "dill",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Test helpers imported as top-level `support.*` from tests/support/.
+module = ["support.*"]
+ignore_missing_imports = true
+
 [tool.bandit]
 skips = [
     "B101",  # assert: internal invariants, not shipped with -O
     "B102",  # exec: agent Python executor sandbox feature
     "B104",  # 0.0.0.0 bind: containerized; exposure controlled at orchestration
     "B105",  # hardcoded password string: false positives on path / hash-name literals
-    "B107",  # password default: placeholder, not a real credential
     "B110",  # try/except/pass: best-effort cleanup paths
     "B112",  # try/except/continue: iteration over partially-bad inputs
     "B307",  # eval: agent Python executor sandbox feature
@@ -160,17 +173,6 @@ skips = [
     "B608",  # SQL string interpolation: identifiers come from module-level constants
              # and validated quote helpers; values bind via %s.
 ]
-
-[tool.codespell]
-ignore-words-list = ["ans", "assertIn"]
-skip = ["*.csv", "tmp*", "./.venv"]
-
-[tool.pyright]
-exclude = ["**/__pycache__", "**/.*"]
-extraPaths = []
-deprecateTypingAliases = true
-reportDeprecated = "warning"
-reportPrivateImportUsage = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

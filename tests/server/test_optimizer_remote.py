@@ -5,8 +5,8 @@ import json
 import httpx
 import pytest
 import respx
-from lumilake import envs as envs_mod
 
+from lumilake import envs as envs_mod
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.remote import RemoteOptimizer

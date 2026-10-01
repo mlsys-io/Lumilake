@@ -2,8 +2,9 @@
 
 import re
 
-from lumilake_cli.commands.job import app
 from typer.testing import CliRunner
+
+from lumilake_cli.commands.job import app
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 

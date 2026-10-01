@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from lumilake import envs
-
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,

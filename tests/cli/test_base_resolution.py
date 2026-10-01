@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from lumilake.config import LumilakeConfig
 from lumilake_cli.core import http
 

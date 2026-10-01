@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Self
 
 import httpx
+
 from lumilake import envs
 from lumilake.config import DEFAULT_CONFIG_PATH, LumilakeConfig
 from lumilake.errors import (

@@ -5,8 +5,9 @@ from typing import Any
 
 import aiohttp
 import requests
-from lumilake import envs
 from requests.models import Response as SyncHTTPResponse
+
+from lumilake import envs
 
 _DEFAULT_TIMEOUT = envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
 

@@ -11,7 +11,6 @@ from typing import Any
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
-
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority

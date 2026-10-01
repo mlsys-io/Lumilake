@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from lumilake import envs
 from support.runtime_server import (
     ArtifactRuntimeManager,
     RecordingRuntimeManager,
@@ -16,6 +15,7 @@ from support.runtime_server import (
 )
 
 import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
+from lumilake import envs
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule

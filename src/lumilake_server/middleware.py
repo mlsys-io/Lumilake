@@ -1,9 +1,9 @@
 """Request-scoped middleware shared between the live server and tests."""
 
 from fastapi import Request
-from lumilake.log import trace_id_var
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from lumilake.log import trace_id_var
 from lumilake_server.utils.utils import unique_id
 
 REQUEST_ID_HEADER = "X-Request-ID"

@@ -2,8 +2,8 @@ import textwrap
 from typing import Any
 
 import pytest
-from lumilake import envs
 
+from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -907,8 +907,7 @@ def test_api_node_consuming_fanned_return_history_upstream_fails_closed() -> Non
         RuntimeGraphBuilder().build(compiled)
 
 
-_YAML_SINGLE_HOP_TWO_ROWS = textwrap.dedent(
-    """
+_YAML_SINGLE_HOP_TWO_ROWS = textwrap.dedent("""
     name: yaml-api-two-rows
 
     inputs:
@@ -933,8 +932,7 @@ _YAML_SINGLE_HOP_TWO_ROWS = textwrap.dedent(
     outputs:
       - name: result
         ref: "Summarise"
-    """
-)
+    """)
 
 
 def _build_yaml_two_row_graph() -> tuple[RuntimeGraph, str]:
@@ -997,8 +995,7 @@ def test_merged_workflow_result_stays_row_aligned_after_optimize() -> None:
     assert contents == ["a database index", "a message queue"]
 
 
-_YAML_API_NODE_FEEDS_LOCAL_NODE = textwrap.dedent(
-    """
+_YAML_API_NODE_FEEDS_LOCAL_NODE = textwrap.dedent("""
     name: api-node-feeds-local-node
 
     inputs:
@@ -1034,8 +1031,7 @@ _YAML_API_NODE_FEEDS_LOCAL_NODE = textwrap.dedent(
     outputs:
       - name: result
         ref: "Critique"
-    """
-)
+    """)
 
 
 def test_api_row_fanned_node_feeding_local_node_fails_closed() -> None:
@@ -1052,8 +1048,7 @@ def test_api_row_fanned_node_feeding_local_node_fails_closed() -> None:
         RuntimeGraphBuilder().build(compiled)
 
 
-_YAML_LOCAL_NODE_FEEDS_API_NODE = textwrap.dedent(
-    """
+_YAML_LOCAL_NODE_FEEDS_API_NODE = textwrap.dedent("""
     name: local-node-feeds-api-node
 
     inputs:
@@ -1085,8 +1080,7 @@ _YAML_LOCAL_NODE_FEEDS_API_NODE = textwrap.dedent(
     outputs:
       - name: result
         ref: "Api"
-    """
-)
+    """)
 
 
 def test_api_node_feeding_local_multi_row_upstream_fails_closed() -> None:

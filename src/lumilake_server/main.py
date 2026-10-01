@@ -12,9 +12,9 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+
 from lumilake import envs
 from lumilake.log import configure_default_logger, init_child_logger
-
 from lumilake_server import __version__
 from lumilake_server.hooks import register
 from lumilake_server.middleware import TraceIdMiddleware
@@ -193,8 +193,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
 
     @app.get("/docs", include_in_schema=False)
     async def api_documentation(request: Request):
-        return HTMLResponse(
-            """
+        return HTMLResponse("""
             <!doctype html>
             <html lang="en">
             <head>
@@ -214,8 +213,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
                 />
 
             </body>
-            </html>"""
-        )
+            </html>""")
 
     return app
 
