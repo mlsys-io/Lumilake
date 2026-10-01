@@ -158,10 +158,9 @@ and hardware — reintroducing head-of-line blocking inside the partition.
 The split is conditional on the capacity-aware-selection lever
 (`LUMILAKE_CAPACITY_AWARE_SELECTION`). With the lever on (default) the key
 carries `requires_gpu`, so CPU and GPU items in the same class land in separate
-partitions. With the lever off the key drops `requires_gpu` and returns to its
-pre-change shape, so those items share a partition again and the old
-head-of-line behaviour genuinely returns — the lever reverts the whole change
-set, not just the capacity filter.
+partitions. With the lever off the key drops `requires_gpu`, so those items
+share a partition and head-of-line blocking applies within it — the lever
+controls both the partition key and the capacity filter.
 
 That has a cost, stated plainly: CPU-only and GPU-requiring items that would
 otherwise share a partition can no longer co-batch, which loses some affinity.
@@ -199,8 +198,8 @@ cost of a substantially more complex claim path.
 
 ## 6. Baseline scheduling policies
 
-The scheduler policy is switchable so the baseline policies can be A/B'd
-against the legacy selection on identical seeds. Policies are registered in
+The scheduler policy is switchable so policies can be compared on identical
+seeds. Policies are registered in
 `SCHEDULING_POLICIES` (mirroring the optimizer's `OPTIMIZER_TYPES`): a new
 policy is a `BaseSchedulingPolicy` subclass plus one registry entry, resolved
 by `create_scheduling_policy`. The interface takes the candidate *set* and
@@ -213,8 +212,8 @@ may use only the queued items, their graphs, and what has already run — never
 the future. The policies:
 
 - **`legacy`** (default): per-user round-robin fairness within a partition,
-  preserving priority quantums, starvation pinning and affinity selection.
-  Reproduces the pre-policy selection exactly.
+  keeping one item per user in round-robin order, then filling the batch in
+  affinity clustering order.
 - **`fifo`**: enqueue order (`enqueued_at`, then `workflow_id`).
 - **`spt`**: smallest `estimate_area` first; items without an estimate after
   all estimated ones; ties by enqueue order.

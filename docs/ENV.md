@@ -68,20 +68,19 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_QUEUE_QUANTUM_LOW` | Low-priority queue quantum. Defaults to `5`. |
 | `LUMILAKE_POLL_TIMEOUT_SECONDS` | Overall timeout for runtime polling. Defaults to `inf`. |
 | `LUMILAKE_POLL_INTERVAL_SECONDS` | Interval between runtime status polls. Defaults to `5`. |
-| `LUMILAKE_CAPACITY_AWARE_SELECTION` | Rollback lever for capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. Set to `0` to revert the whole change set: selection becomes capacity-blind AND the partition key drops `requires_gpu`, so CPU and GPU items in the same class share a partition again and the old head-of-line blocking returns. |
 | `LUMILAKE_FLOWMESH_OUTPUT_DESTINATION` | FlowMesh result delivery mode. `local` (default) or `http`. |
 
 ### Scheduling policy
 
-The scheduler policy is switchable so the baseline policies can be A/B'd
-against the legacy selection on identical seeds. `legacy` (the default)
-reproduces today's selection exactly; the other baselines are `fifo`, `spt`,
-`lpt`, `affinity`, and `plas` (see `docs/SCHEDULING.md`).
+The scheduler policy is switchable so policies can be compared on identical
+seeds. `legacy` (the default) is per-user round-robin with affinity
+clustering; the baselines are `fifo`, `spt`, `lpt`, `affinity`, and `plas`
+(see `docs/SCHEDULING.md`).
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `legacy` (default), `fifo`, `spt`, `lpt`, `affinity`, or `plas`. Defaults to `legacy` so existing deployments are byte-identical until they opt in. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
-| `LUMILAKE_CAPACITY_AWARE_SELECTION` | Rollback lever for capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work. Set to `0` to restore capacity-blind selection, which reintroduces head-of-line blocking where a batch that no worker can run stalls dispatch until capacity frees. |
+| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `legacy` (default), `fifo`, `spt`, `lpt`, `affinity`, or `plas`. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
+| `LUMILAKE_CAPACITY_AWARE_SELECTION` | Capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. `0` makes selection capacity-blind and drops `requires_gpu` from the partition key: CPU and GPU items in the same class share a partition, and a batch no worker can run blocks dispatch until capacity frees. |
 | `LUMILAKE_COST_DB_SEC_PER_QUERY` | Estimated seconds per data-retrieval query in the analytic cost model. Defaults to `0.05`, mirroring HALO's `_db_input_sec`. |
 | `LUMILAKE_COST_CPU_SEC_PER_NODE` | Estimated seconds per pure-CPU node in the analytic cost model. Defaults to `0.1` — a small constant for non-GPU, non-DB work whose duration is otherwise unmodeled. |
 | `LUMILAKE_COST_DEFAULT_MODEL_SIZE_B` | Fallback model size (billions of parameters) when a GPU op's model name carries no inferable size. Defaults to `20`, matching HALO's `_default_model_size_b`. |

@@ -45,8 +45,8 @@ iff their partition keys are equal. The API credential digest is included so a
 batch never mixes jobs with different caller-supplied credentials. When
 capacity-aware selection is on, ``requires_gpu`` is appended so a busy GPU group
 never suppresses CPU-only items in the same principal/token/credential/
-optimizer/hardware class; with the rollback lever off the key drops it and
-returns to its pre-change shape, so CPU and GPU items share a partition again.
+optimizer/hardware class; with it off the key omits ``requires_gpu``, so CPU
+and GPU items share a partition.
 """
 
 

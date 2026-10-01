@@ -1,6 +1,6 @@
 """The default scheduling policy: per-user round-robin fairness.
 
-Reproduces the pre-policy selection exactly. Within a partition the candidate
+Within a partition the candidate
 pool is built round-robin across users (see ``PriorityJobManager``), so the
 policy only needs to preserve that ordering when affinity's clustering would
 otherwise reorder it: it keeps one item per user in round-robin order before

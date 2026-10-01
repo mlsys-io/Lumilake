@@ -312,7 +312,7 @@ class LumilakeServerConfig:
         self.poll_interval_seconds = poll_interval_seconds
         """Bounded wait for capacity release / error-retry backoff."""
         self.capacity_aware_selection = capacity_aware_selection
-        """Whether selection filters by free capacity (rollback lever)."""
+        """Whether selection filters by free capacity."""
 
         if is_local:
             self._host = self._port = None

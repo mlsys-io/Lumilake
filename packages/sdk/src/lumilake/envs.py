@@ -114,16 +114,15 @@ LUMILAKE_GPU_WORKER_GROUP_SIZE: int = int(
     os.environ.get("LUMILAKE_GPU_WORKER_GROUP_SIZE") or "0"
 )
 # Whether dispatch filters selection by free capacity. Default on: an unrunnable
-# batch is skipped in favour of runnable work. Set to ``0`` to restore the
-# capacity-blind behaviour where a batch that no worker can run stalls dispatch
-# (head-of-line blocking) until capacity frees. A rollback lever for the
-# capacity-aware selection path.
+# batch is skipped in favour of runnable work. With ``0`` selection is
+# capacity-blind, so a batch that no worker can run stalls dispatch
+# (head-of-line blocking) until capacity frees.
 LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
     "LUMILAKE_CAPACITY_AWARE_SELECTION", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
-# Scheduling policy. "legacy" reproduces today's selection exactly; the other
-# baselines are "fifo", "spt", "lpt", "affinity", and "plas".
+# Scheduling policy: "legacy" (per-user round-robin with affinity clustering),
+# "fifo", "spt", "lpt", "affinity", or "plas".
 LUMILAKE_SCHEDULER_POLICY: str = (
     (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "legacy").strip().lower()
 )
