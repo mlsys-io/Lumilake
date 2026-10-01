@@ -174,8 +174,6 @@ skips = [
 ]
 
 [tool.codespell]
-ignore-words-list = ["ans", "assertIn"]
-skip = ["*.csv", "tmp*", "./.venv"]
 
 [tool.pyright]
 exclude = ["**/__pycache__", "**/.*"]
