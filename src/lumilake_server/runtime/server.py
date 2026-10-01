@@ -11,7 +11,7 @@ import time
 import traceback
 from collections.abc import Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import lumid_hooks
@@ -255,6 +255,19 @@ def _optimizer_subprocess_entry(
 
 class LumilakeServerError(Exception):
     pass
+
+
+class RuntimeExecutionError(Exception):
+    """The runtime backend failed while executing a batch.
+
+    Raised only for the backend execution itself, so failures in the work
+    around it (planning, result handling, bookkeeping) are told apart from
+    runtime work that may be partly or fully done.
+    """
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
 
 
 class LumilakeServerConfig:
@@ -1824,7 +1837,25 @@ class LumilakeServer:
         compiled_graph._coalesce_rewrite_skipped = False
         return compiled_graph
 
-    async def _run_batch(self, workers: list[str], batch: BatchSelection) -> None:
+    async def _run_batch(
+        self,
+        workers: list[str],
+        batch: BatchSelection,
+        *,
+        isolate_failures: bool = True,
+        release_workers: bool = True,
+    ) -> None:
+        """Run one batch, isolating a failure to the request that caused it.
+
+        Requests from one principal are coalesced into a single execution, and
+        FlowMesh aborts that whole execution on any task failure (see
+        ``FlowmeshRuntimeManager`` "Fail fast"). Coalescing can also merge ops
+        of different requests into one task, so the failure cannot be pinned on
+        a member afterwards. When a batch spanning several requests fails, each
+        request is therefore re-run on its own: a good request then succeeds
+        and a bad one fails with its own error, instead of every member sharing
+        the batch's. The success path is unchanged and keeps its batching.
+        """
         batch_id = f"batch-{unique_id()}"
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
@@ -1843,12 +1874,74 @@ class LumilakeServer:
             self._request_execution_history_ids.setdefault(request_id, set()).add(
                 execution_request_id
             )
+        retry_batches: list[BatchSelection] = []
         try:
-            await self._run_batch_inner(
-                workers, batch, batch_id, request_ids, execution_request_id
+            retry_batches = await self._run_batch_inner(
+                workers,
+                batch,
+                batch_id,
+                request_ids,
+                execution_request_id,
+                isolate_failures=isolate_failures,
+                release_workers=release_workers,
             )
         finally:
             self._cleanup_execution_tracking(execution_request_id, request_ids)
+        if not retry_batches:
+            return
+        # The workers stay claimed across the retries and are released once,
+        # after the last one: releasing between them would let the scheduler
+        # hand them to another batch while this one is still running.
+        try:
+            for retry_batch in retry_batches:
+                try:
+                    await self._run_batch(
+                        workers,
+                        retry_batch,
+                        isolate_failures=False,
+                        release_workers=False,
+                    )
+                except Exception as exc:
+                    self.logger.exception(
+                        "Isolated re-run of request(s) %s failed unexpectedly",
+                        sorted({item.request_id for item in retry_batch.workflows}),
+                    )
+                    await self._fail_unrecorded_workflows(retry_batch, exc)
+        finally:
+            if release_workers:
+                await self._release_workers(workers)
+
+    async def _fail_unrecorded_workflows(
+        self, batch: BatchSelection, error: Exception
+    ) -> None:
+        """Record ``error`` for workflows of ``batch`` that never got a result.
+
+        Used when a run raised past its own error handling, so these workflows
+        would otherwise stay pending and queued forever.
+        """
+        try:
+            unrecorded = [
+                workflow
+                for workflow in batch.workflows
+                if (state := self._requests.get(workflow.request_id)) is not None
+                and workflow.workflow_id in state.pending_workflows
+            ]
+            if unrecorded:
+                await self._handle_batch_results(
+                    replace(batch, workflows=unrecorded),
+                    {},
+                    {},
+                    error,
+                )
+        except Exception:
+            self.logger.exception(
+                "Failed to record error for workflows %s",
+                [workflow.workflow_id for workflow in batch.workflows],
+            )
+        finally:
+            self.job_manager.finalize_workflows(
+                [workflow.workflow_id for workflow in batch.workflows]
+            )
 
     async def _run_batch_inner(
         self,
@@ -1857,7 +1950,17 @@ class LumilakeServer:
         batch_id: str,
         request_ids: tuple[str, ...],
         execution_request_id: str,
-    ) -> None:
+        *,
+        isolate_failures: bool = True,
+        release_workers: bool = True,
+    ) -> list[BatchSelection]:
+        """Execute ``batch``; return per-request batches to re-run, if any.
+
+        A non-empty return means the batch failed while spanning more than one
+        request and nothing was recorded for its members: the caller re-runs
+        each returned batch on its own (see ``_run_batch``).
+        """
+        retry_batches: list[BatchSelection] = []
         cancelled_requests = await self._collect_cancelled_requests(set(request_ids))
         active_workflows = [
             workflow
@@ -1980,26 +2083,45 @@ class LumilakeServer:
                 execution_request_id=execution_request_id,
             )
         except Exception as exc:
+            failure = exc.cause if isinstance(exc, RuntimeExecutionError) else exc
             sanitized_exc = (
-                _sanitize_flowmesh_api_error(exc) if isinstance(exc, APIError) else exc
+                _sanitize_flowmesh_api_error(failure)
+                if isinstance(failure, APIError)
+                else failure
             )
             self.logger.error(
                 "Batch %s failed: %s", batch_id, sanitized_exc, exc_info=True
             )
             if active_workflows:
                 self.runtime_manager.mark_batch_failed(execution_request_id, batch_id)
-            cancelled_requests = await self._collect_cancelled_requests(
-                set(request_ids)
-            )
-            await self._handle_batch_results(
-                batch,
-                {},
-                {},
-                sanitized_exc,
-                batch_id=batch_id,
-                cancelled_requests=cancelled_requests,
-                execution_request_id=execution_request_id,
-            )
+            if (
+                isinstance(exc, RuntimeExecutionError)
+                and isolate_failures
+                and len(active_request_ids) > 1
+            ):
+                # Do not record the error against every member: re-run each
+                # request alone so only the one that failed reports failure.
+                retry_batches = self._split_batch_by_request(batch)
+                self.logger.warning(
+                    "Batch %s (execution %s) failed across %d requests; re-running"
+                    " each request alone so the failure stays with its own request",
+                    batch_id,
+                    execution_request_id,
+                    len(retry_batches),
+                )
+            else:
+                cancelled_requests = await self._collect_cancelled_requests(
+                    set(request_ids)
+                )
+                await self._handle_batch_results(
+                    batch,
+                    {},
+                    {},
+                    sanitized_exc,
+                    batch_id=batch_id,
+                    cancelled_requests=cancelled_requests,
+                    execution_request_id=execution_request_id,
+                )
         finally:
             runtime_token_var.reset(runtime_token_handle)
             for request_id in request_raw_nodes:
@@ -2011,6 +2133,13 @@ class LumilakeServer:
                     continue
                 raw_nodes = counts.get("raw", 0)
                 optimized_nodes = counts.get("optimized", 0)
+                if retry_batches:
+                    # Nothing was processed: hand the nodes back to pending so
+                    # the per-request re-run accounts for them exactly once.
+                    state.processing_runtime_nodes_raw -= raw_nodes
+                    state.pending_runtime_nodes_raw += raw_nodes
+                    state.processing_runtime_nodes_optimized -= optimized_nodes
+                    continue
                 if raw_nodes:
                     if state.processing_runtime_nodes_raw < raw_nodes:
                         raise RuntimeError(
@@ -2031,10 +2160,38 @@ class LumilakeServer:
                         )
                     state.processing_runtime_nodes_optimized -= optimized_nodes
                     state.processed_runtime_nodes_optimized += optimized_nodes
-            await self._release_workers(workers)
-            self.job_manager.finalize_workflows(
-                [workflow.workflow_id for workflow in batch.workflows]
+            if not retry_batches:
+                # On a retry the re-runs release the workers and finalize
+                # these workflows themselves.
+                if release_workers:
+                    await self._release_workers(workers)
+                self.job_manager.finalize_workflows(
+                    [workflow.workflow_id for workflow in batch.workflows]
+                )
+        return retry_batches
+
+    @staticmethod
+    def _split_batch_by_request(batch: BatchSelection) -> list[BatchSelection]:
+        """One batch per request, keeping each request's workflows in order."""
+        by_request: dict[str, list[WorkflowItem]] = {}
+        for workflow in batch.workflows:
+            by_request.setdefault(workflow.request_id, []).append(workflow)
+        return [
+            BatchSelection(
+                workflows=workflows,
+                runtime_graphs={
+                    item.workflow_id: batch.runtime_graphs[item.workflow_id]
+                    for item in workflows
+                },
+                data_profile_graphs={
+                    item.workflow_id: batch.data_profile_graphs[item.workflow_id]
+                    for item in workflows
+                },
+                config=batch.config,
+                clustering_seconds=0.0,
             )
+            for workflows in by_request.values()
+        ]
 
     def _cleanup_execution_tracking(
         self,
@@ -2739,12 +2896,17 @@ class LumilakeServer:
             batch_id,
             selected_workers,
         )
-        connector_result = await self.runtime_manager.process_request(
-            batch_request_info,
-            schedule,
-            selected_workers,
-            normalized_data_profile_results,
-        )
+        try:
+            connector_result = await self.runtime_manager.process_request(
+                batch_request_info,
+                schedule,
+                selected_workers,
+                normalized_data_profile_results,
+            )
+        except RequestCancelledError:
+            raise
+        except Exception as exc:
+            raise RuntimeExecutionError(exc) from exc
         flat_outputs = connector_result["flat_outputs"]
         chat_histories = connector_result["chat_histories"]
         task_node_map = connector_result.get("task_node_map")

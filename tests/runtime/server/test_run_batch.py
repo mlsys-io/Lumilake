@@ -19,8 +19,10 @@ import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
+from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.server import RuntimeExecutionError
 from lumilake_server.utils.job_storage import get_job_storage
 
 
@@ -1037,3 +1039,378 @@ def test_relocate_artifacts_rewrites_nested_uri_in_json_encoded_output(
     # Bytes must actually be copied to target, not just the uri string.
     data, _ = storage.get_artifact(target_id, filename)
     assert data == payload_bytes
+
+
+def _two_request_batch(server: Any) -> tuple[dict[str, Any], BatchSelection]:
+    workflows = [
+        make_workflow(
+            workflow_id="wf-good",
+            request_id="req-good",
+            graph_name="g-good",
+            public_graph_name="shared",
+        ),
+        make_workflow(
+            workflow_id="wf-bad",
+            request_id="req-bad",
+            graph_name="g-bad",
+            public_graph_name="shared",
+        ),
+    ]
+    return attach_request_states(server, workflows), make_batch(workflows)
+
+
+@pytest.mark.asyncio
+async def test_run_batch_failure_in_one_request_does_not_fail_the_other(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A coalesced batch fails as a whole when any member's task fails (FlowMesh
+    aborts the execution). The members are then re-run alone, so the good
+    request succeeds and only the bad one reports — with its own error."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    handlers, batch = _two_request_batch(server)
+    calls: list[set[str]] = []
+    released: list[list[str]] = []
+
+    async def _process_batch(
+        selected_batch: BatchSelection, *args: Any, **kwargs: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        members = {item.request_id for item in selected_batch.workflows}
+        calls.append(members)
+        if "req-bad" in members:
+            raise RuntimeExecutionError(
+                RuntimeError("Task tsk-bad failed; aborting workflow")
+            )
+        return {
+            item.workflow_id: {"output": [f"value-{item.request_id}"]}
+            for item in selected_batch.workflows
+        }, {}
+
+    async def _release(workers: list[str]) -> None:
+        released.append(list(workers))
+
+    monkeypatch.setattr(server, "_process_batch", _process_batch)
+    monkeypatch.setattr(server, "_release_workers", _release)
+    await server._run_batch(["worker-1"], batch)
+
+    # One coalesced attempt, then one run per request.
+    assert calls == [{"req-good", "req-bad"}, {"req-good"}, {"req-bad"}]
+    good = handlers["req-good"].results
+    assert len(good) == 1
+    assert good[0].error_info is None
+    assert good[0].outputs["shared"]["output"] == ["value-req-good"]
+    bad = handlers["req-bad"].results
+    assert len(bad) == 1
+    assert bad[0].error_info is not None
+    assert any("tsk-bad" in str(item) for item in bad[0].error_info)
+    # Workers stay claimed through the retries and are released exactly once.
+    assert released == [["worker-1"]]
+    # Node accounting counts each request's nodes once, not once per attempt.
+    for request_id in ("req-good", "req-bad"):
+        state = server._requests[request_id]
+        assert state.pending_runtime_nodes_raw == 0
+        assert state.processing_runtime_nodes_raw == 0
+        assert state.processed_runtime_nodes_raw > 0
+        assert not state.batch_node_counts
+
+
+@pytest.mark.asyncio
+async def test_run_batch_failure_of_a_single_request_is_not_retried(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    workflows = [
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        )
+    ]
+    handlers = attach_request_states(server, workflows)
+    calls = 0
+
+    async def _fail(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("only member failed")
+
+    monkeypatch.setattr(server, "_process_batch", _fail)
+    await server._run_batch(["worker-1"], make_batch(workflows))
+
+    assert calls == 1
+    errors = handlers["req-a"].results[0].error_info
+    assert errors is not None
+    assert any("only member failed" in str(item) for item in errors)
+
+
+@pytest.mark.asyncio
+async def test_run_batch_isolated_retries_do_not_recurse(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every member also fails alone, each gets its own error and the
+    retries stop there: a per-request run is never split again."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    handlers, batch = _two_request_batch(server)
+    calls = 0
+
+    async def _fail(selected_batch: BatchSelection, *args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        members = sorted({item.request_id for item in selected_batch.workflows})
+        raise RuntimeExecutionError(RuntimeError(f"failed: {','.join(members)}"))
+
+    monkeypatch.setattr(server, "_process_batch", _fail)
+    await server._run_batch(["worker-1"], batch)
+
+    assert calls == 3
+    assert any(
+        "failed: req-good" == str(e.get("batch_error"))
+        for e in handlers["req-good"].results[0].error_info
+    )
+    assert any(
+        "failed: req-bad" == str(e.get("batch_error"))
+        for e in handlers["req-bad"].results[0].error_info
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_batch_cancellation_of_a_multi_request_batch_is_not_retried(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    handlers, batch = _two_request_batch(server)
+    calls = 0
+
+    async def _cancelled(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise RequestCancelledError("exec-cancelled")
+
+    monkeypatch.setattr(server, "_process_batch", _cancelled)
+    await server._run_batch(["worker-1"], batch)
+
+    assert calls == 1
+    for request_id in ("req-good", "req-bad"):
+        assert len(handlers[request_id].results) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_batch_result_handling_failure_does_not_rerun_executed_work(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batch executed; only recording its results failed. Re-running the
+    members would repeat completed FlowMesh work, so the failure is recorded
+    against the batch instead and the workers are still released once."""
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    handlers, batch = _two_request_batch(server)
+    executions: list[set[str]] = []
+    released: list[list[str]] = []
+
+    async def _process_batch(
+        selected_batch: BatchSelection, *args: Any, **kwargs: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        executions.append({item.request_id for item in selected_batch.workflows})
+        return {
+            item.workflow_id: {"output": [f"value-{item.request_id}"]}
+            for item in selected_batch.workflows
+        }, {}
+
+    async def _release(workers: list[str]) -> None:
+        released.append(list(workers))
+
+    original_handle = server._handle_batch_results
+    handle_calls = 0
+
+    async def _flaky_handle(*args: Any, **kwargs: Any) -> None:
+        nonlocal handle_calls
+        handle_calls += 1
+        if handle_calls == 1:
+            raise RuntimeError("result handling failed")
+        await original_handle(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_process_batch", _process_batch)
+    monkeypatch.setattr(server, "_release_workers", _release)
+    monkeypatch.setattr(server, "_handle_batch_results", _flaky_handle)
+    await server._run_batch(["worker-1"], batch)
+
+    assert executions == [{"req-good", "req-bad"}]
+    assert released == [["worker-1"]]
+    for request_id in ("req-good", "req-bad"):
+        results = handlers[request_id].results
+        assert len(results) == 1
+        assert results[0].error_info is not None
+        assert any(
+            "result handling failed" in str(item) for item in results[0].error_info
+        )
+
+
+class _OutputRuntimeManager(RecordingRuntimeManager):
+    """Runs the real `_process_batch` around a fake FlowMesh submit."""
+
+    def __init__(self, *, fail_for: str | None = None, collapse: bool = False) -> None:
+        super().__init__()
+        self.fail_for = fail_for
+        self.collapse = collapse
+        self.submissions: list[set[str]] = []
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        members = set(request_info.member_request_ids)
+        self.submissions.append(members)
+        if self.fail_for is not None and self.fail_for in members:
+            raise RuntimeError(f"Task for {self.fail_for} failed; aborting workflow")
+        values = ["collapsed"] if self.collapse else ["ok"] * 3
+        flat_outputs = {
+            node_id: list(values) for node_id in request_info.output_node_map
+        }
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+def _two_request_process_batch_setup(
+    server: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_manager: _OutputRuntimeManager,
+) -> tuple[dict[str, Any], BatchSelection]:
+    server.runtime_manager = cast(Any, runtime_manager)
+    workflows = [
+        make_workflow(
+            workflow_id=f"wf-{name}",
+            request_id=f"req-{name}",
+            graph_name=f"g-{name}",
+            public_graph_name="shared",
+            slice_length=3,
+            total_length=3,
+        )
+        for name in ("good", "bad")
+    ]
+    handlers = attach_request_states(server, workflows)
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_fake_build_and_schedule(server, "output")
+    return handlers, make_batch(workflows)
+
+
+@pytest.mark.asyncio
+async def test_process_batch_runtime_failure_reruns_each_request_alone(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    runtime_manager = _OutputRuntimeManager(fail_for="req-bad")
+    handlers, batch = _two_request_process_batch_setup(
+        server, monkeypatch, runtime_manager
+    )
+
+    await server._run_batch(["worker-1"], batch)
+
+    assert runtime_manager.submissions == [
+        {"req-good", "req-bad"},
+        {"req-good"},
+        {"req-bad"},
+    ]
+    good = handlers["req-good"].results[0]
+    assert good.error_info is None
+    assert good.outputs["shared"]["output"] == ["ok"] * 3
+    bad = handlers["req-bad"].results[0]
+    assert bad.error_info is not None
+    assert any("req-bad failed" in str(item) for item in bad.error_info)
+
+
+@pytest.mark.asyncio
+async def test_process_batch_output_handling_failure_does_not_resubmit_to_runtime(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FlowMesh finished the whole batch; remapping its outputs then fails.
+    That is not a runtime failure, so nothing is submitted a second time."""
+    server = server_factory()
+    runtime_manager = _OutputRuntimeManager(collapse=True)
+    handlers, batch = _two_request_process_batch_setup(
+        server, monkeypatch, runtime_manager
+    )
+
+    await server._run_batch(["worker-1"], batch)
+
+    assert runtime_manager.submissions == [{"req-good", "req-bad"}]
+    for request_id in ("req-good", "req-bad"):
+        errors = handlers[request_id].results[0].error_info
+        assert errors is not None
+        assert any("Output length mismatch" in str(item) for item in errors)
+
+
+@pytest.mark.asyncio
+async def test_run_batch_unexpected_retry_failure_does_not_strand_later_retries(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    handlers, batch = _two_request_batch(server)
+    released: list[list[str]] = []
+    finalized: list[str] = []
+
+    async def _process_batch(
+        selected_batch: BatchSelection, *args: Any, **kwargs: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if len({item.request_id for item in selected_batch.workflows}) > 1:
+            raise RuntimeExecutionError(RuntimeError("coalesced failure"))
+        return {
+            item.workflow_id: {"output": [f"value-{item.request_id}"]}
+            for item in selected_batch.workflows
+        }, {}
+
+    async def _release(workers: list[str]) -> None:
+        released.append(list(workers))
+
+    original_run_batch = server._run_batch
+
+    async def _run_batch(
+        workers: list[str], selected_batch: BatchSelection, **kwargs: Any
+    ) -> None:
+        members = {item.request_id for item in selected_batch.workflows}
+        if members == {"req-good"} and kwargs["isolate_failures"] is False:
+            raise RuntimeError("unexpected retry failure")
+        await original_run_batch(workers, selected_batch, **kwargs)
+
+    original_finalize = server.job_manager.finalize_workflows
+
+    def _finalize(workflow_ids: Any) -> None:
+        ids = list(workflow_ids)
+        finalized.extend(ids)
+        original_finalize(ids)
+
+    monkeypatch.setattr(server, "_process_batch", _process_batch)
+    monkeypatch.setattr(server, "_release_workers", _release)
+    monkeypatch.setattr(server, "_run_batch", _run_batch)
+    monkeypatch.setattr(server.job_manager, "finalize_workflows", _finalize)
+    await original_run_batch(["worker-1"], batch)
+
+    bad = handlers["req-bad"].results
+    assert len(bad) == 1
+    assert bad[0].error_info is None
+    assert bad[0].outputs["shared"]["output"] == ["value-req-bad"]
+    good = handlers["req-good"].results
+    assert len(good) == 1
+    assert good[0].error_info is not None
+    assert any("unexpected retry failure" in str(item) for item in good[0].error_info)
+    assert not server._requests["req-good"].pending_workflows
+    assert {"wf-good", "wf-bad"} <= set(finalized)
+    assert released == [["worker-1"]]
