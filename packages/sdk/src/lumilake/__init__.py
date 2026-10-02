@@ -26,6 +26,7 @@ from lumilake.resources._log_models import (
     LogEntry,
     LogEvent,
     LogQueryResponse,
+    WorkflowUsage,
 )
 from lumilake.resources.deploy import SERVICE_NAMES, AsyncDeploy, Deploy
 from lumilake.resources.info import AsyncInfo, Info
@@ -62,6 +63,7 @@ __all__ = [
     "LumilakeClient",
     "LumilakeConfig",
     "LumilakeError",
+    "WorkflowUsage",
     "NotFoundError",
     "Traces",
     "Workers",

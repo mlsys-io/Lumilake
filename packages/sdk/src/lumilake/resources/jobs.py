@@ -158,7 +158,11 @@ class Jobs(SyncResource):
         return unwrap(self._client.get(f"/jobs/{job_id}", **_request_kwargs(timeout)))
 
     def progress(self, job_id: str, *, timeout: float | None = None) -> dict[str, Any]:
-        """Fetch detailed progress data for a job (available throughout its life)."""
+        """Fetch detailed progress data for a job (available throughout its life).
+
+        The returned dict includes a ``usage`` field: the token usage summed
+        over the job's task results, or ``None`` when no task reports usage.
+        """
         return unwrap(
             self._client.get(f"/jobs/{job_id}/progress", **_request_kwargs(timeout))
         )
@@ -482,6 +486,11 @@ class AsyncJobs(AsyncResource):
     async def progress(
         self, job_id: str, *, timeout: float | None = None
     ) -> dict[str, Any]:
+        """Fetch detailed progress data for a job (available throughout its life).
+
+        The returned dict includes a ``usage`` field: the token usage summed
+        over the job's task results, or ``None`` when no task reports usage.
+        """
         response = await self._client.get(
             f"/jobs/{job_id}/progress", **_request_kwargs(timeout)
         )

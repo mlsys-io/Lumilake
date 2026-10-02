@@ -116,6 +116,17 @@ class BatchProgress(BaseModel):
     )
 
 
+class WorkflowUsage(BaseModel):
+    prompt_tokens: int = Field(description="Prompt token count.")
+    completion_tokens: int = Field(description="Completion token count.")
+    reasoning_tokens: int = Field(description="Reasoning token count.")
+    calls: int = Field(description="Number of model calls.")
+    failures: int = Field(description="Number of failed calls.")
+    retries: int = Field(description="Number of retried calls.")
+    truncated_calls: int = Field(description="Number of truncated calls.")
+    wall_sec: float = Field(description="Wall-clock seconds.")
+
+
 class JobProgress(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -129,6 +140,9 @@ class JobProgress(BaseModel):
     execution: ProgressStep = Field(default_factory=ProgressStep)
     outputs: ProgressStep = Field(default_factory=ProgressStep)
     batch_progress: BatchProgress = Field(default_factory=BatchProgress)
+    usage: WorkflowUsage | None = Field(
+        default=None, description="Token usage summed over the job's task results."
+    )
 
     def apply_status(self, status: dict[str, Any]) -> None:
         if "data probing" in status:

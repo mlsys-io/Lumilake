@@ -17,6 +17,7 @@ from lumilake import (
     JobWorkflowInfo,
     LogEntry,
     LogQueryResponse,
+    WorkflowUsage,
 )
 from lumilake.errors import LogStreamError, NotFoundError
 
@@ -179,6 +180,42 @@ def test_progress(jobs: Jobs, base_url: str) -> None:
             "job_id": "j-1",
             "progress": {"completed": 2},
         }
+
+
+def test_progress_includes_usage(jobs: Jobs, base_url: str) -> None:
+    with respx.mock(base_url=base_url) as mocked:
+        mocked.get("/api/v1/jobs/j-1/progress").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "job_id": "j-1",
+                        "progress": {
+                            "usage": {
+                                "prompt_tokens": 300,
+                                "completion_tokens": 75,
+                                "reasoning_tokens": 15,
+                                "calls": 6,
+                                "failures": 1,
+                                "retries": 3,
+                                "truncated_calls": 1,
+                                "wall_sec": 5.0,
+                            }
+                        },
+                    }
+                },
+            )
+        )
+        result = jobs.progress("j-1")
+    usage = WorkflowUsage.model_validate(result["progress"]["usage"])
+    assert usage.prompt_tokens == 300
+    assert usage.completion_tokens == 75
+    assert usage.reasoning_tokens == 15
+    assert usage.calls == 6
+    assert usage.failures == 1
+    assert usage.retries == 3
+    assert usage.truncated_calls == 1
+    assert usage.wall_sec == 5.0
 
 
 def test_result(jobs: Jobs, base_url: str) -> None:
@@ -509,6 +546,16 @@ def test_list_workflows_returns_typed_models(jobs: Jobs, base_url: str) -> None:
                                 "task_count": 5,
                                 "succeeded_count": 4,
                                 "failed_count": 1,
+                                "usage": {
+                                    "prompt_tokens": 100,
+                                    "completion_tokens": 50,
+                                    "reasoning_tokens": 10,
+                                    "calls": 4,
+                                    "failures": 1,
+                                    "retries": 2,
+                                    "truncated_calls": 0,
+                                    "wall_sec": 3.5,
+                                },
                             },
                             {
                                 "workflow_id": "wf-2",
@@ -529,7 +576,12 @@ def test_list_workflows_returns_typed_models(jobs: Jobs, base_url: str) -> None:
     assert result[0].workflow_id == "wf-1"
     assert result[0].status == "COMPLETED"
     assert result[0].task_count == 5
+    assert result[0].usage is not None
+    assert result[0].usage.prompt_tokens == 100
+    assert result[0].usage.completion_tokens == 50
+    assert result[0].usage.wall_sec == 3.5
     assert result[1].workflow_id == "wf-2"
+    assert result[1].usage is None
 
 
 def test_list_workflows_empty_when_no_workflows_key(jobs: Jobs, base_url: str) -> None:

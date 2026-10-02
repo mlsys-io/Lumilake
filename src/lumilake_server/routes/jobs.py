@@ -16,6 +16,7 @@ from typing import Any, Literal
 from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
 
+import httpx
 import yaml
 from fastapi import (
     APIRouter,
@@ -27,7 +28,24 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response, StreamingResponse
-from flowmesh.exceptions import APIError, AuthenticationError, NotFoundError
+from flowmesh.exceptions import (
+    APIError,
+    AuthenticationError,
+    FlowMeshConnectionError,
+    NotFoundError,
+)
+from flowmesh.models.result import (
+    APIResult,
+    BaseExecutorResult,
+    DataProfilingResult,
+    DataRetrievalResult,
+    EchoResult,
+    GenerationUsage,
+    InferenceResult,
+    PythonResult,
+    ServeResult,
+    SSHResult,
+)
 from lumid_hooks import PrincipalContext
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
@@ -62,7 +80,7 @@ from lumilake_server.hooks.security import (
 )
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
-from lumilake_server.runtime.flowmesh_client import flowmesh_for
+from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
 from lumilake_server.runtime.optimizer import (
     OPTIMIZER_PROVIDERS,
     OPTIMIZER_TYPES,
@@ -82,6 +100,7 @@ from lumilake_server.schemas.progress import (
     JobProgress,
     ProgressDetails,
     ProgressStep,
+    WorkflowUsage,
 )
 from lumilake_server.utils.data_profile_offload import (
     build_request_data_profile_tasks,
@@ -2182,6 +2201,10 @@ async def _run_job(
                 record.trace_ids = list(
                     dict.fromkeys([*record.trace_ids, *final_trace_ids])
                 )
+        if record.status in TERMINAL_JOB_STATUSES:
+            await _persist_terminal_usage(
+                record, flowmesh_for_token(runtime_token), logger
+            )
         await asyncio.to_thread(_job_storage.save, record)
         prefix = f"request::{job_id}::"
         stale_keys = [key for key in data_profile_registry if key.startswith(prefix)]
@@ -3180,6 +3203,17 @@ async def get_job_progress(
         if needs_save:
             await asyncio.to_thread(_job_storage.save, record)
 
+    if record.status not in TERMINAL_JOB_STATUSES:
+        fm = flowmesh_for(request)
+        computed = await _compute_job_usage(fm, _job_workflow_ids(record), hook_logger)
+        needs_save = False
+        async with jobs_lock:
+            if record.progress.usage != computed:
+                record.progress.usage = computed
+                needs_save = True
+        if needs_save:
+            await asyncio.to_thread(_job_storage.save, record)
+
     return {
         "ok": True,
         "data": {
@@ -3368,6 +3402,9 @@ class JobWorkflowInfo(BaseModel):
     failed_count: int | None = Field(
         default=None, description="Number of failed tasks."
     )
+    usage: WorkflowUsage | None = Field(
+        default=None, description="Token usage summed over the workflow's task results."
+    )
 
 
 class JobWorkflowsPayload(BaseModel):
@@ -3425,6 +3462,222 @@ class JobWorkflowLogsResponse(BaseModel):
 
 def _job_workflow_ids(record: JobRecord) -> list[str]:
     return [trace_id for trace_id in record.trace_ids if trace_id]
+
+
+_NO_USAGE_RESULT_TYPES: tuple[type[Any], ...] = (
+    EchoResult,
+    SSHResult,
+    ServeResult,
+    DataProfilingResult,
+    DataRetrievalResult,
+    PythonResult,
+)
+
+
+class _UnknownUsage:
+    pass
+
+
+_UNKNOWN_USAGE = _UnknownUsage()
+
+
+def _task_usage_from_result(result: Any) -> WorkflowUsage | None | _UnknownUsage:
+    """Map one task result to a usage contribution, or ``None`` when it made
+    no model call. ``UNKNOWN`` marks a model-calling task we cannot map."""
+    if isinstance(result, APIResult):
+        if result.usage is None:
+            return _UNKNOWN_USAGE
+        return WorkflowUsage(
+            prompt_tokens=result.usage.prompt_tokens,
+            completion_tokens=result.usage.completion_tokens,
+            reasoning_tokens=result.usage.reasoning_tokens,
+            calls=result.usage.calls,
+            failures=result.usage.failures,
+            retries=result.usage.retries,
+            truncated_calls=result.usage.truncated_calls,
+            wall_sec=result.usage.wall_sec,
+        )
+    if isinstance(result, InferenceResult):
+        if not isinstance(result.usage, GenerationUsage):
+            return _UNKNOWN_USAGE
+        return _inference_usage(result)
+    if isinstance(result, _NO_USAGE_RESULT_TYPES):
+        return None
+    if _is_skipped_task(result):
+        return None
+    return _UNKNOWN_USAGE
+
+
+def _is_skipped_task(result: Any) -> bool:
+    """Whether a result is a condition-skipped task's bare executor result.
+
+    FlowMesh writes a skipped task's result as a bare ``BaseExecutorResult``
+    and records ``skipped: true`` only in the envelope metadata, which
+    ``GET /results/{id}`` does not return. A bare result with no extra fields
+    is therefore the only client-visible signal; such a task made no model
+    call and contributes nothing.
+    """
+    return type(result) is BaseExecutorResult and not (result.__pydantic_extra__ or {})
+
+
+def _inference_usage(result: Any) -> WorkflowUsage:
+    """Map an inference result, subtracting merged children's shares.
+
+    A merged parent's ``GenerationUsage`` is the whole batch total while each
+    child carries its own share; each child is fetched on its own, so the
+    parent records only its own share (total minus the children's sum).
+    """
+    usage = result.usage
+    prompt = usage.prompt_tokens
+    completion = usage.completion_tokens
+    calls = usage.num_requests
+    for child in result.children.values():
+        if not isinstance(child, InferenceResult):
+            continue
+        child_usage = child.usage
+        if not isinstance(child_usage, GenerationUsage):
+            continue
+        prompt -= child_usage.prompt_tokens
+        completion -= child_usage.completion_tokens
+        calls -= child_usage.num_requests
+    return WorkflowUsage(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        reasoning_tokens=0,
+        calls=calls,
+        failures=0,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=usage.latency_sec,
+    )
+
+
+async def _fetch_workflow_usage(
+    fm: Any, workflow_id: str, logger: Logger
+) -> WorkflowUsage | None:
+    """Sum usage over a workflow's completed task results.
+
+    Raises NotFoundError when FlowMesh no longer knows the workflow; callers
+    decide whether to skip or fail closed.
+    """
+    try:
+        workflow = await fm.workflows.retrieve(workflow_id)
+    except NotFoundError:
+        raise
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="upstream authentication failed",
+        ) from exc
+    except (APIError, FlowMeshConnectionError, httpx.TransportError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="upstream workflow usage fetch failed",
+        ) from exc
+    results = await _fetch_task_results(fm, workflow.completed_tasks, logger)
+    contributions: list[WorkflowUsage] = []
+    for task_id, result in results:
+        contribution = _task_usage_from_result(result)
+        if isinstance(contribution, _UnknownUsage):
+            logger.warning(
+                "Task %s usage unavailable at job total time; storing null",
+                task_id,
+            )
+            return None
+        if contribution is not None:
+            contributions.append(contribution)
+    return _sum_usage(contributions)
+
+
+async def _fetch_task_results(
+    fm: Any, task_ids: list[str], logger: Logger
+) -> list[tuple[str, Any]]:
+    """Fetch each task's result concurrently with a small bound."""
+    semaphore = asyncio.Semaphore(8)
+
+    async def _fetch(task_id: str) -> tuple[str, Any]:
+        async with semaphore:
+            try:
+                result = await fm.results.retrieve(task_id)
+            except NotFoundError:
+                raise
+            except AuthenticationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="upstream authentication failed",
+                ) from exc
+            except (APIError, FlowMeshConnectionError, httpx.TransportError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="upstream task result fetch failed",
+                ) from exc
+            except ValidationError as exc:
+                logger.exception(
+                    "FlowMesh task %s returned a malformed result", task_id
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="upstream task result malformed",
+                ) from exc
+            return task_id, result
+
+    return await asyncio.gather(*(_fetch(t) for t in task_ids))
+
+
+def _sum_usage(usages: list[WorkflowUsage]) -> WorkflowUsage:
+    return WorkflowUsage(
+        prompt_tokens=sum(u.prompt_tokens for u in usages),
+        completion_tokens=sum(u.completion_tokens for u in usages),
+        reasoning_tokens=sum(u.reasoning_tokens for u in usages),
+        calls=sum(u.calls for u in usages),
+        failures=sum(u.failures for u in usages),
+        retries=sum(u.retries for u in usages),
+        truncated_calls=sum(u.truncated_calls for u in usages),
+        wall_sec=sum(u.wall_sec for u in usages),
+    )
+
+
+async def _compute_job_usage(
+    fm: Any, workflow_ids: list[str], logger: Logger
+) -> WorkflowUsage | None:
+    """Sum usage over the workflows' task results, or None when any is
+    unavailable.
+
+    A workflow whose task usage is unavailable (unmappable, or FlowMesh no
+    longer knows it) makes the job total null. Upstream errors propagate.
+    """
+    usages: list[WorkflowUsage] = []
+    for workflow_id in workflow_ids:
+        try:
+            usage = await _fetch_workflow_usage(fm, workflow_id, logger)
+        except NotFoundError:
+            usage = None
+        if usage is None:
+            logger.warning(
+                "Workflow %s usage unavailable at job total time; storing null",
+                workflow_id,
+            )
+            return None
+        usages.append(usage)
+    return _sum_usage(usages)
+
+
+async def _persist_terminal_usage(record: JobRecord, fm: Any, logger: Logger) -> None:
+    """Persist the summed usage onto a terminal job's progress.
+
+    Fail closed: if any task's usage is unavailable (unmappable, or FlowMesh
+    no longer knows it) or cannot be read, the persisted usage is null rather
+    than a partial sum. The job itself is not failed.
+    """
+    try:
+        computed = await _compute_job_usage(fm, _job_workflow_ids(record), logger)
+    except HTTPException:
+        logger.exception(
+            "Failed to read workflow usage at terminal time; storing null job usage"
+        )
+        computed = None
+    async with jobs_lock:
+        record.progress.usage = computed
 
 
 @router.get(
@@ -3489,6 +3742,10 @@ async def list_job_workflows(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="upstream workflow enumeration failed",
             ) from exc
+        try:
+            usage_model = await _fetch_workflow_usage(fm, workflow_id, hook_logger)
+        except NotFoundError:
+            continue
         collected.append(
             JobWorkflowInfo(
                 workflow_id=workflow_id,
@@ -3497,6 +3754,7 @@ async def list_job_workflows(
                 task_count=len(wf.task_ids),
                 succeeded_count=len(wf.completed_tasks),
                 failed_count=len(wf.failed_tasks),
+                usage=usage_model,
             )
         )
     return {

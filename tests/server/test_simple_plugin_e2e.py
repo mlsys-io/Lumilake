@@ -94,6 +94,22 @@ class _FakeRuntimeServer:
         self.cancel_calls.append(job_id)
 
 
+class _FakeUsageFlowMesh:
+    """FlowMesh stub reporting an all-zero usage for every workflow."""
+
+    def __init__(self) -> None:
+        self.workflows = _FakeUsageWorkflows()
+
+
+class _FakeUsageWorkflows:
+    async def retrieve(self, workflow_id: str) -> Any:
+        return _FakeUsageWorkflow()
+
+
+class _FakeUsageWorkflow:
+    completed_tasks: list[str] = []
+
+
 @pytest.fixture(autouse=True)
 def _reset_hook_state() -> Iterator[None]:
     hooks.IDENTITY_PROVIDERS.clear()
@@ -166,6 +182,11 @@ def job_routes(monkeypatch: pytest.MonkeyPatch) -> Any:
         job_routes_module,
         "_dump_output_locations",
         _dump_output_locations,
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for_token",
+        lambda _token: _FakeUsageFlowMesh(),
     )
     return job_routes_module
 

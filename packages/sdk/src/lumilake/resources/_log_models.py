@@ -37,6 +37,19 @@ class LogQueryResponse(BaseModel):
     prev_cursor: str | None = None
 
 
+class WorkflowUsage(BaseModel):
+    """Token usage summed over a workflow's task results."""
+
+    prompt_tokens: int = Field(description="Prompt token count.")
+    completion_tokens: int = Field(description="Completion token count.")
+    reasoning_tokens: int = Field(description="Reasoning token count.")
+    calls: int = Field(description="Number of model calls.")
+    failures: int = Field(description="Number of failed calls.")
+    retries: int = Field(description="Number of retried calls.")
+    truncated_calls: int = Field(description="Number of truncated calls.")
+    wall_sec: float = Field(description="Wall-clock seconds.")
+
+
 class JobWorkflowInfo(BaseModel):
     """Summary of one FlowMesh workflow associated with a job."""
 
@@ -53,4 +66,7 @@ class JobWorkflowInfo(BaseModel):
     )
     failed_count: int | None = Field(
         default=None, description="Number of failed tasks."
+    )
+    usage: WorkflowUsage | None = Field(
+        default=None, description="Token usage summed over the workflow's task results."
     )

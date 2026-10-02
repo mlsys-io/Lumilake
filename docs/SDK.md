@@ -117,14 +117,14 @@ client.jobs.preview({"data": [...], "hardware": {"gpu": 1, "gpu_memory": "24Gi"}
 client.jobs.submit({"data": [...], "hardware": {"gpu_model": "RTX 5080"}}, workflow_format="yaml")
 client.jobs.list(status="completed", limit=20)
 client.jobs.get(job_id)
-client.jobs.progress(job_id)
+client.jobs.progress(job_id)  # dict; includes "usage" (summed per-job token usage) or None
 client.jobs.result(job_id)
 client.jobs.inputs(job_id)
 client.jobs.cancel(job_id)
 client.jobs.artifact(job_id, path="s3://...", output="result.json")
 
 # Per-workflow FlowMesh logs (mirrors `lumilake job logs show/stream/download`).
-workflows = client.jobs.list_workflows(job_id)
+workflows = client.jobs.list_workflows(job_id)  # each has .usage (WorkflowUsage | None)
 page = client.jobs.get_logs(job_id, workflows[0].workflow_id, limit=200)  # LogQueryResponse
 for entry in client.jobs.stream_logs(job_id, workflows[0].workflow_id):  # Iterator[LogEntry]
     print(entry.event.message)
