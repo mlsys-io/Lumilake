@@ -1120,6 +1120,71 @@ def _install_list_lambda_build_and_schedule(server: Any, output_name: str) -> No
     server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
 
 
+def _install_list_lambda_downstream_build_and_schedule(
+    server: Any, output_name: str
+) -> None:
+    """Fake build/schedule with a list-mode python node feeding a downstream
+    node whose output is the workflow output. The downstream node's row count
+    follows the list Lambda (one group per input list), not the input rows."""
+
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
+        lambda_id = f"{node_prefix}__{suffix}__lambda"
+        downstream_id = f"{node_prefix}__{suffix}__downstream"
+        lambda_op = RuntimeOp(
+            node_id=lambda_id,
+            task_type="python",
+            backend="python",
+            model="",
+            data_spec={"mode": "list"},
+            model_spec={},
+            inference_spec={},
+        )
+        downstream_op = RuntimeOp(
+            node_id=downstream_id,
+            task_type="api",
+            backend="api",
+            model="",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+            dependencies=(lambda_id,),
+        )
+        output_node_map = (
+            {} if task_type_override == "data_profile" else {downstream_id: output_name}
+        )
+        return RuntimeGraph(
+            nodes={lambda_id: lambda_op, downstream_id: downstream_op},
+            node_order=[lambda_id, downstream_id],
+            output_node_map=output_node_map,
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+
+
 @pytest.mark.asyncio
 async def test_list_lambda_output_single_slice_demux_accepts_one_value(
     server_factory,
@@ -1165,6 +1230,54 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
     observations = resp.outputs["shared"]["observations"]
     assert len(observations) == 1
     assert json.loads(observations[0]) == whole_list
+
+
+@pytest.mark.asyncio
+async def test_list_lambda_downstream_output_single_slice_demux_accepts_one_value(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A downstream op (e.g. an API stage) that transitively depends on a
+    list-mode Lambda follows the Lambda's cardinality: one output value per
+    input list, not one per input row. The merged-workflow demux must accept
+    the single value for the single slice instead of raising an output-length
+    mismatch."""
+    whole_list = [
+        {"fid": "f1", "statement": "s1", "quote": "q1"},
+        {"fid": "f2", "statement": "s2", "quote": "q2"},
+    ]
+    server = server_factory()
+    server.runtime_manager = cast(
+        Any, _ListLambdaRuntimeManager(items=[{"output": it} for it in whole_list])
+    )
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-list-downstream",
+            request_id="req-list-downstream",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=2,
+            total_length=2,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_list_lambda_downstream_build_and_schedule(server, "out")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-list-downstream"].results[0]
+    assert resp.error_info is None
+    out = resp.outputs["shared"]["out"]
+    assert len(out) == 1
+    assert json.loads(out[0]) == whole_list
 
 
 @pytest.mark.asyncio

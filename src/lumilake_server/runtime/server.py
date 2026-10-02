@@ -127,6 +127,7 @@ class RequestState:
     total_input_items: int = 0
     completed_input_items_success: int = 0
     successful_workflow_ids: set[str] = field(default_factory=set)
+    list_lambda_outputs: dict[str, set[str]] = field(default_factory=dict)
     ready: bool = False
 
 
@@ -2332,11 +2333,34 @@ class LumilakeServer:
                 )
                 return False
 
+            list_lambda_names = state.list_lambda_outputs.get(
+                workflow.workflow_id, set()
+            )
             buffers = (
                 state.chat_history_buffers if is_history else state.output_buffers
             ).setdefault(public_name, {})
             merged_without_errors = True
             for output_name, values in payload.items():
+                if output_name in list_lambda_names:
+                    # A list-mode Lambda output is one whole-list value per
+                    # run, not one per input row: place it at the slice start
+                    # in a single-slot buffer.
+                    target = buffers.setdefault(output_name, [None])
+                    if target[0] is not None:
+                        append_error(
+                            state,
+                            {
+                                "graph": public_name,
+                                "slice_index": workflow.slice_index,
+                                "workflow_id": workflow.workflow_id,
+                                "output": output_name,
+                                "error": "overlapping slice assignment",
+                            },
+                        )
+                        merged_without_errors = False
+                    if values:
+                        target[0] = values[0]
+                    continue
                 if len(values) != workflow.slice_length:
                     append_error(
                         state,
@@ -2945,16 +2969,39 @@ class LumilakeServer:
                     return workflow
             return None
 
-        # A list-mode Lambda runs once per run over whole input lists: one output.
+        # A list-mode Lambda runs once per run over whole input lists: one
+        # output. Any node that is itself a list-mode Lambda, or transitively
+        # depends on one, follows the list Lambda's cardinality (one group per
+        # input list), not the per-input-row slice length.
+        runtime_graph = batch_request_info.runtime_graph
+        list_lambda_nodes = {
+            node_id
+            for node_id, node in runtime_graph.nodes.items()
+            if node.task_type == python_step.TASK_TYPE
+            and node.data_spec.get("mode") == "list"
+        }
+        list_lambda_dependent_nodes: set[str] = set()
+        for node_id in runtime_graph.node_order:
+            node = runtime_graph.nodes[node_id]
+            if node_id in list_lambda_nodes or any(
+                dep in list_lambda_dependent_nodes for dep in node.dependencies
+            ):
+                list_lambda_dependent_nodes.add(node_id)
         list_lambda_outputs = {
             (group_key, output_name)
             for node_id, (group_key, output_name) in output_mapping.items()
-            if batch_request_info.runtime_graph.nodes.get(node_id) is not None
-            and batch_request_info.runtime_graph.nodes[node_id].task_type
-            == python_step.TASK_TYPE
-            and batch_request_info.runtime_graph.nodes[node_id].data_spec.get("mode")
-            == "list"
+            if node_id in list_lambda_dependent_nodes
         }
+        for group_key, output_name in list_lambda_outputs:
+            group_slices = grouped_workflows.get(group_key, [])
+            if len(group_slices) != 1:
+                continue
+            (single_workflow,) = group_slices
+            state = self._requests.get(single_workflow.request_id)
+            if state is not None:
+                state.list_lambda_outputs.setdefault(
+                    single_workflow.workflow_id, set()
+                ).add(output_name)
 
         for node_id, outputs in flat_outputs.items():
             mapping = output_mapping.get(node_id)
