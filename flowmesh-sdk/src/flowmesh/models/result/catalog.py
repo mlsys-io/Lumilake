@@ -213,7 +213,8 @@ class APIResult(StrictExecutorResult):
     truncated: bool = False
     headers: dict[str, str] | None = None
     response_json: Any = Field(default=None, alias="json")
-    usage: APIUsage | None = None
+    usage: dict[str, Any] | None = None
+    usage_summary: APIUsage | None = None
     text: str | None = None
     items: list[APIItem | APIGroupItem] = Field(default_factory=list)
 

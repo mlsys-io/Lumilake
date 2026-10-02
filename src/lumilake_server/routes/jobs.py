@@ -3485,17 +3485,17 @@ def _task_usage_from_result(result: Any) -> WorkflowUsage | None | _UnknownUsage
     """Map one task result to a usage contribution, or ``None`` when it made
     no model call. ``UNKNOWN`` marks a model-calling task we cannot map."""
     if isinstance(result, APIResult):
-        if result.usage is None:
+        if result.usage_summary is None:
             return _UNKNOWN_USAGE
         return WorkflowUsage(
-            prompt_tokens=result.usage.prompt_tokens,
-            completion_tokens=result.usage.completion_tokens,
-            reasoning_tokens=result.usage.reasoning_tokens,
-            calls=result.usage.calls,
-            failures=result.usage.failures,
-            retries=result.usage.retries,
-            truncated_calls=result.usage.truncated_calls,
-            wall_sec=result.usage.wall_sec,
+            prompt_tokens=result.usage_summary.prompt_tokens,
+            completion_tokens=result.usage_summary.completion_tokens,
+            reasoning_tokens=result.usage_summary.reasoning_tokens,
+            calls=result.usage_summary.calls,
+            failures=result.usage_summary.failures,
+            retries=result.usage_summary.retries,
+            truncated_calls=result.usage_summary.truncated_calls,
+            wall_sec=result.usage_summary.wall_sec,
         )
     if isinstance(result, InferenceResult):
         if not isinstance(result.usage, GenerationUsage):
@@ -3553,27 +3553,14 @@ def _inference_usage(result: Any) -> WorkflowUsage:
 
 
 async def _fetch_workflow_usage(
-    fm: Any, workflow_id: str, logger: Logger
+    fm: Any, workflow: Any, logger: Logger
 ) -> WorkflowUsage | None:
     """Sum usage over a workflow's completed task results.
 
-    Raises NotFoundError when FlowMesh no longer knows the workflow; callers
-    decide whether to skip or fail closed.
+    ``workflow`` must already be retrieved. Raises NotFoundError when
+    FlowMesh no longer has one of the task results; callers decide whether
+    to skip or fail closed.
     """
-    try:
-        workflow = await fm.workflows.retrieve(workflow_id)
-    except NotFoundError:
-        raise
-    except AuthenticationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="upstream authentication failed",
-        ) from exc
-    except (APIError, FlowMeshConnectionError, httpx.TransportError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="upstream workflow usage fetch failed",
-        ) from exc
     results = await _fetch_task_results(fm, workflow.completed_tasks, logger)
     contributions: list[WorkflowUsage] = []
     for task_id, result in results:
@@ -3649,9 +3636,24 @@ async def _compute_job_usage(
     usages: list[WorkflowUsage] = []
     for workflow_id in workflow_ids:
         try:
-            usage = await _fetch_workflow_usage(fm, workflow_id, logger)
+            workflow = await fm.workflows.retrieve(workflow_id)
         except NotFoundError:
             usage = None
+        except AuthenticationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="upstream authentication failed",
+            ) from exc
+        except (APIError, FlowMeshConnectionError, httpx.TransportError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="upstream workflow usage fetch failed",
+            ) from exc
+        else:
+            try:
+                usage = await _fetch_workflow_usage(fm, workflow, logger)
+            except NotFoundError:
+                usage = None
         if usage is None:
             logger.warning(
                 "Workflow %s usage unavailable at job total time; storing null",
@@ -3743,9 +3745,9 @@ async def list_job_workflows(
                 detail="upstream workflow enumeration failed",
             ) from exc
         try:
-            usage_model = await _fetch_workflow_usage(fm, workflow_id, hook_logger)
+            usage_model = await _fetch_workflow_usage(fm, wf, hook_logger)
         except NotFoundError:
-            continue
+            usage_model = None
         collected.append(
             JobWorkflowInfo(
                 workflow_id=workflow_id,

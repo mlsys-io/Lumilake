@@ -148,7 +148,12 @@ class _FakeWorkflows:
         self.retrieve_calls.append(workflow_id)
         if workflow_id in self._workflows:
             return self._workflows[workflow_id]
-        raise NotFoundError(f"workflow {workflow_id} not found")
+        raise NotFoundError(
+            f"workflow {workflow_id} not found",
+            status_code=404,
+            method="GET",
+            url=f"/workflows/{workflow_id}",
+        )
 
     async def get_logs(
         self,
@@ -268,7 +273,7 @@ def _api_result(
         "method": "GET",
         "url": "http://x",
         "status_code": 200,
-        "usage": usage,
+        "usage_summary": usage,
     }
 
 
@@ -410,7 +415,9 @@ async def test_list_workflows_fans_over_trace_ids(
     body = resp.json()["data"]
     assert body["job_id"] == "j-1"
     assert sorted(w["workflow_id"] for w in body["workflows"]) == ["wf-1", "wf-2"]
-    assert sorted(set(fake_workflows.retrieve_calls)) == ["wf-1", "wf-2"]
+    # Each workflow is retrieved exactly once: once for status, and the
+    # already-retrieved workflow is reused for the usage path.
+    assert fake_workflows.retrieve_calls == ["wf-1", "wf-2"]
 
 
 @pytest.mark.anyio
@@ -483,6 +490,89 @@ async def test_list_workflows_passes_usage_through(
         "wall_sec": 3.5,
     }
     assert workflows["wf-2"]["usage"] is None
+
+
+@pytest.mark.anyio
+async def test_list_workflows_keeps_workflow_when_task_result_vanished(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task result FlowMesh no longer has must not drop the workflow from
+    the listing; it is still listed with status/counts and null usage."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    wf1 = _FakeWorkflow(
+        "wf-1", "COMPLETED", completed_tasks=["tsk-00000001", "tsk-00000002"]
+    )
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": wf1},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    fake_fm = _FakeFlowMesh(
+        fake_workflows,
+        task_results={
+            "tsk-00000001": _api_result(
+                "tsk-00000001",
+                _api_usage(
+                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
+                ),
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: fake_fm,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    workflows = resp.json()["data"]["workflows"]
+    assert len(workflows) == 1
+    assert workflows[0]["workflow_id"] == "wf-1"
+    assert workflows[0]["status"] == "COMPLETED"
+    assert workflows[0]["succeeded_count"] == 2
+    assert workflows[0]["usage"] is None
+
+
+@pytest.mark.anyio
+async def test_list_workflows_skips_workflow_when_retrieve_not_found(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A NotFoundError from the workflow retrieve itself skips the workflow."""
+    _seed_job(job_routes, "j-1", ["wf-1", "wf-2"])
+    wf1 = _FakeWorkflow("wf-1", "COMPLETED", completed_tasks=["tsk-00000001"])
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": wf1},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    fake_fm = _FakeFlowMesh(
+        fake_workflows,
+        task_results={
+            "tsk-00000001": _api_result(
+                "tsk-00000001",
+                _api_usage(
+                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
+                ),
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: fake_fm,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    workflows = resp.json()["data"]["workflows"]
+    assert [w["workflow_id"] for w in workflows] == ["wf-1"]
 
 
 class _FakeProgressServer:
@@ -1152,7 +1242,7 @@ async def test_progress_malformed_result_returns_502(
                 "method": "GET",
                 "url": "http://x",
                 "status_code": 200,
-                "usage": {"prompt_tokens": "not-an-int"},
+                "usage_summary": {"prompt_tokens": "not-an-int"},
             }
         },
     )
