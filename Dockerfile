@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
+ && apt-get install -y --no-install-recommends ca-certificates tini git \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,7 +21,6 @@ WORKDIR /app
 # Install deps first for layer caching. requirements.txt is generated
 # from uv.lock by scripts/dev/sync_requirements.py.
 COPY src/lumilake_server/requirements.txt ./requirements.txt
-COPY flowmesh-sdk ./flowmesh-sdk
 RUN pip install -r requirements.txt
 
 COPY LICENSE ./LICENSE

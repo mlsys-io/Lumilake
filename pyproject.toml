@@ -66,7 +66,7 @@ lumilake-sdk = { workspace = true }
 lumilake-cli = { workspace = true }
 lumilake-deploy = { workspace = true }
 lumilake-hook = { workspace = true }
-flowmesh-sdk = { path = "flowmesh-sdk" }
+flowmesh-sdk = { git = "https://github.com/mlsys-io/FlowMesh.git", rev = "c28053f665bba1da504988cbab718a58dc09a669", subdirectory = "sdk" }
 
 [tool.uv]
 default-groups = []
