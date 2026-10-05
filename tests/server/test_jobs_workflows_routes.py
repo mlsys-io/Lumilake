@@ -305,7 +305,6 @@ def _api_usage(
     completion: int,
     reasoning: int = 0,
     calls: int = 1,
-    failures: int = 0,
     retries: int = 0,
     truncated: int = 0,
     wall: float = 1.0,
@@ -315,7 +314,6 @@ def _api_usage(
         "completion_tokens": completion,
         "reasoning_tokens": reasoning,
         "calls": calls,
-        "failures": failures,
         "retries": retries,
         "truncated_calls": truncated,
         "wall_sec": wall,
@@ -458,9 +456,7 @@ async def test_list_workflows_passes_usage_through(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
             "tsk-00000002": _echo_result("tsk-00000002"),
             "tsk-00000003": _unknown_result("tsk-00000003"),
@@ -484,7 +480,6 @@ async def test_list_workflows_passes_usage_through(
         "completion_tokens": 50,
         "reasoning_tokens": 10,
         "calls": 4,
-        "failures": 1,
         "retries": 2,
         "truncated_calls": 0,
         "wall_sec": 3.5,
@@ -511,9 +506,7 @@ async def test_list_workflows_keeps_workflow_when_task_result_vanished(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
         },
     )
@@ -553,9 +546,7 @@ async def test_list_workflows_skips_workflow_when_retrieve_not_found(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
         },
     )
@@ -603,9 +594,7 @@ async def test_progress_sums_usage_over_workflows(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
             "tsk-00000002": _inference_result(
                 "tsk-00000002",
@@ -638,7 +627,6 @@ async def test_progress_sums_usage_over_workflows(
         "completion_tokens": 75,
         "reasoning_tokens": 10,
         "calls": 6,
-        "failures": 1,
         "retries": 2,
         "truncated_calls": 0,
         "wall_sec": 5.0,
@@ -704,7 +692,6 @@ async def test_progress_merged_inference_parent_not_double_counted(
         "completion_tokens": 200,
         "reasoning_tokens": 0,
         "calls": 4,
-        "failures": 0,
         "retries": 0,
         "truncated_calls": 0,
         "wall_sec": 12.0,
@@ -730,9 +717,7 @@ async def test_progress_skipped_task_contributes_nothing(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
             "tsk-skip": _skip_result("tsk-skip"),
         },
@@ -762,7 +747,6 @@ async def test_progress_skipped_task_contributes_nothing(
         "completion_tokens": 50,
         "reasoning_tokens": 10,
         "calls": 4,
-        "failures": 1,
         "retries": 2,
         "truncated_calls": 0,
         "wall_sec": 3.5,
@@ -788,9 +772,7 @@ async def test_progress_no_model_task_contributes_nothing(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
             "tsk-echo": _echo_result("tsk-echo"),
         },
@@ -820,7 +802,6 @@ async def test_progress_no_model_task_contributes_nothing(
         "completion_tokens": 50,
         "reasoning_tokens": 10,
         "calls": 4,
-        "failures": 1,
         "retries": 2,
         "truncated_calls": 0,
         "wall_sec": 3.5,
@@ -845,9 +826,7 @@ async def test_progress_usage_null_when_task_unmappable(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
             "tsk-00000002": _unknown_result("tsk-00000002"),
         },
@@ -887,7 +866,6 @@ async def test_progress_terminal_usage_survives_persistence(
         completion_tokens=50,
         reasoning_tokens=10,
         calls=4,
-        failures=1,
         retries=2,
         truncated_calls=0,
         wall_sec=3.5,
@@ -916,7 +894,6 @@ async def test_progress_terminal_usage_survives_persistence(
         "completion_tokens": 50,
         "reasoning_tokens": 10,
         "calls": 4,
-        "failures": 1,
         "retries": 2,
         "truncated_calls": 0,
         "wall_sec": 3.5,
@@ -942,9 +919,7 @@ async def test_persist_terminal_usage_null_on_fetch_error(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
         },
         task_result_errors={
@@ -981,9 +956,7 @@ async def test_persist_terminal_usage_null_on_not_found(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
         },
     )
@@ -1011,9 +984,7 @@ async def test_progress_live_null_when_task_result_vanished(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
         },
     )
@@ -1057,9 +1028,7 @@ async def test_progress_live_null_when_api_task_usage_missing(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
             "tsk-00000002": _api_result("tsk-00000002", None),
         },
@@ -1105,9 +1074,7 @@ async def test_persist_terminal_usage_null_when_api_task_usage_missing(
         task_results={
             "tsk-00000001": _api_result(
                 "tsk-00000001",
-                _api_usage(
-                    100, 50, reasoning=10, calls=4, failures=1, retries=2, wall=3.5
-                ),
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
             ),
             "tsk-00000002": _api_result("tsk-00000002", None),
         },
@@ -1131,7 +1098,6 @@ async def test_progress_live_no_stale_value_when_usage_now_null(
         completion_tokens=50,
         reasoning_tokens=10,
         calls=4,
-        failures=1,
         retries=2,
         truncated_calls=0,
         wall_sec=3.5,
@@ -1180,7 +1146,6 @@ async def test_progress_all_zero_tasks_give_zero_total(
         "completion_tokens": 0,
         "reasoning_tokens": 0,
         "calls": 0,
-        "failures": 0,
         "retries": 0,
         "truncated_calls": 0,
         "wall_sec": 0.0,
@@ -1423,7 +1388,6 @@ async def test_progress_live_empty_job_gives_zero_total(
         "completion_tokens": 0,
         "reasoning_tokens": 0,
         "calls": 0,
-        "failures": 0,
         "retries": 0,
         "truncated_calls": 0,
         "wall_sec": 0.0,

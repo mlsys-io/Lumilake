@@ -196,7 +196,6 @@ def test_progress_includes_usage(jobs: Jobs, base_url: str) -> None:
                                 "completion_tokens": 75,
                                 "reasoning_tokens": 15,
                                 "calls": 6,
-                                "failures": 1,
                                 "retries": 3,
                                 "truncated_calls": 1,
                                 "wall_sec": 5.0,
@@ -212,7 +211,6 @@ def test_progress_includes_usage(jobs: Jobs, base_url: str) -> None:
     assert usage.completion_tokens == 75
     assert usage.reasoning_tokens == 15
     assert usage.calls == 6
-    assert usage.failures == 1
     assert usage.retries == 3
     assert usage.truncated_calls == 1
     assert usage.wall_sec == 5.0
@@ -551,7 +549,6 @@ def test_list_workflows_returns_typed_models(jobs: Jobs, base_url: str) -> None:
                                     "completion_tokens": 50,
                                     "reasoning_tokens": 10,
                                     "calls": 4,
-                                    "failures": 1,
                                     "retries": 2,
                                     "truncated_calls": 0,
                                     "wall_sec": 3.5,

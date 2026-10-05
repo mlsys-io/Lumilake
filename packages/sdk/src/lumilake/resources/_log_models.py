@@ -44,7 +44,6 @@ class WorkflowUsage(BaseModel):
     completion_tokens: int = Field(description="Completion token count.")
     reasoning_tokens: int = Field(description="Reasoning token count.")
     calls: int = Field(description="Number of model calls.")
-    failures: int = Field(description="Number of failed calls.")
     retries: int = Field(description="Number of retried calls.")
     truncated_calls: int = Field(description="Number of truncated calls.")
     wall_sec: float = Field(description="Wall-clock seconds.")
