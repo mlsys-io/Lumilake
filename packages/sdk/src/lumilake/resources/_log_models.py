@@ -38,7 +38,11 @@ class LogQueryResponse(BaseModel):
 
 
 class WorkflowUsage(BaseModel):
-    """Token usage summed over a workflow's task results."""
+    """Token usage summed over a workflow's task results.
+
+    A zero-valued instance means no observed model calls; ``None`` (where the
+    field is optional) means usage was unavailable.
+    """
 
     prompt_tokens: int = Field(description="Prompt token count.")
     completion_tokens: int = Field(description="Completion token count.")
@@ -67,5 +71,10 @@ class JobWorkflowInfo(BaseModel):
         default=None, description="Number of failed tasks."
     )
     usage: WorkflowUsage | None = Field(
-        default=None, description="Token usage summed over the workflow's task results."
+        default=None,
+        description=(
+            "Token usage summed over the workflow's task results. A zero-valued "
+            "object means no observed model calls; null means usage was "
+            "unavailable."
+        ),
     )

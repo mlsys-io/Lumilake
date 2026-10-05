@@ -1,6 +1,6 @@
 import re
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal, overload
 
 import dill
 
@@ -11,6 +11,14 @@ from lumilake_server.utils.lambda_runtime import validate_source
 MAX_TIMEOUT_S = 600.0
 MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
+
+# A row-mode LambdaOp receives one tuple of scalar values per row and returns
+# a single scalar. A list-mode LambdaOp receives each input as its whole list
+# of JSON values and returns a list of JSON values (one output item per
+# element). The overloads below let ``mode`` select the callable contract so a
+# list-mode callable needs no ``type: ignore``.
+RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
+ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 
 
 def _validate_limits(timeout_s: float | None, memory_mb: int | None) -> None:
@@ -114,14 +122,36 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
-    fn: Callable[[tuple[SingleDtype, ...]], str]
+    fn: RowLambdaFn | ListLambdaFn
 
     LAMBDA_MODES = ("row", "list")
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: RowLambdaFn,
+        code: str | None = None,
+        mode: Literal["row"] = "row",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: ListLambdaFn,
+        code: str | None = None,
+        mode: Literal["list"] = "list",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+    ) -> None: ...
 
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
-        fn: Callable[[tuple[SingleDtype, ...]], str],
+        fn: RowLambdaFn | ListLambdaFn,
         code: str | None = None,
         mode: str = "row",
         timeout_s: float | None = None,
@@ -214,7 +244,5 @@ class LambdaOp(Op):
         )
 
 
-def lambda_op(
-    inputs: list[list[str] | Op], fn: Callable[[tuple[SingleDtype, ...]], str]
-) -> LambdaOp:
+def lambda_op(inputs: list[list[str] | Op], fn: RowLambdaFn) -> LambdaOp:
     return LambdaOp(inputs, fn)

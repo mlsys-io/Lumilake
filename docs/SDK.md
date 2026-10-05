@@ -118,6 +118,7 @@ client.jobs.submit({"data": [...], "hardware": {"gpu_model": "RTX 5080"}}, workf
 client.jobs.list(status="completed", limit=20)
 client.jobs.get(job_id)
 client.jobs.progress(job_id)  # dict; includes "usage" (summed per-job token usage) or None
+#   usage: a zero-valued WorkflowUsage means no observed model calls; None means usage was unavailable
 client.jobs.result(job_id)
 client.jobs.inputs(job_id)
 client.jobs.cancel(job_id)
@@ -125,6 +126,7 @@ client.jobs.artifact(job_id, path="s3://...", output="result.json")
 
 # Per-workflow FlowMesh logs (mirrors `lumilake job logs show/stream/download`).
 workflows = client.jobs.list_workflows(job_id)  # each has .usage (WorkflowUsage | None)
+#   usage: a zero-valued WorkflowUsage means no observed model calls; None means usage was unavailable
 page = client.jobs.get_logs(job_id, workflows[0].workflow_id, limit=200)  # LogQueryResponse
 for entry in client.jobs.stream_logs(job_id, workflows[0].workflow_id):  # Iterator[LogEntry]
     print(entry.event.message)

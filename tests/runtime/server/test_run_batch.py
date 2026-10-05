@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from flowmesh.models.result import APIGroupItem, APIItem
 from support.runtime_server import (
     ArtifactRuntimeManager,
     RecordingRuntimeManager,
@@ -861,6 +862,7 @@ class _EmbeddingRuntimeManager(RecordingRuntimeManager):
                 output_path=None,
                 expected_row_count=self._row_count,
                 list_lambda=False,
+                list_lambda_cardinality=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1068,8 +1070,187 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
                 items=self._items,
                 output_path="value.items.output",
                 list_lambda=True,
+                list_lambda_cardinality=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+class _RowwiseApiRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch but runs the real row-wise API aggregation,
+    proving a two-row slice demultiplexes into two row-aligned outputs."""
+
+    def __init__(self, *, items: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._items = items
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        flowmesh_manager = FlowmeshRuntimeManager()
+        flat_outputs: dict[str, list[str]] = {}
+        for node_id in request_info.output_node_map:
+            flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
+                output_op_id=node_id,
+                output_task_id="task-1",
+                request_id=request_info.request_id,
+                items=self._items,
+                output_path="items.rows.json.choices[0].message.content",
+                list_lambda=False,
+                list_lambda_cardinality=False,
+            )
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+class _RowwiseApiListLambdaRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch but runs the real row-wise API aggregation for
+    an API node whose rows come from a list-mode Lambda fan-out inside one
+    input row. The group's two rows belong to that one input row and must stay
+    one whole-list output value, not demultiplex into two."""
+
+    def __init__(self, *, items: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._items = items
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        flowmesh_manager = FlowmeshRuntimeManager()
+        flat_outputs: dict[str, list[str]] = {}
+        for node_id in request_info.output_node_map:
+            flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
+                output_op_id=node_id,
+                output_task_id="task-1",
+                request_id=request_info.request_id,
+                items=self._items,
+                output_path="items.rows.json.choices[0].message.content",
+                list_lambda=False,
+                list_lambda_cardinality=node_id
+                in request_info.runtime_graph.list_lambda_cardinality_nodes(),
+            )
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+def _install_rowwise_api_list_lambda_build_and_schedule(
+    server: Any, output_name: str
+) -> None:
+    """Fake build/schedule with a list-mode python node feeding a row-wise API
+    node whose output is the workflow output. The API rows come from the list
+    Lambda's fan-out inside one input row, so the output follows the Lambda's
+    cardinality (one whole-list value), not the input row count."""
+
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
+        lambda_id = f"{node_prefix}__{suffix}__lambda"
+        api_id = f"{node_prefix}__{suffix}__api"
+        lambda_op = RuntimeOp(
+            node_id=lambda_id,
+            task_type="python",
+            backend="python",
+            model="",
+            data_spec={"mode": "list"},
+            model_spec={},
+            inference_spec={},
+        )
+        api_op = RuntimeOp(
+            node_id=api_id,
+            task_type="api",
+            backend="api",
+            model="",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+            dependencies=(lambda_id,),
+        )
+        output_node_map = (
+            {} if task_type_override == "data_profile" else {api_id: output_name}
+        )
+        return RuntimeGraph(
+            nodes={lambda_id: lambda_op, api_id: api_op},
+            node_order=[lambda_id, api_id],
+            output_node_map=output_node_map,
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+
+
+def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> None:
+    """Fake build/schedule whose output node is a plain api task (not a
+    list-mode python step), so the row-wise API demux path applies."""
+
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
+        node_id = f"{node_prefix}__{suffix}"
+        op = RuntimeOp(
+            node_id=node_id,
+            task_type="api",
+            backend="api",
+            model="",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+        )
+        output_node_map = (
+            {} if task_type_override == "data_profile" else {node_id: output_name}
+        )
+        return RuntimeGraph(
+            nodes={node_id: op}, node_order=[node_id], output_node_map=output_node_map
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
 
 
 def _install_list_lambda_build_and_schedule(server: Any, output_name: str) -> None:
@@ -1315,6 +1496,184 @@ async def test_list_lambda_output_multi_slice_run_fails_closed(
     assert any(
         "List-Lambda output cannot be split across slices" in str(item)
         for item in resp.error_info
+    )
+
+
+@pytest.mark.asyncio
+async def test_rowwise_api_output_demuxes_two_row_slice(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct row-wise API output over a two-row slice returns one
+    APIGroupItem holding both rows; the server demux must flatten the group's
+    rows into two row-aligned output values (one per input row), not reject
+    the single group as too short."""
+    group = APIGroupItem(
+        index=0,
+        rows=[
+            APIItem(
+                index=0,
+                url="https://example.invalid",
+                status_code=200,
+                json={"choices": [{"message": {"content": "r0"}}]},
+            ),
+            APIItem(
+                index=1,
+                url="https://example.invalid",
+                status_code=200,
+                json={"choices": [{"message": {"content": "r1"}}]},
+            ),
+        ],
+    )
+    server = server_factory()
+    server.runtime_manager = cast(
+        Any, _RowwiseApiRuntimeManager(items=[group.model_dump(by_alias=True)])
+    )
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-rowwise",
+            request_id="req-rowwise",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=2,
+            total_length=2,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_rowwise_api_build_and_schedule(server, "out")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-rowwise"].results[0]
+    assert resp.error_info is None
+    out = resp.outputs["shared"]["out"]
+    assert out == ["r0", "r1"]
+
+
+@pytest.mark.asyncio
+async def test_rowwise_api_list_lambda_output_stays_one_whole_list_value(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row-wise API output whose rows come from a list-mode Lambda fan-out
+    inside ONE input row returns one APIGroupItem holding both rows; the two
+    rows belong to that one input row and must surface as ONE output value
+    holding both replies, not demultiplex into two row-aligned values."""
+    group = APIGroupItem(
+        index=0,
+        rows=[
+            APIItem(
+                index=0,
+                url="https://example.invalid",
+                status_code=200,
+                json={"choices": [{"message": {"content": "OK"}}]},
+            ),
+            APIItem(
+                index=1,
+                url="https://example.invalid",
+                status_code=200,
+                json={"choices": [{"message": {"content": "OK"}}]},
+            ),
+        ],
+    )
+    server = server_factory()
+    server.runtime_manager = cast(
+        Any,
+        _RowwiseApiListLambdaRuntimeManager(items=[group.model_dump(by_alias=True)]),
+    )
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-rowwise-list-lambda",
+            request_id="req-rowwise-list-lambda",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=1,
+            total_length=1,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_rowwise_api_list_lambda_build_and_schedule(server, "out")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-rowwise-list-lambda"].results[0]
+    assert resp.error_info is None
+    out = resp.outputs["shared"]["out"]
+    assert len(out) == 1
+    assert json.loads(out[0]) == ["OK", "OK"]
+
+
+@pytest.mark.asyncio
+async def test_list_lambda_output_two_values_for_one_row_slice_fails_closed(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A list-mode Lambda output must be exactly one whole-list value per run.
+    Two values for a one-row slice must fail closed with a clear length-mismatch
+    error, not be silently cut to one."""
+
+    class _TwoValueListLambdaManager(RecordingRuntimeManager):
+        async def process_request(
+            self,
+            request_info: Any,
+            schedule: Schedule,
+            worker_ids: list[str],
+            data_profile_results: dict[str, list[dict[str, Any]]] | None,
+        ) -> dict[str, Any]:
+            flat_outputs: dict[str, list[str]] = {}
+            for node_id in request_info.output_node_map:
+                flat_outputs[node_id] = ["v0", "v1"]
+            return {
+                "flat_outputs": flat_outputs,
+                "chat_histories": {},
+                "task_node_map": {},
+            }
+
+    server = server_factory()
+    server.runtime_manager = cast(Any, _TwoValueListLambdaManager())
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-list-two",
+            request_id="req-list-two",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=1,
+            total_length=1,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_list_lambda_build_and_schedule(server, "observations")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-list-two"].results[0]
+    assert resp.error_info is not None
+    assert any(
+        "list-Lambda output length mismatch" in str(item) for item in resp.error_info
     )
 
 

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from flowmesh.models.result import APIResult
+from flowmesh.models.result.catalog import PythonResult
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -28,7 +29,7 @@ from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeMana
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
-def _explode_fn(items: tuple[Any, ...]) -> list[dict[str, str]]:
+def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
     return [{"value": v} for v in items[0]]
 
 
@@ -98,6 +99,19 @@ def test_resolve_output_items_still_raises_without_items_key() -> None:
     manager = FlowmeshRuntimeManager()
     with pytest.raises(RuntimeError, match="produced no items"):
         manager._resolve_output_items({"ok": True}, "out-1")
+
+
+def test_resolve_output_items_accepts_empty_python_result_value() -> None:
+    """A real SDK PythonResult with ``value={"items": []}`` is a valid empty
+    list-mode Lambda output, not a failure."""
+    manager = FlowmeshRuntimeManager()
+    result = PythonResult(exit_code=0, value={"items": []})
+    assert (
+        manager._resolve_output_items(
+            result.model_dump(mode="json"), "out-1", task_type="python"
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -366,7 +380,7 @@ def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, st
                     }
                 ]
             },
-            ['["r0", "r1"]'],
+            ["r0", "r1"],
         ),
     ],
 )
@@ -432,7 +446,7 @@ async def test_api_output_node_reads_content(
 
 def _build_list_lambda_output_request() -> tuple[RequestInfo, str]:
     stock = input_placeholder("Stock")
-    explode = LambdaOp([stock], _explode_fn, mode="list")  # type: ignore[arg-type]
+    explode = LambdaOp([stock], _explode_fn, mode="list")
     output = as_output("observations", explode)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)

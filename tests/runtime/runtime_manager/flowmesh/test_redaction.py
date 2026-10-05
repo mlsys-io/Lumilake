@@ -14,6 +14,8 @@ from typing import Any
 import pytest
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
+from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
+from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -420,8 +422,6 @@ async def test_archive_task_response_archives_grouped_api_result(
 ) -> None:
     """A grouped APIResult (items[].rows[]) must validate through the SDK's
     result adapter and archive with both rows intact."""
-    from flowmesh.resources.results import _RESULT_ADAPTER
-
     grouped_payload = {
         "task_type": "api",
         "executor": "api",
@@ -495,8 +495,6 @@ def test_api_result_dump_keeps_json_row_key() -> None:
     """A grouped API result validated by the vendored flowmesh APIResult and
     dumped with model_dump(mode="json") must keep the row key ``json``, not
     rename it to ``response_json`` (serialize_by_alias)."""
-    from flowmesh.models.result.catalog import APIResult
-
     payload = {
         "ok": True,
         "executor": "api",
@@ -517,7 +515,7 @@ def test_api_result_dump_keeps_json_row_key() -> None:
             }
         ],
     }
-    validated = APIResult.model_validate(payload)
+    validated = CatalogAPIResult.model_validate(payload)
     dumped = validated.model_dump(mode="json")
     row = dumped["items"][0]["rows"][0]
     assert "json" in row

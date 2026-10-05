@@ -21,6 +21,7 @@ from typing import Any
 
 import yaml
 from flowmesh.exceptions import APIError
+from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
@@ -838,7 +839,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             # (runtime/python_step.py); PythonResult carries it under "value".
             value = results_json.get("value")
             value_items = value.get("items") if isinstance(value, dict) else None
-            if isinstance(value_items, list) and value_items:
+            if isinstance(value_items, list):
                 return value_items
             raise RuntimeError(f"python step {output_op_id} returned no items")
         if task_type == "api":
@@ -919,6 +920,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         output_path: str | None,
         expected_row_count: int | None = None,
         list_lambda: bool,
+        list_lambda_cardinality: bool,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
             items = await self._archive_artifact_items(
@@ -984,6 +986,23 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     ]
                 )
             ]
+        if output_path is not None and output_path.startswith("items.rows"):
+            # A row-wise API task returns one APIGroupItem per input table,
+            # holding that table's rows. Flatten each walked group's rows into
+            # the row-aligned output list so a multi-row slice demultiplexes
+            # into one output value per row. When the rows instead come from a
+            # list-mode Lambda fan-out inside one input row, the group's rows
+            # belong to that one input row and must stay one whole-list value.
+            flattened: list[str] = []
+            for item in items:
+                walked = _walk_output_path(item, output_field_parts, output_op_id)
+                if isinstance(walked, list):
+                    flattened.extend(_coerce_output_value(v) for v in walked)
+                else:
+                    flattened.append(_coerce_output_value(walked))
+            if list_lambda_cardinality:
+                return [_coerce_output_value(flattened)]
+            return flattened
         return [
             _coerce_output_value(
                 _walk_output_path(item, output_field_parts, output_op_id)
@@ -1005,7 +1024,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             raise _sanitize_flowmesh_api_error(e) from None
         # The SDK returns a pydantic result model (e.g. APIResult); coerce to a
         # plain dict so redaction and JSON serialization work on the raw body.
-        if hasattr(response_data, "model_dump"):
+        if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
         response_uri = self._save_json_artifact(
             request_info,
@@ -1282,6 +1301,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         # Aggregate results from output nodes
         flat_outputs: dict[str, Any] = {}
         prompts: dict[str, Any] = {}
+        list_lambda_cardinality_nodes = (
+            request_info.runtime_graph.list_lambda_cardinality_nodes()
+        )
 
         for _, output_op_id in output_node_indices:
             output_task_id = node_task_map.get(output_op_id)
@@ -1297,7 +1319,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 raise _sanitize_flowmesh_api_error(e) from None
             # The SDK returns a pydantic result model; coerce to a plain dict
             # so downstream dict access (items/text/embedding_file) works.
-            if hasattr(results_json, "model_dump"):
+            if isinstance(results_json, BaseModel):
                 results_json = results_json.model_dump(mode="json")
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
             api_prompt = None
@@ -1325,6 +1347,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 list_lambda=output_node is not None
                 and output_node.task_type == python_step.TASK_TYPE
                 and output_node.data_spec.get("mode") == "list",
+                list_lambda_cardinality=output_op_id in list_lambda_cardinality_nodes,
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []

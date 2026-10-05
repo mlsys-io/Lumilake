@@ -1,4 +1,5 @@
 import textwrap
+from typing import Any
 
 import pytest
 
@@ -35,7 +36,7 @@ def _build(yaml_text: str) -> RuntimeGraph:
     return RuntimeGraphBuilder().build(compiled)
 
 
-def _explode_fn(items: tuple[str, ...]) -> list[dict[str, str]]:
+def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
     return [{"value": v} for v in items[0]]
 
 
@@ -305,7 +306,7 @@ def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
 
 def test_list_lambda_data_op_input_compiles() -> None:
     constant = data(["NVDA", "AAPL"])
-    explode = LambdaOp([constant], _explode_fn, mode="list")  # type: ignore[arg-type]
+    explode = LambdaOp([constant], _explode_fn, mode="list")
     output = as_output("out", explode)
     compiled = Graph.from_ops([output]).compile()
 
@@ -323,7 +324,7 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
     """An API-backed rowwise LLMChatOp reading a list-mode Lambda must bind the
     column to the python stage at ``value.items.output``."""
     stock = input_placeholder("Stock")
-    explode = LambdaOp([stock], _explode_fn, mode="list")  # type: ignore[arg-type]
+    explode = LambdaOp([stock], _explode_fn, mode="list")
     llm = LLMChatOp(
         [OpMessage(role="user", content="Summarize the rows.")],
         config=GenerationConfig(

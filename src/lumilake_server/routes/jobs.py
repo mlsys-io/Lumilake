@@ -1695,12 +1695,13 @@ async def _fire_parent_terminal_hooks(
     record: JobRecord,
     principal: PrincipalContext,
     parent_job_id: str,
+    runtime_token: str | None,
 ) -> None:
     """Fire the parent's lifecycle hooks once for a terminal dynamic run.
 
-    Aggregates the children's trace ids onto the parent record and persists
-    it, then emits usage and registers the trace resources. No-op unless the
-    record has reached a terminal state.
+    Aggregates the children's trace ids onto the parent record, persists its
+    terminal usage, then emits usage and registers the trace resources.
+    No-op unless the record has reached a terminal state.
     """
     async with jobs_lock:
         if record.status not in TERMINAL_JOB_STATUSES or record.finished_at is None:
@@ -1719,6 +1720,8 @@ async def _fire_parent_terminal_hooks(
     trace_ids = list(dict.fromkeys(trace_ids))
     async with jobs_lock:
         record.trace_ids = trace_ids
+    await _persist_terminal_usage(record, flowmesh_for_token(runtime_token), logger)
+    async with jobs_lock:
         snapshot = copy.deepcopy(record)
     await asyncio.to_thread(_job_storage.save, snapshot)
     await emit_usage([_usage_row(record, principal)], logger)
@@ -1971,7 +1974,9 @@ async def _run_dynamic_job(
                 save_exc,
             )
     finally:
-        await _fire_parent_terminal_hooks(record, principal, parent_job_id)
+        await _fire_parent_terminal_hooks(
+            record, principal, parent_job_id, runtime_token
+        )
 
 
 def _collect_api_credential(graph_specs: dict[str, dict[str, Any]]) -> str | None:
@@ -3181,7 +3186,9 @@ async def get_job_progress(
     )
 
     if record.status == "cancelled":
-        cancelled_progress = JobProgress()
+        # A cancelled job keeps the progress (including any terminal usage
+        # the job runner persisted before cancellation) it had reached.
+        cancelled_progress = record.progress.model_copy(deep=True)
         return {
             "ok": True,
             "data": {
@@ -3530,6 +3537,7 @@ def _inference_usage(result: Any) -> WorkflowUsage:
     prompt = usage.prompt_tokens
     completion = usage.completion_tokens
     calls = usage.num_requests
+    wall_sec = usage.latency_sec
     for child in result.children.values():
         if not isinstance(child, InferenceResult):
             continue
@@ -3539,6 +3547,7 @@ def _inference_usage(result: Any) -> WorkflowUsage:
         prompt -= child_usage.prompt_tokens
         completion -= child_usage.completion_tokens
         calls -= child_usage.num_requests
+        wall_sec -= child_usage.latency_sec
     return WorkflowUsage(
         prompt_tokens=prompt,
         completion_tokens=completion,
@@ -3546,7 +3555,7 @@ def _inference_usage(result: Any) -> WorkflowUsage:
         calls=calls,
         retries=0,
         truncated_calls=0,
-        wall_sec=usage.latency_sec,
+        wall_sec=wall_sec,
     )
 
 

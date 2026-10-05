@@ -29,7 +29,6 @@ from lumilake.log import (
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
@@ -2344,7 +2343,24 @@ class LumilakeServer:
                 if output_name in list_lambda_names:
                     # A list-mode Lambda output is one whole-list value per
                     # run, not one per input row: place it at the slice start
-                    # in a single-slot buffer.
+                    # in a single-slot buffer. More than one value for a
+                    # one-row slice is a length mismatch, not something to cut.
+                    if len(values) != 1:
+                        append_error(
+                            state,
+                            {
+                                "graph": public_name,
+                                "slice_index": workflow.slice_index,
+                                "workflow_id": workflow.workflow_id,
+                                "output": output_name,
+                                "error": (
+                                    "list-Lambda output length mismatch: "
+                                    f"expected=1 got={len(values)}"
+                                ),
+                            },
+                        )
+                        merged_without_errors = False
+                        continue
                     target = buffers.setdefault(output_name, [None])
                     if target[0] is not None:
                         append_error(
@@ -2358,8 +2374,7 @@ class LumilakeServer:
                             },
                         )
                         merged_without_errors = False
-                    if values:
-                        target[0] = values[0]
+                    target[0] = values[0]
                     continue
                 if len(values) != workflow.slice_length:
                     append_error(
@@ -2974,19 +2989,7 @@ class LumilakeServer:
         # depends on one, follows the list Lambda's cardinality (one group per
         # input list), not the per-input-row slice length.
         runtime_graph = batch_request_info.runtime_graph
-        list_lambda_nodes = {
-            node_id
-            for node_id, node in runtime_graph.nodes.items()
-            if node.task_type == python_step.TASK_TYPE
-            and node.data_spec.get("mode") == "list"
-        }
-        list_lambda_dependent_nodes: set[str] = set()
-        for node_id in runtime_graph.node_order:
-            node = runtime_graph.nodes[node_id]
-            if node_id in list_lambda_nodes or any(
-                dep in list_lambda_dependent_nodes for dep in node.dependencies
-            ):
-                list_lambda_dependent_nodes.add(node_id)
+        list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()
         list_lambda_outputs = {
             (group_key, output_name)
             for node_id, (group_key, output_name) in output_mapping.items()

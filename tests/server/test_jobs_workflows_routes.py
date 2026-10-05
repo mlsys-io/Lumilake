@@ -686,7 +686,7 @@ async def test_progress_merged_inference_parent_not_double_counted(
         )
     assert resp.status_code == 200
     usage = resp.json()["data"]["progress"]["usage"]
-    # parent own share (100-30, 200-50, 4-1) + child (30, 50, 1)
+    # parent own share (100-30, 200-50, 4-1, 10.0-2.0) + child (30, 50, 1, 2.0)
     assert usage == {
         "prompt_tokens": 100,
         "completion_tokens": 200,
@@ -694,7 +694,7 @@ async def test_progress_merged_inference_parent_not_double_counted(
         "calls": 4,
         "retries": 0,
         "truncated_calls": 0,
-        "wall_sec": 12.0,
+        "wall_sec": 10.0,
     }
 
 
@@ -1391,6 +1391,49 @@ async def test_progress_live_empty_job_gives_zero_total(
         "retries": 0,
         "truncated_calls": 0,
         "wall_sec": 0.0,
+    }
+
+
+@pytest.mark.anyio
+async def test_progress_cancelled_job_keeps_persisted_usage(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled job's progress keeps the terminal usage the job runner
+    persisted before cancellation, rather than returning a blank record."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    record.status = "cancelled"
+    record.progress.usage = job_routes_module.WorkflowUsage(
+        prompt_tokens=44,
+        completion_tokens=105,
+        reasoning_tokens=97,
+        calls=2,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=1.05,
+    )
+    job_routes._job_storage.save(record)
+
+    def _no_fm(_request: Any) -> Any:
+        raise AssertionError("flowmesh_for must not be called for a cancelled job")
+
+    monkeypatch.setattr(job_routes_module, "flowmesh_for", _no_fm)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/progress", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    usage = resp.json()["data"]["progress"]["usage"]
+    assert usage == {
+        "prompt_tokens": 44,
+        "completion_tokens": 105,
+        "reasoning_tokens": 97,
+        "calls": 2,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.05,
     }
 
 

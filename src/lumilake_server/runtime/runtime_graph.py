@@ -3,7 +3,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import sqlparse
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,7 +27,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
-from lumilake_server.ops.util_ops import SubmittedFunction
+from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
@@ -245,6 +245,26 @@ class RuntimeGraph:
             if node_id in self.nodes
         ]
 
+    def list_lambda_cardinality_nodes(self) -> set[str]:
+        """Node ids whose output follows a list-mode Lambda's cardinality: one
+        whole-list value per input list, not one per input row. A node that is
+        itself a list-mode Lambda, or transitively depends on one, produces one
+        group per input list, so its rows must not be demultiplexed per row."""
+        list_lambda_nodes = {
+            node_id
+            for node_id, node in self.nodes.items()
+            if node.task_type == python_step.TASK_TYPE
+            and node.data_spec.get("mode") == "list"
+        }
+        list_lambda_dependent: set[str] = set()
+        for node_id in self.node_order:
+            node = self.nodes[node_id]
+            if node_id in list_lambda_nodes or any(
+                dep in list_lambda_dependent for dep in node.dependencies
+            ):
+                list_lambda_dependent.add(node_id)
+        return list_lambda_dependent
+
     def with_node_prefix(self, prefix: str, separator: str = "__") -> Self:
         if not prefix:
             return self
@@ -393,7 +413,7 @@ class RuntimeGraphBuilder:
         llm_ops: dict[str, LLMOp] = {}
         retrieval_ops: dict[str, DataRetrievalOp] = {}
         list_lambda_ops: dict[str, LambdaOp] = {}
-        output_source_to_outputop: dict[str, tuple[str, str | None]] = {}
+        output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
             if isinstance(op, LLMOp):
                 llm_ops[op_id] = op
@@ -414,7 +434,19 @@ class RuntimeGraphBuilder:
                         f"(got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
-                output_source_to_outputop[source.id] = (op.name, op.path)
+                output_source_to_outputop.setdefault(source.id, []).append(
+                    (op.name, op.path)
+                )
+
+        for source_id, outputs in output_source_to_outputop.items():
+            if len(outputs) > 1:
+                names = ", ".join(name for name, _ in outputs)
+                raise ValueError(
+                    f"Multiple OutputOps ({names}) target the same source node "
+                    f"'{source_id}'. A runtime node produces a single output; "
+                    "project multiple outputs from one source by adding an "
+                    "intermediate LambdaOp instead."
+                )
 
         has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
         if not llm_ops and not retrieval_ops and not has_lambda:
@@ -455,7 +487,9 @@ class RuntimeGraphBuilder:
             dsl_to_runtime[retrieval_op_id] = [runtime_op.node_id]
 
             if retrieval_op_id in output_source_to_outputop:
-                output_name, path_override = output_source_to_outputop[retrieval_op_id]
+                ((output_name, path_override),) = output_source_to_outputop[
+                    retrieval_op_id
+                ]
                 output_node_map[runtime_op.node_id] = output_name
                 mode = retrieval_op.data_spec["mode"]
                 # Mode-derived defaults match the FlowMesh executor's item
@@ -479,7 +513,9 @@ class RuntimeGraphBuilder:
             dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
 
             if lambda_op_id in output_source_to_outputop:
-                output_name, path_override = output_source_to_outputop[lambda_op_id]
+                ((output_name, path_override),) = output_source_to_outputop[
+                    lambda_op_id
+                ]
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "value.items.output"
 
@@ -551,7 +587,7 @@ class RuntimeGraphBuilder:
             dsl_to_runtime[llm_op_id] = mapping
 
             if llm_op_id in output_source_to_outputop:
-                output_name, path_override = output_source_to_outputop[llm_op_id]
+                ((output_name, path_override),) = output_source_to_outputop[llm_op_id]
                 for output_node_id in output_node_ids:
                     output_node_map[output_node_id] = output_name
                     if path_override:
@@ -590,7 +626,9 @@ class RuntimeGraphBuilder:
                     dsl_to_runtime,
                 )
                 if lambda_id in output_source_to_outputop:
-                    output_name, path_override = output_source_to_outputop[lambda_id]
+                    ((output_name, path_override),) = output_source_to_outputop[
+                        lambda_id
+                    ]
                     output_node_map[lambda_id] = output_name
                     if path_override:
                         output_paths[lambda_id] = path_override
@@ -2616,10 +2654,12 @@ class RuntimeGraphBuilder:
                     literal_args.append(value)
                 if can_evaluate:
                     label = f"lambda_{op.id}"
+                    # List-mode LambdaOps raise above, so this call is row-mode.
+                    row_fn = cast(RowLambdaFn, op.fn)
                     columns[label] = {
                         "data": {
                             "type": "list",
-                            "items": [str(op.fn(tuple(literal_args)))],
+                            "items": [str(row_fn(tuple(literal_args)))],
                         }
                     }
                     ancestor_buffer[op.id] = [(Roles.USER, label)]

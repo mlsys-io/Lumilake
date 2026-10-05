@@ -161,7 +161,8 @@ class Jobs(SyncResource):
         """Fetch detailed progress data for a job (available throughout its life).
 
         The returned dict includes a ``usage`` field: the token usage summed
-        over the job's task results, or ``None`` when no task reports usage.
+        over the job's task results. A zero-valued usage object means the job
+        made no observed model calls; ``None`` means usage was unavailable.
         """
         return unwrap(
             self._client.get(f"/jobs/{job_id}/progress", **_request_kwargs(timeout))
@@ -489,7 +490,8 @@ class AsyncJobs(AsyncResource):
         """Fetch detailed progress data for a job (available throughout its life).
 
         The returned dict includes a ``usage`` field: the token usage summed
-        over the job's task results, or ``None`` when no task reports usage.
+        over the job's task results. A zero-valued usage object means the job
+        made no observed model calls; ``None`` means usage was unavailable.
         """
         response = await self._client.get(
             f"/jobs/{job_id}/progress", **_request_kwargs(timeout)

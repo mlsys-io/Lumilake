@@ -21,6 +21,7 @@ from unittest.mock import Mock
 import httpx
 import pytest
 from fastapi import FastAPI
+from flowmesh.models.result import ResultEnvelope
 from lumid_hooks import PrincipalContext, ResourceRef
 
 import lumilake_server.utils.job_storage as job_storage_module
@@ -280,6 +281,37 @@ class _FakeUsageWorkflows:
 
 class _FakeUsageWorkflow:
     completed_tasks: list[str] = []
+
+
+class _FakeUsageWorkflowWithTasks:
+    def __init__(self, completed_tasks: list[str]) -> None:
+        self.completed_tasks = completed_tasks
+
+
+class _FakeUsageWorkflowsWithTasks:
+    def __init__(self, task_results: dict[str, dict[str, Any]]) -> None:
+        self._task_results = task_results
+
+    async def retrieve(self, workflow_id: str) -> _FakeUsageWorkflowWithTasks:
+        return _FakeUsageWorkflowWithTasks(list(self._task_results.keys()))
+
+
+class _FakeUsageResults:
+    def __init__(self, task_results: dict[str, dict[str, Any]]) -> None:
+        self._task_results = task_results
+
+    async def retrieve(self, task_id: str) -> Any:
+        return ResultEnvelope.model_validate(
+            {"task_id": task_id, "result": self._task_results[task_id]}
+        ).result
+
+
+class _FakeUsageFlowMeshWithTasks:
+    """FlowMesh stub reporting API usage for a fixed set of task results."""
+
+    def __init__(self, task_results: dict[str, dict[str, Any]]) -> None:
+        self.workflows = _FakeUsageWorkflowsWithTasks(task_results)
+        self.results = _FakeUsageResults(task_results)
 
 
 @pytest.fixture(autouse=True)
@@ -750,3 +782,66 @@ async def test_static_yaml_without_type_runs_as_static(
     assert record.status == "completed"
     # A static job is a single job with no dynamic child rounds.
     assert record.child_job_ids == []
+
+
+@pytest.mark.anyio
+async def test_dynamic_parent_persists_terminal_usage(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed dynamic parent persists its aggregate usage (summed from
+    its children's API task results) at terminal time, not null."""
+    usage = {
+        "prompt_tokens": 44,
+        "completion_tokens": 105,
+        "reasoning_tokens": 97,
+        "calls": 2,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.05,
+    }
+    task_results = {
+        "tsk-child-1": {
+            "task_type": "api",
+            "executor": "x",
+            "method": "GET",
+            "url": "http://x",
+            "status_code": 200,
+            "usage_summary": usage,
+        }
+    }
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for_token",
+        lambda _token: _FakeUsageFlowMeshWithTasks(task_results),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [
+        _SUBGRAPH_PLAN,
+        {"next": "STOP"},
+    ]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed"
+    assert record.trace_ids
+    assert record.progress.usage is not None
+    # Two child rounds each contribute the same API task usage, so the parent
+    # total is the doubled sum.
+    assert record.progress.usage.model_dump() == {
+        "prompt_tokens": 88,
+        "completion_tokens": 210,
+        "reasoning_tokens": 194,
+        "calls": 4,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 2.1,
+    }
