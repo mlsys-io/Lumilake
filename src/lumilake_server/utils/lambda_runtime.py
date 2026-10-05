@@ -36,7 +36,7 @@ import types
 from collections.abc import Callable
 from typing import Any
 
-SAFE_BUILTIN_NAMES = (
+_SAFE_BUILTIN_BASE_NAMES = (
     "int",
     "float",
     "str",
@@ -62,6 +62,31 @@ SAFE_BUILTIN_NAMES = (
     "range",
     "isinstance",
 )
+
+# Built-in exception classes user code reasonably raises or catches.
+EXCEPTION_BUILTIN_NAMES = (
+    "Exception",
+    "ArithmeticError",
+    "AssertionError",
+    "AttributeError",
+    "IndexError",
+    "KeyError",
+    "LookupError",
+    "NotImplementedError",
+    "OverflowError",
+    "RuntimeError",
+    "StopIteration",
+    "TypeError",
+    "ValueError",
+    "ZeroDivisionError",
+)
+
+SAFE_BUILTIN_NAMES = _SAFE_BUILTIN_BASE_NAMES + EXCEPTION_BUILTIN_NAMES
+
+# Names the standalone namespace exposes but FlowMesh's inline ``safe_eval``
+# namespace does not (its SAFE_BUILTINS has no exception classes), so inline
+# code that references them is rejected at submit.
+INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 
 _SOURCE_NAME = "<lambda_op>"
 _LIBRARY_ROOTS = ("numpy", "pandas")
@@ -113,6 +138,15 @@ def _imported_names(module: ast.AST) -> list[tuple[str, int]]:
 def _param_count(args: ast.arguments) -> int:
     count = len(args.posonlyargs) + len(args.args) + len(args.kwonlyargs)
     return count + (1 if args.vararg else 0) + (1 if args.kwarg else 0)
+
+
+def _is_docstring(stmt: ast.stmt) -> bool:
+    """Whether ``stmt`` is a module-level string literal (a docstring)."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and isinstance(stmt.value.value, str)
+    )
 
 
 def _parse(code: str) -> ast.Expression | ast.Module:
@@ -191,9 +225,11 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
 
     A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
     which the FlowMesh worker materializes in its own restricted namespace: no
-    ``__import__``, and the function is the first name the code binds. Code
-    that a standalone LambdaOp accepts but that namespace cannot run is
-    rejected here, at submit, with the reason.
+    ``__import__``, and it calls the first name the code binds at top level.
+    So the ``def`` named ``fn_name`` must be the first top-level statement,
+    with only a module docstring allowed before it. Code that a standalone
+    LambdaOp accepts but that namespace cannot run is rejected here, at
+    submit, with the reason.
     """
     name = validate_source(code, fn_name)
     tree = _parse(code)
@@ -208,22 +244,25 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " modules, or move this logic to a LambdaOp that is a workflow"
             " output or feeds only other LambdaOps"
         )
+    used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    unavailable = sorted(
+        used.intersection(INLINE_UNAVAILABLE_BUILTIN_NAMES),
+        key=INLINE_UNAVAILABLE_BUILTIN_NAMES.index,
+    )
+    if unavailable:
+        raise ValueError(
+            f"it references {unavailable[0]!r}, but a LambdaOp that feeds an"
+            " LLM is evaluated inline by the FlowMesh worker, where that name"
+            " is not defined. Use the standalone LambdaOp form (a workflow"
+            " output or feeding only other LambdaOps) to raise or catch"
+            " exceptions"
+        )
     for stmt in tree.body:
-        if isinstance(stmt, ast.FunctionDef):
-            if stmt.name != name:
-                break
+        if _is_docstring(stmt):
+            continue
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == name:
             return name
-        if isinstance(
-            stmt,
-            (
-                ast.Assign,
-                ast.AnnAssign,
-                ast.AugAssign,
-                ast.ClassDef,
-                ast.AsyncFunctionDef,
-            ),
-        ):
-            break
+        break
     raise ValueError(
         f"a LambdaOp that feeds an LLM must define {name!r} as the first name"
         " its code binds (the FlowMesh worker calls the first definition), so"

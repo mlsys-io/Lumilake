@@ -15,6 +15,7 @@ import pytest
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
+from flowmesh.models.tasks import TaskInfo
 from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
@@ -282,8 +283,31 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: fake_fm))
 
-    async def _fetch_task_status(_self: FlowmeshRuntimeManager, task_id: str) -> str:
-        return "DONE"
+    async def _fetch_task_status(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> TaskInfo:
+        return TaskInfo(
+            task_id=task_id,
+            workflow_id="wf-1",
+            owner_id="owner",
+            org_id="org",
+            supplier_id="supplier",
+            source="",
+            task={},
+            status="DONE",
+            submitted_at="2026-01-01T00:00:00Z",
+            submitted_ts=0.0,
+            usages=[],
+            attempts=1,
+            max_attempts=1,
+            load=0,
+            depends_on=[],
+            pending_dependencies=[],
+            dependents=[],
+            completed=True,
+            failed=False,
+            graph_node_name=row_id,
+        )
 
     async def _fetch_task_description(
         _self: FlowmeshRuntimeManager, task_id: str

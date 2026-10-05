@@ -21,6 +21,7 @@ from typing import Any
 
 import yaml
 from flowmesh.exceptions import APIError
+from flowmesh.models.tasks import TaskInfo
 from pydantic import BaseModel
 
 from lumilake import envs
@@ -217,6 +218,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self._execution_task_status: dict[tuple[str, str], dict[str, str]] = (
             {}
         )  # (request_id, batch_id) -> dict of execution task IDs -> status
+        self._execution_task_errors: dict[str, str] = (
+            {}
+        )  # task ID -> recorded FlowMesh error for a failed task
         self._execution_output_tasks: dict[tuple[str, str], set[str]] = (
             {}
         )  # (request_id, batch_id) -> set of output task IDs
@@ -312,12 +316,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     async def fetch_task_status(
         self,
         task_id: str,
-    ) -> str:
+    ) -> TaskInfo:
         try:
             task_info = await self.fm.tasks.retrieve(task_id)
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
-        return task_info.status
+        return task_info
 
     async def fetch_task_description(
         self,
@@ -329,27 +333,20 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
 
-    async def _task_failure_reason(
+    def _task_failure_reason(
         self, task_id: str, task_node_map: Mapping[str, str]
     ) -> str:
-        """`` (node <id>): <FlowMesh error>`` for a failed task, best effort.
+        """`` (node <id>): <FlowMesh error>`` for a failed task.
 
-        FlowMesh records the executor's error on the task (for a ``python``
-        task, the caller's exception type and message), so a failed job
-        names what went wrong rather than only which task failed.
+        The error comes from the ``TaskInfo`` the status poll already
+        retrieved for the failed task. A task with no recorded error yields
+        just the node suffix.
         """
         node_id = task_node_map.get(task_id)
         reason = f" (node {node_id})" if node_id else ""
-        try:
-            description = await self.fetch_task_description(task_id)
-        except Exception as exc:  # The failure itself must still be reported.
-            self.logger.warning(
-                "Could not fetch the error of failed task %s: %s", task_id, exc
-            )
-            return reason
-        error = description.get("error") or description.get("last_error")
-        if isinstance(error, str) and error.strip():
-            reason += f": {error.strip()}"
+        error = self._execution_task_errors.get(task_id)
+        if error:
+            reason += f": {error}"
         return reason
 
     async def _resolve_task_node_maps(
@@ -409,12 +406,27 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         completed = True
         for task_id, status in list(task_status.items()):
             if status not in TERMINAL_STATUSES:
-                latest_status = await self.fetch_task_status(task_id)
+                task_info = await self.fetch_task_status(task_id)
                 async with self._task_status_lock:
-                    task_status[task_id] = latest_status
-                if latest_status not in TERMINAL_STATUSES:
+                    task_status[task_id] = task_info.status
+                    if task_info.status == "FAILED":
+                        self._record_task_error(task_id, task_info)
+                if task_info.status not in TERMINAL_STATUSES:
                     completed = False
         return completed
+
+    def _record_task_error(self, task_id: str, task_info: TaskInfo) -> None:
+        """Record the FlowMesh error of a failed task, if it has one.
+
+        The error is read from the same ``TaskInfo`` the status poll already
+        retrieved. A task with no recorded error is left unrecorded; the
+        caller then reports the plain message. The error is an untrusted
+        remote field, so it is redacted before it is recorded and later
+        raised or logged.
+        """
+        error = task_info.error or task_info.last_error
+        if error and error.strip():
+            self._execution_task_errors[task_id] = redact_secrets_in_text(error.strip())
 
     def _formulate_details(
         self,
@@ -1278,9 +1290,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     elapsed,
                     failed_tasks[0],
                 )
-                reason = await self._task_failure_reason(failed_tasks[0], task_node_map)
+                reasons = "; ".join(
+                    f"Task {tid} failed{self._task_failure_reason(tid, task_node_map)}"
+                    for tid in failed_tasks
+                )
                 raise RuntimeError(
-                    f"Task {failed_tasks[0]} failed{reason}; aborting workflow"
+                    f"{reasons}; aborting workflow"
                     f" ({len(failed_tasks)} task(s) failed in total)"
                 )
 
@@ -1295,7 +1310,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         # Check for failures in output nodes
         for tid, status in output_task_status.items():
             if status == "FAILED":
-                reason = await self._task_failure_reason(tid, task_node_map)
+                reason = self._task_failure_reason(tid, task_node_map)
                 raise RuntimeError(f"Output task {tid} failed{reason}")
 
         # Aggregate results from output nodes

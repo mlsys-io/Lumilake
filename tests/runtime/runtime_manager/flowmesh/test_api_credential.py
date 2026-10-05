@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 import yaml
+from flowmesh.models.tasks import TaskInfo
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -135,8 +136,31 @@ async def test_dispatched_request_carries_resolved_caller_credential(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(_self: FlowmeshRuntimeManager, task_id: str) -> str:
-        return "DONE"
+    async def _fetch_task_status(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> TaskInfo:
+        return TaskInfo(
+            task_id=task_id,
+            workflow_id="wf-1",
+            owner_id="owner",
+            org_id="org",
+            supplier_id="supplier",
+            source="",
+            task={},
+            status="DONE",
+            submitted_at="2026-01-01T00:00:00Z",
+            submitted_ts=0.0,
+            usages=[],
+            attempts=1,
+            max_attempts=1,
+            load=0,
+            depends_on=[],
+            pending_dependencies=[],
+            dependents=[],
+            completed=True,
+            failed=False,
+            graph_node_name=row_id,
+        )
 
     async def _fetch_task_description(
         _self: FlowmeshRuntimeManager, task_id: str

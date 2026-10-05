@@ -36,6 +36,27 @@ def test_materialized_function_sees_only_the_restricted_builtins() -> None:
         lambda_runtime.materialize("lambda a: eval('1')")(("x",))
 
 
+def test_materialized_function_can_raise_a_builtin_exception() -> None:
+    with pytest.raises(ValueError, match="boom"):
+        lambda_runtime.materialize("def f(a):\n    raise ValueError('boom')")(("x",))
+
+
+def test_materialized_function_can_catch_a_builtin_exception() -> None:
+    code = (
+        "def f(a):\n"
+        "    try:\n"
+        "        raise KeyError('k')\n"
+        "    except KeyError:\n"
+        "        return 'handled'"
+    )
+    assert lambda_runtime.materialize(code)(("x",)) == "handled"
+
+
+def test_materialized_function_still_cannot_reference_systemexit() -> None:
+    with pytest.raises(NameError, match="SystemExit"):
+        lambda_runtime.materialize("def f(a):\n    raise SystemExit('x')")(("x",))
+
+
 def test_validation_parses_but_never_executes() -> None:
     code = "def f(a):\n    return a[0]\nran_module_body"
     assert lambda_runtime.validate_source(code) == "f"
@@ -106,6 +127,87 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         lambda_runtime.validate_inline_source(
             "def g(a):\n    return a\ndef f(a):\n    return a", "f"
         )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "for i in range(1):\n    pass\ndef main(x):\n    return 'a'",
+        "if True:\n    K = 1\ndef main(x):\n    return 'a'",
+        "try:\n    K = 1\nexcept:\n    pass\ndef main(x):\n    return 'a'",
+        "with open('/dev/null') as f:\n    pass\ndef main(x):\n    return 'a'",
+    ],
+)
+def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
+    """A name bound first by a top-level ``for``/``if``/``try``/``with`` etc.
+    is what the FlowMesh worker would call, so it must be rejected at submit
+    just like any other non-``def`` first statement."""
+    with pytest.raises(ValueError, match="first name its code binds"):
+        lambda_runtime.validate_inline_source(code, "main")
+
+
+def test_inline_source_allows_only_a_docstring_before_the_def() -> None:
+    """A module docstring before ``def main`` is fine; any other statement
+    before it is not."""
+    assert (
+        lambda_runtime.validate_inline_source(
+            '"""A docstring."""\ndef main(x):\n    return x', "main"
+        )
+        == "main"
+    )
+    with pytest.raises(ValueError, match="first name its code binds"):
+        lambda_runtime.validate_inline_source(
+            "X = 1\ndef main(x):\n    return x", "main"
+        )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def main(x):\n    raise ValueError('boom')",
+        "def main(x):\n    try:\n        return x\n"
+        "    except KeyError:\n        return 'k'",
+        "def main(x):\n    return isinstance(x, RuntimeError)",
+    ],
+)
+def test_inline_source_rejects_exception_class_references(code: str) -> None:
+    """FlowMesh's inline ``safe_eval`` namespace has no exception classes, so
+    inline code that references one must be rejected at submit rather than
+    fail on the worker with a NameError."""
+    with pytest.raises(ValueError, match="evaluated inline.*not defined"):
+        lambda_runtime.validate_inline_source(code, "main")
+
+
+def test_inline_source_without_exception_names_is_accepted() -> None:
+    assert (
+        lambda_runtime.validate_inline_source(
+            "def main(x):\n    return x.upper()", "main"
+        )
+        == "main"
+    )
+    assert (
+        lambda_runtime.validate_inline_source(
+            "def main(x):\n    return str(len(x))", "main"
+        )
+        == "main"
+    )
+
+
+def test_standalone_source_still_accepts_exception_classes() -> None:
+    assert (
+        lambda_runtime.validate_source(
+            "def main(x):\n    raise ValueError('boom')", "main"
+        )
+        == "main"
+    )
+    assert (
+        lambda_runtime.validate_source(
+            "def main(x):\n    try:\n        return x\n"
+            "    except KeyError:\n        return 'k'",
+            "main",
+        )
+        == "main"
+    )
 
 
 @pytest.mark.parametrize(
@@ -251,7 +353,7 @@ ops:
 
 
 def test_yaml_standalone_lambda_with_imports_compiles() -> None:
-    """The user report: imports before and inside ``main`` compile to a python task."""
+    """Imports before and inside ``main`` compile to a python task."""
     spec = parse_yaml_payload(_STANDALONE)["lambda-import-test"]
     graph = Graph.from_json(spec["graph"])
     runtime = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))

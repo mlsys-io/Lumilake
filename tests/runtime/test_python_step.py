@@ -208,7 +208,7 @@ _PLAN_X: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
 @pytest.mark.parametrize(
     "code, output",
     [
-        # The user report: a stdlib import inside the function body.
+        # A stdlib import inside the function body.
         ("def main(Dummy):\n    import math\n    return math.sqrt(16)\n", "4.0"),
         ("def main(Dummy):\n    import os\n    return os.sep\n", "/"),
         # ... and at module level, before the function.

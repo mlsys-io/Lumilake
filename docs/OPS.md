@@ -232,7 +232,9 @@ Where the function runs depends on what reads it:
   busy the batch waits for capacity; with no such worker in the cluster the
   schedule fails before dispatch. The code may `import` any standard-library
   module (plus numpy/pandas where the image has them), at module level or in
-  the function body; other imports are rejected at submit. If the function
+  the function body; import statements naming anything else are rejected at
+  submit. A dynamic `__import__` of a non-allowed module is not statically
+  rejected and fails when the task runs. If the function
   raises, the job's error names the step and the exception, for example
   `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
 - **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
@@ -263,15 +265,21 @@ authored through the Python SDK in the same process (`LambdaOp(fn=...)` with a
 real callable, as used by library callers of the graph builder) is the caller's
 own trusted code and may be called in-process.
 
-In every location the function sees the same base namespace: a small set of builtins
-(`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`, `sum`,
-`max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`, `map`,
-`filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`, `np`
-and `pd`. The standalone task embeds the same materializer the server validates
-against. This namespace fixes which names resolve; it is **not** a security
-boundary. In the standalone task the container is the boundary, which is why
-that task also allows standard-library imports; `np` / `pd` resolve only if the
-task image provides them.
+In every location the function sees the same base namespace: a small set of
+builtins (`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`,
+`sum`, `max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`,
+`map`, `filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`,
+`np` and `pd`. The standalone namespace additionally has the built-in exception
+classes user code reasonably raises or catches (`Exception`, `ArithmeticError`,
+`AssertionError`, `AttributeError`, `IndexError`, `KeyError`, `LookupError`,
+`NotImplementedError`, `OverflowError`, `RuntimeError`, `StopIteration`,
+`TypeError`, `ValueError`, `ZeroDivisionError`); the inline namespace has no
+exception classes, so inline code that references one is rejected at submit. The
+standalone task embeds the same materializer the server validates against. This
+namespace fixes which names resolve; it is **not** a security boundary. In the
+standalone task the container is the boundary, which is why that task also
+allows standard-library imports; `np` / `pd` resolve only if the task image
+provides them.
 
 Optional per-op limits for the standalone `python` task:
 
