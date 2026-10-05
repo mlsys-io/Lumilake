@@ -247,9 +247,12 @@ class RuntimeGraph:
 
     def list_lambda_cardinality_nodes(self) -> set[str]:
         """Node ids whose output follows a list-mode Lambda's cardinality: one
-        whole-list value per input list, not one per input row. A node that is
-        itself a list-mode Lambda, or transitively depends on one, produces one
-        group per input list, so its rows must not be demultiplexed per row."""
+        whole-list value per input list, not one per input row. A list-mode
+        Lambda itself, and any non-row-mode-python node that transitively
+        depends on one, produces one group per input list, so its rows must not
+        be demultiplexed per row. A row-mode python step downstream of a
+        list-mode Lambda runs once per element and emits one output per element,
+        so it breaks the chain and is not marked."""
         list_lambda_nodes = {
             node_id
             for node_id, node in self.nodes.items()
@@ -259,9 +262,17 @@ class RuntimeGraph:
         list_lambda_dependent: set[str] = set()
         for node_id in self.node_order:
             node = self.nodes[node_id]
-            if node_id in list_lambda_nodes or any(
-                dep in list_lambda_dependent for dep in node.dependencies
+            if node_id in list_lambda_nodes:
+                list_lambda_dependent.add(node_id)
+                continue
+            if (
+                node.task_type == python_step.TASK_TYPE
+                and node.data_spec.get("mode") != "list"
             ):
+                # A row-mode python step demultiplexes per element; it neither
+                # preserves the list-Lambda cardinality nor propagates it.
+                continue
+            if any(dep in list_lambda_dependent for dep in node.dependencies):
                 list_lambda_dependent.add(node_id)
         return list_lambda_dependent
 
@@ -517,7 +528,7 @@ class RuntimeGraphBuilder:
                     lambda_op_id
                 ]
                 output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "value.items.output"
+                output_paths[runtime_op.node_id] = path_override or "items.output"
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":

@@ -167,6 +167,113 @@ async def test_finalize_skips_overwrite_when_cancel_won_during_unlocked_gap(
     assert record.error == "cancelled by user"
 
 
+@pytest.mark.anyio
+async def test_run_job_prestart_cancel_persists_zero_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A job cancelled before its runner starts must persist an all-zero
+    ``WorkflowUsage`` (not null) so ``GET /jobs/{id}/progress`` reports zero
+    model calls rather than unavailable usage."""
+    record = _make_record("job-prestart-cancel")
+    record.status = "cancelled"
+    record.finished_at = "2026-06-12T12:00:00+00:00"
+
+    class _FakeServer:
+        runtime_manager: Any = type(
+            "_RM",
+            (),
+            {
+                "set_dispatch_token": staticmethod(lambda *a, **kw: None),
+                "set_api_credential": staticmethod(lambda *a, **kw: None),
+            },
+        )()
+
+        def parse_query(self, graph_specs: Any) -> Any:
+            return graph_specs
+
+        async def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("execute must not run for a pre-cancelled job")
+
+        def trace_ids_for_request(self, *_a: Any) -> list[str]:
+            return []
+
+        def optimization_seconds_for_request(self, *_a: Any) -> float:
+            return 0.0
+
+        def selection_seconds_for_request(self, *_a: Any) -> float:
+            return 0.0
+
+        def clustering_seconds_for_request(self, *_a: Any) -> float:
+            return 0.0
+
+        def release_request_workflows(self, *_a: Any) -> None:
+            return None
+
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(lambda cls: _FakeServer()),
+    )
+    monkeypatch.setattr(
+        job_routes_module, "build_request_data_profile_tasks", lambda **_: []
+    )
+    monkeypatch.setattr(
+        job_routes_module._job_storage, "save", lambda _r: None, raising=False
+    )
+    monkeypatch.setattr(
+        job_routes_module, "_dump_output_locations", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(job_routes_module, "emit_usage", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        job_routes_module, "register_resource", AsyncMock(return_value=None)
+    )
+
+    # The pre-start branch must reach _persist_terminal_usage, which reads
+    # the job's (empty) workflow ids and sums to an all-zero WorkflowUsage.
+    class _ZeroWorkflows:
+        async def retrieve(self, workflow_id: str) -> Any:
+            raise AssertionError("no workflows on a pre-cancelled job")
+
+    class _ZeroFm:
+        workflows = _ZeroWorkflows()
+
+    monkeypatch.setattr(
+        job_routes_module, "flowmesh_for_token", lambda _token: _ZeroFm()
+    )
+
+    principal = PrincipalContext(
+        principal_id="p1",
+        external_id="u1",
+        org_id="o1",
+        principal_type="user",
+        scopes=["admin"],
+    )
+
+    await _run_job(
+        job_id=record.job_id,
+        graph_specs={},
+        workflow_slices={},
+        record=record,
+        priority=Priority.MEDIUM,
+        principal=principal,
+        runtime_token=None,
+        trace_id=record.job_id,
+        optimizer_type="halo",
+    )
+
+    assert record.status == "cancelled"
+    assert record.progress.usage is not None
+    assert record.progress.usage.model_dump() == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "calls": 0,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 0.0,
+    }
+
+
 def _smoke() -> None:
     # Make the module importable in environments without pytest-anyio.
     asyncio.run(asyncio.sleep(0))

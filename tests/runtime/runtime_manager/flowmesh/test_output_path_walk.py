@@ -84,6 +84,11 @@ def test_walk_rejects_malformed_index():
         )
 
 
+def test_walk_rejects_empty_part():
+    with pytest.raises(RuntimeError, match="malformed output path part"):
+        _walk_output_path({"output": "x"}, ("",), "node-empty")
+
+
 def test_walk_raises_on_undecodable_string():
     with pytest.raises(RuntimeError, match="non-JSON string"):
         _walk_output_path({"table": "not-json"}, ("table", "col"), "node-5")

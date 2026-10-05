@@ -18,11 +18,11 @@ Versioned API routes live under `/api/v1`.
 | `GET /api/v1/jobs` | List jobs visible to the caller. |
 | `GET /api/v1/jobs/{job_id}` | Fetch one job. |
 | `POST /api/v1/jobs/{job_id}/cancel` | Cancel a job and its runtime request. |
-| `GET /api/v1/jobs/{job_id}/progress` | Fetch job progress details. Includes a `usage` object (summed token usage over the job's workflows) when any workflow reports usage, else `null`. A zero-valued `usage` object means the job made no observed model calls; `null` means usage was unavailable. |
+| `GET /api/v1/jobs/{job_id}/progress` | Fetch job progress details. Includes a `usage` object (summed token usage over the job's workflows) when it can be determined. A zero-valued `usage` object means the job made no observed model calls (including a job with no workflows); `null` means usage was unavailable. |
 | `GET /api/v1/jobs/{job_id}/result` | Fetch the stored result for a completed job. |
 | `GET /api/v1/jobs/{job_id}/inputs` | Fetch the resolved job inputs. |
 | `GET /api/v1/jobs/{job_id}/artifact?path=...` | Download a stored artifact referenced by the job result. |
-| `GET /api/v1/jobs/{job_id}/workflows` | List FlowMesh workflows associated with the job (one per execution batch). Each workflow entry carries a `usage` object (token usage summed over its finished tasks) when FlowMesh reports one, else `null`. A zero-valued `usage` object means the workflow made no observed model calls; `null` means usage was unavailable. |
+| `GET /api/v1/jobs/{job_id}/workflows` | List FlowMesh workflows associated with the job (one per execution batch). Each workflow entry carries a `usage` object (token usage summed over its finished tasks) when it can be determined. A zero-valued `usage` object means the workflow made no observed model calls; `null` means usage was unavailable. |
 | `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs?limit&before&after` | Fetch one page of logs for a job's FlowMesh workflow. |
 | `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/stream?cursor` | Stream logs for a job's FlowMesh workflow as SSE. |
 | `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/download` | Download per-task archived logs as a tar archive (`application/x-tar`). |

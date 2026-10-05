@@ -1068,7 +1068,7 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
                 output_task_id="task-1",
                 request_id=request_info.request_id,
                 items=self._items,
-                output_path="value.items.output",
+                output_path="items.output",
                 list_lambda=True,
                 list_lambda_cardinality=False,
             )
@@ -1131,6 +1131,39 @@ class _RowwiseApiListLambdaRuntimeManager(RecordingRuntimeManager):
                 request_id=request_info.request_id,
                 items=self._items,
                 output_path="items.rows.json.choices[0].message.content",
+                list_lambda=False,
+                list_lambda_cardinality=node_id
+                in request_info.runtime_graph.list_lambda_cardinality_nodes(),
+            )
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+class _RowwisePythonDownstreamListLambdaRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch for a row-mode python step downstream of a
+    list-mode Lambda. The row-mode step emits one output per upstream element,
+    so the output is a plain row-aligned list, not a list-Lambda whole-list
+    value."""
+
+    def __init__(self, *, items: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._items = items
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        flowmesh_manager = FlowmeshRuntimeManager()
+        flat_outputs: dict[str, list[str]] = {}
+        for node_id in request_info.output_node_map:
+            flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
+                output_op_id=node_id,
+                output_task_id="task-1",
+                request_id=request_info.request_id,
+                items=self._items,
+                output_path="items.output",
                 list_lambda=False,
                 list_lambda_cardinality=node_id
                 in request_info.runtime_graph.list_lambda_cardinality_nodes(),
@@ -1342,6 +1375,72 @@ def _install_list_lambda_downstream_build_and_schedule(
         return RuntimeGraph(
             nodes={lambda_id: lambda_op, downstream_id: downstream_op},
             node_order=[lambda_id, downstream_id],
+            output_node_map=output_node_map,
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+
+
+def _install_rowwise_python_downstream_build_and_schedule(
+    server: Any, output_name: str
+) -> None:
+    """Fake build/schedule with a list-mode python node feeding a row-mode
+    python step whose output is the workflow output. The row-mode step runs
+    once per upstream element and emits one output per element, so it does NOT
+    follow the list Lambda's cardinality."""
+
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
+        lambda_id = f"{node_prefix}__{suffix}__lambda"
+        row_id = f"{node_prefix}__{suffix}__row"
+        lambda_op = RuntimeOp(
+            node_id=lambda_id,
+            task_type="python",
+            backend="python",
+            model="",
+            data_spec={"mode": "list"},
+            model_spec={},
+            inference_spec={},
+        )
+        row_op = RuntimeOp(
+            node_id=row_id,
+            task_type="python",
+            backend="python",
+            model="",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+            dependencies=(lambda_id,),
+        )
+        output_node_map = (
+            {} if task_type_override == "data_profile" else {row_id: output_name}
+        )
+        return RuntimeGraph(
+            nodes={lambda_id: lambda_op, row_id: row_op},
+            node_order=[lambda_id, row_id],
             output_node_map=output_node_map,
         )
 
@@ -1675,6 +1774,51 @@ async def test_list_lambda_output_two_values_for_one_row_slice_fails_closed(
     assert any(
         "list-Lambda output length mismatch" in str(item) for item in resp.error_info
     )
+
+
+@pytest.mark.asyncio
+async def test_rowwise_python_downstream_list_lambda_returns_every_value(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row-mode python step downstream of a list-mode Lambda runs once per
+    upstream element and emits one output per element. Its output must surface
+    every value (one per input row), not be forced into the list-Lambda
+    one-whole-list path and rejected as a length mismatch."""
+    server = server_factory()
+    server.runtime_manager = cast(
+        Any,
+        _RowwisePythonDownstreamListLambdaRuntimeManager(
+            items=[{"output": "tagged:NVDA"}, {"output": "tagged:AAPL"}]
+        ),
+    )
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-rowwise-python-downstream",
+            request_id="req-rowwise-python-downstream",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=2,
+            total_length=2,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_rowwise_python_downstream_build_and_schedule(server, "out")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-rowwise-python-downstream"].results[0]
+    assert resp.error_info is None
+    out = resp.outputs["shared"]["out"]
+    assert out == ["tagged:NVDA", "tagged:AAPL"]
 
 
 def _two_request_batch(server: Any) -> tuple[dict[str, Any], BatchSelection]:

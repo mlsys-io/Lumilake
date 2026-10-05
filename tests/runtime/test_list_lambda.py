@@ -171,7 +171,7 @@ def test_list_lambda_as_workflow_output() -> None:
     ]
     assert explode_node.data_spec["mode"] == "list"
     assert explode_node.node_id in runtime_graph.output_node_map
-    assert runtime_graph.output_paths[explode_node.node_id] == "value.items.output"
+    assert runtime_graph.output_paths[explode_node.node_id] == "items.output"
 
 
 def test_list_lambda_in_message_chain_raises() -> None:

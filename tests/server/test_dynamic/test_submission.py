@@ -26,9 +26,11 @@ from lumid_hooks import PrincipalContext, ResourceRef
 
 import lumilake_server.utils.job_storage as job_storage_module
 from lumilake_server import hooks
+from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
-from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.runtime.protocol import LumilakeResponse, Priority
+from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _DEMO_PRINCIPAL = PrincipalContext(
@@ -844,4 +846,66 @@ async def test_dynamic_parent_persists_terminal_usage(
         "retries": 0,
         "truncated_calls": 0,
         "wall_sec": 2.1,
+    }
+
+
+@pytest.mark.anyio
+async def test_dynamic_prestart_cancel_persists_zero_usage(
+    job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dynamic job cancelled before its runner starts must persist an
+    all-zero ``WorkflowUsage`` (not null), matching the static runner's
+    terminal contract."""
+    record = job_routes_module.JobRecord(
+        job_id="dyn-prestart-cancel",
+        status="cancelled",
+        submitted_at="2026-01-01T00:00:00+00:00",
+        finished_at="2026-01-01T00:00:01+00:00",
+        inputs={},
+        output_location={"out": S3Location(type="s3", prefix="out/")},
+    )
+    job_routes.jobs[record.job_id] = record
+
+    spec = DynamicSpec.model_validate(
+        {
+            "type": "dynamic",
+            "goal": "analyze",
+            "driver": {"model": "Qwen/Qwen3-8B", "max_rounds": 2},
+        }
+    )
+
+    class _ZeroWorkflows:
+        async def retrieve(self, workflow_id: str) -> Any:
+            raise AssertionError("no workflows on a pre-cancelled dynamic job")
+
+    class _ZeroFm:
+        workflows = _ZeroWorkflows()
+
+    monkeypatch.setattr(
+        job_routes_module, "flowmesh_for_token", lambda _token: _ZeroFm()
+    )
+
+    principal = _DEMO_PRINCIPAL
+    await job_routes_module._run_dynamic_job(
+        record.job_id,
+        spec,
+        record,
+        symbols=["NVDA"],
+        output_location=S3Location(type="s3", prefix="out/"),
+        priority=Priority.MEDIUM,
+        principal=principal,
+        runtime_token=None,
+        trace_id=record.job_id,
+    )
+
+    assert record.status == "cancelled"
+    assert record.progress.usage is not None
+    assert record.progress.usage.model_dump() == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "calls": 0,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 0.0,
     }

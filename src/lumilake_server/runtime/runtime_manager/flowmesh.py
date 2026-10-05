@@ -139,6 +139,8 @@ def _split_walk_part(part: str) -> tuple[str, int | None]:
     reject any other bracketed form so the walker fails closed on unknown
     shapes."""
     if "[" not in part:
+        if not part:
+            raise RuntimeError(f"malformed output path part {part!r}")
         return part, None
     if not part.endswith("]"):
         raise RuntimeError(f"malformed output path part {part!r}")
@@ -950,32 +952,22 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         else:
             output_field_parts = ("output",)
             if output_path is not None:
-                if list_lambda:
-                    # A list-mode python step's output is read at value.items.output.
-                    if output_path != "value.items.output":
-                        raise RuntimeError(
-                            f"OutputOp {output_op_id!r} has malformed path "
-                            f"{output_path!r}"
-                        )
-                else:
-                    if (
-                        not isinstance(output_path, str)
-                        or not output_path.startswith("items.")
-                        or output_path == "items."
-                    ):
-                        raise RuntimeError(
-                            f"OutputOp {output_op_id!r} has malformed path "
-                            f"{output_path!r}"
-                        )
-                    parts = tuple(
-                        part for part in output_path[len("items.") :].split(".") if part
+                if (
+                    not isinstance(output_path, str)
+                    or not output_path.startswith("items.")
+                    or output_path == "items."
+                ):
+                    raise RuntimeError(
+                        f"OutputOp {output_op_id!r} has malformed path "
+                        f"{output_path!r}"
                     )
-                    if not parts:
-                        raise RuntimeError(
-                            f"OutputOp {output_op_id!r} has malformed path "
-                            f"{output_path!r}"
-                        )
-                    output_field_parts = parts
+                parts = tuple(output_path[len("items.") :].split("."))
+                if not parts or any(not part or part.startswith("[") for part in parts):
+                    raise RuntimeError(
+                        f"OutputOp {output_op_id!r} has malformed path "
+                        f"{output_path!r}"
+                    )
+                output_field_parts = parts
         if list_lambda:
             # A list-mode Lambda runs once per run over whole input lists: one output.
             return [

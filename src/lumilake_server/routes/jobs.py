@@ -28,6 +28,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response, StreamingResponse
+from flowmesh import AsyncFlowMesh
 from flowmesh.exceptions import (
     APIError,
     AuthenticationError,
@@ -35,6 +36,7 @@ from flowmesh.exceptions import (
     NotFoundError,
 )
 from flowmesh.models.result import (
+    AnyExecutorResult,
     APIResult,
     BaseExecutorResult,
     DataProfilingResult,
@@ -46,6 +48,7 @@ from flowmesh.models.result import (
     ServeResult,
     SSHResult,
 )
+from flowmesh.models.workflows import Workflow
 from lumid_hooks import PrincipalContext
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
@@ -2032,6 +2035,8 @@ async def _run_job(
             record.status = "running"
             record.started_at = _now()
             record.progress.queuing.completed = True
+    if terminal_before_start:
+        await _persist_terminal_usage(record, flowmesh_for_token(runtime_token), logger)
     await asyncio.to_thread(_job_storage.save, record)
     if terminal_before_start:
         if record.finished_at and not suppress_hooks:
@@ -3488,7 +3493,9 @@ class _UnknownUsage:
 _UNKNOWN_USAGE = _UnknownUsage()
 
 
-def _task_usage_from_result(result: Any) -> WorkflowUsage | None | _UnknownUsage:
+def _task_usage_from_result(
+    result: AnyExecutorResult,
+) -> WorkflowUsage | None | _UnknownUsage:
     """Map one task result to a usage contribution, or ``None`` when it made
     no model call. ``UNKNOWN`` marks a model-calling task we cannot map."""
     if isinstance(result, APIResult):
@@ -3514,7 +3521,7 @@ def _task_usage_from_result(result: Any) -> WorkflowUsage | None | _UnknownUsage
     return _UNKNOWN_USAGE
 
 
-def _is_skipped_task(result: Any) -> bool:
+def _is_skipped_task(result: AnyExecutorResult) -> bool:
     """Whether a result is a condition-skipped task's bare executor result.
 
     FlowMesh writes a skipped task's result as a bare ``BaseExecutorResult``
@@ -3526,7 +3533,7 @@ def _is_skipped_task(result: Any) -> bool:
     return type(result) is BaseExecutorResult and not (result.__pydantic_extra__ or {})
 
 
-def _inference_usage(result: Any) -> WorkflowUsage:
+def _inference_usage(result: InferenceResult) -> WorkflowUsage:
     """Map an inference result, subtracting merged children's shares.
 
     A merged parent's ``GenerationUsage`` is the whole batch total while each
@@ -3560,7 +3567,7 @@ def _inference_usage(result: Any) -> WorkflowUsage:
 
 
 async def _fetch_workflow_usage(
-    fm: Any, workflow: Any, logger: Logger
+    fm: AsyncFlowMesh, workflow: Workflow, logger: Logger
 ) -> WorkflowUsage | None:
     """Sum usage over a workflow's completed task results.
 
@@ -3584,12 +3591,12 @@ async def _fetch_workflow_usage(
 
 
 async def _fetch_task_results(
-    fm: Any, task_ids: list[str], logger: Logger
-) -> list[tuple[str, Any]]:
+    fm: AsyncFlowMesh, task_ids: list[str], logger: Logger
+) -> list[tuple[str, AnyExecutorResult]]:
     """Fetch each task's result concurrently with a small bound."""
     semaphore = asyncio.Semaphore(8)
 
-    async def _fetch(task_id: str) -> tuple[str, Any]:
+    async def _fetch(task_id: str) -> tuple[str, AnyExecutorResult]:
         async with semaphore:
             try:
                 result = await fm.results.retrieve(task_id)
@@ -3631,7 +3638,7 @@ def _sum_usage(usages: list[WorkflowUsage]) -> WorkflowUsage:
 
 
 async def _compute_job_usage(
-    fm: Any, workflow_ids: list[str], logger: Logger
+    fm: AsyncFlowMesh, workflow_ids: list[str], logger: Logger
 ) -> WorkflowUsage | None:
     """Sum usage over the workflows' task results, or None when any is
     unavailable.
@@ -3670,7 +3677,9 @@ async def _compute_job_usage(
     return _sum_usage(usages)
 
 
-async def _persist_terminal_usage(record: JobRecord, fm: Any, logger: Logger) -> None:
+async def _persist_terminal_usage(
+    record: JobRecord, fm: AsyncFlowMesh, logger: Logger
+) -> None:
     """Persist the summed usage onto a terminal job's progress.
 
     Fail closed: if any task's usage is unavailable (unmappable, or FlowMesh
@@ -3742,7 +3751,7 @@ async def list_job_workflows(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="upstream authentication failed",
             ) from exc
-        except APIError as exc:
+        except (APIError, FlowMeshConnectionError, httpx.TransportError) as exc:
             request.app.state.logger.exception(
                 "FlowMesh workflows.retrieve failed for workflow %s", workflow_id
             )

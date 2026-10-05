@@ -566,6 +566,53 @@ async def test_list_workflows_skips_workflow_when_retrieve_not_found(
     assert [w["workflow_id"] for w in workflows] == ["wf-1"]
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        APIError(
+            "upstream failure", status_code=500, method="GET", url="/workflows/wf-1"
+        ),
+        FlowMeshConnectionError("down"),
+        httpx.ReadTimeout("timed out"),
+    ],
+)
+async def test_list_workflows_upstream_error_returns_502(
+    app: FastAPI,
+    job_routes: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+) -> None:
+    """APIError, FlowMeshConnectionError and httpx.TransportError from the
+    workflow retrieve all map to 502, not an unhandled 500."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+
+    class _RaisingWorkflows(_FakeWorkflows):
+        def __init__(self) -> None:
+            super().__init__(
+                workflows={},
+                logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+            )
+
+        async def retrieve(self, workflow_id: str) -> Any:
+            raise exc
+
+    fake_fm = _FakeFlowMesh(_RaisingWorkflows())
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: fake_fm,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "upstream workflow enumeration failed"
+
+
 class _FakeProgressServer:
     is_started = True
 

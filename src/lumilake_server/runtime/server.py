@@ -2986,8 +2986,11 @@ class LumilakeServer:
 
         # A list-mode Lambda runs once per run over whole input lists: one
         # output. Any node that is itself a list-mode Lambda, or transitively
-        # depends on one, follows the list Lambda's cardinality (one group per
-        # input list), not the per-input-row slice length.
+        # depends on one without crossing a row-mode python step, follows the
+        # list Lambda's cardinality (one group per input list), not the
+        # per-input-row slice length. A row-mode python step downstream of a
+        # list-mode Lambda runs once per element and emits one output per
+        # element, so it is a cardinality boundary and is not marked.
         runtime_graph = batch_request_info.runtime_graph
         list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()
         list_lambda_outputs = {
