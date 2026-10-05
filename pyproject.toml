@@ -25,7 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = ["httpx>=0.27.0,<1"]
 
 [project.urls]
 Homepage = "https://github.com/mlsys-io/lumilake_OSS"

@@ -775,6 +775,9 @@ wheels = [
 name = "lumilake"
 version = "0.1.9rc3"
 source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+]
 
 [package.optional-dependencies]
 all = [
@@ -840,6 +843,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "lumilake-cli", marker = "extra == 'all'", editable = "packages/cli" },
     { name = "lumilake-cli", marker = "extra == 'cli'", editable = "packages/cli" },
     { name = "lumilake-deploy", marker = "extra == 'all'", editable = "packages/deploy" },
@@ -953,7 +957,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "lumid-hooks", specifier = ">=0.2.0" },
 ]
 
@@ -969,7 +973,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
