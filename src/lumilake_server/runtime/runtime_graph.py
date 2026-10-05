@@ -35,6 +35,7 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
+from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _type_default_sample,
@@ -2684,6 +2685,17 @@ class RuntimeGraphBuilder:
                         fn_arg if len(fn_arg) > 1 else fn_arg[0]["content"]
                         for fn_arg in fn_args
                     ]
+                    if isinstance(op.fn, SubmittedFunction):
+                        # Inlined steps run in the FlowMesh worker's safe_eval
+                        # namespace, stricter than a standalone python task.
+                        try:
+                            lambda_runtime.validate_inline_source(
+                                op.code, op.fn.__name__
+                            )
+                        except ValueError as exc:
+                            raise ValueError(
+                                f"Invalid LambdaOp '{op.id}': {exc}"
+                            ) from exc
                     label = f"lambda_{op.id}"
                     steps[label] = (op.code, fn_args_serialized, True)
                     ancestor_buffer[op.id] = [(Roles.USER, label)]

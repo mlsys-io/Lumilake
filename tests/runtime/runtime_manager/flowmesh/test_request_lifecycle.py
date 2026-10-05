@@ -224,16 +224,13 @@ def _build_two_row_request() -> tuple[RequestInfo, str, str]:
     return request_info, row0_id, row1_id
 
 
-@pytest.mark.asyncio
-async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others(
+async def _run_failing_request(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """OPS.md's documented fan-out contract is all-or-nothing: if any row's
-    task fails, the whole workflow request fails and no partial per-row
-    results are returned, even for rows that already completed
-    successfully. This pins the fail-fast raise in process_request's poll
-    loop; without it a FAILED row would be silently ignored (or a partial
-    result quietly returned) instead of aborting the request."""
+    status_by_task: dict[str, str],
+    error_by_task: dict[str, str | None],
+) -> tuple[FlowmeshRuntimeManager, str, str, str]:
+    """Run the two-row request against fake FlowMesh task states; return the
+    manager, both row node ids and the error ``process_request`` raised."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
@@ -245,7 +242,6 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
 
     task_ids = ["task-row0", "task-row1"]
     node_by_task = {"task-row0": row0_id, "task-row1": row1_id}
-    status_by_task = {"task-row0": "PENDING", "task-row1": "FAILED"}
 
     class _FakeWorkflows:
         async def submit(self, task_yaml: str) -> Any:
@@ -277,7 +273,10 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     async def _fetch_task_description(
         _self: FlowmeshRuntimeManager, task_id: str
     ) -> dict[str, Any]:
-        return {"graph_node_name": node_by_task[task_id]}
+        return {
+            "graph_node_name": node_by_task[task_id],
+            "error": error_by_task.get(task_id),
+        }
 
     monkeypatch.setattr(
         manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
@@ -288,12 +287,34 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
         types.MethodType(_fetch_task_description, manager),
     )
 
-    with pytest.raises(RuntimeError, match="failed; aborting workflow"):
+    with pytest.raises(RuntimeError) as excinfo:
         await manager.process_request(
             request_info,
             Schedule(worker_assignment={"worker-1": [row0_id, row1_id]}),
             worker_ids=["worker-1"],
         )
+    return manager, row0_id, row1_id, str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OPS.md's documented fan-out contract is all-or-nothing: if any row's
+    task fails, the whole workflow request fails and no partial per-row
+    results are returned, even for rows that already completed
+    successfully. This pins the fail-fast raise in process_request's poll
+    loop; without it a FAILED row would be silently ignored (or a partial
+    result quietly returned) instead of aborting the request."""
+    manager, _, row1_id, message = await _run_failing_request(
+        monkeypatch,
+        {"task-row0": "PENDING", "task-row1": "FAILED"},
+        {"task-row1": "python task failed: ImportError: boom"},
+    )
+    assert message == (
+        f"Task task-row1 failed (node {row1_id}): python task failed:"
+        " ImportError: boom; aborting workflow (1 task(s) failed in total)"
+    )
 
     batch_key = ("req-failfast", "batch-1")
     assert manager._execution_task_status[batch_key]["task-row0"] == "PENDING"
@@ -594,3 +615,31 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
     flat = result_["flat_outputs"][row_id]
     assert len(flat) == 1
     assert json.loads(flat[0]) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_output_task_reports_the_flowmesh_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed output task (e.g. a standalone LambdaOp whose code raised)
+    must surface FlowMesh's recorded error, not only the task id."""
+    error = "python task failed: ImportError: __import__ not found"
+    _, row0_id, row1_id, message = await _run_failing_request(
+        monkeypatch,
+        {"task-row0": "FAILED", "task-row1": "FAILED"},
+        {"task-row0": error, "task-row1": error},
+    )
+    assert message in {
+        f"Output task task-row0 failed (node {row0_id}): {error}",
+        f"Output task task-row1 failed (node {row1_id}): {error}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_task_without_a_recorded_error_still_fails_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, row1_id, message = await _run_failing_request(
+        monkeypatch, {"task-row0": "PENDING", "task-row1": "FAILED"}, {}
+    )
+    assert message.startswith(f"Task task-row1 failed (node {row1_id}); aborting")

@@ -329,6 +329,29 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
 
+    async def _task_failure_reason(
+        self, task_id: str, task_node_map: Mapping[str, str]
+    ) -> str:
+        """`` (node <id>): <FlowMesh error>`` for a failed task, best effort.
+
+        FlowMesh records the executor's error on the task (for a ``python``
+        task, the caller's exception type and message), so a failed job
+        names what went wrong rather than only which task failed.
+        """
+        node_id = task_node_map.get(task_id)
+        reason = f" (node {node_id})" if node_id else ""
+        try:
+            description = await self.fetch_task_description(task_id)
+        except Exception as exc:  # The failure itself must still be reported.
+            self.logger.warning(
+                "Could not fetch the error of failed task %s: %s", task_id, exc
+            )
+            return reason
+        error = description.get("error") or description.get("last_error")
+        if isinstance(error, str) and error.strip():
+            reason += f": {error.strip()}"
+        return reason
+
     async def _resolve_task_node_maps(
         self,
         task_ids: list[str],
@@ -1255,8 +1278,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     elapsed,
                     failed_tasks[0],
                 )
+                reason = await self._task_failure_reason(failed_tasks[0], task_node_map)
                 raise RuntimeError(
-                    f"Task {failed_tasks[0]} failed; aborting workflow"
+                    f"Task {failed_tasks[0]} failed{reason}; aborting workflow"
                     f" ({len(failed_tasks)} task(s) failed in total)"
                 )
 
@@ -1271,7 +1295,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         # Check for failures in output nodes
         for tid, status in output_task_status.items():
             if status == "FAILED":
-                raise RuntimeError(f"Output task {tid} failed")
+                reason = await self._task_failure_reason(tid, task_node_map)
+                raise RuntimeError(f"Output task {tid} failed{reason}")
 
         # Aggregate results from output nodes
         flat_outputs: dict[str, Any] = {}
