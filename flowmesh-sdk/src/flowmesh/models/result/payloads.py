@@ -26,7 +26,6 @@ class APIUsage(StrictModel):
     completion_tokens: int
     reasoning_tokens: int
     calls: int
-    failures: int
     retries: int
     truncated_calls: int
     wall_sec: float
