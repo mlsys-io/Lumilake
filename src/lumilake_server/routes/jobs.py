@@ -3191,8 +3191,6 @@ async def get_job_progress(
     )
 
     if record.status == "cancelled":
-        # A cancelled job keeps the progress (including any terminal usage
-        # the job runner persisted before cancellation) it had reached.
         cancelled_progress = record.progress.model_copy(deep=True)
         return {
             "ok": True,
@@ -3496,8 +3494,7 @@ _UNKNOWN_USAGE = _UnknownUsage()
 def _task_usage_from_result(
     result: AnyExecutorResult,
 ) -> WorkflowUsage | None | _UnknownUsage:
-    """Map one task result to a usage contribution, or ``None`` when it made
-    no model call. ``UNKNOWN`` marks a model-calling task we cannot map."""
+    """Map one task result to its usage, ``None`` when it made no model call."""
     if isinstance(result, APIResult):
         if result.usage_summary is None:
             return _UNKNOWN_USAGE
@@ -3522,24 +3519,14 @@ def _task_usage_from_result(
 
 
 def _is_skipped_task(result: AnyExecutorResult) -> bool:
-    """Whether a result is a condition-skipped task's bare executor result.
-
-    FlowMesh writes a skipped task's result as a bare ``BaseExecutorResult``
-    and records ``skipped: true`` only in the envelope metadata, which
-    ``GET /results/{id}`` does not return. A bare result with no extra fields
-    is therefore the only client-visible signal; such a task made no model
-    call and contributes nothing.
-    """
+    """Whether a result is a condition-skipped task's bare executor result,
+    the only skip signal ``GET /results/{id}`` exposes."""
     return type(result) is BaseExecutorResult and not (result.__pydantic_extra__ or {})
 
 
 def _inference_usage(result: InferenceResult) -> WorkflowUsage:
-    """Map an inference result, subtracting merged children's shares.
-
-    A merged parent's ``GenerationUsage`` is the whole batch total while each
-    child carries its own share; each child is fetched on its own, so the
-    parent records only its own share (total minus the children's sum).
-    """
+    """Map an inference result; a merged parent's usage is the batch total, so
+    subtract the children's shares, which are fetched on their own."""
     usage = result.usage
     prompt = usage.prompt_tokens
     completion = usage.completion_tokens
@@ -3569,12 +3556,8 @@ def _inference_usage(result: InferenceResult) -> WorkflowUsage:
 async def _fetch_workflow_usage(
     fm: AsyncFlowMesh, workflow: Workflow, logger: Logger
 ) -> WorkflowUsage | None:
-    """Sum usage over a workflow's completed task results.
-
-    ``workflow`` must already be retrieved. Raises NotFoundError when
-    FlowMesh no longer has one of the task results; callers decide whether
-    to skip or fail closed.
-    """
+    """Sum usage over a workflow's completed task results, or ``None`` when
+    any is unavailable. Raises NotFoundError for a missing task result."""
     results = await _fetch_task_results(fm, workflow.completed_tasks, logger)
     contributions: list[WorkflowUsage] = []
     for task_id, result in results:
@@ -3640,12 +3623,7 @@ def _sum_usage(usages: list[WorkflowUsage]) -> WorkflowUsage:
 async def _compute_job_usage(
     fm: AsyncFlowMesh, workflow_ids: list[str], logger: Logger
 ) -> WorkflowUsage | None:
-    """Sum usage over the workflows' task results, or None when any is
-    unavailable.
-
-    A workflow whose task usage is unavailable (unmappable, or FlowMesh no
-    longer knows it) makes the job total null. Upstream errors propagate.
-    """
+    """Sum usage over the workflows, or ``None`` when any is unavailable."""
     usages: list[WorkflowUsage] = []
     for workflow_id in workflow_ids:
         try:
@@ -3680,12 +3658,8 @@ async def _compute_job_usage(
 async def _persist_terminal_usage(
     record: JobRecord, fm: AsyncFlowMesh, logger: Logger
 ) -> None:
-    """Persist the summed usage onto a terminal job's progress.
-
-    Fail closed: if any task's usage is unavailable (unmappable, or FlowMesh
-    no longer knows it) or cannot be read, the persisted usage is null rather
-    than a partial sum. The job itself is not failed.
-    """
+    """Persist the summed usage onto a terminal job's progress; ``None`` when
+    it cannot be read, never a partial sum."""
     try:
         computed = await _compute_job_usage(fm, _job_workflow_ids(record), logger)
     except HTTPException:

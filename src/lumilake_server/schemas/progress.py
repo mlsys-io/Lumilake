@@ -117,11 +117,7 @@ class BatchProgress(BaseModel):
 
 
 class WorkflowUsage(BaseModel):
-    """Token usage summed over a workflow's task results.
-
-    A zero-valued instance means no observed model calls; ``None`` (where the
-    field is optional) means usage was unavailable.
-    """
+    """Token usage summed over a workflow's task results."""
 
     prompt_tokens: int = Field(description="Prompt token count.")
     completion_tokens: int = Field(description="Completion token count.")
@@ -146,12 +142,7 @@ class JobProgress(BaseModel):
     outputs: ProgressStep = Field(default_factory=ProgressStep)
     batch_progress: BatchProgress = Field(default_factory=BatchProgress)
     usage: WorkflowUsage | None = Field(
-        default=None,
-        description=(
-            "Token usage summed over the job's task results. A zero-valued "
-            "object means no observed model calls; null means usage was "
-            "unavailable."
-        ),
+        default=None, description="Token usage summed over the job's task results."
     )
 
     def apply_status(self, status: dict[str, Any]) -> None:

@@ -246,13 +246,8 @@ class RuntimeGraph:
         ]
 
     def list_lambda_cardinality_nodes(self) -> set[str]:
-        """Node ids whose output follows a list-mode Lambda's cardinality: one
-        whole-list value per input list, not one per input row. A list-mode
-        Lambda itself, and any non-row-mode-python node that transitively
-        depends on one, produces one group per input list, so its rows must not
-        be demultiplexed per row. A row-mode python step downstream of a
-        list-mode Lambda runs once per element and emits one output per element,
-        so it breaks the chain and is not marked."""
+        """Node ids that emit one whole-list value per run: list-mode Lambdas and
+        their dependents, up to a row-mode python step."""
         list_lambda_nodes = {
             node_id
             for node_id, node in self.nodes.items()
@@ -269,8 +264,6 @@ class RuntimeGraph:
                 node.task_type == python_step.TASK_TYPE
                 and node.data_spec.get("mode") != "list"
             ):
-                # A row-mode python step demultiplexes per element; it neither
-                # preserves the list-Lambda cardinality nor propagates it.
                 continue
             if any(dep in list_lambda_dependent for dep in node.dependencies):
                 list_lambda_dependent.add(node_id)
@@ -441,8 +434,7 @@ class RuntimeGraphBuilder:
                 if not isinstance(source, (LLMOp, DataRetrievalOp, LambdaOp)):
                     raise ValueError(
                         f"OutputOp '{op.name}' input must be an LLMOp, "
-                        f"DataRetrievalOp, or LambdaOp "
-                        f"(got {type(source).__name__})"
+                        f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
                 output_source_to_outputop.setdefault(source.id, []).append(
@@ -462,7 +454,7 @@ class RuntimeGraphBuilder:
         has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
         if not llm_ops and not retrieval_ops and not has_lambda:
             raise ValueError(
-                "Graph must contain at least one LLMOp, DataRetrievalOp, " "or LambdaOp"
+                "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
@@ -604,11 +596,6 @@ class RuntimeGraphBuilder:
                     if path_override:
                         output_paths[output_node_id] = path_override
                     elif self._is_api_task(llm_op):
-                        # An api-mode LLM output node has no ``items.output``;
-                        # its content lives under the api item path (row-wise
-                        # tasks nest rows under ``items.rows``). Default the
-                        # read path from the same source the builder uses for
-                        # intermediate reads so the reader stays single-path.
                         output_paths[output_node_id] = self._upstream_output_path(
                             llm_op
                         )
@@ -1548,8 +1535,7 @@ class RuntimeGraphBuilder:
 
     @staticmethod
     def _is_rowwise_api_task(op: Op) -> bool:
-        """Whether an API task is row-wise (dataframe) rather than aggregate or
-        plain (graph_template), which changes how its rows are read."""
+        """Whether an API task is row-wise (dataframe)."""
         return (
             RuntimeGraphBuilder._is_api_task(op)
             and isinstance(op, LLMChatOp)
@@ -1558,9 +1544,7 @@ class RuntimeGraphBuilder:
 
     @staticmethod
     def _upstream_output_path(op: Op) -> str:
-        """Result path for an upstream op's text output: the row-aligned API
-        path for a row-wise API task, the plain item path for an aggregate or
-        plain API task, ``items.output`` otherwise."""
+        """Result path for an upstream op's text output."""
         if RuntimeGraphBuilder._is_api_task(op):
             if RuntimeGraphBuilder._is_rowwise_api_task(op):
                 return _API_ROW_PATH

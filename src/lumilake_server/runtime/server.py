@@ -2341,10 +2341,6 @@ class LumilakeServer:
             merged_without_errors = True
             for output_name, values in payload.items():
                 if output_name in list_lambda_names:
-                    # A list-mode Lambda output is one whole-list value per
-                    # run, not one per input row: place it at the slice start
-                    # in a single-slot buffer. More than one value for a
-                    # one-row slice is a length mismatch, not something to cut.
                     if len(values) != 1:
                         append_error(
                             state,
@@ -2984,13 +2980,6 @@ class LumilakeServer:
                     return workflow
             return None
 
-        # A list-mode Lambda runs once per run over whole input lists: one
-        # output. Any node that is itself a list-mode Lambda, or transitively
-        # depends on one without crossing a row-mode python step, follows the
-        # list Lambda's cardinality (one group per input list), not the
-        # per-input-row slice length. A row-mode python step downstream of a
-        # list-mode Lambda runs once per element and emits one output per
-        # element, so it is a cardinality boundary and is not marked.
         runtime_graph = batch_request_info.runtime_graph
         list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()
         list_lambda_outputs = {

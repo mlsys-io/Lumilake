@@ -12,11 +12,6 @@ MAX_TIMEOUT_S = 600.0
 MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
 
-# A row-mode LambdaOp receives one tuple of scalar values per row and returns
-# a single scalar. A list-mode LambdaOp receives each input as its whole list
-# of JSON values and returns a list of JSON values (one output item per
-# element). The overloads below let ``mode`` select the callable contract so a
-# list-mode callable needs no ``type: ignore``.
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 

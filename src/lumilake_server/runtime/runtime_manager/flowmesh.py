@@ -89,7 +89,7 @@ def _walk_output_path(
     """Walk a dotted ``items.<a>.<b>.<c>`` path through a result item;
     JSON-decode intermediate string fields so DataFrame-serialized columns
     (e.g. ``items.table.symbol``) traverse cleanly. A part may carry a list
-    index (``choices[0]``) for the api item path; anything else fails closed."""
+    index (``choices[0]``)."""
     value: Any = item
     walked: list[str] = []
     for part in parts:
@@ -105,9 +105,6 @@ def _walk_output_path(
         attr, index = _split_walk_part(part)
         if attr:
             if isinstance(value, list) and all(isinstance(v, Mapping) for v in value):
-                # Map the attribute over a list of items (e.g. ``rows.json``
-                # descends into each row of a grouped api result), matching
-                # FlowMesh's own path resolution.
                 value = [_walk_output_path(v, (attr,), output_op_id) for v in value]
             else:
                 if not isinstance(value, Mapping) or attr not in value:
@@ -118,9 +115,6 @@ def _walk_output_path(
                 value = value[attr]
         if index is not None:
             if isinstance(value, list) and all(isinstance(v, list) for v in value):
-                # Index each fanned-out row (e.g. ``choices[0]`` after
-                # ``rows.json`` mapped over the group), matching FlowMesh's
-                # own path resolution.
                 value = [
                     _walk_output_path(v, (f"[{index}]",), output_op_id) for v in value
                 ]
@@ -135,9 +129,7 @@ def _walk_output_path(
 
 
 def _split_walk_part(part: str) -> tuple[str, int | None]:
-    """Split a walk part like ``choices[0]`` into its attribute and list index;
-    reject any other bracketed form so the walker fails closed on unknown
-    shapes."""
+    """Split a walk part like ``choices[0]`` into its attribute and index."""
     if "[" not in part:
         if not part:
             raise RuntimeError(f"malformed output path part {part!r}")
@@ -834,7 +826,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
         items = results_json.get("items")
         if isinstance(items, list):
-            # An empty list is a valid empty output, not a missing result.
             return items
         if task_type == "python":
             # A python step returns {"items": [...]} as its value
@@ -969,7 +960,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     )
                 output_field_parts = parts
         if list_lambda:
-            # A list-mode Lambda runs once per run over whole input lists: one output.
             return [
                 _coerce_output_value(
                     [
@@ -979,12 +969,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 )
             ]
         if output_path is not None and output_path.startswith("items.rows"):
-            # A row-wise API task returns one APIGroupItem per input table,
-            # holding that table's rows. Flatten each walked group's rows into
-            # the row-aligned output list so a multi-row slice demultiplexes
-            # into one output value per row. When the rows instead come from a
-            # list-mode Lambda fan-out inside one input row, the group's rows
-            # belong to that one input row and must stay one whole-list value.
+            # One group per input table; flatten to one value per row.
             flattened: list[str] = []
             for item in items:
                 walked = _walk_output_path(item, output_field_parts, output_op_id)
@@ -1014,8 +999,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             response_data = await self.fm.results.retrieve(tid)
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
-        # The SDK returns a pydantic result model (e.g. APIResult); coerce to a
-        # plain dict so redaction and JSON serialization work on the raw body.
         if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
         response_uri = self._save_json_artifact(
@@ -1309,8 +1292,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 results_json = await self.fm.results.retrieve(output_task_id)
             except APIError as e:
                 raise _sanitize_flowmesh_api_error(e) from None
-            # The SDK returns a pydantic result model; coerce to a plain dict
-            # so downstream dict access (items/text/embedding_file) works.
             if isinstance(results_json, BaseModel):
                 results_json = results_json.model_dump(mode="json")
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
