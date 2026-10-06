@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 import yaml
-from flowmesh.models.result import APIResult
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -115,14 +114,19 @@ async def test_dispatched_request_carries_resolved_caller_credential(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> Any:
-            return APIResult(
-                executor="api",
-                method="POST",
-                url="https://api.example.com/v1/chat",
-                status_code=200,
-                text="assistant reply",
-            )
+        async def retrieve(self, task_id: str) -> dict[str, Any]:
+            return {
+                "items": [
+                    {
+                        "index": 0,
+                        "json": {
+                            "choices": [{"message": {"content": "assistant reply"}}]
+                        },
+                        "text": "assistant reply",
+                        "prompt": "{{prompt}}",
+                    }
+                ]
+            }
 
     class _FakeFm:
         def __init__(self) -> None:

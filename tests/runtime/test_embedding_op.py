@@ -305,6 +305,8 @@ async def test_aggregation_surfaces_artifact_uri_and_metadata(
         request_id="req-1",
         items=_embedding_items(),
         output_path=None,
+        list_lambda=False,
+        list_lambda_cardinality=False,
     )
     # usage.num_requests=2 covers 2 input rows via one artifact: the
     # per-row output contract requires 2 output items, not 1.
@@ -343,6 +345,8 @@ async def test_aggregation_fails_fast_without_archive_prefix(
             request_id="req-1",
             items=_embedding_items(),
             output_path=None,
+            list_lambda=False,
+            list_lambda_cardinality=False,
         )
 
 
@@ -365,6 +369,8 @@ async def test_aggregation_fails_fast_on_missing_embedding_path(
             request_id="req-1",
             items=bad_items,
             output_path=None,
+            list_lambda=False,
+            list_lambda_cardinality=False,
         )
 
 
@@ -445,6 +451,8 @@ async def test_flat_embedding_result_aggregates_to_artifact_ref(
         items=items,
         output_path=None,
         expected_row_count=3,
+        list_lambda=False,
+        list_lambda_cardinality=False,
     )
     assert len(outputs) == 3
     for idx, raw in enumerate(outputs):
@@ -474,6 +482,8 @@ async def test_embedding_row_count_mismatch_fails_fast(
             items=items,
             output_path=None,
             expected_row_count=5,
+            list_lambda=False,
+            list_lambda_cardinality=False,
         )
 
 
@@ -538,6 +548,8 @@ async def test_embedding_artifact_is_fetchable_and_loads_real_vectors(
         request_id="req-1",
         items=_embedding_items(),
         output_path=None,
+        list_lambda=False,
+        list_lambda_cardinality=False,
     )
 
     _, _, archived_bytes, _ = stub_storage.saved[0]

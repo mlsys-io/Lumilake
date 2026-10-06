@@ -21,9 +21,11 @@ from typing import Any
 
 import yaml
 from flowmesh.exceptions import APIError
+from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
@@ -86,7 +88,8 @@ def _walk_output_path(
 ) -> Any:
     """Walk a dotted ``items.<a>.<b>.<c>`` path through a result item;
     JSON-decode intermediate string fields so DataFrame-serialized columns
-    (e.g. ``items.table.symbol``) traverse cleanly."""
+    (e.g. ``items.table.symbol``) traverse cleanly. A part may carry a list
+    index (``choices[0]``)."""
     value: Any = item
     walked: list[str] = []
     for part in parts:
@@ -99,13 +102,45 @@ def _walk_output_path(
                     f"output node {output_op_id} cannot descend into non-JSON "
                     f"string at path 'items.{'.'.join(walked)}': {value!r}"
                 ) from exc
-        if not isinstance(value, Mapping) or part not in value:
-            raise RuntimeError(
-                f"output node {output_op_id} item missing field at path "
-                f"'items.{'.'.join(walked)}': {item}"
-            )
-        value = value[part]
+        attr, index = _split_walk_part(part)
+        if attr:
+            if isinstance(value, list) and all(isinstance(v, Mapping) for v in value):
+                value = [_walk_output_path(v, (attr,), output_op_id) for v in value]
+            else:
+                if not isinstance(value, Mapping) or attr not in value:
+                    raise RuntimeError(
+                        f"output node {output_op_id} item missing field at path "
+                        f"'items.{'.'.join(walked)}': {item}"
+                    )
+                value = value[attr]
+        if index is not None:
+            if isinstance(value, list) and all(isinstance(v, list) for v in value):
+                value = [
+                    _walk_output_path(v, (f"[{index}]",), output_op_id) for v in value
+                ]
+            elif not isinstance(value, list) or not -len(value) <= index < len(value):
+                raise RuntimeError(
+                    f"output node {output_op_id} item missing index at path "
+                    f"'items.{'.'.join(walked)}': {item}"
+                )
+            else:
+                value = value[index]
     return value
+
+
+def _split_walk_part(part: str) -> tuple[str, int | None]:
+    """Split a walk part like ``choices[0]`` into its attribute and index."""
+    if "[" not in part:
+        if not part:
+            raise RuntimeError(f"malformed output path part {part!r}")
+        return part, None
+    if not part.endswith("]"):
+        raise RuntimeError(f"malformed output path part {part!r}")
+    attr, _, rest = part.partition("[")
+    suffix = rest[:-1]
+    if not suffix.isdigit():
+        raise RuntimeError(f"malformed output path index in {part!r}")
+    return attr, int(suffix)
 
 
 def _coerce_output_value(value: Any) -> str:
@@ -790,14 +825,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         ``items``, embedding a flat one-item batch, and API wraps the assistant
         ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
         items = results_json.get("items")
-        if isinstance(items, list) and items:
+        if isinstance(items, list):
             return items
         if task_type == "python":
             # A python step returns {"items": [...]} as its value
             # (runtime/python_step.py); PythonResult carries it under "value".
             value = results_json.get("value")
             value_items = value.get("items") if isinstance(value, dict) else None
-            if isinstance(value_items, list) and value_items:
+            if isinstance(value_items, list):
                 return value_items
             raise RuntimeError(f"python step {output_op_id} returned no items")
         if task_type == "api":
@@ -877,6 +912,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         items: list[dict[str, Any]],
         output_path: str | None,
         expected_row_count: int | None = None,
+        list_lambda: bool,
+        list_lambda_cardinality: bool,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
             items = await self._archive_artifact_items(
@@ -915,15 +952,34 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                         f"OutputOp {output_op_id!r} has malformed path "
                         f"{output_path!r}"
                     )
-                parts = tuple(
-                    part for part in output_path[len("items.") :].split(".") if part
-                )
-                if not parts:
+                parts = tuple(output_path[len("items.") :].split("."))
+                if not parts or any(not part or part.startswith("[") for part in parts):
                     raise RuntimeError(
                         f"OutputOp {output_op_id!r} has malformed path "
                         f"{output_path!r}"
                     )
                 output_field_parts = parts
+        if list_lambda:
+            return [
+                _coerce_output_value(
+                    [
+                        _walk_output_path(item, output_field_parts, output_op_id)
+                        for item in items
+                    ]
+                )
+            ]
+        if output_path is not None and output_path.startswith("items.rows"):
+            # One group per input table; flatten to one value per row.
+            flattened: list[str] = []
+            for item in items:
+                walked = _walk_output_path(item, output_field_parts, output_op_id)
+                if isinstance(walked, list):
+                    flattened.extend(_coerce_output_value(v) for v in walked)
+                else:
+                    flattened.append(_coerce_output_value(walked))
+            if list_lambda_cardinality:
+                return [_coerce_output_value(flattened)]
+            return flattened
         return [
             _coerce_output_value(
                 _walk_output_path(item, output_field_parts, output_op_id)
@@ -943,8 +999,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             response_data = await self.fm.results.retrieve(tid)
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
-        # results.retrieve returns a pydantic AnyExecutorResult; dump it for redaction.
-        response_data = response_data.model_dump(mode="json")
+        if isinstance(response_data, BaseModel):
+            response_data = response_data.model_dump(mode="json")
         response_uri = self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1220,6 +1276,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         # Aggregate results from output nodes
         flat_outputs: dict[str, Any] = {}
         prompts: dict[str, Any] = {}
+        list_lambda_cardinality_nodes = (
+            request_info.runtime_graph.list_lambda_cardinality_nodes()
+        )
 
         for _, output_op_id in output_node_indices:
             output_task_id = node_task_map.get(output_op_id)
@@ -1233,8 +1292,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 results_json = await self.fm.results.retrieve(output_task_id)
             except APIError as e:
                 raise _sanitize_flowmesh_api_error(e) from None
-            # results.retrieve returns a pydantic AnyExecutorResult; dump it.
-            results_json = results_json.model_dump(mode="json")
+            if isinstance(results_json, BaseModel):
+                results_json = results_json.model_dump(mode="json")
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
             api_prompt = None
             if output_node is not None and output_node.task_type == "api":
@@ -1258,6 +1317,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 expected_row_count=self._embedding_row_count(
                     request_info.runtime_graph, output_op_id
                 ),
+                list_lambda=output_node is not None
+                and output_node.task_type == python_step.TASK_TYPE
+                and output_node.data_spec.get("mode") == "list",
+                list_lambda_cardinality=output_op_id in list_lambda_cardinality_nodes,
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []

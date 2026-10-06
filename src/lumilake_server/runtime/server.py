@@ -126,6 +126,7 @@ class RequestState:
     total_input_items: int = 0
     completed_input_items_success: int = 0
     successful_workflow_ids: set[str] = field(default_factory=set)
+    list_lambda_outputs: dict[str, set[str]] = field(default_factory=dict)
     ready: bool = False
 
 
@@ -2331,11 +2332,46 @@ class LumilakeServer:
                 )
                 return False
 
+            list_lambda_names = state.list_lambda_outputs.get(
+                workflow.workflow_id, set()
+            )
             buffers = (
                 state.chat_history_buffers if is_history else state.output_buffers
             ).setdefault(public_name, {})
             merged_without_errors = True
             for output_name, values in payload.items():
+                if output_name in list_lambda_names:
+                    if len(values) != 1:
+                        append_error(
+                            state,
+                            {
+                                "graph": public_name,
+                                "slice_index": workflow.slice_index,
+                                "workflow_id": workflow.workflow_id,
+                                "output": output_name,
+                                "error": (
+                                    "list-Lambda output length mismatch: "
+                                    f"expected=1 got={len(values)}"
+                                ),
+                            },
+                        )
+                        merged_without_errors = False
+                        continue
+                    target = buffers.setdefault(output_name, [None])
+                    if target[0] is not None:
+                        append_error(
+                            state,
+                            {
+                                "graph": public_name,
+                                "slice_index": workflow.slice_index,
+                                "workflow_id": workflow.workflow_id,
+                                "output": output_name,
+                                "error": "overlapping slice assignment",
+                            },
+                        )
+                        merged_without_errors = False
+                    target[0] = values[0]
+                    continue
                 if len(values) != workflow.slice_length:
                     append_error(
                         state,
@@ -2944,6 +2980,24 @@ class LumilakeServer:
                     return workflow
             return None
 
+        runtime_graph = batch_request_info.runtime_graph
+        list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()
+        list_lambda_outputs = {
+            (group_key, output_name)
+            for node_id, (group_key, output_name) in output_mapping.items()
+            if node_id in list_lambda_dependent_nodes
+        }
+        for group_key, output_name in list_lambda_outputs:
+            group_slices = grouped_workflows.get(group_key, [])
+            if len(group_slices) != 1:
+                continue
+            (single_workflow,) = group_slices
+            state = self._requests.get(single_workflow.request_id)
+            if state is not None:
+                state.list_lambda_outputs.setdefault(
+                    single_workflow.workflow_id, set()
+                ).add(output_name)
+
         for node_id, outputs in flat_outputs.items():
             mapping = output_mapping.get(node_id)
             if mapping is None:
@@ -2955,6 +3009,21 @@ class LumilakeServer:
                     f" {type(outputs).__name__}"
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
+            if (group_key, output_name) in list_lambda_outputs:
+                group_slices = grouped_workflows.get(group_key, [])
+                if len(group_slices) != 1:
+                    raise ValueError(
+                        "List-Lambda output cannot be split across slices: "
+                        f"{output_name} covers {len(group_slices)} slice(s) in "
+                        f"group {group_key}. A list-mode Lambda runs once per "
+                        "run and its single whole-list result cannot be "
+                        "partitioned per slice."
+                    )
+                (single_workflow,) = group_slices
+                direct_outputs.setdefault(single_workflow.workflow_id, {})[
+                    output_name
+                ] = outputs
+                continue
             if matched_workflow is not None:
                 if len(outputs) != matched_workflow.slice_length:
                     raise ValueError(

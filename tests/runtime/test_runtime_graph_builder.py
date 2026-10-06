@@ -1,4 +1,5 @@
 import textwrap
+from typing import Any
 
 import pytest
 
@@ -9,6 +10,7 @@ from lumilake_server.ops import (
     DataRetrievalOp,
     EmbeddingOp,
     ImageGenerationOp,
+    LambdaOp,
     LLMChatOp,
     LLMVisionOp,
     OpMessage,
@@ -36,6 +38,10 @@ def _sql_spec(template: str, params: list) -> dict:
         "template": template,
         "params": params,
     }
+
+
+def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
+    return [{"value": v} for v in items[0]]
 
 
 def _s3_spec(template: str, params: list) -> dict:
@@ -724,21 +730,20 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
     workflow = textwrap.dedent("""
         name: df_only
         inputs:
-          Stock: ["NVDA"]
+          Paper: ["x"]
         ops:
-          - id: Retrieval
-            op: DataRetrievalOp
-            inputs: [Stock]
-            data_spec:
-              type: lumid
-              mode: sql
-              template: "SELECT * FROM t WHERE symbol = :symbol"
-              params:
-                - name: symbol
-                  node: Stock
+          - id: Candidates
+            op: LambdaOp
+            mode: list
+            inputs: [Paper]
+            fn_name: identity
+            code: |
+              def identity(inputs: tuple[str, ...]) -> list[dict]:
+                  (paper,) = inputs
+                  return [{"fid": paper, "output": {"fid": paper}}]
           - id: Select
             op: LLMChatOp
-            inputs: [Stock, Retrieval]
+            inputs: [Candidates]
             config:
               model: dummy-model
             prompt:
@@ -755,8 +760,8 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
                 content: ""
             aggregate_table:
               - label: fid
-                node: Retrieval
-                path: items.table
+                node: Candidates
+                path: items.output.fid
         outputs:
           - name: result
             ref: Select
@@ -779,3 +784,19 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
         and {"label": "df", "value": "df"} in step.get("arguments", [])
         for step in steps
     )
+
+
+def test_two_output_ops_on_one_list_lambda_rejected() -> None:
+    """Two OutputOps sourcing the same list Lambda are rejected at build time.
+
+    A runtime node produces a single output, so projecting two outputs from
+    one source would silently drop one. The builder must fail loudly instead
+    of overwriting the first mapping."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    out_a = as_output("a", explode)
+    out_b = as_output("b", explode)
+    compiled = Graph.from_ops([out_a, out_b]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="Multiple OutputOps"):
+        RuntimeGraphBuilder().build(compiled)

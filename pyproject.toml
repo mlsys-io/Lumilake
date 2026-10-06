@@ -25,7 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = ["httpx>=0.27.0,<1"]
 
 [project.urls]
 Homepage = "https://github.com/mlsys-io/lumilake_OSS"
@@ -66,6 +66,7 @@ lumilake-sdk = { workspace = true }
 lumilake-cli = { workspace = true }
 lumilake-deploy = { workspace = true }
 lumilake-hook = { workspace = true }
+flowmesh-sdk = { git = "https://github.com/mlsys-io/FlowMesh.git", rev = "c28053f665bba1da504988cbab718a58dc09a669", subdirectory = "sdk" }
 
 [tool.uv]
 default-groups = []

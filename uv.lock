@@ -455,16 +455,12 @@ wheels = [
 [[package]]
 name = "flowmesh-sdk"
 version = "0.1.10"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/mlsys-io/FlowMesh.git?subdirectory=sdk&rev=c28053f665bba1da504988cbab718a58dc09a669#c28053f665bba1da504988cbab718a58dc09a669" }
 dependencies = [
     { name = "httpx" },
     { name = "pandas" },
     { name = "pydantic" },
     { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/6c/cfb87456e8b17864000daec2925a742414369da348c14f69ee7629a54d08/flowmesh_sdk-0.1.10.tar.gz", hash = "sha256:479d41c41f220960c6671e55287c28d89481712ab2a907ae2b0912fb2dbc0f0f", size = 29710, upload-time = "2026-09-30T07:20:45.928Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/ee/74375f2c70f3a828d7add42f3e4e071cc44c179860ccdf0937d84df64865/flowmesh_sdk-0.1.10-py3-none-any.whl", hash = "sha256:4b477e8b6a988900bbc60da72453e5d5fdd0f4fc8c6ad4bb6ed44c01d82aa5a2", size = 41647, upload-time = "2026-09-30T07:20:39.174Z" },
 ]
 
 [[package]]
@@ -771,6 +767,9 @@ wheels = [
 name = "lumilake"
 version = "0.1.9rc3"
 source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+]
 
 [package.optional-dependencies]
 all = [
@@ -836,6 +835,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "lumilake-cli", marker = "extra == 'all'", editable = "packages/cli" },
     { name = "lumilake-cli", marker = "extra == 'cli'", editable = "packages/cli" },
     { name = "lumilake-deploy", marker = "extra == 'all'", editable = "packages/deploy" },
@@ -870,7 +870,7 @@ server-runtime = [
     { name = "aiohttp", specifier = "==3.14.3" },
     { name = "dill", specifier = "==0.4.1" },
     { name = "fastapi", specifier = "==0.142.2" },
-    { name = "flowmesh-sdk", specifier = "==0.1.10" },
+    { name = "flowmesh-sdk", git = "https://github.com/mlsys-io/FlowMesh.git?subdirectory=sdk&rev=c28053f665bba1da504988cbab718a58dc09a669" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "lumid-hooks", specifier = "==0.2.0" },
     { name = "pandas", specifier = "==3.0.6" },
@@ -907,7 +907,7 @@ deploy = [
 
 [package.metadata]
 requires-dist = [
-    { name = "flowmesh-sdk", specifier = ">=0.1.9" },
+    { name = "flowmesh-sdk", git = "https://github.com/mlsys-io/FlowMesh.git?subdirectory=sdk&rev=c28053f665bba1da504988cbab718a58dc09a669" },
     { name = "lumilake-deploy", marker = "extra == 'deploy'", editable = "packages/deploy" },
     { name = "lumilake-sdk", editable = "packages/sdk" },
     { name = "requests", specifier = ">=2.32.3" },
@@ -949,7 +949,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "lumid-hooks", specifier = ">=0.2.0" },
 ]
 
@@ -965,7 +965,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]

@@ -1,6 +1,6 @@
 import re
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal, overload
 
 import dill
 
@@ -11,6 +11,9 @@ from lumilake_server.utils.lambda_runtime import validate_source
 MAX_TIMEOUT_S = 600.0
 MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
+
+RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
+ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 
 
 def _validate_limits(timeout_s: float | None, memory_mb: int | None) -> None:
@@ -114,16 +117,45 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
-    fn: Callable[[tuple[SingleDtype, ...]], str]
+    fn: RowLambdaFn | ListLambdaFn
+
+    LAMBDA_MODES = ("row", "list")
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: RowLambdaFn,
+        code: str | None = None,
+        mode: Literal["row"] = "row",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: ListLambdaFn,
+        code: str | None = None,
+        mode: Literal["list"] = "list",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+    ) -> None: ...
 
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
-        fn: Callable[[tuple[SingleDtype, ...]], str],
+        fn: RowLambdaFn | ListLambdaFn,
         code: str | None = None,
+        mode: str = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
     ) -> None:
+        if mode not in self.LAMBDA_MODES:
+            raise ValueError(
+                f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
+            )
         _validate_limits(timeout_s, memory_mb)
         input_ops: list[Op] = []
         for inp in inputs:
@@ -133,6 +165,7 @@ class LambdaOp(Op):
                 input_ops.append(DataOp(inp))
         super().__init__(input_ops)
         self.fn = fn
+        self.mode = mode
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
@@ -173,6 +206,7 @@ class LambdaOp(Op):
             "fn_name": self.fn.__name__,
             "_code": self.code,
             "_inputs": [inp.id for inp in self.inputs],
+            "mode": self.mode,
         }
         if self.timeout_s is not None:
             data["timeout_s"] = self.timeout_s
@@ -199,12 +233,11 @@ class LambdaOp(Op):
             inputs=input_ops,
             fn=fn,
             code=code,
+            mode=data.get("mode", "row"),
             timeout_s=timeout_s,
             memory_mb=memory_mb,
         )
 
 
-def lambda_op(
-    inputs: list[list[str] | Op], fn: Callable[[tuple[SingleDtype, ...]], str]
-) -> LambdaOp:
+def lambda_op(inputs: list[list[str] | Op], fn: RowLambdaFn) -> LambdaOp:
     return LambdaOp(inputs, fn)

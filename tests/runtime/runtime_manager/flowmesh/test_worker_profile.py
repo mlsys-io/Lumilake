@@ -57,11 +57,11 @@ async def test_profile_lists_the_advertised_task_types_sorted(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _serve(monkeypatch, _worker("w", frozenset({TaskType.PYTHON, TaskType.ECHO})))
+    _serve(monkeypatch, _worker("w", frozenset({TaskType.PYTHON})))
 
     profile = await flowmesh_manager.get_worker_profile("w")
 
-    assert profile["supported_task_types"] == ["echo", "python"]
+    assert profile["supported_task_types"] == ["python"]
 
 
 @pytest.mark.asyncio

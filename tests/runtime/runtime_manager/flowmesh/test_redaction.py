@@ -14,6 +14,8 @@ from typing import Any
 import pytest
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
+from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
+from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -251,13 +253,18 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
         async def retrieve(self, task_id: str) -> Any:
             self.calls += 1
             if self.calls == 1:
-                return APIResult(
-                    executor="api",
-                    method="POST",
-                    url="https://api.example.com/v1/chat",
-                    status_code=200,
-                    text="assistant reply",
-                )
+                return {
+                    "items": [
+                        {
+                            "index": 0,
+                            "json": {
+                                "choices": [{"message": {"content": "assistant reply"}}]
+                            },
+                            "text": "assistant reply",
+                            "prompt": "{{prompt}}",
+                        }
+                    ]
+                }
             raise APIError(
                 "task spec invalid",
                 status_code=422,
@@ -409,33 +416,55 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
 
 
 @pytest.mark.asyncio
-async def test_archive_task_response_serializes_sdk_result_model(
+async def test_archive_task_response_archives_grouped_api_result(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """results.retrieve returns a pydantic result model (AnyExecutorResult),
-    not a plain dict. _archive_task_response must coerce it to a dict before
-    redaction and JSON serialization, or archiving fails with
-    "Object of type APIResult is not JSON serializable"."""
-    result = APIResult(
-        executor="api",
-        method="POST",
-        url="https://api.example.com/v1/chat",
-        status_code=200,
-        headers={"Authorization": "Bearer sk-live-secret"},
-        json={"choices": [{"text": "hi"}]},
-        text="ok",
+    """A grouped APIResult (items[].rows[]) must validate through the SDK's
+    result adapter and archive with both rows intact."""
+    grouped_payload = {
+        "task_type": "api",
+        "executor": "api",
+        "method": "POST",
+        "url": "https://lum.id/llm/v1/chat/completions",
+        "status_code": 200,
+        "truncated": False,
+        "items": [
+            {
+                "index": 0,
+                "rows": [
+                    {
+                        "index": 0,
+                        "url": "https://lum.id/llm/v1/chat/completions",
+                        "status_code": 200,
+                        "truncated": False,
+                        "json": {
+                            "choices": [{"message": {"content": '{"kind": "none"}'}}]
+                        },
+                        "text": '{"kind": "none"}',
+                        "prompt": "[...]",
+                    },
+                    {
+                        "index": 1,
+                        "url": "https://lum.id/llm/v1/chat/completions",
+                        "status_code": 200,
+                        "truncated": False,
+                        "json": {
+                            "choices": [{"message": {"content": '{"kind": "second"}'}}]
+                        },
+                        "text": '{"kind": "second"}',
+                        "prompt": "[...]",
+                    },
+                ],
+            }
+        ],
+    }
+    validated = _RESULT_ADAPTER.validate_python(grouped_payload)
+
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_context",
+        lambda: _FakeFlowMeshClient(validated),
     )
-
-    class _FakeResults:
-        async def retrieve(self, task_id: str) -> Any:
-            return result
-
-    class _FakeFm:
-        def __init__(self) -> None:
-            self.results = _FakeResults()
-
-    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
     saved: dict[str, Any] = {}
 
     def _fake_save_json_artifact(
@@ -459,10 +488,36 @@ async def test_archive_task_response_serializes_sdk_result_model(
 
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
-    assert isinstance(saved["data"], dict)
-    assert saved["data"]["task_type"] == "api"
-    assert saved["data"]["status_code"] == 200
-    assert saved["data"]["json"] == {"choices": [{"text": "hi"}]}
-    # The Authorization header must be redacted in the archived artifact.
-    assert saved["data"]["headers"]["Authorization"] == "***REDACTED***"
-    assert "sk-live-secret" not in str(saved["data"])
+    assert saved["data"]["items"][0]["rows"][1]["text"] == '{"kind": "second"}'
+
+
+def test_api_result_dump_keeps_json_row_key() -> None:
+    """A grouped API result validated by the vendored flowmesh APIResult and
+    dumped with model_dump(mode="json") must keep the row key ``json``, not
+    rename it to ``response_json`` (serialize_by_alias)."""
+    payload = {
+        "ok": True,
+        "executor": "api",
+        "method": "POST",
+        "url": "u",
+        "status_code": 200,
+        "items": [
+            {
+                "index": 0,
+                "rows": [
+                    {
+                        "index": 0,
+                        "url": "u",
+                        "status_code": 200,
+                        "json": {"a": 1},
+                    }
+                ],
+            }
+        ],
+    }
+    validated = CatalogAPIResult.model_validate(payload)
+    dumped = validated.model_dump(mode="json")
+    row = dumped["items"][0]["rows"][0]
+    assert "json" in row
+    assert row["json"] == {"a": 1}
+    assert "response_json" not in row

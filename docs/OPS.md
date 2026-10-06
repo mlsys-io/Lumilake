@@ -241,6 +241,13 @@ Where the function runs depends on what reads it:
   naming the step. Make the `LambdaOp` a workflow output, or use a non-API
   `LLMChatOp`.
 
+A `LambdaOp` may declare `mode: list`. The function then receives each input as
+its whole list and returns a list of JSON values; the standalone `python` task
+emits one item per element in order, so each element is one group downstream,
+read at `value.items.output`. A list-mode `LambdaOp` is read through a node
+column (`rowwise_columns` / `aggregate_table`), not through an LLM message
+chain.
+
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source
 whose first binding is a one-parameter `def`), and a `LambdaOp` whose inputs are
