@@ -36,6 +36,27 @@ def test_materialized_function_sees_only_the_restricted_builtins() -> None:
         lambda_runtime.materialize("lambda a: eval('1')")(("x",))
 
 
+def test_materialized_function_can_raise_a_builtin_exception() -> None:
+    with pytest.raises(ValueError, match="boom"):
+        lambda_runtime.materialize("def f(a):\n    raise ValueError('boom')")(("x",))
+
+
+def test_materialized_function_can_catch_a_builtin_exception() -> None:
+    code = (
+        "def f(a):\n"
+        "    try:\n"
+        "        raise KeyError('k')\n"
+        "    except KeyError:\n"
+        "        return 'handled'"
+    )
+    assert lambda_runtime.materialize(code)(("x",)) == "handled"
+
+
+def test_materialized_function_still_cannot_reference_systemexit() -> None:
+    with pytest.raises(NameError, match="SystemExit"):
+        lambda_runtime.materialize("def f(a):\n    raise SystemExit('x')")(("x",))
+
+
 def test_validation_parses_but_never_executes() -> None:
     code = "def f(a):\n    return a[0]\nran_module_body"
     assert lambda_runtime.validate_source(code) == "f"
@@ -43,12 +64,12 @@ def test_validation_parses_but_never_executes() -> None:
         lambda_runtime.materialize(code)
 
 
-def test_declared_fn_name_must_match_the_first_function() -> None:
+def test_declared_fn_name_must_be_a_defined_function() -> None:
     assert lambda_runtime.validate_source(_SHOUT, "shout") == "shout"
     assert lambda_runtime.materialize(_SHOUT, "shout")(("hi",)) == "HI"
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError, match="no top-level function named 'other'"):
         lambda_runtime.validate_source(_SHOUT, "other")
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError, match="functions defined: 'shout'"):
         lambda_runtime.materialize(_SHOUT, "other")
 
 
@@ -57,18 +78,143 @@ def test_declared_fn_name_only_labels_a_lambda() -> None:
     assert lambda_runtime.materialize("lambda a: a[0]", "label")(("x",)) == "x"
 
 
-def test_the_first_function_binding_grammar_is_unchanged() -> None:
+def test_fn_name_selects_the_function_among_several() -> None:
     code = "def other(a):\n    return 'other'\ndef wanted(a):\n    return 'wanted'"
     assert lambda_runtime.validate_source(code) == "other"
-    with pytest.raises(ValueError, match="does not match"):
-        lambda_runtime.validate_source(code, "wanted")
+    assert lambda_runtime.validate_source(code, "wanted") == "wanted"
+    assert lambda_runtime.materialize(code, "wanted")(("x",)) == "wanted"
+
+
+def test_imports_and_constants_may_precede_the_function() -> None:
+    code = "import os\nimport math as m\nK = 3\ndef main(a):\n    return m.sqrt(K * 3)"
+    assert lambda_runtime.validate_source(code, "main") == "main"
+    assert lambda_runtime.materialize(code, "main")(("x",)) == 3.0
+
+
+def test_stdlib_imports_inside_the_function_work() -> None:
+    code = (
+        "def main(a):\n    import math\n    from os import path\n"
+        "    return path.join('a', str(math.sqrt(16)))"
+    )
+    assert lambda_runtime.materialize(code, "main")(("x",)) == "a/4.0"
+
+
+@pytest.mark.parametrize(
+    "code, message",
+    [
+        ("import requests\ndef f(a):\n    return a", "'requests' is not available"),
+        ("def f(a):\n    from httpx import get\n    return a", "'httpx' is not"),
+        ("def f(a):\n    from . import x\n    return a", "relative imports"),
+    ],
+)
+def test_non_stdlib_imports_are_rejected_at_validation(code: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        lambda_runtime.validate_source(code, "f")
+
+
+def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
+    assert lambda_runtime.validate_inline_source(_SHOUT, "shout") == "shout"
+    assert lambda_runtime.validate_inline_source("lambda a: a[0]", "x") == "<lambda>"
+    with pytest.raises(ValueError, match="imports 'math'.*evaluated inline"):
+        lambda_runtime.validate_inline_source(
+            "def f(a):\n    import math\n    return a", "f"
+        )
+    with pytest.raises(ValueError, match="imports 'os'"):
+        lambda_runtime.validate_inline_source("import os\ndef f(a):\n    return a", "f")
+    with pytest.raises(ValueError, match="first name its code binds"):
+        lambda_runtime.validate_inline_source("X = 1\ndef f(a):\n    return a", "f")
+    with pytest.raises(ValueError, match="first name its code binds"):
+        lambda_runtime.validate_inline_source(
+            "def g(a):\n    return a\ndef f(a):\n    return a", "f"
+        )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "for i in range(1):\n    pass\ndef main(x):\n    return 'a'",
+        "if True:\n    K = 1\ndef main(x):\n    return 'a'",
+        "try:\n    K = 1\nexcept:\n    pass\ndef main(x):\n    return 'a'",
+        "with open('/dev/null') as f:\n    pass\ndef main(x):\n    return 'a'",
+    ],
+)
+def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
+    """A name bound first by a top-level ``for``/``if``/``try``/``with`` etc.
+    is what the FlowMesh worker would call, so it must be rejected at submit
+    just like any other non-``def`` first statement."""
+    with pytest.raises(ValueError, match="first name its code binds"):
+        lambda_runtime.validate_inline_source(code, "main")
+
+
+def test_inline_source_allows_only_a_docstring_before_the_def() -> None:
+    """A module docstring before ``def main`` is fine; any other statement
+    before it is not."""
+    assert (
+        lambda_runtime.validate_inline_source(
+            '"""A docstring."""\ndef main(x):\n    return x', "main"
+        )
+        == "main"
+    )
+    with pytest.raises(ValueError, match="first name its code binds"):
+        lambda_runtime.validate_inline_source(
+            "X = 1\ndef main(x):\n    return x", "main"
+        )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def main(x):\n    raise ValueError('boom')",
+        "def main(x):\n    try:\n        return x\n"
+        "    except KeyError:\n        return 'k'",
+        "def main(x):\n    return isinstance(x, RuntimeError)",
+    ],
+)
+def test_inline_source_rejects_exception_class_references(code: str) -> None:
+    """FlowMesh's inline ``safe_eval`` namespace has no exception classes, so
+    inline code that references one must be rejected at submit rather than
+    fail on the worker with a NameError."""
+    with pytest.raises(ValueError, match="evaluated inline.*not defined"):
+        lambda_runtime.validate_inline_source(code, "main")
+
+
+def test_inline_source_without_exception_names_is_accepted() -> None:
+    assert (
+        lambda_runtime.validate_inline_source(
+            "def main(x):\n    return x.upper()", "main"
+        )
+        == "main"
+    )
+    assert (
+        lambda_runtime.validate_inline_source(
+            "def main(x):\n    return str(len(x))", "main"
+        )
+        == "main"
+    )
+
+
+def test_standalone_source_still_accepts_exception_classes() -> None:
+    assert (
+        lambda_runtime.validate_source(
+            "def main(x):\n    raise ValueError('boom')", "main"
+        )
+        == "main"
+    )
+    assert (
+        lambda_runtime.validate_source(
+            "def main(x):\n    try:\n        return x\n"
+            "    except KeyError:\n        return 'k'",
+            "main",
+        )
+        == "main"
+    )
 
 
 @pytest.mark.parametrize(
     "code, message",
     [
         ("def f(a, b):\n    return a", "exactly 1 parameter"),
-        ("X = 1\ndef f(a):\n    return a", "first binding"),
+        ("X = 1\n", "must define a top-level function"),
         ("def f(a:\n", "does not parse"),
         ("async def f(a):\n    return a", "async"),
         ("lambda a, b: a", "exactly 1 parameter"),
@@ -92,7 +238,7 @@ def test_deserialized_lambda_op_never_runs_its_code() -> None:
 
 
 def test_deserialize_rejects_a_fn_name_the_code_does_not_define() -> None:
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError, match="no top-level function named 'other'"):
         LambdaOp._from_json({"fn_name": "other", "_code": _SHOUT, "_inputs": []}, {})
     op = LambdaOp._from_json(
         {"fn_name": "label", "_code": "lambda a: a[0]", "_inputs": []}, {}
@@ -102,7 +248,7 @@ def test_deserialize_rejects_a_fn_name_the_code_does_not_define() -> None:
 
 def test_yaml_fn_name_that_the_code_does_not_define_is_rejected() -> None:
     payload = _CHAIN.replace("fn_name: shout", "fn_name: whisper")
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError, match="no top-level function named 'whisper'"):
         _build(payload)
 
 
@@ -184,3 +330,43 @@ def test_submitted_lambda_in_api_mode_fails_closed() -> None:
 def test_yaml_rejects_a_non_numeric_limit() -> None:
     with pytest.raises(ValueError, match="timeout_s"):
         parse_yaml_payload(_CHAIN.replace("timeout_s: 10", "timeout_s: soon"))
+
+
+_STANDALONE = """
+name: lambda-import-test
+inputs:
+  Dummy: ["run"]
+outputs:
+  - name: result
+    ref: Check
+ops:
+  - id: Check
+    op: LambdaOp
+    inputs: [Dummy]
+    fn_name: main
+    code: |
+      import os
+      def main(Dummy):
+          import math
+          return math.sqrt(16)
+"""
+
+
+def test_yaml_standalone_lambda_with_imports_compiles() -> None:
+    """Imports before and inside ``main`` compile to a python task."""
+    spec = parse_yaml_payload(_STANDALONE)["lambda-import-test"]
+    graph = Graph.from_json(spec["graph"])
+    runtime = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))
+    (node,) = [n for n in runtime.nodes.values() if n.task_type == "python"]
+    assert "import math" in node.data_spec["code"]
+
+
+def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
+    payload = _CHAIN.replace(
+        "      def shout(inputs):\n",
+        "      def shout(inputs):\n          import math\n",
+    )
+    with pytest.raises(
+        ValueError, match="Invalid LambdaOp '[^']*Shout[^']*': it imports 'math'"
+    ):
+        _build(payload)

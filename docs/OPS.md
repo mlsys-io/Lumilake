@@ -194,10 +194,10 @@ values.
 `LambdaOp` runs a serialized Python function against the listed
 upstream values. YAML carries the function as source code (`code`) plus
 a `fn_name`. The function must accept the input tuple in the same
-order as `inputs:` and return a string. For `def` source, `fn_name` must be the
-function the code defines first; a different name is rejected rather than
-running some other function. For a `lambda` expression `fn_name` is only a
-label.
+order as `inputs:` and return a string. For `def` source, `fn_name` names the
+top-level function to call; imports, constants and helper functions may come
+before it, and a name the code does not define is rejected. For a `lambda`
+expression `fn_name` is only a label.
 
 ```yaml
 inputs:
@@ -230,11 +230,20 @@ Where the function runs depends on what reads it:
   only on a CPU worker that advertises the `python` task type (a Docker-backed
   worker on a FlowMesh version that supports it). While every such worker is
   busy the batch waits for capacity; with no such worker in the cluster the
-  schedule fails before dispatch.
+  schedule fails before dispatch. The code may `import` any standard-library
+  module (plus numpy/pandas where the image has them), at module level or in
+  the function body; import statements naming anything else are rejected at
+  submit. A dynamic `__import__` of a non-allowed module is not statically
+  rejected and fails when the task runs. If the function
+  raises, the job's error names the step and the exception, for example
+  `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
 - **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the
-  standalone form above for code that should run in its own container.
+  standalone form above for code that should run in its own container. The
+  worker's namespace has no `import`, and it calls the first name the code
+  binds, so here the code must not import anything and `fn_name` must be the
+  first definition; code that breaks either rule is rejected at submit.
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error
@@ -250,20 +259,27 @@ chain.
 
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source
-whose first binding is a one-parameter `def`), and a `LambdaOp` whose inputs are
+that defines a one-parameter `def` named `fn_name`), and a `LambdaOp` whose inputs are
 all literal is not folded into a constant when its code was submitted. Code
 authored through the Python SDK in the same process (`LambdaOp(fn=...)` with a
 real callable, as used by library callers of the graph builder) is the caller's
 own trusted code and may be called in-process.
 
-In every location the function sees the same namespace: a small set of builtins
-(`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`, `sum`,
-`max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`, `map`,
-`filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`, `np`
-and `pd`. The standalone task embeds the same materializer the server validates
-against. This namespace fixes which names resolve; it is **not** a security
-boundary. In the standalone task the container is the boundary, and `np` / `pd`
-resolve only if the task image provides them.
+In every location the function sees the same base namespace: a small set of
+builtins (`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`,
+`sum`, `max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`,
+`map`, `filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`,
+`np` and `pd`. The standalone namespace additionally has the built-in exception
+classes user code reasonably raises or catches (`Exception`, `ArithmeticError`,
+`AssertionError`, `AttributeError`, `IndexError`, `KeyError`, `LookupError`,
+`NotImplementedError`, `OverflowError`, `RuntimeError`, `StopIteration`,
+`TypeError`, `ValueError`, `ZeroDivisionError`); the inline namespace has no
+exception classes, so inline code that references one is rejected at submit. The
+standalone task embeds the same materializer the server validates against. This
+namespace fixes which names resolve; it is **not** a security boundary. In the
+standalone task the container is the boundary, which is why that task also
+allows standard-library imports; `np` / `pd` resolve only if the task image
+provides them.
 
 Optional per-op limits for the standalone `python` task:
 

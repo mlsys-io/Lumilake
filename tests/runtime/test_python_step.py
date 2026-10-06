@@ -187,7 +187,7 @@ def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
     code = "def a(inputs):\n    return 'a'\n"
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
     assert _run_wrapper(code, plan, {}, fn_name="a") == {"items": [{"output": "a"}]}
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError, match="no top-level function named 'b'"):
         _run_wrapper(code, plan, {}, fn_name="b")
 
 
@@ -197,9 +197,38 @@ def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
     assert out == {"items": [{"output": "x"}]}
 
 
-def test_wrapper_requires_a_function_first() -> None:
-    with pytest.raises(ValueError, match="first binding"):
-        _run_wrapper("X = 1\ndef a(x):\n    return x\n", [], {})
+def test_wrapper_requires_a_function() -> None:
+    with pytest.raises(ValueError, match="no top-level function named 'a'"):
+        _run_wrapper("X = 1\n", [], {}, fn_name="a")
+
+
+_PLAN_X: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
+
+
+@pytest.mark.parametrize(
+    "code, output",
+    [
+        # A stdlib import inside the function body.
+        ("def main(Dummy):\n    import math\n    return math.sqrt(16)\n", "4.0"),
+        ("def main(Dummy):\n    import os\n    return os.sep\n", "/"),
+        # ... and at module level, before the function.
+        ("import os\ndef main(Dummy):\n    return os.sep\n", "/"),
+        (
+            "from collections import Counter\nN = 2\n"
+            "def helper(s):\n    return Counter(s)['x'] * N\n"
+            "def main(row):\n    return str(helper(row[0]))\n",
+            "2",
+        ),
+        (
+            "def main(row):\n    import datetime, statistics\n"
+            "    return str(statistics.mean([1, 3]))\n",
+            "2",
+        ),
+    ],
+)
+def test_wrapper_runs_stdlib_imports_and_a_preamble(code: str, output: str) -> None:
+    out = _run_wrapper(code, _PLAN_X, {}, fn_name="main")
+    assert out == {"items": [{"output": output}]}
 
 
 def test_wrapper_keeps_the_restricted_namespace() -> None:
@@ -211,8 +240,8 @@ def test_wrapper_keeps_the_restricted_namespace() -> None:
     assert out == {"items": [{"output": "[2, 1]"}]}
     with pytest.raises(NameError, match="open"):
         _run_wrapper("def f(inputs):\n    return open('/etc/passwd').read()", [], {})
-    with pytest.raises(NameError, match="__import__"):
-        _run_wrapper("def f(inputs):\n    return __import__('os').name", [], {})
+    with pytest.raises(ImportError, match="'requests' is not available"):
+        _run_wrapper("def f(inputs):\n    return __import__('requests')", [], {})
 
 
 def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
@@ -222,8 +251,10 @@ def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
         {},
     )
     assert out == {"items": [{"output": "4"}]}
-    with pytest.raises(ImportError, match="'os'"):
-        _run_wrapper("def f(inputs):\n    np\n    return __import__('os').name", [], {})
+    with pytest.raises(ImportError, match="'requests'"):
+        _run_wrapper(
+            "def f(inputs):\n    np\n    return __import__('requests')", [], {}
+        )
 
 
 # ------------------------------------------------------------------ #
