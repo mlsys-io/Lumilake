@@ -1,6 +1,6 @@
 [project]
 name = "lumilake"
-version = "0.1.9rc3"
+version = "0.1.9"
 description = "Data analytics engine for agentic workflows"
 readme = "README.md"
 requires-python = "<3.13,>=3.12"
@@ -33,16 +33,16 @@ Repository = "https://github.com/mlsys-io/lumilake_OSS"
 Issues = "https://github.com/mlsys-io/lumilake_OSS/issues"
 
 [project.optional-dependencies]
-sdk = ["lumilake-sdk==0.1.9rc3"]
+sdk = ["lumilake-sdk==0.1.9"]
 # Full CLI; pin lumilake-cli alone for the thin variant.
-cli = ["lumilake-cli==0.1.9rc3", "lumilake-deploy==0.1.9rc3"]
-deploy = ["lumilake-deploy==0.1.9rc3"]
-hook = ["lumilake-hook==0.1.9rc3"]
+cli = ["lumilake-cli==0.1.9", "lumilake-deploy==0.1.9"]
+deploy = ["lumilake-deploy==0.1.9"]
+hook = ["lumilake-hook==0.1.9"]
 all = [
-    "lumilake-sdk==0.1.9rc3",
-    "lumilake-cli==0.1.9rc3",
-    "lumilake-deploy==0.1.9rc3",
-    "lumilake-hook==0.1.9rc3",
+    "lumilake-sdk==0.1.9",
+    "lumilake-cli==0.1.9",
+    "lumilake-deploy==0.1.9",
+    "lumilake-hook==0.1.9",
 ]
 
 [build-system]
@@ -66,7 +66,6 @@ lumilake-sdk = { workspace = true }
 lumilake-cli = { workspace = true }
 lumilake-deploy = { workspace = true }
 lumilake-hook = { workspace = true }
-flowmesh-sdk = { git = "https://github.com/mlsys-io/FlowMesh.git", rev = "c28053f665bba1da504988cbab718a58dc09a669", subdirectory = "sdk" }
 
 [tool.uv]
 default-groups = []
@@ -112,7 +111,7 @@ server-runtime = [
     "dill==0.4.1",
     "sqlparse==0.6.0",
     "lumid-hooks==0.2.0",
-    "flowmesh-sdk==0.1.10",
+    "flowmesh-sdk==0.1.11",
 ]
 
 [tool.isort]
