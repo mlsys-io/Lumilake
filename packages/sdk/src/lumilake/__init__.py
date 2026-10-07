@@ -34,7 +34,7 @@ from lumilake.resources.jobs import AsyncJobs, Jobs
 from lumilake.resources.traces import AsyncTraces, Traces
 from lumilake.resources.workers import AsyncWorkers, Workers
 
-__version__ = "0.1.9rc3"
+__version__ = "0.1.9"
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
