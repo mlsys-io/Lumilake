@@ -1126,10 +1126,13 @@ async def recover_in_flight_jobs(
     whose own record is already terminal is left as it is and its index entry
     re-saved, so a completed job is never reported failed. With
     ``submitted_before`` set, jobs submitted at or after that instant are
-    skipped: they belong to this process even if not yet in memory.
+    skipped: they belong to this process even if not yet in memory. A job whose
+    record cannot be read or written is retried by raising after the pass, so
+    the caller's background retry runs again.
     """
     affected = 0
     repaired = 0
+    unreachable: list[str] = []
     summaries = await asyncio.to_thread(
         lambda: list(_job_storage.iter_summaries(set(_ACTIVE_STATUSES)))
     )
@@ -1143,6 +1146,7 @@ async def recover_in_flight_jobs(
             logger.exception(
                 "Failed to load job %s during startup recovery", summary.job_id
             )
+            unreachable.append(summary.job_id)
             continue
         if loaded is None:
             continue
@@ -1164,6 +1168,7 @@ async def recover_in_flight_jobs(
                 logger.exception(
                     "Failed to repair the index entry of job %s", record.job_id
                 )
+                unreachable.append(summary.job_id)
                 continue
             repaired += 1
             continue
@@ -1178,6 +1183,7 @@ async def recover_in_flight_jobs(
                 "Failed to persist failed-status for job %s during startup recovery",
                 summary.job_id,
             )
+            unreachable.append(summary.job_id)
             continue
         _release_output_locations(record)
         affected += 1
@@ -1189,6 +1195,11 @@ async def recover_in_flight_jobs(
     if affected:
         logger.warning(
             "Recovered %d in-flight job(s) as failed (reason=%r)", affected, reason
+        )
+    if unreachable:
+        raise RuntimeError(
+            f"Startup recovery could not read or write {len(unreachable)} job(s):"
+            f" {', '.join(unreachable)}"
         )
     return affected
 

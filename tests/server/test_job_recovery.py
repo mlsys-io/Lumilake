@@ -126,6 +126,33 @@ async def test_recover_spares_jobs_submitted_after_the_cutoff(
 
 
 @pytest.mark.asyncio
+async def test_recover_raises_after_the_pass_when_a_record_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    _seed(storage, "flaky-job", "running")
+    _seed(storage, "other-job", "running")
+    real_load = storage.load
+
+    def load(job_id: str) -> dict[str, object] | None:
+        if job_id == "flaky-job":
+            raise ConnectionError("archive unreachable")
+        return real_load(job_id)
+
+    monkeypatch.setattr(storage, "load", load)
+    monkeypatch.setattr(jobs_routes, "_job_storage", storage)
+    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
+    monkeypatch.setattr(jobs_routes, "jobs", {})
+
+    with pytest.raises(RuntimeError, match="flaky-job"):
+        await jobs_routes.recover_in_flight_jobs(reason="restart")
+    assert _loaded_status(storage, "other-job")["status"] == "failed"
+    flaky = real_load("flaky-job")
+    assert flaky is not None
+    assert flaky["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_recover_retries_until_storage_answers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

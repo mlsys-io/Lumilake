@@ -103,6 +103,20 @@ def test_load_missing_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     assert storage.load("no-such-job") is None
 
 
+def test_load_reraises_non_archive_not_found_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-ArchiveNotFound blob read error propagates instead of returning None."""
+    storage, _ = _make_storage("arc", monkeypatch)
+
+    def boom(key: str) -> tuple[bytes, str]:
+        raise ConnectionError("archive unreachable")
+
+    monkeypatch.setattr(job_storage_module.lumid_data_client, "get_blob", boom)
+    with pytest.raises(ConnectionError, match="archive unreachable"):
+        storage.load("job-xyz")
+
+
 def test_save_artifact_returns_bare_blob_key(monkeypatch: pytest.MonkeyPatch) -> None:
     storage, backend = _make_storage("archive/v1", monkeypatch)
     uri = storage.save_artifact(
