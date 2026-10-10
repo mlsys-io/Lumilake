@@ -14,14 +14,17 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Mapping, Sequence
+import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
 from flowmesh.exceptions import APIError
 from flowmesh.models.tasks import TaskInfo
+from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
 from lumilake import envs
@@ -172,6 +175,31 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
     )
 
 
+_TRANSIENT_FLOWMESH_STATUS = frozenset({502, 503, 504})
+_FLOWMESH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+_SUBMIT_LOOKUP_SKEW = timedelta(minutes=2)
+_read_logger = init_child_logger("FlowmeshReadRetry")
+
+
+async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) -> T:
+    """Run a read-only FlowMesh call, retrying gateway 502/503/504 responses."""
+    for delay in _FLOWMESH_RETRY_DELAYS_S:
+        try:
+            return await call()
+        except APIError as e:
+            if e.status_code not in _TRANSIENT_FLOWMESH_STATUS:
+                raise
+            _read_logger.warning(
+                "FlowMesh read %s returned %s; retrying in %.1fs: %s",
+                what,
+                e.status_code,
+                delay,
+                _sanitize_flowmesh_api_error(e),
+            )
+        await asyncio.sleep(delay)
+    return await call()
+
+
 _AUTH_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9!#$%&'*+.^_`|~-]*\s+")
 
 
@@ -318,7 +346,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_id: str,
     ) -> TaskInfo:
         try:
-            task_info = await self.fm.tasks.retrieve(task_id)
+            task_info = await _retry_transient_read(
+                lambda: self.fm.tasks.retrieve(task_id), f"task {task_id}"
+            )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
         return task_info
@@ -328,10 +358,65 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_id: str,
     ) -> dict[str, Any]:
         try:
-            task_info = await self.fm.tasks.retrieve(task_id)
+            task_info = await _retry_transient_read(
+                lambda: self.fm.tasks.retrieve(task_id), f"task {task_id}"
+            )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
+
+    async def _find_submitted_workflow(
+        self, submit_id: str, since: datetime
+    ) -> Workflow | None:
+        """The FlowMesh workflow carrying ``submit_id``, if an earlier attempt
+        created it.
+        """
+        workflows = await _retry_transient_read(
+            lambda: self.fm.workflows.list(), "workflow list"
+        )
+        cutoff = since - _SUBMIT_LOOKUP_SKEW
+        for wf in workflows:
+            if not wf.task_ids or datetime.fromisoformat(wf.submitted_at) < cutoff:
+                continue
+            desc = await self.fetch_task_description(wf.task_ids[0])
+            custom = desc["task"]["metadata"]["annotations"].get("custom") or {}
+            if custom.get("lumilake_submit_id") == submit_id:
+                return wf
+        return None
+
+    async def _submit_workflow(
+        self, task_yaml: str, submit_id: str
+    ) -> tuple[str, list[str]]:
+        """Submit a workflow, retrying gateway 502/503/504 without double-submitting.
+
+        Before each resubmit, look for a workflow an earlier attempt already created and
+        adopt it. Returns (workflow_id, task_ids).
+        """
+        since = datetime.now(UTC)
+        for delay in _FLOWMESH_RETRY_DELAYS_S:
+            try:
+                resp = await self.fm.workflows.submit(task_yaml)
+                return resp.workflow_id, [t.task_id for t in resp.tasks]
+            except APIError as e:
+                if e.status_code not in _TRANSIENT_FLOWMESH_STATUS:
+                    raise
+                self.logger.warning(
+                    "FlowMesh submit returned %s; retrying in %.1fs: %s",
+                    e.status_code,
+                    delay,
+                    _sanitize_flowmesh_api_error(e),
+                )
+            await asyncio.sleep(delay)
+            existing = await self._find_submitted_workflow(submit_id, since)
+            if existing is not None:
+                self.logger.info(
+                    "Adopting FlowMesh workflow %s created by an earlier submit "
+                    "attempt",
+                    existing.workflow_id,
+                )
+                return existing.workflow_id, existing.task_ids
+        resp = await self.fm.workflows.submit(task_yaml)
+        return resp.workflow_id, [t.task_id for t in resp.tasks]
 
     def _task_failure_reason(
         self, task_id: str, task_node_map: Mapping[str, str]
@@ -819,8 +904,11 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                         # dir; prefixing it here doubles the segment and
                         # 404s (the file lives at `artifacts/<path>`, not
                         # `artifacts/artifacts/<path>`).
-                        await self.fm.results.download_file(
-                            output_task_id, path, tmp_path
+                        await _retry_transient_read(
+                            lambda: self.fm.results.download_file(
+                                output_task_id, path, tmp_path
+                            ),
+                            f"file {path} of task {output_task_id}",
                         )
                         data = tmp_path.read_bytes()
                     finally:
@@ -1031,7 +1119,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         """Fetch a task's raw FlowMesh response and archive it as a job
         artifact, redacting the untrusted body before persisting it."""
         try:
-            response_data = await self.fm.results.retrieve(tid)
+            response_data = await _retry_transient_read(
+                lambda: self.fm.results.retrieve(tid), f"task {tid}"
+            )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
         if isinstance(response_data, BaseModel):
@@ -1105,6 +1195,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             schedule=schedule,
         )
         self._resolve_api_credentials(request_info.member_request_ids, task_spec)
+        submit_id = uuid.uuid4().hex
+        task_spec["metadata"]["annotations"]["custom"] = {
+            "lumilake_submit_id": submit_id
+        }
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
         task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
@@ -1144,7 +1238,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
             raise RequestCancelledError(request_info.request_id)
         try:
-            submit_resp = await self.fm.workflows.submit(task_yaml)
+            workflow_id, task_ids = await self._submit_workflow(task_yaml, submit_id)
         except APIError as e:
             sanitized = _sanitize_flowmesh_api_error(e)
             self.logger.error(
@@ -1154,7 +1248,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
             raise sanitized from None
 
-        task_ids = [t.task_id for t in submit_resp.tasks]
         self.logger.info(f"Flowmesh accepted {len(task_ids)} tasks: {task_ids}")
         node_names = [
             node.get("name")
@@ -1169,7 +1262,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         async with self._task_status_lock:
             self._batch_workflow_id[
                 (request_info.request_id, request_info.batch_id)
-            ] = submit_resp.workflow_id
+            ] = workflow_id
 
         total_nodes = len(task_ids)
         output_nodes = len(output_node_indices)
@@ -1329,7 +1422,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 )
 
             try:
-                results_json = await self.fm.results.retrieve(output_task_id)
+                results_json = await _retry_transient_read(
+                    lambda: self.fm.results.retrieve(output_task_id),
+                    f"task {output_task_id}",
+                )
             except APIError as e:
                 raise _sanitize_flowmesh_api_error(e) from None
             if isinstance(results_json, BaseModel):
