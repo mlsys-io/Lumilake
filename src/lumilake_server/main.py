@@ -125,7 +125,7 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
                 )
 
             if envs.LUMILAKE_RECOVER_IN_FLIGHT_JOBS:
-                started_at = dt.datetime.now(dt.UTC).isoformat()
+                started_at = dt.datetime.now(dt.UTC)
                 try:
                     await jobs.recover_in_flight_jobs(submitted_before=started_at)
                 except Exception:

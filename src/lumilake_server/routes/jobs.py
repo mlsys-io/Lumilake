@@ -1114,19 +1114,9 @@ async def mark_running_jobs_failed(reason: str = "server shutdown") -> None:
 _ACTIVE_STATUSES = frozenset({"pending", "running"})
 
 
-def _parse_ts(value: str | None) -> dt.datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = dt.datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.UTC)
-
-
 async def recover_in_flight_jobs(
     reason: str = "server restart during execution",
-    submitted_before: str | None = None,
+    submitted_before: dt.datetime | None = None,
 ) -> int:
     """Mark storage-side ``pending``/``running`` jobs as failed; the
     dispatch token they need only lives in process memory.
@@ -1140,7 +1130,6 @@ async def recover_in_flight_jobs(
     """
     affected = 0
     repaired = 0
-    cutoff = _parse_ts(submitted_before)
     summaries = await asyncio.to_thread(
         lambda: list(_job_storage.iter_summaries(set(_ACTIVE_STATUSES)))
     )
@@ -1165,6 +1154,9 @@ async def recover_in_flight_jobs(
                 summary.job_id,
             )
             continue
+        submitted = dt.datetime.fromisoformat(record.submitted_at)
+        if submitted_before is not None and submitted >= submitted_before:
+            continue
         if record.status not in _ACTIVE_STATUSES:
             try:
                 await asyncio.to_thread(_job_storage.save, record)
@@ -1174,9 +1166,6 @@ async def recover_in_flight_jobs(
                 )
                 continue
             repaired += 1
-            continue
-        submitted = _parse_ts(record.submitted_at)
-        if cutoff is not None and (submitted is None or submitted >= cutoff):
             continue
         record.status = "failed"
         if not record.error:
@@ -1194,7 +1183,7 @@ async def recover_in_flight_jobs(
         affected += 1
     if repaired:
         logger.warning(
-            "Repaired %d stale jobs-index entr(ies) whose record was already terminal",
+            "Repaired %d stale jobs-index entries whose record was already terminal",
             repaired,
         )
     if affected:
@@ -1205,7 +1194,7 @@ async def recover_in_flight_jobs(
 
 
 async def recover_in_flight_jobs_until_done(
-    submitted_before: str,
+    submitted_before: dt.datetime,
     attempts: int = 10,
     first_delay_s: float = 5.0,
     max_delay_s: float = 300.0,
