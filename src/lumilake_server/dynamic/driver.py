@@ -1,22 +1,22 @@
 """Validation and graph-assembly helpers for dynamic workflow rounds.
 
-A round is a single job whose DAG is ``[emitted subgraph] -> [observation
-LambdaOp] -> [proposer LLMChatOp]``. The proposer reads the goal, all prior
-observations, and the overall topology, and emits a structured plan selecting
-the next subgraph (a small acyclic DAG of ops) or ``STOP``. These helpers
-validate the emitted subgraph, assemble the fused round graph, and validate
-the returned plan.
+A round is a single job running the emitted subgraph. Without ``driver.api``
+the round graph also holds an observation LambdaOp and a proposer LLMChatOp;
+with it, the server computes the observation and calls the external planner.
 """
 
 import ast
+import copy
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
 from lumilake_server import ops as ops_pkg
+from lumilake_server.common import retrieval_items_path
 from lumilake_server.dynamic.blocks import (
     INPUT_NODE_ID,
     OBSERVATION_NODE_ID,
@@ -30,6 +30,10 @@ from lumilake_server.parser.yaml_parser import (
     SUPPORTED_OPS,
     _op_id_prefix,
     parse_yaml_payload,
+)
+from lumilake_server.runtime.runtime_manager.flowmesh import (
+    _coerce_output_value,
+    _walk_output_path,
 )
 
 _OBSERVATION_TEMPLATE_FILE = Path(__file__).with_name("observation_template.py")
@@ -113,6 +117,7 @@ class SubgraphPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ops: list[dict[str, Any]]
+    export: list[str] = []
 
 
 class _RawPlan(BaseModel):
@@ -122,20 +127,24 @@ class _RawPlan(BaseModel):
 
     next: str
     ops: list[dict[str, Any]] | None = None
+    export: list[str] = []
 
 
 class RoundBuild(BaseModel):
     """Typed result of assembling one round.
 
-    ``graph`` is the native round graph; ``leaf_output_names`` lists the
-    archived ``leaf_<internal_id>`` output names in deterministic order, so the
-    route can validate that every expected leaf produced a result.
+    The ``*_user_ids`` lists run parallel to the output-name lists so the route
+    can key stored results by the id later rounds reference.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     graph: dict[str, Any]
     leaf_output_names: list[str]
+    leaf_user_ids: list[str]
+    export_output_names: list[str] = []
+    export_user_ids: list[str] = []
+    forwarded_inputs: dict[str, list[str]] = {}
 
 
 def round_output_location(
@@ -297,6 +306,288 @@ def resolve_subgraph(
     return resolved
 
 
+def _default_forward_path(op_type: str, op: dict[str, Any]) -> str:
+    """The result path the runtime reads for an implicit reference to an op."""
+    if op_type == "DataRetrievalOp":
+        mode = (
+            op.get("data_spec", {}).get("mode")
+            if isinstance(op.get("data_spec"), dict)
+            else None
+        )
+        return retrieval_items_path(mode) if isinstance(mode, str) else "items.output"
+    return "items.output"
+
+
+def _forward_values(
+    items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
+) -> list[str]:
+    """Walk each stored whole item with the runtime walker and coerce to strings."""
+    return [_coerce_output_value(_walk_output_path(item, parts, ref)) for item in items]
+
+
+def _forward_values_flattened(
+    items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
+) -> list[str]:
+    """Walk each stored whole item and flatten the result to one string per
+    element (strings as-is, ``json.dumps`` otherwise)."""
+    values: list[str] = []
+    for item in items:
+        walked = _walk_output_path(item, parts, ref)
+        if isinstance(walked, list):
+            values.extend(_coerce_output_value(v) for v in walked)
+        else:
+            values.append(_coerce_output_value(walked))
+    return values
+
+
+def _forward_values_per_row(
+    items: list[dict[str, Any]],
+    parts: tuple[str, ...],
+    ref: str,
+    consumer: str,
+    rows: int,
+) -> list[str]:
+    """Walk each stored whole item to one string and align it with ``rows``.
+
+    Each row is its own input slice, so the result must hold exactly one item
+    per row; any other count is rejected rather than mis-aligned.
+    """
+    values: list[str] = []
+    for index, item in enumerate(items):
+        walked = _walk_output_path(item, parts, ref)
+        if isinstance(walked, list):
+            if len(walked) != 1:
+                raise DriverProtocolError(
+                    f"op {consumer!r} references {ref!r}: item {index} holds "
+                    f"{len(walked)} values at {'.'.join(parts)!r}, but a "
+                    f"{rows}-row run binds exactly one value per row"
+                )
+            walked = walked[0]
+        values.append(_coerce_output_value(walked))
+    if len(values) != rows:
+        raise DriverProtocolError(
+            f"op {consumer!r} references {ref!r}: its result has "
+            f"{len(values)} items for a {rows}-row run, so its items cannot "
+            "be matched to rows"
+        )
+    return values
+
+
+def _walk_values_per_row(
+    items: list[dict[str, Any]],
+    parts: tuple[str, ...],
+    ref: str,
+    consumer: str,
+    rows: int,
+) -> list[Any]:
+    """Walk each stored whole item to its raw per-row value, uncoerced.
+
+    Lets a caller tell a per-row scalar from a per-row list (a grouped
+    reference) before deciding how to forward it.
+    """
+    values: list[Any] = []
+    for index, item in enumerate(items):
+        walked = _walk_output_path(item, parts, ref)
+        if isinstance(walked, list) and len(walked) == 1:
+            walked = walked[0]
+        values.append(walked)
+    if len(values) != rows:
+        raise DriverProtocolError(
+            f"op {consumer!r} references {ref!r}: its result has "
+            f"{len(values)} items for a {rows}-row run, so its items cannot "
+            "be matched to rows"
+        )
+    return values
+
+
+def walk_archived_items(
+    archived: dict[str, list[str]],
+    configs: dict[str, dict[str, Any]],
+) -> dict[str, list[str]]:
+    """Walk each archived whole item with its producer's default forward path.
+
+    Leaf and export outputs archive the whole result item, so each is walked
+    with the producer's default path and coerced to a string.
+    """
+    walked: dict[str, list[str]] = {}
+    for node_id, values in archived.items():
+        config = configs.get(node_id, {})
+        op_type = config.get("op", "")
+        default_path = _default_forward_path(op_type, config)
+        parts = tuple(default_path[len("items.") :].split("."))
+        items: list[dict[str, Any]] = []
+        for value in values:
+            try:
+                items.append(json.loads(value))
+            except (TypeError, ValueError) as exc:
+                raise DriverProtocolError(
+                    f"archived output for {node_id!r} is not a JSON item: " f"{value!r}"
+                ) from exc
+        walked[node_id] = _forward_values(items, parts, node_id)
+    return walked
+
+
+def forward_refs(
+    subgraph: list[dict[str, Any]],
+    results: dict[str, list[dict[str, Any]]],
+    configs: dict[str, dict[str, Any]],
+    rows: int = 1,
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Rewrite a round's subgraph so references to earlier-round ops bind as
+    workflow inputs carrying exactly the value the in-graph reference would
+    have read. With ``rows > 1`` every bound input holds exactly one value per row.
+    """
+    inputs: dict[str, list[str]] = {}
+    ops: list[dict[str, Any]] = []
+    materializers: list[dict[str, Any]] = []
+    materialized: set[str] = set()
+
+    def add_materializer(ref: str, path: str, walked: list[Any]) -> str:
+        """Bind a JSON input per row plus a LambdaOp that decodes each row's
+        JSON back to its list; returns the materializer id."""
+        input_id = f"{ref} | {path}"
+        if input_id not in materialized:
+            inputs[input_id] = [_coerce_output_value(v) for v in walked]
+            materializers.append(
+                {
+                    "id": f"{input_id} | rows",
+                    "op": "LambdaOp",
+                    "inputs": [input_id],
+                    "fn_name": "decode_rows",
+                    "code": (
+                        "def decode_rows(columns):\n"
+                        "    return [json.loads(v) for v in columns[0]]\n"
+                    ),
+                    "mode": "aligned",
+                }
+            )
+            materialized.add(input_id)
+        return f"{input_id} | rows"
+
+    def bind_implicit(
+        ref: str, consumer: str, *, image_source: bool = False
+    ) -> str | None:
+        """Bind an implicit reference; returns the rewritten ref (a materializer
+        id) when the per-row value is a grouped list, else None to leave it
+        unchanged."""
+        if ref not in results:
+            return None
+        op_type = configs[ref].get("op", "")
+        default_path = _default_forward_path(op_type, configs[ref])
+        parts = tuple(default_path[len("items.") :].split("."))
+        if rows > 1:
+            walked = _walk_values_per_row(results[ref], parts, ref, consumer, rows)
+            if any(isinstance(v, list) for v in walked):
+                if not all(isinstance(v, list) for v in walked):
+                    raise DriverProtocolError(
+                        f"op {consumer!r} references {ref!r}: some rows hold a "
+                        "list and some a scalar at "
+                        f"{'.'.join(parts)!r}, which cannot be forwarded"
+                    )
+                if image_source:
+                    raise DriverProtocolError(
+                        f"op {consumer!r} image_source {ref!r} holds a list per "
+                        "row and cannot be forwarded as JSON"
+                    )
+                return add_materializer(ref, default_path, walked)
+            inputs[ref] = [_coerce_output_value(v) for v in walked]
+        else:
+            inputs[ref] = _forward_values(results[ref], parts, ref)
+        return None
+
+    def bind_explicit(ref: str, path: str, consumer: str) -> tuple[str, str]:
+        """Forward an explicit ``(node, path)`` reference, returning the
+        ``(node, path)`` the consumer should read.
+
+        A grouped reference binds a JSON input per row plus a materializer.
+        """
+        input_id = f"{ref} | {path}"
+        if input_id in materialized:
+            return f"{input_id} | rows", "items.output"
+        if input_id not in inputs:
+            parts = tuple(path[len("items.") :].split("."))
+            if rows > 1:
+                walked = _walk_values_per_row(results[ref], parts, ref, consumer, rows)
+                if any(isinstance(v, list) for v in walked):
+                    if not all(isinstance(v, list) for v in walked):
+                        raise DriverProtocolError(
+                            f"op {consumer!r} references {ref!r}: some rows hold "
+                            "a list and some a scalar at "
+                            f"{'.'.join(parts)!r}, which cannot be forwarded"
+                        )
+                    return add_materializer(ref, path, walked), "items.output"
+                inputs[input_id] = [_coerce_output_value(v) for v in walked]
+            else:
+                inputs[input_id] = _forward_values_flattened(results[ref], parts, ref)
+        return input_id, ""
+
+    for op in subgraph:
+        op = copy.deepcopy(op)
+        consumer = str(op.get("id"))
+        for index, ref in enumerate(op.get("inputs", [])):
+            if isinstance(ref, str):
+                rewritten = bind_implicit(ref, consumer)
+                if rewritten is not None:
+                    op["inputs"][index] = rewritten
+        prompt = op.get("prompt")
+        if isinstance(prompt, dict):
+            format_kwargs = prompt.get("format_kwargs")
+            if isinstance(format_kwargs, dict):
+                for key, ref in format_kwargs.items():
+                    if isinstance(ref, str):
+                        rewritten = bind_implicit(ref, consumer)
+                        if rewritten is not None:
+                            format_kwargs[key] = rewritten
+        format_kwargs = op.get("format_kwargs")
+        if isinstance(format_kwargs, dict):
+            for key, ref in format_kwargs.items():
+                if isinstance(ref, str):
+                    rewritten = bind_implicit(ref, consumer)
+                    if rewritten is not None:
+                        format_kwargs[key] = rewritten
+        image_source = op.get("image_source")
+        if isinstance(image_source, str):
+            bind_implicit(image_source, consumer, image_source=True)
+        aggregate_table = op.get("aggregate_table")
+        if isinstance(aggregate_table, list):
+            for row in aggregate_table:
+                if not isinstance(row, dict):
+                    continue
+                node = row.get("node")
+                path = row.get("path")
+                if isinstance(node, str) and isinstance(path, str) and node in results:
+                    row["node"], row["path"] = bind_explicit(node, path, consumer)
+        rowwise_columns = op.get("rowwise_columns")
+        if isinstance(rowwise_columns, list):
+            for column in rowwise_columns:
+                if not isinstance(column, dict):
+                    continue
+                node = column.get("node")
+                path = column.get("path")
+                if isinstance(node, str) and isinstance(path, str) and node in results:
+                    column["node"], column["path"] = bind_explicit(node, path, consumer)
+        data_spec = op.get("data_spec")
+        if isinstance(data_spec, dict):
+            params = data_spec.get("params")
+            if isinstance(params, list):
+                for param in params:
+                    if not isinstance(param, dict):
+                        continue
+                    node = param.get("node")
+                    path = param.get("path")
+                    if (
+                        isinstance(node, str)
+                        and isinstance(path, str)
+                        and node in results
+                    ):
+                        param["node"], param["path"] = bind_explicit(
+                            node, path, consumer
+                        )
+        ops.append(op)
+    ops.extend(materializers)
+    return ops, inputs
+
+
 def _validate_declared_inputs(
     op_id: str,
     op_type: str,
@@ -422,18 +713,14 @@ def validate_emitted_subgraph(
     node_registry: dict[str, dict[str, Any]],
     max_nodes: int,
     library: dict[str, dict[str, Any]] | None = None,
+    *,
+    export: list[str] | None = None,
+    results: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     """Structurally validate a planner-emitted subgraph.
 
-    Enforces: node count within ``max_nodes``, known op types (or a ``ref`` to
-    a known library entry), unique ids that do not collide with the fixed round
-    graph, explicit inputs that reference either a prior-round node (in
-    ``node_registry``) or another node in this subgraph, and acyclicity. Raises
-    :class:`DriverProtocolError` on any violation.
-
-    ``node_registry`` maps prior-round node ids to their RESOLVED op configs,
-    so a cross-round reference resolves to the real op (with its real type),
-    not a stub.
+    A reference to an earlier op without an available result is rejected rather
+    than recomputed. Raises :class:`DriverProtocolError`.
     """
     if len(subgraph) > max_nodes:
         raise DriverProtocolError(
@@ -486,11 +773,29 @@ def validate_emitted_subgraph(
             )
         _validate_declared_inputs(op_id, op_type, op, raw_inputs, available_ops)
 
+    if export is not None:
+        if not isinstance(export, list) or not all(isinstance(e, str) for e in export):
+            raise DriverProtocolError("'export' must be a list of op ids")
+        for exported_id in export:
+            if exported_id not in ids:
+                raise DriverProtocolError(
+                    f"exported op id {exported_id!r} is not an op of this subgraph"
+                )
+
+    available_results = set(results) if results is not None else None
     seen: set[str] = set()
     for op in resolved:
         op_id = op["id"]
         for ref in op.get("inputs", []):
-            if ref == INPUT_NODE_ID or ref in node_registry:
+            if ref == INPUT_NODE_ID:
+                continue
+            if ref in node_registry:
+                if available_results is not None and ref not in available_results:
+                    raise DriverProtocolError(
+                        f"subgraph op {op_id!r} references earlier op {ref!r}, "
+                        "whose result is not available (it was neither a leaf "
+                        "nor exported); no recompute is allowed"
+                    )
                 continue
             if ref not in ids:
                 raise DriverProtocolError(
@@ -611,14 +916,35 @@ def system_message(
     return "\n".join(lines)
 
 
-def compute_observation(leaf_outputs: dict[str, list[str]], preview_width: int) -> str:
-    """Compute the round observation string from the archived leaf outputs.
+def planner_messages(
+    *,
+    goal: str,
+    observations: list[str],
+    topology: list[str],
+    threshold: float | None,
+    library: dict[str, dict[str, Any]] | None,
+    has_subgraph: bool,
+    round_observation: str | None = None,
+) -> tuple[str, str]:
+    """Render the planner system and user messages.
 
-    The observation LambdaOp runs in-graph to feed the proposer, but its output
-    is not an archived output (only LLMOp/DataRetrievalOp can be). The server
-    recomputes the same compact summary from the leaf outputs (archived via the
-    per-leaf OutputOps) so it can be accumulated across rounds.
+    The user message asks for the first subgraph or the next one based on the
+    last round's observation, followed by ``round_observation`` when given.
     """
+    system = system_message(goal, observations, topology, threshold, library)
+    user = (
+        "Emit the first subgraph that starts to advance the goal."
+        if not has_subgraph
+        else "Here is the observation from the last round. Based on it, emit "
+        "the next subgraph, or STOP."
+    )
+    if round_observation is not None:
+        user = f"{user}\n\n{round_observation}"
+    return system, user
+
+
+def compute_observation(leaf_outputs: dict[str, list[str]], preview_width: int) -> str:
+    """Compute the round observation string from the archived leaf outputs."""
     source = observation_lambda(preview_width=preview_width)
     namespace: dict[str, Any] = {"json": json}
     exec(source, namespace)  # noqa: S102 - server-authored template
@@ -649,9 +975,7 @@ def result_outputs(result: Any) -> dict[str, Any]:
 def validate_plan(raw_outputs: dict[str, Any]) -> StopPlan | SubgraphPlan:
     """Parse and validate the proposer's plan from a job result.
 
-    Requires exactly one ``plan`` output carrying one serialized value, with
-    ``next`` drawn from ``{STOP, SUBGRAPH}``. Anything malformed raises
-    :class:`DriverProtocolError` rather than degrading to a silent success.
+    Requires exactly one ``plan`` output carrying one serialized value.
     """
     plan_outputs: list[Any] = []
     for graph_outputs in raw_outputs.values():
@@ -683,6 +1007,15 @@ def validate_plan(raw_outputs: dict[str, Any]) -> StopPlan | SubgraphPlan:
         raise DriverProtocolError(
             f"plan value must be a serialized string, got {type(value).__name__}"
         )
+    return validate_plan_text(value)
+
+
+def validate_plan_text(value: str) -> StopPlan | SubgraphPlan:
+    """Parse and validate one serialized plan string.
+
+    ``next`` must be drawn from ``{STOP, SUBGRAPH}``; anything malformed raises
+    :class:`DriverProtocolError`.
+    """
     try:
         plan = json.loads(_strip_plan_wrappers(value))
     except (ValueError, TypeError) as exc:
@@ -703,7 +1036,7 @@ def validate_plan(raw_outputs: dict[str, Any]) -> StopPlan | SubgraphPlan:
     if raw.next == SUBGRAPH:
         if raw.ops is None:
             raise DriverProtocolError("subgraph plan requires an 'ops' list")
-        return SubgraphPlan(ops=raw.ops)
+        return SubgraphPlan(ops=raw.ops, export=raw.export)
     raise DriverProtocolError(
         f"plan 'next' must be one of {sorted([STOP, SUBGRAPH])}, got {raw.next!r}"
     )
@@ -713,30 +1046,7 @@ def plan_to_dict(plan: StopPlan | SubgraphPlan) -> dict[str, Any]:
     """Render a validated plan back to a plain dict."""
     if isinstance(plan, StopPlan):
         return {"next": STOP}
-    return {"next": SUBGRAPH, "ops": plan.ops}
-
-
-def _closure_ops(
-    subgraph: list[dict[str, Any]], node_registry: dict[str, dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Return the ops needed for one round.
-
-    Includes the current subgraph ops plus the transitive closure of the
-    prior-round nodes they reference (from ``node_registry``). The YAML parser
-    repairs ordering, so the emitted order here need not be topological.
-    """
-    needed: dict[str, dict[str, Any]] = {}
-
-    def visit(op: dict[str, Any]) -> None:
-        for ref in op.get("inputs", []):
-            if isinstance(ref, str) and ref in node_registry and ref not in needed:
-                needed[ref] = node_registry[ref]
-                visit(node_registry[ref])
-
-    for op in subgraph:
-        needed[op["id"]] = op
-        visit(op)
-    return list(needed.values())
+    return {"next": SUBGRAPH, "ops": plan.ops, "export": plan.export}
 
 
 def _current_leaves(subgraph: list[dict[str, Any]]) -> list[str]:
@@ -763,45 +1073,63 @@ def build_round(
     temperature: float,
     threshold: float | None = None,
     library: dict[str, dict[str, Any]] | None = None,
+    results: dict[str, list[dict[str, Any]]] | None = None,
+    export: Sequence[str] = (),
     chat_template_kwargs: dict[str, Any] | None = None,
     max_model_len: int | None = None,
     gpu_memory_utilization: float | None = None,
     dtype: str | None = None,
     extra_engine_kwargs: dict[str, Any] | None = None,
+    include_proposer: bool = True,
+    rows: int = 1,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
-    The round graph is the emitted subgraph (converted to native nodes via the
-    YAML parser) plus one OutputOp per leaf, the observation LambdaOp, and the
-    proposer LLMChatOp. The proposer sees the goal, all prior observations, and
-    the topology. Returns the graph plus the ordered archived leaf output names.
+    References to earlier-round ops are forwarded as workflow inputs from
+    ``results``, so no earlier op is pulled back into this round's graph.
     """
     subgraph = resolve_subgraph(subgraph, library)
-    closure = _closure_ops(subgraph, node_registry)
+    forwarded, inputs = forward_refs(
+        subgraph, results if results is not None else {}, node_registry, rows
+    )
+    workflow_inputs: dict[str, list[str]] = {INPUT_NODE_ID: []}
+    workflow_inputs.update(inputs)
     workflow = {
         "name": f"round_{round_index}",
-        "inputs": {INPUT_NODE_ID: []},
-        "ops": closure,
+        "inputs": workflow_inputs,
+        "ops": forwarded,
         "outputs": [],
     }
     parsed = parse_yaml_payload(workflow)
     graph_name = next(iter(parsed))
     native = parsed[graph_name]["graph"]
-    leaf_ids = sorted(
-        _internal_id(graph_name, op["op"], op["id"])
+    leaves = _current_leaves(subgraph)
+    leaf_pairs = sorted(
+        (_internal_id(graph_name, op["op"], op["id"]), op["id"])
         for op in subgraph
-        if op["id"] in _current_leaves(subgraph)
+        if op["id"] in leaves
     )
-    system = system_message(goal, observations, topology, threshold, library)
-    user = (
-        "Emit the first subgraph that starts to advance the goal."
-        if not subgraph
-        else "Here is the observation from the last round. Based on it, emit "
-        "the next subgraph, or STOP."
+    leaf_ids = [internal for internal, _ in leaf_pairs]
+    leaf_user_ids = [user for _, user in leaf_pairs]
+    export_pairs = sorted(
+        (_internal_id(graph_name, op["op"], op["id"]), op["id"])
+        for op in subgraph
+        if op["id"] in export and op["id"] not in leaves
+    )
+    export_ids = [internal for internal, _ in export_pairs]
+    export_user_ids = [user for _, user in export_pairs]
+    system, user = planner_messages(
+        goal=goal,
+        observations=observations,
+        topology=topology,
+        threshold=threshold,
+        library=library,
+        has_subgraph=bool(subgraph),
     )
     graph = fused_round_graph(
         native,
         leaf_ids=leaf_ids,
+        export_ids=export_ids,
         proposer_system=system,
         proposer_user=user,
         lambda_code=observation_lambda(preview_width=preview_width),
@@ -813,10 +1141,15 @@ def build_round(
         gpu_memory_utilization=gpu_memory_utilization,
         dtype=dtype,
         extra_engine_kwargs=extra_engine_kwargs,
+        include_proposer=include_proposer,
     )
     return RoundBuild(
         graph=graph,
         leaf_output_names=[f"leaf_{leaf_id}" for leaf_id in leaf_ids],
+        leaf_user_ids=leaf_user_ids,
+        export_output_names=[f"export_{export_id}" for export_id in export_ids],
+        export_user_ids=export_user_ids,
+        forwarded_inputs=inputs,
     )
 
 
