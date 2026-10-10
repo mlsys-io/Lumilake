@@ -30,6 +30,7 @@ from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -236,6 +237,11 @@ class _FakeRuntimeServer:
 
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.0
+
+    def workflow_dispatches_for_request(
+        self, request_id: str
+    ) -> list[WorkflowDispatch]:
+        return []
 
     def selection_seconds_for_request(self, job_id: str) -> float:
         return 0.0

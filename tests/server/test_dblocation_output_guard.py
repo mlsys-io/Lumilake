@@ -27,6 +27,7 @@ from lumilake_server.routes.jobs import (
     _validate_db_location_live,
 )
 from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import DBLocation, S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -90,6 +91,11 @@ class _FakeRuntimeServer:
 
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.0
+
+    def workflow_dispatches_for_request(
+        self, request_id: str
+    ) -> list[WorkflowDispatch]:
+        return []
 
     def release_request_workflows(self, job_id: str) -> None:
         return None

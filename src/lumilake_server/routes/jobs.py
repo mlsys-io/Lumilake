@@ -98,6 +98,7 @@ from lumilake_server.runtime.protocol import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import _API_CREDENTIAL_PLACEHOLDER
 from lumilake_server.runtime.server import LumilakeServer
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import DBLocation, IOLocation, S3Location
 from lumilake_server.schemas.progress import (
     JobProgress,
@@ -562,6 +563,7 @@ class JobRecord:
     result: LumilakeResponse | None = None
     folder_inputs: dict[str, str] = field(default_factory=dict)
     trace_ids: list[str] = field(default_factory=list)
+    workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
 
@@ -571,6 +573,9 @@ class JobRecord:
         self.progress = JobProgress.model_validate(self.progress)
         if self.result is not None:
             self.result = LumilakeResponse.model_validate(self.result)
+        self.workflow_dispatches = [
+            WorkflowDispatch.model_validate(row) for row in self.workflow_dispatches
+        ]
         normalized: dict[str, IOLocation] = {}
         for key, loc in self.output_location.items():
             normalized[key] = _IO_LOCATION_ADAPTER.validate_python(loc)
@@ -627,6 +632,12 @@ class JobStatusPayload(BaseModel):
         default_factory=list,
         description=(
             "Job ids of the rounds this dynamic run has created so far, in order."
+        ),
+    )
+    workflow_dispatches: list[WorkflowDispatch] = Field(
+        default_factory=list,
+        description=(
+            "Raw per-workflow scheduler dispatch rows, one per actual dispatch."
         ),
     )
 
@@ -2211,6 +2222,9 @@ async def _run_job(
                 record.trace_ids = list(
                     dict.fromkeys([*record.trace_ids, *final_trace_ids])
                 )
+        workflow_dispatches = server.workflow_dispatches_for_request(job_id)
+        async with jobs_lock:
+            record.workflow_dispatches = list(workflow_dispatches)
         if record.status in TERMINAL_JOB_STATUSES:
             await _persist_terminal_usage(
                 record, flowmesh_for_token(runtime_token), logger
