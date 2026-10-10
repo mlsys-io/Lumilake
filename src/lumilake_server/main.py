@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 import inspect
 import logging
 import os
@@ -124,15 +125,19 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
                 )
 
             if envs.LUMILAKE_RECOVER_IN_FLIGHT_JOBS:
+                started_at = dt.datetime.now(dt.UTC).isoformat()
                 try:
-                    await jobs.recover_in_flight_jobs()
+                    await jobs.recover_in_flight_jobs(submitted_before=started_at)
                 except Exception:
                     logger.warning(
-                        "In-flight job recovery failed; continuing startup. "
-                        "Jobs stuck in pending/running will remain stuck "
-                        "until cleared manually.",
+                        "In-flight job recovery failed; retrying in the background.",
                         exc_info=True,
                     )
+                    task = asyncio.create_task(
+                        jobs.recover_in_flight_jobs_until_done(started_at)
+                    )
+                    app.state.background_tasks.add(task)
+                    task.add_done_callback(app.state.background_tasks.discard)
             else:
                 logger.info(
                     "Skipping in-flight job recovery "

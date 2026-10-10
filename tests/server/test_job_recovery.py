@@ -72,3 +72,68 @@ async def test_recover_in_flight_jobs_skips_in_memory_active_records(
 
     assert affected == 0
     assert _loaded_status(storage, "still-running")["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_recover_leaves_a_terminal_record_behind_a_stale_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    _seed(storage, "done-late", "running")
+    storage._storage["done-late"][
+        "status"
+    ] = "completed"  # record landed, index did not
+    assert [s.job_id for s in storage.iter_summaries({"running"})] == ["done-late"]
+
+    monkeypatch.setattr(jobs_routes, "_job_storage", storage)
+    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
+    monkeypatch.setattr(jobs_routes, "jobs", {})
+
+    affected = await jobs_routes.recover_in_flight_jobs()
+
+    assert affected == 0
+    assert _loaded_status(storage, "done-late")["status"] == "completed"
+    assert [s.job_id for s in storage.iter_summaries({"running"})] == []
+
+
+@pytest.mark.asyncio
+async def test_recover_spares_jobs_submitted_after_the_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    _seed(storage, "old-job", "running")  # submitted 2026-05-25
+    monkeypatch.setattr(jobs_routes, "_job_storage", storage)
+    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
+    monkeypatch.setattr(jobs_routes, "jobs", {})
+
+    affected = await jobs_routes.recover_in_flight_jobs(
+        submitted_before="2026-05-24T00:00:00+00:00"
+    )
+    assert affected == 0
+    assert _loaded_status(storage, "old-job")["status"] == "running"
+
+    affected = await jobs_routes.recover_in_flight_jobs(
+        submitted_before="2026-05-26T00:00:00+00:00"
+    )
+    assert affected == 1
+    assert _loaded_status(storage, "old-job")["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_recover_retries_until_storage_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    async def flaky(**kwargs: object) -> int:
+        calls.append(kwargs)
+        if len(calls) < 3:
+            raise ConnectionError("storage not up yet")
+        return 0
+
+    monkeypatch.setattr(jobs_routes, "recover_in_flight_jobs", flaky)
+    ok = await jobs_routes.recover_in_flight_jobs_until_done(
+        "2026-05-26T00:00:00+00:00", attempts=5, first_delay_s=0
+    )
+    assert ok and len(calls) == 3
+    assert calls[0] == {"submitted_before": "2026-05-26T00:00:00+00:00"}
