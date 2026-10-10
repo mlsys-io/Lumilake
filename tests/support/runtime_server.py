@@ -46,6 +46,7 @@ class RecordingRuntimeManager:
         self.cancelled = set() if cancelled is None else set(cancelled)
         self.status_by_request = {} if status_by_request is None else status_by_request
         self._dispatch_tokens: dict[str, str | None] = {}
+        self._batch_workflow_id: dict[tuple[str, str], str] = {}
         self.cancel_calls: list[str] = []
         self.mark_calls: list[tuple[str, str, str]] = []
         self._result_dir = tempfile.TemporaryDirectory(prefix="lumilake-runtime-test-")

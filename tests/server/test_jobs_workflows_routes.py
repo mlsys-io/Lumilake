@@ -20,6 +20,7 @@ from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes.jobs import JobRecord
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -384,6 +385,108 @@ def _seed_job(job_routes: Any, job_id: str, trace_ids: list[str]) -> None:
     record.trace_ids = trace_ids
     job_routes.jobs[job_id] = record
     job_routes._job_storage.save(record)
+
+
+@pytest.mark.anyio
+async def test_get_job_returns_workflow_dispatches(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """GET /api/v1/jobs/{job_id} returns the persisted dispatch rows."""
+    record = JobRecord(
+        job_id="j-dispatch",
+        status="completed",
+        submitted_at=dt.datetime.now(dt.UTC).isoformat(),
+        inputs={},
+        output_location={"out": S3Location(type="s3", prefix="x/y")},
+        org_id="demo",
+        user_id="alice@example.com",
+    )
+    record.workflow_dispatches = [
+        WorkflowDispatch(
+            workflow_id="wf-1",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_index=0,
+            slice_start=0,
+            slice_length=1,
+            total_length=1,
+            enqueued_at=100.0,
+            dispatched_at=101.0,
+            miss_count=0,
+            batch_id="batch-1",
+            execution_request_id="exec-1",
+            batch_workflow_ids=["wf-1"],
+            workers=["cpu-0"],
+            flowmesh_workflow_id="fm-1",
+        )
+    ]
+    job_routes.jobs["j-dispatch"] = record
+    job_routes._job_storage.save(record)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-dispatch", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    rows = resp.json()["data"]["workflow_dispatches"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["workflow_id"] == "wf-1"
+    assert row["batch_id"] == "batch-1"
+    assert row["batch_workflow_ids"] == ["wf-1"]
+    assert row["workers"] == ["cpu-0"]
+    assert row["flowmesh_workflow_id"] == "fm-1"
+    assert row["enqueued_at"] == 100.0
+    assert row["dispatched_at"] == 101.0
+
+
+@pytest.mark.anyio
+async def test_get_job_reloads_workflow_dispatches_from_storage(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """Rows survive a storage reload: JobRecord(**loaded) rehydrates the dicts
+    back into WorkflowDispatch with every field equal."""
+    record = JobRecord(
+        job_id="j-dispatch-reload",
+        status="completed",
+        submitted_at=dt.datetime.now(dt.UTC).isoformat(),
+        inputs={},
+        output_location={"out": S3Location(type="s3", prefix="x/y")},
+        org_id="demo",
+        user_id="alice@example.com",
+    )
+    row = WorkflowDispatch(
+        workflow_id="wf-1",
+        graph_name="ga",
+        public_graph_name="shared",
+        slice_index=0,
+        slice_start=0,
+        slice_length=1,
+        total_length=1,
+        enqueued_at=100.0,
+        dispatched_at=101.0,
+        miss_count=2,
+        batch_id="batch-1",
+        execution_request_id="exec-1",
+        batch_workflow_ids=["wf-1"],
+        workers=["cpu-0"],
+        flowmesh_workflow_id="fm-1",
+    )
+    record.workflow_dispatches = [row]
+    job_routes._job_storage.save(record)
+    # Drop the in-memory copy so the GET forces a storage reload.
+    job_routes.jobs.clear()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-dispatch-reload", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    rows = resp.json()["data"]["workflow_dispatches"]
+    assert len(rows) == 1
+    assert rows[0] == row.model_dump()
 
 
 @pytest.mark.anyio

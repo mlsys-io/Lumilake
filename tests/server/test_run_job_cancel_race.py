@@ -20,6 +20,7 @@ from lumilake_server.routes.jobs import (
     _run_job,
 )
 from lumilake_server.runtime.protocol import Priority
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 
 
@@ -84,6 +85,9 @@ async def test_finalize_skips_overwrite_when_cancel_won_during_unlocked_gap(
             return _FakeResponse(response_payload)
 
         def trace_ids_for_request(self, *_a: Any) -> list[str]:
+            return []
+
+        def workflow_dispatches_for_request(self, *_a: Any) -> list[Any]:
             return []
 
         def optimization_seconds_for_request(self, *_a: Any) -> float:
@@ -272,6 +276,125 @@ async def test_run_job_prestart_cancel_persists_zero_usage(
         "truncated_calls": 0,
         "wall_sec": 0.0,
     }
+
+
+@pytest.mark.anyio
+async def test_run_job_exception_keeps_workflow_dispatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A job whose run raises after dispatch still carries its dispatch rows.
+
+    Rows are collected in the ``finally`` block (where final trace ids are
+    gathered), so an exception mid-run must not drop them.
+    """
+    record = _make_record("job-exc-keeps-rows")
+
+    class _FakeServer:
+        runtime_manager: Any = type(
+            "_RM",
+            (),
+            {
+                "set_dispatch_token": staticmethod(lambda *a, **kw: None),
+                "set_api_credential": staticmethod(lambda *a, **kw: None),
+            },
+        )()
+
+        def parse_query(self, graph_specs: Any) -> Any:
+            return graph_specs
+
+        async def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("boom after dispatch")
+
+        def trace_ids_for_request(self, *_a: Any) -> list[str]:
+            return []
+
+        def workflow_dispatches_for_request(self, *_a: Any) -> list[Any]:
+            return [
+                WorkflowDispatch(
+                    workflow_id="wf-1",
+                    graph_name="ga",
+                    public_graph_name="shared",
+                    slice_index=0,
+                    slice_start=0,
+                    slice_length=1,
+                    total_length=1,
+                    enqueued_at=100.0,
+                    dispatched_at=101.0,
+                    miss_count=0,
+                    batch_id="batch-1",
+                    execution_request_id="exec-1",
+                    batch_workflow_ids=["wf-1"],
+                    workers=["cpu-0"],
+                    flowmesh_workflow_id="fm-1",
+                )
+            ]
+
+        def optimization_seconds_for_request(self, *_a: Any) -> float:
+            return 0.0
+
+        def selection_seconds_for_request(self, *_a: Any) -> float:
+            return 0.0
+
+        def clustering_seconds_for_request(self, *_a: Any) -> float:
+            return 0.0
+
+        def release_request_workflows(self, *_a: Any) -> None:
+            return None
+
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(lambda cls: _FakeServer()),
+    )
+    monkeypatch.setattr(
+        job_routes_module, "build_request_data_profile_tasks", lambda **_: []
+    )
+    monkeypatch.setattr(
+        job_routes_module._job_storage, "save", lambda _r: None, raising=False
+    )
+    monkeypatch.setattr(
+        job_routes_module, "_dump_output_locations", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(job_routes_module, "emit_usage", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        job_routes_module, "register_resource", AsyncMock(return_value=None)
+    )
+
+    class _ZeroWorkflows:
+        async def retrieve(self, workflow_id: str) -> Any:
+            raise AssertionError("no workflows on a failed job")
+
+    class _ZeroFm:
+        workflows = _ZeroWorkflows()
+
+    monkeypatch.setattr(
+        job_routes_module, "flowmesh_for_token", lambda _token: _ZeroFm()
+    )
+
+    principal = PrincipalContext(
+        principal_id="p1",
+        external_id="u1",
+        org_id="o1",
+        principal_type="user",
+        scopes=["admin"],
+    )
+
+    await _run_job(
+        job_id=record.job_id,
+        graph_specs={},
+        workflow_slices={},
+        record=record,
+        priority=Priority.MEDIUM,
+        principal=principal,
+        runtime_token=None,
+        trace_id=record.job_id,
+        optimizer_type="halo",
+    )
+
+    assert record.status == "failed"
+    assert len(record.workflow_dispatches) == 1
+    assert record.workflow_dispatches[0].workflow_id == "wf-1"
+    assert record.workflow_dispatches[0].flowmesh_workflow_id == "fm-1"
 
 
 def _smoke() -> None:

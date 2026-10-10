@@ -21,6 +21,7 @@ from lumilake_server.runtime.optimizer import create_optimizer
 from lumilake_server.runtime.protocol import LumilakeResponse
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _DEFAULT_TOKENS = {
@@ -86,6 +87,11 @@ class _FakeRuntimeServer:
 
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.01
+
+    def workflow_dispatches_for_request(
+        self, request_id: str
+    ) -> list[WorkflowDispatch]:
+        return []
 
     def release_request_workflows(self, job_id: str) -> None:
         self.runtime_manager.clear_dispatch_token(job_id)

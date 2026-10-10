@@ -79,6 +79,7 @@ from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     required_task_types,
 )
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.utils import (
@@ -122,6 +123,7 @@ class RequestState:
     optimization_seconds: float = 0.0
     selection_seconds: float = 0.0
     clustering_seconds: float = 0.0
+    workflow_dispatches: list["WorkflowDispatch"] = field(default_factory=list)
     batch_node_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     total_input_items: int = 0
     completed_input_items_success: int = 0
@@ -709,6 +711,14 @@ class LumilakeServer:
         if state is None:
             return None
         return state.clustering_seconds
+
+    def workflow_dispatches_for_request(
+        self, request_id: str
+    ) -> list[WorkflowDispatch]:
+        state = self._requests.get(request_id)
+        if state is None:
+            return []
+        return list(state.workflow_dispatches)
 
     @staticmethod
     def _api_credential_digest(credential: str | None) -> str | None:
@@ -1845,6 +1855,8 @@ class LumilakeServer:
         *,
         isolate_failures: bool = True,
         release_workers: bool = True,
+        batch_id: str | None = None,
+        execution_request_id: str | None = None,
     ) -> None:
         """Run one batch, isolating a failure to the request that caused it.
 
@@ -1856,12 +1868,25 @@ class LumilakeServer:
         request is therefore re-run on its own: a good request then succeeds
         and a bad one fails with its own error, instead of every member sharing
         the batch's. The success path is unchanged and keeps its batching.
+
+        ``batch_id``/``execution_request_id`` may be supplied by the scheduler
+        loop so the dispatch telemetry row and the execution share the same
+        ids; otherwise they are generated here. Every call records a dispatch
+        row per workflow, so an isolated re-run records its own rows.
         """
-        batch_id = f"batch-{unique_id()}"
+        if batch_id is None:
+            batch_id = f"batch-{unique_id()}"
+        if execution_request_id is None:
+            execution_request_id = f"exec-{unique_id()}"
+        self._record_workflow_dispatches(
+            batch,
+            batch_id=batch_id,
+            execution_request_id=execution_request_id,
+            workers=workers,
+        )
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
         )
-        execution_request_id = f"exec-{unique_id()}"
         self._execution_contexts[execution_request_id] = ExecutionBatchContext(
             execution_request_id=execution_request_id,
             batch_id=batch_id,
@@ -2125,6 +2150,12 @@ class LumilakeServer:
                 )
         finally:
             runtime_token_var.reset(runtime_token_handle)
+            if active_workflows:
+                self._fill_flowmesh_workflow_ids(
+                    batch_id=batch_id,
+                    execution_request_id=execution_request_id,
+                    member_request_ids=active_request_ids,
+                )
             for request_id in request_raw_nodes:
                 state = self._requests.get(request_id)
                 if state is None:
@@ -2229,6 +2260,75 @@ class LumilakeServer:
                 continue
             state.selection_seconds += selection_share
             state.clustering_seconds += clustering_share
+
+    def _record_workflow_dispatches(
+        self,
+        batch: BatchSelection,
+        *,
+        batch_id: str,
+        execution_request_id: str,
+        workers: list[str],
+    ) -> None:
+        """Append one raw dispatch row per workflow in ``batch``.
+
+        Called once per actual dispatch (including isolated re-runs), never
+        for aborted reservations. Rows are raw facts; no durations or counts
+        are computed here.
+        """
+        dispatched_at = time.time()
+        batch_workflow_ids = [workflow.workflow_id for workflow in batch.workflows]
+        for workflow in batch.workflows:
+            state = self._requests.get(workflow.request_id)
+            if state is None:
+                continue
+            state.workflow_dispatches.append(
+                WorkflowDispatch(
+                    workflow_id=workflow.workflow_id,
+                    graph_name=workflow.graph_name,
+                    public_graph_name=workflow.public_graph_name,
+                    slice_index=workflow.slice_index,
+                    slice_start=workflow.slice_start,
+                    slice_length=workflow.slice_length,
+                    total_length=workflow.total_length,
+                    enqueued_at=workflow.enqueued_at,
+                    dispatched_at=dispatched_at,
+                    miss_count=workflow.miss_count,
+                    batch_id=batch_id,
+                    execution_request_id=execution_request_id,
+                    batch_workflow_ids=batch_workflow_ids,
+                    workers=list(workers),
+                )
+            )
+
+    def _fill_flowmesh_workflow_ids(
+        self,
+        *,
+        batch_id: str,
+        execution_request_id: str,
+        member_request_ids: set[str],
+    ) -> None:
+        """Fill ``flowmesh_workflow_id`` on the batch's dispatch rows.
+
+        The FlowMesh workflow id is only known after submit, so it is patched
+        onto the existing rows (never a second row). The runtime manager keys
+        its map by ``(execution_request_id, batch_id)``. The map is mutated on
+        the runtime's runner thread, so snapshot via ``.copy()`` before use.
+        """
+        workflow_id = self.runtime_manager._batch_workflow_id.copy().get(
+            (execution_request_id, batch_id)
+        )
+        if workflow_id is None:
+            return
+        for request_id in member_request_ids:
+            state = self._requests.get(request_id)
+            if state is None:
+                continue
+            for row in state.workflow_dispatches:
+                if (
+                    row.execution_request_id == execution_request_id
+                    and row.batch_id == batch_id
+                ):
+                    row.flowmesh_workflow_id = workflow_id
 
     def _record_optimizer_time(
         self,

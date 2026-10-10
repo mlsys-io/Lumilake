@@ -20,6 +20,7 @@ from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _DEMO_PRINCIPAL = PrincipalContext(
@@ -97,6 +98,11 @@ class _FakeRuntimeServer:
 
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.0
+
+    def workflow_dispatches_for_request(
+        self, request_id: str
+    ) -> list[WorkflowDispatch]:
+        return []
 
     def release_request_workflows(self, job_id: str) -> None:
         return None
