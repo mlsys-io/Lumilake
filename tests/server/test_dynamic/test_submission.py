@@ -476,6 +476,24 @@ async def test_dynamic_child_carries_chain_lineage(
         assert config.chain_round == round_index
     assert [c.chain_round for c in fake_server.configs] == [0, 1, 2]
 
+    # Each child's record persists the same lineage, and the status route
+    # returns it.
+    for round_index, child_id in enumerate(record.child_job_ids):
+        child_record = job_routes.jobs[child_id]
+        assert child_record.chain_id == job_id
+        assert child_record.chain_round == round_index
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            child_resp = await client.get(
+                f"/jobs/{child_id}",
+                headers={"Authorization": "Bearer token"},
+            )
+        assert child_resp.status_code == 200, child_resp.text
+        child = child_resp.json()["data"]
+        assert child["chain_id"] == job_id
+        assert child["chain_round"] == round_index
+
 
 @pytest.mark.anyio
 async def test_dynamic_lineage_exposed_on_job_status(
@@ -784,6 +802,110 @@ async def test_static_yaml_without_type_runs_as_static(
     assert record.status == "completed"
     # A static job is a single job with no dynamic child rounds.
     assert record.child_job_ids == []
+
+
+@pytest.mark.anyio
+async def test_static_submit_carries_declared_chain_lineage(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """A static submission that declares ``chain_id`` / ``chain_round`` threads
+    them onto the job's ``LumilakeRequestConfig`` exactly as the dynamic child
+    path does, so a client-driven chain is traceable and chain-aware."""
+    body = _submit_body(_STATIC_YAML)
+    body["data"][0]["chain_id"] = "client-chain-1"
+    body["data"][0]["chain_round"] = 3
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed"
+    fake_server = job_routes._fake_runtime_server
+    assert len(fake_server.configs) == 1
+    config = fake_server.configs[0]
+    assert config.chain_id == "client-chain-1"
+    assert config.chain_round == 3
+
+
+@pytest.mark.anyio
+async def test_static_submit_rejects_empty_chain_id(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """An empty ``chain_id`` is rejected at submission time."""
+    body = _submit_body(_STATIC_YAML)
+    body["data"][0]["chain_id"] = ""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.anyio
+async def test_static_submit_rejects_disagreeing_chain_lineage(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """Entries of one submission that declare different chain lineage are
+    rejected with 422 naming the disagreeing entries."""
+    body = _submit_body(_STATIC_YAML)
+    body["data"][0]["chain_id"] = "chain-a"
+    body["data"][0]["chain_round"] = 0
+    body["data"].append(dict(body["data"][0]))
+    body["data"][1]["name"] = "demo2"
+    body["data"][1]["chain_id"] = "chain-b"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "entries disagree on chain lineage" in detail
+    assert "entry 0" in detail and "entry 1" in detail
+
+
+@pytest.mark.anyio
+async def test_static_submit_lineage_read_back_from_route(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """A client-declared ``chain_id`` / ``chain_round`` is stored on the job
+    record and returned by ``GET /jobs/{job_id}``."""
+    body = _submit_body(_STATIC_YAML)
+    body["data"][0]["chain_id"] = "client-chain-1"
+    body["data"][0]["chain_round"] = 3
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.chain_id == "client-chain-1"
+    assert record.chain_round == 3
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        get_resp = await client.get(
+            f"/jobs/{job_id}",
+            headers={"Authorization": "Bearer token"},
+        )
+    assert get_resp.status_code == 200, get_resp.text
+    data = get_resp.json()["data"]
+    assert data["chain_id"] == "client-chain-1"
+    assert data["chain_round"] == 3
 
 
 @pytest.mark.anyio

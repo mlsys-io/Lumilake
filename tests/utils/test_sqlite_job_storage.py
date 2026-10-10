@@ -51,6 +51,8 @@ class _Rec:
     finished_at: str | None = None
     error: str | None = None
     parent_job_id: str | None = None
+    chain_id: str | None = None
+    chain_round: int = 0
     inputs: dict[str, Any] = field(default_factory=dict)
     output_location: dict[str, Any] = field(default_factory=dict)
     progress: dict[str, Any] = field(default_factory=dict)
@@ -101,6 +103,22 @@ def test_save_and_load_round_trip(tmp_path, monkeypatch) -> None:
     storage.save(_Rec(job_id="job-xyz", status="running"))
     loaded = storage.load("job-xyz")
     assert loaded is not None and loaded["status"] == "running"
+
+
+def test_save_and_load_round_trip_keeps_chain_lineage(tmp_path, monkeypatch) -> None:
+    storage, _ = _sqlite(tmp_path, monkeypatch)
+    storage.save(
+        _Rec(
+            job_id="job-chain",
+            status="running",
+            chain_id="client-chain-1",
+            chain_round=3,
+        )
+    )
+    loaded = storage.load("job-chain")
+    assert loaded is not None
+    assert loaded["chain_id"] == "client-chain-1"
+    assert loaded["chain_round"] == 3
 
 
 def test_save_is_idempotent_upsert(tmp_path, monkeypatch) -> None:

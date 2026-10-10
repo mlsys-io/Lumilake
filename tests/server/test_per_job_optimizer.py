@@ -238,6 +238,8 @@ async def test_submit_stores_optimizer_lowercase_for_partition_key(
         optimizer_type: str | None = None,
         hardware_requirements: Any = None,
         parsed_graphs: Any = None,
+        chain_id: str | None = None,
+        chain_round: int = 0,
     ) -> None:
         captured.append(optimizer_type)
         captured_hardware.append(hardware_requirements)

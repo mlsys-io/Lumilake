@@ -564,6 +564,8 @@ class JobRecord:
     trace_ids: list[str] = field(default_factory=list)
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
+    chain_id: str | None = None
+    chain_round: int = 0
 
     def __post_init__(self) -> None:
         if not self.output_location:
@@ -627,6 +629,19 @@ class JobStatusPayload(BaseModel):
         default_factory=list,
         description=(
             "Job ids of the rounds this dynamic run has created so far, in order."
+        ),
+    )
+    chain_id: str | None = Field(
+        default=None,
+        description=(
+            "Chain lineage id this job belongs to: a client-declared chain id, "
+            "or the parent job id for a dynamic round's child job."
+        ),
+    )
+    chain_round: int = Field(
+        default=0,
+        description=(
+            "Zero-based round index within the chain; ``0`` for a standalone job."
         ),
     )
 
@@ -801,6 +816,25 @@ class JobSubmitItem(BaseModel):
         ),
     )
     name: str | None = Field(default=None, description="Optional workflow name.")
+    chain_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Optional chain lineage id declaring that this submission is one "
+            "round of a client-driven chain. Non-empty when set. It is carried "
+            "onto the job's config and used by chain-aware scheduling policies "
+            "such as ``plas`` to order rounds of the same chain together."
+        ),
+    )
+    chain_round: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Zero-based round index within the chain declared by ``chain_id``; "
+            "``0`` for a standalone job. Carried for lineage only and never "
+            "used for scheduling selection or ordering."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -1631,6 +1665,8 @@ async def _submit_dynamic_child(
         user_id=principal.external_id,
         progress=JobProgress(),
         parent_job_id=parent_job_id,
+        chain_id=parent_job_id,
+        chain_round=round_index,
     )
     async with jobs_lock:
         parent_record = jobs.get(parent_job_id)
@@ -2892,6 +2928,23 @@ async def submit_job(
             effective_batch_size,
         )
 
+    # A submission is one job; take the declared chain lineage from its first
+    # entry so a client-driven chain can be traced and scheduled chain-aware.
+    # All entries must agree on the lineage, since they form one job.
+    chain_id = entries[0].chain_id
+    chain_round = entries[0].chain_round
+    for idx, entry in enumerate(entries):
+        if entry.chain_id != chain_id or entry.chain_round != chain_round:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"entries disagree on chain lineage: entry 0 declares "
+                    f"chain_id={chain_id!r} chain_round={chain_round}, entry "
+                    f"{idx} declares chain_id={entry.chain_id!r} "
+                    f"chain_round={entry.chain_round}"
+                ),
+            )
+
     server = LumilakeServer.get_started_instance()
     try:
         graphs = server.parse_query(graph_specs)
@@ -2927,6 +2980,8 @@ async def submit_job(
         org_id=principal.org_id,
         user_id=principal.external_id,
         progress=JobProgress(),
+        chain_id=chain_id,
+        chain_round=chain_round,
     )
 
     async with jobs_lock:
@@ -2973,6 +3028,8 @@ async def submit_job(
                 optimizer,
                 hardware,
                 graphs,
+                chain_id=chain_id,
+                chain_round=chain_round,
             )
         )
     request.app.state.background_tasks.add(task)

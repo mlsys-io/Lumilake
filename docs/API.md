@@ -27,6 +27,8 @@ Versioned API routes live under `/api/v1`.
 | `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/stream?cursor` | Stream logs for a job's FlowMesh workflow as SSE. |
 | `GET /api/v1/jobs/{job_id}/workflows/{workflow_id}/logs/download` | Download per-task archived logs as a tar archive (`application/x-tar`). |
 
+Each item in the `data` list accepts `workflow`, `inputs`, `output_location`, `input_batch_size`, `name`, and two optional chain-lineage fields: `chain_id` (a non-empty string when set) and `chain_round` (an integer `>= 0`, default `0`). `chain_id` / `chain_round` let a client that runs its own agent loop declare that its submissions form one chain; they are carried onto the job's config, where `chain_id` is used by chain-aware scheduling policies such as `plas` and `chain_round` is lineage only (never used for selection or ordering). Without `chain_id`, a job is its own chain. `GET /api/v1/jobs/{job_id}` returns the job's `chain_id` and `chain_round` fields.
+
 ## Workers
 
 | Route | Purpose |
