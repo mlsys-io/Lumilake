@@ -1598,6 +1598,119 @@ async def test_list_lambda_output_multi_slice_run_fails_closed(
     )
 
 
+class _AlignedRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch but runs the real row-wise aggregation for an
+    aligned python step, proving its per-row output splits across slices."""
+
+    def __init__(self, *, items: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._items = items
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        flowmesh_manager = FlowmeshRuntimeManager()
+        flat_outputs: dict[str, list[str]] = {}
+        for node_id in request_info.output_node_map:
+            flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
+                output_op_id=node_id,
+                output_task_id="task-1",
+                request_id=request_info.request_id,
+                items=self._items,
+                output_path="items.output",
+                list_lambda=False,
+                list_lambda_cardinality=False,
+            )
+        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+
+
+def _install_aligned_build_and_schedule(server: Any, output_name: str) -> None:
+    """Fake build/schedule that marks the output node as an aligned python step."""
+
+    def _fake_build(
+        compiled_graph: Any,
+        task_type_override: str | None = None,
+        node_prefix: str | None = None,
+    ) -> RuntimeGraph:
+        assert node_prefix is not None
+        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
+        node_id = f"{node_prefix}__{suffix}"
+        op = RuntimeOp(
+            node_id=node_id,
+            task_type="python",
+            backend="python",
+            model="",
+            data_spec={"mode": "aligned"},
+            model_spec={},
+            inference_spec={},
+        )
+        output_node_map = (
+            {} if task_type_override == "data_profile" else {node_id: output_name}
+        )
+        return RuntimeGraph(
+            nodes={node_id: op}, node_order=[node_id], output_node_map=output_node_map
+        )
+
+    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+
+    async def _fake_schedule(
+        *,
+        request_id: str,
+        batch_id: str,
+        optimizer_type: str,
+        runtime_graph: RuntimeGraph,
+        selected_workers: list[str],
+        worker_profiles: dict[str, dict[str, Any]],
+        data_profile_results: dict[str, list[dict[str, Any]]],
+        member_request_ids: set[str] | None = None,
+        bearer_token: str | None = None,
+    ) -> Schedule:
+        return Schedule(
+            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
+        )
+
+    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_aligned_output_multi_slice_run_splits_per_slice(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An aligned python step is row-cardinality: its per-row output splits
+    across slices instead of failing the list-Lambda whole-list check."""
+    server = server_factory()
+    server.runtime_manager = cast(
+        Any, _AlignedRuntimeManager(items=[{"output": "r0"}, {"output": "r1"}])
+    )
+
+    slice0, slice1 = make_workflow_slices_from_inputs(
+        request_id="req-aligned",
+        public_graph_name="shared",
+        entities=["NVDA", "AAPL"],
+    )
+    handlers = attach_request_states(server, [slice0, slice1])
+    batch = make_batch([slice0, slice1])
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_aligned_build_and_schedule(server, "observations")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-aligned"].results[0]
+    assert resp.error_info is None
+    observations = resp.outputs["shared"]["observations"]
+    assert observations == ["r0", "r1"]
+
+
 @pytest.mark.asyncio
 async def test_rowwise_api_output_demuxes_two_row_slice(
     server_factory,

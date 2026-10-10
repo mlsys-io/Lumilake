@@ -21,6 +21,23 @@ from pydantic import (
 )
 
 
+class DriverApi(BaseModel):
+    """External OpenAI-compatible planner endpoint for a dynamic run.
+
+    When set, the server calls the planner endpoint directly between rounds
+    instead of embedding a proposer op in the round graph. ``url`` is the full
+    chat-completions URL; ``authorization`` is sent as the Authorization header.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: StrictStr
+    model: StrictStr | None = None
+    authorization: StrictStr | None = None
+    timeout_sec: StrictFloat | None = Field(default=None, gt=0)
+    retries: StrictInt | None = Field(default=None, ge=0)
+
+
 class DriverSettings(BaseModel):
     """Driver settings for a dynamic workflow run."""
 
@@ -41,6 +58,7 @@ class DriverSettings(BaseModel):
     gpu_memory_utilization: StrictFloat | None = Field(default=None, gt=0, le=1)
     dtype: StrictStr | None = None
     extra_engine_kwargs: dict[StrictStr, Any] | None = None
+    api: DriverApi | None = None
 
     @field_validator("dtype")
     @classmethod

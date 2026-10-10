@@ -69,6 +69,11 @@ For DataFrame-shaped fields (e.g. `items.table` from SQL retrievals which
 arrive as JSON-encoded DataFrames), the walker decodes the string once and
 continues traversal — so `items.table.symbol` projects the `symbol` column.
 
+The path `items` (exactly, with no field) selects the whole result item rather
+than one field of it. Dynamic workflows use it to archive each leaf and each
+`export`ed op so later rounds can read any field of the stored item; see
+[`docs/SDK.md`](SDK.md#dynamic-workflows).
+
 > **n8n note.** n8n-imported workflows do **not** support the `path:`
 > selector — n8n's UI has no equivalent annotation. They fall back to the
 > mode-derived default automatically, which covers the common
@@ -89,6 +94,8 @@ params:
 ```
 
 For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns.
+
+An `aggregate_table` column may reference a workflow input by `node` with an empty `path` (`path: ""`), in which case the input's literal values are inlined as the column's list rather than read from a runtime envelope.
 
 Live sampling is **off by default**. The recommended path is to set `sample_value` on the upstream `data_spec` — that supplies a representative value at build time with zero live execution. To explicitly opt in to bounded live queries, set `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING=1`. To skip data profiling entirely, set `LUMILAKE_DISABLE_DATA_PROFILE=1`.
 

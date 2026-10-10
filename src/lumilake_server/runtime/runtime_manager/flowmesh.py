@@ -87,6 +87,29 @@ def _resolve_gpu_memory(hardware: HardwareRequirements | None) -> str:
     return envs.HARDWARE_GPU_MEMORY_REQUIREMENT
 
 
+def _select_dataframe_column(value: Any, attr: str) -> Any:
+    """Select a column from a serialized DataFrame mapping (``{"df": "<json>"}``)
+    as a list in row order, or ``None`` if ``value`` is not such a mapping."""
+    if not isinstance(value, Mapping) or list(value) != ["df"]:
+        return None
+    if not isinstance(value["df"], str):
+        return None
+    try:
+        decoded = json.loads(value["df"])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, Mapping):
+        return None
+    column = decoded.get(attr)
+    if not isinstance(column, Mapping):
+        return None
+    try:
+        ordered = sorted(column, key=int)
+    except (TypeError, ValueError):
+        ordered = list(column)
+    return [column[k] for k in ordered]
+
+
 def _walk_output_path(
     item: Mapping[str, Any], parts: Sequence[str], output_op_id: str
 ) -> Any:
@@ -111,12 +134,16 @@ def _walk_output_path(
             if isinstance(value, list) and all(isinstance(v, Mapping) for v in value):
                 value = [_walk_output_path(v, (attr,), output_op_id) for v in value]
             else:
-                if not isinstance(value, Mapping) or attr not in value:
+                column = _select_dataframe_column(value, attr)
+                if column is not None:
+                    value = column
+                elif not isinstance(value, Mapping) or attr not in value:
                     raise RuntimeError(
                         f"output node {output_op_id} item missing field at path "
                         f"'items.{'.'.join(walked)}': {item}"
                     )
-                value = value[attr]
+                else:
+                    value = value[attr]
         if index is not None:
             if isinstance(value, list) and all(isinstance(v, list) for v in value):
                 value = [
@@ -1066,22 +1093,29 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         else:
             output_field_parts = ("output",)
             if output_path is not None:
-                if (
-                    not isinstance(output_path, str)
-                    or not output_path.startswith("items.")
-                    or output_path == "items."
-                ):
+                if not isinstance(output_path, str) or output_path == "items.":
                     raise RuntimeError(
                         f"OutputOp {output_op_id!r} has malformed path "
                         f"{output_path!r}"
                     )
-                parts = tuple(output_path[len("items.") :].split("."))
-                if not parts or any(not part or part.startswith("[") for part in parts):
-                    raise RuntimeError(
-                        f"OutputOp {output_op_id!r} has malformed path "
-                        f"{output_path!r}"
-                    )
-                output_field_parts = parts
+                if output_path == "items":
+                    # Select the whole result item.
+                    output_field_parts = ()
+                else:
+                    if not output_path.startswith("items."):
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    parts = tuple(output_path[len("items.") :].split("."))
+                    if not parts or any(
+                        not part or part.startswith("[") for part in parts
+                    ):
+                        raise RuntimeError(
+                            f"OutputOp {output_op_id!r} has malformed path "
+                            f"{output_path!r}"
+                        )
+                    output_field_parts = parts
         if list_lambda:
             return [
                 _coerce_output_value(

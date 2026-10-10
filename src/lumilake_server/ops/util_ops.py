@@ -119,7 +119,7 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn
 
-    LAMBDA_MODES = ("row", "list")
+    LAMBDA_MODES = ("row", "list", "aligned")
 
     @overload
     def __init__(
@@ -139,6 +139,17 @@ class LambdaOp(Op):
         fn: ListLambdaFn,
         code: str | None = None,
         mode: Literal["list"] = "list",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: ListLambdaFn,
+        code: str | None = None,
+        mode: Literal["aligned"] = "aligned",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
     ) -> None: ...
@@ -200,6 +211,11 @@ class LambdaOp(Op):
 
                     fn_serialized = re.sub(pattern, _replace, fn_serialized)
             self.code = fn_serialized
+
+    @property
+    def takes_whole_columns(self) -> bool:
+        """List and aligned Lambdas receive whole columns and return a list."""
+        return self.mode in ("list", "aligned")
 
     def _serialize(self) -> dict[str, Any]:
         data: dict[str, Any] = {

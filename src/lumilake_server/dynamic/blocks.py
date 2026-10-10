@@ -8,6 +8,7 @@ LambdaOp and a proposer LLMChatOp). It is an internal implementation detail,
 not a public extension point.
 """
 
+from collections.abc import Sequence
 from typing import Any
 
 from lumilake_server.common import GenerationConfig
@@ -49,6 +50,7 @@ def fused_round_graph(
     subgraph: dict[str, dict[str, Any]],
     *,
     leaf_ids: list[str],
+    export_ids: Sequence[str] = (),
     proposer_system: str,
     proposer_user: str,
     lambda_code: str,
@@ -60,6 +62,7 @@ def fused_round_graph(
     gpu_memory_utilization: float | None = None,
     dtype: str | None = None,
     extra_engine_kwargs: dict[str, Any] | None = None,
+    include_proposer: bool = True,
 ) -> dict[str, Any]:
     """Assemble the native graph for one fused round.
 
@@ -67,14 +70,21 @@ def fused_round_graph(
     ``subgraph`` is an ordered mapping of native op dicts (``_id``/``_op``/
     ``_inputs`` form) already validated and topologically sorted. ``leaf_ids``
     names the current round's leaf nodes (a subset of ``subgraph``) to observe
-    and archive. Each leaf gets an ``OutputOp`` so its result is archived; the
-    leaves are fed directly to the observation LambdaOp (one input per leaf);
-    the proposer is a leaf consuming the observation as its sole user message,
-    so it sees only the compact stats + preview.
+    and archive; ``export_ids`` names non-leaf ops later rounds will reference.
+    Each leaf and each exported op gets an ``OutputOp`` with ``path: items`` so
+    its whole result item is archived for later rounds; the leaves are fed
+    directly to the observation LambdaOp (one input per leaf); the proposer is
+    a leaf consuming the observation as its sole user message, so it sees only
+    the compact stats + preview. With ``include_proposer=False`` the graph
+    carries only the emitted ops and their archived outputs (no observation
+    lambda, no proposer, no plan output); the planner runs server-side.
     """
     for leaf_id in leaf_ids:
         if leaf_id not in subgraph:
             raise ValueError(f"leaf id {leaf_id!r} not present in the subgraph")
+    for export_id in export_ids:
+        if export_id not in subgraph:
+            raise ValueError(f"export id {export_id!r} not present in the subgraph")
 
     ordered: dict[str, Any] = {}
     for node_id, node in subgraph.items():
@@ -84,11 +94,20 @@ def fused_round_graph(
     for leaf_id in leaf_ids:
         leaf_ref = DataOp(data=[])
         leaf_ref.id = leaf_id
-        output = OutputOp(name=f"leaf_{leaf_id}", output=leaf_ref)
+        output = OutputOp(name=f"leaf_{leaf_id}", output=leaf_ref, path="items")
         output.id = f"output_{leaf_id}"
+        leaf_outputs[output.id] = output.serialize()
+    for export_id in export_ids:
+        export_ref = DataOp(data=[])
+        export_ref.id = export_id
+        output = OutputOp(name=f"export_{export_id}", output=export_ref, path="items")
+        output.id = f"output_export_{export_id}"
         leaf_outputs[output.id] = output.serialize()
     for node_id, node in leaf_outputs.items():
         ordered[node_id] = node
+
+    if not include_proposer:
+        return ordered
 
     if leaf_ids:
         leaf_refs = [DataOp(data=[]) for _ in leaf_ids]

@@ -60,17 +60,21 @@ from lumilake_server.dynamic.driver import (
     STOP,
     DriverProtocolError,
     StopPlan,
+    SubgraphPlan,
     build_round,
     compute_observation,
     plan_to_dict,
+    planner_messages,
     resolve_subgraph,
     result_outputs,
     round_output_location,
     validate_emitted_subgraph,
     validate_library,
     validate_plan,
+    validate_plan_text,
+    walk_archived_items,
 )
-from lumilake_server.dynamic.spec import DynamicSpec
+from lumilake_server.dynamic.spec import DriverApi, DynamicSpec
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.hooks.security import (
     authenticate_request,
@@ -319,13 +323,14 @@ def _effective_dynamic_output_location(
 
 def _render_dynamic_round0(
     spec: DynamicSpec,
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Render the round-0 native graph for a validated dynamic spec.
 
     Returns ``(graph, output_location)``, where ``output_location`` is the
     driver's validated output location, or ``None`` when the spec does not
-    declare one. Raises ``HTTPException`` 422 for an invalid driver config or
-    unsupported op.
+    declare one. With ``api`` set the graph is ``None`` because round 0
+    dispatches no graph. Raises ``HTTPException`` 422 for an invalid driver
+    config or unsupported op.
     """
     if spec.driver.poll_interval != 2.0:
         raise HTTPException(
@@ -338,6 +343,8 @@ def _render_dynamic_round0(
     declared_output_location = spec.driver.output_location
     try:
         validate_library(spec.library)
+        if spec.driver.api is not None:
+            return None, declared_output_location
         round_build = build_round(
             [],
             node_registry={},
@@ -368,35 +375,36 @@ def _render_dynamic_round0(
 def _validate_dynamic_submission(
     resolved_inputs: dict[str, dict[str, list[str]]],
 ) -> None:
-    """Enforce the dynamic one-symbol contract after input resolution.
+    """Enforce the dynamic symbol contract after input resolution.
 
     Shared by submit and preview so both doors reject the same invalid dynamic
-    requests: exactly one non-empty ``Symbols`` value.
+    requests: at least one ``Symbols`` value, none of them blank.
     """
     name = next(iter(resolved_inputs))
     symbols = list(resolved_inputs[name].get(INPUT_NODE_ID, []))
-    if len(symbols) != 1 or not symbols[0].strip():
+    if not symbols or any(not symbol.strip() for symbol in symbols):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                "dynamic workflow requires exactly one non-empty symbol per "
-                f"run; got {len(symbols)}"
+                "dynamic workflow requires at least one symbol and no blank "
+                f"symbols; got {symbols!r}"
             ),
         )
 
 
-def _extract_leaf_outputs(
-    outputs: dict[str, Any], expected_names: list[str]
+def _extract_archived_outputs(
+    outputs: dict[str, Any], expected_names: list[str], prefix: str
 ) -> dict[str, list[str]]:
-    """Extract the archived leaf outputs for the expected leaf set.
+    """Extract the archived outputs for the expected output set.
 
-    ``expected_names`` lists the ``leaf_<internal_id>`` output names for the
-    round's leaves. Every expected leaf must be present, be a list, and carry
-    exactly one value (the single-symbol contract). The documented archive
-    representation is a list containing exactly one STRING; any other element
-    type (a decoded dict or list) is rejected rather than coerced, because
-    str()-ing a decoded value would silently degrade the observation. A missing
-    or malformed leaf raises :class:`DriverProtocolError`.
+    ``expected_names`` lists the ``<prefix><internal_id>`` output names for the
+    round's archived ops (leaves and exports). Every expected output must be
+    present and be a list of strings; a row-wise producer emits one item per
+    row, so any number of values is accepted and all are stored. Each value is
+    a JSON item (the documented archive representation); a non-string element
+    is rejected rather than coerced, because str()-ing a decoded value would
+    silently degrade the observation. A missing or malformed output raises
+    :class:`DriverProtocolError`.
     """
     present: dict[str, list[str]] = {}
     for graph_outputs in outputs.values():
@@ -404,24 +412,37 @@ def _extract_leaf_outputs(
             continue
         for name, values in graph_outputs.items():
             if name in expected_names:
+                if name in present:
+                    raise DriverProtocolError(
+                        f"output {name!r} was returned by more than one graph; "
+                        "a round's slices must merge into one batch"
+                    )
                 present[name] = values
-    leaf_outputs: dict[str, list[str]] = {}
+    archived: dict[str, list[str]] = {}
     for name in expected_names:
         if name not in present:
-            raise DriverProtocolError(f"round is missing expected leaf output {name!r}")
+            raise DriverProtocolError(f"round is missing expected output {name!r}")
         values = present[name]
-        if not isinstance(values, list) or len(values) != 1:
+        if not isinstance(values, list):
             raise DriverProtocolError(
-                f"leaf output {name!r} must be a list with exactly one value "
-                f"(single-symbol contract), got {values!r}"
+                f"output {name!r} must be a list of strings (documented "
+                f"archive representation), got {values!r}"
             )
-        if not isinstance(values[0], str):
-            raise DriverProtocolError(
-                f"leaf output {name!r} must be a list containing exactly one "
-                f"string (documented archive representation), got {values[0]!r}"
-            )
-        leaf_outputs[name[len("leaf_") :]] = [values[0]]
-    return leaf_outputs
+        for value in values:
+            if not isinstance(value, str):
+                raise DriverProtocolError(
+                    f"output {name!r} must be a list of strings (documented "
+                    f"archive representation), got {value!r}"
+                )
+        archived[name[len(prefix) :]] = list(values)
+    return archived
+
+
+def _extract_leaf_outputs(
+    outputs: dict[str, Any], expected_names: list[str]
+) -> dict[str, list[str]]:
+    """Extract the archived leaf outputs for the expected leaf set."""
+    return _extract_archived_outputs(outputs, expected_names, "leaf_")
 
 
 def _flatten_leaf_outputs(
@@ -1070,6 +1091,13 @@ def _validate_runtime_graphs(
             ) from exc
 
 
+_GPU_ZERO_CONFLICT = (
+    "hardware.gpu=0 conflicts with workflow: this graph contains "
+    "ops that require a GPU worker (vLLM / transformers / "
+    "diffusers / text-to-image). Drop --gpu 0 or remove the GPU op."
+)
+
+
 def _any_graph_requires_gpu(
     server: LumilakeServer, graphs: dict[str, CompiledGraph]
 ) -> bool:
@@ -1675,6 +1703,7 @@ async def _submit_dynamic_child(
     parent_job_id: str,
     graph: dict[str, Any],
     symbols: list[str],
+    forwarded_inputs: dict[str, list[str]],
     output_location: IOLocation,
     priority: Priority,
     principal: PrincipalContext,
@@ -1692,25 +1721,72 @@ async def _submit_dynamic_child(
     """
     child_job_id = f"req-{unique_id()}"
     graph_name = f"round_{round_index}"
-    graph_specs = {
-        graph_name: {"graph": graph, "inputs": {INPUT_NODE_ID: list(symbols)}}
-    }
-    workflow_slices = {
-        graph_name: WorkflowSliceMeta(
-            public_graph_name=graph_name,
-            slice_index=0,
-            slice_start=0,
-            slice_length=len(symbols),
-            total_length=len(symbols),
-            template_hash=_workflow_template_hash(graph, "native"),
-            varying_input_keys=(),
+    inputs = {INPUT_NODE_ID: list(symbols)}
+    inputs.update(forwarded_inputs)
+    # Slice the round exactly as a static submission with ``input_batch_size:
+    # 1`` does: one graph per row, merged back into one batch by the job
+    # manager.
+    total_length, varying_input_keys = _input_shape(inputs)
+    input_batches = _chunk_inputs(inputs, 1)
+    template_hash = _workflow_template_hash(graph, "native")
+    graph_specs: dict[str, dict[str, Any]] = {}
+    workflow_slices: dict[str, WorkflowSliceMeta] = {}
+    slice_start = 0
+    for batch_idx, batch_inputs in enumerate(input_batches):
+        slice_name = (
+            graph_name
+            if len(input_batches) == 1
+            else f"{graph_name}__slice_{batch_idx + 1}"
         )
-    }
+        slice_length, _ = _input_shape(batch_inputs)
+        workflow_slices[slice_name] = WorkflowSliceMeta(
+            public_graph_name=graph_name,
+            slice_index=batch_idx,
+            slice_start=slice_start,
+            slice_length=slice_length,
+            total_length=total_length,
+            template_hash=template_hash,
+            varying_input_keys=varying_input_keys,
+        )
+        _dispatch_workflow_to_graph_specs(
+            workflow_format="native",
+            workflow_payload=graph,
+            batch_inputs=batch_inputs,
+            graph_name=slice_name,
+            graph_specs=graph_specs,
+            idx=0,
+        )
+        slice_start += slice_length
+    # An api-driven run checks hardware.gpu == 0 per real round.
+    child_graphs: dict[str, CompiledGraph] | None = None
+    if hardware_requirements is not None and hardware_requirements.gpu == 0:
+        server = LumilakeServer.get_started_instance()
+        error: str | None = None
+        try:
+            child_graphs = server.parse_query(graph_specs)
+        except (ValueError, KeyError, RuntimeError) as exc:
+            error = f"dynamic round {round_index} failed to compile: {exc}"
+        else:
+            if _any_graph_requires_gpu(server, child_graphs):
+                error = _GPU_ZERO_CONFLICT
+        if error is not None:
+            async with jobs_lock:
+                parent_record = jobs.get(parent_job_id)
+                if (
+                    parent_record is None
+                    or parent_record.status in TERMINAL_JOB_STATUSES
+                ):
+                    return None
+                parent_record.status = "failed"
+                parent_record.error = error
+                parent_record.finished_at = _now()
+            await asyncio.to_thread(_job_storage.save, parent_record)
+            return None
     child_record = JobRecord(
         job_id=child_job_id,
         status="pending",
         submitted_at=_now(),
-        inputs={graph_name: {INPUT_NODE_ID: list(symbols)}},
+        inputs={graph_name: inputs},
         output_location={graph_name: output_location},
         org_id=principal.org_id,
         user_id=principal.external_id,
@@ -1746,6 +1822,7 @@ async def _submit_dynamic_child(
             trace_id,
             optimizer_type,
             hardware_requirements,
+            parsed_graphs=child_graphs,
             suppress_hooks=True,
             chain_id=parent_job_id,
             chain_round=round_index,
@@ -1826,6 +1903,79 @@ async def _fire_parent_terminal_hooks(
             logger.exception("Failed to register trace %s", trace_id)
 
 
+async def _call_api_planner(
+    api: DriverApi,
+    *,
+    model: str,
+    system: str,
+    user: str,
+    max_tokens: int,
+    temperature: float,
+    chat_template_kwargs: dict[str, Any] | None,
+) -> str:
+    """POST the planner messages to ``api.url`` and return the reply text.
+
+    Sends an OpenAI-compatible chat-completions request and returns
+    ``choices[0].message.content``. A failed call, after ``api.retries``
+    retries, raises :class:`DriverProtocolError`.
+    """
+    body: dict[str, Any] = {
+        "model": api.model or model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if chat_template_kwargs:
+        body["chat_template_kwargs"] = chat_template_kwargs
+    headers = {"Content-Type": "application/json"}
+    if api.authorization:
+        headers["Authorization"] = api.authorization
+    timeout = api.timeout_sec or envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+    attempts = (api.retries or 0) + 1
+    last_error = ""
+    for _ in range(attempts):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(api.url, json=body, headers=headers)
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            continue
+        if not isinstance(content, str):
+            last_error = f"reply content is {type(content).__name__}, not a string"
+            continue
+        return content
+    raise DriverProtocolError(
+        f"planner endpoint {api.url} failed after {attempts} attempt(s): {last_error}"
+    )
+
+
+def _admit_subgraph(
+    plan: SubgraphPlan,
+    node_registry: dict[str, dict[str, Any]],
+    max_nodes: int,
+    library: dict[str, dict[str, Any]] | None,
+    results: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Validate an emitted subgraph, resolve it, and register its nodes."""
+    validate_emitted_subgraph(
+        plan.ops,
+        node_registry,
+        max_nodes,
+        library,
+        export=plan.export,
+        results=results,
+    )
+    resolved = resolve_subgraph(plan.ops, library)
+    for op in resolved:
+        node_registry[op["id"]] = op
+    return resolved
+
+
 async def _run_dynamic_job(
     parent_job_id: str,
     spec: DynamicSpec,
@@ -1864,6 +2014,7 @@ async def _run_dynamic_job(
         stopped_by: str | None = None
         plans: list[dict[str, Any]] = []
         round_results: list[dict[str, list[str]]] = []
+        all_results: dict[str, list[dict[str, Any]]] = {}
 
         async with jobs_lock:
             record.progress.execution = ProgressStep(
@@ -1879,8 +2030,56 @@ async def _run_dynamic_job(
 
         round_index = 0
         current_subgraph: list[dict[str, Any]] = []
+        current_export: list[str] = []
+        api = spec.driver.api
+        include_proposer = api is None
         while round_index < max_rounds:
             topology = list(node_registry.keys())
+            if api is not None and round_index == 0:
+                # Round 0 dispatches no graph: the planner is asked for the
+                # first subgraph directly, which round 1 then runs.
+                try:
+                    system, user = planner_messages(
+                        goal=spec.goal,
+                        observations=observations,
+                        topology=topology,
+                        threshold=spec.driver.threshold,
+                        library=spec.library,
+                        has_subgraph=False,
+                    )
+                    plan = validate_plan_text(
+                        await _call_api_planner(
+                            api,
+                            model=spec.driver.model,
+                            system=system,
+                            user=user,
+                            max_tokens=spec.driver.max_tokens,
+                            temperature=spec.driver.temperature,
+                            chat_template_kwargs=spec.driver.chat_template_kwargs,
+                        )
+                    )
+                    plans.append(plan_to_dict(plan))
+                    if isinstance(plan, StopPlan):
+                        stopped_by = STOP
+                        break
+                    current_subgraph = _admit_subgraph(
+                        plan, node_registry, max_nodes, spec.library, all_results
+                    )
+                    current_export = plan.export
+                except (DriverProtocolError, ValueError) as exc:
+                    async with jobs_lock:
+                        if record.status in TERMINAL_JOB_STATUSES:
+                            return
+                        record.status = "failed"
+                        record.error = (
+                            f"dynamic round {round_index} produced an invalid plan: "
+                            f"{exc}"
+                        )
+                        record.finished_at = _now()
+                    await asyncio.to_thread(_job_storage.save, record)
+                    return
+                round_index += 1
+                continue
             try:
                 round_build = build_round(
                     current_subgraph,
@@ -1895,11 +2094,15 @@ async def _run_dynamic_job(
                     temperature=spec.driver.temperature,
                     threshold=spec.driver.threshold,
                     library=spec.library,
+                    results=all_results,
+                    export=current_export,
                     chat_template_kwargs=spec.driver.chat_template_kwargs,
                     max_model_len=spec.driver.max_model_len,
                     gpu_memory_utilization=spec.driver.gpu_memory_utilization,
                     dtype=spec.driver.dtype,
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
+                    include_proposer=include_proposer,
+                    rows=len(symbols),
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -1915,6 +2118,7 @@ async def _run_dynamic_job(
                     parent_job_id=parent_job_id,
                     graph=round_build.graph,
                     symbols=symbols,
+                    forwarded_inputs=round_build.forwarded_inputs,
                     output_location=_IO_LOCATION_ADAPTER.validate_python(
                         round_output_location(
                             output_location.model_dump(), run_namespace, round_index
@@ -1974,28 +2178,91 @@ async def _run_dynamic_job(
                 return
             try:
                 outputs = result_outputs({"result": {"outputs": result.outputs}})
-                plan = validate_plan(outputs)
-                plans.append(plan_to_dict(plan))
                 leaf_outputs = _extract_leaf_outputs(
                     outputs, round_build.leaf_output_names
                 )
-                round_results.append(_flatten_leaf_outputs(leaf_outputs))
-                observations.append(
-                    compute_observation(leaf_outputs, spec.driver.preview_width)
+                export_outputs = _extract_archived_outputs(
+                    outputs, round_build.export_output_names, "export_"
                 )
+                # Leaf and export outputs archive the whole result item; walk
+                # each with its producer's default path so the observation and
+                # stored round results keep the pre-forwarding text values.
+                internal_configs: dict[str, dict[str, Any]] = {}
+                for name, user_id in zip(
+                    round_build.leaf_output_names, round_build.leaf_user_ids
+                ):
+                    internal_configs[name[len("leaf_") :]] = node_registry[user_id]
+                for name, user_id in zip(
+                    round_build.export_output_names, round_build.export_user_ids
+                ):
+                    internal_configs[name[len("export_") :]] = node_registry[user_id]
+                walked_leaves = walk_archived_items(leaf_outputs, internal_configs)
+                round_results.append(_flatten_leaf_outputs(walked_leaves))
+                observation = compute_observation(
+                    walked_leaves, spec.driver.preview_width
+                )
+                if api is None:
+                    plan = validate_plan(outputs)
+                else:
+                    system, user = planner_messages(
+                        goal=spec.goal,
+                        observations=observations,
+                        topology=topology,
+                        threshold=spec.driver.threshold,
+                        library=spec.library,
+                        has_subgraph=bool(current_subgraph),
+                        round_observation=(
+                            observation if round_build.leaf_output_names else None
+                        ),
+                    )
+                    plan = validate_plan_text(
+                        await _call_api_planner(
+                            api,
+                            model=spec.driver.model,
+                            system=system,
+                            user=user,
+                            max_tokens=spec.driver.max_tokens,
+                            temperature=spec.driver.temperature,
+                            chat_template_kwargs=spec.driver.chat_template_kwargs,
+                        )
+                    )
+                plans.append(plan_to_dict(plan))
+                observations.append(observation)
+                # Decode the archived whole items into results keyed by user id
+                # so a later round can forward references to them.
+                leaf_internal_to_user = dict(
+                    zip(
+                        (
+                            name[len("leaf_") :]
+                            for name in round_build.leaf_output_names
+                        ),
+                        round_build.leaf_user_ids,
+                    )
+                )
+                for internal_id, values in leaf_outputs.items():
+                    all_results[leaf_internal_to_user[internal_id]] = (
+                        _flatten_leaf_outputs({internal_id: values})[internal_id]
+                    )
+                export_internal_to_user = dict(
+                    zip(
+                        (
+                            name[len("export_") :]
+                            for name in round_build.export_output_names
+                        ),
+                        round_build.export_user_ids,
+                    )
+                )
+                for internal_id, values in export_outputs.items():
+                    all_results[export_internal_to_user[internal_id]] = (
+                        _flatten_leaf_outputs({internal_id: values})[internal_id]
+                    )
                 if isinstance(plan, StopPlan):
                     stopped_by = STOP
                     break
-                current_subgraph = plan.ops
-                validate_emitted_subgraph(
-                    current_subgraph,
-                    node_registry,
-                    max_nodes,
-                    spec.library,
+                current_subgraph = _admit_subgraph(
+                    plan, node_registry, max_nodes, spec.library, all_results
                 )
-                current_subgraph = resolve_subgraph(current_subgraph, spec.library)
-                for op in current_subgraph:
-                    node_registry[op["id"]] = op
+                current_export = plan.export
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:
@@ -2497,6 +2764,7 @@ async def preview_job(
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
     seen_public_names: set[str] = set()
     preview_request_id = f"preview-{unique_id()}"
+    dynamic_spec: DynamicSpec | None = None
 
     for idx, entry in enumerate(entries):
         workflow_payload = _decode_workflow_body(entry.workflow, workflow_format, idx)
@@ -2512,6 +2780,15 @@ async def preview_job(
             )
         if is_dynamic:
             dynamic_spec = _decode_dynamic_spec(entry.workflow, idx)
+            if dynamic_spec.driver.api is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=(
+                        "preview is not available for an api-driven dynamic "
+                        "workflow: its rounds come from the external planner "
+                        "at run time"
+                    ),
+                )
             workflow_payload, dynamic_output_location = _render_dynamic_round0(
                 dynamic_spec
             )
@@ -2606,11 +2883,7 @@ async def preview_job(
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "hardware.gpu=0 conflicts with workflow: this graph contains "
-                "ops that require a GPU worker (vLLM / transformers / "
-                "diffusers / text-to-image). Drop --gpu 0 or remove the GPU op."
-            ),
+            detail=_GPU_ZERO_CONFLICT,
         )
 
     preview_task_keys: list[str] = []
@@ -2936,72 +3209,73 @@ async def submit_job(
         resolved_inputs[name] = inputs
         output_locations[name] = output_location
 
-        template_hash = _workflow_template_hash(workflow_payload, workflow_format)
-        slice_start = 0
-        for batch_idx, batch_inputs in enumerate(input_batches):
-            graph_name = (
-                name if len(input_batches) == 1 else f"{name}__slice_{batch_idx + 1}"
-            )
-            if graph_name in graph_specs:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"duplicate internal graph name: {graph_name}",
+        if workflow_payload is not None:
+            template_hash = _workflow_template_hash(workflow_payload, workflow_format)
+            slice_start = 0
+            for batch_idx, batch_inputs in enumerate(input_batches):
+                graph_name = (
+                    name
+                    if len(input_batches) == 1
+                    else f"{name}__slice_{batch_idx + 1}"
                 )
-            slice_length, _ = _input_shape(batch_inputs)
-            workflow_slices[graph_name] = WorkflowSliceMeta(
-                public_graph_name=name,
-                slice_index=batch_idx,
-                slice_start=slice_start,
-                slice_length=slice_length,
-                total_length=total_length,
-                template_hash=template_hash,
-                varying_input_keys=varying_input_keys,
-            )
-            logger.debug(
-                "Resolved inputs for %s: %s",
-                graph_name,
-                {key: list(vals) for key, vals in batch_inputs.items()},
-            )
-            _dispatch_workflow_to_graph_specs(
-                workflow_format="native" if is_dynamic else workflow_format,
-                workflow_payload=workflow_payload,
-                batch_inputs=batch_inputs,
-                graph_name=graph_name,
-                graph_specs=graph_specs,
-                idx=idx,
-                parser_scope=name,
-            )
-            slice_start += slice_length
+                if graph_name in graph_specs:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=f"duplicate internal graph name: {graph_name}",
+                    )
+                slice_length, _ = _input_shape(batch_inputs)
+                workflow_slices[graph_name] = WorkflowSliceMeta(
+                    public_graph_name=name,
+                    slice_index=batch_idx,
+                    slice_start=slice_start,
+                    slice_length=slice_length,
+                    total_length=total_length,
+                    template_hash=template_hash,
+                    varying_input_keys=varying_input_keys,
+                )
+                logger.debug(
+                    "Resolved inputs for %s: %s",
+                    graph_name,
+                    {key: list(vals) for key, vals in batch_inputs.items()},
+                )
+                _dispatch_workflow_to_graph_specs(
+                    workflow_format="native" if is_dynamic else workflow_format,
+                    workflow_payload=workflow_payload,
+                    batch_inputs=batch_inputs,
+                    graph_name=graph_name,
+                    graph_specs=graph_specs,
+                    idx=idx,
+                    parser_scope=name,
+                )
+                slice_start += slice_length
 
-        logger.info(
-            "Prepared workflow '%s' into %d slice(s) with batch size %d",
-            name,
-            len(input_batches),
-            effective_batch_size,
-        )
+            logger.info(
+                "Prepared workflow '%s' into %d slice(s) with batch size %d",
+                name,
+                len(input_batches),
+                effective_batch_size,
+            )
 
     server = LumilakeServer.get_started_instance()
-    try:
-        graphs = server.parse_query(graph_specs)
-    except (ValueError, KeyError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"Graph compilation failed: {exc}",
-        ) from exc
-    _validate_runtime_graphs(server, graphs)
-    if (
-        hardware is not None
-        and hardware.gpu == 0
-        and _any_graph_requires_gpu(server, graphs)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "hardware.gpu=0 conflicts with workflow: this graph contains "
-                "ops that require a GPU worker (vLLM / transformers / "
-                "diffusers / text-to-image). Drop --gpu 0 or remove the GPU op."
-            ),
-        )
+    graphs: dict[str, CompiledGraph] = {}
+    if graph_specs:
+        try:
+            graphs = server.parse_query(graph_specs)
+        except (ValueError, KeyError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Graph compilation failed: {exc}",
+            ) from exc
+        _validate_runtime_graphs(server, graphs)
+        if (
+            hardware is not None
+            and hardware.gpu == 0
+            and _any_graph_requires_gpu(server, graphs)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=_GPU_ZERO_CONFLICT,
+            )
 
     if is_dynamic and dynamic_spec is not None:
         _validate_dynamic_submission(resolved_inputs)

@@ -180,7 +180,7 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
         ),
-        inputs=[stock],
+        inputs=[stock, news_sql],
     )
     vision = LLMVisionOp(
         [OpMessage(role="user", content="ignored")],
@@ -203,21 +203,275 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
 
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    embedding_id = f"{vision.id}_embedding"
-    vlm = runtime_graph.nodes[vision.id]
-    template = vlm.data_spec["template"]
-    columns = template["columns"]
-    assert {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}} in columns
+    # A per-row VLM over a retrieval flattens to four nodes: the flatten and
+    # regroup python steps, one embedding, and one inference.
+    assert runtime_graph.dsl_to_runtime[vision.id] == [
+        f"{vision.id}_flatten",
+        f"{vision.id}_embedding",
+        f"{vision.id}_infer",
+        vision.id,
+    ]
+    flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
+    assert flatten.task_type == "python"
+    assert flatten.data_spec["mode"] == "flatten"
+    assert flatten.data_spec["template"] == "Summarize {Stock} with title {title}."
+    plan = flatten.data_spec["plan"]
     assert {
-        "label": "title",
+        "kind": "literal",
+        "values": ["NVDA"],
+        "label": "Stock",
+        "grouped": False,
+    } in plan
+    assert {
+        "kind": "stage",
         "node": news_sql.id,
-        "path": "items.table.title",
-    } in columns
-    assert {"role": "user", "content": "Summarize {Stock} with title {title}."} in (
-        template["options"]["format"]["messages"]
+        "path": "table.title",
+        "label": "title",
+        "grouped": True,
+    } in plan
+
+    infer = runtime_graph.nodes[f"{vision.id}_infer"]
+    assert infer.task_type == "inference"
+    infer_columns = infer.data_spec["template"]["columns"]
+    assert infer_columns == [
+        {
+            "label": "prompt",
+            "node": f"{vision.id}_flatten",
+            "path": "value.items.output",
+        },
+        {
+            "label": f"{news_s3.id}_batch",
+            "node": f"{vision.id}_flatten",
+            "path": "value.items.output",
+        },
+    ]
+    assert infer.data_spec["image_embedding"] == {
+        "node": f"{vision.id}_embedding",
+        "path": "embedding_file",
+    }
+    assert f"{vision.id}_flatten" in infer.dependencies
+    assert f"{vision.id}_embedding" in infer.dependencies
+
+    regroup = runtime_graph.nodes[vision.id]
+    assert regroup.task_type == "python"
+    assert regroup.data_spec["mode"] == "regroup"
+    assert regroup.data_spec["plan"][0] == {
+        "kind": "stage",
+        "node": f"{vision.id}_infer",
+        "label": "outputs",
+    }
+    assert regroup.data_spec["plan"][1] == {
+        "kind": "stage",
+        "node": f"{vision.id}_flatten",
+        "path": "row",
+        "label": "rows",
+    }
+    assert regroup.data_spec["plan"][2] == {
+        "kind": "stage",
+        "node": news_s3.id,
+        "path": "content",
+        "label": "groups",
+        "grouped": True,
+    }
+    assert f"{vision.id}_infer" in regroup.dependencies
+    assert f"{vision.id}_flatten" in regroup.dependencies
+    assert news_s3.id in regroup.dependencies
+
+
+def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
+    """A rowwise column {label, node} with no path on an InputOp ref is bound
+    as a literal list column, not silently dropped."""
+    stock = input_placeholder("Stock")
+    news_sql = DataRetrievalOp(
+        data_spec=_sql_spec(
+            "SELECT title FROM news WHERE symbol = :symbol",
+            [{"name": "symbol", "node": stock.id}],
+        ),
+        inputs=[stock],
     )
-    assert embedding_id in vlm.dependencies
-    assert news_sql.id in vlm.dependencies
+    news_s3 = DataRetrievalOp(
+        data_spec=_s3_spec(
+            "example-data/news/images/{symbol}.png",
+            [{"name": "symbol", "node": stock.id}],
+        ),
+        inputs=[stock, news_sql],
+    )
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="ignored")],
+        image_source=news_s3.id,
+        image_source_op=news_s3,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+        rowwise_template="Summarize {Stock} with title {title}.",
+        rowwise_columns=[
+            {"label": "Stock", "node": stock.id},
+            {
+                "label": "title",
+                "node": news_sql.id,
+                "path": "items.table.title",
+            },
+        ],
+        system_messages=["You are concise."],
+    )
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
+    plan = flatten.data_spec["plan"]
+    # The InputOp ref without a path binds as a literal column in the flatten
+    # plan (one value per symbol).
+    assert {
+        "kind": "literal",
+        "values": ["NVDA", "AAPL"],
+        "label": "Stock",
+        "grouped": False,
+    } in plan
+    assert {
+        "kind": "stage",
+        "node": news_sql.id,
+        "path": "table.title",
+        "label": "title",
+        "grouped": True,
+    } in plan
+
+
+def test_rowwise_vlm_column_node_outside_graph_raises() -> None:
+    """A rowwise column node that is not reachable from the output (not wired
+    into the graph) is an error, not a silent drop."""
+    stock = input_placeholder("Stock")
+    news_sql = DataRetrievalOp(
+        data_spec=_sql_spec(
+            "SELECT title FROM news WHERE symbol = :symbol",
+            [{"name": "symbol", "node": stock.id}],
+        ),
+        inputs=[stock],
+    )
+    news_s3 = DataRetrievalOp(
+        data_spec=_s3_spec(
+            "example-data/news/images/{symbol}.png",
+            [{"name": "symbol", "node": stock.id}],
+        ),
+        inputs=[stock],
+    )
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="ignored")],
+        image_source=news_s3.id,
+        image_source_op=news_s3,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+        rowwise_template="Summarize {Stock} with title {title}.",
+        rowwise_columns=[
+            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+            {
+                "label": "title",
+                "node": news_sql.id,
+                "path": "items.table.title",
+            },
+        ],
+        system_messages=["You are concise."],
+    )
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="not reachable"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_rowwise_vlm_image_source_is_group_boundary() -> None:
+    """A flattened VLM whose only rowwise column is an InputOp (no retrieval
+    column) still builds: the image source defines the per-symbol groups."""
+    stock = input_placeholder("Stock")
+    news_s3 = DataRetrievalOp(
+        data_spec=_s3_spec(
+            "example-data/news/images/{symbol}.png",
+            [{"name": "symbol", "node": stock.id}],
+        ),
+        inputs=[stock],
+    )
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="ignored")],
+        image_source=news_s3.id,
+        image_source_op=news_s3,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "node": stock.id},
+        ],
+        system_messages=["You are concise."],
+    )
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert runtime_graph.dsl_to_runtime[vision.id] == [
+        f"{vision.id}_flatten",
+        f"{vision.id}_embedding",
+        f"{vision.id}_infer",
+        vision.id,
+    ]
+    flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
+    plan = flatten.data_spec["plan"]
+    # The image source is the group boundary and is the first plan entry.
+    assert plan[0] == {
+        "kind": "stage",
+        "node": news_s3.id,
+        "path": "content",
+        "label": f"{news_s3.id}_batch",
+        "grouped": True,
+    }
+    assert {
+        "kind": "literal",
+        "values": ["NVDA", "AAPL"],
+        "label": "Stock",
+        "grouped": False,
+    } in plan
+
+    regroup = runtime_graph.nodes[vision.id]
+    assert regroup.data_spec["plan"][2] == {
+        "kind": "stage",
+        "node": news_s3.id,
+        "path": "content",
+        "label": "groups",
+        "grouped": True,
+    }
+    assert news_s3.id in regroup.dependencies
+
+
+def test_rowwise_column_without_data_or_node_path_raises() -> None:
+    """A rowwise column with neither data nor node+path is an error, not a
+    silent drop."""
+    stock = input_placeholder("Stock")
+    news_sql = DataRetrievalOp(
+        data_spec=_sql_spec(
+            "SELECT title FROM news WHERE symbol = :symbol",
+            [{"name": "symbol", "node": stock.id}],
+        ),
+        inputs=[stock],
+    )
+    news_s3 = DataRetrievalOp(
+        data_spec=_s3_spec(
+            "example-data/news/images/{symbol}.png",
+            [{"name": "symbol", "node": stock.id}],
+        ),
+        inputs=[stock],
+    )
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="ignored")],
+        image_source=news_s3.id,
+        image_source_op=news_s3,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+        rowwise_template="Summarize {Stock} with title {title}.",
+        rowwise_columns=[
+            {"label": "Stock", "node": news_sql.id},
+        ],
+        system_messages=["You are concise."],
+    )
+    output = as_output("result", vision)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="without a path"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_local_rowwise_op_emits_condition() -> None:
@@ -243,6 +497,29 @@ def test_local_rowwise_op_emits_condition() -> None:
         "node": "gate",
         "expr": "gate == 'on'",
     }
+
+
+def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
+    """A rowwise LLMChatOp column {label, node} with no path on an InputOp ref
+    is bound as a literal list column, not silently dropped."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "node": stock.id},
+        ],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    columns = runtime_graph.nodes[row_id].data_spec["columns"]
+    assert {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}} in (
+        columns
+    )
 
 
 def test_local_aggregate_op_emits_condition() -> None:
@@ -784,6 +1061,49 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
         and {"label": "df", "value": "df"} in step.get("arguments", [])
         for step in steps
     )
+
+
+def test_aggregate_column_referencing_input_binds_literal_list() -> None:
+    """An aggregate_table column referencing an InputOp compiles to a literal
+    list column (InputOps never become runtime nodes, so the value is inlined
+    verbatim rather than emitted as a ``{node, path}`` ref)."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[{"label": "ticker", "node": stock.id, "path": ""}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    node = runtime_graph.nodes[row_id]
+    template = node.data_spec["template"]
+    df_col = next(col for col in template["columns"] if col.get("label") == "df")
+    table_columns = df_col["data"]["columns"]
+    assert table_columns == [
+        {"label": "ticker", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
+    ]
+    # The InputOp is bound as a literal column, so it must not become a
+    # dependency on a runtime node that does not exist.
+    assert not node.dependencies
+    assert stock.id not in (node.dependencies or [])
+
+
+def test_aggregate_column_referencing_input_rejects_drill_path() -> None:
+    """A non-empty ``path`` on an InputOp aggregate column is rejected: the
+    input has no runtime envelope to drill into."""
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[{"label": "ticker", "node": stock.id, "path": "items.output"}],
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+    with pytest.raises(ValueError, match="cannot be drilled"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_two_output_ops_on_one_list_lambda_rejected() -> None:

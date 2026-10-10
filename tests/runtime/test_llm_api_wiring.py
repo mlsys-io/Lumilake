@@ -1274,7 +1274,7 @@ def test_api_rowwise_node_ref_source_mapping_is_authoritative() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": "items.output"}],
+        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1529,6 +1529,51 @@ def test_vlm_rowwise_column_feeding_fanned_api_upstream_builds() -> None:
     assert upstream_cols[0]["path"] == "items.rows.json.choices[0].message.content"
 
 
+def _plain_llm(model: str, content: Any) -> LLMChatOp:
+    return LLMChatOp(
+        [OpMessage(role="user", content=content)],
+        config=GenerationConfig(model=model),
+    )
+
+
+def test_local_llm_consuming_multi_row_local_llm_binds_row_wise() -> None:
+    """A local LLM consuming a multi-row plain local LLM reads it as a node
+    column the worker resolves to one value per row."""
+    stock = input_placeholder("Stock")
+    upstream = _plain_llm("meta-llama/Llama-3.1-8B-Instruct", stock)
+    consumer = _plain_llm(
+        "meta-llama/Llama-3.1-8B-Instruct",
+        FormatOp("{a} {b}", a=stock, b=upstream),
+    )
+    output = as_output("result", consumer)
+    compiled = Graph.from_ops([output]).compile(Stock=["A", "B", "C"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    columns = {
+        col["label"]: col
+        for col in runtime_graph.nodes[consumer.id].data_spec["template"]["columns"]
+    }
+    assert columns[f"{upstream.id}_output"]["node"] == upstream.id
+    assert columns[stock.id]["data"]["items"] == ["A", "B", "C"]
+
+
+def test_local_llm_message_columns_with_mismatched_rows_fail_closed() -> None:
+    """Two multi-row message columns of different lengths cannot align."""
+    stock = input_placeholder("Stock")
+    other = input_placeholder("Other")
+    upstream = _plain_llm("meta-llama/Llama-3.1-8B-Instruct", other)
+    consumer = _plain_llm(
+        "meta-llama/Llama-3.1-8B-Instruct",
+        FormatOp("{a} {b}", a=stock, b=upstream),
+    )
+    output = as_output("result", consumer)
+    compiled = Graph.from_ops([output]).compile(Stock=["A", "B"], Other=["x", "y", "z"])
+
+    with pytest.raises(ValueError, match="different row counts"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
     """A DataRetrievalOp template param referencing a multi-row upstream must
     fail closed: a retrieval param binds a single node reference, so wiring it
@@ -1551,6 +1596,83 @@ def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
     )
     output = as_output("result", retrieval)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def _retrieval_with_params(upstream: LLMChatOp, stock: Any) -> DataRetrievalOp:
+    params = [
+        {"label": "symbol", "node": stock.id},
+        {"label": "start_date", "node": upstream.id, "path": "items.output"},
+    ]
+    return DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE s = '{symbol}' AND d >= '{start_date}'",
+            "params": params,
+        },
+        inputs=[stock, upstream],
+    )
+
+
+def test_retrieval_param_binds_row_wise_to_multi_row_local_llm() -> None:
+    """A retrieval param bound to a multi-row local LLM stays a node reference
+    that the worker resolves to one value per row, aligned with the row-wise
+    InputOp literal param."""
+    stock = input_placeholder("Stock")
+    planner = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    retrieval = _retrieval_with_params(planner, stock)
+    output = as_output("result", retrieval)
+    compiled = Graph.from_ops([output]).compile(Stock=["A", "B", "C"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    node = runtime_graph.nodes[retrieval.id]
+    assert tuple(node.dependencies or ()) == (planner.id,)
+    params = {p["label"]: p for p in node.data_spec["params"]}
+    assert params["symbol"]["data"] == {"type": "list", "items": ["A", "B", "C"]}
+    assert params["start_date"] == {
+        "label": "start_date",
+        "node": planner.id,
+        "path": "items.output",
+    }
+
+
+def test_retrieval_params_with_mismatched_row_counts_fail_closed() -> None:
+    """Row-wise params must carry the same number of rows; a 3-row upstream
+    against a 2-value literal list is ambiguous and fails at build time."""
+    stock = input_placeholder("Stock")
+    other = input_placeholder("Other")
+    planner = LLMChatOp(
+        [OpMessage(role="user", content=other)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    retrieval = _retrieval_with_params(planner, stock)
+    output = as_output("result", retrieval)
+    compiled = Graph.from_ops([output]).compile(Stock=["A", "B"], Other=["x", "y", "z"])
+
+    with pytest.raises(ValueError, match="different lengths"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_retrieval_param_feeding_multi_row_api_llm_fails_closed() -> None:
+    """An API-dispatched upstream does not expose one scalar item per row, so a
+    retrieval param cannot bind to it row-wise."""
+    stock = input_placeholder("Stock")
+    planner = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct", api=ApiConfig()
+        ),
+    )
+    retrieval = _retrieval_with_params(planner, stock)
+    output = as_output("result", retrieval)
+    compiled = Graph.from_ops([output]).compile(Stock=["A", "B", "C"])
 
     with pytest.raises(ValueError, match="produces multiple rows"):
         RuntimeGraphBuilder().build(compiled)
@@ -1747,7 +1869,7 @@ def test_condition_source_rowwise_node_ref_fails_closed() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": "items.output"}],
+        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
     )
     relay = FormatOp("{prior}", prior=gate)
     consumer = LLMChatOp(
@@ -1778,7 +1900,7 @@ def test_condition_source_rowwise_node_ref_consumer_first_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": "items.output"}],
+        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
     )
     consumer = LLMChatOp(
         [OpMessage(role="user", content="hi")],
@@ -2068,9 +2190,7 @@ def test_api_aggregate_upstream_read_at_item_path() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": stock.id, "path": "items.output"}
-        ],
+        aggregate_table=[{"label": "summary", "node": stock.id, "path": ""}],
     )
     aggregate.inputs.append(stock)
     rowwise = LLMChatOp(
