@@ -223,9 +223,6 @@ def build_app(config: LumilakeServerConfig | None = None) -> FastAPI:
     return app
 
 
-app = build_app()
-
-
 def run_api_server() -> None:
     # The server container always wants structured JSON logs; flip the
     # default here so log aggregators in the deploy stack ingest records

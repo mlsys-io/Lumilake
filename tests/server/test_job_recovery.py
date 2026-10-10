@@ -1,21 +1,12 @@
 import asyncio
 import datetime as dt
-import os
-import sys
 from contextlib import contextmanager
 
 import pytest
 
-# Importing lumilake_server.main runs envs.load_env_file_or_raise() and
-# envs.validate() at import time; satisfy those before importing it.
-os.environ.setdefault("LUMILAKE_SKIP_DOTENV_CHECK", "1")
-os.environ.setdefault("LUMILAKE_SERVER_HOST", "0.0.0.0")
-os.environ.setdefault("LUMILAKE_SERVER_PORT", "9000")
-os.environ.setdefault("LUMILAKE_RUNTIME_ORCHESTRATOR_URL", "http://127.0.0.1:18000")
-os.environ.setdefault("LUMILAKE_CPU_WORKER_GROUP_SIZE", "1")
-os.environ.setdefault("LUMILAKE_GPU_WORKER_GROUP_SIZE", "0")
-
+from lumilake import envs
 from lumilake_server.routes import jobs as jobs_routes
+from lumilake_server.runtime.server import LumilakeServerConfig
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils import job_storage as job_storage_module
 from lumilake_server.utils.job_storage import InMemoryJobStorage
@@ -161,8 +152,9 @@ async def test_startup_recovery_failure_schedules_background_retry(
     """When the startup recovery pass raises, a background
     ``recover_in_flight_jobs_until_done`` task is scheduled in
     ``app.state.background_tasks`` and cancelled cleanly on shutdown."""
-    # main.py runs ``app = build_app()`` at import, which parses sys.argv.
-    monkeypatch.setattr(sys, "argv", ["pytest"])
+    monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
+    monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
+    # main runs envs.validate() at import.
     from lumilake_server import main as main_module
 
     async def boom(**kwargs: object) -> int:
@@ -179,7 +171,14 @@ async def test_startup_recovery_failure_schedules_background_retry(
         main_module.LumilakeServer, "serve_instance", _noop_serve_instance
     )
 
-    app = main_module.build_app()
+    app = main_module.build_app(
+        LumilakeServerConfig(
+            host="127.0.0.1",
+            port=9000,
+            cpu_worker_group_size=1,
+            gpu_worker_group_size=0,
+        )
+    )
     async with app.router.lifespan_context(app):
         assert len(app.state.background_tasks) == 1
         task = next(iter(app.state.background_tasks))
