@@ -1111,27 +1111,42 @@ async def mark_running_jobs_failed(reason: str = "server shutdown") -> None:
     logger.warning("Marked %d jobs failed due to shutdown", len(active))
 
 
+_ACTIVE_STATUSES = frozenset({"pending", "running"})
+
+
 async def recover_in_flight_jobs(
     reason: str = "server restart during execution",
+    submitted_before: dt.datetime | None = None,
 ) -> int:
     """Mark storage-side ``pending``/``running`` jobs as failed; the
-    dispatch token they need only lives in process memory."""
+    dispatch token they need only lives in process memory.
+
+    The candidate list comes from the jobs index, which can lag the per-job
+    record (a record write that lands while its index update does not). A job
+    whose own record is already terminal is left as it is and its index entry
+    re-saved, so a completed job is never reported failed. With
+    ``submitted_before`` set, jobs submitted at or after that instant are
+    skipped: they belong to this process even if not yet in memory. A job whose
+    record cannot be read or written is retried by raising after the pass, so
+    the caller's background retry runs again.
+    """
     affected = 0
-    in_memory: dict[str, JobRecord] = {}
-    async with jobs_lock:
-        in_memory = dict(jobs)
+    repaired = 0
+    unreachable: list[str] = []
     summaries = await asyncio.to_thread(
-        lambda: list(_job_storage.iter_summaries({"pending", "running"}))
+        lambda: list(_job_storage.iter_summaries(set(_ACTIVE_STATUSES)))
     )
     for summary in summaries:
-        if summary.job_id in in_memory:
-            continue
+        async with jobs_lock:
+            if summary.job_id in jobs:
+                continue
         try:
             loaded = await asyncio.to_thread(_job_storage.load, summary.job_id)
         except Exception:
             logger.exception(
                 "Failed to load job %s during startup recovery", summary.job_id
             )
+            unreachable.append(summary.job_id)
             continue
         if loaded is None:
             continue
@@ -1142,6 +1157,20 @@ async def recover_in_flight_jobs(
                 "Failed to reconstruct job %s during startup recovery",
                 summary.job_id,
             )
+            continue
+        submitted = dt.datetime.fromisoformat(record.submitted_at)
+        if submitted_before is not None and submitted >= submitted_before:
+            continue
+        if record.status not in _ACTIVE_STATUSES:
+            try:
+                await asyncio.to_thread(_job_storage.save, record)
+            except Exception:
+                logger.exception(
+                    "Failed to repair the index entry of job %s", record.job_id
+                )
+                unreachable.append(summary.job_id)
+                continue
+            repaired += 1
             continue
         record.status = "failed"
         if not record.error:
@@ -1154,14 +1183,59 @@ async def recover_in_flight_jobs(
                 "Failed to persist failed-status for job %s during startup recovery",
                 summary.job_id,
             )
+            unreachable.append(summary.job_id)
             continue
         _release_output_locations(record)
         affected += 1
+    if repaired:
+        logger.warning(
+            "Repaired %d stale jobs-index entries whose record was already terminal",
+            repaired,
+        )
     if affected:
         logger.warning(
             "Recovered %d in-flight job(s) as failed (reason=%r)", affected, reason
         )
+    if unreachable:
+        raise RuntimeError(
+            f"Startup recovery could not read or write {len(unreachable)} job(s):"
+            f" {', '.join(unreachable)}"
+        )
     return affected
+
+
+async def recover_in_flight_jobs_until_done(
+    submitted_before: dt.datetime,
+    attempts: int = 10,
+    first_delay_s: float = 5.0,
+    max_delay_s: float = 300.0,
+) -> bool:
+    """Run :func:`recover_in_flight_jobs`, retrying with backoff while storage
+    is unreachable. Returns whether a pass completed."""
+    delay = first_delay_s
+    for attempt in range(1, attempts + 1):
+        try:
+            await recover_in_flight_jobs(submitted_before=submitted_before)
+            return True
+        except Exception:
+            if attempt == attempts:
+                logger.warning(
+                    "In-flight job recovery failed %d times; giving up. Jobs stuck "
+                    "in pending/running will remain stuck until cleared manually.",
+                    attempts,
+                    exc_info=True,
+                )
+                return False
+            logger.warning(
+                "In-flight job recovery failed (attempt %d/%d); retrying in %.0fs",
+                attempt,
+                attempts,
+                delay,
+                exc_info=True,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay_s)
+    return False
 
 
 async def _load_job_record(job_id: str) -> JobRecord | None:

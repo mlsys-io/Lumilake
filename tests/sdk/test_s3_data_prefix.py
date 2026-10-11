@@ -11,6 +11,8 @@ import types
 
 import pytest
 
+import lumilake
+
 
 def _reload_envs(
     monkeypatch: pytest.MonkeyPatch, env: dict[str, str]
@@ -20,11 +22,13 @@ def _reload_envs(
     Reloading is necessary because envs reads module-level variables at import
     time. We remove the cached module, patch os.environ, then re-import.
     Patching find_dotenv prevents any local .env file from polluting the
-    controlled snapshot.
+    controlled snapshot. The package attribute is restored as well, so later
+    ``from lumilake import envs`` gets the original module.
     """
     import dotenv
 
     monkeypatch.setattr(dotenv, "find_dotenv", lambda: "")
+    monkeypatch.setattr(lumilake, "envs", sys.modules["lumilake.envs"])
     monkeypatch.delitem(sys.modules, "lumilake.envs", raising=False)
     for key in ("S3_DATA_PREFIX", "S3_ARCHIVE_PREFIX"):
         monkeypatch.delenv(key, raising=False)

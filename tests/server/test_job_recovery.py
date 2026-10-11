@@ -1,6 +1,13 @@
+import asyncio
+import datetime as dt
+from contextlib import contextmanager
+from typing import Any
+
 import pytest
 
+from lumilake import envs
 from lumilake_server.routes import jobs as jobs_routes
+from lumilake_server.runtime.server import LumilakeServerConfig
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils import job_storage as job_storage_module
 from lumilake_server.utils.job_storage import InMemoryJobStorage
@@ -72,3 +79,155 @@ async def test_recover_in_flight_jobs_skips_in_memory_active_records(
 
     assert affected == 0
     assert _loaded_status(storage, "still-running")["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_recover_leaves_a_terminal_record_behind_a_stale_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    _seed(storage, "done-late", "running")
+    storage._storage["done-late"][
+        "status"
+    ] = "completed"  # record landed, index did not
+    assert [s.job_id for s in storage.iter_summaries({"running"})] == ["done-late"]
+
+    monkeypatch.setattr(jobs_routes, "_job_storage", storage)
+    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
+    monkeypatch.setattr(jobs_routes, "jobs", {})
+
+    affected = await jobs_routes.recover_in_flight_jobs()
+
+    assert affected == 0
+    assert _loaded_status(storage, "done-late")["status"] == "completed"
+    assert [s.job_id for s in storage.iter_summaries({"running"})] == []
+
+
+@pytest.mark.asyncio
+async def test_recover_spares_jobs_submitted_after_the_cutoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    _seed(storage, "old-job", "running")  # submitted 2026-05-25
+    monkeypatch.setattr(jobs_routes, "_job_storage", storage)
+    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
+    monkeypatch.setattr(jobs_routes, "jobs", {})
+
+    affected = await jobs_routes.recover_in_flight_jobs(
+        submitted_before=dt.datetime(2026, 5, 24, tzinfo=dt.UTC)
+    )
+    assert affected == 0
+    assert _loaded_status(storage, "old-job")["status"] == "running"
+
+    affected = await jobs_routes.recover_in_flight_jobs(
+        submitted_before=dt.datetime(2026, 5, 26, tzinfo=dt.UTC)
+    )
+    assert affected == 1
+    assert _loaded_status(storage, "old-job")["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_recover_raises_after_the_pass_when_a_record_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    _seed(storage, "flaky-job", "running")
+    _seed(storage, "other-job", "running")
+    real_load = storage.load
+
+    def load(job_id: str) -> dict[str, Any] | None:
+        if job_id == "flaky-job":
+            raise ConnectionError("archive unreachable")
+        return real_load(job_id)
+
+    monkeypatch.setattr(storage, "load", load)
+    monkeypatch.setattr(jobs_routes, "_job_storage", storage)
+    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
+    monkeypatch.setattr(jobs_routes, "jobs", {})
+
+    with pytest.raises(RuntimeError, match="flaky-job"):
+        await jobs_routes.recover_in_flight_jobs(reason="restart")
+    assert _loaded_status(storage, "other-job")["status"] == "failed"
+    flaky = real_load("flaky-job")
+    assert flaky is not None
+    assert flaky["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_recover_retries_until_storage_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    async def flaky(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        if len(calls) < 3:
+            raise ConnectionError("storage not up yet")
+        return 0
+
+    monkeypatch.setattr(jobs_routes, "recover_in_flight_jobs", flaky)
+    ok = await jobs_routes.recover_in_flight_jobs_until_done(
+        dt.datetime(2026, 5, 26, tzinfo=dt.UTC), attempts=5, first_delay_s=0
+    )
+    assert ok and len(calls) == 3
+    assert calls[0] == {"submitted_before": dt.datetime(2026, 5, 26, tzinfo=dt.UTC)}
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_failure_schedules_background_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the startup recovery pass raises, a background
+    ``recover_in_flight_jobs_until_done`` task is scheduled in
+    ``app.state.background_tasks`` and cancelled cleanly on shutdown."""
+    monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
+    monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
+    # main runs envs.validate() at import.
+    from lumilake_server import main as main_module
+
+    async def boom(**kwargs: Any) -> int:
+        raise ConnectionError("storage not up yet")
+
+    monkeypatch.setattr(main_module.envs, "LUMILAKE_RECOVER_IN_FLIGHT_JOBS", True)
+    monkeypatch.setattr(main_module.jobs, "recover_in_flight_jobs", boom)
+    monkeypatch.setattr(
+        main_module.jobs, "recover_in_flight_jobs_until_done", _noop_until_done
+    )
+    monkeypatch.setattr(main_module, "_load_plugins", _noop_load_plugins)
+    monkeypatch.setattr(main_module, "reconcile_registrars", _noop_reconcile)
+    monkeypatch.setattr(
+        main_module.LumilakeServer, "serve_instance", _noop_serve_instance
+    )
+
+    app = main_module.build_app(
+        LumilakeServerConfig(
+            host="127.0.0.1",
+            port=9000,
+            cpu_worker_group_size=1,
+            gpu_worker_group_size=0,
+        )
+    )
+    async with app.router.lifespan_context(app):
+        assert len(app.state.background_tasks) == 1
+        task = next(iter(app.state.background_tasks))
+        assert not task.done()
+    # Shutdown cancels the background task cleanly.
+    assert task.cancelled()
+
+
+async def _noop_until_done(submitted_before: dt.datetime, **kwargs: Any) -> bool:
+    await asyncio.sleep(3600)
+    return True
+
+
+async def _noop_load_plugins(stack: Any, logger: Any) -> None:
+    return None
+
+
+async def _noop_reconcile(logger: Any) -> None:
+    return None
+
+
+@contextmanager
+def _noop_serve_instance(config: Any = None):
+    yield None

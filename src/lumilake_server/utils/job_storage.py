@@ -357,9 +357,6 @@ class PersistentJobStorage(JobStorage):
             data = self._get_json(obj_name)
         except ArchiveNotFound:
             return None
-        except Exception as exc:  # pragma: no cover
-            self.logger.warning("Failed to load job %s: %s", job_id, exc)
-            return None
         data["inputs"] = (
             self._get_json_optional(self._job_object_name(job_id, "inputs.json")) or {}
         )
