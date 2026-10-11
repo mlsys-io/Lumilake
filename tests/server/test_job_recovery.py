@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 from contextlib import contextmanager
+from typing import Any
 
 import pytest
 
@@ -134,7 +135,7 @@ async def test_recover_raises_after_the_pass_when_a_record_is_unreachable(
     _seed(storage, "other-job", "running")
     real_load = storage.load
 
-    def load(job_id: str) -> dict[str, object] | None:
+    def load(job_id: str) -> dict[str, Any] | None:
         if job_id == "flaky-job":
             raise ConnectionError("archive unreachable")
         return real_load(job_id)
@@ -158,7 +159,7 @@ async def test_recover_retries_until_storage_answers(
 ) -> None:
     calls = []
 
-    async def flaky(**kwargs: object) -> int:
+    async def flaky(**kwargs: Any) -> int:
         calls.append(kwargs)
         if len(calls) < 3:
             raise ConnectionError("storage not up yet")
@@ -184,7 +185,7 @@ async def test_startup_recovery_failure_schedules_background_retry(
     # main runs envs.validate() at import.
     from lumilake_server import main as main_module
 
-    async def boom(**kwargs: object) -> int:
+    async def boom(**kwargs: Any) -> int:
         raise ConnectionError("storage not up yet")
 
     monkeypatch.setattr(main_module.envs, "LUMILAKE_RECOVER_IN_FLIGHT_JOBS", True)
@@ -214,19 +215,19 @@ async def test_startup_recovery_failure_schedules_background_retry(
     assert task.cancelled()
 
 
-async def _noop_until_done(submitted_before: dt.datetime, **kwargs: object) -> bool:
+async def _noop_until_done(submitted_before: dt.datetime, **kwargs: Any) -> bool:
     await asyncio.sleep(3600)
     return True
 
 
-async def _noop_load_plugins(stack: object, logger: object) -> None:
+async def _noop_load_plugins(stack: Any, logger: Any) -> None:
     return None
 
 
-async def _noop_reconcile(logger: object) -> None:
+async def _noop_reconcile(logger: Any) -> None:
     return None
 
 
 @contextmanager
-def _noop_serve_instance(config: object = None):
+def _noop_serve_instance(config: Any = None):
     yield None
