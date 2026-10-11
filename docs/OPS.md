@@ -189,6 +189,18 @@ results. The job's final response mixes the failed slice's rows (empty
 output plus an error entry) with the other slice's real per-row
 values.
 
+### LLMVisionOp
+
+`LLMVisionOp` runs vision-language generation over images. When it declares a
+`rowwise_template` and its `image_source` is a `DataRetrievalOp`, the runtime
+compiles it as a flat per-row VLM: one `flatten` python step renders one prompt
+per image (row-major across all symbols), one `embedding` task embeds every
+image, one `inference` task runs the model over the flat prompts, and a
+`regroup` python step groups the outputs back to one item per symbol. Downstream
+readers see the VLM's outputs grouped one list per symbol, read at
+`value.items.output`. The image source defines the per-symbol groups (one prompt
+per image); any other retrieval column must have the same per-symbol counts.
+
 ### LambdaOp
 
 `LambdaOp` runs a serialized Python function against the listed
@@ -256,6 +268,13 @@ emits one item per element in order, so each element is one group downstream,
 read at `value.items.output`. A list-mode `LambdaOp` is read through a node
 column (`rowwise_columns` / `aggregate_table`), not through an LLM message
 chain.
+
+`mode: aligned` is the same calling convention as `list` (whole columns in, a
+list out, read at `value.items.output`), with one added guarantee: the function
+returns exactly one value per input row, and the standalone task raises if the
+returned list's length does not match the row count. Because its output is
+row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run
+value, so its dependents keep one item per row and can be split across slices.
 
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source

@@ -531,6 +531,7 @@ class TestRecursiveResolverAndCycleGuard:
                 },
                 graph_dict=graph_dict,
                 inputs_dict={stock.name: ["NVDA"]},
+                input_ops_by_id={},
                 visited={op_a.id, "OP_B"},
             )
 

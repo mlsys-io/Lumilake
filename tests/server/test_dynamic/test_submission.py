@@ -12,11 +12,12 @@ a terminal state, leaf-output integrity, and the static-workflow regression.
 """
 
 import asyncio
+import copy
 import json
 import logging
-from collections.abc import Collection, Iterator
+import types
+from collections.abc import Callable, Collection, Iterator
 from typing import Any
-from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -25,11 +26,19 @@ from flowmesh.models.result import ResultEnvelope
 from lumid_hooks import PrincipalContext, ResourceRef
 
 import lumilake_server.utils.job_storage as job_storage_module
+from lumilake import envs
 from lumilake_server import hooks
+from lumilake_server.dynamic.driver import (
+    build_round,
+    planner_messages,
+    resolve_subgraph,
+)
 from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.middleware import TraceIdMiddleware
+from lumilake_server.ops import OutputOp
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
@@ -55,7 +64,7 @@ driver:
     prefix: dynamic/data-free/
 """
 
-_SUBGRAPH_PLAN = {
+_SUBGRAPH_PLAN: dict[str, Any] = {
     "next": "subgraph",
     "ops": [
         {
@@ -165,10 +174,15 @@ class _FakeRuntimeServer:
         self.fail_cancel = False
         self.cancel_raises_cancelled = False
         self.omit_leaf_outputs = False
+        self.leaf_item: Callable[[int], dict[str, Any]] = lambda row: {
+            "table": {"market_cap": 10 + row},
+            "output": {"market_cap": 10 + row},
+        }
+        self.workflow_slices_calls: list[dict[str, Any]] = []
         self.hanging_requests: set[str] = set()
         self._traces: dict[str, list[str]] = {}
         self.runtime_manager = _FakeRuntimeManager()
-        self._runtime_builder = Mock()
+        self._runtime_builder = RuntimeGraphBuilder()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         self.parse_query_calls.append(graph_specs)
@@ -187,6 +201,7 @@ class _FakeRuntimeServer:
         workflow_slices: dict[str, Any] | None = None,
     ) -> LumilakeResponse:
         self.execute_calls.append(request_id or "")
+        self.workflow_slices_calls.append(dict(workflow_slices or {}))
         self.executed_graphs.append(graphs)
         self.configs.append(config)
         if request_id:
@@ -218,8 +233,16 @@ class _FakeRuntimeServer:
         # them).
         if not self.omit_leaf_outputs:
             leaf_names = self._leaf_output_names(graphs)
+            # The job manager merges a round's per-row slices into one batch,
+            # so each leaf holds one item per merged row.
+            rows = sum(meta.slice_length for meta in (workflow_slices or {}).values())
             for name in leaf_names:
-                outputs["round"][name] = ['{"market_cap": 10}']
+                # Leaves archive the whole result item (path: items); shape it
+                # so the producer's default path (items.table for SQL,
+                # items.output for LLM) walks back to the same value.
+                outputs["round"][name] = [
+                    json.dumps(self.leaf_item(row)) for row in range(max(rows, 1))
+                ]
         return LumilakeResponse(outputs=outputs)
 
     def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
@@ -228,7 +251,7 @@ class _FakeRuntimeServer:
         names: list[str] = []
         for graph in graphs.values():
             for op in graph.iter_ops(OutputOp):
-                if str(op.name).startswith("leaf_"):
+                if str(op.name).startswith("leaf_") and op.name not in names:
                     names.append(op.name)
         return names
 
@@ -722,7 +745,7 @@ async def test_dynamic_stop_round_missing_leaf_fails_parent(
     await _run_background(app)
     record = job_routes.jobs[job_id]
     assert record.status == "failed"
-    assert "missing expected leaf output" in (record.error or "")
+    assert "missing expected output" in (record.error or "")
 
 
 @pytest.mark.anyio
@@ -757,25 +780,31 @@ name: static
 inputs:
   Symbols: ["NVDA"]
 ops:
-  - id: "Greeting"
-    op: FormatOp
+  - id: "Fetch"
+    op: DataRetrievalOp
     inputs: [Symbols]
-    template: "Hello, {name}!"
-    format_kwargs:
-      name: Symbols
+    data_spec:
+      type: lumid
+      mode: sql
+      template: "SELECT * FROM t WHERE symbol = :symbol"
+      params:
+        - label: symbol
+          node: Symbols
 outputs:
   - name: reply
-    ref: "Greeting"
+    ref: "Fetch"
 """
 
 
 @pytest.mark.anyio
 async def test_static_yaml_without_type_runs_as_static(
-    app: FastAPI, job_routes: Any
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A YAML workflow with no ``type`` field defaults to static: it is parsed
     as a normal graph and dispatched through the static ``_run_job`` path, not
     the dynamic planning loop."""
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -915,3 +944,526 @@ async def test_dynamic_prestart_cancel_persists_zero_usage(
         "truncated_calls": 0,
         "wall_sec": 0.0,
     }
+
+
+_API_URL = "http://planner.test/v1/chat/completions"
+
+_API_DYNAMIC_YAML = f"""
+name: dynamic
+type: dynamic
+goal: analyze market data
+driver:
+  model: Qwen/Qwen3-8B
+  max_tokens: 321
+  temperature: 0.2
+  max_rounds: 4
+  max_nodes_per_round: 4
+  output_location:
+    type: s3
+    prefix: dynamic/data-free/
+  api:
+    url: {_API_URL}
+    model: planner-model
+    authorization: Bearer planner-key
+"""
+
+
+class _FakePlanner:
+    """OpenAI-compatible planner endpoint served through an httpx mock
+    transport. Each call pops the next scripted reply; an ``int`` reply is
+    returned as that HTTP status."""
+
+    def __init__(self, replies: list[Any]) -> None:
+        self.replies = list(replies)
+        self.requests: list[httpx.Request] = []
+
+    def bodies(self) -> list[dict[str, Any]]:
+        return [json.loads(request.content) for request in self.requests]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        reply = self.replies.pop(0)
+        if isinstance(reply, int):
+            return httpx.Response(reply, json={"error": "nope"})
+        content = reply if isinstance(reply, str) else json.dumps(reply)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": content}}]},
+        )
+
+
+@pytest.fixture
+def fake_planner(
+    job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> Callable[[list[Any]], _FakePlanner]:
+    real_client = httpx.AsyncClient
+
+    def _install(replies: list[Any]) -> _FakePlanner:
+        planner = _FakePlanner(replies)
+
+        class _PlannerClient(real_client):  # type: ignore[valid-type, misc]
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(
+                    transport=httpx.MockTransport(planner.handle), **kwargs
+                )
+
+        shim = types.SimpleNamespace(**{**vars(httpx), "AsyncClient": _PlannerClient})
+        monkeypatch.setattr(job_routes, "httpx", shim)
+        return planner
+
+    return _install
+
+
+async def _submit_and_run(app: FastAPI, job_routes: Any, yaml_text: str) -> Any:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(yaml_text),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    await _run_background(app)
+    return job_routes.jobs[job_id]
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_planner_drives_two_rounds(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    planner = fake_planner([_SUBGRAPH_PLAN, {"next": "STOP"}])
+    record = await _submit_and_run(app, job_routes, _API_DYNAMIC_YAML)
+    fake_server = job_routes._fake_runtime_server
+
+    assert record.status == "completed", record.error
+    # Round 0 dispatches nothing: the only graph is round 1, which runs the
+    # first emitted subgraph. The planner then returns STOP.
+    assert len(fake_server.execute_calls) == 1
+    assert [config.chain_round for config in fake_server.configs] == [1]
+    assert fake_server.configs[0].chain_id == record.job_id
+    assert len(record.child_job_ids) == 1
+    assert [plan["next"] for plan in record.result.outputs["round"]["plan"]] == [
+        "subgraph",
+        "STOP",
+    ]
+
+    # The round graph carries only the emitted ops and their archived outputs.
+    (graph,) = fake_server.executed_graphs[0].values()
+    op_types = {type(op).__name__ for op in graph.iter_ops()}
+    assert "LLMChatOp" not in op_types
+    assert "LambdaOp" not in op_types
+    output_names = {op.name for op in graph.iter_ops(OutputOp)}
+    assert output_names and all(name.startswith("leaf_") for name in output_names)
+
+    # Both planner calls hit the configured endpoint with its credentials.
+    assert [str(request.url) for request in planner.requests] == [_API_URL] * 2
+    for request in planner.requests:
+        assert request.headers["authorization"] == "Bearer planner-key"
+    first, second = planner.bodies()
+    for body in (first, second):
+        assert body["model"] == "planner-model"
+        assert body["max_tokens"] == 321
+        assert body["temperature"] == 0.2
+        assert "chat_template_kwargs" not in body
+
+    # The messages are exactly what the in-graph proposer would receive.
+    system, user = planner_messages(
+        goal="analyze market data",
+        observations=[],
+        topology=[],
+        threshold=None,
+        library=None,
+        has_subgraph=False,
+    )
+    assert first["messages"] == [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    system, user = planner_messages(
+        goal="analyze market data",
+        observations=[],
+        topology=["q1"],
+        threshold=None,
+        library=None,
+        has_subgraph=True,
+    )
+    assert second["messages"][0] == {"role": "system", "content": system}
+    assert second["messages"][1]["role"] == "user"
+    assert second["messages"][1]["content"].startswith(f"{user}\n\n")
+    assert "market_cap" in second["messages"][1]["content"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_planner_immediate_stop_runs_no_round(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    planner = fake_planner([{"next": "STOP"}])
+    record = await _submit_and_run(app, job_routes, _API_DYNAMIC_YAML)
+
+    assert record.status == "completed", record.error
+    assert job_routes._fake_runtime_server.execute_calls == []
+    assert record.child_job_ids == []
+    assert len(planner.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_planner_call_failure_fails_job(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    fake_planner([500])
+    record = await _submit_and_run(app, job_routes, _API_DYNAMIC_YAML)
+
+    assert record.status == "failed"
+    assert _API_URL in (record.error or "")
+    assert "1 attempt(s)" in (record.error or "")
+    assert job_routes._fake_runtime_server.execute_calls == []
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_planner_retries_before_failing(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    planner = fake_planner([503, {"next": "STOP"}])
+    yaml_text = _API_DYNAMIC_YAML + "    retries: 1\n"
+    record = await _submit_and_run(app, job_routes, yaml_text)
+
+    assert record.status == "completed", record.error
+    assert len(planner.requests) == 2
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_planner_invalid_plan_fails_job(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    fake_planner([_SUBGRAPH_PLAN, "not a plan"])
+    record = await _submit_and_run(app, job_routes, _API_DYNAMIC_YAML)
+
+    assert record.status == "failed"
+    assert "invalid plan" in (record.error or "")
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_planner_second_round_failure_fails_job(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    fake_planner([_SUBGRAPH_PLAN, 500])
+    record = await _submit_and_run(app, job_routes, _API_DYNAMIC_YAML)
+
+    assert record.status == "failed"
+    assert "planner endpoint" in (record.error or "")
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_planner_forwards_chat_template_kwargs(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    planner = fake_planner([{"next": "STOP"}])
+    yaml_text = _API_DYNAMIC_YAML.replace(
+        "  max_rounds: 4\n",
+        "  max_rounds: 4\n  chat_template_kwargs:\n    enable_thinking: false\n",
+    )
+    record = await _submit_and_run(app, job_routes, yaml_text)
+
+    assert record.status == "completed", record.error
+    assert planner.bodies()[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+_GPU_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "q1",
+            "op": "LLMChatOp",
+            "inputs": ["Symbols"],
+            "messages": [{"role": "user", "content": "Summarize the table."}],
+            "config": {"model": "Qwen/Qwen3-8B"},
+        }
+    ],
+}
+
+
+async def _submit_with_hardware(
+    app: FastAPI, yaml_text: str, hardware: dict[str, Any]
+) -> Any:
+    transport = httpx.ASGITransport(app=app)
+    body = _submit_body(yaml_text)
+    body["hardware"] = hardware
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    return resp
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_spec_with_gpu_zero_accepted_at_submit(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    # An api-driven dynamic spec never dispatches the in-graph proposer, so
+    # ``hardware.gpu: 0`` must not be rejected against the synthetic round-0
+    # graph. The planner returns STOP, so no real round runs.
+    fake_planner([{"next": "STOP"}])
+    resp = await _submit_with_hardware(app, _API_DYNAMIC_YAML, {"gpu": 0})
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed", record.error
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_spec_engine_fields_not_validated_at_submit(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    # An api-driven spec compiles no round-0 graph, so its engine-sizing
+    # fields are not validated at submit: a dtype/extra_engine_kwargs conflict
+    # that would 422 via engine_overlay is accepted and the job completes.
+    yaml_text = (
+        _API_DYNAMIC_YAML + "  dtype: bf16\n  extra_engine_kwargs:\n    dtype: fp16\n"
+    )
+    fake_planner([{"next": "STOP"}])
+    record = await _submit_and_run(app, job_routes, yaml_text)
+    assert record.status == "completed", record.error
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_spec_preview_rejected(
+    app: FastAPI, fake_planner: Any
+) -> None:
+    # There is no round graph to preview before the external planner runs, so
+    # an api-driven dynamic spec is rejected 422 on /jobs/preview.
+    fake_planner([{"next": "STOP"}])
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs/preview",
+            json=_submit_body(_API_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422, resp.text
+    assert "api-driven dynamic workflow" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_spec_gpu_op_round_fails_parent(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    # The api-driven submit guard skips the proposer, but each real dispatched
+    # round still honours ``hardware.gpu: 0``: a round whose subgraph contains
+    # a GPU op fails the parent with the conflict text.
+    fake_planner([_GPU_PLAN, {"next": "STOP"}])
+    resp = await _submit_with_hardware(app, _API_DYNAMIC_YAML, {"gpu": 0})
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "failed"
+    assert "hardware.gpu=0 conflicts" in (record.error or "")
+
+
+@pytest.mark.anyio
+async def test_dynamic_non_api_spec_with_gpu_zero_rejected(
+    app: FastAPI, job_routes: Any
+) -> None:
+    # A non-api dynamic spec dispatches the in-graph proposer, so the round-0
+    # graph contains a GPU op and ``hardware.gpu: 0`` is still rejected 422.
+    resp = await _submit_with_hardware(app, _VALID_DYNAMIC_YAML, {"gpu": 0})
+    assert resp.status_code == 422, resp.text
+    assert "hardware.gpu=0 conflicts" in resp.text
+
+
+def test_planner_messages_match_in_graph_proposer() -> None:
+    """The in-graph proposer renders the same system and user text as the
+    messages the API planner is sent."""
+    ops = resolve_subgraph(copy.deepcopy(_SUBGRAPH_PLAN["ops"]), None)
+    registry = {op["id"]: op for op in ops}
+    kwargs: dict[str, Any] = dict(
+        goal="analyze market data",
+        observations=["earlier"],
+        threshold=None,
+        library=None,
+    )
+    build = build_round(
+        ops,
+        node_registry=registry,
+        round_index=1,
+        topology=["q1"],
+        preview_width=900,
+        model="m",
+        max_tokens=10,
+        temperature=0.1,
+        results={},
+        **kwargs,
+    )
+    system, user = planner_messages(topology=["q1"], has_subgraph=True, **kwargs)
+    message = build.graph["message"]["messages"]
+    assert message[0]["content"].format_map({}) == system
+    assert build.graph["format"]["template"] == f"{user}\n\n{{ref0}}"
+
+    api_build = build_round(
+        ops,
+        node_registry=registry,
+        round_index=1,
+        topology=["q1"],
+        preview_width=900,
+        model="m",
+        max_tokens=10,
+        temperature=0.1,
+        results={},
+        include_proposer=False,
+        **kwargs,
+    )
+    assert set(api_build.graph) == set(build.graph) - {
+        "observation",
+        "format",
+        "message",
+        "proposer",
+        "output",
+    } - {key for key in build.graph if key.startswith("render_")}
+
+
+_MULTI_SYMBOL_BODY_INPUTS = {"Symbols": ["NVDA", "MSFT", "AAPL"]}
+
+_LLM_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "q2",
+            "op": "LLMChatOp",
+            "inputs": ["q1"],
+            "messages": [{"role": "user", "content": "Summarize the table."}],
+            "aggregate_table": [{"label": "cap", "node": "q1", "path": "items.table"}],
+            "config": {"model": "Qwen/Qwen3-8B"},
+        }
+    ],
+}
+
+
+async def _submit_multi_symbol(app: FastAPI, job_routes: Any) -> Any:
+    body = _submit_body(_VALID_DYNAMIC_YAML)
+    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]["job_id"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_multi_symbol_rounds_slice_per_row_and_forward_row_aligned(
+    app: FastAPI, job_routes: Any
+) -> None:
+    job_id = await _submit_multi_symbol(app, job_routes)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [_SUBGRAPH_PLAN, _LLM_PLAN, {"next": "STOP"}]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed", record.error
+
+    # Every round child is one job of three one-row slices that the job
+    # manager merges into a single batch.
+    assert len(fake_server.executed_graphs) == 3
+    for graphs, slices in zip(
+        fake_server.executed_graphs, fake_server.workflow_slices_calls
+    ):
+        assert len(graphs) == 3
+        metas = sorted(slices.values(), key=lambda meta: meta.slice_index)
+        assert [meta.slice_index for meta in metas] == [0, 1, 2]
+        assert [meta.slice_start for meta in metas] == [0, 1, 2]
+        assert {meta.slice_length for meta in metas} == {1}
+        assert {meta.total_length for meta in metas} == {3}
+        assert len({meta.template_hash for meta in metas}) == 1
+        assert len({meta.public_graph_name for meta in metas}) == 1
+        assert "Symbols" in metas[0].varying_input_keys
+        by_slice = {name: slices[name].slice_index for name in slices}
+        ordered = sorted(graphs, key=lambda name: by_slice[name])
+        assert [graphs[name].inputs["Symbols"] for name in ordered] == [
+            ["NVDA"],
+            ["MSFT"],
+            ["AAPL"],
+        ]
+
+    # Round 2 forwards q1's stored items: slice i carries row i's value only.
+    round2 = fake_server.executed_graphs[2]
+    slices = fake_server.workflow_slices_calls[2]
+    ordered = sorted(round2, key=lambda name: slices[name].slice_index)
+    explicit = "q1 | items.table"
+    assert [json.loads(round2[name].inputs[explicit][0]) for name in ordered] == [
+        {"market_cap": 10},
+        {"market_cap": 11},
+        {"market_cap": 12},
+    ]
+    assert explicit in slices[ordered[0]].varying_input_keys
+
+    # No op is recomputed: the retrieval runs only in round 1's graphs.
+    retrieval_counts = [
+        sum(
+            1
+            for graph in graphs.values()
+            for op in graph.iter_ops()
+            if type(op).__name__ == "DataRetrievalOp"
+        )
+        for graphs in fake_server.executed_graphs
+    ]
+    assert retrieval_counts == [0, 3, 0]
+
+    # The stored round results cover all rows.
+    results = record.result.outputs["round"]["results"]
+    assert list(results[1].values())[0] == [
+        {"market_cap": 10},
+        {"market_cap": 11},
+        {"market_cap": 12},
+    ]
+
+
+@pytest.mark.anyio
+async def test_dynamic_multi_symbol_grouped_forward_materializes_per_row(
+    app: FastAPI, job_routes: Any
+) -> None:
+    job_id = await _submit_multi_symbol(app, job_routes)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [_SUBGRAPH_PLAN, _LLM_PLAN, {"next": "STOP"}]
+    # Each row's stored value is a two-element list, which a one-row slice
+    # cannot carry as a scalar; it is forwarded through a row-aligned
+    # materializer instead.
+    fake_server.leaf_item = lambda row: {"table": ["a", "b"], "output": ["a", "b"]}
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed", record.error
+
+    # Round 2 forwards q1's grouped per-row list via a JSON input per row.
+    round2 = fake_server.executed_graphs[2]
+    slices = fake_server.workflow_slices_calls[2]
+    ordered = sorted(round2, key=lambda name: slices[name].slice_index)
+    explicit = "q1 | items.table"
+    assert [json.loads(round2[name].inputs[explicit][0]) for name in ordered] == [
+        ["a", "b"],
+        ["a", "b"],
+        ["a", "b"],
+    ]
+    assert explicit in slices[ordered[0]].varying_input_keys
+
+
+@pytest.mark.anyio
+async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
+    app: FastAPI, job_routes: Any
+) -> None:
+    await _submit_multi_symbol(app, job_routes)
+    body = _submit_body(_VALID_DYNAMIC_YAML)
+    body["data"][0]["inputs"] = {"Symbols": ["NVDA", " "]}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422
+    await _run_background(app)

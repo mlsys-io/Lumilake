@@ -135,11 +135,28 @@ def _run_wrapper(
     plan: python_step.ColumnPlan,
     inputs: dict[str, str],
     fn_name: str | None = None,
+    mode: str = "row",
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
     declared = fn_name or lambda_runtime.validate_source(code)
     namespace: dict[str, Any] = {}
-    exec(python_step.wrapper_source("op-1", declared, code, plan), namespace)
+    exec(python_step.wrapper_source("op-1", declared, code, plan, mode), namespace)
+    return namespace["main"](inputs)
+
+
+def _run_reshape(
+    mode: str,
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    template: str = "{symbol}: {title}",
+):
+    """Run a generated flatten/regroup step, which never calls user code."""
+    namespace: dict[str, Any] = {}
+    if mode == "flatten":
+        code = python_step.flatten_source("reshape", plan, template)
+    else:
+        code = python_step.regroup_source("reshape", plan)
+    exec(code, namespace)
     return namespace["main"](inputs)
 
 
@@ -189,6 +206,44 @@ def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
     assert _run_wrapper(code, plan, {}, fn_name="a") == {"items": [{"output": "a"}]}
     with pytest.raises(ValueError, match="no top-level function named 'b'"):
         _run_wrapper(code, plan, {}, fn_name="b")
+
+
+def test_wrapper_list_mode_decode_rows_decodes_each_row() -> None:
+    # The grouped-list materializer's decode_rows receives tuple(columns) (a
+    # 1-tuple for its single JSON input) and must decode each row's JSON back
+    # to its list, one group per row.
+    code = (
+        "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
+    )
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+    ]
+    out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode="list")
+    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
+
+
+def test_wrapper_aligned_mode_returns_one_value_per_row(tmp_path: Path) -> None:
+    # An aligned lambda gets whole columns and returns a list, but must return
+    # exactly one value per input row; the wrapper emits one item per row.
+    code = (
+        "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
+    )
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+    ]
+    out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode="aligned")
+    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
+
+
+def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
+    # An aligned lambda that returns a different number of values than there are
+    # rows is rejected by the wrapper.
+    code = "def bad(columns):\n    return [columns[0][0]]\n"
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["a", "b", "c"]}]
+    with pytest.raises(
+        ValueError, match="aligned lambda 'op-1' returned 1 values for 3 rows"
+    ):
+        _run_wrapper(code, plan, {}, fn_name="bad", mode="aligned")
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
@@ -362,3 +417,266 @@ def test_python_output_items_come_from_value() -> None:
     assert items == [{"output": "x"}]
     with pytest.raises(RuntimeError, match="returned no items"):
         manager._resolve_output_items({"value": {}}, "node", task_type="python")
+
+
+def _sql_stage(
+    tmp_path: Path, name: str, tables: list[dict[str, dict[str, Any]]]
+) -> str:
+    """A SQL-shaped retrieval stage: one item per symbol row, each a serialized df."""
+    return _stage(
+        tmp_path,
+        name,
+        {"items": [{"table": {"df": json.dumps(t)}} for t in tables]},
+    )
+
+
+def _s3_stage(tmp_path: Path, name: str, keys: list[list[str]]) -> str:
+    return _stage(
+        tmp_path,
+        name,
+        {"items": [{"keys": k} for k in keys]},
+    )
+
+
+def _flatten_plan() -> python_step.ColumnPlan:
+    return [
+        {
+            "kind": "stage",
+            "node": "art",
+            "path": "keys",
+            "label": "art_batch",
+            "grouped": True,
+        },
+        {
+            "kind": "literal",
+            "values": ["AAA", "BBB", "CCC"],
+            "label": "symbol",
+            "grouped": False,
+        },
+        {
+            "kind": "stage",
+            "node": "news",
+            "path": "table.title",
+            "label": "title",
+            "grouped": True,
+        },
+    ]
+
+
+def _flatten_inputs(
+    tmp_path: Path, sizes: list[int], titles: list[list[str]]
+) -> dict[str, str]:
+    """Build per-symbol news/art stages; ``titles`` is one list per symbol."""
+    news_tables = [
+        {"title": {str(j): t for j, t in enumerate(sym_titles)}}
+        for sym_titles in titles
+    ]
+    news = _sql_stage(tmp_path, "news", news_tables)
+    art = _s3_stage(tmp_path, "art", [[f"k{j}" for j in range(s)] for s in sizes])
+    return {"news": news, "art": art}
+
+
+def test_flatten_renders_one_prompt_per_image_row_major(tmp_path: Path) -> None:
+    # sizes (2, 0, 3): symbol 0 has 2 images, symbol 1 none, symbol 2 has 3.
+    titles = [["t0", "t1"], [], ["t2", "t3", "t4"]]
+    inputs = _flatten_inputs(tmp_path, [2, 0, 3], titles)
+    out = _run_reshape("flatten", _flatten_plan(), inputs, template="{symbol}: {title}")
+    items = out["items"]
+    assert len(items) == 5
+    # Row-major: row 0's two images first, then row 2's three.
+    assert [i["row"] for i in items] == [0, 0, 2, 2, 2]
+    assert items[0]["output"] == "AAA: t0"
+    assert items[1]["output"] == "AAA: t1"
+    assert items[2]["output"] == "CCC: t2"
+    assert items[4]["output"] == "CCC: t4"
+
+
+def test_flatten_renders_one_prompt_per_image_middle_empty(tmp_path: Path) -> None:
+    titles = [["t0", "t1"], ["t2", "t3", "t4"], []]
+    inputs = _flatten_inputs(tmp_path, [2, 3, 0], titles)
+    out = _run_reshape("flatten", _flatten_plan(), inputs, template="{symbol}: {title}")
+    items = out["items"]
+    assert len(items) == 5
+    assert [i["row"] for i in items] == [0, 0, 1, 1, 1]
+
+
+def test_flatten_rejects_group_size_mismatch(tmp_path: Path) -> None:
+    # 3 symbols; row 0 has 4 news titles but only 3 art keys -> grouped size mismatch.
+    news = _sql_stage(
+        tmp_path,
+        "news",
+        [
+            {"title": {"0": "t0", "1": "t1", "2": "t2", "3": "t3"}},
+            {"title": {"0": "t4"}},
+            {"title": {"0": "t5"}},
+        ],
+    )
+    art = _s3_stage(tmp_path, "art", [["k0", "k1", "k2"], ["k3"], ["k4"]])
+    inputs = {"news": news, "art": art}
+    with pytest.raises(ValueError, match="row 0 has 4 values; expected 3"):
+        _run_reshape("flatten", _flatten_plan(), inputs)
+
+
+def test_flatten_rejects_missing_key(tmp_path: Path) -> None:
+    news = _sql_stage(tmp_path, "news", [{"title": {"0": "t0", "1": "t1"}}])
+    # art item carries no "keys" key -> _walk_path raises naming node and path.
+    art = _stage(tmp_path, "art", {"items": [{"nokeys": []}]})
+    inputs = {"news": news, "art": art}
+    with pytest.raises(ValueError, match="missing 'keys'"):
+        _run_reshape("flatten", _flatten_plan(), inputs)
+
+
+def test_flatten_checks_grouped_columns_against_image_counts(tmp_path: Path) -> None:
+    # The image column (first) has groups [2, 1]; the title column has [2, 2],
+    # so row 1's title count (2) mismatches the image count (1).
+    news = _sql_stage(
+        tmp_path,
+        "news",
+        [
+            {"title": {"0": "t0", "1": "t1"}},
+            {"title": {"0": "t2", "1": "t3"}},
+        ],
+    )
+    art = _s3_stage(tmp_path, "art", [["k0", "k1"], ["k2"]])
+    plan: python_step.ColumnPlan = [
+        {
+            "kind": "stage",
+            "node": "art",
+            "path": "keys",
+            "label": "art_batch",
+            "grouped": True,
+        },
+        {
+            "kind": "stage",
+            "node": "news",
+            "path": "table.title",
+            "label": "title",
+            "grouped": True,
+        },
+    ]
+    inputs = {"news": news, "art": art}
+    with pytest.raises(ValueError, match="row 1 has 2 values; expected 1"):
+        _run_reshape("flatten", plan, inputs)
+
+
+def test_flatten_with_only_literal_symbol_emits_prompts_without_image_text(
+    tmp_path: Path,
+) -> None:
+    # Images [2, 1] and only a literal symbol column: 3 prompts, rows [0,0,1],
+    # and no image content is rendered into the prompt.
+    art = _s3_stage(tmp_path, "art", [["k0", "k1"], ["k2"]])
+    plan: python_step.ColumnPlan = [
+        {
+            "kind": "stage",
+            "node": "art",
+            "path": "keys",
+            "label": "art_batch",
+            "grouped": True,
+        },
+        {
+            "kind": "literal",
+            "values": ["AAA", "BBB"],
+            "label": "symbol",
+            "grouped": False,
+        },
+    ]
+    out = _run_reshape("flatten", plan, {"art": art}, template="{symbol}")
+    items = out["items"]
+    assert len(items) == 3
+    assert [i["row"] for i in items] == [0, 0, 1]
+    assert items[0]["output"] == "AAA"
+    assert items[1]["output"] == "AAA"
+    assert items[2]["output"] == "BBB"
+    assert all("k0" not in i["output"] and "k1" not in i["output"] for i in items)
+
+
+def test_regroup_groups_outputs_back_per_symbol(tmp_path: Path) -> None:
+    # flatten produced 5 prompts with rows [0,0,2,2,2]; regroup must give 3 groups.
+    infer = _stage(
+        tmp_path,
+        "infer",
+        {
+            "items": [
+                {"output": "o0"},
+                {"output": "o1"},
+                {"output": "o2"},
+                {"output": "o3"},
+                {"output": "o4"},
+            ]
+        },
+    )
+    flatten = _stage(
+        tmp_path,
+        "flatten",
+        {
+            "items": [
+                {"output": "p", "row": 0},
+                {"output": "p", "row": 0},
+                {"output": "p", "row": 2},
+                {"output": "p", "row": 2},
+                {"output": "p", "row": 2},
+            ]
+        },
+    )
+    news = _sql_stage(
+        tmp_path,
+        "news",
+        [
+            {"title": {"0": "t0", "1": "t1"}},
+            {"title": {}},
+            {"title": {"0": "t2", "1": "t3", "2": "t4"}},
+        ],
+    )
+    plan: python_step.ColumnPlan = [
+        {"kind": "stage", "node": "infer"},
+        {"kind": "stage", "node": "flatten", "path": "row"},
+        {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
+    ]
+    out = _run_reshape(
+        "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
+    )
+    assert out == {
+        "items": [
+            {"output": ["o0", "o1"]},
+            {"output": []},
+            {"output": ["o2", "o3", "o4"]},
+        ]
+    }
+
+
+def test_regroup_rejects_row_out_of_range(tmp_path: Path) -> None:
+    infer = _stage(tmp_path, "infer", {"items": [{"output": "o0"}]})
+    flatten = _stage(tmp_path, "flatten", {"items": [{"output": "p", "row": 5}]})
+    news = _sql_stage(
+        tmp_path,
+        "news",
+        [{"title": {"0": "t0"}}, {"title": {"0": "t1"}}, {"title": {"0": "t2"}}],
+    )
+    plan: python_step.ColumnPlan = [
+        {"kind": "stage", "node": "infer"},
+        {"kind": "stage", "node": "flatten", "path": "row"},
+        {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
+    ]
+    with pytest.raises(ValueError, match="row 5 out of range for 3 symbols"):
+        _run_reshape(
+            "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
+        )
+
+
+def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
+    infer = _stage(tmp_path, "infer", {"items": [{"output": "o0"}]})
+    flatten = _stage(
+        tmp_path,
+        "flatten",
+        {"items": [{"output": "p", "row": 0}, {"output": "p", "row": 0}]},
+    )
+    news = _sql_stage(tmp_path, "news", [{"title": {"0": "t0", "1": "t1", "2": "t2"}}])
+    plan: python_step.ColumnPlan = [
+        {"kind": "stage", "node": "infer"},
+        {"kind": "stage", "node": "flatten", "path": "row"},
+        {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
+    ]
+    with pytest.raises(ValueError, match="1 outputs but 2 rows"):
+        _run_reshape(
+            "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
+        )

@@ -195,17 +195,98 @@ emitted subgraph, and stops on `STOP` or `max_rounds`. The parent job owns the
 run's traces and lifecycle. Each round runs one native graph:
 
 - the emitted subgraph runs first (each leaf is archived under a `leaf_<id>`
-  output);
+  output, each exported op under an `export_<id>` output);
 - the observation LambdaOp computes numeric statistics and a bounded preview
   of the subgraph's leaf outputs;
 - the proposer LLMChatOp sees the goal, all prior observations, and the overall
   topology, and emits one structured plan: either `{"next": "STOP"}` or
   `{"next": "subgraph", "ops": [...]}`.
 
-Within one run, every node can reference any existing node by id from any
-previous round (an accumulated global node registry); nodes are immutable once
-created. A run must target exactly one non-empty symbol. The parent's result
-carries the per-round plans.
+Within one run, a later round can reference an earlier round's node by id
+(an accumulated global node registry); nodes are immutable once created. A
+round never recomputes earlier nodes: the round graph contains only the ops
+emitted that round, and each reference to an earlier node is bound as a
+workflow input carrying that node's stored result. A node's result is
+available to later rounds when it was a leaf of its round (an op no other op
+of that round consumes) or the plan listed it under `export`. A reference to
+any other earlier node is rejected with an error naming it. A run targets one
+or more non-empty symbols. The parent's result carries the per-round plans.
+
+With several symbols, each round child is sliced like a static submission with
+`input_batch_size: 1`: one graph per symbol, merged back into one batch by the
+job manager, so every op emits one item per symbol and the stored round
+results and the observation cover all of them. Forwarded values bind per row:
+item `i` of an earlier result feeds symbol `i` only. A result that does not
+hold exactly one item per symbol fails the round with an error naming the op
+and the reference. A row value that is a list (a grouped reference, e.g. an
+aggregate table reading per-symbol summaries) is forwarded through a
+row-aligned materializer that decodes each row's JSON back to its list, so the
+consumer sees one group per row.
+
+A subgraph plan may carry an optional `export` list of op ids from the same
+subgraph:
+
+```json
+{"next": "subgraph", "ops": [...], "export": ["top_sector"]}
+```
+
+Each exported op must be an op of that plan's `ops`. Its whole result is
+archived (under `export_<id>`) next to the leaf results, so later rounds can
+reference a non-leaf op without recomputing it.
+
+#### External planner endpoint (`driver.api`)
+
+By default the planner runs inside each round graph as a proposer op. Setting
+`driver.api` moves it out: the server calls an OpenAI-compatible
+chat-completions endpoint itself between rounds.
+
+```yaml
+driver:
+  model: Qwen/Qwen3-8B
+  api:
+    url: https://planner.example.com/v1/chat/completions
+    model: planner-model
+    authorization: Bearer <key>
+    timeout_sec: 120
+    retries: 2
+```
+
+- `url` — required; the full chat-completions URL.
+- `model` — model name sent in the request; defaults to `driver.model`.
+- `authorization` — optional; sent verbatim as the `Authorization` header.
+- `timeout_sec` — optional per-call timeout; defaults to the server HTTP
+  timeout (`LUMILAKE_HTTP_TIMEOUT_SECONDS`). Must be greater than zero.
+- `retries` — optional number of extra attempts after a failed call, default
+  `0`.
+
+With `api` set:
+
+- round 0 dispatches no graph; the server calls the planner for the first
+  subgraph, and that subgraph runs as round 1 (`chain_round` is `1`);
+- each round graph holds only the emitted ops and their archived outputs
+  (leaves plus `export` entries); there is no observation lambda and no
+  proposer op;
+- after each round the server computes the observation from the stored leaf
+  results, builds the same system and user messages the in-graph proposer
+  receives, and POSTs `{model, messages, max_tokens, temperature}` (plus
+  `chat_template_kwargs` when `driver.chat_template_kwargs` is set) to `url`;
+- the reply text, `choices[0].message.content`, is validated as a plan exactly
+  like the in-graph proposer's output (`{"next": "STOP"}` or
+  `{"next": "subgraph", "ops": [...]}` with an optional `export`);
+- a failed call (after `retries`) or an invalid plan fails the parent job with
+  an error naming the endpoint or the plan problem;
+- `POST /jobs/preview` rejects the spec with 422: there is no round graph to
+  preview before the planner runs.
+
+Submission compiles no graph for an api-driven spec: `hardware.gpu: 0` and the
+engine-sizing fields are not checked at submit, and each dispatched round's
+graph is checked when it runs.
+
+`driver.model`, `max_tokens`, `temperature`, and `chat_template_kwargs` still
+describe the planner request. The engine-sizing fields (`max_model_len`,
+`gpu_memory_utilization`, `dtype`, `extra_engine_kwargs`) configure the
+in-graph proposer and have no effect when `api` is set. Without `api`,
+behavior is unchanged.
 
 The `driver:` YAML settings the server accepts are:
 
