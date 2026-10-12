@@ -22,7 +22,7 @@ type: dynamic
 # node as its input, so the outlier sector flows from round 1's data into round
 # 2's WHERE clause.
 #
-# Inputs:  Symbols=["NVDA"] (exactly one symbol per dynamic run)
+# Inputs:  Symbols=["NVDA"] (one or more symbols per dynamic run)
 # Output:  archived planner plan for each round; each round's leaf results are
 #          archived under `leaf_<node>` outputs.
 #

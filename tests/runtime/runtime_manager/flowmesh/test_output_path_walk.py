@@ -77,6 +77,15 @@ def test_walk_rowwise_api_path_maps_over_rows():
     assert _walk_output_path(item, parts, "node-rowwise") == ["r0", "r1"]
 
 
+def test_walk_whole_item_path():
+    # ``path: items`` selects the whole result item, JSON-encoded.
+    item = {"symbol": "NVDA", "close": 107.5}
+    assert _walk_output_path(item, (), "node-whole") == item
+    assert _coerce_output_value(
+        _walk_output_path(item, (), "node-whole")
+    ) == json.dumps(item)
+
+
 def test_walk_rejects_malformed_index():
     with pytest.raises(RuntimeError, match="malformed output path index"):
         _walk_output_path(

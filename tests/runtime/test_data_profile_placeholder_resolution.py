@@ -1,13 +1,4 @@
-"""Coverage for data-profile placeholder resolution in
-``RuntimeGraphBuilder``.
-
-Exercises the construction-time fallback for ``LLMChatOp`` structural
-outputs missing ``min``/``max``/``candidates``, the upstream
-``DataRetrievalOp`` ``sample_value`` short-circuit, the live-sample
-path with the SQL sampler hook, the recursive resolver across two
-``DataRetrievalOp`` hops, the cycle guard, and the explicit rejection
-for unsupported upstream op kinds.
-"""
+"""Coverage for data-profile placeholder resolution in ``RuntimeGraphBuilder``."""
 
 from typing import Any
 from unittest.mock import patch
@@ -531,6 +522,7 @@ class TestRecursiveResolverAndCycleGuard:
                 },
                 graph_dict=graph_dict,
                 inputs_dict={stock.name: ["NVDA"]},
+                input_ops_by_id={},
                 visited={op_a.id, "OP_B"},
             )
 
