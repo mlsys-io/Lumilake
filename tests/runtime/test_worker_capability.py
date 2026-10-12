@@ -6,12 +6,21 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     required_task_types,
+    requires_cpu_worker,
 )
 
 
 def test_only_python_is_gated_today() -> None:
     assert required_task_types(["api", "python", "inference"]) == {"python"}
     assert required_task_types(["api", "data_retrieval"]) == frozenset()
+
+
+def test_requires_cpu_worker_for_cpu_only_task_types() -> None:
+    assert requires_cpu_worker(["inference", "api"])
+    assert requires_cpu_worker([" Data_Retrieval "])
+    assert requires_cpu_worker(["python"])
+    assert not requires_cpu_worker(["inference", "embedding", "diffusion"])
+    assert not requires_cpu_worker([])
 
 
 def test_advertised_task_types_reads_the_profile() -> None:

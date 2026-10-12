@@ -66,10 +66,11 @@ class LumilakeRequestConfig(BaseModel):
     chain_id: str | None = None
     """Parent job id when this request is one round of a dynamic chain; ``None``
     for a standalone job. Identifies which dynamic run this round belongs to so
-    the run's rounds can be traced; it is not an input to scheduling selection or
-    ordering."""
+    the run's rounds can be traced. The ``plas`` and ``cohort_pack`` scheduling
+    policies group items by it; other policies ignore it."""
     chain_round: int = Field(default=0, ge=0)
-    """Zero-based round index within the chain; ``0`` for a standalone job."""
+    """Zero-based round index within the chain; ``0`` for a standalone job. The
+    ``cohort_pack`` scheduling policy groups items by it."""
 
 
 class LumilakeRequest(BaseModel):

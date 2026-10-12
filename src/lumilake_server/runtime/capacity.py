@@ -41,6 +41,68 @@ class FreeCapacity:
         """True when this snapshot holds enough idle workers of each class."""
         return self.cpu_count >= cpu_group_size and self.gpu_count >= gpu_group_size
 
+    def dispatch_count(
+        self,
+        *,
+        cpu_group_size: int,
+        gpu_group_size: int,
+        worker_meets_hardware: Any,
+        hardware: Any,
+        required_task_types: frozenset[str] = frozenset(),
+    ) -> int:
+        """Number of whole dispatches the idle workers can serve at once.
+
+        A dispatch claims ``cpu_group_size`` CPU workers and ``gpu_group_size``
+        GPU workers (a class with group size ``0`` is not claimed). The count is
+        the smallest ``eligible // group size`` over the claimed classes, where
+        eligible workers meet ``hardware`` when the snapshot carries profiles.
+        ``required_task_types`` are the gated task types the dispatch needs:
+        each dispatch's CPU group must hold an eligible worker advertising all
+        of them, so the count is also bounded by the number of such workers, and
+        is ``0`` when there is none, no CPU group, or no profiles (the cases in
+        which :meth:`eligible_workers` returns ``None``). ``0`` when no class is
+        claimed.
+        """
+        eligible_cpu = self._meeting_hardware(
+            self.cpu_worker_ids, worker_meets_hardware, hardware
+        )
+        eligible_gpu = self._meeting_hardware(
+            self.gpu_worker_ids, worker_meets_hardware, hardware
+        )
+        counts = [
+            len(ids) // group_size
+            for ids, group_size in (
+                (eligible_cpu, cpu_group_size),
+                (eligible_gpu, gpu_group_size),
+            )
+            if group_size > 0
+        ]
+        if required_task_types:
+            if cpu_group_size < 1 or not self.profiles:
+                return 0
+            counts.append(
+                sum(
+                    required_task_types
+                    <= advertised_task_types(self.profiles.get(w, {}))
+                    for w in eligible_cpu
+                )
+            )
+        return min(counts, default=0)
+
+    def _meeting_hardware(
+        self,
+        worker_ids: tuple[str, ...],
+        worker_meets_hardware: Any,
+        hardware: Any,
+    ) -> list[str]:
+        if not self.profiles:
+            return list(worker_ids)
+        return [
+            w
+            for w in worker_ids
+            if worker_meets_hardware(self.profiles.get(w, {}), hardware)
+        ]
+
     def can_satisfy_hardware(
         self,
         *,
@@ -97,16 +159,12 @@ class FreeCapacity:
                 list(self.cpu_worker_ids[:cpu_group_size]),
                 list(self.gpu_worker_ids[:gpu_group_size]),
             )
-        eligible_cpu = [
-            w
-            for w in self.cpu_worker_ids
-            if worker_meets_hardware(self.profiles.get(w, {}), hardware)
-        ]
-        eligible_gpu = [
-            w
-            for w in self.gpu_worker_ids
-            if worker_meets_hardware(self.profiles.get(w, {}), hardware)
-        ]
+        eligible_cpu = self._meeting_hardware(
+            self.cpu_worker_ids, worker_meets_hardware, hardware
+        )
+        eligible_gpu = self._meeting_hardware(
+            self.gpu_worker_ids, worker_meets_hardware, hardware
+        )
         if len(eligible_cpu) < cpu_group_size or len(eligible_gpu) < gpu_group_size:
             return None
         selected_cpu = eligible_cpu[:cpu_group_size]

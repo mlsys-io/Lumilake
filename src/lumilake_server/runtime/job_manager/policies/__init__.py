@@ -8,6 +8,7 @@ one registry entry — no branches in the job manager.
 from lumilake import envs
 
 from .base import BaseSchedulingPolicy
+from .cohort_pack import CohortPackSchedulingPolicy
 from .default import DefaultSchedulingPolicy
 from .fifo import FifoSchedulingPolicy
 from .lpt import LptSchedulingPolicy
@@ -20,6 +21,7 @@ SCHEDULING_POLICIES: dict[str, type[BaseSchedulingPolicy]] = {
     "spt": SptSchedulingPolicy,
     "lpt": LptSchedulingPolicy,
     "plas": PlasSchedulingPolicy,
+    "cohort_pack": CohortPackSchedulingPolicy,
 }
 
 
@@ -44,6 +46,7 @@ def create_scheduling_policy(
 
 __all__ = [
     "BaseSchedulingPolicy",
+    "CohortPackSchedulingPolicy",
     "DefaultSchedulingPolicy",
     "FifoSchedulingPolicy",
     "LptSchedulingPolicy",

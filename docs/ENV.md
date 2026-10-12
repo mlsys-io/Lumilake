@@ -74,11 +74,18 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 
 `LUMILAKE_SCHEDULER_POLICY` selects how the scheduler orders a batch:
 `default` (per-user round-robin with affinity clustering), `fifo`, `spt`,
-`lpt`, or `plas` (see `docs/SCHEDULING.md`).
+`lpt`, `plas`, or `cohort_pack` (see `docs/SCHEDULING.md`).
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `default`, `fifo`, `spt`, `lpt`, or `plas`; defaults to `default`. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
+| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `default`, `fifo`, `spt`, `lpt`, `plas`, or `cohort_pack`; defaults to `default`. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
+| `LUMILAKE_SCHEDULER_COHORT_PACK_FIXED_SECONDS` | `cohort_pack` fixed cost per batch, in seconds. Finite, `>= 0`. Defaults to `0`. |
+| `LUMILAKE_SCHEDULER_COHORT_PACK_MIX_SECONDS` | `cohort_pack` cost per extra distinct template in a batch, in seconds. Finite, `>= 0`. Defaults to `0`. |
+| `LUMILAKE_SCHEDULER_COHORT_PACK_BETA` | `cohort_pack` economy-of-scale exponent: a `k`-slice batch scales its per-slice work by `(k / BATCH_SIZE) ** (beta - 1)`. Finite, `> 0`. Defaults to `1`. |
+| `LUMILAKE_SCHEDULER_COHORT_PACK_AREA_TO_SECONDS` | `cohort_pack` seconds of unit-speed work per unit of `estimate_area`. The fixed and mixing costs above are divided by this times the per-slice `estimate_area` of the anchor unit's first round to get slice units; an item the cost model cannot estimate counts as area `1`. Candidate batches are then compared by slice count. Finite, `> 0`. Defaults to `1`. |
+| `LUMILAKE_SCHEDULER_COHORT_PACK_GAMMA` | `cohort_pack` spreading break-even factor: a unit's batch is cut for one more idle lane while the time saved is at least this multiple of the lane-time it costs. Finite, `>= 0`. Defaults to `1`. |
+| `LUMILAKE_SCHEDULER_COHORT_PACK_BATCH_SIZE` | `cohort_pack` reference batch size of the economy-of-scale factor and of the spreading rule (distinct from the dispatch batch size). Must be `> 0`. Defaults to `10`. |
+| `LUMILAKE_SCHEDULER_COHORT_PACK_PATIENCE` | `cohort_pack` patience: an incomplete unit whose slices have been passed over more than this many dispatches stops waiting for its missing mates and goes first. A chain that has ended keeps counting as a mate, so a unit waiting for it goes after more than this many misses, or at once when no complete unit is ready. Must be `>= 0`. Defaults to `8`. The global `LUMILAKE_STARVATION_LIMIT` overrides every policy once a candidate reaches it, so a unit is released after the smaller of `PATIENCE + 1` policy-level misses and that limit; set `LUMILAKE_STARVATION_LIMIT` above this value for units to wait as configured. |
 | `LUMILAKE_CAPACITY_AWARE_SELECTION` | Capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. `0` makes selection capacity-blind and drops `requires_gpu` from the partition key: CPU and GPU items in the same class share a partition, and a batch no worker can run blocks dispatch until capacity frees. |
 | `LUMILAKE_COST_DB_SEC_PER_QUERY` | Estimated seconds per data-retrieval query in the analytic cost model. Defaults to `0.05`, mirroring HALO's `_db_input_sec`. |
 | `LUMILAKE_COST_CPU_SEC_PER_NODE` | Estimated seconds per pure-CPU node in the analytic cost model. Defaults to `0.1` — a small constant for non-GPU, non-DB work whose duration is otherwise unmodeled. |

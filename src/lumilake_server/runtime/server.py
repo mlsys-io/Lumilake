@@ -78,6 +78,7 @@ from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     required_task_types,
+    requires_cpu_worker,
 )
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
@@ -1115,8 +1116,8 @@ class LumilakeServer:
         requires_gpu = any(
             self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
-        requires_cpu = any(
-            self._requires_cpu(op) for op in runtime_graph.nodes.values()
+        requires_cpu = requires_cpu_worker(
+            op.task_type for op in runtime_graph.nodes.values()
         )
         needed_task_types = required_task_types(
             op.task_type for op in runtime_graph.nodes.values()
@@ -1293,12 +1294,6 @@ class LumilakeServer:
         # and the dispatcher then stalls trying to route to one.
         return FlowmeshRuntimeManager._runtime_op_requires_gpu(op)
 
-    @staticmethod
-    def _requires_cpu(op: RuntimeOp) -> bool:
-        """Mirror the dispatcher's CPU-only engine list (see
-        FlowmeshRuntimeManager._runtime_op_requires_cpu)."""
-        return FlowmeshRuntimeManager._runtime_op_requires_cpu(op)
-
     @classmethod
     def _batch_requires_gpu(cls, batch: BatchSelection) -> bool:
         for runtime_graph in batch.runtime_graphs.values():
@@ -1315,16 +1310,16 @@ class LumilakeServer:
             for op in runtime_graph.nodes.values()
         )
 
-    @classmethod
-    def _batch_requires_cpu(cls, batch: BatchSelection) -> bool:
+    @staticmethod
+    def _batch_requires_cpu(batch: BatchSelection) -> bool:
         """A configured CPU group size of 0 is only valid alongside a nonzero
         GPU group; a batch with a data_retrieval or api op still needs one CPU
         worker (matching _select_preview_workers_and_profiles)."""
-        for runtime_graph in batch.runtime_graphs.values():
-            for op in runtime_graph.nodes.values():
-                if cls._requires_cpu(op):
-                    return True
-        return False
+        return requires_cpu_worker(
+            op.task_type
+            for runtime_graph in batch.runtime_graphs.values()
+            for op in runtime_graph.nodes.values()
+        )
 
     @classmethod
     def _normalize_worker_profile(

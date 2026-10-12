@@ -1744,13 +1744,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return task_type in {"inference", "embedding", "diffusion"}
 
     @staticmethod
-    def _runtime_op_requires_cpu(runtime_op: RuntimeOp) -> bool:
-        """Mirrors HaloOptimizer._map_engine's CPU-only engines
-        (data_retrieval, api) so schedule previews agree with dispatch."""
-        task_type = (runtime_op.task_type or "").strip().lower()
-        return task_type in {"data_retrieval", "api", "python"}
-
-    @staticmethod
     def _build_flat_schedule_hint(
         *,
         worker_assignment: Mapping[str, Sequence[str]],
