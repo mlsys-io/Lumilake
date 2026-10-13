@@ -232,7 +232,7 @@ the future. The policies:
   size of the largest batch its last committed round went out in (a round
   dispatched in several batches counts as its widest batch). There is no time
   bound, and Lumilake has no end-of-chain signal, so a chain that has ended keeps
-  counting as a mate: a unit waiting for it goes after more than `PATIENCE`
+  counting as a mate: a unit waiting for it goes after more than `patience`
   misses, or at once when no complete unit is ready (the anchor then falls back
   to any unit).
   On every selection the cohort is cut into balanced *units* of whole chains,
@@ -247,30 +247,29 @@ the future. The policies:
   members in cut order, each group's slices by enqueue time, slice index and
   workflow id) and the rest stays queued for later selections.
   The anchor is the complete unit whose slices have the highest miss count,
-  oldest first among ties; an incomplete unit passed over more than
-  `LUMILAKE_SCHEDULER_COHORT_PACK_PATIENCE` dispatches goes first instead: the
-  one passed over most, then the lexically smallest chain id (a longer id ranks
-  ahead of an id it extends), then the oldest. The global
-  `LUMILAKE_STARVATION_LIMIT` overrides every policy once a candidate reaches
-  it, so the effective release threshold is the smaller of `PATIENCE + 1`
-  policy-level misses and that limit; set the limit above `PATIENCE` to let
-  units wait for their mates as configured.
+  oldest first among ties; an incomplete unit passed over more than `patience`
+  dispatches goes first instead: the one passed over most, then the lexically
+  smallest chain id (a longer id ranks ahead of an id it extends), then the
+  oldest. The global `LUMILAKE_STARVATION_LIMIT` overrides every policy once a
+  candidate reaches it, so the effective release threshold is the smaller of
+  `patience + 1` policy-level misses and that limit; set the limit above
+  `patience` to let units wait for their mates as configured.
   Unless the unit is spread over lanes (below), the remaining room is filled by
   considering up to three whole ready rounds of any unit, of other templates
   too, and keeping the set with the lowest estimated time per slice, if it is
   strictly lower than the unit alone (ties: break the fewest other units, then
   take the rounds with the lowest total enqueue-order rank). With no fixed or
-  mixing cost and `LUMILAKE_SCHEDULER_COHORT_PACK_BETA` `>= 1`, merging never
-  lowers the time per slice, so the batch stays template-pure; with `BETA < 1`
-  the economy of scale alone can make merging pay. The batch-cost model
-  (`LUMILAKE_SCHEDULER_COHORT_PACK_*`, see `docs/ENV.md`) converts the fixed and
-  mixing costs to slice units with the per-slice `estimate_area` of the anchor
-  unit's first round (an item the cost model cannot estimate counts as area
-  `1`), then compares candidate batches by slice count, so slices count as
-  equally costly. When the free-lane count is known, the unit's batch may be
-  cut so the rest goes out on lanes that would otherwise idle (the free lanes
-  minus one per other ready unit), while the model says each extra batch saves
-  at least `GAMMA` times the lane-time it costs; that batch is not filled. The
+  mixing cost and `beta` `>= 1`, merging never lowers the time per slice, so the
+  batch stays template-pure; with `beta < 1` the economy of scale alone can make
+  merging pay. The batch-cost model (the `fixed_seconds`, `mix_seconds`, `beta`,
+  `area_to_seconds` and `batch_size` args) converts the fixed and mixing costs
+  to slice units with the per-slice `estimate_area` of the anchor unit's first
+  round (an item the cost model cannot estimate counts as area `1`), then
+  compares candidate batches by slice count, so slices count as equally costly.
+  When the free-lane count is known, the unit's batch may be cut so the rest
+  goes out on lanes that would otherwise idle (the free lanes minus one per
+  other ready unit), while the model says each extra batch saves at least
+  `gamma` times the lane-time it costs; that batch is not filled. The
   free-lane count is the number of whole dispatches the free workers can serve
   for the anchor partition: workers (those meeting its hardware, when the
   capacity snapshot carries worker profiles) divided by the worker group size
@@ -284,6 +283,20 @@ the future. The policies:
   profiles. `reserve_batch` passes it only when it receives the free capacity,
   which the server does while `LUMILAKE_CAPACITY_AWARE_SELECTION` is on (its
   default); with it off the policy does not spread.
+
+  `cohort_pack` takes these keys in `LUMILAKE_SCHEDULER_CUSTOM_ARGS` (a JSON
+  object, e.g. `{"patience": 3, "gamma": 0.5}`); an unknown key or a value
+  outside its constraint fails server startup:
+
+  | Key | Meaning | Constraint | Default |
+  |-----|---------|------------|---------|
+  | `fixed_seconds` | Fixed cost per batch, in seconds. | finite, `>= 0` | `0.0` |
+  | `mix_seconds` | Cost per extra distinct template in a batch, in seconds. | finite, `>= 0` | `0.0` |
+  | `beta` | Economy-of-scale exponent: a `k`-slice batch scales its per-slice work by `(k / batch_size) ** (beta - 1)`. | finite, `> 0` | `1.0` |
+  | `area_to_seconds` | Seconds of unit-speed work per unit of `estimate_area`. The fixed and mixing costs are divided by this times the per-slice `estimate_area` of the anchor unit's first round to get slice units; an item the cost model cannot estimate counts as area `1`. Candidate batches are then compared by slice count. | finite, `> 0` | `1.0` |
+  | `gamma` | Spreading break-even factor: a unit's batch is cut for one more idle lane while the time saved is at least this multiple of the lane-time it costs. | finite, `>= 0` | `1.0` |
+  | `batch_size` | Reference batch size of the economy-of-scale factor and of the spreading rule (distinct from the dispatch batch size `B`). | `> 0` | `10` |
+  | `patience` | An incomplete unit whose slices have been passed over more than this many dispatches stops waiting for its missing mates and goes first. A chain that has ended keeps counting as a mate, so a unit waiting for it goes after more than this many misses, or at once when no complete unit is ready. | `>= 0` | `8` |
 
 The size-based policies (`spt`, `lpt`) and the attained-service policy
 (`plas`) use the analytic cost model of §7. `estimate_area` is a predicted

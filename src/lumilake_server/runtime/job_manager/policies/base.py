@@ -3,7 +3,9 @@
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
+
+from pydantic import BaseModel
 
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 
@@ -22,6 +24,9 @@ class BaseSchedulingPolicy(ABC):
     candidate set and returns a subset rather than reducing to a per-item key
     — a future policy can score sets, not just items.
     """
+
+    args_model: ClassVar[type[BaseModel] | None] = None
+    """Pydantic model of the policy's custom args; ``None`` means it takes none."""
 
     def __init__(
         self,

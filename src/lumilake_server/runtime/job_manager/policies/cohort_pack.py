@@ -5,17 +5,78 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from lumilake import envs
+from pydantic import BaseModel, ConfigDict, Field
+
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.job_manager.cost import CostParams, estimate_area
 
 from .base import BaseSchedulingPolicy
 
-__all__ = ["CohortPackSchedulingPolicy"]
+__all__ = ["CohortPackArgs", "CohortPackSchedulingPolicy"]
 
 Template = str
 Key = tuple[str, int, Template]
 """``(chain, round, template)``: a group of slices that can share one batch."""
+
+
+class CohortPackArgs(BaseModel):
+    """Custom args of the ``cohort_pack`` policy."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    fixed_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        allow_inf_nan=False,
+        description="Fixed cost per batch, in seconds.",
+    )
+    mix_seconds: float = Field(
+        default=0.0,
+        ge=0,
+        allow_inf_nan=False,
+        description="Cost per extra distinct template in a batch, in seconds.",
+    )
+    beta: float = Field(
+        default=1.0,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Economy-of-scale exponent: a k-slice batch scales its per-slice "
+            "work by (k / batch_size) ** (beta - 1)."
+        ),
+    )
+    area_to_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds of unit-speed work per unit of estimate_area.",
+    )
+    gamma: float = Field(
+        default=1.0,
+        ge=0,
+        allow_inf_nan=False,
+        description=(
+            "Spreading break-even factor: a unit's batch is cut for one more "
+            "idle lane while the time saved is at least gamma times the "
+            "lane-time it costs."
+        ),
+    )
+    batch_size: int = Field(
+        default=10,
+        gt=0,
+        description=(
+            "Reference batch size of the economy-of-scale factor and of the "
+            "spreading rule (distinct from the dispatch batch size)."
+        ),
+    )
+    patience: int = Field(
+        default=8,
+        ge=0,
+        description=(
+            "Dispatches an incomplete unit waits for its missing mates before "
+            "it goes first."
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -135,29 +196,27 @@ class CohortPackSchedulingPolicy(BaseSchedulingPolicy):
     area 1.
     """
 
+    args_model = CohortPackArgs
+
     def __init__(
         self,
         *,
-        fixed_seconds: float = envs.LUMILAKE_SCHEDULER_COHORT_PACK_FIXED_SECONDS,
-        mix_seconds: float = envs.LUMILAKE_SCHEDULER_COHORT_PACK_MIX_SECONDS,
-        beta: float = envs.LUMILAKE_SCHEDULER_COHORT_PACK_BETA,
-        area_to_seconds: float = envs.LUMILAKE_SCHEDULER_COHORT_PACK_AREA_TO_SECONDS,
-        gamma: float = envs.LUMILAKE_SCHEDULER_COHORT_PACK_GAMMA,
-        model_batch_size: int = envs.LUMILAKE_SCHEDULER_COHORT_PACK_BATCH_SIZE,
-        patience: int = envs.LUMILAKE_SCHEDULER_COHORT_PACK_PATIENCE,
+        args: CohortPackArgs | None = None,
         cost_params: CostParams | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if args is None:
+            args = CohortPackArgs()
         self._model = BatchCostModel(
-            fixed_seconds=fixed_seconds,
-            mix_seconds=mix_seconds,
-            beta=beta,
-            area_to_seconds=area_to_seconds,
-            batch_size=model_batch_size,
+            fixed_seconds=args.fixed_seconds,
+            mix_seconds=args.mix_seconds,
+            beta=args.beta,
+            area_to_seconds=args.area_to_seconds,
+            batch_size=args.batch_size,
         )
-        self._gamma = gamma
-        self._patience = patience
+        self._gamma = args.gamma
+        self._patience = args.patience
         self._cost_params = cost_params or CostParams()
         self._free_lanes: int | None = None
         # chain -> round -> templates of the slices committed so far

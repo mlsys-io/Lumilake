@@ -5,6 +5,7 @@ succeeds in any environment. Server startup calls :func:`load_env_file_or_raise`
 and :func:`validate`; SDK / CLI / deploy consumers do not.
 """
 
+import json
 import logging
 import math
 import os
@@ -126,31 +127,10 @@ LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
 LUMILAKE_SCHEDULER_POLICY: str = (
     (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "default").strip().lower()
 )
-# cohort_pack: the batch-cost constants the policy reasons with. Fixed cost per
-# batch and cost per extra distinct template in a batch (seconds), the
-# economy-of-scale exponent, seconds of unit-speed work per unit of
-# estimate_area, the spreading break-even factor, the reference batch size of the
-# scale factor, and how many dispatches an incomplete unit waits for its mates.
-LUMILAKE_SCHEDULER_COHORT_PACK_FIXED_SECONDS: float = float(
-    os.environ.get("LUMILAKE_SCHEDULER_COHORT_PACK_FIXED_SECONDS") or "0"
-)
-LUMILAKE_SCHEDULER_COHORT_PACK_MIX_SECONDS: float = float(
-    os.environ.get("LUMILAKE_SCHEDULER_COHORT_PACK_MIX_SECONDS") or "0"
-)
-LUMILAKE_SCHEDULER_COHORT_PACK_BETA: float = float(
-    os.environ.get("LUMILAKE_SCHEDULER_COHORT_PACK_BETA") or "1"
-)
-LUMILAKE_SCHEDULER_COHORT_PACK_AREA_TO_SECONDS: float = float(
-    os.environ.get("LUMILAKE_SCHEDULER_COHORT_PACK_AREA_TO_SECONDS") or "1"
-)
-LUMILAKE_SCHEDULER_COHORT_PACK_GAMMA: float = float(
-    os.environ.get("LUMILAKE_SCHEDULER_COHORT_PACK_GAMMA") or "1"
-)
-LUMILAKE_SCHEDULER_COHORT_PACK_BATCH_SIZE: int = int(
-    os.environ.get("LUMILAKE_SCHEDULER_COHORT_PACK_BATCH_SIZE") or "10"
-)
-LUMILAKE_SCHEDULER_COHORT_PACK_PATIENCE: int = int(
-    os.environ.get("LUMILAKE_SCHEDULER_COHORT_PACK_PATIENCE") or "8"
+# JSON object of keyword arguments for the selected policy (docs/SCHEDULING.md
+# lists each policy's arguments).
+LUMILAKE_SCHEDULER_CUSTOM_ARGS: str = (
+    os.environ.get("LUMILAKE_SCHEDULER_CUSTOM_ARGS") or "{}"
 )
 # Analytic cost-model coefficients (see cost.py / docs/SCHEDULING.md S6).
 LUMILAKE_COST_DB_SEC_PER_QUERY: float = float(
@@ -433,36 +413,12 @@ def validate() -> None:
         raise ValueError("LUMILAKE_COST_DEFAULT_MODEL_SIZE_B must be > 0")
     if LUMILAKE_COST_INPUT_QUERY_COUNT <= 0:
         raise ValueError("LUMILAKE_COST_INPUT_QUERY_COUNT must be > 0")
-    if not math.isfinite(LUMILAKE_SCHEDULER_COHORT_PACK_FIXED_SECONDS) or (
-        LUMILAKE_SCHEDULER_COHORT_PACK_FIXED_SECONDS < 0
-    ):
-        raise ValueError(
-            "LUMILAKE_SCHEDULER_COHORT_PACK_FIXED_SECONDS must be finite and >= 0"
-        )
-    if not math.isfinite(LUMILAKE_SCHEDULER_COHORT_PACK_MIX_SECONDS) or (
-        LUMILAKE_SCHEDULER_COHORT_PACK_MIX_SECONDS < 0
-    ):
-        raise ValueError(
-            "LUMILAKE_SCHEDULER_COHORT_PACK_MIX_SECONDS must be finite and >= 0"
-        )
-    if not math.isfinite(LUMILAKE_SCHEDULER_COHORT_PACK_BETA) or (
-        LUMILAKE_SCHEDULER_COHORT_PACK_BETA <= 0
-    ):
-        raise ValueError("LUMILAKE_SCHEDULER_COHORT_PACK_BETA must be finite and > 0")
-    if not math.isfinite(LUMILAKE_SCHEDULER_COHORT_PACK_AREA_TO_SECONDS) or (
-        LUMILAKE_SCHEDULER_COHORT_PACK_AREA_TO_SECONDS <= 0
-    ):
-        raise ValueError(
-            "LUMILAKE_SCHEDULER_COHORT_PACK_AREA_TO_SECONDS must be finite and > 0"
-        )
-    if not math.isfinite(LUMILAKE_SCHEDULER_COHORT_PACK_GAMMA) or (
-        LUMILAKE_SCHEDULER_COHORT_PACK_GAMMA < 0
-    ):
-        raise ValueError("LUMILAKE_SCHEDULER_COHORT_PACK_GAMMA must be finite and >= 0")
-    if LUMILAKE_SCHEDULER_COHORT_PACK_BATCH_SIZE <= 0:
-        raise ValueError("LUMILAKE_SCHEDULER_COHORT_PACK_BATCH_SIZE must be > 0")
-    if LUMILAKE_SCHEDULER_COHORT_PACK_PATIENCE < 0:
-        raise ValueError("LUMILAKE_SCHEDULER_COHORT_PACK_PATIENCE must be >= 0")
+    try:
+        custom_args = json.loads(LUMILAKE_SCHEDULER_CUSTOM_ARGS)
+    except json.JSONDecodeError:
+        custom_args = None
+    if not isinstance(custom_args, dict):
+        raise ValueError("LUMILAKE_SCHEDULER_CUSTOM_ARGS must be a JSON object")
     if LUMILAKE_RUNTIME_MANAGER_TYPE not in ("default", "flowmesh"):
         raise ValueError(
             "LUMILAKE_RUNTIME_MANAGER_TYPE must be 'default' or 'flowmesh'"

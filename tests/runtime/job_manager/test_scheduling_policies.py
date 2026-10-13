@@ -5,11 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from lumilake import envs
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.cost import estimate_area
 from lumilake_server.runtime.job_manager.policies import (
     SCHEDULING_POLICIES,
+    CohortPackArgs,
     CohortPackSchedulingPolicy,
     create_scheduling_policy,
 )
@@ -272,11 +274,13 @@ def _cohort_select(
     patience: int = 8,
 ) -> list[str]:
     impl = CohortPackSchedulingPolicy(
-        fixed_seconds=fixed_seconds,
-        mix_seconds=mix_seconds,
-        beta=beta,
-        gamma=gamma,
-        patience=patience,
+        args=CohortPackArgs(
+            fixed_seconds=fixed_seconds,
+            mix_seconds=mix_seconds,
+            beta=beta,
+            gamma=gamma,
+            patience=patience,
+        )
     )
     impl.on_commit(history or [])
     impl.observe_free_lanes(free_lanes)
@@ -619,7 +623,7 @@ async def _starved_unit_dispatch(*, starvation_limit: int, misses: int) -> set[s
         policy="cohort_pack",
         starvation_limit=starvation_limit,
     )
-    manager._policy_impl = CohortPackSchedulingPolicy(patience=8)
+    manager._policy_impl = CohortPackSchedulingPolicy(args=CohortPackArgs(patience=8))
     # Chains a and b both ran round 0; only a is ready for round 1, so its unit
     # is waiting for b.
     manager._policy_impl.on_commit(
@@ -795,3 +799,90 @@ def test_cohort_pack_merges_templates_for_economy_of_scale_alone() -> None:
     assert _cohort_select(cpu + gpu, 10, beta=1.0) == ["a0"]
     assert _cohort_select(cpu + gpu, 10, beta=1.5) == ["a0"]
     assert _cohort_select(cpu + gpu, 10, beta=0.5) == ["a0", "b0"]
+
+
+def test_create_policy_passes_custom_args_to_cohort_pack() -> None:
+    history = [
+        _round_item("a0", ["cpu"], 0.0, "a", 0),
+        _round_item("b0", ["cpu"], 0.0, "b", 0),
+    ]
+    waiting = _round_item("a1", ["gpu"], 5.0, "a", 1)
+    other = _round_item("z0", ["cpu", "cpu"], 6.0, "z", 0)
+    waiting.miss_count = 4
+
+    def pick(custom_args: dict[str, Any]) -> list[str]:
+        impl = create_scheduling_policy("cohort_pack", custom_args=custom_args)
+        impl.on_commit(history)
+        picked = impl.select_batch([waiting, other], {}, 10)
+        return [wid.removeprefix("wf-") for wid in picked]
+
+    # With patience 3, 4 misses release the incomplete unit; the default 8 does not.
+    assert pick({"patience": 3, "gamma": 0.5}) == ["a1"]
+    assert pick({}) == ["z0"]
+
+
+def test_create_policy_rejects_an_unknown_cohort_pack_arg() -> None:
+    with pytest.raises(ValueError):
+        create_scheduling_policy("cohort_pack", custom_args={"patients": 3})
+
+
+def test_create_policy_rejects_an_out_of_range_cohort_pack_arg() -> None:
+    with pytest.raises(ValueError):
+        create_scheduling_policy("cohort_pack", custom_args={"beta": 0})
+
+
+@pytest.mark.parametrize(
+    "custom_args", [{"patience": True}, {"patience": 2.5}, {"beta": "1"}]
+)
+def test_create_policy_rejects_a_mistyped_cohort_pack_arg(
+    custom_args: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError):
+        create_scheduling_policy("cohort_pack", custom_args=custom_args)
+
+
+def test_create_policy_accepts_an_int_for_a_float_cohort_pack_arg() -> None:
+    assert create_scheduling_policy("cohort_pack", custom_args={"beta": 2}) is not None
+
+
+def test_create_policy_rejects_custom_args_for_a_policy_without_any() -> None:
+    with pytest.raises(ValueError, match="fifo.*takes no custom args.*'x'"):
+        create_scheduling_policy("fifo", custom_args={"x": 1})
+    assert create_scheduling_policy("fifo", custom_args={}) is not None
+
+
+def test_create_policy_reads_custom_args_from_the_env_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "LUMILAKE_SCHEDULER_CUSTOM_ARGS", '{"patience": 3}')
+    assert create_scheduling_policy("cohort_pack") is not None
+    with pytest.raises(ValueError, match="takes no custom args"):
+        create_scheduling_policy("fifo")
+    monkeypatch.setattr(envs, "LUMILAKE_SCHEDULER_CUSTOM_ARGS", '{"bogus": 1}')
+    with pytest.raises(ValueError):
+        create_scheduling_policy("cohort_pack")
+
+
+@pytest.mark.parametrize(
+    ("raw", "valid"),
+    [("{}", True), ('{"patience": 3}', True), ("[1]", False), ("not json", False)],
+)
+def test_envs_validate_requires_custom_args_to_be_a_json_object(
+    monkeypatch: pytest.MonkeyPatch, raw: str, valid: bool
+) -> None:
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
+    monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
+    monkeypatch.setattr(envs, "LUMILAKE_JOB_MANAGER_TYPE", "priority")
+    monkeypatch.setattr(envs, "LUMILAKE_RUNTIME_MANAGER_TYPE", "default")
+    monkeypatch.setattr(envs, "LUMILAKE_STARVATION_LIMIT", 3)
+    monkeypatch.setattr(envs, "LUMILAKE_BATCH_ACCUMULATION_SECONDS", 0.0)
+    monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
+    monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
+    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 60.0)
+    monkeypatch.setattr(envs, "LUMILAKE_SCHEDULER_CUSTOM_ARGS", raw)
+    if valid:
+        envs.validate()
+    else:
+        with pytest.raises(ValueError, match="must be a JSON object"):
+            envs.validate()
