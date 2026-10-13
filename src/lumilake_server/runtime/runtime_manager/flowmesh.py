@@ -19,11 +19,10 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
 from flowmesh.exceptions import APIError
-from flowmesh.models.tasks import TaskInfo
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
@@ -50,6 +49,21 @@ from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sen
 from lumilake_server.utils.job_storage import get_job_storage
 
 from .base import BaseRuntimeManager
+
+
+class TaskStatusLike(Protocol):
+    """What the status poll reads. ``TaskInfo`` and the SDK's lighter
+    ``TaskStatusView`` (flowmesh-sdk with ``tasks.status()``) both satisfy it."""
+
+    @property
+    def status(self) -> Any: ...
+
+    @property
+    def error(self) -> str | None: ...
+
+    @property
+    def last_error(self) -> str | None: ...
+
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 
@@ -371,10 +385,17 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     async def fetch_task_status(
         self,
         task_id: str,
-    ) -> TaskInfo:
+    ) -> TaskStatusLike:
+        # Poll the lightweight status view when the SDK has it. The full task
+        # (``retrieve``) carries the spec and its source, ~0.5-1 MB for an
+        # inference task, and polling that for every in-flight slice is what
+        # loaded FlowMesh before the 2026-10-12 home-cluster failures
+        # (FlowMesh#225). flowmesh-sdk 0.1.11 has no ``status``; fall back.
+        tasks = self.fm.tasks
+        poll = getattr(tasks, "status", None) or tasks.retrieve
         try:
             task_info = await _retry_transient_read(
-                lambda: self.fm.tasks.retrieve(task_id), f"task {task_id}"
+                lambda: poll(task_id), f"task {task_id}"
             )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
@@ -450,7 +471,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     ) -> str:
         """`` (node <id>): <FlowMesh error>`` for a failed task.
 
-        The error comes from the ``TaskInfo`` the status poll already
+        The error comes from the status object the poll already
         retrieved for the failed task. A task with no recorded error yields
         just the node suffix.
         """
@@ -527,10 +548,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     completed = False
         return completed
 
-    def _record_task_error(self, task_id: str, task_info: TaskInfo) -> None:
+    def _record_task_error(self, task_id: str, task_info: TaskStatusLike) -> None:
         """Record the FlowMesh error of a failed task, if it has one.
 
-        The error is read from the same ``TaskInfo`` the status poll already
+        The error is read from the same status object the poll already
         retrieved. A task with no recorded error is left unrecorded; the
         caller then reports the plain message. The error is an untrusted
         remote field, so it is redacted before it is recorded and later
