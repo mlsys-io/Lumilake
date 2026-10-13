@@ -14,6 +14,10 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
+from lumilake_server.runtime.worker_capability import (
+    required_task_types,
+    requires_cpu_worker,
+)
 from lumilake_server.utils.utils import unique_id
 
 from .base import (
@@ -231,6 +235,46 @@ class PriorityJobManager(BaseJobManager):
             return base
         return (*base, item.requires_gpu)
 
+    def _partition_group_sizes(self, partition: PartitionKey) -> tuple[int, int]:
+        """``(cpu_group_size, gpu_group_size)`` one dispatch of ``partition`` claims."""
+        requires_gpu = partition[5] if len(partition) > 5 else False
+        return (
+            self._cpu_worker_group_size,
+            self._gpu_worker_group_size if requires_gpu else 0,
+        )
+
+    def _partition_dispatch_count(
+        self,
+        partition: PartitionKey,
+        capacity: FreeCapacity,
+        candidates: list[WorkflowItem],
+    ) -> int:
+        """Whole dispatches of ``partition`` the idle workers can serve at once.
+
+        Workers must meet the partition's hardware when the capacity snapshot
+        carries profiles, a GPU dispatch is bounded by its CPU group too, and a
+        CPU worker must advertise every gated task type the work needs. A
+        configured CPU group of zero still claims one CPU worker when the work
+        has a CPU-only node (as dispatch does). The task types are those of all
+        ``candidates``, a conservative bound: the batch actually selected needs
+        a subset of them.
+        """
+        cpu_group_size, gpu_group_size = self._partition_group_sizes(partition)
+        task_types = [
+            op.task_type
+            for item in candidates
+            for op in item.runtime_graph.nodes.values()
+        ]
+        if cpu_group_size <= 0 and requires_cpu_worker(task_types):
+            cpu_group_size = 1
+        return capacity.dispatch_count(
+            cpu_group_size=cpu_group_size,
+            gpu_group_size=gpu_group_size,
+            worker_meets_hardware=self._worker_meets_hardware,
+            hardware=self._hardware_from_signature(partition[4]),
+            required_task_types=required_task_types(task_types),
+        )
+
     def _partition_eligible(
         self,
         partition: PartitionKey,
@@ -245,9 +289,7 @@ class PriorityJobManager(BaseJobManager):
         the partition's hardware signature, so selection never picks a
         partition that cannot be claimed.
         """
-        requires_gpu = partition[5] if len(partition) > 5 else False
-        cpu_group_size = self._cpu_worker_group_size
-        gpu_group_size = self._gpu_worker_group_size if requires_gpu else 0
+        cpu_group_size, gpu_group_size = self._partition_group_sizes(partition)
         if not capacity.can_satisfy(
             cpu_group_size=cpu_group_size, gpu_group_size=gpu_group_size
         ):
@@ -520,7 +562,9 @@ class PriorityJobManager(BaseJobManager):
 
         When ``capacity`` is given, partitions the current free capacity cannot
         run are excluded from selection before the round-robin pick and before
-        starvation pinning.
+        starvation pinning. Once the anchor partition and its candidates are
+        chosen, the policy is told how many whole dispatches ``capacity`` can
+        serve for them (``None`` without ``capacity``) before it selects.
         """
         if batch_size <= 0:
             batch_size = 1
@@ -598,6 +642,11 @@ class PriorityJobManager(BaseJobManager):
             if not candidates:
                 self._not_empty.clear()
                 return None
+            self._policy_impl.observe_free_lanes(
+                self._partition_dispatch_count(anchor_partition, capacity, candidates)
+                if capacity is not None
+                else None
+            )
 
             queue_sizes = self._queue_sizes_by_priority()
             candidate_by_priority = {priority.value: 0 for priority in Priority}

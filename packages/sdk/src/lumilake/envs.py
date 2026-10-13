@@ -5,6 +5,7 @@ succeeds in any environment. Server startup calls :func:`load_env_file_or_raise`
 and :func:`validate`; SDK / CLI / deploy consumers do not.
 """
 
+import json
 import logging
 import math
 import os
@@ -122,9 +123,14 @@ LUMILAKE_CAPACITY_AWARE_SELECTION: bool = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 # Scheduling policy: "default" (per-user round-robin with affinity clustering),
-# "fifo", "spt", "lpt", or "plas".
+# "fifo", "spt", "lpt", "plas", or "cohort_pack".
 LUMILAKE_SCHEDULER_POLICY: str = (
     (os.environ.get("LUMILAKE_SCHEDULER_POLICY") or "default").strip().lower()
+)
+# JSON object of keyword arguments for the selected policy (docs/SCHEDULING.md
+# lists each policy's arguments).
+LUMILAKE_SCHEDULER_CUSTOM_ARGS: str = (
+    os.environ.get("LUMILAKE_SCHEDULER_CUSTOM_ARGS") or "{}"
 )
 # Analytic cost-model coefficients (see cost.py / docs/SCHEDULING.md S6).
 LUMILAKE_COST_DB_SEC_PER_QUERY: float = float(
@@ -407,6 +413,12 @@ def validate() -> None:
         raise ValueError("LUMILAKE_COST_DEFAULT_MODEL_SIZE_B must be > 0")
     if LUMILAKE_COST_INPUT_QUERY_COUNT <= 0:
         raise ValueError("LUMILAKE_COST_INPUT_QUERY_COUNT must be > 0")
+    try:
+        custom_args = json.loads(LUMILAKE_SCHEDULER_CUSTOM_ARGS)
+    except json.JSONDecodeError:
+        custom_args = None
+    if not isinstance(custom_args, dict):
+        raise ValueError("LUMILAKE_SCHEDULER_CUSTOM_ARGS must be a JSON object")
     if LUMILAKE_RUNTIME_MANAGER_TYPE not in ("default", "flowmesh"):
         raise ValueError(
             "LUMILAKE_RUNTIME_MANAGER_TYPE must be 'default' or 'flowmesh'"

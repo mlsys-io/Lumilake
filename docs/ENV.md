@@ -74,11 +74,12 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 
 `LUMILAKE_SCHEDULER_POLICY` selects how the scheduler orders a batch:
 `default` (per-user round-robin with affinity clustering), `fifo`, `spt`,
-`lpt`, or `plas` (see `docs/SCHEDULING.md`).
+`lpt`, `plas`, or `cohort_pack` (see `docs/SCHEDULING.md`).
 
 | Key | Purpose |
 |-----|---------|
-| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `default`, `fifo`, `spt`, `lpt`, or `plas`; defaults to `default`. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
+| `LUMILAKE_SCHEDULER_POLICY` | Scheduling policy, resolved through the `SCHEDULING_POLICIES` registry (mirroring `OPTIMIZER_TYPES`). `default`, `fifo`, `spt`, `lpt`, `plas`, or `cohort_pack`; defaults to `default`. A new policy is a `BaseSchedulingPolicy` subclass plus one registry entry. |
+| `LUMILAKE_SCHEDULER_CUSTOM_ARGS` | JSON object of keyword arguments for the policy selected by `LUMILAKE_SCHEDULER_POLICY`; it applies to that policy only. It is validated at server start: an unknown key, an invalid value, or any key for a policy that takes none fails startup. Defaults to `{}`. Each policy's arguments are listed in `docs/SCHEDULING.md`. Example: `LUMILAKE_SCHEDULER_POLICY=cohort_pack` with `LUMILAKE_SCHEDULER_CUSTOM_ARGS='{"patience": 3, "gamma": 0.5}'`. |
 | `LUMILAKE_CAPACITY_AWARE_SELECTION` | Capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. `0` makes selection capacity-blind and drops `requires_gpu` from the partition key: CPU and GPU items in the same class share a partition, and a batch no worker can run blocks dispatch until capacity frees. |
 | `LUMILAKE_COST_DB_SEC_PER_QUERY` | Estimated seconds per data-retrieval query in the analytic cost model. Defaults to `0.05`, mirroring HALO's `_db_input_sec`. |
 | `LUMILAKE_COST_CPU_SEC_PER_NODE` | Estimated seconds per pure-CPU node in the analytic cost model. Defaults to `0.1` — a small constant for non-GPU, non-DB work whose duration is otherwise unmodeled. |
