@@ -36,7 +36,6 @@ class PlasSchedulingPolicy(BaseSchedulingPolicy):
     def select_batch(
         self,
         candidates: list[WorkflowItem],
-        affinity_rank: dict[str, int],
         batch_size: int,
     ) -> list[str]:
         ordered = sorted(

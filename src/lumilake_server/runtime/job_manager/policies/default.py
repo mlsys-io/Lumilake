@@ -1,12 +1,16 @@
-"""The default scheduling policy: per-user round-robin fairness.
+"""The default scheduling policy: affinity clustering plus per-user round-robin.
 
 Within a partition the candidate pool is built round-robin across users (see
-``PriorityJobManager``), so the policy only needs to preserve that ordering
-when affinity's clustering would otherwise reorder it: it keeps one item per
-user in round-robin order before filling the rest of the batch.
+``PriorityJobManager``). The policy clusters the pool by affinity (model,
+system-prompt, and graph-size distance) and then preserves per-user round-robin
+fairness: it keeps one item per user in round-robin order before filling the
+rest of the batch.
 """
 
 from lumilake_server.runtime.job_manager.base import WorkflowItem
+from lumilake_server.runtime.job_manager.cluster_algo.clustering import (
+    select_affinity_batch_ids,
+)
 
 from .base import BaseSchedulingPolicy
 
@@ -14,18 +18,22 @@ __all__ = ["DefaultSchedulingPolicy"]
 
 
 class DefaultSchedulingPolicy(BaseSchedulingPolicy):
-    """Default policy: per-user round-robin fairness within a partition."""
+    """Default policy: affinity clustering plus per-user round-robin fairness."""
 
     def select_batch(
         self,
         candidates: list[WorkflowItem],
-        affinity_rank: dict[str, int],
         batch_size: int,
     ) -> list[str]:
+        affinity_ids = select_affinity_batch_ids(
+            {i.workflow_id: i.runtime_graph for i in candidates},
+            {i.workflow_id: i.enqueued_at for i in candidates},
+            batch_size,
+        )
         if batch_size <= 1:
-            return list(affinity_rank)[:batch_size]
+            return affinity_ids[:batch_size]
         candidate_map = {item.workflow_id: item for item in candidates}
-        selected_ids = [wid for wid in affinity_rank if wid in candidate_map]
+        selected_ids = [wid for wid in affinity_ids if wid in candidate_map]
         if not selected_ids:
             return []
 

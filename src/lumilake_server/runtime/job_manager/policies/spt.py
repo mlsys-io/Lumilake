@@ -29,7 +29,6 @@ class SptSchedulingPolicy(BaseSchedulingPolicy):
     def select_batch(
         self,
         candidates: list[WorkflowItem],
-        affinity_rank: dict[str, int],
         batch_size: int,
     ) -> list[str]:
         def key(item: WorkflowItem) -> tuple[int, float, float, str]:
