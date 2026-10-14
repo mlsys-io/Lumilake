@@ -1,3 +1,4 @@
+import logging
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -1493,3 +1494,40 @@ async def _reserve_scenario_batch(policy: str, starved: bool) -> list[str]:
 async def test_reserve_batch_selection_per_policy(policy: str, starved: bool) -> None:
     got = await _reserve_scenario_batch(policy, starved)
     assert got == _SCENARIO_EXPECTED[(policy, starved)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["default", "fifo"])
+async def test_affinity_selection_debug_log(
+    policy: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    quantums = {priority: 0 for priority in Priority}
+    quantums[Priority.HIGH] = 2
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=quantums,
+        starvation_limit=2,
+        policy=policy,
+        logger=logging.getLogger("test-policy-log"),
+    )
+    for req, graph in (("req-a", "a-1"), ("req-b", "b-1")):
+        await manager.enqueue(
+            _build_job(req, graph, user_id=req, priority=Priority.HIGH)
+        )
+
+    with caplog.at_level(logging.DEBUG, logger="test-policy-log"):
+        reservation = await manager.reserve_batch(2)
+    assert reservation is not None
+
+    records = [
+        r
+        for r in caplog.records
+        if r.name == "test-policy-log.JobManager"
+        and r.getMessage().startswith("Affinity selected ids=")
+    ]
+    if policy == "default":
+        assert len(records) == 1
+        message = records[0].getMessage()
+        assert "req-a" in message and "req-b" in message
+    else:
+        assert records == []
