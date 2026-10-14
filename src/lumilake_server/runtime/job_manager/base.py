@@ -41,6 +41,16 @@ class WorkflowItem:
     requires_gpu: bool = False
 
 
+def format_workflow_item(item: WorkflowItem) -> str:
+    return (
+        f"{item.workflow_id}"
+        f"(req={item.request_id},user={item.config.user_id},pri={item.config.priority.value},"
+        f"graph={item.graph_name},public={item.public_graph_name},"
+        f"slice={item.slice_index},miss={item.miss_count},"
+        f"chain={item.config.chain_id},round={item.config.chain_round})"
+    )
+
+
 @dataclass(slots=True)
 class BatchSelection:
     workflows: list[WorkflowItem]
@@ -48,6 +58,8 @@ class BatchSelection:
     data_profile_graphs: dict[str, RuntimeGraph]
     config: LumilakeRequestConfig
     clustering_seconds: float = 0.0
+    """Seconds spent in the policy's ``select_batch`` when no candidate is
+    starved, and in the starvation path's affinity clustering when one is."""
 
 
 @dataclass(slots=True)

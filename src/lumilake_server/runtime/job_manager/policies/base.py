@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from lumilake.log import Logger, init_child_logger
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 
 __all__ = ["BaseSchedulingPolicy"]
@@ -32,24 +33,26 @@ class BaseSchedulingPolicy(ABC):
         self,
         *,
         clock: Callable[[], float] = time.monotonic,
+        logger: Logger | None = None,
         **kwargs: Any,
     ) -> None:
         self._clock = clock
+        self._logger = init_child_logger("JobManager") if logger is None else logger
 
     @abstractmethod
     def select_batch(
         self,
         candidates: list[WorkflowItem],
-        affinity_rank: dict[str, int],
         batch_size: int,
     ) -> list[str]:
         """Return the ranked subset of ``candidates`` that forms the batch.
 
-        ``candidates`` is the candidate set for the anchor partition (already
-        narrowed by starvation pinning). ``affinity_rank`` maps workflow id to
-        the affinity-selection order, so a policy can break ties the way
-        clustering shaped the batch. The returned ids must be a subset of the
-        candidate ids, ordered best-first, and at most ``batch_size`` long.
+        ``candidates`` is the anchor partition's whole candidate pool and
+        ``batch_size`` the batch size. The job manager calls it only when no
+        candidate is starved: a batch with a starved candidate is filled by
+        the job manager's starvation path (starved items first, then affinity
+        clustering pinned around them). The returned ids must be a subset of
+        the candidate ids, ordered best-first, and at most ``batch_size`` long.
 
         Policies get read-only access to the items and the manager's state
         they were constructed with; they must not mutate queue state.

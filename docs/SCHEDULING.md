@@ -206,13 +206,26 @@ returns the batch subset, so a policy can score sets rather than individual
 items — batch execution cost is not separable over its members (a model swap
 is charged once per distinct model in the batch, not per item).
 
+The policy selects the batch unless a candidate is starved, and does nothing
+else. The job manager picks the anchor partition and builds its candidate pool
+round-robin across users. When a candidate is starved (at
+`LUMILAKE_STARVATION_LIMIT` misses), the batch is filled by the job manager's
+starvation path: starved items first (oldest first), then affinity clustering
+pinned around them, and the policy is not consulted. Otherwise the job manager
+calls the policy's `select_batch` with the whole candidate pool and the batch
+size. Commit, miss counting, and everything downstream (HALO, dispatch) are
+the same under every policy.
+
 Each policy returns at most `batch_size` ids, a subset of the candidates, and
 may use only the queued items, their graphs, and what has already run — never
 the future. The policies:
 
-- **`default`**: per-user round-robin fairness within a partition,
-  keeping one item per user in round-robin order, then filling the batch in
-  affinity clustering order.
+- **`default`**: affinity clustering with per-user round-robin fairness. It
+  clusters the candidates by a distance over base models, system-prompt tokens
+  and graph size, and picks the batch-sized subset with the lowest average
+  intra-batch distance. It then keeps one item per user in round-robin order
+  (that user's affinity pick when it has one), and fills the rest of the batch
+  in affinity order, then candidate order.
 - **`fifo`**: enqueue order (`enqueued_at`, then `workflow_id`).
 - **`spt`**: smallest `estimate_area` first; items without an estimate after
   all estimated ones; ties by enqueue order.
