@@ -44,11 +44,12 @@ class BaseSchedulingPolicy(ABC):
     ) -> list[str]:
         """Return the ranked subset of ``candidates`` that forms the batch.
 
-        ``candidates`` is the anchor partition's candidate pool minus the
-        starved candidates the job manager has already forced into the batch;
-        ``batch_size`` is the room left in the batch. The returned ids must be
-        a subset of the candidate ids, ordered best-first, and at most
-        ``batch_size`` long.
+        ``candidates`` is the anchor partition's whole candidate pool and
+        ``batch_size`` the batch size. The job manager calls it only when no
+        candidate is starved: a batch with a starved candidate is filled by
+        the job manager's starvation path (starved items first, then affinity
+        clustering pinned around them). The returned ids must be a subset of
+        the candidate ids, ordered best-first, and at most ``batch_size`` long.
 
         Policies get read-only access to the items and the manager's state
         they were constructed with; they must not mutate queue state.

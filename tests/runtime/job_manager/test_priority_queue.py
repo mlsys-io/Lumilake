@@ -16,6 +16,7 @@ from lumilake_server.runtime.protocol import (
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _slice_meta(graph_name: str) -> WorkflowSliceMeta:
@@ -393,73 +394,160 @@ async def test_starvation_override_allows_low_priority_progress() -> None:
 
 
 @pytest.mark.asyncio
-async def test_starved_candidates_are_forced_before_the_policy() -> None:
-    class _RecordingFifo(FifoSchedulingPolicy):
-        def __init__(self) -> None:
-            super().__init__()
-            self.calls: list[tuple[list[str], int]] = []
+async def test_starved_ids_are_pinned_for_affinity_selection() -> None:
+    quantums = {priority: 0 for priority in Priority}
+    quantums[Priority.HIGH] = 1
+    quantums[Priority.LOW] = 1
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=quantums,
+        starvation_limit=2,
+    )
 
-        def select_batch(
-            self, candidates: list[WorkflowItem], batch_size: int
-        ) -> list[str]:
-            self.calls.append(
-                (sorted(item.workflow_id for item in candidates), batch_size)
-            )
-            return super().select_batch(candidates, batch_size)
-
-    async def _setup() -> tuple[PriorityJobManager, _RecordingFifo, WorkflowItem]:
-        quantums = {priority: 0 for priority in Priority}
-        quantums[Priority.HIGH] = 2
-        quantums[Priority.LOW] = 1
-        manager = PriorityJobManager(
-            optimizer=MagicMock(spec=BaseOptimizer),
-            quantums=quantums,
-            starvation_limit=2,
+    await manager.enqueue(
+        _build_job(
+            "req-high",
+            "h-1",
+            user_id="user-high",
+            priority=Priority.HIGH,
         )
-        recorder = _RecordingFifo()
-        manager._policy_impl = recorder
-        for request_id in ("req-high", "req-high-2"):
-            await manager.enqueue(
-                _build_job(
-                    request_id,
-                    f"h-{request_id}",
-                    user_id="user-high",
-                    priority=Priority.HIGH,
-                )
-            )
-        (low_item,) = await manager.enqueue(
-            _build_job(
-                "req-low",
-                "l-1",
-                user_id="user-low",
-                priority=Priority.LOW,
-            )
+    )
+    low_items = await manager.enqueue(
+        _build_job(
+            "req-low",
+            "l-1",
+            user_id="user-low",
+            priority=Priority.LOW,
         )
-        low_item.miss_count = 2
-        return manager, recorder, low_item
+    )
+    low_items[0].miss_count = 2
 
-    manager, recorder, low_item = await _setup()
-    batch = await manager.select_batch(2)
-    assert batch is not None
+    captured: dict[str, list[str]] = {}
+
+    def _capture_pins(
+        runtime_graphs: dict[str, RuntimeGraph],
+        _enqueued_at: dict[str, float],
+        _batch_size: int,
+        *,
+        pinned_ids: list[str] | None = None,
+        **_kwargs: Any,
+    ) -> list[str]:
+        captured["pinned_ids"] = [] if pinned_ids is None else list(pinned_ids)
+        return [next(iter(runtime_graphs))]
+
+    with patch(
+        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+        side_effect=_capture_pins,
+    ):
+        batch = await manager.select_batch(1)
+        assert batch is not None
+
+    assert low_items[0].workflow_id in captured["pinned_ids"]
+    assert batch.workflows[0].workflow_id == low_items[0].workflow_id
+
+
+class _RecordingFifo(FifoSchedulingPolicy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[list[str], int]] = []
+
+    def select_batch(
+        self, candidates: list[WorkflowItem], batch_size: int
+    ) -> list[str]:
+        self.calls.append((sorted(item.workflow_id for item in candidates), batch_size))
+        return super().select_batch(candidates, batch_size)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["fifo", "default"])
+async def test_starved_candidate_uses_starvation_path_not_policy(policy: str) -> None:
+    quantums = {priority: 0 for priority in Priority}
+    quantums[Priority.HIGH] = 2
+    quantums[Priority.LOW] = 1
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=quantums,
+        starvation_limit=2,
+        policy=policy,
+    )
+    recorder = _RecordingFifo()
+    manager._policy_impl = recorder
+
+    await manager.enqueue(
+        _build_job(
+            "req-high",
+            "h-1",
+            user_id="user-high",
+            priority=Priority.HIGH,
+        )
+    )
+    await manager.enqueue(
+        _build_job(
+            "req-high-2",
+            "h-2",
+            user_id="user-high",
+            priority=Priority.HIGH,
+        )
+    )
+    (low_item,) = await manager.enqueue(
+        _build_job(
+            "req-low",
+            "l-1",
+            user_id="user-low",
+            priority=Priority.LOW,
+        )
+    )
+    low_item.miss_count = 2
+
+    captured: dict[str, list[str]] = {}
+
+    def _pinned_first(
+        runtime_graphs: dict[str, RuntimeGraph],
+        _enqueued_at: dict[str, float],
+        _batch_size: int,
+        *,
+        pinned_ids: list[str] | None = None,
+        **_kwargs: Any,
+    ) -> list[str]:
+        captured["pinned_ids"] = [] if pinned_ids is None else list(pinned_ids)
+        pinned = [] if pinned_ids is None else list(pinned_ids)
+        return pinned + [wid for wid in runtime_graphs if wid not in pinned]
+
+    with patch(
+        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+        side_effect=_pinned_first,
+    ):
+        batch = await manager.select_batch(2)
+        assert batch is not None
+
+    # The starved item is pinned and goes first; the policy is not consulted.
+    assert low_item.workflow_id in captured["pinned_ids"]
     assert batch.workflows[0].workflow_id == low_item.workflow_id
     assert len(batch.workflows) == 2
-    assert recorder.calls == [
-        (
-            sorted(
-                item.workflow_id
-                for item in manager._items.values()
-                if item.workflow_id != low_item.workflow_id
-            ),
-            1,
-        )
-    ]
-
-    manager, recorder, low_item = await _setup()
-    batch = await manager.select_batch(1)
-    assert batch is not None
-    assert batch.workflows[0].workflow_id == low_item.workflow_id
     assert recorder.calls == []
-    assert batch.clustering_seconds == 0.0
+
+
+@pytest.mark.asyncio
+async def test_fifo_without_starved_candidate_skips_affinity() -> None:
+    quantums = {priority: 0 for priority in Priority}
+    quantums[Priority.HIGH] = 2
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=quantums,
+        starvation_limit=2,
+        policy="fifo",
+    )
+
+    await manager.enqueue(_build_job("req-a", "graph-a", user_id="user-a"))
+    await manager.enqueue(_build_job("req-b", "graph-b", user_id="user-b"))
+
+    with patch(
+        "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+        side_effect=AssertionError("select_affinity_batch_ids should not be called"),
+    ):
+        batch = await manager.select_batch(2)
+        assert batch is not None
+        assert {item.request_id for item in batch.workflows} == {"req-a", "req-b"}
 
 
 @pytest.mark.asyncio
@@ -515,9 +603,15 @@ async def test_multi_tenant_case_07_priority_with_starvation_progression() -> No
         return [selected]
 
     picked_priorities: list[Priority] = []
-    with patch(
-        "lumilake_server.runtime.job_manager.policies.default.select_affinity_batch_ids",
-        side_effect=_prefer_higher_priority,
+    with (
+        patch(
+            "lumilake_server.runtime.job_manager.policies.default.select_affinity_batch_ids",
+            side_effect=_prefer_higher_priority,
+        ),
+        patch(
+            "lumilake_server.runtime.job_manager.priority_queue.select_affinity_batch_ids",
+            side_effect=_prefer_higher_priority,
+        ),
     ):
         while await manager.has_work():
             batch = await manager.select_batch(1)
@@ -1276,3 +1370,126 @@ async def test_capacity_aware_lever_changes_partition_key_shape() -> None:
     assert len(off_key) == 5
     assert on_key[:5] == off_key[:5]
     assert on_key != off_key
+
+
+# Fixed scenario: one partition, six candidates across three users with
+# distinct models, system prompts, node counts and enqueue times, batch size
+# 3. The second variant starves w3. Each case pins the exact batch
+# reserve_batch returns.
+
+_SCENARIO_SPECS = [
+    # (request_id, user_id, model, prompt, n_nodes, enqueued_at)
+    ("req-a", "u1", "llama-7b", "alpha", 1, 3.0),
+    ("req-b", "u1", "llama-7b", "alpha", 1, 4.0),
+    ("req-c", "u2", "llama-13b", "beta", 2, 1.0),
+    ("req-d", "u2", "llama-13b", "beta", 2, 2.0),
+    ("req-e", "u3", "gpt-3.5", "gamma", 3, 5.0),
+    ("req-f", "u3", "gpt-3.5", "gamma", 3, 6.0),
+]
+_SCENARIO_IDS = ["w1", "w2", "w3", "w4", "w5", "w6"]
+
+# Expected ordered workflow_id lists from reserve_batch.
+_SCENARIO_EXPECTED: dict[tuple[str, bool], list[str]] = {
+    ("default", False): ["w1", "w3", "w5"],
+    ("fifo", False): ["w3", "w4", "w1"],
+    ("plas", False): ["w3", "w4", "w1"],
+    ("lpt", False): ["w5", "w6", "w3"],
+    ("spt", False): ["w1", "w2", "w3"],
+    ("cohort_pack", False): ["w3"],
+    ("default", True): ["w3", "w4", "w5"],
+    ("fifo", True): ["w3", "w4", "w5"],
+    ("plas", True): ["w3", "w4", "w5"],
+    ("lpt", True): ["w3", "w4", "w5"],
+    ("spt", True): ["w3", "w4", "w5"],
+    ("cohort_pack", True): ["w3", "w4", "w5"],
+}
+
+
+def _build_scenario_graph(model: str, prompt: str, n_nodes: int) -> RuntimeGraph:
+    nodes: dict[str, RuntimeOp] = {}
+    node_order: list[str] = []
+    prev: str | None = None
+    for idx in range(n_nodes):
+        node_id = f"n{idx}"
+        deps = (prev,) if prev else ()
+        nodes[node_id] = RuntimeOp(
+            node_id=node_id,
+            task_type="inference",
+            backend="vllm",
+            model=model,
+            data_spec={
+                "type": "graph_template",
+                "template": {
+                    "name": "format",
+                    "columns": [],
+                    "options": {
+                        "format": {
+                            "messages": [
+                                {"role": "system", "content": prompt},
+                                {"role": "user", "content": "hi"},
+                            ]
+                        }
+                    },
+                },
+            },
+            model_spec={},
+            inference_spec={},
+            dependencies=deps,
+        )
+        node_order.append(node_id)
+        prev = node_id
+    return RuntimeGraph(
+        nodes=nodes,
+        node_order=node_order,
+        output_node_map={node_order[-1]: "output"},
+    )
+
+
+async def _reserve_scenario_batch(policy: str, starved: bool) -> list[str]:
+    quantums = {priority: 0 for priority in Priority}
+    quantums[Priority.HIGH] = 10
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=quantums,
+        starvation_limit=2,
+        policy=policy,
+    )
+    items: list[Any] = []
+    with patch(
+        "lumilake_server.runtime.job_manager.priority_queue.unique_id",
+        side_effect=iter(_SCENARIO_IDS),
+    ):
+        for (req, user, model, prompt, n_nodes, enq), wid in zip(
+            _SCENARIO_SPECS, _SCENARIO_IDS
+        ):
+            graph = _build_scenario_graph(model, prompt, n_nodes)
+            job = Job(
+                request_id=req,
+                runtime_graphs={req: graph},
+                data_profile_graphs={req: graph},
+                dsl_graphs={req: cast(Any, object())},
+                workflow_slices={req: _slice_meta(req)},
+                config=LumilakeRequestConfig(
+                    priority=Priority.HIGH,
+                    user_id=user,
+                    principal_id="p",
+                ),
+            )
+            (item,) = await manager.enqueue(job)
+            item.enqueued_at = enq
+            items.append(item)
+    if starved:
+        items[2].miss_count = 2  # w3 (req-c)
+    reservation = await manager.reserve_batch(3)
+    assert reservation is not None
+    return [item.workflow_id for item in reservation.selection.workflows]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "policy", ["default", "fifo", "plas", "lpt", "spt", "cohort_pack"]
+)
+@pytest.mark.parametrize("starved", [False, True])
+async def test_reserve_batch_selection_per_policy(policy: str, starved: bool) -> None:
+    got = await _reserve_scenario_batch(policy, starved)
+    assert got == _SCENARIO_EXPECTED[(policy, starved)]

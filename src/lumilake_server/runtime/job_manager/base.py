@@ -48,7 +48,8 @@ class BatchSelection:
     data_profile_graphs: dict[str, RuntimeGraph]
     config: LumilakeRequestConfig
     clustering_seconds: float = 0.0
-    """Seconds spent in the scheduling policy's select_batch."""
+    """Seconds spent in the policy's ``select_batch`` when no candidate is
+    starved, and in the starvation path's affinity clustering when one is."""
 
 
 @dataclass(slots=True)
