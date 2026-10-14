@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from lumilake.log import Logger, init_child_logger
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 
 __all__ = ["BaseSchedulingPolicy"]
@@ -32,9 +33,11 @@ class BaseSchedulingPolicy(ABC):
         self,
         *,
         clock: Callable[[], float] = time.monotonic,
+        logger: Logger | None = None,
         **kwargs: Any,
     ) -> None:
         self._clock = clock
+        self._logger = init_child_logger("JobManager") if logger is None else logger
 
     @abstractmethod
     def select_batch(

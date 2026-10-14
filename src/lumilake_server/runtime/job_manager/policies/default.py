@@ -7,7 +7,9 @@ fairness: it keeps one item per user in round-robin order before filling the
 rest of the batch.
 """
 
-from lumilake_server.runtime.job_manager.base import WorkflowItem
+import logging
+
+from lumilake_server.runtime.job_manager.base import WorkflowItem, format_workflow_item
 from lumilake_server.runtime.job_manager.cluster_algo.clustering import (
     select_affinity_batch_ids,
 )
@@ -30,9 +32,18 @@ class DefaultSchedulingPolicy(BaseSchedulingPolicy):
             {i.workflow_id: i.enqueued_at for i in candidates},
             batch_size,
         )
+        candidate_map = {item.workflow_id: item for item in candidates}
+        if self._logger.isEnabledFor(logging.DEBUG):
+            self._logger.debug(
+                "Affinity selected ids=%s",
+                [
+                    format_workflow_item(candidate_map[wid])
+                    for wid in affinity_ids
+                    if wid in candidate_map
+                ],
+            )
         if batch_size <= 1:
             return affinity_ids[:batch_size]
-        candidate_map = {item.workflow_id: item for item in candidates}
         selected_ids = [wid for wid in affinity_ids if wid in candidate_map]
         if not selected_ids:
             return []
