@@ -206,14 +206,15 @@ returns the batch subset, so a policy can score sets rather than individual
 items — batch execution cost is not separable over its members (a model swap
 is charged once per distinct model in the batch, not per item).
 
-The policy owns batch selection and nothing else. The job manager picks the
-anchor partition, builds its candidate pool round-robin across users, and
-forces starved candidates (those at `LUMILAKE_STARVATION_LIMIT` misses) into
-the batch first, oldest first. It then hands the policy the remaining
-candidates and the room left in the batch, and appends the policy's pick. When
-starved candidates fill the batch, the policy is not consulted. Commit, miss
-counting, and everything downstream (HALO, dispatch) are the same under every
-policy.
+The policy selects the batch unless a candidate is starved, and does nothing
+else. The job manager picks the anchor partition and builds its candidate pool
+round-robin across users. When a candidate is starved (at
+`LUMILAKE_STARVATION_LIMIT` misses), the batch is filled by the job manager's
+starvation path: starved items first (oldest first), then affinity clustering
+pinned around them, and the policy is not consulted. Otherwise the job manager
+calls the policy's `select_batch` with the whole candidate pool and the batch
+size. Commit, miss counting, and everything downstream (HALO, dispatch) are
+the same under every policy.
 
 Each policy returns at most `batch_size` ids, a subset of the candidates, and
 may use only the queued items, their graphs, and what has already run — never
