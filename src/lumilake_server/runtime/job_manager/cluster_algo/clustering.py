@@ -34,7 +34,6 @@ def select_affinity_batch_ids(
     enqueued_at: dict[str, float],
     batch_size: int,
     *,
-    pinned_ids: list[str] | None = None,
     model_weight: float = MODEL_WEIGHT,
     data_weight: float = DATA_WEIGHT,
     size_weight: float = SIZE_WEIGHT,
@@ -50,9 +49,7 @@ def select_affinity_batch_ids(
 
     The function merges clusters by average linkage and, for any cluster with
     size >= batch_size, chooses the subset with minimal average distance.
-    Enqueue time is used as a tie-breaker (older first). When ``pinned_ids``
-    are provided, the selector always includes those IDs (up to batch size)
-    and fills remaining slots by affinity.
+    Enqueue time is used as a tie-breaker (older first).
     """
     if batch_size <= 0:
         batch_size = 1
@@ -60,20 +57,6 @@ def select_affinity_batch_ids(
     candidate_ids = list(graphs.keys())
     if len(candidate_ids) <= batch_size:
         return candidate_ids
-    candidate_set = set(candidate_ids)
-    normalized_pinned: list[str] = []
-    if pinned_ids:
-        seen: set[str] = set()
-        for workflow_id in pinned_ids:
-            if workflow_id not in candidate_set or workflow_id in seen:
-                continue
-            seen.add(workflow_id)
-            normalized_pinned.append(workflow_id)
-    if len(normalized_pinned) >= batch_size:
-        return sorted(
-            normalized_pinned,
-            key=lambda workflow_id: enqueued_at.get(workflow_id, float("inf")),
-        )[:batch_size]
 
     affinity = {
         workflow_id: _build_affinity(graphs[workflow_id])
@@ -119,26 +102,9 @@ def select_affinity_batch_ids(
                 count += 1
         return total / count if count else 0.0
 
-    def select_subset(candidate_ids: list[str], pinned: list[str]) -> list[str]:
+    def select_subset(candidate_ids: list[str]) -> list[str]:
         if len(candidate_ids) <= batch_size:
             return list(candidate_ids)
-        pinned_set = set(pinned)
-        if len(pinned) >= batch_size:
-            return sorted(
-                pinned,
-                key=lambda workflow_id: enqueued_at.get(workflow_id, float("inf")),
-            )[:batch_size]
-        if pinned:
-            selected = list(pinned)
-            remaining = [cid for cid in candidate_ids if cid not in pinned_set]
-            while len(selected) < batch_size and remaining:
-                next_id = min(
-                    remaining,
-                    key=lambda cid: (avg_distance(cid, selected), enqueued_at[cid]),
-                )
-                selected.append(next_id)
-                remaining.remove(next_id)
-            return selected
 
         best_subset: list[str] | None = None
         best_score: float | None = None
@@ -185,11 +151,9 @@ def select_affinity_batch_ids(
 
     def consider_cluster(cluster_ids: list[str]) -> None:
         nonlocal best_ids, best_score, best_oldest
-        if any(workflow_id not in cluster_ids for workflow_id in normalized_pinned):
-            return
         if len(cluster_ids) < batch_size:
             return
-        subset = select_subset(cluster_ids, normalized_pinned)
+        subset = select_subset(cluster_ids)
         score = batch_score(subset)
         oldest = min(enqueued_at[cid] for cid in subset)
         if (
@@ -225,7 +189,7 @@ def select_affinity_batch_ids(
         consider_cluster(merged)
 
     if best_ids is None:
-        return select_subset(candidate_ids, normalized_pinned)
+        return select_subset(candidate_ids)
     return best_ids
 
 

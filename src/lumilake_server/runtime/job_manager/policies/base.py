@@ -40,16 +40,15 @@ class BaseSchedulingPolicy(ABC):
     def select_batch(
         self,
         candidates: list[WorkflowItem],
-        affinity_rank: dict[str, int],
         batch_size: int,
     ) -> list[str]:
         """Return the ranked subset of ``candidates`` that forms the batch.
 
-        ``candidates`` is the candidate set for the anchor partition (already
-        narrowed by starvation pinning). ``affinity_rank`` maps workflow id to
-        the affinity-selection order, so a policy can break ties the way
-        clustering shaped the batch. The returned ids must be a subset of the
-        candidate ids, ordered best-first, and at most ``batch_size`` long.
+        ``candidates`` is the anchor partition's candidate pool minus the
+        starved candidates the job manager has already forced into the batch;
+        ``batch_size`` is the room left in the batch. The returned ids must be
+        a subset of the candidate ids, ordered best-first, and at most
+        ``batch_size`` long.
 
         Policies get read-only access to the items and the manager's state
         they were constructed with; they must not mutate queue state.
