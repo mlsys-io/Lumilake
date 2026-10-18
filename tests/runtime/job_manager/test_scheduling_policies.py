@@ -1,7 +1,7 @@
 """Every registered scheduling policy against one shared workload."""
 
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -168,7 +168,6 @@ HISTORY = [
     _item("c1r0", ["gpu"], -2.0, chain_id="c1"),
     _item("c2r0", ["agent"], -1.0, chain_id="c2"),
 ]
-AFFINITY_RANK = {"wf-gpu2": 0, "wf-cpu1": 1}
 
 EXPECTED = {
     # One item per user in round-robin order (preferring affinity picks),
@@ -192,7 +191,11 @@ EXPECTED = {
 def _select(policy: str, batch_size: int) -> list[str]:
     impl = create_scheduling_policy(policy)
     impl.on_commit(HISTORY)
-    selected = impl.select_batch(list(CANDIDATES), dict(AFFINITY_RANK), batch_size)
+    with patch(
+        "lumilake_server.runtime.job_manager.policies.default.select_affinity_batch_ids",
+        side_effect=lambda _g, _e, n: ["wf-gpu2", "wf-cpu1"][:n],
+    ):
+        selected = impl.select_batch(list(CANDIDATES), batch_size)
     return [wid.removeprefix("wf-") for wid in selected]
 
 
@@ -284,7 +287,7 @@ def _cohort_select(
     )
     impl.on_commit(history or [])
     impl.observe_free_lanes(free_lanes)
-    selected = impl.select_batch(candidates, {}, batch_size)
+    selected = impl.select_batch(candidates, batch_size)
     return [wid.removeprefix("wf-") for wid in selected]
 
 
@@ -404,7 +407,7 @@ def test_cohort_pack_does_not_spread_onto_lanes_other_units_will_take() -> None:
 def test_free_lane_hook_defaults_to_a_no_op() -> None:
     impl = create_scheduling_policy("fifo")
     impl.observe_free_lanes(3)
-    assert impl.select_batch(list(CANDIDATES), {}, 2) == ["wf-agent", "wf-gpu"]
+    assert impl.select_batch(list(CANDIDATES), 2) == ["wf-agent", "wf-gpu"]
 
 
 class _LaneRecorder(CohortPackSchedulingPolicy):
@@ -695,7 +698,7 @@ def test_cohort_pack_late_older_commit_keeps_the_last_round_width() -> None:
     # incomplete unit and y0 would win.
     z2 = _round_item("z2", ["cpu", "cpu"], 1.0, "z", 2)
     y0 = _round_item("y0", ["gpu"], 2.0, "y", 0)
-    assert [w.removeprefix("wf-") for w in impl.select_batch([z2, y0], {}, 3)] == ["z2"]
+    assert [w.removeprefix("wf-") for w in impl.select_batch([z2, y0], 3)] == ["z2"]
 
 
 def test_cohort_pack_mate_width_is_the_largest_batch_of_its_last_round() -> None:
@@ -717,10 +720,10 @@ def test_cohort_pack_oversized_unit_goes_out_over_several_dispatches() -> None:
         _round_item(f"s{i}", ["cpu"], enqueued, "c", 0)
         for i, enqueued in enumerate([3.0, 1.0, 5.0, 2.0, 4.0])
     ]
-    first = impl.select_batch(list(slices), {}, 3)
+    first = impl.select_batch(list(slices), 3)
     assert [w.removeprefix("wf-") for w in first] == ["s1", "s3", "s0"]
     left = [item for item in slices if item.workflow_id not in set(first)]
-    second = impl.select_batch(left, {}, 3)
+    second = impl.select_batch(left, 3)
     assert [w.removeprefix("wf-") for w in second] == ["s4", "s2"]
 
 
@@ -813,7 +816,7 @@ def test_create_policy_passes_custom_args_to_cohort_pack() -> None:
     def pick(custom_args: dict[str, Any]) -> list[str]:
         impl = create_scheduling_policy("cohort_pack", custom_args=custom_args)
         impl.on_commit(history)
-        picked = impl.select_batch([waiting, other], {}, 10)
+        picked = impl.select_batch([waiting, other], 10)
         return [wid.removeprefix("wf-") for wid in picked]
 
     # With patience 3, 4 misses release the incomplete unit; the default 8 does not.

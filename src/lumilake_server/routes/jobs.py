@@ -619,14 +619,16 @@ class JobStatusPayload(BaseModel):
         default=None,
         description=(
             "Accumulated job-manager batch-selection time in seconds, excluding"
-            " the clustering substep reported in clustering_seconds."
+            " the substep reported in clustering_seconds."
         ),
     )
     clustering_seconds: float | None = Field(
         default=None,
         description=(
-            "Accumulated affinity-clustering time in seconds, attributed to this"
-            " request as its share of the batches it participated in."
+            "Accumulated time in seconds spent in the policy's batch selection"
+            " when no candidate is starved, and in the starvation path's"
+            " affinity clustering when one is, attributed to this request as"
+            " its share of the batches it participated in."
         ),
     )
     error: str | None = Field(
@@ -953,13 +955,15 @@ class JobPreviewPayload(BaseModel):
     selection_seconds: float = Field(
         description=(
             "Wall-clock seconds spent inside the transient job manager's"
-            " batch-selection path (excluding the clustering substep)."
+            " batch-selection path (excluding the substep reported in"
+            " clustering_seconds)."
         ),
     )
     clustering_seconds: float = Field(
         description=(
-            "Wall-clock seconds spent in affinity clustering during the"
-            " transient batch selection."
+            "Wall-clock seconds spent in the policy's batch selection when no"
+            " candidate is starved, and in the starvation path's affinity"
+            " clustering when one is, during the transient batch selection."
         ),
     )
     optimization_seconds: float = Field(

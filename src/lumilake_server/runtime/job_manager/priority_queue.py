@@ -27,6 +27,7 @@ from .base import (
     BatchSelection,
     Job,
     WorkflowItem,
+    format_workflow_item,
 )
 from .cluster_algo.clustering import select_affinity_batch_ids
 from .cost import CostParams
@@ -140,10 +141,12 @@ class PriorityJobManager(BaseJobManager):
         # blocking applies within it).
         self._capacity_aware_selection = capacity_aware_selection
         self._policy = policy
+        self.logger = init_child_logger("JobManager", logger, log_level)
         self._policy_impl = create_scheduling_policy(
             policy,
             cost_params=cost_params,
             clock=clock,
+            logger=self.logger,
         )
         # Callable ``(worker_profile, HardwareRequirements) -> bool`` used to
         # filter candidate workers by hardware when capacity is supplied.
@@ -179,7 +182,6 @@ class PriorityJobManager(BaseJobManager):
         # At most one outstanding reserve_batch reservation. Subsequent
         # reserve_batch calls raise until commit/abort releases this slot.
         self._active_reservation: BatchReservation | None = None
-        self.logger = init_child_logger("JobManager", logger, log_level)
         self.logger.info(
             "Scheduling policy active: %s (resolved to %s)",
             self._policy,
@@ -331,16 +333,6 @@ class PriorityJobManager(BaseJobManager):
         )
 
     @staticmethod
-    def _format_item(item: WorkflowItem) -> str:
-        return (
-            f"{item.workflow_id}"
-            f"(req={item.request_id},user={item.config.user_id},pri={item.config.priority.value},"
-            f"graph={item.graph_name},public={item.public_graph_name},"
-            f"slice={item.slice_index},miss={item.miss_count},"
-            f"chain={item.config.chain_id},round={item.config.chain_round})"
-        )
-
-    @staticmethod
     def _queue_owner_id(item: WorkflowItem) -> str:
         return item.config.user_id
 
@@ -409,7 +401,7 @@ class PriorityJobManager(BaseJobManager):
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Enqueued items=%s",
-                    [self._format_item(item) for item in workflow_items],
+                    [format_workflow_item(item) for item in workflow_items],
                 )
         return workflow_items
 
@@ -564,7 +556,10 @@ class PriorityJobManager(BaseJobManager):
         run are excluded from selection before the round-robin pick and before
         starvation pinning. Once the anchor partition and its candidates are
         chosen, the policy is told how many whole dispatches ``capacity`` can
-        serve for them (``None`` without ``capacity``) before it selects.
+        serve for them (``None`` without ``capacity``) before it selects. When
+        a candidate is starved, the batch is filled by the starvation path
+        (starved items first, then affinity clustering pinned around them) and
+        the policy is not called; otherwise the policy selects the batch.
         """
         if batch_size <= 0:
             batch_size = 1
@@ -674,55 +669,54 @@ class PriorityJobManager(BaseJobManager):
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(
                     "Candidate pool items=%s",
-                    [self._format_item(item) for item in candidates],
+                    [format_workflow_item(item) for item in candidates],
                 )
 
             starved = [
                 item for item in candidates if item.miss_count >= self._starvation_limit
             ]
             item_map = {item.workflow_id: item for item in candidates}
-            clustering_start = time.perf_counter()
-            base_batch_ids = select_affinity_batch_ids(
-                {item.workflow_id: item.runtime_graph for item in candidates},
-                {item.workflow_id: item.enqueued_at for item in candidates},
-                batch_size,
-                pinned_ids=[
-                    item.workflow_id
-                    for item in sorted(starved, key=lambda node: node.enqueued_at)
-                ],
-            )
-            clustering_seconds = time.perf_counter() - clustering_start
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(
-                    "Affinity selected ids=%s",
-                    [
-                        self._format_item(item_map[workflow_id])
-                        for workflow_id in base_batch_ids
-                        if workflow_id in item_map
+            if starved:
+                clustering_start = time.perf_counter()
+                base_batch_ids = select_affinity_batch_ids(
+                    {item.workflow_id: item.runtime_graph for item in candidates},
+                    {item.workflow_id: item.enqueued_at for item in candidates},
+                    batch_size,
+                    pinned_ids=[
+                        item.workflow_id
+                        for item in sorted(starved, key=lambda node: node.enqueued_at)
                     ],
                 )
-            selected_ids = self._apply_starvation_policy(
-                candidates, base_batch_ids, batch_size
-            )
-            if not starved:
-                selected_ids = self._policy_impl.select_batch(
-                    candidates,
-                    {wid: i for i, wid in enumerate(base_batch_ids[:batch_size])},
-                    batch_size,
+                clustering_seconds = time.perf_counter() - clustering_start
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(
+                        "Affinity selected ids=%s",
+                        [
+                            format_workflow_item(item_map[workflow_id])
+                            for workflow_id in base_batch_ids
+                            if workflow_id in item_map
+                        ],
+                    )
+                selected_ids = self._apply_starvation_policy(
+                    candidates, base_batch_ids, batch_size
                 )
+            else:
+                clustering_start = time.perf_counter()
+                selected_ids = self._policy_impl.select_batch(candidates, batch_size)
+                clustering_seconds = time.perf_counter() - clustering_start
             if starved:
                 self.logger.info(
                     "Starvation override: forced=%d selected=%d forced_items=%s",
                     len(starved),
                     len(selected_ids),
-                    [self._format_item(item) for item in starved],
+                    [format_workflow_item(item) for item in starved],
                 )
             else:
                 self.logger.debug("Selected batch size=%d", len(selected_ids))
 
             if self.logger.isEnabledFor(logging.DEBUG):
                 selected_names = [
-                    self._format_item(item_map[workflow_id])
+                    format_workflow_item(item_map[workflow_id])
                     for workflow_id in selected_ids
                     if workflow_id in item_map
                 ]
