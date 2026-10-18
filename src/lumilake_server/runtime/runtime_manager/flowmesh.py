@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 from flowmesh.exceptions import APIError
-from flowmesh.models.tasks import TaskInfo
+from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
@@ -371,10 +371,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     async def fetch_task_status(
         self,
         task_id: str,
-    ) -> TaskInfo:
+    ) -> TaskStatusView:
         try:
             task_info = await _retry_transient_read(
-                lambda: self.fm.tasks.retrieve(task_id), f"task {task_id}"
+                lambda: self.fm.tasks.status(task_id), f"task {task_id}"
             )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
@@ -450,7 +450,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     ) -> str:
         """`` (node <id>): <FlowMesh error>`` for a failed task.
 
-        The error comes from the ``TaskInfo`` the status poll already
+        The error comes from the ``TaskStatusView`` the status poll already
         retrieved for the failed task. A task with no recorded error yields
         just the node suffix.
         """
@@ -527,10 +527,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     completed = False
         return completed
 
-    def _record_task_error(self, task_id: str, task_info: TaskInfo) -> None:
+    def _record_task_error(self, task_id: str, task_info: TaskStatusView) -> None:
         """Record the FlowMesh error of a failed task, if it has one.
 
-        The error is read from the same ``TaskInfo`` the status poll already
+        The error is read from the same ``TaskStatusView`` the status poll already
         retrieved. A task with no recorded error is left unrecorded; the
         caller then reports the plain message. The error is an untrusted
         remote field, so it is redacted before it is recorded and later
