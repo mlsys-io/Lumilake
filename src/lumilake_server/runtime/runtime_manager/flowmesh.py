@@ -1563,8 +1563,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         cache_telemetry: dict[str, dict[str, Any]] = {}
         store_plan: list[CacheStore] = []
 
-        for node_id in graph.node_order:
-            row_keys, task_key = cache.compute_keys(graph, node_id)
+        # Compute every cacheable node's keys first, on the unmodified graph,
+        # so an upstream that becomes an emit/merge step below cannot make its
+        # dependents look non-cacheable. Iterate in topological order so the
+        # rewrites (and any generated partial nodes) are applied upstream-first.
+        all_keys = cache.compute_all_keys(graph)
+        for node_id in graph.topological_order():
+            row_keys, task_key = all_keys.get(node_id, (None, None))
             if row_keys is None and task_key is None:
                 # Not cacheable, or an upstream is not cacheable (fail closed).
                 continue
@@ -1678,40 +1683,46 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         )
 
         async def store_one(store: CacheStore) -> None:
-            task_id = node_task_map.get(store.node_id)
-            if task_id is None:
-                return
-            status = self._execution_task_status.get(
-                (request_info.request_id, request_info.batch_id), {}
-            ).get(task_id)
-            if status != "DONE":
-                return
-            results_json = await _retry_transient_read(
-                lambda: self.fm.results.retrieve(task_id),
-                f"task {task_id}",
-            )
-            if isinstance(results_json, BaseModel):
-                results_json = results_json.model_dump(mode="json")
-            items = self._resolve_output_items(
-                results_json, store.node_id, task_type="python"
-            )
-            if store.whole_task:
-                await asyncio.to_thread(
-                    cache.store_entry,
-                    job_storage,
-                    store.keys[0],
-                    items,
-                    producer_job_id,
+            try:
+                task_id = node_task_map.get(store.node_id)
+                if task_id is None:
+                    return
+                status = self._execution_task_status.get(
+                    (request_info.request_id, request_info.batch_id), {}
+                ).get(task_id)
+                if status != "DONE":
+                    return
+                results_json = await _retry_transient_read(
+                    lambda: self.fm.results.retrieve(task_id),
+                    f"task {task_id}",
                 )
-                return
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        cache.store_entry, job_storage, key, [item], producer_job_id
+                if isinstance(results_json, BaseModel):
+                    results_json = results_json.model_dump(mode="json")
+                items = self._resolve_output_items(
+                    results_json, store.node_id, task_type="python"
+                )
+                if store.whole_task:
+                    await asyncio.to_thread(
+                        cache.store_entry,
+                        job_storage,
+                        store.keys[0],
+                        items,
+                        producer_job_id,
                     )
-                    for key, item in zip(store.keys, items)
+                    return
+                await asyncio.gather(
+                    *(
+                        asyncio.to_thread(
+                            cache.store_entry, job_storage, key, [item], producer_job_id
+                        )
+                        for key, item in zip(store.keys, items)
+                    )
                 )
-            )
+            except Exception:
+                # A cache write must never fail the request; log and move on.
+                self.logger.warning(
+                    "failed to store cache results for node %s", store.node_id
+                )
 
         await asyncio.gather(*(store_one(store) for store in store_plan))
 

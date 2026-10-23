@@ -88,6 +88,10 @@ def test_is_pinned_image() -> None:
     assert not is_pinned_image("name")
     assert not is_pinned_image("sha256:short")
     assert not is_pinned_image("name@sha256:short")
+    # The digest must be lowercase hex, not just 64 arbitrary characters.
+    assert not is_pinned_image("name@sha256:" + "g" * 64)
+    assert not is_pinned_image("sha256:" + "G" * 64)
+    assert not is_pinned_image("name@sha256:" + "A" * 64)
 
 
 def test_lambda_op_cache_requires_pinned_image() -> None:
@@ -136,6 +140,47 @@ def test_row_key_per_row() -> None:
     row_keys = _row_keys(_graph(node), "n")
     assert len(row_keys) == 3
     assert len(set(row_keys)) == 3
+
+
+def test_row_key_broadcasts_one_value_column() -> None:
+    # A one-value literal column broadcasts to every row (matching the row-mode
+    # wrapper); it must not raise IndexError on later rows.
+    node = _op(
+        "n",
+        plan=[
+            {"kind": "literal", "values": ["a", "b", "c"]},
+            {"kind": "literal", "values": ["const"]},
+        ],
+    )
+    row_keys = _row_keys(_graph(node), "n")
+    assert len(row_keys) == 3
+    assert len(set(row_keys)) == 3
+
+
+def test_row_key_uses_aligned_upstream_row() -> None:
+    # A row-mode upstream contributes its row i key to row i, so adding an
+    # unrelated upstream row does not change the other rows' keys.
+    up = _op("up", plan=[{"kind": "literal", "values": ["a", "b"]}])
+    down = _op(
+        "down",
+        plan=[{"kind": "stage", "node": "up"}],
+        dependencies=("up",),
+    )
+    graph = _graph(up, down)
+    down_keys = _row_keys(graph, "down")
+    assert len(down_keys) == 2
+
+    up2 = _op("up", plan=[{"kind": "literal", "values": ["a", "b", "c"]}])
+    down2 = _op(
+        "down",
+        plan=[{"kind": "stage", "node": "up"}],
+        dependencies=("up",),
+    )
+    graph2 = _graph(up2, down2)
+    down_keys2 = _row_keys(graph2, "down")
+    # Row 0 and row 1 keys are unchanged; a third row was added.
+    assert down_keys2[:2] == down_keys
+    assert len(down_keys2) == 3
 
 
 def test_upstream_key_changes_row_key() -> None:
@@ -238,6 +283,26 @@ def test_plan_partial_hit_merges() -> None:
     assert plan.cached == [None, "cached-b", None]
     assert plan.partial_node == "n__partial"
     assert plan.rows_hit == 1 and plan.rows_missed == 2
+
+
+def test_plan_partial_hit_with_stage_column_runs_all() -> None:
+    # A partial rewrite cannot filter staged upstream columns, so a row node
+    # with a stage input and a partial hit runs every row normally (all-miss)
+    # instead of merging.
+    up = _op("up", plan=[{"kind": "literal", "values": ["a", "b", "c"]}])
+    node = _op(
+        "n",
+        plan=[{"kind": "stage", "node": "up"}],
+        dependencies=("up",),
+    )
+    graph = _graph(up, node)
+    keys = _row_keys(graph, "n")
+    storage = InMemoryJobStorage()
+    _store(storage, keys[1], ["cached-b"], "job-1")
+    entries = [cache.load_entry(storage, k) for k in keys]
+    plan = cache.plan_node(graph, "n", entries)
+    assert plan.kind == "run"
+    assert plan.rows_missed == 3
 
 
 def test_partial_plan_filters_literal_columns() -> None:

@@ -272,3 +272,109 @@ async def test_store_after_success_and_none_after_failure(
     await manager._store_cache_results(_request_info(graph), store_plan, {"n": "t1"})
     # Entries remain from the successful run (not overwritten by failure).
     assert _entry(storage, keys[0])["items"] == [{"output": "o1"}]
+
+
+@pytest.mark.asyncio
+async def test_partial_hit_with_stage_column_runs_all_rows(_job_storage) -> None:
+    # A row node with a stage input and a partial hit cannot merge (the partial
+    # task cannot filter staged columns), so it runs all rows and stores every
+    # row's key on success.
+    up = _op("up", plan=[{"kind": "literal", "values": ["a", "b", "c"]}])
+    node = _op(
+        "n",
+        plan=[{"kind": "stage", "node": "up"}],
+        dependencies=("up",),
+    )
+    graph = _graph(up, node)
+    storage = _job_storage
+    up_keys = _row_keys(graph, "up")
+    down_keys = _row_keys(graph, "n")
+    for i, key in enumerate(up_keys):
+        _store(storage, key, f"up{i}", "job-0")
+    _store(storage, down_keys[1], "cached-b", "job-0")
+
+    manager = FlowmeshRuntimeManager()
+    telemetry, store_plan = await manager._apply_cache_rewrites(
+        _request_info(graph), _schedule(["up", "n"])
+    )
+    # The node runs normally (no merge, no partial node).
+    assert graph.nodes["n"].data_spec["mode"] == "row"
+    assert "n__partial" not in graph.nodes
+    # Store plan covers every row's key.
+    assert store_plan == [CacheStore(node_id="n", keys=down_keys, whole_task=False)]
+    assert telemetry["n"]["rows_missed"] == 3
+
+
+@pytest.mark.asyncio
+async def test_chained_cacheable_upstream_all_hit_still_looked_up(_job_storage) -> None:
+    # An all-hit upstream becomes an emit step; its downstream cacheable node
+    # must still be looked up (and hit) rather than fail closed and rerun.
+    up = _op("up", plan=[{"kind": "literal", "values": ["a", "b"]}])
+    down = _op(
+        "down",
+        plan=[{"kind": "stage", "node": "up"}],
+        dependencies=("up",),
+    )
+    graph = _graph(up, down)
+    storage = _job_storage
+    up_keys = _row_keys(graph, "up")
+    down_keys = _row_keys(graph, "down")
+    for i, key in enumerate(up_keys):
+        _store(storage, key, f"up{i}", "job-0")
+    for i, key in enumerate(down_keys):
+        _store(storage, key, f"down{i}", "job-0")
+
+    manager = FlowmeshRuntimeManager()
+    telemetry, store_plan = await manager._apply_cache_rewrites(
+        _request_info(graph), _schedule(["up", "down"])
+    )
+    # Upstream replayed; downstream still hit (not rerun).
+    assert graph.nodes["up"].data_spec["mode"] == "emit"
+    assert graph.nodes["down"].data_spec["mode"] == "emit"
+    assert graph.nodes["down"].data_spec["items"] == ["down0", "down1"]
+    assert store_plan == []
+    assert telemetry["up"]["rows_hit"] == 2
+    assert telemetry["down"]["rows_hit"] == 2
+
+
+@pytest.mark.asyncio
+async def test_storage_errors_fail_open(_job_storage, monkeypatch) -> None:
+    # A storage that raises on get and on put must not fail the request: the
+    # job runs normally and stores nothing.
+    class FailingStorage:
+        def get_artifact(self, *args, **kwargs):
+            raise RuntimeError("transport down")
+
+        def save_artifact(self, *args, **kwargs):
+            raise RuntimeError("transport down")
+
+    import lumilake_server.utils.job_storage as js
+
+    monkeypatch.setattr(js, "_job_storage", FailingStorage())
+    node = _op("n", plan=[{"kind": "literal", "values": ["a", "b"]}])
+    graph = _graph(node)
+    manager = FlowmeshRuntimeManager()
+    telemetry, store_plan = await manager._apply_cache_rewrites(
+        _request_info(graph), _schedule(["n"])
+    )
+    # Lookup failure counts as a miss; the node runs normally and plans a store.
+    assert graph.nodes["n"].data_spec["mode"] == "row"
+    assert telemetry["n"]["rows_missed"] == 2
+    assert len(store_plan) == 1
+
+    # A store failure must not propagate.
+    manager._execution_task_status[("req-1", "batch-1")] = {"t1": "DONE"}
+    monkeypatch.setattr(
+        FlowmeshRuntimeManager,
+        "fm",
+        property(
+            lambda self: SimpleNamespace(
+                results=SimpleNamespace(
+                    retrieve=lambda tid: _async_dict(
+                        {"items": [{"output": "o1"}, {"output": "o2"}]}
+                    )
+                )
+            )
+        ),
+    )
+    await manager._store_cache_results(_request_info(graph), store_plan, {"n": "t1"})

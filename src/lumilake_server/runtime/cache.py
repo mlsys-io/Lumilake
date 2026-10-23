@@ -15,9 +15,12 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from lumilake.log import get_default_logger
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.utils.job_storage import JobStorage
+
+logger = get_default_logger()
 
 # Bump to invalidate every previously stored entry when the materializer or
 # the key's meaning changes.
@@ -56,15 +59,18 @@ def _row_key(
     """The per-row lineage key for one row of a cacheable row-mode node.
 
     Excludes ``timeout_s``/``memory_mb`` (they don't change the result) and
-    includes the op spec, this row's resolved literal values, and the per-row
-    keys of cacheable upstream rows.
+    includes the op spec, this row's resolved literal values, and the aligned
+    upstream keys for this row. A one-value literal column broadcasts to every
+    row, matching the row-mode wrapper in ``python_step``.
     """
     spec = {
         "code": node.data_spec["code"],
         "fn_name": node.data_spec["fn_name"],
         "mode": node.data_spec.get("mode", "row"),
         "image": node.data_spec.get("image"),
-        "row_values": [col[row_index] for col in literal_values],
+        "row_values": [
+            col[0] if len(col) == 1 else col[row_index] for col in literal_values
+        ],
         "upstream_keys": upstream_keys,
         "cache_version": CACHE_VERSION,
     }
@@ -104,9 +110,91 @@ def _plan_columns(node: Any) -> tuple[list[list[Any]], list[str]]:
     return literal_values, upstream_node_ids
 
 
-def _row_count(node: Any, literal_values: list[list[Any]]) -> int:
-    """The number of rows a row-mode node processes (max literal length)."""
-    return max((len(col) for col in literal_values), default=1)
+def _aligned_upstream_keys(
+    graph: RuntimeGraph,
+    node: Any,
+    upstream_node_ids: list[str],
+    keys: dict[str, tuple[list[str] | None, str | None]],
+) -> tuple[list[list[str]], int] | None:
+    """The upstream key(s) that align with this node's rows.
+
+    A row-mode upstream contributes its row ``i`` key to row ``i``; a
+    list/aligned upstream contributes its whole-task key to every row. Returns
+    ``(per_row_upstream_keys, row_count)`` where ``per_row_upstream_keys[i]`` is
+    the upstream key list for row ``i``, or ``None`` (fail closed) if an
+    upstream is not cacheable, or if a row-mode upstream's row count neither
+    matches this node's nor is 1 (a broadcast).
+    """
+    literal_values, _ = _plan_columns(node)
+    n = max((len(col) for col in literal_values), default=0)
+    upstream_keys: list[tuple[str | None, list[str] | None]] = []
+    for upstream_id in upstream_node_ids:
+        upstream = graph.nodes.get(upstream_id)
+        if not is_cacheable_node(upstream):
+            return None
+        upstream_row_keys, upstream_task_key = keys.get(upstream_id, (None, None))
+        if upstream_task_key is not None:
+            upstream_keys.append((upstream_task_key, None))
+        elif upstream_row_keys is not None:
+            upstream_keys.append((None, upstream_row_keys))
+        else:
+            return None
+    if n == 0:
+        # No literal columns: the row count comes from the row-mode upstreams.
+        n = max((len(rk) for _, rk in upstream_keys if rk is not None), default=1)
+    per_row: list[list[str]] = [[] for _ in range(n)]
+    for upstream_key, upstream_row_keys in upstream_keys:
+        if upstream_row_keys is None:
+            assert upstream_key is not None
+            for row in per_row:
+                row.append(upstream_key)
+        elif len(upstream_row_keys) == 1:
+            for row in per_row:
+                row.append(upstream_row_keys[0])
+        elif len(upstream_row_keys) == n:
+            for i, row in enumerate(per_row):
+                row.append(upstream_row_keys[i])
+        else:
+            return None
+    return per_row, n
+
+
+def compute_all_keys(
+    graph: RuntimeGraph,
+) -> dict[str, tuple[list[str] | None, str | None]]:
+    """Compute every cacheable node's key(s) on the unmodified graph.
+
+    Runs in ``graph.topological_order()`` so an upstream's keys are known
+    before its dependents, and memoizes the result. Returns a map of node id to
+    ``(row_keys, task_key)``; a node that is not cacheable, or whose upstream is
+    not cacheable, maps to ``(None, None)`` (fail closed).
+    """
+    keys: dict[str, tuple[list[str] | None, str | None]] = {}
+    for node_id in graph.topological_order():
+        node = graph.nodes.get(node_id)
+        if not is_cacheable_node(node):
+            keys[node_id] = (None, None)
+            continue
+        assert node is not None
+        literal_values, upstream_node_ids = _plan_columns(node)
+        aligned = _aligned_upstream_keys(graph, node, upstream_node_ids, keys)
+        if aligned is None:
+            keys[node_id] = (None, None)
+            continue
+        per_row_upstream_keys, n = aligned
+        mode = node.data_spec.get("mode", "row")
+        if mode == "row":
+            row_keys = [
+                _row_key(node, i, literal_values, per_row_upstream_keys[i])
+                for i in range(n)
+            ]
+            keys[node_id] = (row_keys, None)
+        else:
+            keys[node_id] = (
+                None,
+                _task_key(node, literal_values, per_row_upstream_keys[0]),
+            )
+    return keys
 
 
 def compute_keys(
@@ -120,31 +208,7 @@ def compute_keys(
     ``(None, None)`` if the node is not cacheable or any upstream is not
     cacheable (fail closed).
     """
-    node = graph.nodes.get(node_id)
-    if not is_cacheable_node(node):
-        return None, None
-    assert node is not None
-    literal_values, upstream_node_ids = _plan_columns(node)
-    # Fail closed: every stage upstream must itself be a cacheable python task.
-    upstream_keys: list[str] = []
-    for upstream_id in upstream_node_ids:
-        upstream = graph.nodes.get(upstream_id)
-        if not is_cacheable_node(upstream):
-            return None, None
-        upstream_row_keys, upstream_task_key = compute_keys(graph, upstream_id)
-        if upstream_task_key is not None:
-            upstream_keys.append(upstream_task_key)
-        elif upstream_row_keys is not None:
-            upstream_keys.extend(upstream_row_keys)
-        else:
-            return None, None
-    mode = node.data_spec.get("mode", "row")
-    if mode == "row":
-        n = _row_count(node, literal_values)
-        row_keys = [_row_key(node, i, literal_values, upstream_keys) for i in range(n)]
-        return row_keys, None
-    task_key = _task_key(node, literal_values, upstream_keys)
-    return None, task_key
+    return compute_all_keys(graph).get(node_id, (None, None))
 
 
 def _object_name(key: str) -> str:
@@ -212,6 +276,15 @@ def _plan_row_node(
             rows_hit=len(entries),
             producer_job_ids=producers,
         )
+    # A partial rewrite filters the literal columns to the missed rows but
+    # leaves staged upstream columns at their full length, which the row-mode
+    # wrapper rejects. Only merge when every plan column is literal; otherwise
+    # run every row normally (all-miss) and store every row's key on success.
+    node = graph.nodes[node_id]
+    assert node is not None
+    _, upstream_node_ids = _plan_columns(node)
+    if upstream_node_ids:
+        return CachePlan(kind="run", rows_missed=len(entries))
     missed_rows = [i for i, e in enumerate(entries) if e is None]
     return CachePlan(
         kind="merge",
@@ -294,10 +367,18 @@ def partial_data_spec(node: Any, missed_rows: list[int]) -> dict[str, Any]:
 
 
 def load_entry(job_storage: JobStorage, key: str) -> dict[str, Any] | None:
-    """Load a cached entry, or ``None`` on a miss."""
+    """Load a cached entry, or ``None`` on a miss.
+
+    A missing entry is a miss. A storage transport or HTTP error is also
+    treated as a miss (the job still runs normally) but is logged, so a cache
+    outage never fails a request.
+    """
     try:
         data, _ = job_storage.get_artifact(CACHE_NAMESPACE, _object_name(key))
     except KeyError:
+        return None
+    except Exception:
+        logger.warning("cache lookup failed for key %s; treating as a miss", key)
         return None
     try:
         return json.loads(data.decode("utf-8"))

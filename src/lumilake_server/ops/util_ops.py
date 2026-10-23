@@ -22,14 +22,18 @@ ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 def is_pinned_image(image: str) -> bool:
     """Return whether ``image`` is pinned to an immutable content digest.
 
-    A pinned reference is either ``name@sha256:<64 hex>`` or a bare image ID
-    (``sha256:<64 hex>``). A bare tag can move, so a cached result keyed on it
-    could silently go stale; ``cache: true`` requires a pinned image.
+    A pinned reference is either ``name@sha256:<64 lowercase hex>`` or a bare
+    image ID (``sha256:<64 lowercase hex>``). A bare tag can move, so a cached
+    result keyed on it could silently go stale; ``cache: true`` requires a
+    pinned image.
     """
     if "@sha256:" in image:
         digest = image.split("@sha256:", 1)[1]
-        return len(digest) == 64
-    return image.startswith("sha256:") and len(image) == 7 + 64
+    elif image.startswith("sha256:"):
+        digest = image[len("sha256:") :]
+    else:
+        return False
+    return len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
 
 
 def _validate_limits(
