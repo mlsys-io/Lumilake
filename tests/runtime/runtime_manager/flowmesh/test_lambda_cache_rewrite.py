@@ -123,7 +123,8 @@ async def test_all_hit_rewrites_to_emit(_job_storage) -> None:
     telemetry, store_plan = await manager._apply_cache_rewrites(
         _request_info(graph), _schedule(["n"])
     )
-    assert graph.nodes["n"].data_spec["mode"] == "emit"
+    assert graph.nodes["n"].data_spec["mode"] == "row"
+    assert graph.nodes["n"].data_spec["cache_emit"] is True
     assert graph.nodes["n"].data_spec["items"] == ["out0", "out1"]
     assert graph.nodes["n"].dependencies == ()
     assert store_plan == []
@@ -203,10 +204,79 @@ async def test_list_mode_whole_task_key(_job_storage) -> None:
     telemetry, store_plan = await manager._apply_cache_rewrites(
         _request_info(graph), _schedule(["n"])
     )
-    assert graph.nodes["n"].data_spec["mode"] == "emit"
-    assert graph.nodes["n"].data_spec["items"] == [{"output": "whole"}]
+    assert graph.nodes["n"].data_spec["mode"] == "list"
+    assert graph.nodes["n"].data_spec["cache_emit"] is True
+    assert graph.nodes["n"].data_spec["items"] == ["whole"]
     assert store_plan == []
     assert telemetry["n"]["rows_hit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_output_shape_matches_miss_for_list_and_row(_job_storage) -> None:
+    # The emit step must produce the same aggregated output shape as an
+    # uncached run: a list-mode node collapses to one whole-list value, a
+    # row-mode node yields one value per row.
+    manager = FlowmeshRuntimeManager()
+
+    # List mode: a miss returns several items that aggregate into one value.
+    list_node = _op("n", mode="list", plan=[{"kind": "literal", "values": ["a", "b"]}])
+    list_graph = _graph(list_node)
+    storage = _job_storage
+    _, task_key = cache.compute_keys(list_graph, "n")
+    assert task_key is not None
+    cache.store_entry(storage, task_key, [{"output": "v1"}, {"output": "v2"}], "job-0")
+    await manager._apply_cache_rewrites(_request_info(list_graph), _schedule(["n"]))
+    emit_items = list_graph.nodes["n"].data_spec["items"]
+    # The emit step wraps each plain value back into an item, like the miss.
+    hit = await manager._aggregate_output_node(
+        output_op_id="n",
+        output_task_id="t",
+        request_id="req-1",
+        items=[{"output": v} for v in emit_items],
+        output_path=None,
+        list_lambda=True,
+        list_lambda_cardinality=False,
+    )
+    miss = await manager._aggregate_output_node(
+        output_op_id="n",
+        output_task_id="t",
+        request_id="req-1",
+        items=[{"output": "v1"}, {"output": "v2"}],
+        output_path=None,
+        list_lambda=True,
+        list_lambda_cardinality=False,
+    )
+    assert hit == miss
+    assert len(hit) == 1
+
+    # Row mode: a miss yields one value per row.
+    row_node = _op("n", plan=[{"kind": "literal", "values": ["a", "b"]}])
+    row_graph = _graph(row_node)
+    row_keys = _row_keys(row_graph, "n")
+    for i, key in enumerate(row_keys):
+        _store(storage, key, f"out{i}", "job-0")
+    await manager._apply_cache_rewrites(_request_info(row_graph), _schedule(["n"]))
+    row_emit = row_graph.nodes["n"].data_spec["items"]
+    assert row_emit == ["out0", "out1"]
+    row_hit = await manager._aggregate_output_node(
+        output_op_id="n",
+        output_task_id="t",
+        request_id="req-1",
+        items=[{"output": v} for v in row_emit],
+        output_path=None,
+        list_lambda=False,
+        list_lambda_cardinality=False,
+    )
+    row_miss = await manager._aggregate_output_node(
+        output_op_id="n",
+        output_task_id="t",
+        request_id="req-1",
+        items=[{"output": "out0"}, {"output": "out1"}],
+        output_path=None,
+        list_lambda=False,
+        list_lambda_cardinality=False,
+    )
+    assert row_hit == row_miss == ["out0", "out1"]
 
 
 @pytest.mark.asyncio
@@ -329,8 +399,10 @@ async def test_chained_cacheable_upstream_all_hit_still_looked_up(_job_storage) 
         _request_info(graph), _schedule(["up", "down"])
     )
     # Upstream replayed; downstream still hit (not rerun).
-    assert graph.nodes["up"].data_spec["mode"] == "emit"
-    assert graph.nodes["down"].data_spec["mode"] == "emit"
+    assert graph.nodes["up"].data_spec["mode"] == "row"
+    assert graph.nodes["up"].data_spec["cache_emit"] is True
+    assert graph.nodes["down"].data_spec["mode"] == "row"
+    assert graph.nodes["down"].data_spec["cache_emit"] is True
     assert graph.nodes["down"].data_spec["items"] == ["down0", "down1"]
     assert store_plan == []
     assert telemetry["up"]["rows_hit"] == 2

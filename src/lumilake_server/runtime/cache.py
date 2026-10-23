@@ -115,6 +115,7 @@ def _aligned_upstream_keys(
     node: Any,
     upstream_node_ids: list[str],
     keys: dict[str, tuple[list[str] | None, str | None]],
+    mode: str,
 ) -> tuple[list[list[str]], int] | None:
     """The upstream key(s) that align with this node's rows.
 
@@ -122,11 +123,15 @@ def _aligned_upstream_keys(
     list/aligned upstream contributes its whole-task key to every row. Returns
     ``(per_row_upstream_keys, row_count)`` where ``per_row_upstream_keys[i]`` is
     the upstream key list for row ``i``, or ``None`` (fail closed) if an
-    upstream is not cacheable, or if a row-mode upstream's row count neither
-    matches this node's nor is 1 (a broadcast).
+    upstream is not cacheable, if a row-mode upstream's row count neither
+    matches this node's nor is 1 (a broadcast), or if a row-mode node's row
+    count cannot be known before the run (its rows come only from a list/aligned
+    upstream).
     """
     literal_values, _ = _plan_columns(node)
-    n = max((len(col) for col in literal_values), default=0)
+    # A one-value literal column broadcasts to any row count, so it does not
+    # determine n.
+    n = max((len(col) for col in literal_values if len(col) != 1), default=0)
     upstream_keys: list[tuple[str | None, list[str] | None]] = []
     for upstream_id in upstream_node_ids:
         upstream = graph.nodes.get(upstream_id)
@@ -139,9 +144,21 @@ def _aligned_upstream_keys(
             upstream_keys.append((None, upstream_row_keys))
         else:
             return None
+    # The row count is the max over multi-value literal columns and row-mode
+    # upstreams.
+    row_counts = [len(rk) for _, rk in upstream_keys if rk is not None]
+    if row_counts:
+        n = max(n, max(row_counts))
     if n == 0:
-        # No literal columns: the row count comes from the row-mode upstreams.
-        n = max((len(rk) for _, rk in upstream_keys if rk is not None), default=1)
+        if mode == "row" and upstream_keys:
+            # A row-mode node whose row count depends only on a list/aligned
+            # upstream is unknowable before the run; fail closed.
+            return None
+        n = 1
+    # Every literal column must broadcast (1) or match the row count.
+    for col in literal_values:
+        if len(col) not in (1, n):
+            return None
     per_row: list[list[str]] = [[] for _ in range(n)]
     for upstream_key, upstream_row_keys in upstream_keys:
         if upstream_row_keys is None:
@@ -177,12 +194,12 @@ def compute_all_keys(
             continue
         assert node is not None
         literal_values, upstream_node_ids = _plan_columns(node)
-        aligned = _aligned_upstream_keys(graph, node, upstream_node_ids, keys)
+        mode = node.data_spec.get("mode", "row")
+        aligned = _aligned_upstream_keys(graph, node, upstream_node_ids, keys, mode)
         if aligned is None:
             keys[node_id] = (None, None)
             continue
         per_row_upstream_keys, n = aligned
-        mode = node.data_spec.get("mode", "row")
         if mode == "row":
             row_keys = [
                 _row_key(node, i, literal_values, per_row_upstream_keys[i])
@@ -304,10 +321,16 @@ def _plan_task_node(node_id: str, entries: list[dict[str, Any] | None]) -> Cache
     items = entry.get("items")
     if not isinstance(items, list):
         return CachePlan(kind="run", rows_missed=1)
+    # Unwrap the stored ``{"output": v}`` items to plain values so the emit
+    # step replays the same shape as the original computation (row mode already
+    # unwraps per-row entries).
+    values = [
+        i["output"] if isinstance(i, dict) and "output" in i else i for i in items
+    ]
     producers = {entry["producer_job_id"]} if entry.get("producer_job_id") else set()
     return CachePlan(
         kind="emit",
-        items=items,
+        items=values,
         rows_hit=1,
         producer_job_ids=producers,
     )
@@ -330,10 +353,14 @@ def emit_data_spec(node: Any, items: list[Any]) -> dict[str, Any]:
     """The data spec for an emit step that replays a fully-cached result.
 
     The step only returns cached items — it runs no user code — so it needs no
-    image and runs in the default image.
+    image and runs in the default image. It keeps the original mode so the
+    output aggregation sees the same shape as an uncached run, and marks itself
+    with ``cache_emit`` so the step compiler selects the emit source (and skips
+    the timeout) rather than treating the mode as a user computation.
     """
     return {
-        "mode": "emit",
+        "mode": node.data_spec.get("mode", "row"),
+        "cache_emit": True,
         "items": items,
         "plan": [],
     }

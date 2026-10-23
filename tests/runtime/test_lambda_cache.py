@@ -241,6 +241,56 @@ def test_cacheable_upstream_keeps_node_cacheable() -> None:
     assert row_keys is not None
 
 
+def test_row_node_with_list_upstream_fails_closed() -> None:
+    # A row-mode node whose rows come only from a list/aligned upstream has an
+    # unknowable row count before the run; it must fail closed (not cacheable)
+    # rather than guess a row count.
+    up = _op("up", mode="list", plan=[{"kind": "literal", "values": ["a", "b"]}])
+    down = _op(
+        "down",
+        plan=[{"kind": "stage", "node": "up"}],
+        dependencies=("up",),
+    )
+    row_keys, task_key = cache.compute_keys(_graph(up, down), "down")
+    assert row_keys is None and task_key is None
+
+
+def test_row_node_with_list_upstream_and_literal_stays_cacheable() -> None:
+    # A row-mode node with a multi-value literal column knows its row count
+    # from the literal, so a list/aligned upstream broadcasting to every row is
+    # fine.
+    up = _op("up", mode="list", plan=[{"kind": "literal", "values": ["a", "b"]}])
+    down = _op(
+        "down",
+        plan=[
+            {"kind": "stage", "node": "up"},
+            {"kind": "literal", "values": ["x", "y"]},
+        ],
+        dependencies=("up",),
+    )
+    row_keys, task_key = cache.compute_keys(_graph(up, down), "down")
+    assert row_keys is not None and task_key is None
+    assert len(row_keys) == 2
+
+
+def test_row_node_with_one_value_literal_broadcasts() -> None:
+    # A row-mode node consuming N upstream rows plus a one-value literal column
+    # is cacheable: the literal broadcasts to every row (fix 9).
+    up = _op("up", plan=[{"kind": "literal", "values": ["a", "b", "c"]}])
+    down = _op(
+        "down",
+        plan=[
+            {"kind": "stage", "node": "up"},
+            {"kind": "literal", "values": ["const"]},
+        ],
+        dependencies=("up",),
+    )
+    row_keys, task_key = cache.compute_keys(_graph(up, down), "down")
+    assert row_keys is not None and task_key is None
+    assert len(row_keys) == 3
+    assert len(set(row_keys)) == 3
+
+
 # --- plan rewrites -----------------------------------------------------------
 
 
@@ -323,9 +373,37 @@ def test_partial_plan_filters_literal_columns() -> None:
 def test_emit_data_spec_has_no_image() -> None:
     node = _op("n")
     spec = cache.emit_data_spec(node, ["out"])
-    assert spec["mode"] == "emit"
+    assert spec["mode"] == "row"
+    assert spec["cache_emit"] is True
     assert spec["items"] == ["out"]
     assert "image" not in spec
+
+
+def test_emit_data_spec_keeps_original_mode() -> None:
+    # The emit step keeps the node's original mode so the output aggregation
+    # sees the same shape as an uncached run, and marks itself cache_emit so
+    # the step compiler selects the emit source.
+    row_node = _op("n", mode="row")
+    row_spec = cache.emit_data_spec(row_node, ["out"])
+    assert row_spec["mode"] == "row"
+    assert row_spec["cache_emit"] is True
+    assert row_spec["items"] == ["out"]
+
+    list_node = _op("n", mode="list")
+    list_spec = cache.emit_data_spec(list_node, ["out"])
+    assert list_spec["mode"] == "list"
+    assert list_spec["cache_emit"] is True
+
+
+def test_flowmesh_spec_emit_step_uses_emit_source_and_no_timeout() -> None:
+    # A cache emit step keeps its original mode (list here) but must compile to
+    # the emit source (not the list wrapper) and carry no timeout.
+    node = _op("n", mode="list")
+    spec = cache.emit_data_spec(node, ["out"])
+    fm = python_step.flowmesh_spec("n", spec)
+    assert "timeoutSeconds" not in fm
+    assert "_ITEMS" in fm["code"]
+    assert "materialize" not in fm["code"]
 
 
 def test_merge_data_spec() -> None:

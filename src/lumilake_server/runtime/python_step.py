@@ -329,7 +329,12 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
     """The FlowMesh ``python`` task spec for a runtime python step."""
     plan: ColumnPlan = data_spec["plan"]
     mode = data_spec.get("mode", "row")
-    if mode == "flatten":
+    # A cache emit step keeps its original mode (so output aggregation sees the
+    # same shape as an uncached run) and marks itself cache_emit; it only
+    # replays cached items, so it selects the emit source and gets no timeout.
+    if data_spec.get("cache_emit"):
+        code = emit_source(node_id, data_spec["items"])
+    elif mode == "flatten":
         code = flatten_source(node_id, plan, data_spec["template"])
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
@@ -351,7 +356,7 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         "code": code,
         "entrypoint": "main",
     }
-    if mode not in ("emit", "merge"):
+    if not data_spec.get("cache_emit") and mode not in ("emit", "merge"):
         spec["timeoutSeconds"] = data_spec["timeout_s"]
     if data_spec.get("image"):
         spec["image"] = data_spec["image"]
