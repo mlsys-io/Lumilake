@@ -1039,8 +1039,12 @@ class HaloOptimizer(BaseOptimizer):
     def _python_exec_cost(node: Node) -> float:
         """A python step's run time is unknown before it runs; cost it at a
         small fraction of its timeout so it neither dominates the plan nor
-        looks free next to an LLM call."""
+        looks free next to an LLM call. When the op declares an
+        ``expected_runtime_s`` planning hint, use that instead."""
         raw = node.raw if isinstance(node.raw, dict) else {}
+        expected = raw.get("expected_runtime_s")
+        if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+            return float(expected)
         timeout = raw.get("timeout_s")
         if not isinstance(timeout, (int, float)):
             timeout = python_step.DEFAULT_TIMEOUT_SECONDS

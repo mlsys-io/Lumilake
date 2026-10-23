@@ -20,7 +20,10 @@ ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 
 
 def _validate_limits(
-    timeout_s: float | None, memory_mb: int | None, image: str | None
+    timeout_s: float | None,
+    memory_mb: int | None,
+    image: str | None,
+    expected_runtime_s: float | None,
 ) -> None:
     if timeout_s is not None:
         if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
@@ -28,6 +31,19 @@ def _validate_limits(
         cap = MAX_IMAGE_TIMEOUT_S if image else MAX_TIMEOUT_S
         if not 0 < timeout_s <= cap:
             raise ValueError(f"timeout_s must be in (0, {cap:g}], got {timeout_s}")
+    if expected_runtime_s is not None:
+        if isinstance(expected_runtime_s, bool) or not isinstance(
+            expected_runtime_s, (int, float)
+        ):
+            raise ValueError(
+                f"expected_runtime_s must be a number, got {expected_runtime_s!r}"
+            )
+        effective_timeout = timeout_s if timeout_s is not None else MAX_TIMEOUT_S
+        if not 0 < expected_runtime_s <= effective_timeout:
+            raise ValueError(
+                "expected_runtime_s must be in (0,"
+                f" {effective_timeout:g}], got {expected_runtime_s}"
+            )
     if memory_mb is not None:
         if isinstance(memory_mb, bool) or not isinstance(memory_mb, int):
             raise ValueError(f"memory_mb must be an integer, got {memory_mb!r}")
@@ -137,6 +153,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        expected_runtime_s: float | None = None,
     ) -> None: ...
 
     @overload
@@ -149,6 +166,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        expected_runtime_s: float | None = None,
     ) -> None: ...
 
     @overload
@@ -161,6 +179,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        expected_runtime_s: float | None = None,
     ) -> None: ...
 
     def __init__(
@@ -172,6 +191,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        expected_runtime_s: float | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -179,7 +199,7 @@ class LambdaOp(Op):
             )
         if image is not None and not image.strip():
             raise ValueError("LambdaOp image must be a non-empty string")
-        _validate_limits(timeout_s, memory_mb, image)
+        _validate_limits(timeout_s, memory_mb, image, expected_runtime_s)
         input_ops: list[Op] = []
         for inp in inputs:
             if isinstance(inp, Op):
@@ -193,6 +213,8 @@ class LambdaOp(Op):
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
         self.image = image
+        # A planning hint for HALO; never enforced at runtime.
+        self.expected_runtime_s = expected_runtime_s
         if code:
             self.code: str = code
         else:
@@ -243,6 +265,8 @@ class LambdaOp(Op):
             data["memory_mb"] = self.memory_mb
         if self.image is not None:
             data["image"] = self.image
+        if self.expected_runtime_s is not None:
+            data["expected_runtime_s"] = self.expected_runtime_s
         return data
 
     @classmethod
@@ -255,6 +279,7 @@ class LambdaOp(Op):
         timeout_s = data.get("timeout_s")
         memory_mb = data.get("memory_mb")
         image = data.get("image")
+        expected_runtime_s = data.get("expected_runtime_s")
         try:
             fn = SubmittedFunction(code, fn_name, allow_any_imports=image is not None)
         except ValueError as exc:
@@ -269,6 +294,7 @@ class LambdaOp(Op):
             timeout_s=timeout_s,
             memory_mb=memory_mb,
             image=image,
+            expected_runtime_s=expected_runtime_s,
         )
 
 

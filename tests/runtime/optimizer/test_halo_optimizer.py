@@ -213,6 +213,33 @@ def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
         )
 
 
+def _python_node(raw: dict[str, object]) -> Node:
+    return Node(
+        id="p1",
+        type="python",
+        engine="python",
+        model="",
+        inputs=(),
+        outputs=(),
+        db_queries=(),
+        raw=raw,
+    )
+
+
+def test_python_exec_cost_uses_expected_runtime_when_present() -> None:
+    cost = HaloOptimizer._python_exec_cost(
+        _python_node({"timeout_s": 86400, "expected_runtime_s": 5})
+    )
+    assert cost == 5
+
+
+def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
+    cost = HaloOptimizer._python_exec_cost(_python_node({"timeout_s": 600}))
+    assert cost == 30
+    # No timeout at all falls back to the default timeout.
+    assert HaloOptimizer._python_exec_cost(_python_node({})) == 30
+
+
 @pytest.mark.parametrize(
     "profile",
     [
