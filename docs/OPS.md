@@ -262,6 +262,19 @@ Where the function runs depends on what reads it:
   naming the step. Make the `LambdaOp` a workflow output, or use a non-API
   `LLMChatOp`.
 
+A `LambdaOp` may declare `image: <container-ref>` to run its standalone
+`python` task in a container image of the author's choice (for example a
+simulator image that installs TORAX or c302). The image is passed through to
+the FlowMesh python task spec as `image`. An image-bearing `LambdaOp` is always
+compiled to its own FlowMesh `python` task — it is never evaluated inline by a
+worker — and the import allowlist (standard library / numpy / pandas) is
+skipped, because the image decides what is installed; a missing module then
+surfaces as a task error. Because the inline path cannot use an image, an
+image-bearing `LambdaOp` that an LLM op consumes through its message chain is
+rejected at graph build with an error naming the op; read it through a node
+column (`rowwise_columns` / `aggregate_table`) instead, which binds the
+standalone task's output. An empty or whitespace-only `image` is rejected.
+
 A `LambdaOp` may declare `mode: list`. The function then receives each input as
 its whole list and returns a list of JSON values; the standalone `python` task
 emits one item per element in order, so each element is one group downstream,
@@ -304,11 +317,14 @@ Optional per-op limits for the standalone `python` task:
 
 | Field | Default | Bounds | Meaning |
 |---|---|---|---|
-| `timeout_s` | 600 | (0, 600] | Task timeout in seconds (`timeoutSeconds`). |
+| `timeout_s` | 600 | (0, 600] without `image`; (0, 86400] with `image` | Task timeout in seconds (`timeoutSeconds`). |
 | `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
+| `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
 
 The limits apply only to the standalone `python` task; they have no effect on a
-`LambdaOp` that an LLM op inlines.
+`LambdaOp` that an LLM op inlines. An image-bearing `LambdaOp` may set
+`timeout_s` up to 86400 s (a full day), for long-running simulation steps; a
+`LambdaOp` without `image` stays capped at 600 s.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see

@@ -1026,6 +1026,13 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         if isinstance(value, bool) or not isinstance(value, kind):
             raise ValueError(f"LambdaOp '{entry.id}' '{key}' must be a number")
         op_dict[key] = value
+    image = entry.fields.get("image")
+    if image is not None:
+        if not isinstance(image, str) or not image.strip():
+            raise ValueError(
+                f"LambdaOp '{entry.id}' 'image' must be a non-empty string"
+            )
+        op_dict["image"] = image
 
 
 def _build_generation_config(
