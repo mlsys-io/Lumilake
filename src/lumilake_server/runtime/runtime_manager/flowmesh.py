@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_server.runtime import python_step
+from lumilake_server.runtime import cache, python_step
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
@@ -52,6 +52,21 @@ from lumilake_server.utils.job_storage import get_job_storage
 from .base import BaseRuntimeManager
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+
+
+@dataclass
+class CacheStore:
+    """A pending cache write: read the succeeded task for ``node_id`` and store
+    its output items under ``keys``.
+
+    ``whole_task`` is true for list/aligned mode, where the entire item list is
+    stored under the single whole-task key; otherwise each item is stored under
+    its own per-row key.
+    """
+
+    node_id: str
+    keys: list[str]
+    whole_task: bool
 
 
 @dataclass
@@ -1222,6 +1237,15 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         self.logger.info(f"Submitting request {request_info.request_id} to Flowmesh.")
 
+        # Look up cached LambdaOp results and rewrite the runtime graph so
+        # fully-cached nodes replay their result and partially-cached row nodes
+        # run only the missed rows. This must run before the task spec is built
+        # so the rewritten graph (and any generated partial node) flows through
+        # schedule validation and FlowMesh submission.
+        cache_telemetry, store_plan = await self._apply_cache_rewrites(
+            request_info, schedule
+        )
+
         # Build task spec from the runtime graph.
         task_spec, output_node_indices, flowmesh_to_raw = await self._build_task_spec(
             request_info,
@@ -1508,11 +1532,188 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 prompts[output_op_id] = output_prompts
 
         self.logger.info(f"Aggregated {len(flat_outputs)} output results.")
+
+        # Store fresh rows from succeeded tasks, concurrently. Only rows from a
+        # task that succeeded are cached; a failed task stores nothing.
+        await self._store_cache_results(request_info, store_plan, node_task_map)
+
         return {
             "flat_outputs": flat_outputs,
             "chat_histories": prompts,
             "task_node_map": dict(raw_task_node_map),
+            "cache_telemetry": cache_telemetry,
         }
+
+    async def _apply_cache_rewrites(
+        self,
+        request_info: RequestInfo,
+        schedule: Schedule,
+    ) -> tuple[dict[str, dict[str, Any]], list[CacheStore]]:
+        """Look up cached LambdaOp results and rewrite the runtime graph.
+
+        For each cacheable node, load its cache entries concurrently, decide a
+        rewrite (emit / merge / run), and mutate ``request_info.runtime_graph``
+        so the rewritten node (and any generated partial node) flows through
+        schedule validation and FlowMesh submission. Returns ``(cache_telemetry,
+        store_plan)``: per-node telemetry for the job record, and the pending
+        cache writes to run after the batch succeeds.
+        """
+        graph = request_info.runtime_graph
+        job_storage = get_job_storage()
+        cache_telemetry: dict[str, dict[str, Any]] = {}
+        store_plan: list[CacheStore] = []
+
+        for node_id in graph.node_order:
+            row_keys, task_key = cache.compute_keys(graph, node_id)
+            if row_keys is None and task_key is None:
+                # Not cacheable, or an upstream is not cacheable (fail closed).
+                continue
+            if row_keys is not None:
+                keys = row_keys
+            else:
+                assert task_key is not None
+                keys = [task_key]
+            entries = await asyncio.gather(
+                *(asyncio.to_thread(cache.load_entry, job_storage, key) for key in keys)
+            )
+            plan = cache.plan_node(graph, node_id, entries)
+            cache_telemetry[node_id] = {
+                "rows_hit": plan.rows_hit,
+                "rows_missed": plan.rows_missed,
+                "producer_job_ids": sorted(plan.producer_job_ids),
+            }
+            if plan.kind == "emit":
+                assert plan.items is not None
+                self._rewrite_emit(graph, node_id, plan)
+                continue
+            if plan.kind == "merge":
+                assert plan.partial_node is not None
+                assert plan.missed_rows is not None
+                self._rewrite_merge(graph, schedule, node_id, plan)
+                # The partial task's fresh rows are stored under the missed-row
+                # keys once it succeeds.
+                store_plan.append(
+                    CacheStore(
+                        node_id=plan.partial_node,
+                        keys=[keys[i] for i in plan.missed_rows],
+                        whole_task=False,
+                    )
+                )
+                continue
+            # "run": the node runs as normal; store its fresh rows on success.
+            store_plan.append(
+                CacheStore(
+                    node_id=node_id,
+                    keys=keys,
+                    whole_task=row_keys is None,
+                )
+            )
+
+        return cache_telemetry, store_plan
+
+    def _rewrite_emit(
+        self, graph: RuntimeGraph, node_id: str, plan: cache.CachePlan
+    ) -> None:
+        """Replace a fully-cached node with an emit step that replays its
+        result without running the computation."""
+        node = graph.nodes[node_id]
+        assert plan.items is not None
+        graph.nodes[node_id] = replace(
+            node,
+            data_spec=cache.emit_data_spec(node, plan.items),
+            dependencies=(),
+        )
+
+    def _rewrite_merge(
+        self,
+        graph: RuntimeGraph,
+        schedule: Schedule,
+        node_id: str,
+        plan: cache.CachePlan,
+    ) -> None:
+        """Rewrite a partially-cached row node: run the missed rows in a
+        generated partial node and splice the cached rows back in with a merge
+        step on the original node id."""
+        node = graph.nodes[node_id]
+        partial_id = plan.partial_node
+        assert partial_id is not None
+        assert plan.missed_rows is not None
+        assert plan.cached is not None
+        partial = replace(
+            node,
+            node_id=partial_id,
+            data_spec=cache.partial_data_spec(node, plan.missed_rows),
+        )
+        graph.nodes[partial_id] = partial
+        graph.node_order.append(partial_id)
+        graph.nodes[node_id] = replace(
+            node,
+            data_spec=cache.merge_data_spec(node, plan.cached, partial_id),
+            dependencies=(partial_id,),
+        )
+        # The partial node runs on the same worker as the original node so the
+        # schedule hint still covers every graph node.
+        for worker, worker_nodes in schedule.worker_assignment.items():
+            if node_id in worker_nodes:
+                worker_nodes.append(partial_id)
+                break
+
+    async def _store_cache_results(
+        self,
+        request_info: RequestInfo,
+        store_plan: list[CacheStore],
+        node_task_map: dict[str, str],
+    ) -> None:
+        """Store fresh rows from succeeded tasks, concurrently.
+
+        Only rows from a task that succeeded are cached; a failed task stores
+        nothing. ``node_task_map`` maps runtime node id to the FlowMesh task id
+        that ran it.
+        """
+        if not store_plan:
+            return
+        job_storage = get_job_storage()
+        producer_job_id = min(
+            request_info.member_request_ids, default=request_info.request_id
+        )
+
+        async def store_one(store: CacheStore) -> None:
+            task_id = node_task_map.get(store.node_id)
+            if task_id is None:
+                return
+            status = self._execution_task_status.get(
+                (request_info.request_id, request_info.batch_id), {}
+            ).get(task_id)
+            if status != "DONE":
+                return
+            results_json = await _retry_transient_read(
+                lambda: self.fm.results.retrieve(task_id),
+                f"task {task_id}",
+            )
+            if isinstance(results_json, BaseModel):
+                results_json = results_json.model_dump(mode="json")
+            items = self._resolve_output_items(
+                results_json, store.node_id, task_type="python"
+            )
+            if store.whole_task:
+                await asyncio.to_thread(
+                    cache.store_entry,
+                    job_storage,
+                    store.keys[0],
+                    items,
+                    producer_job_id,
+                )
+                return
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        cache.store_entry, job_storage, key, [item], producer_job_id
+                    )
+                    for key, item in zip(store.keys, items)
+                )
+            )
+
+        await asyncio.gather(*(store_one(store) for store in store_plan))
 
     async def _build_task_spec(
         self,

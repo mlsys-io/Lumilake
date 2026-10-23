@@ -115,6 +115,7 @@ class RequestState:
     workflow_lengths: dict[str, int] = field(default_factory=dict)
     error_info: list[dict[str, Any]] | None = None
     task_node_map: dict[str, dict[str, str]] = field(default_factory=dict)
+    cache_telemetry: dict[str, dict[str, Any]] = field(default_factory=dict)
     plan_cache: dict[str, "PlanCacheEntry"] = field(default_factory=dict)
     pending_runtime_nodes_raw: int = 0
     processing_runtime_nodes_raw: int = 0
@@ -1003,6 +1004,7 @@ class LumilakeServer:
                 outputs=state.outputs,
                 error_info=state.error_info,
                 chat_histories=state.chat_histories,
+                cache_telemetry=state.cache_telemetry,
             )
             await state.handler.put_result(response)
         await self.job_manager.remove_workflows(workflow_ids)
@@ -2635,6 +2637,7 @@ class LumilakeServer:
                 outputs=state.outputs,
                 error_info=state.error_info,
                 chat_histories=state.chat_histories,
+                cache_telemetry=state.cache_telemetry,
             )
             await state.handler.put_result(response)
             # Keep request state available for progress polling after completion.
@@ -3046,6 +3049,12 @@ class LumilakeServer:
                 state = self._requests.get(request_id)
                 if state is not None:
                     state.task_node_map[batch_id] = dict(task_node_map)
+        cache_telemetry = connector_result.get("cache_telemetry")
+        if isinstance(cache_telemetry, dict) and cache_telemetry:
+            for request_id in member_request_ids:
+                state = self._requests.get(request_id)
+                if state is not None:
+                    state.cache_telemetry.update(cache_telemetry)
         self.logger.debug(
             "Batch %s completed: %d outputs (cache_hit=%s)",
             batch_id,

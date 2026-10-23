@@ -89,7 +89,7 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
-from lumilake_server.ops.util_ops import LambdaOp
+from lumilake_server.ops.util_ops import LambdaOp, is_pinned_image
 
 from .common import make_id as _make_id
 
@@ -1033,6 +1033,19 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
                 f"LambdaOp '{entry.id}' 'image' must be a non-empty string"
             )
         op_dict["image"] = image
+    cache = entry.fields.get("cache", False)
+    if cache is not None and not isinstance(cache, bool):
+        raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a boolean")
+    if cache:
+        if not image:
+            raise ValueError(f"LambdaOp '{entry.id}' 'cache: true' requires an image")
+        if not is_pinned_image(image):
+            raise ValueError(
+                f"LambdaOp '{entry.id}' 'cache: true' requires a pinned image "
+                "reference: either 'name@sha256:<digest>' or a bare image ID "
+                f"'sha256:<64 hex>' (got {image!r})"
+            )
+        op_dict["cache"] = True
 
 
 def _build_generation_config(
