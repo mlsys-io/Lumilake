@@ -13,15 +13,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# uv/uvx come from the digest-pinned official multi-arch image so the
+# build tool is verified, not a floating download.
+COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /uvx /usr/local/bin/
+ENV PATH=/usr/local/bin:$PATH
+
+# Install a hash-pinned pip through uv so the image's pip is verified too.
+RUN printf '%s\n' 'pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70' \
+      | uv pip install --python /usr/local/bin/python --require-hashes --only-binary :all: -r -
+
 # Install deps first for layer caching. requirements.txt is generated
 # from uv.lock by scripts/dev/sync_requirements.py.
 COPY src/lumilake_server/requirements.txt ./requirements.txt
-RUN pip install -r requirements.txt
+RUN uv pip install -r requirements.txt
 
 COPY LICENSE ./LICENSE
 COPY packages/sdk ./packages/sdk
