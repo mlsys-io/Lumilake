@@ -281,6 +281,39 @@ def test_inlines_sliced_dep_refs_when_non_contracted_dep_stays_pinned(
     ) == "items[1].output"
 
 
+def test_shard_rewrite_slices_value_items_output_for_unsharded_dep(
+    flowmesh_manager: FlowmeshRuntimeManager,
+) -> None:
+    """A sharded consumer reading ``value.items.output`` from an unsharded
+    node gets one ``value.items[i].output`` ref per shard, like ``items``."""
+    rewritten = _rewrite(
+        flowmesh_manager,
+        _two_node_graph("value.items.output", ["a", "b"]),
+        {
+            "gpu-0": ["n1"],
+            "gpu-1": ["n1"],
+            "cpu-0": ["n0"],
+        },
+    )
+    by_name = {str(node.get("name")): node for node in rewritten.nodes}
+    assert by_name["n1__shard_0"].get("dependsOn") == ["n0"]
+    assert by_name["n1__shard_1"].get("dependsOn") == ["n0"]
+    cols_0 = (
+        (((by_name["n1__shard_0"].get("spec") or {}).get("data") or {}).get("template"))
+        or {}
+    ).get("columns") or []
+    cols_1 = (
+        (((by_name["n1__shard_1"].get("spec") or {}).get("data") or {}).get("template"))
+        or {}
+    ).get("columns") or []
+    assert ((cols_0[0].get("data") or {}).get("items") or [{}])[0].get(
+        "path"
+    ) == "value.items[0].output"
+    assert ((cols_1[0].get("data") or {}).get("items") or [{}])[0].get(
+        "path"
+    ) == "value.items[1].output"
+
+
 def test_shard_rewrite_inlines_unsharded_list_dependency_without_boundary_nodes(
     flowmesh_manager: FlowmeshRuntimeManager,
 ) -> None:

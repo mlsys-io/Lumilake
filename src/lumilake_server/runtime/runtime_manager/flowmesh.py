@@ -2602,13 +2602,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     f" match shard source cardinality {total}"
                 )
             suffix = self._extract_unindexed_items_suffix(path)
+            prefix = "value." if path.strip().startswith("value.") else ""
             items: list[dict[str, str]] = []
             for source_idx in range(start, end):
                 resolved_idx = 0 if dep_total == 1 else source_idx
                 items.append(
                     {
                         "node": dep_id,
-                        "path": f"items[{resolved_idx}]{suffix}",
+                        "path": f"{prefix}items[{resolved_idx}]{suffix}",
                     }
                 )
             column.pop("node", None)
@@ -2648,7 +2649,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     @staticmethod
     def _extract_unindexed_items_suffix(path: str) -> str:
         normalized = path.strip()
-        prefix = "items"
+        prefix = "value.items" if normalized.startswith("value.items") else "items"
         if not normalized.startswith(prefix):
             raise ValueError(
                 "Invalid shard boundary rewrite path: "
@@ -2659,6 +2660,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     @staticmethod
     def _is_unindexed_items_path(path: str) -> bool:
         normalized = path.strip()
+        if normalized.startswith("value.items"):
+            normalized = normalized[len("value.") :]
         return normalized.startswith("items") and not normalized.startswith("items[")
 
     @staticmethod
