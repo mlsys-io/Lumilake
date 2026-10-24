@@ -352,3 +352,122 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
         "node": explode_node.node_id,
         "path": "value.items.output.value",
     }
+
+
+def _rowwise_lambda_yaml(*, image: bool, aggregate: bool) -> str:
+    """A row-mode LambdaOp read through a node column by an LLM. The LambdaOp
+    is standalone (no LLM inlines it), so its column must bind to the python
+    stage at ``value.items.output``."""
+    image_block = "    image: ghcr.io/me/sim:latest\n" if image else ""
+    if aggregate:
+        consumer = (
+            "  - id: summarize\n"
+            "    op: LLMChatOp\n"
+            "    inputs: [Uppercase]\n"
+            "    messages:\n"
+            "      - role: user\n"
+            '        content: "Summarize the table."\n'
+            "    aggregate_table:\n"
+            "      - { label: text, node: Uppercase, path: items.output }\n"
+            "    config: { model: meta-llama/Llama-3.1-8B-Instruct }\n"
+        )
+    else:
+        consumer = (
+            "  - id: summarize\n"
+            "    op: LLMChatOp\n"
+            "    inputs: [Uppercase]\n"
+            "    messages:\n"
+            "      - role: user\n"
+            '        content: "hello"\n'
+            '    rowwise_template: "Summarize {text}"\n'
+            "    rowwise_columns:\n"
+            "      - { label: text, node: Uppercase, path: items.output }\n"
+            "    config: { model: meta-llama/Llama-3.1-8B-Instruct }\n"
+        )
+    return (
+        "name: row_lambda_node_column\n"
+        "inputs:\n"
+        '  Text: ["hello world", "the quick brown fox"]\n'
+        "ops:\n"
+        "  - id: Uppercase\n"
+        "    op: LambdaOp\n"
+        "    inputs: [Text]\n"
+        "    fn_name: shout\n"
+        "    code: |\n"
+        "      def shout(inputs):\n"
+        "          (text,) = inputs\n"
+        "          return text.upper()\n" + image_block + consumer + "outputs:\n"
+        "  - { name: out, ref: summarize }\n"
+    )
+
+
+@pytest.mark.parametrize("image", [False, True])
+@pytest.mark.parametrize("aggregate", [False, True])
+def test_rowwise_lambda_node_column_binds_at_value_items_output(
+    image: bool, aggregate: bool
+) -> None:
+    """A standalone row-mode LambdaOp read through a node column (rowwise or
+    aggregate) binds to the python stage at ``value.items.output``, for both
+    plain and image-bearing LambdaOps."""
+    runtime_graph = _build(_rowwise_lambda_yaml(image=image, aggregate=aggregate))
+
+    (uppercase_node,) = [
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
+    ]
+    assert uppercase_node.data_spec["plan"] == [
+        {"kind": "literal", "values": ["hello world", "the quick brown fox"]}
+    ]
+    if image:
+        assert uppercase_node.data_spec["image"] == "ghcr.io/me/sim:latest"
+
+    summarize_node = next(
+        n
+        for n in runtime_graph.nodes.values()
+        if n.task_type == "inference"
+        and ("columns" in n.data_spec or "template" in n.data_spec)
+    )
+    assert uppercase_node.node_id in summarize_node.dependencies
+    if aggregate:
+        template = summarize_node.data_spec["template"]
+        df_col = next(c for c in template["columns"] if c.get("label") == "df")
+        columns = df_col["data"]["columns"]
+    else:
+        columns = summarize_node.data_spec["columns"]
+    assert {
+        "label": "text",
+        "node": uppercase_node.node_id,
+        "path": "value.items.output",
+    } in columns
+
+
+def test_rowwise_lambda_node_column_standalone_path_still_rejects_drill() -> None:
+    """A standalone row-mode LambdaOp read through a node column only supports
+    the whole output, mirroring the list-mode contract."""
+    yaml_text = textwrap.dedent("""
+        name: row_lambda_drill
+        inputs:
+          Text: ["hello"]
+        ops:
+          - id: Uppercase
+            op: LambdaOp
+            inputs: [Text]
+            fn_name: shout
+            code: |
+              def shout(inputs):
+                  (text,) = inputs
+                  return text.upper()
+          - id: summarize
+            op: LLMChatOp
+            inputs: [Uppercase]
+            messages:
+              - role: user
+                content: "hello"
+            rowwise_template: "Summarize {text}"
+            rowwise_columns:
+              - { label: text, node: Uppercase, path: items.rows }
+            config: { model: meta-llama/Llama-3.1-8B-Instruct }
+        outputs:
+          - { name: out, ref: summarize }
+        """)
+    with pytest.raises(ValueError, match="standalone Lambda"):
+        _build(yaml_text)

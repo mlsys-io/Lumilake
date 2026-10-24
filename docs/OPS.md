@@ -249,6 +249,9 @@ Where the function runs depends on what reads it:
   rejected and fails when the task runs. If the function
   raises, the job's error names the step and the exception, for example
   `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
+  When an LLM op reads a standalone `LambdaOp` through a node column
+  (`rowwise_columns` / `aggregate_table`), the column binds to the python
+  step's output at `value.items.output`.
 - **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the
