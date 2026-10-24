@@ -576,6 +576,7 @@ class RuntimeGraphBuilder:
                     ),
                     graph_dict=graph_dict,
                     inputs_dict=inputs_dict,
+                    visited_node_ids=visited_node_ids,
                     dsl_to_runtime=dsl_to_runtime,
                 )
                 mapping = [runtime_op.node_id for runtime_op in runtime_ops]
@@ -966,6 +967,7 @@ class RuntimeGraphBuilder:
                             upstream=graph_dict.get(node_ref),
                             inputs_dict=inputs_dict,
                             graph_dict=graph_dict,
+                            visited_node_ids=visited_node_ids,
                             dsl_to_runtime=dsl_to_runtime,
                             kind="rowwise column",
                         )
@@ -1791,6 +1793,7 @@ class RuntimeGraphBuilder:
         upstream: Op | None,
         inputs_dict: dict[str, list[str]],
         graph_dict: dict[str, Op],
+        visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None,
         kind: str,
     ) -> dict[str, Any]:
@@ -1833,6 +1836,21 @@ class RuntimeGraphBuilder:
                 raise ValueError(
                     f"Column '{label}' of consumer '{consumer_id}' reads"
                     f" '{path}' from list-mode Lambda '{node_ref}'; only"
+                    " 'items.output' (the whole output) is supported."
+                )
+            path = "value." + path
+        elif (
+            isinstance(upstream, LambdaOp)
+            and not upstream.takes_whole_columns
+            and node_ref not in visited_node_ids
+        ):
+            # A row-mode LambdaOp that no LLM inlined runs as its own python
+            # step, whose result wraps the rows in ``{items: [{output: ...}]}``
+            # just like a list-mode Lambda. Read it at ``value.items.output``.
+            if not path.startswith("items.output"):
+                raise ValueError(
+                    f"Column '{label}' of consumer '{consumer_id}' reads"
+                    f" '{path}' from standalone Lambda '{node_ref}'; only"
                     " 'items.output' (the whole output) is supported."
                 )
             path = "value." + path
@@ -2100,6 +2118,7 @@ class RuntimeGraphBuilder:
                 upstream_llm_ids=upstream_llm_ids,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                visited_node_ids=visited_node_ids,
                 dsl_to_runtime=dsl_to_runtime,
             )
             return self._create_runtime_op(
@@ -2129,6 +2148,7 @@ class RuntimeGraphBuilder:
                 upstream_llm_ids=upstream_llm_ids,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                visited_node_ids=visited_node_ids,
                 dsl_to_runtime=dsl_to_runtime,
             )
             return self._create_runtime_op(
@@ -2219,6 +2239,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Dispatch an API LLM op to its row-wise, aggregate or plain builder."""
@@ -2232,6 +2253,7 @@ class RuntimeGraphBuilder:
                 condition=condition,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                visited_node_ids=visited_node_ids,
                 dsl_to_runtime=dsl_to_runtime,
             )
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
@@ -2245,6 +2267,7 @@ class RuntimeGraphBuilder:
                 condition=condition,
                 graph_dict=graph_dict,
                 inputs_dict=inputs_dict,
+                visited_node_ids=visited_node_ids,
                 dsl_to_runtime=dsl_to_runtime,
             )
         merged_dependencies: list[str] = []
@@ -2352,6 +2375,7 @@ class RuntimeGraphBuilder:
         upstream_llm_ids: list[str],
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None,
     ) -> tuple[dict[str, Any], list[str]]:
         """Build the dataframe data_spec for a rowwise LLMChatOp, shared by the
@@ -2384,6 +2408,7 @@ class RuntimeGraphBuilder:
                         upstream=graph_dict.get(node_ref),
                         inputs_dict=inputs_dict,
                         graph_dict=graph_dict,
+                        visited_node_ids=visited_node_ids,
                         dsl_to_runtime=dsl_to_runtime,
                         kind="rowwise column",
                     )
@@ -2421,6 +2446,7 @@ class RuntimeGraphBuilder:
         upstream_llm_ids: list[str],
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None,
     ) -> tuple[dict[str, Any], list[str]]:
         """Build the graph_template data_spec for an aggregate LLMChatOp,
@@ -2467,6 +2493,7 @@ class RuntimeGraphBuilder:
                     upstream=graph_dict.get(node_ref),
                     inputs_dict=inputs_dict,
                     graph_dict=graph_dict,
+                    visited_node_ids=visited_node_ids,
                     dsl_to_runtime=dsl_to_runtime,
                     kind="aggregate column",
                 )
@@ -2555,6 +2582,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build the single API task for a rowwise LLMChatOp: rows are resolved
@@ -2566,6 +2594,7 @@ class RuntimeGraphBuilder:
             upstream_llm_ids=upstream_llm_ids,
             graph_dict=graph_dict,
             inputs_dict=inputs_dict,
+            visited_node_ids=visited_node_ids,
             dsl_to_runtime=dsl_to_runtime,
         )
         return self._build_api_task(
@@ -2593,6 +2622,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Build the single API task for an aggregate LLMChatOp: the data_spec
@@ -2605,6 +2635,7 @@ class RuntimeGraphBuilder:
             upstream_llm_ids=upstream_llm_ids,
             graph_dict=graph_dict,
             inputs_dict=inputs_dict,
+            visited_node_ids=visited_node_ids,
             dsl_to_runtime=dsl_to_runtime,
         )
         return self._build_api_task(
