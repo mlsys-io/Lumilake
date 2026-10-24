@@ -347,6 +347,30 @@ def test_wrapper_flatten_multiple_grouped_items(tmp_path: Path) -> None:
     }
 
 
+def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
+    # A list-mode Lambda reading a DataRetrievalOp gets one column element per
+    # retrieval item, matching the standalone path.
+    ret_dir = _stage(
+        tmp_path,
+        "ret",
+        {
+            "items": [
+                {"table": {"df": json.dumps({"title": {"0": "t0"}})}},
+                {"table": {"df": json.dumps({"title": {"0": "t1"}})}},
+            ]
+        },
+    )
+    out = _run_wrapper(
+        "def titles(inputs):\n"
+        "    return [json.loads(v['table']['df'])['title']['0'] for v in inputs[0]]\n",
+        [{"kind": "stage", "node": "ret"}],
+        {"ret": ret_dir},
+        mode="list",
+        fn_name="titles",
+    )
+    assert out == {"items": [{"output": "t0"}, {"output": "t1"}]}
+
+
 def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="expected 1 or 3"):
         _run_wrapper(
