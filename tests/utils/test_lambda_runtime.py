@@ -112,6 +112,18 @@ def test_non_stdlib_imports_are_rejected_at_validation(code: str, message: str) 
         lambda_runtime.validate_source(code, "f")
 
 
+def test_allow_any_imports_skips_the_import_allowlist() -> None:
+    code = "import scipy\ndef f(a):\n    return a"
+    with pytest.raises(ValueError, match="'scipy' is not available"):
+        lambda_runtime.validate_source(code, "f")
+    assert lambda_runtime.validate_source(code, "f", allow_any_imports=True) == "f"
+    # Relative imports are still rejected even with the allowlist skipped.
+    with pytest.raises(ValueError, match="relative imports"):
+        lambda_runtime.validate_source(
+            "from . import x\ndef f(a):\n    return a", "f", allow_any_imports=True
+        )
+
+
 def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
     assert lambda_runtime.validate_inline_source(_SHOUT, "shout") == "shout"
     assert lambda_runtime.validate_inline_source("lambda a: a[0]", "x") == "<lambda>"
@@ -309,6 +321,51 @@ def test_yaml_limits_reach_the_op() -> None:
     (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
     assert isinstance(op.fn, SubmittedFunction)
     assert (op.timeout_s, op.memory_mb) == (10, 256)
+
+
+def test_yaml_image_reaches_the_op() -> None:
+    payload = _CHAIN.replace(
+        "    memory_mb: 256\n",
+        "    memory_mb: 256\n    image: ghcr.io/me/sim:latest\n",
+    )
+    spec = parse_yaml_payload(payload)["chain"]
+    (lambda_dict,) = [d for d in spec["graph"].values() if d["_op"] == "LambdaOp"]
+    assert lambda_dict["image"] == "ghcr.io/me/sim:latest"
+    graph = Graph.from_json(spec["graph"])
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+    assert op.image == "ghcr.io/me/sim:latest"
+    assert op._serialize()["image"] == "ghcr.io/me/sim:latest"
+
+
+def test_yaml_rejects_an_empty_image() -> None:
+    with pytest.raises(ValueError, match="image"):
+        parse_yaml_payload(_CHAIN.replace("    memory_mb: 256\n", "    image: ''\n"))
+
+
+def test_native_graph_image_round_trip() -> None:
+    op = LambdaOp._from_json(
+        {
+            "fn_name": "shout",
+            "_code": _SHOUT,
+            "_inputs": [],
+            "timeout_s": 5,
+            "image": "ghcr.io/me/sim:latest",
+        },
+        {},
+    )
+    assert op.image == "ghcr.io/me/sim:latest"
+    assert op._serialize()["image"] == "ghcr.io/me/sim:latest"
+    # An image-bearing op skips the import allowlist.
+    op2 = LambdaOp._from_json(
+        {
+            "fn_name": "f",
+            "_code": "import scipy\ndef f(a):\n    return a",
+            "_inputs": [],
+            "image": "ghcr.io/me/sim:latest",
+        },
+        {},
+    )
+    assert op2.image == "ghcr.io/me/sim:latest"
 
 
 def test_submitted_literal_lambda_is_not_folded_by_the_server() -> None:

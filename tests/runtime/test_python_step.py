@@ -136,11 +136,19 @@ def _run_wrapper(
     inputs: dict[str, str],
     fn_name: str | None = None,
     mode: str = "row",
+    allow_any_imports: bool = False,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
-    declared = fn_name or lambda_runtime.validate_source(code)
+    declared = fn_name or lambda_runtime.validate_source(
+        code, allow_any_imports=allow_any_imports
+    )
     namespace: dict[str, Any] = {}
-    exec(python_step.wrapper_source("op-1", declared, code, plan, mode), namespace)
+    exec(
+        python_step.wrapper_source(
+            "op-1", declared, code, plan, mode, allow_any_imports
+        ),
+        namespace,
+    )
     return namespace["main"](inputs)
 
 
@@ -312,6 +320,21 @@ def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
         )
 
 
+def test_wrapper_with_allow_any_imports_accepts_arbitrary_imports() -> None:
+    # Without the flag, a non-stdlib import is rejected at validation time.
+    with pytest.raises(ValueError, match="'scipy' is not available"):
+        _run_wrapper("import scipy\ndef f(inputs):\n    return 'x'", [], {})
+    # With the flag (an image-bearing LambdaOp), the import is allowed; the
+    # module must actually be installed, so use a stdlib module here.
+    out = _run_wrapper(
+        "import math\ndef f(inputs):\n    return str(math.sqrt(16))",
+        [],
+        {},
+        allow_any_imports=True,
+    )
+    assert out == {"items": [{"output": "4.0"}]}
+
+
 # ------------------------------------------------------------------ #
 # Node prefixes, limits and scheduling
 # ------------------------------------------------------------------ #
@@ -372,6 +395,59 @@ def test_python_step_timeout_and_memory_reach_the_task() -> None:
     assert spec["resources"] == {"hardware": {"memory": "512Mi"}}
 
 
+def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
+    _, shout, compiled = _llm_then_lambda(image="ghcr.io/me/sim:latest")
+    graph = RuntimeGraphBuilder().build(compiled)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["image"] == "ghcr.io/me/sim:latest"
+
+    _, plain, compiled_plain = _llm_then_lambda()
+    plain_spec = (
+        RuntimeGraphBuilder()
+        .build(compiled_plain)
+        .nodes[plain.id]
+        .to_flowmesh_node()["spec"]
+    )
+    assert "image" not in plain_spec
+
+
+def test_image_lambda_read_by_an_llm_message_chain_is_rejected() -> None:
+    stock = input_placeholder("Stock")
+    shout = LambdaOp(
+        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    # The image-bearing LambdaOp cannot be inlined, so it must be rejected with
+    # a clear error naming the op.
+    with pytest.raises(
+        ValueError, match="image-bearing LambdaOp '.*' through its message chain"
+    ):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
+    stock = input_placeholder("Stock")
+    shout = LambdaOp(
+        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Result: {r}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Result: {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert shout.id in _python_nodes(graph)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["image"] == "ghcr.io/me/sim:latest"
+
+
 def test_python_step_defaults_carry_the_default_timeout() -> None:
     _, shout, compiled = _llm_then_lambda()
     node = RuntimeGraphBuilder().build(compiled).nodes[shout.id]
@@ -385,6 +461,32 @@ def test_python_step_defaults_carry_the_default_timeout() -> None:
 def test_lambda_op_rejects_a_bad_timeout(kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="timeout_s"):
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), **kwargs)
+
+
+def test_image_lambda_allows_a_larger_timeout_cap() -> None:
+    # Without an image the cap stays at 600 s.
+    with pytest.raises(ValueError, match="timeout_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), timeout_s=601)
+    # With an image the cap is 86400 s.
+    LambdaOp(
+        [["x"]],
+        fn=lambda inputs: str(inputs[0]),
+        timeout_s=86400,
+        image="ghcr.io/me/sim:latest",
+    )
+    with pytest.raises(ValueError, match="timeout_s"):
+        LambdaOp(
+            [["x"]],
+            fn=lambda inputs: str(inputs[0]),
+            timeout_s=86401,
+            image="ghcr.io/me/sim:latest",
+        )
+
+
+@pytest.mark.parametrize("image", ["", "   "])
+def test_lambda_op_rejects_an_empty_image(image: str) -> None:
+    with pytest.raises(ValueError, match="image"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), image=image)
 
 
 @pytest.mark.parametrize("value", [1, 10**9, True])

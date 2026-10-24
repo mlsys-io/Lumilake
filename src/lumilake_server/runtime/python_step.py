@@ -183,7 +183,7 @@ def main(inputs):
 _ROW_MAIN = """\
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
+    fn = materialize(_USER_CODE, _FN_NAME, allow_any_imports={allow_any_imports})
     columns = [_column(entry, inputs, _text) for entry in _PLAN]
     n = max((len(c) for c in columns), default=1)
     for entry, col in zip(_PLAN, columns):
@@ -199,7 +199,7 @@ def main(inputs):
 _LIST_MAIN = """\
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
+    fn = materialize(_USER_CODE, _FN_NAME, allow_any_imports={allow_any_imports})
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
     return {{"items": [{{"output": v}} for v in values]}}
@@ -208,7 +208,7 @@ def main(inputs):
 _ALIGNED_MAIN = """\
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
+    fn = materialize(_USER_CODE, _FN_NAME, allow_any_imports={allow_any_imports})
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
     n = max((len(c) for c in columns), default=0)
@@ -245,6 +245,7 @@ def wrapper_source(
     user_code: str,
     plan: ColumnPlan,
     mode: str = "row",
+    allow_any_imports: bool = False,
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode == "list":
@@ -259,6 +260,7 @@ def wrapper_source(
         code=user_code,
         fn_name=fn_name,
         plan=json.dumps(plan),
+        allow_any_imports=allow_any_imports,
     )
 
 
@@ -272,7 +274,12 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         code = regroup_source(node_id, plan)
     else:
         code = wrapper_source(
-            node_id, data_spec["fn_name"], data_spec["code"], plan, mode
+            node_id,
+            data_spec["fn_name"],
+            data_spec["code"],
+            plan,
+            mode,
+            allow_any_imports=data_spec.get("image") is not None,
         )
     spec: dict[str, Any] = {
         "taskType": TASK_TYPE,
@@ -280,6 +287,8 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         "entrypoint": "main",
         "timeoutSeconds": data_spec["timeout_s"],
     }
+    if data_spec.get("image"):
+        spec["image"] = data_spec["image"]
     stages = list(
         dict.fromkeys(entry["node"] for entry in plan if entry["kind"] == "stage")
     )

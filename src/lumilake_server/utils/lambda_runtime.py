@@ -177,7 +177,9 @@ def _check_def(stmt: ast.FunctionDef) -> str:
     return stmt.name
 
 
-def validate_source(code: str, fn_name: str | None = None) -> str:
+def validate_source(
+    code: str, fn_name: str | None = None, allow_any_imports: bool = False
+) -> str:
     """Check LambdaOp source without running any of it; return the function name.
 
     Parsing only: a ``def`` runs its decorators, defaults and annotations when
@@ -188,7 +190,9 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     top-level one-parameter function of that name. Imports, constants and
     helper functions may come before it. Without ``fn_name`` the first
     top-level function is used. A lambda has no name, so ``fn_name`` labels it
-    only. Every import must name the standard library, numpy or pandas.
+    only. Every import must name the standard library, numpy or pandas, unless
+    ``allow_any_imports`` is set (a LambdaOp that runs in a custom container
+    image, where the image decides what is installed).
     """
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
@@ -196,7 +200,7 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     for name, level in _imported_names(tree):
         if level != 0:
             raise ValueError("LambdaOp code must not use relative imports")
-        if not _importable(name):
+        if not allow_any_imports and not _importable(name):
             raise ValueError(_not_importable_message(name))
     defs = [
         stmt
@@ -271,13 +275,17 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
 
 
 def materialize(
-    code: str, fn_name: str | None = None
+    code: str,
+    fn_name: str | None = None,
+    allow_any_imports: bool = False,
 ) -> Callable[[tuple[Any, ...]], Any]:
     """Build the function from validated source in the LambdaOp namespace.
 
-    ``fn_name`` is checked against the source as in ``validate_source``.
+    ``fn_name`` is checked against the source as in ``validate_source``. When
+    ``allow_any_imports`` is set (a LambdaOp running in a custom container
+    image), imports are not restricted: the image decides what is installed.
     """
-    defined_name = validate_source(code, fn_name)
+    defined_name = validate_source(code, fn_name, allow_any_imports=allow_any_imports)
     src = code.strip()
     used = {node.id for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Name)}
     namespace: dict[str, Any] = {
@@ -300,7 +308,10 @@ def materialize(
         import pandas
 
         namespace["pd"] = pandas
-    namespace["__builtins__"]["__import__"] = _lambda_import
+    if allow_any_imports:
+        namespace["__builtins__"]["__import__"] = builtins.__import__
+    else:
+        namespace["__builtins__"]["__import__"] = _lambda_import
     if src.startswith("lambda"):
         return eval(compile(src, _SOURCE_NAME, "eval"), namespace)
     exec(compile(src, _SOURCE_NAME, "exec"), namespace)
