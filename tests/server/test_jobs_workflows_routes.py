@@ -442,6 +442,40 @@ async def test_get_job_returns_workflow_dispatches(
 
 
 @pytest.mark.anyio
+async def test_get_job_returns_cache_telemetry(app: FastAPI, job_routes: Any) -> None:
+    """GET /api/v1/jobs/{job_id} returns the per-op cache telemetry."""
+    record = JobRecord(
+        job_id="j-cache",
+        status="completed",
+        submitted_at=dt.datetime.now(dt.UTC).isoformat(),
+        inputs={},
+        output_location={"out": S3Location(type="s3", prefix="x/y")},
+        org_id="demo",
+        user_id="alice@example.com",
+    )
+    record.cache_telemetry = {
+        "sim": {
+            "rows_hit": 3,
+            "rows_missed": 1,
+            "producer_job_ids": ["req-1"],
+        }
+    }
+    job_routes.jobs["j-cache"] = record
+    job_routes._job_storage.save(record)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-cache", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    telemetry = resp.json()["data"]["cache_telemetry"]
+    assert telemetry == {
+        "sim": {"rows_hit": 3, "rows_missed": 1, "producer_job_ids": ["req-1"]}
+    }
+
+
+@pytest.mark.anyio
 async def test_get_job_reloads_workflow_dispatches_from_storage(
     app: FastAPI, job_routes: Any
 ) -> None:

@@ -115,6 +115,11 @@ class LumilakeResponse(BaseModel):
         default=None, description="Chat histories metadata for output nodes."
     )
     """Chat histories metadata for output nodes (history tracking)"""
+    cache_telemetry: dict[str, dict[str, Any]] | None = Field(
+        default=None,
+        description="Per-op cache hit/miss counts and producer job ids.",
+    )
+    """Cache telemetry for cacheable LambdaOps (rows hit/missed, producers)"""
 
 
 class RequestCancelledError(RuntimeError):

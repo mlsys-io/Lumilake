@@ -572,6 +572,7 @@ class JobRecord:
     error: str | None = None
     progress: JobProgress = field(default_factory=JobProgress)
     result: LumilakeResponse | None = None
+    cache_telemetry: dict[str, dict[str, Any]] = field(default_factory=dict)
     folder_inputs: dict[str, str] = field(default_factory=dict)
     trace_ids: list[str] = field(default_factory=list)
     workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
@@ -651,6 +652,13 @@ class JobStatusPayload(BaseModel):
         default_factory=list,
         description=(
             "Raw per-workflow scheduler dispatch rows, one per actual dispatch."
+        ),
+    )
+    cache_telemetry: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-op cache hit/miss counts and producer job ids for cacheable"
+            " LambdaOps."
         ),
     )
 
@@ -2470,6 +2478,11 @@ async def _run_job(
                 already_terminal = True
             else:
                 record.result = validated_result
+                record.cache_telemetry = (
+                    validated_result.cache_telemetry
+                    if validated_result.cache_telemetry
+                    else {}
+                )
                 record.trace_ids = list(trace_ids)
                 if optimization_seconds is not None:
                     record.optimization_seconds = optimization_seconds

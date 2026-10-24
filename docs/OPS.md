@@ -321,6 +321,7 @@ Optional per-op limits for the standalone `python` task:
 | `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
 | `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
 | `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
+| `cache` | false | boolean | Reuse the standalone task's result across jobs; requires a pinned `image`. |
 
 The limits apply only to the standalone `python` task; they have no effect on a
 `LambdaOp` that an LLM op inlines. An image-bearing `LambdaOp` may set
@@ -330,6 +331,44 @@ The limits apply only to the standalone `python` task; they have no effect on a
 `expected_runtime_s` is a planning hint only: it is seconds per input row of
 the task, and HALO uses it to estimate the step's run time. It is never
 enforced as a limit.
+
+### LambdaOp result cache
+
+A standalone `LambdaOp` may declare `cache: true` to reuse its result across
+jobs. Caching requires a **pinned image**: either `name@sha256:<64-hex-digest>`
+or a bare image ID `sha256:<64-hex>`. A bare tag can move, so a cached result
+keyed on it could silently go stale; `cache: true` without an image, or with an
+unpinned image, is rejected at submit. The cache is opt-in and off by default.
+
+The cache key is a Merkle-style SHA-256 over the op's lineage: the submitted
+`code`, `fn_name`, `mode`, the pinned `image`, the resolved literal input
+values, the keys of cacheable upstream `LambdaOp`s, and a `CACHE_VERSION`
+constant (bumped when the key's meaning changes). Resource limits
+(`timeout_s`, `memory_mb`) are deliberately excluded — they do not change the
+result, so a job that only raises a limit still hits the cache. The function
+must be deterministic: the same inputs must produce the same output, or the
+cache returns stale results.
+
+Row granularity depends on `mode`:
+
+- **`mode: row`** (default) caches one entry per row. On a later job, each row
+  is looked up independently. If every row hits, the node is replaced by an
+  emit step that replays the cached items without running the computation. If
+  some rows miss, the node runs a generated partial task on the missed rows
+  only, and a small merge step splices the cached rows back in, restoring the
+  original row order. If no row hits, the node runs as normal.
+- **`mode: list`** and **`mode: aligned`** cache one whole-task entry per key.
+  A full hit replaces the node with an emit step; a miss runs it as normal.
+
+Only rows from a task that succeeded are stored; a failed task stores nothing.
+An op whose upstream is not itself a cacheable `LambdaOp` (for example one that
+reads an LLM or data-retrieval op) is simply not cached — it never errors.
+
+Cache entries live under the archive's `cache/` namespace via
+`JobStorage.save_artifact`/`get_artifact`, so cache growth never bloats the
+per-job `record.json` or `jobs_index.json`. Lookups and stores run concurrently.
+Per-op telemetry (rows hit, rows missed, producer job ids) is recorded on the
+job record and job status payload.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see

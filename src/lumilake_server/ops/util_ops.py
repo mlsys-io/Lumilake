@@ -19,6 +19,23 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 
 
+def is_pinned_image(image: str) -> bool:
+    """Return whether ``image`` is pinned to an immutable content digest.
+
+    A pinned reference is either ``name@sha256:<64 lowercase hex>`` or a bare
+    image ID (``sha256:<64 lowercase hex>``). A bare tag can move, so a cached
+    result keyed on it could silently go stale; ``cache: true`` requires a
+    pinned image.
+    """
+    if "@sha256:" in image:
+        digest = image.split("@sha256:", 1)[1]
+    elif image.startswith("sha256:"):
+        digest = image[len("sha256:") :]
+    else:
+        return False
+    return len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+
 def _validate_limits(
     timeout_s: float | None,
     memory_mb: int | None,
@@ -154,6 +171,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool = False,
     ) -> None: ...
 
     @overload
@@ -167,6 +185,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool = False,
     ) -> None: ...
 
     @overload
@@ -180,6 +199,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool = False,
     ) -> None: ...
 
     def __init__(
@@ -192,6 +212,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool = False,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -200,6 +221,17 @@ class LambdaOp(Op):
         if image is not None and not image.strip():
             raise ValueError("LambdaOp image must be a non-empty string")
         _validate_limits(timeout_s, memory_mb, image, expected_runtime_s)
+        if cache:
+            if not image:
+                raise ValueError(
+                    "LambdaOp cache requires an image (a pinned image reference)"
+                )
+            if not is_pinned_image(image):
+                raise ValueError(
+                    "LambdaOp cache requires a pinned image reference: either "
+                    "'name@sha256:<digest>' or a bare image ID 'sha256:<64 hex>' "
+                    f"(got {image!r})"
+                )
         input_ops: list[Op] = []
         for inp in inputs:
             if isinstance(inp, Op):
@@ -215,6 +247,7 @@ class LambdaOp(Op):
         self.image = image
         # A planning hint for HALO; never enforced at runtime.
         self.expected_runtime_s = expected_runtime_s
+        self.cache = cache
         if code:
             self.code: str = code
         else:
@@ -267,6 +300,8 @@ class LambdaOp(Op):
             data["image"] = self.image
         if self.expected_runtime_s is not None:
             data["expected_runtime_s"] = self.expected_runtime_s
+        if self.cache:
+            data["cache"] = True
         return data
 
     @classmethod
@@ -280,6 +315,7 @@ class LambdaOp(Op):
         memory_mb = data.get("memory_mb")
         image = data.get("image")
         expected_runtime_s = data.get("expected_runtime_s")
+        cache = bool(data.get("cache", False))
         try:
             fn = SubmittedFunction(code, fn_name, allow_any_imports=image is not None)
         except ValueError as exc:
@@ -295,6 +331,7 @@ class LambdaOp(Op):
             memory_mb=memory_mb,
             image=image,
             expected_runtime_s=expected_runtime_s,
+            cache=cache,
         )
 
 
