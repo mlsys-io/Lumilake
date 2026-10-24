@@ -407,6 +407,74 @@ def test_list_lambda_data_op_input_compiles() -> None:
     ]
 
 
+def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
+    """A list-mode Lambda reading [row-wise LLM, DataRetrievalOp] that feeds an
+    LLM must compile, with a stage entry for the retrieval (one element per
+    retrieval item) alongside the LLM entry, matching the standalone path."""
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM news WHERE symbol = :symbol",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
+        inputs=[stock],
+    )
+    judge = LLMChatOp(
+        [OpMessage(role="user", content="Judge {r}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Judge {r}",
+        rowwise_columns=[{"label": "r", "node": retrieval.id, "path": "items.table"}],
+    )
+    judge.inputs.append(retrieval)
+    combine = LambdaOp(
+        [judge, retrieval],
+        fn=lambda items: [{"n": len(items[0])}],
+        mode="list",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Summarize {c}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {c}",
+        rowwise_columns=[{"label": "c", "node": combine.id, "path": "items.output"}],
+    )
+    llm.inputs.append(combine)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    combine_node = next(
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
+    )
+    assert combine_node.data_spec["mode"] == "list"
+    judge_node = next(
+        n
+        for n in runtime_graph.nodes.values()
+        if n.task_type == "inference" and "columns" in n.data_spec
+    )
+    assert combine_node.data_spec["plan"] == [
+        {"kind": "stage", "node": judge_node.node_id, "flatten": True},
+        {"kind": "stage", "node": retrieval.id},
+    ]
+    assert judge_node.node_id in combine_node.dependencies
+    assert retrieval.id in combine_node.dependencies
+
+    llm_node = next(
+        n
+        for n in runtime_graph.nodes.values()
+        if n.task_type == "inference"
+        and "columns" in n.data_spec
+        and combine_node.node_id in n.dependencies
+    )
+    assert combine_node.node_id in llm_node.dependencies
+
+    order = {node_id: idx for idx, node_id in enumerate(runtime_graph.node_order)}
+    assert order[retrieval.id] < order[judge_node.node_id]
+    assert order[judge_node.node_id] < order[combine_node.node_id]
+    assert order[combine_node.node_id] < order[llm_node.node_id]
+
+
 def test_api_op_reads_list_lambda_at_value_items_output() -> None:
     """An API-backed rowwise LLMChatOp reading a list-mode Lambda must bind the
     column to the python stage at ``value.items.output``."""
