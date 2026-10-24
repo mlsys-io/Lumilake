@@ -230,6 +230,123 @@ def test_wrapper_flattens_rowwise_llm_grouped_item(tmp_path: Path) -> None:
     assert out == {"items": [{"output": "r0"}, {"output": "r1"}, {"output": "r2"}]}
 
 
+def test_wrapper_flattens_api_rowwise_llm_rows_list_mode(tmp_path: Path) -> None:
+    # An API rowwise LLM fans out over ``items.rows`` (one completion per row)
+    # instead of the grouped ``items.output`` list a local rowwise LLM emits.
+    # The ``flatten`` plan flag must expand each row's completion to one value
+    # so a list-mode Lambda sees one value per row, not one outer dict.
+    llm_dir = _stage(
+        tmp_path,
+        "llm",
+        {
+            "items": [
+                {
+                    "rows": [
+                        {
+                            "json": {"choices": [{"message": {"content": "r0"}}]},
+                            "text": "r0",
+                        },
+                        {
+                            "json": {"choices": [{"message": {"content": "r1"}}]},
+                            "text": "r1",
+                        },
+                        {
+                            "json": {"choices": [{"message": {"content": "r2"}}]},
+                            "text": "r2",
+                        },
+                    ]
+                }
+            ]
+        },
+    )
+    out = _run_wrapper(
+        "lambda inputs: inputs[0]",
+        [{"kind": "stage", "node": "llm", "flatten": True}],
+        {"llm": llm_dir},
+        mode="list",
+    )
+    assert out == {"items": [{"output": "r0"}, {"output": "r1"}, {"output": "r2"}]}
+
+
+def test_wrapper_flattens_api_rowwise_llm_rows_standalone(tmp_path: Path) -> None:
+    # A standalone (row-mode) Lambda over an API rowwise LLM must also expand
+    # ``items.rows`` to one completion per row, not hand the Lambda a single
+    # serialized outer dict.
+    llm_dir = _stage(
+        tmp_path,
+        "llm",
+        {
+            "items": [
+                {
+                    "rows": [
+                        {
+                            "json": {"choices": [{"message": {"content": "r0"}}]},
+                            "text": "r0",
+                        },
+                        {
+                            "json": {"choices": [{"message": {"content": "r1"}}]},
+                            "text": "r1",
+                        },
+                    ]
+                }
+            ]
+        },
+    )
+    out = _run_wrapper(
+        "lambda inputs: inputs[0]",
+        [{"kind": "stage", "node": "llm", "flatten": True}],
+        {"llm": llm_dir},
+        mode="row",
+    )
+    assert out == {"items": [{"output": "r0"}, {"output": "r1"}]}
+
+
+def test_wrapper_flatten_keeps_a_list_value_as_one_value(tmp_path: Path) -> None:
+    # A per-row value that is itself a list must stay one value per row, not be
+    # expanded further. The grouped item carries one list per row.
+    llm_dir = _stage(
+        tmp_path,
+        "llm",
+        {"items": [{"output": [["a", "b"], ["c", "d"]]}]},
+    )
+    out = _run_wrapper(
+        "lambda inputs: inputs[0]",
+        [{"kind": "stage", "node": "llm", "flatten": True}],
+        {"llm": llm_dir},
+        mode="list",
+    )
+    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
+
+
+def test_wrapper_flatten_multiple_grouped_items(tmp_path: Path) -> None:
+    # Several FlowMesh tables/slices each group their per-row outputs into one
+    # item; flattening must expand every item, not just the first.
+    llm_dir = _stage(
+        tmp_path,
+        "llm",
+        {
+            "items": [
+                {"output": ["r0", "r1"]},
+                {"output": ["r2", "r3"]},
+            ]
+        },
+    )
+    out = _run_wrapper(
+        "lambda inputs: inputs[0]",
+        [{"kind": "stage", "node": "llm", "flatten": True}],
+        {"llm": llm_dir},
+        mode="list",
+    )
+    assert out == {
+        "items": [
+            {"output": "r0"},
+            {"output": "r1"},
+            {"output": "r2"},
+            {"output": "r3"},
+        ]
+    }
+
+
 def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="expected 1 or 3"):
         _run_wrapper(
