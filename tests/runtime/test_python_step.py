@@ -478,8 +478,15 @@ def test_wrapper_keeps_the_restricted_namespace() -> None:
     assert out == {"items": [{"output": "[2, 1]"}]}
     with pytest.raises(ValueError, match="'open'.*does not provide"):
         _run_wrapper("def f(inputs):\n    return open('/etc/passwd').read()", [], {})
-    with pytest.raises(ImportError, match="'requests' is not available"):
-        _run_wrapper("def f(inputs):\n    return __import__('requests')", [], {})
+
+
+def test_wrapper_allows_importing_any_module_the_container_image_provides() -> None:
+    # The container is the isolation boundary for a standalone task: any module
+    # the image provides may be imported, so __import__ is not restricted.
+    out = _run_wrapper(
+        "def f(inputs):\n    import requests\n    return requests.__name__", [], {}
+    )
+    assert out == {"items": [{"output": "requests"}]}
 
 
 def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
@@ -489,10 +496,6 @@ def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
         {},
     )
     assert out == {"items": [{"output": "4"}]}
-    with pytest.raises(ImportError, match="'requests'"):
-        _run_wrapper(
-            "def f(inputs):\n    np\n    return __import__('requests')", [], {}
-        )
 
 
 # ------------------------------------------------------------------ #
