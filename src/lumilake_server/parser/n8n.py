@@ -1551,6 +1551,17 @@ def _make_code_ops(
                 f"Code node '{node_name}' notes 'image' must be a non-empty string"
             )
         op["image"] = image
+    # Bounds are checked when the op is built.
+    for key, field, kind in (
+        ("timeout-s", "timeout_s", (int, float)),
+        ("memory-mb", "memory_mb", int),
+    ):
+        value = notes.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, kind):
+            raise ValueError(f"Code node '{node_name}' notes '{key}' must be a number")
+        op[field] = value
     expected_runtime_s = notes.get("expected-runtime-s")
     if expected_runtime_s is not None:
         if isinstance(expected_runtime_s, bool) or not isinstance(
