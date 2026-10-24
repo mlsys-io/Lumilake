@@ -702,6 +702,7 @@ class LumilakeServer:
         ) | self._request_execution_history_ids.get(request_id, set())
         if execution_ids:
             self.runtime_manager.release_executions(execution_ids)
+        self.runtime_manager.release_request_task_ids(request_id)
         self.runtime_manager.clear_dispatch_token(request_id)
 
     def optimization_seconds_for_request(self, request_id: str) -> float | None:

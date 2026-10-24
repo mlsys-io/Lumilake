@@ -2865,8 +2865,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return rewritten
 
     def release_executions(self, execution_ids: set[str]) -> None:
-        """Drop ``_batch_workflow_id`` and ``_request_task_ids`` entries for
-        the given executions.
+        """Drop ``_batch_workflow_id`` entries for the given executions.
 
         Called once a request's ``trace_ids`` have been persisted to
         ``JobStorage``; the in-memory tuple→workflow id map can then go.
@@ -2874,15 +2873,16 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         Snapshots the keys via ``.copy()`` before popping — entries can be
         added on the runtime async thread while we run on the FastAPI thread.
         """
-        released_workflow_ids: set[str] = set()
         for key in self._batch_workflow_id.copy():
             if key[0] in execution_ids:
-                released_workflow_ids.add(self._batch_workflow_id[key])
                 self._batch_workflow_id.pop(key, None)
-        if released_workflow_ids:
-            for key in self._request_task_ids.copy():
-                if key[1] in released_workflow_ids:
-                    self._request_task_ids.pop(key, None)
+
+    def release_request_task_ids(self, request_id: str) -> None:
+        """Drop the member request's owned task ids; other members of a shared
+        execution keep theirs until they finish."""
+        for key in self._request_task_ids.copy():
+            if key[0] == request_id:
+                self._request_task_ids.pop(key, None)
 
     async def cancel_request(self, request_id: str) -> None:
         """Cancel all FM workflows for a request. Uses the scheduler

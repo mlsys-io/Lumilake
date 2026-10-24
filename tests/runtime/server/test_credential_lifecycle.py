@@ -139,6 +139,22 @@ def test_release_request_workflows_clears_dispatch_token() -> None:
     assert server.runtime_manager.get_api_credential("req-1") is None
 
 
+def test_releasing_one_member_keeps_the_other_members_task_ownership() -> None:
+    """Two jobs share one execution; the first to finish must not drop the
+    second's owned task ids before it persists them."""
+    server = make_server()
+    manager = server.runtime_manager
+    server._request_execution_ids = {"job-a": {"exec-1"}, "job-b": {"exec-1"}}
+    manager._batch_workflow_id[("exec-1", "batch-0")] = "wf-1"
+    manager._request_task_ids[("job-a", "wf-1")] = ["tsk-a"]
+    manager._request_task_ids[("job-b", "wf-1")] = ["tsk-b"]
+
+    server.release_request_workflows("job-a")
+
+    assert server.task_ids_for_request("job-a") == {}
+    assert server.task_ids_for_request("job-b") == {"wf-1": ["tsk-b"]}
+
+
 def _compiled():
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
