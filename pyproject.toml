@@ -106,7 +106,7 @@ server-runtime = [
     "python-dotenv==1.2.4",
     "requests==2.34.2",
     "urllib3==2.8.0",
-    "aiohttp==3.14.3",
+    "aiohttp>=3.14.4",
     "shortuuid==1.0.13",
     "pandas==3.0.6",
     "dill==0.4.1",
@@ -117,6 +117,8 @@ server-runtime = [
     "anyio>=4.14.2",
     "certifi>=2026.10.19",
     "urllib3>=2.8.0",
+    # Security floor for the aiohttp 3.14.3 advisories (CVE-2026-111063/64/65/66/748/749/750, GHSA-2g87-pp6c-29x5).
+    "aiohttp>=3.14.4",
     # Security floor for the unbounded tracestate parsing advisory.
     "opentelemetry-api>=1.45.1",
 ]
