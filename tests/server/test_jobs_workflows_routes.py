@@ -967,16 +967,12 @@ async def test_progress_usage_restricted_to_owned_tasks_in_shared_workflow(
 async def test_progress_usage_reads_ownership_from_runtime_manager_while_running(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A running coalesced job reports only its own tasks even before
-    ``job_task_ids`` is persisted (which happens only at job end)."""
-    _seed_job(job_routes, "j-a", ["wf-1"])
-    _seed_job(job_routes, "j-b", ["wf-1"])
+    """A running coalesced job has no persisted trace or task ids yet and
+    reports only the tasks the runtime manager says it owns."""
+    _seed_job(job_routes, "j-a", [])
+    _seed_job(job_routes, "j-b", [])
     job_routes.jobs["j-a"].status = "running"
     job_routes.jobs["j-b"].status = "running"
-    # Ownership is not yet persisted on the records; it lives only in the
-    # runtime manager, as it does while a job is still running.
-    assert job_routes.jobs["j-a"].job_task_ids == {}
-    assert job_routes.jobs["j-b"].job_task_ids == {}
     wf1 = _FakeWorkflow(
         "wf-1",
         "COMPLETED",

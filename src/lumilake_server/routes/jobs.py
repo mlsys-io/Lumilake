@@ -3630,13 +3630,14 @@ async def get_job_progress(
 
     if record.status not in TERMINAL_JOB_STATUSES:
         fm = flowmesh_for(request)
-        # ``job_task_ids`` is persisted only once the job finishes.
+        # ``trace_ids`` and ``job_task_ids`` are persisted only once the job
+        # finishes.
         task_ids_by_workflow = record.job_task_ids or server.task_ids_for_request(
             job_id
         )
         computed = await _compute_job_usage(
             fm,
-            _job_workflow_ids(record),
+            list(dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])),
             hook_logger,
             task_ids_by_workflow=task_ids_by_workflow or None,
         )
