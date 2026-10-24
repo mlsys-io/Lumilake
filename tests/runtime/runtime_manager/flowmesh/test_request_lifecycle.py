@@ -951,3 +951,102 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
     )
     flat = result_["flat_outputs"][llm_row_id]
     assert flat == ["reply-0", "reply-1", "reply-2"]
+
+
+@pytest.mark.asyncio
+async def test_rowwise_lambda_output_emits_no_history_when_grouped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flattened rowwise output has one grouped item per table but one output
+    value per row. FlowMesh keeps only the first row's prompt on the grouped
+    item, so per-row prompts cannot be recovered; the runtime manager must emit
+    no chat history for that node rather than a count that disagrees with the
+    outputs."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
+    manager = FlowmeshRuntimeManager()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        lambda: InMemoryJobStorage(),
+    )
+
+    request_info, lambda_row_id, llm_row_id = _build_rowwise_lambda_output_request()
+
+    class _FakeWorkflows:
+        async def submit(self, task_yaml: str) -> Any:
+            return SimpleNamespace(
+                tasks=[
+                    SimpleNamespace(task_id="task-lambda"),
+                    SimpleNamespace(task_id="task-llm"),
+                ],
+                workflow_id="wf-1",
+            )
+
+    class _FakeResults:
+        async def retrieve(self, task_id: str) -> dict[str, Any]:
+            if task_id == "task-lambda":
+                return {
+                    "value": {
+                        "items": [
+                            {"output": "HELLO"},
+                            {"output": "WORLD"},
+                            {"output": "FOO"},
+                        ]
+                    }
+                }
+            # The grouped item carries only the first row's prompt under
+            # ``metadata.prompt``; there is one item for three output values.
+            return {
+                "items": [
+                    {
+                        "index": 0,
+                        "output": ["reply-0", "reply-1", "reply-2"],
+                        "metadata": {
+                            "prompt": [{"role": "user", "content": "Result: HELLO"}]
+                        },
+                    }
+                ]
+            }
+
+    class _FakeFm:
+        def __init__(self) -> None:
+            self.workflows = _FakeWorkflows()
+            self.results = _FakeResults()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+
+    node_by_task = {
+        "task-lambda": lambda_row_id,
+        "task-llm": llm_row_id,
+    }
+
+    async def _fetch_task_status(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> TaskStatusView:
+        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
+
+    async def _fetch_task_description(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> dict[str, Any]:
+        return {"graph_node_name": node_by_task[task_id]}
+
+    monkeypatch.setattr(
+        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+    )
+    monkeypatch.setattr(
+        manager,
+        "fetch_task_description",
+        types.MethodType(_fetch_task_description, manager),
+    )
+
+    result_ = await manager.process_request(
+        request_info,
+        Schedule(
+            worker_assignment={
+                "worker-1": [lambda_row_id, llm_row_id],
+            }
+        ),
+        worker_ids=["worker-1"],
+    )
+    assert result_["flat_outputs"][llm_row_id] == ["reply-0", "reply-1", "reply-2"]
+    # One grouped item for three outputs: no recoverable per-row history.
+    assert result_["chat_histories"] == {}

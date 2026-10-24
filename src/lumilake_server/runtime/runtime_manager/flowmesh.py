@@ -1526,16 +1526,22 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
-            for item, text in zip(items, outputs):
-                try:
-                    prompt = item["metadata"]["prompt"]
-                except (KeyError, TypeError):
-                    continue
-                if not isinstance(prompt, list):
-                    continue
-                output_prompts.append(
-                    prompt + [{"role": Roles.ASSISTANT.value, "content": text}]
-                )
+            # A flattened rowwise/items.rows output has one grouped item per
+            # table but one output value per row, so per-row prompts cannot be
+            # recovered from the grouped item (FlowMesh keeps only the first
+            # row's prompt). Emit history only when there is exactly one item
+            # per output value; otherwise leave the node without history.
+            if len(items) == len(outputs):
+                for item, text in zip(items, outputs):
+                    try:
+                        prompt = item["metadata"]["prompt"]
+                    except (KeyError, TypeError):
+                        continue
+                    if not isinstance(prompt, list):
+                        continue
+                    output_prompts.append(
+                        prompt + [{"role": Roles.ASSISTANT.value, "content": text}]
+                    )
             if output_prompts:
                 prompts[output_op_id] = output_prompts
 
