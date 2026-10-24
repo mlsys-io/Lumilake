@@ -42,7 +42,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
-          version: "0.11.26"
+          version: "0.13.5"
           python-version: "3.12"
       - name: Run zizmor
         run: uvx --from zizmor==1.26.1 zizmor --persona pedantic --format github .github/workflows
@@ -72,7 +72,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
-          version: "0.11.26"
+          version: "0.13.5"
           python-version: "3.12"
       - name: Run bandit
         run: |
@@ -95,7 +95,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
-          version: "0.11.26"
+          version: "0.13.5"
           python-version: "3.12"
       - name: Run pip-audit (server image runtime)
         # src/lumilake_server/requirements.txt is the pin set baked into
