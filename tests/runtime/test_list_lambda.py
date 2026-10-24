@@ -142,7 +142,11 @@ def test_list_lambda_groups_then_collapses() -> None:
         if n.task_type == "inference" and "columns" in n.data_spec
     )
     (collapse_plan,) = collapse_node.data_spec["plan"]
-    assert collapse_plan == {"kind": "stage", "node": summarize_node.node_id}
+    assert collapse_plan == {
+        "kind": "stage",
+        "node": summarize_node.node_id,
+        "flatten": True,
+    }
     assert summarize_node.node_id in collapse_node.dependencies
     assert collapse_node.node_id in runtime_graph.output_node_map
 
@@ -302,6 +306,46 @@ def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
     order = {node_id: idx for idx, node_id in enumerate(runtime_graph.node_order)}
     assert order[extract_node.node_id] < order[explode_node.node_id]
     assert order[explode_node.node_id] < order[summarize_node.node_id]
+
+
+def test_list_lambda_over_rowwise_llm_flattens_grouped_item() -> None:
+    """A list-mode Lambda reading a rowwise LLM must mark the plan entry
+    ``flatten`` so the python step expands the grouped item back to one value
+    per row (instead of handing the list-mode Lambda a single grouped element)."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    reply = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    reply.inputs.append(shout)
+    tally = LambdaOp(
+        [reply],
+        fn=lambda items: [{"n": len(items[0])}],
+        mode="list",
+    )
+    output = as_output("out", tally)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL", "MSFT"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    tally_node = next(
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
+    )
+    assert tally_node.data_spec["mode"] == "list"
+    reply_node = next(
+        n
+        for n in runtime_graph.nodes.values()
+        if n.task_type == "inference" and "columns" in n.data_spec
+    )
+    (reply_plan,) = tally_node.data_spec["plan"]
+    assert reply_plan == {
+        "kind": "stage",
+        "node": reply_node.node_id,
+        "flatten": True,
+    }
+    assert reply_node.node_id in tally_node.dependencies
 
 
 def test_list_lambda_data_op_input_compiles() -> None:

@@ -274,6 +274,11 @@ read at `value.items.output`. A list-mode `LambdaOp` is read through a node
 column (`rowwise_columns` / `aggregate_table`), not through an LLM message
 chain.
 
+A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one
+value per input row: the row-wise LLM groups its per-row outputs back into one
+item internally, and the standalone `python` step flattens that grouped item
+back to one value per row before the function sees its whole-list input.
+
 `mode: aligned` is the same calling convention as `list` (whole columns in, a
 list out, read at `value.items.output`), with one added guarantee: the function
 returns exactly one value per input row, and the standalone task raises if the

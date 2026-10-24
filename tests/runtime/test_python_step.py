@@ -75,6 +75,30 @@ def test_lambda_over_llm_reads_the_llm_stage() -> None:
     )
 
 
+def test_standalone_lambda_over_rowwise_llm_flattens_plan_entry() -> None:
+    """A standalone (row-mode) Lambda reading a rowwise LLM must mark the plan
+    entry ``flatten`` so the python step expands the grouped item back to one
+    value per row."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    reply = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    reply.inputs.append(shout)
+    tally = LambdaOp([reply], fn=lambda inputs: str(len(inputs[0])))
+    compiled = Graph.from_ops([as_output("n", tally)]).compile(
+        Stock=["NVDA", "AAPL", "MSFT"]
+    )
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    node = _python_nodes(graph)[tally.id]
+    (reply_plan,) = node.data_spec["plan"]
+    assert reply_plan == {"kind": "stage", "node": reply.id, "flatten": True}
+
+
 def test_lambda_chain_compiles_both_steps() -> None:
     stock = input_placeholder("Stock")
     first = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
@@ -186,6 +210,24 @@ def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
         {"py": py_dir, "api": api_dir},
     )
     assert out == {"items": [{"output": "pt"}]}
+
+
+def test_wrapper_flattens_rowwise_llm_grouped_item(tmp_path: Path) -> None:
+    # A rowwise LLM upstream groups its per-row outputs back into one item
+    # (FlowMesh ``_populate_table``); the ``flatten`` plan flag must expand it
+    # back to one value per row so a list-mode Lambda sees N values, not one.
+    llm_dir = _stage(
+        tmp_path,
+        "llm",
+        {"items": [{"output": ["r0", "r1", "r2"]}]},
+    )
+    out = _run_wrapper(
+        "lambda inputs: inputs[0]",
+        [{"kind": "stage", "node": "llm", "flatten": True}],
+        {"llm": llm_dir},
+        mode="list",
+    )
+    assert out == {"items": [{"output": "r0"}, {"output": "r1"}, {"output": "r2"}]}
 
 
 def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
