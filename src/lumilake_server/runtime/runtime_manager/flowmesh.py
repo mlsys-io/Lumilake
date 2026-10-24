@@ -1064,6 +1064,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         expected_row_count: int | None = None,
         list_lambda: bool,
         list_lambda_cardinality: bool,
+        rowwise_llm: bool = False,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
             items = await self._archive_artifact_items(
@@ -1125,8 +1126,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     ]
                 )
             ]
-        if output_path is not None and output_path.startswith("items.rows"):
-            # One group per input table; flatten to one value per row.
+        if (output_path is not None and output_path.startswith("items.rows")) or (
+            rowwise_llm
+        ):
+            # One group per input table: an API rowwise task's ``items.rows``
+            # path, or a local rowwise LLM whose ``dataframe`` data_spec makes
+            # FlowMesh group its per-row outputs back into one item per table
+            # (``_populate_table``). Flatten to one value per row.
             flattened: list[str] = []
             for item in items:
                 walked = _walk_output_path(item, output_field_parts, output_op_id)
@@ -1491,6 +1497,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 and output_node.task_type == python_step.TASK_TYPE
                 and output_node.data_spec.get("mode") == "list",
                 list_lambda_cardinality=output_op_id in list_lambda_cardinality_nodes,
+                rowwise_llm=output_node is not None
+                and output_node.data_spec.get("type") == "dataframe",
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []

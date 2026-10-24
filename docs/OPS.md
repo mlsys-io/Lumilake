@@ -189,6 +189,11 @@ results. The job's final response mixes the failed slice's rows (empty
 output plus an error entry) with the other slice's real per-row
 values.
 
+A local `LLMChatOp` with a `rowwise_template` runs one generation per input
+row. When it is the workflow output, its per-row results are returned as one
+output value per input row (FlowMesh groups them back into one item per table
+internally; the runtime flattens that back to per-row values at aggregation).
+
 ### LLMVisionOp
 
 `LLMVisionOp` runs vision-language generation over images. When it declares a
