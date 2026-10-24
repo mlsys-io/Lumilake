@@ -476,7 +476,7 @@ def test_wrapper_keeps_the_restricted_namespace() -> None:
         {},
     )
     assert out == {"items": [{"output": "[2, 1]"}]}
-    with pytest.raises(NameError, match="open"):
+    with pytest.raises(ValueError, match="'open'.*does not provide"):
         _run_wrapper("def f(inputs):\n    return open('/etc/passwd').read()", [], {})
     with pytest.raises(ImportError, match="'requests' is not available"):
         _run_wrapper("def f(inputs):\n    return __import__('requests')", [], {})
