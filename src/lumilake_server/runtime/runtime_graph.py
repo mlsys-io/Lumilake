@@ -1504,7 +1504,7 @@ class RuntimeGraphBuilder:
             if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
-            elif isinstance(inp, LLMOp):
+            elif isinstance(inp, (LLMOp, DataRetrievalOp)):
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, InputOp):
@@ -1519,7 +1519,7 @@ class RuntimeGraphBuilder:
             else:
                 raise ValueError(
                     f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
-                    f"list-mode LambdaOp, InputOp, or DataOp "
+                    f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
         data_spec: dict[str, Any] = {
