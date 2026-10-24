@@ -306,6 +306,8 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         "entrypoint": "main",
         "timeoutSeconds": data_spec["timeout_s"],
     }
+    if data_spec.get("image"):
+        spec["image"] = data_spec["image"]
     stages = list(
         dict.fromkeys(entry["node"] for entry in plan if entry["kind"] == "stage")
     )

@@ -576,6 +576,83 @@ def test_lambda_op_rejects_a_bad_memory_limit(value: Any) -> None:
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), memory_mb=value)
 
 
+def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
+    _, shout, compiled = _llm_then_lambda(image="ghcr.io/me/sim:latest")
+    graph = RuntimeGraphBuilder().build(compiled)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["image"] == "ghcr.io/me/sim:latest"
+
+    _, plain, compiled_plain = _llm_then_lambda()
+    plain_spec = (
+        RuntimeGraphBuilder()
+        .build(compiled_plain)
+        .nodes[plain.id]
+        .to_flowmesh_node()["spec"]
+    )
+    assert "image" not in plain_spec
+
+
+def test_image_lambda_read_by_an_llm_message_chain_is_rejected() -> None:
+    stock = input_placeholder("Stock")
+    shout = LambdaOp(
+        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    with pytest.raises(
+        ValueError, match="image-bearing LambdaOp '.*' through its message chain"
+    ):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
+    stock = input_placeholder("Stock")
+    shout = LambdaOp(
+        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Result: {r}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Result: {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert shout.id in _python_nodes(graph)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["image"] == "ghcr.io/me/sim:latest"
+
+
+def test_image_lambda_allows_a_larger_timeout_cap() -> None:
+    # Without an image the cap stays at 600 s.
+    with pytest.raises(ValueError, match="timeout_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), timeout_s=601)
+    # With an image the cap is FlowMesh's 3600 s.
+    LambdaOp(
+        [["x"]],
+        fn=lambda inputs: str(inputs[0]),
+        timeout_s=3600,
+        image="ghcr.io/me/sim:latest",
+    )
+    with pytest.raises(ValueError, match="timeout_s"):
+        LambdaOp(
+            [["x"]],
+            fn=lambda inputs: str(inputs[0]),
+            timeout_s=3601,
+            image="ghcr.io/me/sim:latest",
+        )
+
+
+@pytest.mark.parametrize("image", ["", "   "])
+def test_lambda_op_rejects_an_empty_image(image: str) -> None:
+    with pytest.raises(ValueError, match="image"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), image=image)
+
+
 def test_halo_costs_a_default_python_step_at_five_percent_of_its_timeout() -> None:
     def cost(raw: dict[str, Any]) -> float:
         node = Node(id="n", type="python", engine="python", model="", raw=raw)

@@ -1544,6 +1544,13 @@ def _make_code_ops(
         "fn_name": fn_name,
         "_code": fn_code,
     }
+    image = notes.get("image")
+    if image is not None:
+        if not isinstance(image, str) or not image.strip():
+            raise ValueError(
+                f"Code node '{node_name}' notes 'image' must be a non-empty string"
+            )
+        op["image"] = image
     return [op], op["_id"]
 
 
