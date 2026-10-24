@@ -38,6 +38,22 @@ outputs:
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
+## n8n code-node notes
+
+An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its
+`parameters.pythonCode` is the function source, and its `notes` field carries
+Lumilake annotations as a JSON object with kebab-case keys:
+
+| Notes key | Type | Meaning |
+|---|---|---|
+| `inputs` | list of node names | Upstreams; defaults to the node's main incoming edges. |
+| `is-output` | bool | Emit this node's value as a workflow output. |
+| `image` | string | Container image for the standalone `python` task. |
+| `expected-runtime-s` | number | HALO planning hint: seconds per input row; never enforced. |
+
+A Code node with an `image` always runs as its own standalone `python` task.
+`expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
+
 ## Output projection (`path:`)
 
 `outputs[]` entries accept an optional `path:` selector that picks which field
