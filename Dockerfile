@@ -31,7 +31,7 @@ RUN printf '%s\n' 'pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c
 # Install deps first for layer caching. requirements.txt is generated
 # from uv.lock by scripts/dev/sync_requirements.py.
 COPY src/lumilake_server/requirements.txt ./requirements.txt
-RUN uv pip install -r requirements.txt
+RUN uv pip install --system -r requirements.txt
 
 COPY LICENSE ./LICENSE
 COPY packages/sdk ./packages/sdk
