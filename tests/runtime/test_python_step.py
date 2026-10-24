@@ -631,10 +631,8 @@ def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
 
 
 def test_image_lambda_allows_a_larger_timeout_cap() -> None:
-    # Without an image the cap stays at 600 s.
     with pytest.raises(ValueError, match="timeout_s"):
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), timeout_s=601)
-    # With an image the cap is FlowMesh's 3600 s.
     LambdaOp(
         [["x"]],
         fn=lambda inputs: str(inputs[0]),
@@ -711,10 +709,8 @@ def test_lambda_op_rejects_a_bad_expected_runtime(kwargs: dict[str, Any]) -> Non
 
 
 def test_lambda_op_expected_runtime_must_not_exceed_the_effective_timeout() -> None:
-    # Above the default timeout (600) when no timeout is given.
     with pytest.raises(ValueError, match="expected_runtime_s"):
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), expected_runtime_s=601)
-    # Above an explicit timeout.
     with pytest.raises(ValueError, match="expected_runtime_s"):
         LambdaOp(
             [["x"]],
@@ -722,7 +718,6 @@ def test_lambda_op_expected_runtime_must_not_exceed_the_effective_timeout() -> N
             timeout_s=45,
             expected_runtime_s=46,
         )
-    # Equal to the timeout is allowed.
     LambdaOp(
         [["x"]],
         fn=lambda inputs: str(inputs[0]),

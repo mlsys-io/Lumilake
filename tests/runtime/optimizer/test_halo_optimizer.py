@@ -246,14 +246,12 @@ def _python_node(raw: dict[str, object]) -> Node:
 
 def test_python_exec_cost_uses_expected_runtime_when_present() -> None:
     optimizer = HaloOptimizer()
-    # Default input row count is 1, so the hint is used as-is.
     assert (
         optimizer._python_exec_cost(
             _python_node({"timeout_s": 600, "expected_runtime_s": 5})
         )
         == 5
     )
-    # With more input rows, the estimate scales per row.
     optimizer._input_query_count = 10
     assert (
         optimizer._python_exec_cost(
@@ -280,9 +278,7 @@ def test_python_exec_cost_scales_with_literal_plan_rows() -> None:
 def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
     optimizer = HaloOptimizer()
     assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
-    # No timeout at all falls back to the default timeout.
     assert optimizer._python_exec_cost(_python_node({})) == 30
-    # The fallback does not scale with the input row count.
     optimizer._input_query_count = 10
     assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
 
