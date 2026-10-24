@@ -24,9 +24,10 @@ WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /uvx /usr/local/bin/
 ENV PATH=/usr/local/bin:$PATH
 
-# Install a hash-pinned pip through uv so the image's pip is verified too.
-RUN printf '%s\n' 'pip==26.2.2 --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70' \
-      | uv pip install --python /usr/local/bin/python --require-hashes --only-binary :all: -r -
+# The image ships no pip: nothing in the server needs it, and the base
+# image's seeded pip is old and carries a vendored CA bundle. Uninstall it
+# so no pip or pip-vendored certifi remains.
+RUN uv pip uninstall --system pip
 
 # Install deps first for layer caching. requirements.txt is generated
 # from uv.lock by scripts/dev/sync_requirements.py.
@@ -36,7 +37,7 @@ RUN uv pip install --system -r requirements.txt
 COPY LICENSE ./LICENSE
 COPY packages/sdk ./packages/sdk
 COPY packages/hook ./packages/hook
-RUN pip install --no-deps ./packages/sdk ./packages/hook
+RUN uv pip install --system --no-deps ./packages/sdk ./packages/hook
 
 # Image-only server code. Not published to PyPI.
 COPY src/lumilake_server ./lumilake_server
