@@ -1033,6 +1033,15 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
                 f"LambdaOp '{entry.id}' 'image' must be a non-empty string"
             )
         op_dict["image"] = image
+    expected_runtime_s = entry.fields.get("expected_runtime_s")
+    if expected_runtime_s is not None:
+        if isinstance(expected_runtime_s, bool) or not isinstance(
+            expected_runtime_s, (int, float)
+        ):
+            raise ValueError(
+                f"LambdaOp '{entry.id}' 'expected_runtime_s' must be a number"
+            )
+        op_dict["expected_runtime_s"] = expected_runtime_s
 
 
 def _build_generation_config(
