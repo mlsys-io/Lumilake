@@ -574,6 +574,7 @@ class JobRecord:
     result: LumilakeResponse | None = None
     folder_inputs: dict[str, str] = field(default_factory=dict)
     trace_ids: list[str] = field(default_factory=list)
+    job_task_ids: dict[str, list[str]] = field(default_factory=dict)
     workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
@@ -2556,6 +2557,13 @@ async def _run_job(
                 record.trace_ids = list(
                     dict.fromkeys([*record.trace_ids, *final_trace_ids])
                 )
+        job_task_ids: dict[str, list[str]] = {}
+        try:
+            job_task_ids = server.task_ids_for_request(job_id)
+        except Exception:
+            logger.exception("Failed to resolve task ids for job %s", job_id)
+        async with jobs_lock:
+            record.job_task_ids = job_task_ids
         workflow_dispatches = server.workflow_dispatches_for_request(job_id)
         async with jobs_lock:
             record.workflow_dispatches = list(workflow_dispatches)
@@ -3570,7 +3578,12 @@ async def get_job_progress(
 
     if record.status not in TERMINAL_JOB_STATUSES:
         fm = flowmesh_for(request)
-        computed = await _compute_job_usage(fm, _job_workflow_ids(record), hook_logger)
+        computed = await _compute_job_usage(
+            fm,
+            _job_workflow_ids(record),
+            hook_logger,
+            task_ids_by_workflow=record.job_task_ids or None,
+        )
         needs_save = False
         async with jobs_lock:
             if record.progress.usage != computed:
@@ -3909,11 +3922,25 @@ def _inference_usage(result: InferenceResult) -> WorkflowUsage:
 
 
 async def _fetch_workflow_usage(
-    fm: AsyncFlowMesh, workflow: Workflow, logger: Logger
+    fm: AsyncFlowMesh,
+    workflow: Workflow,
+    owned_task_ids: set[str] | None,
+    logger: Logger,
 ) -> WorkflowUsage | None:
-    """Sum usage over a workflow's completed task results, or ``None`` when
-    any is unavailable. Raises NotFoundError for a missing task result."""
-    results = await _fetch_task_results(fm, workflow.completed_tasks, logger)
+    """Sum usage over a workflow's completed task results that belong to the
+    job, or ``None`` when any is unavailable. Raises NotFoundError for a
+    missing task result.
+
+    ``owned_task_ids`` restricts the summed tasks to the ones this job's
+    graphs mapped to after dedup; ``None`` keeps every completed task (jobs
+    dispatched before per-job task attribution)."""
+    if owned_task_ids is None:
+        completed = workflow.completed_tasks
+    else:
+        completed = [
+            task_id for task_id in workflow.completed_tasks if task_id in owned_task_ids
+        ]
+    results = await _fetch_task_results(fm, completed, logger)
     contributions: list[WorkflowUsage] = []
     for task_id, result in results:
         contribution = _task_usage_from_result(result)
@@ -3976,11 +4003,23 @@ def _sum_usage(usages: list[WorkflowUsage]) -> WorkflowUsage:
 
 
 async def _compute_job_usage(
-    fm: AsyncFlowMesh, workflow_ids: list[str], logger: Logger
+    fm: AsyncFlowMesh,
+    workflow_ids: list[str],
+    logger: Logger,
+    task_ids_by_workflow: dict[str, list[str]] | None = None,
 ) -> WorkflowUsage | None:
-    """Sum usage over the workflows, or ``None`` when any is unavailable."""
+    """Sum usage over the workflows, or ``None`` when any is unavailable.
+
+    ``task_ids_by_workflow`` restricts each workflow's summed tasks to the
+    job's own tasks; when absent, every completed task counts (jobs dispatched
+    before per-job task attribution)."""
     usages: list[WorkflowUsage] = []
     for workflow_id in workflow_ids:
+        owned = (
+            set(task_ids_by_workflow[workflow_id])
+            if task_ids_by_workflow is not None and workflow_id in task_ids_by_workflow
+            else None
+        )
         try:
             workflow = await fm.workflows.retrieve(workflow_id)
         except NotFoundError:
@@ -3997,7 +4036,7 @@ async def _compute_job_usage(
             ) from exc
         else:
             try:
-                usage = await _fetch_workflow_usage(fm, workflow, logger)
+                usage = await _fetch_workflow_usage(fm, workflow, owned, logger)
             except NotFoundError:
                 usage = None
         if usage is None:
@@ -4016,7 +4055,12 @@ async def _persist_terminal_usage(
     """Persist the summed usage onto a terminal job's progress; ``None`` when
     it cannot be read, never a partial sum."""
     try:
-        computed = await _compute_job_usage(fm, _job_workflow_ids(record), logger)
+        computed = await _compute_job_usage(
+            fm,
+            _job_workflow_ids(record),
+            logger,
+            task_ids_by_workflow=record.job_task_ids or None,
+        )
     except HTTPException:
         logger.exception(
             "Failed to read workflow usage at terminal time; storing null job usage"
@@ -4089,7 +4133,12 @@ async def list_job_workflows(
                 detail="upstream workflow enumeration failed",
             ) from exc
         try:
-            usage_model = await _fetch_workflow_usage(fm, wf, hook_logger)
+            owned = (
+                set(record.job_task_ids[workflow_id])
+                if workflow_id in record.job_task_ids
+                else None
+            )
+            usage_model = await _fetch_workflow_usage(fm, wf, owned, hook_logger)
         except NotFoundError:
             usage_model = None
         collected.append(
