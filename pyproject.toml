@@ -69,6 +69,7 @@ lumilake-hook = { workspace = true }
 
 [tool.uv]
 default-groups = []
+# Keep in step with the Dockerfile's uv stage and the setup-uv `version:` in CI.
 required-version = "==0.13.5"
 
 [dependency-groups]

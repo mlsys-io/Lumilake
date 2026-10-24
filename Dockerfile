@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # Digest-pinned official multi-arch uv image, used only at build time via
-# bind mounts so no build tool lands in the final image.
+# bind mounts so no build tool lands in the final image. Keep the version in
+# step with [tool.uv].required-version and the setup-uv `version:` in CI.
 FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
 
 FROM python:3.12-slim-bookworm

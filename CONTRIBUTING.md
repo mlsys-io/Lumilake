@@ -86,29 +86,6 @@ uv lock
 
 Do not add generated requirements files unless a release workflow explicitly needs them.
 
-### Pinned build tools
-
-The server `Dockerfile` uses `uv` only at build time, bind-mounted from the
-official uv image pinned by its multi-platform index digest (defined once as
-the `uv` build stage). CI pins the same uv release in every
-`astral-sh/setup-uv` step, and `[tool.uv].required-version` enforces it
-locally. When changing uv:
-
-1. Verify the upstream version and the uv image's index digest (covering both
-   Linux amd64 and arm64) with
-   `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>`.
-2. Update the digest in the `Dockerfile`'s `uv` stage, the `version:` in
-   every `setup-uv` step, and `[tool.uv].required-version` together.
-
-The server image ships neither pip nor uv: it is built for the Lumilake stack
-only, and uv is used only at build time through the pinned bind mount.
-
-The CI secrets scan downloads a versioned Gitleaks archive and verifies its
-repository-pinned SHA-256 before extraction. When updating Gitleaks, check the
-archive hash against the upstream release asset checksums file, and update the
-workflow pin and hash together. A checksum fetched alongside an archive during
-CI is not a substitute for the reviewed repository pin.
-
 ## Signing Off Commits (DCO)
 
 All contributions must be signed off under the [Developer Certificate of Origin](https://developercertificate.org/). Append a `Signed-off-by: Your Name <your.email@example.com>` line to every commit message.
