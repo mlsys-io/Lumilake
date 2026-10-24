@@ -248,6 +248,32 @@ def test_n8n_code_node_image_reaches_the_op() -> None:
     assert op.image == "my/lambda:1"
 
 
+def test_n8n_code_node_expected_runtime_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"expected-runtime-s": 5}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.expected_runtime_s == 5
+
+
+def test_n8n_code_node_rejects_a_bad_expected_runtime() -> None:
+    workflow = _code_node_workflow('{"expected-runtime-s": "soon"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="expected-runtime-s"):
+        parse_n8n_payload(payload)
+
+
 def test_n8n_code_node_rejects_an_empty_image() -> None:
     workflow = _code_node_workflow('{"image":"  "}')
     payload = {

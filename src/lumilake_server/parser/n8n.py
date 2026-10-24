@@ -1551,6 +1551,15 @@ def _make_code_ops(
                 f"Code node '{node_name}' notes 'image' must be a non-empty string"
             )
         op["image"] = image
+    expected_runtime_s = notes.get("expected-runtime-s")
+    if expected_runtime_s is not None:
+        if isinstance(expected_runtime_s, bool) or not isinstance(
+            expected_runtime_s, (int, float)
+        ):
+            raise ValueError(
+                f"Code node '{node_name}' notes 'expected-runtime-s' must be a number"
+            )
+        op["expected_runtime_s"] = expected_runtime_s
     return [op], op["_id"]
 
 

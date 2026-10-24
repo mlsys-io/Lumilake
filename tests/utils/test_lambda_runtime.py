@@ -424,6 +424,45 @@ def test_native_graph_image_round_trip() -> None:
     assert round_tripped.image == "my/lambda:1"
 
 
+def test_yaml_expected_runtime_reaches_the_op() -> None:
+    payload = _CHAIN.replace(
+        "    memory_mb: 256\n",
+        "    memory_mb: 256\n    expected_runtime_s: 5\n",
+    )
+    spec = parse_yaml_payload(payload)["chain"]
+    (lambda_dict,) = [d for d in spec["graph"].values() if d["_op"] == "LambdaOp"]
+    assert lambda_dict["expected_runtime_s"] == 5
+    graph = Graph.from_json(spec["graph"])
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+    assert op.expected_runtime_s == 5
+    assert op._serialize()["expected_runtime_s"] == 5
+
+
+def test_yaml_rejects_a_bad_expected_runtime() -> None:
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        parse_yaml_payload(
+            _CHAIN.replace(
+                "    memory_mb: 256\n",
+                "    memory_mb: 256\n    expected_runtime_s: true\n",
+            )
+        )
+
+
+def test_native_graph_expected_runtime_round_trip() -> None:
+    op = LambdaOp._from_json(
+        {
+            "fn_name": "shout",
+            "_code": _SHOUT,
+            "_inputs": [],
+            "timeout_s": 5,
+            "expected_runtime_s": 3,
+        },
+        {},
+    )
+    assert op.expected_runtime_s == 3
+    assert op._serialize()["expected_runtime_s"] == 3
+
+
 _STANDALONE = """
 name: lambda-import-test
 inputs:

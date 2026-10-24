@@ -656,10 +656,61 @@ def test_lambda_op_rejects_an_empty_image(image: str) -> None:
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), image=image)
 
 
+def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -> None:
+    _, shout, compiled = _llm_then_lambda(expected_runtime_s=5)
+    graph = RuntimeGraphBuilder().build(compiled)
+    node = graph.nodes[shout.id]
+    assert node.data_spec["expected_runtime_s"] == 5
+    # The hint is planning-only and never reaches the FlowMesh task spec.
+    assert "expected_runtime_s" not in node.to_flowmesh_node()["spec"]
+
+    _, plain, compiled_plain = _llm_then_lambda()
+    plain_node = RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
+    assert "expected_runtime_s" not in plain_node.data_spec
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"expected_runtime_s": 0},
+        {"expected_runtime_s": -1},
+        {"expected_runtime_s": True},
+        {"expected_runtime_s": "5"},
+        {"expected_runtime_s": 601},
+    ],
+)
+def test_lambda_op_rejects_a_bad_expected_runtime(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), **kwargs)
+
+
+def test_lambda_op_expected_runtime_must_not_exceed_the_effective_timeout() -> None:
+    # Above the default timeout (600) when no timeout is given.
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), expected_runtime_s=601)
+    # Above an explicit timeout.
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        LambdaOp(
+            [["x"]],
+            fn=lambda inputs: str(inputs[0]),
+            timeout_s=45,
+            expected_runtime_s=46,
+        )
+    # Equal to the timeout is allowed.
+    LambdaOp(
+        [["x"]],
+        fn=lambda inputs: str(inputs[0]),
+        timeout_s=45,
+        expected_runtime_s=45,
+    )
+
+
 def test_halo_costs_a_default_python_step_at_five_percent_of_its_timeout() -> None:
+    optimizer = HaloOptimizer()
+
     def cost(raw: dict[str, Any]) -> float:
         node = Node(id="n", type="python", engine="python", model="", raw=raw)
-        return HaloOptimizer._python_exec_cost(node)
+        return optimizer._python_exec_cost(node)
 
     assert cost({}) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
     assert cost({"timeout_s": 100}) == 5.0

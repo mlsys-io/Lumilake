@@ -1035,12 +1035,17 @@ class HaloOptimizer(BaseOptimizer):
             return self._python_exec_cost(node)
         return self._db_input_sec * self._input_query_count
 
-    @staticmethod
-    def _python_exec_cost(node: Node) -> float:
+    def _python_exec_cost(self, node: Node) -> float:
         """A python step's run time is unknown before it runs; cost it at a
         small fraction of its timeout so it neither dominates the plan nor
-        looks free next to an LLM call."""
+        looks free next to an LLM call. When the op declares an
+        ``expected_runtime_s`` hint, it is seconds per input row of the task,
+        so the estimate is that times the number of input rows; the hint is
+        used only for HALO's estimate."""
         raw = node.raw if isinstance(node.raw, dict) else {}
+        expected = raw.get("expected_runtime_s")
+        if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+            return float(expected) * max(1, int(self._input_query_count))
         timeout = raw.get("timeout_s")
         if not isinstance(timeout, (int, float)):
             timeout = python_step.DEFAULT_TIMEOUT_SECONDS
