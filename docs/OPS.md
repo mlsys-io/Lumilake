@@ -320,11 +320,16 @@ Optional per-op limits for the standalone `python` task:
 | `timeout_s` | 600 | (0, 600] without `image`; (0, 86400] with `image` | Task timeout in seconds (`timeoutSeconds`). |
 | `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
 | `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
+| `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
 
 The limits apply only to the standalone `python` task; they have no effect on a
 `LambdaOp` that an LLM op inlines. An image-bearing `LambdaOp` may set
 `timeout_s` up to 86400 s (a full day), for long-running simulation steps; a
 `LambdaOp` without `image` stays capped at 600 s.
+
+`expected_runtime_s` is a planning hint only: it is seconds per input row of
+the task, and HALO uses it to estimate the step's run time. It is never
+enforced as a limit.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see

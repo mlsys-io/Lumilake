@@ -213,6 +213,48 @@ def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
         )
 
 
+def _python_node(raw: dict[str, object]) -> Node:
+    return Node(
+        id="p1",
+        type="python",
+        engine="python",
+        model="",
+        inputs=(),
+        outputs=(),
+        db_queries=(),
+        raw=raw,
+    )
+
+
+def test_python_exec_cost_uses_expected_runtime_when_present() -> None:
+    optimizer = HaloOptimizer()
+    # Default input row count is 1, so the hint is used as-is.
+    assert (
+        optimizer._python_exec_cost(
+            _python_node({"timeout_s": 86400, "expected_runtime_s": 5})
+        )
+        == 5
+    )
+    # With more input rows, the estimate scales per row.
+    optimizer._input_query_count = 10
+    assert (
+        optimizer._python_exec_cost(
+            _python_node({"timeout_s": 86400, "expected_runtime_s": 5})
+        )
+        == 50
+    )
+
+
+def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
+    optimizer = HaloOptimizer()
+    assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
+    # No timeout at all falls back to the default timeout.
+    assert optimizer._python_exec_cost(_python_node({})) == 30
+    # The fallback does not scale with the input row count.
+    optimizer._input_query_count = 10
+    assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
+
+
 @pytest.mark.parametrize(
     "profile",
     [
