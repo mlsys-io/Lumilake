@@ -726,7 +726,12 @@ class RuntimeGraphBuilder:
                     " Python step reads LLM, data-retrieval, Lambda, input or data"
                     " ops"
                 )
-            plan.append({"kind": "stage", "node": dep})
+            entry: dict[str, Any] = {"kind": "stage", "node": dep}
+            if isinstance(inp, LLMChatOp) and inp.rowwise_template:
+                # A rowwise LLM groups its per-row outputs back into one item;
+                # flatten it to one value per row for the python step.
+                entry["flatten"] = True
+            plan.append(entry)
             if dep not in dependencies:
                 dependencies.append(dep)
 
@@ -1515,7 +1520,13 @@ class RuntimeGraphBuilder:
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
-                plan.append({"kind": "stage", "node": inp.id})
+                entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
+                if isinstance(inp, LLMChatOp) and inp.rowwise_template:
+                    # A rowwise LLM groups its per-row outputs back into one
+                    # item; the python step must flatten it to one value per
+                    # row before the list-mode Lambda sees it.
+                    entry["flatten"] = True
+                plan.append(entry)
                 dependencies.append(inp.id)
             elif isinstance(inp, InputOp):
                 values = inputs_dict.get(inp.name)

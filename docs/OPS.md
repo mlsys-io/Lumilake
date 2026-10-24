@@ -189,6 +189,11 @@ results. The job's final response mixes the failed slice's rows (empty
 output plus an error entry) with the other slice's real per-row
 values.
 
+A local `LLMChatOp` with a `rowwise_template` runs one generation per input
+row. When it is the workflow output, its per-row results are returned as one
+output value per input row (FlowMesh groups them back into one item per table
+internally; the runtime flattens that back to per-row values at aggregation).
+
 ### LLMVisionOp
 
 `LLMVisionOp` runs vision-language generation over images. When it declares a
@@ -284,6 +289,11 @@ emits one item per element in order, so each element is one group downstream,
 read at `value.items.output`. A list-mode `LambdaOp` is read through a node
 column (`rowwise_columns` / `aggregate_table`), not through an LLM message
 chain.
+
+A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one
+value per input row: the row-wise LLM groups its per-row outputs back into one
+item internally, and the standalone `python` step flattens that grouped item
+back to one value per row before the function sees its whole-list input.
 
 `mode: aligned` is the same calling convention as `list` (whole columns in, a
 list out, read at `value.items.output`), with one added guarantee: the function

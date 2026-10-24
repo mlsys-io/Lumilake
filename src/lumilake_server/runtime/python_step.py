@@ -75,6 +75,17 @@ def _column(entry, inputs, text):
             _walk_path(i, parts, "%s item %d path %s" % (entry["node"], idx, path))
             for idx, i in enumerate(items)
         ]
+    if entry.get("flatten"):
+        # A rowwise LLM upstream groups its per-row outputs back into one
+        # item; flatten it to one value per row.
+        flat = []
+        for i in items:
+            out = i["output"] if isinstance(i, dict) and "output" in i else i
+            if isinstance(out, list):
+                flat.extend(text(v) for v in out)
+            else:
+                flat.append(text(out))
+        return flat
     return [text(i["output"]) if isinstance(i, dict) and "output" in i else text(i)
             for i in items]
 """
