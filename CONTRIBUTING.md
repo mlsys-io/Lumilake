@@ -88,19 +88,20 @@ Do not add generated requirements files unless a release workflow explicitly nee
 
 ### Pinned build tools
 
-The server `Dockerfile` copies `uv`/`uvx` from the official uv image pinned by
-its multi-platform index digest. CI pins the same uv release in every
+The server `Dockerfile` uses `uv` only at build time, bind-mounted from the
+official uv image pinned by its multi-platform index digest (defined once as
+the `uv` build stage). CI pins the same uv release in every
 `astral-sh/setup-uv` step, and `[tool.uv].required-version` enforces it
 locally. When changing uv:
 
 1. Verify the upstream version and the uv image's index digest (covering both
    Linux amd64 and arm64) with
    `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>`.
-2. Update the digest in the `Dockerfile`, the `version:` in every
-   `setup-uv` step, and `[tool.uv].required-version` together.
+2. Update the digest in the `Dockerfile`'s `uv` stage, the `version:` in
+   every `setup-uv` step, and `[tool.uv].required-version` together.
 
-The server image ships no pip, so a derived image uses `uv pip install` (uv is
-in the image).
+The server image ships neither pip nor uv: it is built for the Lumilake stack
+only, and uv is used only at build time through the pinned bind mount.
 
 The CI secrets scan downloads a versioned Gitleaks archive and verifies its
 repository-pinned SHA-256 before extraction. When updating Gitleaks, check the
