@@ -263,6 +263,32 @@ def test_n8n_code_node_expected_runtime_reaches_the_op() -> None:
     assert op.expected_runtime_s == 5
 
 
+def test_n8n_code_node_mode_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"mode":"list"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.mode == "list"
+
+
+def test_n8n_code_node_rejects_an_unknown_mode() -> None:
+    workflow = _code_node_workflow('{"mode":"rowwise"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="'mode'"):
+        parse_n8n_payload(payload)
+
+
 def test_n8n_code_node_limits_reach_the_op() -> None:
     workflow = _code_node_workflow(
         '{"image":"my/lambda:1","timeout-s":1800,"memory-mb":4096}'
