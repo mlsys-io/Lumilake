@@ -7,7 +7,7 @@ annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
 attrs==26.1.0
-certifi==2026.7.22
+certifi==2026.10.23
 charset-normalizer==3.5.2
 click==8.5.0
 dill==0.4.1
@@ -21,7 +21,7 @@ idna==3.20
 lumid-hooks==0.2.0
 multidict==6.9.1
 numpy==2.5.3
-opentelemetry-api==1.45.0
+opentelemetry-api==1.45.1
 pandas==3.0.6
 propcache==0.5.4
 pydantic-core==2.46.5

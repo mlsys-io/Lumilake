@@ -69,6 +69,7 @@ lumilake-hook = { workspace = true }
 
 [tool.uv]
 default-groups = []
+required-version = "==0.13.5"
 
 [dependency-groups]
 lint = [
@@ -112,6 +113,12 @@ server-runtime = [
     "sqlparse==0.6.0",
     "lumid-hooks==0.2.0",
     "flowmesh-sdk==0.1.13",
+    # Security floors for dependencies of httpx and requests.
+    "anyio>=4.14.2",
+    "certifi>=2026.10.19",
+    "urllib3>=2.8.0",
+    # Security floor for the unbounded tracestate parsing advisory.
+    "opentelemetry-api>=1.45.1",
 ]
 
 [tool.isort]
