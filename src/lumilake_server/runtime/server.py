@@ -403,6 +403,7 @@ class LumilakeServer:
         self._execution_contexts: dict[str, ExecutionBatchContext] = {}
         self._request_execution_ids: dict[str, set[str]] = {}
         self._request_execution_history_ids: dict[str, set[str]] = {}
+        self._unreleased_execution_members: dict[str, set[str]] = {}
 
         self._progress: dict[str, JobProgress] = {}
         self._optimizer_type = envs.LUMILAKE_DEFAULT_OPTIMIZER
@@ -696,12 +697,23 @@ class LumilakeServer:
 
     def release_request_workflows(self, request_id: str) -> None:
         """Drop the runtime manager's per-batch FM workflow id entries for
-        this request once ``trace_ids`` have been persisted to JobStorage."""
+        this request once ``trace_ids`` have been persisted to JobStorage. An
+        execution shared by several requests is dropped once all of them are
+        released."""
         execution_ids = self._request_execution_ids.get(
             request_id, set()
         ) | self._request_execution_history_ids.get(request_id, set())
-        if execution_ids:
-            self.runtime_manager.release_executions(execution_ids)
+        released: set[str] = set()
+        for execution_id in execution_ids:
+            members = self._unreleased_execution_members.get(execution_id)
+            if members is not None:
+                members.discard(request_id)
+                if members:
+                    continue
+                self._unreleased_execution_members.pop(execution_id)
+            released.add(execution_id)
+        if released:
+            self.runtime_manager.release_executions(released)
         self.runtime_manager.release_request_task_ids(request_id)
         self.runtime_manager.clear_dispatch_token(request_id)
 
@@ -1905,6 +1917,7 @@ class LumilakeServer:
             self._request_execution_history_ids.setdefault(request_id, set()).add(
                 execution_request_id
             )
+        self._unreleased_execution_members[execution_request_id] = set(request_ids)
         retry_batches: list[BatchSelection] = []
         try:
             retry_batches = await self._run_batch_inner(

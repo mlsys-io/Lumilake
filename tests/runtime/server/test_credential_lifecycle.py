@@ -139,12 +139,16 @@ def test_release_request_workflows_clears_dispatch_token() -> None:
     assert server.runtime_manager.get_api_credential("req-1") is None
 
 
-def test_releasing_one_member_keeps_the_other_members_task_ownership() -> None:
+def test_releasing_one_member_keeps_the_other_members_workflows_and_tasks() -> None:
     """Two jobs share one execution; the first to finish must not drop the
-    second's owned task ids before it persists them."""
+    second's trace ids or owned task ids before it persists them."""
     server = make_server()
     manager = server.runtime_manager
-    server._request_execution_ids = {"job-a": {"exec-1"}, "job-b": {"exec-1"}}
+    server._request_execution_history_ids = {
+        "job-a": {"exec-1"},
+        "job-b": {"exec-1"},
+    }
+    server._unreleased_execution_members = {"exec-1": {"job-a", "job-b"}}
     manager._batch_workflow_id[("exec-1", "batch-0")] = "wf-1"
     manager._request_task_ids[("job-a", "wf-1")] = ["tsk-a"]
     manager._request_task_ids[("job-b", "wf-1")] = ["tsk-b"]
@@ -152,7 +156,13 @@ def test_releasing_one_member_keeps_the_other_members_task_ownership() -> None:
     server.release_request_workflows("job-a")
 
     assert server.task_ids_for_request("job-a") == {}
+    assert server.trace_ids_for_request("job-b") == ["wf-1"]
     assert server.task_ids_for_request("job-b") == {"wf-1": ["tsk-b"]}
+
+    server.release_request_workflows("job-b")
+
+    assert manager._batch_workflow_id == {}
+    assert server._unreleased_execution_members == {}
 
 
 def _compiled():
