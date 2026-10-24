@@ -55,6 +55,15 @@ def _walk_path(value, parts, where):
     return value
 
 
+def _row_content(row):
+    # An API rowwise row carries its completion at
+    # ``json.choices[0].message.content``; fall back to ``text``.
+    try:
+        return row["json"]["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return row.get("text", row)
+
+
 def _column(entry, inputs, text):
     if entry["kind"] == "literal":
         return [text(v) for v in entry["values"]]
@@ -75,6 +84,23 @@ def _column(entry, inputs, text):
             _walk_path(i, parts, "%s item %d path %s" % (entry["node"], idx, path))
             for idx, i in enumerate(items)
         ]
+    if entry.get("flatten"):
+        # A rowwise LLM upstream groups its per-row outputs back into one
+        # item; flatten it to one value per row. A local rowwise LLM emits
+        # items with an ``output`` list; an API rowwise LLM emits items with
+        # a ``rows`` list, one completion per row.
+        flat = []
+        for i in items:
+            if isinstance(i, dict) and "rows" in i:
+                for row in i["rows"]:
+                    flat.append(text(_row_content(row)))
+            else:
+                out = i["output"] if isinstance(i, dict) and "output" in i else i
+                if isinstance(out, list):
+                    flat.extend(text(v) for v in out)
+                else:
+                    flat.append(text(out))
+        return flat
     return [text(i["output"]) if isinstance(i, dict) and "output" in i else text(i)
             for i in items]
 """

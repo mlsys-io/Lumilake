@@ -69,7 +69,7 @@ def test_optimize_graphs_dedupes_scoped_label_variants() -> None:
         "graph_b": _build_scoped_graph("B"),
     }
 
-    merged, _ = optimizer.optimize_graphs(runtime_graphs)
+    merged, _, _ = optimizer.optimize_graphs(runtime_graphs)
 
     assert merged.node_count == 2
 
@@ -121,7 +121,9 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
             dsl_to_runtime={},
         )
 
-    merged, _ = optimizer.optimize_graphs({"g1": _graph("req1"), "g2": _graph("req2")})
+    merged, _, _ = optimizer.optimize_graphs(
+        {"g1": _graph("req1"), "g2": _graph("req2")}
+    )
     assert merged.node_count == 2
 
 
@@ -173,7 +175,7 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         dsl_to_runtime={},
     )
 
-    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+    optimized, _, _ = HaloOptimizer().optimize_graphs({"wf": graph})
 
     assert optimized.node_count == 2
     down = optimized.nodes["Down"]
@@ -210,7 +212,7 @@ def test_dedupe_keys_on_condition_and_preserves_it() -> None:
         dsl_to_runtime={},
     )
 
-    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+    optimized, _, _ = HaloOptimizer().optimize_graphs({"wf": graph})
 
     assert optimized.node_count == 2
     assert optimized.nodes["A"].condition == {"node": "gate", "expr": "gate == 'on'"}
@@ -241,7 +243,7 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
         dsl_to_runtime={},
     )
 
-    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+    optimized, _, _ = HaloOptimizer().optimize_graphs({"wf": graph})
 
     assert optimized.node_count == 1
     (survivor,) = optimized.nodes.values()
@@ -285,7 +287,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
         dsl_to_runtime={},
     )
 
-    optimized, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+    optimized, _, _ = HaloOptimizer().optimize_graphs({"wf": graph})
 
     assert optimized.node_count == 2
     assert optimized.nodes["C"].dependencies == ("A",)

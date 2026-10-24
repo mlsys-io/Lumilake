@@ -293,6 +293,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         # FM workflow id per (request_id, batch_id); drives cancel + trace forwarding.
         self._batch_workflow_id: dict[tuple[str, str], str] = {}
+        # (member request id, workflow id) -> owned task ids, for per-job usage.
+        self._request_task_ids: dict[tuple[str, str], list[str]] = {}
         self._cancelled_requests: set[str] = set()
 
         # Cross-thread (FastAPI loop set/clear, _AsyncRunner loop get),
@@ -644,6 +646,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     def get_task_node_map(self, request_id: str, batch_id: str) -> dict[str, str]:
         batch_key = (request_id, batch_id)
         return dict(self._task_node_map.get(batch_key, {}))
+
+    def task_ids_for_request(self, request_id: str) -> dict[str, list[str]]:
+        """Owned FlowMesh task ids per workflow id for a member request."""
+        return {
+            workflow_id: list(task_ids)
+            for (member_id, workflow_id), task_ids in self._request_task_ids.items()
+            if member_id == request_id
+        }
 
     def _build_batch_progress(
         self, batch_keys: list[tuple[str, str]]
@@ -1064,6 +1074,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         expected_row_count: int | None = None,
         list_lambda: bool,
         list_lambda_cardinality: bool,
+        rowwise_llm: bool = False,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
             items = await self._archive_artifact_items(
@@ -1125,8 +1136,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     ]
                 )
             ]
-        if output_path is not None and output_path.startswith("items.rows"):
-            # One group per input table; flatten to one value per row.
+        if (output_path is not None and output_path.startswith("items.rows")) or (
+            rowwise_llm
+        ):
+            # One group per input table: an API rowwise task's ``items.rows``
+            # path, or a local rowwise LLM whose ``dataframe`` data_spec makes
+            # FlowMesh group its per-row outputs back into one item per table
+            # (``_populate_table``). Flatten to one value per row.
             flattened: list[str] = []
             for item in items:
                 walked = _walk_output_path(item, output_field_parts, output_op_id)
@@ -1316,6 +1332,19 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     )
                 raw_task_node_map[task_id] = flowmesh_to_raw[node_name]
             self._task_node_map[batch_key] = raw_task_node_map
+            # Attribute each task to the member requests whose pre-dedup
+            # graphs contributed its canonical node.
+            owner_members = request_info.task_owner_members
+            member_task_ids: dict[str, list[str]] = {
+                member_id: [] for member_id in request_info.member_request_ids
+            }
+            for task_id, canonical_node in raw_task_node_map.items():
+                for member_id in owner_members.get(canonical_node, set()):
+                    if member_id in member_task_ids:
+                        member_task_ids[member_id].append(task_id)
+            for member_id, task_ids in member_task_ids.items():
+                if task_ids:
+                    self._request_task_ids[(member_id, workflow_id)] = task_ids
             metadata = self._batch_metadata.setdefault(
                 batch_key,
                 {
@@ -1491,19 +1520,27 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 and output_node.task_type == python_step.TASK_TYPE
                 and output_node.data_spec.get("mode") == "list",
                 list_lambda_cardinality=output_op_id in list_lambda_cardinality_nodes,
+                rowwise_llm=output_node is not None
+                and output_node.data_spec.get("type") == "dataframe",
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
-            for item, text in zip(items, outputs):
-                try:
-                    prompt = item["metadata"]["prompt"]
-                except (KeyError, TypeError):
-                    continue
-                if not isinstance(prompt, list):
-                    continue
-                output_prompts.append(
-                    prompt + [{"role": Roles.ASSISTANT.value, "content": text}]
-                )
+            # A flattened rowwise/items.rows output has one grouped item per
+            # table but one output value per row, so per-row prompts cannot be
+            # recovered from the grouped item (FlowMesh keeps only the first
+            # row's prompt). Emit history only when there is exactly one item
+            # per output value; otherwise leave the node without history.
+            if len(items) == len(outputs):
+                for item, text in zip(items, outputs):
+                    try:
+                        prompt = item["metadata"]["prompt"]
+                    except (KeyError, TypeError):
+                        continue
+                    if not isinstance(prompt, list):
+                        continue
+                    output_prompts.append(
+                        prompt + [{"role": Roles.ASSISTANT.value, "content": text}]
+                    )
             if output_prompts:
                 prompts[output_op_id] = output_prompts
 
@@ -2828,7 +2865,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return rewritten
 
     def release_executions(self, execution_ids: set[str]) -> None:
-        """Drop ``_batch_workflow_id`` entries for the given executions.
+        """Drop ``_batch_workflow_id`` and ``_request_task_ids`` entries for
+        the given executions.
 
         Called once a request's ``trace_ids`` have been persisted to
         ``JobStorage``; the in-memory tuple→workflow id map can then go.
@@ -2836,9 +2874,15 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         Snapshots the keys via ``.copy()`` before popping — entries can be
         added on the runtime async thread while we run on the FastAPI thread.
         """
+        released_workflow_ids: set[str] = set()
         for key in self._batch_workflow_id.copy():
             if key[0] in execution_ids:
+                released_workflow_ids.add(self._batch_workflow_id[key])
                 self._batch_workflow_id.pop(key, None)
+        if released_workflow_ids:
+            for key in self._request_task_ids.copy():
+                if key[1] in released_workflow_ids:
+                    self._request_task_ids.pop(key, None)
 
     async def cancel_request(self, request_id: str) -> None:
         """Cancel all FM workflows for a request. Uses the scheduler

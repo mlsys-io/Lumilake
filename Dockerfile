@@ -24,8 +24,10 @@ WORKDIR /app
 
 # The image ships no pip: nothing in the server needs it, and the base
 # image's seeded pip is old and carries a vendored CA bundle. Uninstall it
-# so no pip or pip-vendored certifi remains.
-RUN --mount=from=uv,source=/uv,target=/bin/uv uv pip uninstall --system pip
+# and delete ensurepip's bundled pip wheel so no pip or pip-vendored certifi
+# remains.
+RUN --mount=from=uv,source=/uv,target=/bin/uv uv pip uninstall --system pip \
+ && rm -rf /usr/local/lib/python3.12/ensurepip/_bundled
 
 # Install deps first for layer caching. requirements.txt is generated
 # from uv.lock by scripts/dev/sync_requirements.py.

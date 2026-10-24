@@ -30,10 +30,10 @@ def test_materialized_function_keeps_the_contract() -> None:
 
 
 def test_materialized_function_sees_only_the_restricted_builtins() -> None:
-    with pytest.raises(NameError, match="open"):
-        lambda_runtime.materialize("def f(a):\n    return open('/x')")(("x",))
-    with pytest.raises(NameError, match="eval"):
-        lambda_runtime.materialize("lambda a: eval('1')")(("x",))
+    with pytest.raises(ValueError, match="'open'.*does not provide"):
+        lambda_runtime.validate_source("def f(a):\n    return open('/x')", "f")
+    with pytest.raises(ValueError, match="'eval'.*does not provide"):
+        lambda_runtime.validate_source("lambda a: eval('1')")
 
 
 def test_materialized_function_can_raise_a_builtin_exception() -> None:
@@ -53,8 +53,8 @@ def test_materialized_function_can_catch_a_builtin_exception() -> None:
 
 
 def test_materialized_function_still_cannot_reference_systemexit() -> None:
-    with pytest.raises(NameError, match="SystemExit"):
-        lambda_runtime.materialize("def f(a):\n    raise SystemExit('x')")(("x",))
+    with pytest.raises(ValueError, match="'SystemExit'.*does not provide"):
+        lambda_runtime.validate_source("def f(a):\n    raise SystemExit('x')", "f")
 
 
 def test_validation_parses_but_never_executes() -> None:
@@ -208,6 +208,43 @@ def test_standalone_source_still_accepts_exception_classes() -> None:
         )
         == "main"
     )
+
+
+@pytest.mark.parametrize(
+    "code, name",
+    [
+        ("def f(a):\n    return open(a[0])", "open"),
+        ("def f(a):\n    return eval(a[0])", "eval"),
+        ("def f(a):\n    return a[0] + os.sep", "os"),
+        ("lambda a: a[0] + foo", "foo"),
+        ("def f(a):\n    return a[0] + np_typo", "np_typo"),
+    ],
+)
+def test_standalone_source_rejects_unprovided_free_names(code: str, name: str) -> None:
+    """A name the LambdaOp namespace does not provide would raise NameError on
+    the worker, so it must be rejected at submit with the name."""
+    with pytest.raises(ValueError, match=f"'{name}'.*does not provide"):
+        lambda_runtime.validate_source(code, "f")
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def f(a):\n    return len(a) + str(a[0])",
+        "def f(a):\n    return math.sqrt(a[0])",
+        "def f(a):\n    return json.dumps(a[0])",
+        "def f(a):\n    return np.array(a)",
+        "def f(a):\n    return pd.Series(a)",
+        "K = 3\ndef f(a):\n    return a[0] + K",
+        "def helper(a):\n    return a\ndef f(a):\n    return helper(a)",
+        "import math\ndef f(a):\n    return math.sqrt(a[0])",
+        "def f(a):\n    return isinstance(a[0], ValueError)",
+    ],
+)
+def test_standalone_source_accepts_provided_or_bound_names(code: str) -> None:
+    """Safe builtins, namespace globals, np/pd, module constants, helper defs
+    and imports all resolve in the standalone namespace."""
+    assert lambda_runtime.validate_source(code, "f") == "f"
 
 
 @pytest.mark.parametrize(
