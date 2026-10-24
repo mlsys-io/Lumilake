@@ -100,16 +100,23 @@ def test_stdlib_imports_inside_the_function_work() -> None:
 
 
 @pytest.mark.parametrize(
-    "code, message",
+    "code",
     [
-        ("import requests\ndef f(a):\n    return a", "'requests' is not available"),
-        ("def f(a):\n    from httpx import get\n    return a", "'httpx' is not"),
-        ("def f(a):\n    from . import x\n    return a", "relative imports"),
+        "import requests\ndef f(a):\n    return a",
+        "def f(a):\n    from httpx import get\n    return a",
     ],
 )
-def test_non_stdlib_imports_are_rejected_at_validation(code: str, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        lambda_runtime.validate_source(code, "f")
+def test_non_stdlib_imports_are_accepted_for_standalone_code(code: str) -> None:
+    # A standalone task runs in its own container, so any module the image
+    # provides may be imported; validation only checks the shape of the code.
+    assert lambda_runtime.validate_source(code, "f") == "f"
+
+
+def test_relative_imports_are_rejected() -> None:
+    with pytest.raises(ValueError, match="relative imports"):
+        lambda_runtime.validate_source(
+            "def f(a):\n    from . import x\n    return a", "f"
+        )
 
 
 def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
