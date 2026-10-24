@@ -1,6 +1,7 @@
 """A LambdaOp that no LLM consumes compiles to its own FlowMesh python task."""
 
 import json
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -833,3 +834,64 @@ def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
         _run_reshape(
             "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
         )
+
+
+def test_lambda_op_with_runtime_hint_and_cache_round_trips_through_yaml_and_halo() -> (
+    None
+):
+    """A LambdaOp declaring both ``expected_runtime_s`` and ``cache: true``
+    survives the YAML -> graph -> runtime build, carries both fields on its
+    data spec, and HALO costs it from the hint rather than the timeout."""
+    pinned = "ghcr.io/example/sim@sha256:" + "a" * 64
+    yaml_text = textwrap.dedent(f"""
+        name: lambda_hint_cache
+        inputs:
+          stock: ["NVDA"]
+        ops:
+          - id: simulate
+            op: LambdaOp
+            inputs: [stock]
+            fn_name: simulate
+            code: |
+              def simulate(row):
+                  return {{"output": row[0]}}
+            image: {pinned}
+            expected_runtime_s: 5
+            cache: true
+        outputs:
+          - {{ name: out, ref: simulate }}
+        """)
+    specs = parse_yaml_payload(yaml_text)
+    spec = specs["lambda_hint_cache"]
+    graph = Graph.from_json(spec["graph"])
+    lambda_ops = [op for op in graph.iter_ops() if isinstance(op, LambdaOp)]
+    assert len(lambda_ops) == 1
+    op = lambda_ops[0]
+    assert op.expected_runtime_s == 5
+    assert op.cache is True
+    assert op.image == pinned
+
+    compiled = Graph.from_ops([as_output("out", op)]).compile(stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[op.id]
+    assert node.data_spec["expected_runtime_s"] == 5
+    assert node.data_spec["cache"] is True
+    assert node.data_spec["image"] == pinned
+
+    # HALO costs the step from the hint (seconds per input row), not the timeout.
+    optimizer = HaloOptimizer()
+    optimizer._input_query_count = 1
+    raw = HaloOptimizer._build_node_raw(node, ())
+    assert (
+        optimizer._python_exec_cost(
+            Node(id=op.id, type="python", engine="python", model="", raw=raw)
+        )
+        == 5
+    )
+    optimizer._input_query_count = 10
+    assert (
+        optimizer._python_exec_cost(
+            Node(id=op.id, type="python", engine="python", model="", raw=raw)
+        )
+        == 50
+    )
