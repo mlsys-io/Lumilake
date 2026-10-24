@@ -123,6 +123,13 @@ docker buildx imagetools inspect ghcr.io/mlsys-io/lumilake_server:v0.1.1
 
 This manifest is a multi-arch OCI index covering `linux/amd64,linux/arm64`.
 
+The image build reuses the builder's local layer cache and the registry cache,
+so while the `Dockerfile` and its base image are unchanged, the OS layer keeps
+the distro packages it was first built with. Building from the caches suits
+most releases. Only when a release must take a distro security update released
+since, build with `--pull --no-cache` (or clear the builder's cache) so the
+`apt-get upgrade` in the `Dockerfile` picks up the new packages.
+
 ### First-time GHCR setup
 
 The very first push creates the package under

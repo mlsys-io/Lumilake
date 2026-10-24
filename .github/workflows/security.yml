@@ -42,7 +42,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
-          version: "0.11.26"
+          version: "0.13.5"
           python-version: "3.12"
       - name: Run zizmor
         run: uvx --from zizmor==1.26.1 zizmor --persona pedantic --format github .github/workflows
@@ -56,10 +56,18 @@ jobs:
         with:
           persist-credentials: false
       - name: Run gitleaks
+        # Binary, not gitleaks-action — the action gates on a paid license for org repos.
         run: |
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
-            | tar xz -C /tmp gitleaks
-          /tmp/gitleaks detect --source . --no-banner --no-git
+          gitleaks_dir=$(mktemp -d)
+          trap 'rm -rf "$gitleaks_dir"' EXIT
+          curl --fail --silent --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
+            --output "$gitleaks_dir/gitleaks.tar.gz"
+          printf '%s  %s\n' \
+            '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' \
+            "$gitleaks_dir/gitleaks.tar.gz" | sha256sum --check --strict
+          tar xzf "$gitleaks_dir/gitleaks.tar.gz" -C "$gitleaks_dir" gitleaks
+          "$gitleaks_dir/gitleaks" detect --source . --no-banner --no-git
 
   bandit:
     name: Bandit (Python source audit)
@@ -72,7 +80,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
-          version: "0.11.26"
+          version: "0.13.5"
           python-version: "3.12"
       - name: Run bandit
         run: |
@@ -95,7 +103,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
-          version: "0.11.26"
+          version: "0.13.5"
           python-version: "3.12"
       - name: Run pip-audit (server image runtime)
         # src/lumilake_server/requirements.txt is the pin set baked into
