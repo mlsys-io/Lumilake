@@ -58,9 +58,9 @@ def test_materialized_function_still_cannot_reference_systemexit() -> None:
 
 
 def test_validation_parses_but_never_executes() -> None:
-    code = "def f(a):\n    return a[0]\nran_module_body"
+    code = "def f(a):\n    return a[0]\n1/0"
     assert lambda_runtime.validate_source(code) == "f"
-    with pytest.raises(NameError, match="ran_module_body"):
+    with pytest.raises(ZeroDivisionError):
         lambda_runtime.materialize(code)
 
 
@@ -135,7 +135,7 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         "for i in range(1):\n    pass\ndef main(x):\n    return 'a'",
         "if True:\n    K = 1\ndef main(x):\n    return 'a'",
         "try:\n    K = 1\nexcept:\n    pass\ndef main(x):\n    return 'a'",
-        "with open('/dev/null') as f:\n    pass\ndef main(x):\n    return 'a'",
+        "with str() as f:\n    pass\ndef main(x):\n    return 'a'",
     ],
 )
 def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
@@ -218,6 +218,12 @@ def test_standalone_source_still_accepts_exception_classes() -> None:
         ("def f(a):\n    return a[0] + os.sep", "os"),
         ("lambda a: a[0] + foo", "foo"),
         ("def f(a):\n    return a[0] + np_typo", "np_typo"),
+        ('PREFIX = os.environ["X"]\ndef f(a):\n    return PREFIX', "os"),
+        (
+            "def f(a):\n    def helper(x):\n        return missing\n"
+            "    return helper(a)",
+            "missing",
+        ),
     ],
 )
 def test_standalone_source_rejects_unprovided_free_names(code: str, name: str) -> None:
@@ -263,7 +269,7 @@ def test_invalid_source_is_rejected(code: str, message: str) -> None:
 
 
 def test_deserialized_lambda_op_never_runs_its_code() -> None:
-    code = "def f(a):\n    return a[0]\nraise SystemExit('ran in the server')"
+    code = "def f(a):\n    return a[0]\n1/0"
     op = LambdaOp._from_json(
         {"fn_name": "f", "_code": code, "_inputs": [], "timeout_s": 5}, {}
     )

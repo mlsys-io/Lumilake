@@ -147,17 +147,29 @@ def _unbound_global_names(code: str) -> list[str]:
     The standalone LambdaOp namespace supplies only ``SAFE_BUILTIN_NAMES`` plus
     ``json``/``re``/``math``/``Message``/``ops`` (and ``np``/``pd`` when named).
     Any other free name would raise ``NameError`` at run time on the worker, so
-    it is rejected at submit. ``symtable`` reports a name referenced in a nested
-    scope as a global when it is not bound anywhere in the module; names bound
-    at module level (constants, helper ``def``s, imports) are not free.
+    it is rejected at submit. A name referenced at module scope without being
+    bound or imported is free, and a name referenced in any nested scope that
+    is not bound anywhere in the module is free too.
     """
     table = symtable.symtable(code.strip(), _SOURCE_NAME, "exec")
     module_symbols = {s.get_name() for s in table.get_symbols()}
     free: set[str] = set()
-    for child in table.get_children():
-        for symbol in child.get_symbols():
-            if symbol.is_global() and symbol.get_name() not in module_symbols:
-                free.add(symbol.get_name())
+    for symbol in table.get_symbols():
+        if (
+            symbol.is_referenced()
+            and not symbol.is_assigned()
+            and not symbol.is_imported()
+        ):
+            free.add(symbol.get_name())
+
+    def _walk(scope: symtable.SymbolTable) -> None:
+        for child in scope.get_children():
+            for symbol in child.get_symbols():
+                if symbol.is_global() and symbol.get_name() not in module_symbols:
+                    free.add(symbol.get_name())
+            _walk(child)
+
+    _walk(table)
     return sorted(free)
 
 
