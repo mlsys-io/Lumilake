@@ -876,22 +876,21 @@ lint = [
     { name = "types-requests", specifier = "==2.33.0.20260906" },
 ]
 server-runtime = [
-    { name = "aiohttp", specifier = ">=3.14.4" },
-    { name = "anyio", specifier = ">=4.14.2" },
-    { name = "certifi", specifier = ">=2026.10.19" },
+    { name = "aiohttp", specifier = "==3.14.5" },
+    { name = "anyio", specifier = "==4.15.1" },
+    { name = "certifi", specifier = "==2026.10.23" },
     { name = "dill", specifier = "==0.4.1" },
     { name = "fastapi", specifier = "==0.142.2" },
     { name = "flowmesh-sdk", specifier = "==0.1.13" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "lumid-hooks", specifier = "==0.2.0" },
-    { name = "opentelemetry-api", specifier = ">=1.45.1" },
+    { name = "opentelemetry-api", specifier = "==1.45.1" },
     { name = "pandas", specifier = "==3.0.6" },
     { name = "python-dotenv", specifier = "==1.2.4" },
     { name = "requests", specifier = "==2.34.2" },
     { name = "shortuuid", specifier = "==1.0.13" },
     { name = "sqlparse", specifier = "==0.6.0" },
     { name = "urllib3", specifier = "==2.8.0" },
-    { name = "urllib3", specifier = ">=2.8.0" },
     { name = "uvicorn", specifier = "==0.54.0" },
 ]
 test = [
