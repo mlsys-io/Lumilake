@@ -1045,11 +1045,28 @@ class HaloOptimizer(BaseOptimizer):
         raw = node.raw if isinstance(node.raw, dict) else {}
         expected = raw.get("expected_runtime_s")
         if isinstance(expected, (int, float)) and not isinstance(expected, bool):
-            return float(expected) * max(1, int(self._input_query_count))
+            return float(expected) * self._python_row_count(raw)
         timeout = raw.get("timeout_s")
         if not isinstance(timeout, (int, float)):
             timeout = python_step.DEFAULT_TIMEOUT_SECONDS
         return 0.05 * float(timeout)
+
+    def _python_row_count(self, raw: dict[str, Any]) -> int:
+        """The number of input rows a python step processes: the largest literal
+        plan entry's value count, or the graph-wide input count when the step
+        reads only upstream stages."""
+        plan = raw.get("plan")
+        if isinstance(plan, list):
+            literal_lengths = [
+                len(entry["values"])
+                for entry in plan
+                if isinstance(entry, dict)
+                and entry.get("kind") == "literal"
+                and isinstance(entry.get("values"), list)
+            ]
+            if literal_lengths:
+                return max(1, max(literal_lengths))
+        return max(1, int(self._input_query_count))
 
     def _http_exec_cost(self, node: Node) -> float:
         raw = node.raw if isinstance(node.raw, dict) else {}
