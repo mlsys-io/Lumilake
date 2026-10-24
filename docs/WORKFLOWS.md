@@ -48,6 +48,7 @@ Lumilake annotations as a JSON object with kebab-case keys:
 |---|---|---|
 | `inputs` | list of node names | Upstreams; defaults to the node's main incoming edges. |
 | `is-output` | bool | Emit this node's value as a workflow output. |
+| `mode` | string | `row` (default), `list` or `aligned`, as YAML `LambdaOp` `mode`. |
 | `image` | string | Container image for the standalone `python` task. |
 | `timeout-s` | number | Task timeout, as YAML `timeout_s` (at most 3600 with an `image`, else 600). |
 | `memory-mb` | integer | Task memory limit, as YAML `memory_mb`. |

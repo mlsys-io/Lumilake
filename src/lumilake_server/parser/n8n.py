@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from lumilake_server.common import retrieval_items_path
+from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
 
@@ -1544,6 +1545,14 @@ def _make_code_ops(
         "fn_name": fn_name,
         "_code": fn_code,
     }
+    mode = notes.get("mode")
+    if mode is not None:
+        if mode not in LambdaOp.LAMBDA_MODES:
+            raise ValueError(
+                f"Code node '{node_name}' notes 'mode' must be one of "
+                f"{LambdaOp.LAMBDA_MODES} (got {mode!r})"
+            )
+        op["mode"] = mode
     image = notes.get("image")
     if image is not None:
         if not isinstance(image, str) or not image.strip():
