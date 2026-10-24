@@ -669,6 +669,32 @@ def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -
     assert "expected_runtime_s" not in plain_node.data_spec
 
 
+def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> None:
+    _, shout, compiled = _llm_then_lambda(cache=True)
+    graph = RuntimeGraphBuilder().build(compiled)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["cache"] is True
+
+    _, plain, compiled_plain = _llm_then_lambda()
+    plain_spec = (
+        RuntimeGraphBuilder()
+        .build(compiled_plain)
+        .nodes[plain.id]
+        .to_flowmesh_node()["spec"]
+    )
+    assert "cache" not in plain_spec
+
+
+def test_lambda_op_rejects_a_non_bool_cache() -> None:
+    for bad in (1, "yes", 0.0):
+        with pytest.raises(ValueError, match="cache"):
+            LambdaOp(
+                [["x"]],
+                fn=lambda inputs: str(inputs[0]),
+                cache=bad,  # type: ignore[call-overload]
+            )
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

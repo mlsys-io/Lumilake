@@ -308,6 +308,8 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
     }
     if data_spec.get("image"):
         spec["image"] = data_spec["image"]
+    if data_spec.get("cache") is not None:
+        spec["cache"] = data_spec["cache"]
     stages = list(
         dict.fromkeys(entry["node"] for entry in plan if entry["kind"] == "stage")
     )

@@ -152,6 +152,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool | None = None,
     ) -> None: ...
 
     @overload
@@ -165,6 +166,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool | None = None,
     ) -> None: ...
 
     @overload
@@ -178,6 +180,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool | None = None,
     ) -> None: ...
 
     def __init__(
@@ -190,6 +193,7 @@ class LambdaOp(Op):
         memory_mb: int | None = None,
         image: str | None = None,
         expected_runtime_s: float | None = None,
+        cache: bool | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -197,6 +201,8 @@ class LambdaOp(Op):
             )
         if image is not None and not image.strip():
             raise ValueError("LambdaOp image must be a non-empty string")
+        if cache is not None and not isinstance(cache, bool):
+            raise ValueError(f"LambdaOp cache must be a bool, got {cache!r}")
         _validate_limits(timeout_s, memory_mb, image, expected_runtime_s)
         input_ops: list[Op] = []
         for inp in inputs:
@@ -213,6 +219,8 @@ class LambdaOp(Op):
         self.image = image
         # A planning hint for HALO; never enforced at runtime.
         self.expected_runtime_s = expected_runtime_s
+        # Opt-in task caching; passed to FlowMesh only when set.
+        self.cache = cache
         if code:
             self.code: str = code
         else:
@@ -265,6 +273,8 @@ class LambdaOp(Op):
             data["image"] = self.image
         if self.expected_runtime_s is not None:
             data["expected_runtime_s"] = self.expected_runtime_s
+        if self.cache is not None:
+            data["cache"] = self.cache
         return data
 
     @classmethod
@@ -278,6 +288,7 @@ class LambdaOp(Op):
         memory_mb = data.get("memory_mb")
         image = data.get("image")
         expected_runtime_s = data.get("expected_runtime_s")
+        cache = data.get("cache")
         try:
             fn = SubmittedFunction(code, fn_name)
         except ValueError as exc:
@@ -293,6 +304,7 @@ class LambdaOp(Op):
             memory_mb=memory_mb,
             image=image,
             expected_runtime_s=expected_runtime_s,
+            cache=cache,
         )
 
 

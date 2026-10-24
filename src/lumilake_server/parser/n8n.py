@@ -1560,6 +1560,11 @@ def _make_code_ops(
                 f"Code node '{node_name}' notes 'expected-runtime-s' must be a number"
             )
         op["expected_runtime_s"] = expected_runtime_s
+    cache = notes.get("cache")
+    if cache is not None:
+        if not isinstance(cache, bool):
+            raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
+        op["cache"] = cache
     return [op], op["_id"]
 
 

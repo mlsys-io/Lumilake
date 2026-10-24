@@ -756,6 +756,8 @@ class RuntimeGraphBuilder:
             data_spec["image"] = op.image
         if op.expected_runtime_s is not None:
             data_spec["expected_runtime_s"] = op.expected_runtime_s
+        if op.cache is not None:
+            data_spec["cache"] = op.cache
         runtime_op = self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
@@ -1570,6 +1572,8 @@ class RuntimeGraphBuilder:
             data_spec["image"] = op.image
         if op.expected_runtime_s is not None:
             data_spec["expected_runtime_s"] = op.expected_runtime_s
+        if op.cache is not None:
+            data_spec["cache"] = op.cache
         return self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
