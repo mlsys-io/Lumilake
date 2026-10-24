@@ -624,7 +624,9 @@ class RuntimeGraphBuilder:
                 if isinstance(op, LambdaOp)
                 and not op.takes_whole_columns
                 and (
-                    op_id not in visited_node_ids or op_id in output_source_to_outputop
+                    op_id not in visited_node_ids
+                    or op_id in output_source_to_outputop
+                    or op.image is not None
                 )
             ]
             for lambda_id in standalone:
@@ -750,6 +752,8 @@ class RuntimeGraphBuilder:
         }
         if op.memory_mb is not None:
             data_spec["memory_mb"] = op.memory_mb
+        if op.image is not None:
+            data_spec["image"] = op.image
         runtime_op = self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
@@ -1560,6 +1564,8 @@ class RuntimeGraphBuilder:
         }
         if op.memory_mb is not None:
             data_spec["memory_mb"] = op.memory_mb
+        if op.image is not None:
+            data_spec["image"] = op.image
         return self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
@@ -2890,6 +2896,14 @@ class RuntimeGraphBuilder:
                 ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             elif isinstance(op, LambdaOp):
+                if op.image is not None:
+                    raise ValueError(
+                        f"LLMOp '{llm_op_id}' consumes image-bearing LambdaOp"
+                        f" '{op.id}' through its message chain; a LambdaOp with"
+                        " an image always runs as its own FlowMesh python task,"
+                        " so read it through a node column (rowwise_columns /"
+                        " aggregate_table) instead."
+                    )
                 if op.takes_whole_columns:
                     raise ValueError(
                         f"LLMOp '{llm_op_id}' consumes list-mode LambdaOp '{op.id}' "

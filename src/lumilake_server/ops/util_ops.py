@@ -9,6 +9,9 @@ from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.utils.lambda_runtime import validate_source
 
 MAX_TIMEOUT_S = 600.0
+# FlowMesh caps a python task's timeoutSeconds at 3600; a LambdaOp that runs in
+# a custom container image may need longer than the default cap.
+MAX_IMAGE_TIMEOUT_S = 3600.0
 MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
 
@@ -16,14 +19,15 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 
 
-def _validate_limits(timeout_s: float | None, memory_mb: int | None) -> None:
+def _validate_limits(
+    timeout_s: float | None, memory_mb: int | None, image: str | None
+) -> None:
     if timeout_s is not None:
         if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
             raise ValueError(f"timeout_s must be a number, got {timeout_s!r}")
-        if not 0 < timeout_s <= MAX_TIMEOUT_S:
-            raise ValueError(
-                f"timeout_s must be in (0, {MAX_TIMEOUT_S:g}], got {timeout_s}"
-            )
+        cap = MAX_IMAGE_TIMEOUT_S if image else MAX_TIMEOUT_S
+        if not 0 < timeout_s <= cap:
+            raise ValueError(f"timeout_s must be in (0, {cap:g}], got {timeout_s}")
     if memory_mb is not None:
         if isinstance(memory_mb, bool) or not isinstance(memory_mb, int):
             raise ValueError(f"memory_mb must be an integer, got {memory_mb!r}")
@@ -130,6 +134,7 @@ class LambdaOp(Op):
         mode: Literal["row"] = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
+        image: str | None = None,
     ) -> None: ...
 
     @overload
@@ -141,6 +146,7 @@ class LambdaOp(Op):
         mode: Literal["list"] = "list",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
+        image: str | None = None,
     ) -> None: ...
 
     @overload
@@ -152,6 +158,7 @@ class LambdaOp(Op):
         mode: Literal["aligned"] = "aligned",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
+        image: str | None = None,
     ) -> None: ...
 
     def __init__(
@@ -162,12 +169,15 @@ class LambdaOp(Op):
         mode: str = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
+        image: str | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
                 f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
             )
-        _validate_limits(timeout_s, memory_mb)
+        if image is not None and not image.strip():
+            raise ValueError("LambdaOp image must be a non-empty string")
+        _validate_limits(timeout_s, memory_mb, image)
         input_ops: list[Op] = []
         for inp in inputs:
             if isinstance(inp, Op):
@@ -180,6 +190,7 @@ class LambdaOp(Op):
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
+        self.image = image
         if code:
             self.code: str = code
         else:
@@ -228,6 +239,8 @@ class LambdaOp(Op):
             data["timeout_s"] = self.timeout_s
         if self.memory_mb is not None:
             data["memory_mb"] = self.memory_mb
+        if self.image is not None:
+            data["image"] = self.image
         return data
 
     @classmethod
@@ -239,6 +252,7 @@ class LambdaOp(Op):
 
         timeout_s = data.get("timeout_s")
         memory_mb = data.get("memory_mb")
+        image = data.get("image")
         try:
             fn = SubmittedFunction(code, fn_name)
         except ValueError as exc:
@@ -252,6 +266,7 @@ class LambdaOp(Op):
             mode=data.get("mode", "row"),
             timeout_s=timeout_s,
             memory_mb=memory_mb,
+            image=image,
         )
 
 
