@@ -7,8 +7,10 @@ from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    DataRetrievalOp,
     LambdaOp,
     LLMChatOp,
+    LLMVisionOp,
     OpMessage,
     as_output,
     data,
@@ -346,6 +348,47 @@ def test_list_lambda_over_rowwise_llm_flattens_grouped_item() -> None:
         "flatten": True,
     }
     assert reply_node.node_id in tally_node.dependencies
+
+
+def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
+    """A list-mode Lambda reading a rowwise VLM must not mark the plan entry
+    ``flatten``: the VLM's regroup step already emits one output list per source
+    symbol, and flattening would expand image-level values into per-image rows."""
+    stock = input_placeholder("Stock")
+    news_s3 = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "s3",
+            "template": "example-data/news/images/{symbol}.png",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
+        inputs=[stock],
+    )
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="ignored")],
+        image_source=news_s3.id,
+        image_source_op=news_s3,
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+        rowwise_template="Summarize {Stock}.",
+        rowwise_columns=[
+            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+        ],
+    )
+    tally = LambdaOp(
+        [vision],
+        fn=lambda items: [{"n": len(items[0])}],
+        mode="list",
+    )
+    output = as_output("out", tally)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    tally_node = next(
+        n for n in runtime_graph.nodes.values() if n.task_type == "python"
+    )
+    assert tally_node.data_spec["mode"] == "list"
+    (vision_plan,) = tally_node.data_spec["plan"]
+    assert vision_plan == {"kind": "stage", "node": vision.id}
 
 
 def test_list_lambda_data_op_input_compiles() -> None:

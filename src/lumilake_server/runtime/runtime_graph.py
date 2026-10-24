@@ -724,9 +724,15 @@ class RuntimeGraphBuilder:
                     " ops"
                 )
             entry: dict[str, Any] = {"kind": "stage", "node": dep}
-            if isinstance(inp, LLMChatOp) and inp.rowwise_template:
+            if (
+                isinstance(inp, LLMChatOp)
+                and not isinstance(inp, LLMVisionOp)
+                and inp.rowwise_template
+            ):
                 # A rowwise LLM groups its per-row outputs back into one item;
-                # flatten it to one value per row for the python step.
+                # flatten it to one value per row for the python step. A VLM's
+                # regroup step already emits one list per symbol, so it is
+                # excluded.
                 entry["flatten"] = True
             plan.append(entry)
             if dep not in dependencies:
@@ -1511,10 +1517,15 @@ class RuntimeGraphBuilder:
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
                 entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
-                if isinstance(inp, LLMChatOp) and inp.rowwise_template:
+                if (
+                    isinstance(inp, LLMChatOp)
+                    and not isinstance(inp, LLMVisionOp)
+                    and inp.rowwise_template
+                ):
                     # A rowwise LLM groups its per-row outputs back into one
                     # item; the python step must flatten it to one value per
-                    # row before the list-mode Lambda sees it.
+                    # row before the list-mode Lambda sees it. A VLM's regroup
+                    # step already emits one list per symbol, so it is excluded.
                     entry["flatten"] = True
                 plan.append(entry)
                 dependencies.append(inp.id)
