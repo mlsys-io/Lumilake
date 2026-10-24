@@ -274,6 +274,32 @@ def test_n8n_code_node_rejects_a_bad_expected_runtime() -> None:
         parse_n8n_payload(payload)
 
 
+def test_n8n_code_node_cache_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"cache": true}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.cache is True
+
+
+def test_n8n_code_node_rejects_a_non_bool_cache() -> None:
+    workflow = _code_node_workflow('{"cache": "yes"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="cache"):
+        parse_n8n_payload(payload)
+
+
 def test_n8n_code_node_rejects_an_empty_image() -> None:
     workflow = _code_node_workflow('{"image":"  "}')
     payload = {

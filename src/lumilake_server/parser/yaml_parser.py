@@ -1042,6 +1042,11 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
                 f"LambdaOp '{entry.id}' 'expected_runtime_s' must be a number"
             )
         op_dict["expected_runtime_s"] = expected_runtime_s
+    cache = entry.fields.get("cache")
+    if cache is not None:
+        if not isinstance(cache, bool):
+            raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a bool")
+        op_dict["cache"] = cache
 
 
 def _build_generation_config(

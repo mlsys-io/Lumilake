@@ -463,6 +463,45 @@ def test_native_graph_expected_runtime_round_trip() -> None:
     assert op._serialize()["expected_runtime_s"] == 3
 
 
+def test_yaml_cache_reaches_the_op() -> None:
+    payload = _CHAIN.replace(
+        "    memory_mb: 256\n",
+        "    memory_mb: 256\n    cache: true\n",
+    )
+    spec = parse_yaml_payload(payload)["chain"]
+    (lambda_dict,) = [d for d in spec["graph"].values() if d["_op"] == "LambdaOp"]
+    assert lambda_dict["cache"] is True
+    graph = Graph.from_json(spec["graph"])
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+    assert op.cache is True
+    assert op._serialize()["cache"] is True
+
+
+def test_yaml_rejects_a_non_bool_cache() -> None:
+    with pytest.raises(ValueError, match="cache"):
+        parse_yaml_payload(
+            _CHAIN.replace(
+                "    memory_mb: 256\n",
+                "    memory_mb: 256\n    cache: 1\n",
+            )
+        )
+
+
+def test_native_graph_cache_round_trip() -> None:
+    op = LambdaOp._from_json(
+        {
+            "fn_name": "shout",
+            "_code": _SHOUT,
+            "_inputs": [],
+            "timeout_s": 5,
+            "cache": False,
+        },
+        {},
+    )
+    assert op.cache is False
+    assert op._serialize()["cache"] is False
+
+
 _STANDALONE = """
 name: lambda-import-test
 inputs:

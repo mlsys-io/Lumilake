@@ -50,6 +50,7 @@ Lumilake annotations as a JSON object with kebab-case keys:
 | `is-output` | bool | Emit this node's value as a workflow output. |
 | `image` | string | Container image for the standalone `python` task. |
 | `expected-runtime-s` | number | HALO planning hint: seconds per input row; never enforced. |
+| `cache` | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 
 A Code node with an `image` always runs as its own standalone `python` task.
 `expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.

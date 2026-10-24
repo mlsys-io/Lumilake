@@ -329,6 +329,7 @@ Optional per-op limits for the standalone `python` task:
 | `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
 | `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
 | `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
+| `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 
 The limits apply only to the standalone `python` task; they have no effect on a
 `LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as
@@ -337,7 +338,8 @@ its own standalone `python` task and may set `timeout_s` up to FlowMesh's
 
 `expected_runtime_s` is a planning hint only: it is seconds per input row of
 the task, and HALO uses it to estimate the step's run time. It is never
-enforced as a limit.
+enforced as a limit. `cache` is also opt-in: Lumilake sends `cache: true` to
+FlowMesh only when the op sets it.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see
