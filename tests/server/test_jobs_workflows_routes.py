@@ -719,11 +719,19 @@ async def test_list_workflows_upstream_error_returns_502(
 class _FakeProgressServer:
     is_started = True
 
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        task_ids_by_request: dict[str, dict[str, list[str]]] | None = None,
+    ) -> None:
         self._payload = payload
+        self._task_ids_by_request = task_ids_by_request or {}
 
     async def get_request_status(self, job_id: str) -> dict[str, Any]:
         return self._payload
+
+    def task_ids_for_request(self, request_id: str) -> dict[str, list[str]]:
+        return self._task_ids_by_request.get(request_id, {})
 
 
 @pytest.mark.anyio
@@ -952,6 +960,99 @@ async def test_progress_usage_restricted_to_owned_tasks_in_shared_workflow(
     }
     # The unowned task was never fetched: per-job usage must not even read
     # another job's task result.
+    assert "tsk-c" not in fake_fm.results.retrieve_calls
+
+
+@pytest.mark.anyio
+async def test_progress_usage_reads_ownership_from_runtime_manager_while_running(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running coalesced job reports only its own tasks even before
+    ``job_task_ids`` is persisted (which happens only at job end)."""
+    _seed_job(job_routes, "j-a", ["wf-1"])
+    _seed_job(job_routes, "j-b", ["wf-1"])
+    job_routes.jobs["j-a"].status = "running"
+    job_routes.jobs["j-b"].status = "running"
+    # Ownership is not yet persisted on the records; it lives only in the
+    # runtime manager, as it does while a job is still running.
+    assert job_routes.jobs["j-a"].job_task_ids == {}
+    assert job_routes.jobs["j-b"].job_task_ids == {}
+    wf1 = _FakeWorkflow(
+        "wf-1",
+        "COMPLETED",
+        completed_tasks=["tsk-a", "tsk-b", "tsk-c"],
+    )
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": wf1},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    fake_fm = _FakeFlowMesh(
+        fake_workflows,
+        task_results={
+            "tsk-a": _api_result(
+                "tsk-a",
+                _api_usage(100, 50, reasoning=0, calls=2, retries=0, wall=1.0),
+            ),
+            "tsk-b": _api_result(
+                "tsk-b",
+                _api_usage(200, 25, reasoning=0, calls=2, retries=0, wall=1.5),
+            ),
+            "tsk-c": _api_result(
+                "tsk-c",
+                _api_usage(50, 10, reasoning=0, calls=10, retries=0, wall=1.0),
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: fake_fm,
+    )
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(
+            lambda cls: _FakeProgressServer(
+                {"execution": {"completed": True}},
+                task_ids_by_request={
+                    "j-a": {"wf-1": ["tsk-a"]},
+                    "j-b": {"wf-1": ["tsk-b"]},
+                },
+            )
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp_a = await client.get(
+            "/jobs/j-a/progress", headers={"Authorization": "Bearer token"}
+        )
+        resp_b = await client.get(
+            "/jobs/j-b/progress", headers={"Authorization": "Bearer token"}
+        )
+    assert resp_a.status_code == 200
+    assert resp_b.status_code == 200
+    usage_a = resp_a.json()["data"]["progress"]["usage"]
+    assert usage_a == {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "reasoning_tokens": 0,
+        "calls": 2,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.0,
+    }
+    usage_b = resp_b.json()["data"]["progress"]["usage"]
+    assert usage_b == {
+        "prompt_tokens": 200,
+        "completion_tokens": 25,
+        "reasoning_tokens": 0,
+        "calls": 2,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.5,
+    }
+    # tsk-c belongs to no job here; neither job may count it.
     assert "tsk-c" not in fake_fm.results.retrieve_calls
 
 
