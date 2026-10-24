@@ -1529,6 +1529,9 @@ class RuntimeGraphBuilder:
                     entry["flatten"] = True
                 plan.append(entry)
                 dependencies.append(inp.id)
+            elif isinstance(inp, DataRetrievalOp):
+                plan.append({"kind": "stage", "node": inp.id})
+                dependencies.append(inp.id)
             elif isinstance(inp, InputOp):
                 values = inputs_dict.get(inp.name)
                 if values is None:
@@ -1541,7 +1544,7 @@ class RuntimeGraphBuilder:
             else:
                 raise ValueError(
                     f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
-                    f"list-mode LambdaOp, InputOp, or DataOp "
+                    f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
         data_spec: dict[str, Any] = {
