@@ -247,6 +247,9 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
                 tasks=[SimpleNamespace(task_id="task-row0")], workflow_id="wf-1"
             )
 
+        async def cancel(self, workflow_id: str) -> None:
+            pass
+
     class _FakeResults:
         def __init__(self) -> None:
             self.calls = 0

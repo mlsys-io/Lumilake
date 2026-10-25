@@ -179,7 +179,10 @@ same declared output. Rows dispatch and complete independently, but
 within a single FlowMesh workflow request the failure semantics are
 all-or-nothing: if any row's task fails, that workflow request fails
 and no partial per-row results are returned for it, even for rows that
-already completed successfully.
+already completed successfully. Lumilake then cancels that FlowMesh
+workflow, so its tasks still pending or running stop holding workers; the
+same happens when the request times out or fails for any other reason
+after FlowMesh accepted it.
 
 This guarantee holds per FlowMesh workflow request, not per job. A
 job's input rows can be split across multiple `input_batch_size`
