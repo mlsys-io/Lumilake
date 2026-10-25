@@ -127,7 +127,6 @@ def test_redact_strips_nested_lumid_cfg_token():
         "lumid_cfg": {
             "lumid_data_url": "http://example",
             "lumid_data_token": "another-secret",
-            "encoding": "utf-8",
         },
     }
     redacted = redact_sensitive(spec)

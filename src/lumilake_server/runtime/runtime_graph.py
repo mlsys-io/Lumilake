@@ -934,7 +934,6 @@ class RuntimeGraphBuilder:
         updated["lumid_cfg"] = {
             "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             "lumid_data_token": envs.LUMID_DATA_TOKEN,
-            "encoding": "utf-8",
         }
         self.logger.warning(
             "Workflow uses 'type: list' with s3:// items; this path requires the "

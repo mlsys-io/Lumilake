@@ -642,10 +642,10 @@ def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
     embedding = runtime_graph.nodes[embedding_id]
     ds = embedding.data_spec
     assert ds["type"] == "list"
-    assert "lumid_cfg" in ds
-    assert ds["lumid_cfg"]["lumid_data_url"] == _LUMID_URL
-    assert ds["lumid_cfg"]["lumid_data_token"] == _LUMID_TOKEN
-    assert ds["lumid_cfg"]["encoding"] == "utf-8"
+    assert ds["lumid_cfg"] == {
+        "lumid_data_url": _LUMID_URL,
+        "lumid_data_token": _LUMID_TOKEN,
+    }
     assert "s3_cfg" not in ds
 
 
