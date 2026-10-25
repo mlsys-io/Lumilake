@@ -14,6 +14,7 @@ from lumilake_server.ops import (
     LLMChatOp,
     LLMVisionOp,
     OpMessage,
+    SingleDtype,
     as_output,
     input_placeholder,
 )
@@ -1112,3 +1113,68 @@ def test_two_output_ops_on_one_list_lambda_rejected() -> None:
 
     with pytest.raises(ValueError, match="Multiple OutputOps"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def _row_lambda_fn(row: tuple[SingleDtype, ...]) -> str:
+    return str(row[0]).upper()
+
+
+def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
+    """A rowwise LLM reading a standalone row-mode LambdaOp must bind the
+    column to ``value.items.output`` (the PythonResult field), not
+    ``items.output``."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    shout_node = runtime_graph.nodes[shout.id]
+    assert shout_node.task_type == "python"
+    assert shout_node.data_spec.get("mode", "row") == "row"
+    llm_node = runtime_graph.nodes[llm.id]
+    columns = llm_node.data_spec["columns"]
+    assert {
+        "label": "r",
+        "node": shout.id,
+        "path": "value.items.output",
+    } in columns
+    assert shout.id in llm_node.dependencies
+
+
+def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
+    """An aggregate LLM reading a standalone row-mode LambdaOp must bind the
+    table column to ``value.items.output``."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Summarize {df}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    shout_node = runtime_graph.nodes[shout.id]
+    assert shout_node.task_type == "python"
+    llm_node = runtime_graph.nodes[llm.id]
+    template = llm_node.data_spec["template"]
+    df_col = next(col for col in template["columns"] if col.get("label") == "df")
+    table_columns = df_col["data"]["columns"]
+    assert {
+        "label": "r",
+        "node": shout.id,
+        "path": "value.items.output",
+    } in table_columns
+    assert shout.id in llm_node.dependencies

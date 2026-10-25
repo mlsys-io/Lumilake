@@ -1829,6 +1829,10 @@ class RuntimeGraphBuilder:
             if RuntimeGraphBuilder._is_rowwise_api_task(op):
                 return _API_ROW_PATH
             return _API_ITEM_PATH
+        if isinstance(op, LambdaOp) and not op.takes_whole_columns:
+            # A standalone row-mode LambdaOp runs as a python task whose
+            # PythonResult carries its items under ``value``.
+            return "value.items.output"
         return "items.output"
 
     def _node_ref_column(
@@ -1883,6 +1887,16 @@ class RuntimeGraphBuilder:
                 raise ValueError(
                     f"Column '{label}' of consumer '{consumer_id}' reads"
                     f" '{path}' from list-mode Lambda '{node_ref}'; only"
+                    " 'items.output' (the whole output) is supported."
+                )
+            path = "value." + path
+        elif isinstance(upstream, LambdaOp):
+            # A standalone row-mode LambdaOp runs as a python task whose
+            # PythonResult carries its items under ``value``.
+            if not path.startswith("items.output"):
+                raise ValueError(
+                    f"Column '{label}' of consumer '{consumer_id}' reads"
+                    f" '{path}' from row-mode Lambda '{node_ref}'; only"
                     " 'items.output' (the whole output) is supported."
                 )
             path = "value." + path
