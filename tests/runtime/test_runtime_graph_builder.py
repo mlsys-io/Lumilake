@@ -1270,3 +1270,59 @@ def test_inlined_row_lambda_literal_items_not_treated_as_ref() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     assert llm.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_literal_item_with_expr_not_treated_as_ref() -> None:
+    """A literal list item carrying ``node`` plus ``expr`` is ordinary data
+    (FlowMesh reads only ``node``+``path`` inside literal items), so an inlined
+    LambdaOp in that payload must not be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[
+            {
+                "label": "r",
+                "data": {
+                    "type": "list",
+                    "items": [{"node": shout.id, "expr": "literal"}],
+                },
+            }
+        ],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert llm.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_literal_item_with_path_rejected() -> None:
+    """A literal list item carrying ``node`` plus ``path`` is a FlowMesh read,
+    so an inlined LambdaOp in that payload must be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[
+            {
+                "label": "r",
+                "data": {
+                    "type": "list",
+                    "items": [{"node": shout.id, "path": "items.output"}],
+                },
+            }
+        ],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
+        RuntimeGraphBuilder().build(compiled)

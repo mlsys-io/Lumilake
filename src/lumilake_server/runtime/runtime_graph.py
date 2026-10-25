@@ -1939,9 +1939,9 @@ class RuntimeGraphBuilder:
     def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
         """Yield every runtime node reference in a RuntimeOp: data_spec
         column/data-source/list-item refs (a mapping with ``node`` plus
-        ``path`` or ``expr``), python plan stage entries, and the condition
-        node. Literal payloads (``node`` without ``path``/``expr``) are data,
-        not references."""
+        ``path``, or ``expr`` outside literal list items), python plan stage
+        entries, and the condition node. Literal payloads (``node`` without
+        ``path``/``expr``) are data, not references."""
         yield from RuntimeGraphBuilder._iter_spec_refs(node.data_spec)
         condition = node.condition
         if condition is not None:
@@ -1950,13 +1950,21 @@ class RuntimeGraphBuilder:
                 yield cond_node
 
     @staticmethod
-    def _iter_spec_refs(value: Any) -> Iterator[str]:
+    def _iter_spec_refs(value: Any, allow_expr: bool = True) -> Iterator[str]:
         """Yield node references from a data_spec, schema-aware: a mapping
-        with a string ``node`` and a ``path`` or ``expr`` key is a reference;
-        otherwise recurse into nested mappings and lists."""
+        with a string ``node`` and a ``path`` key is a reference; ``expr``
+        counts only outside literal list items. Recurse into nested mappings
+        and lists, disabling ``expr`` below a ``type: list`` payload."""
         if isinstance(value, dict):
+            if value.get("type") == "list":
+                yield from RuntimeGraphBuilder._iter_spec_refs(
+                    value.get("items"), allow_expr=False
+                )
+                return
             node = value.get("node")
-            if isinstance(node, str) and ("path" in value or "expr" in value):
+            if isinstance(node, str) and (
+                "path" in value or (allow_expr and "expr" in value)
+            ):
                 yield node
                 return
             if value.get("kind") == "stage":
@@ -1965,10 +1973,10 @@ class RuntimeGraphBuilder:
                     yield stage_node
                     return
             for v in value.values():
-                yield from RuntimeGraphBuilder._iter_spec_refs(v)
+                yield from RuntimeGraphBuilder._iter_spec_refs(v, allow_expr)
         elif isinstance(value, list):
             for v in value:
-                yield from RuntimeGraphBuilder._iter_spec_refs(v)
+                yield from RuntimeGraphBuilder._iter_spec_refs(v, allow_expr)
 
     def _row_condition(
         self,
