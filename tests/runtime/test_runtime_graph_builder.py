@@ -1178,3 +1178,23 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
         "path": "value.items.output",
     } in table_columns
     assert shout.id in llm_node.dependencies
+
+
+def test_inlined_row_lambda_referenced_by_column_rejected() -> None:
+    """A row-mode LambdaOp inlined into its consuming LLM's message chain has
+    no runtime python task, so a node column referencing it must be rejected
+    rather than emitting a path to a node that does not exist."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
+        RuntimeGraphBuilder().build(compiled)
