@@ -646,7 +646,9 @@ class RuntimeGraphBuilder:
                     output_node_map[lambda_id] = output_name
                     if path_override:
                         output_paths[lambda_id] = path_override
-            self._check_inlined_lambda_refs(nodes, graph_dict, set(standalone))
+
+        if task_type_override != "data_profile":
+            self._check_inlined_lambda_refs(nodes, graph_dict)
 
         all_node_ids = set(graph_dict.keys())
         unvisited_node_ids = all_node_ids - visited_node_ids
@@ -1911,41 +1913,62 @@ class RuntimeGraphBuilder:
         self,
         nodes: dict[str, RuntimeOp],
         graph_dict: dict[str, Op],
-        standalone: set[str],
     ) -> None:
-        """Reject node-column references to a row-mode LambdaOp that was
-        inlined into its consuming LLM and therefore has no runtime python
-        task to read from."""
+        """Reject runtime references to a row-mode LambdaOp that was inlined
+        into its consuming LLM and therefore has no runtime python task."""
+        materialized = set(nodes.keys())
         inlined = {
             op_id
             for op_id, op in graph_dict.items()
             if isinstance(op, LambdaOp)
             and not op.takes_whole_columns
-            and op_id not in standalone
+            and op_id not in materialized
         }
         if not inlined:
             return
         for node in nodes.values():
-            for ref in self._iter_node_refs(node.data_spec):
+            for ref in RuntimeGraphBuilder._iter_runtime_refs(node):
                 if ref in inlined:
                     raise ValueError(
-                        f"LambdaOp '{ref}' is inlined into the LLM that consumes"
-                        " it and has no runtime output; a node column cannot"
-                        f" reference it (referenced by runtime node"
-                        f" '{node.node_id}')."
+                        f"Runtime node '{node.node_id}' references LambdaOp"
+                        f" '{ref}', which is inlined into the LLM that consumes"
+                        " it and has no runtime output."
                     )
 
-    def _iter_node_refs(self, value: Any) -> Iterator[str]:
-        """Yield every ``node`` reference in a data_spec, recursively."""
+    @staticmethod
+    def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
+        """Yield every runtime node reference in a RuntimeOp: data_spec
+        column/data-source/list-item refs (a mapping with ``node`` plus
+        ``path`` or ``expr``), python plan stage entries, and the condition
+        node. Literal payloads (``node`` without ``path``/``expr``) are data,
+        not references."""
+        yield from RuntimeGraphBuilder._iter_spec_refs(node.data_spec)
+        condition = node.condition
+        if condition is not None:
+            cond_node = condition.get("node")
+            if isinstance(cond_node, str):
+                yield cond_node
+
+    @staticmethod
+    def _iter_spec_refs(value: Any) -> Iterator[str]:
+        """Yield node references from a data_spec, schema-aware: a mapping
+        with a string ``node`` and a ``path`` or ``expr`` key is a reference;
+        otherwise recurse into nested mappings and lists."""
         if isinstance(value, dict):
-            ref = value.get("node")
-            if isinstance(ref, str):
-                yield ref
+            node = value.get("node")
+            if isinstance(node, str) and ("path" in value or "expr" in value):
+                yield node
+                return
+            if value.get("kind") == "stage":
+                stage_node = value.get("node")
+                if isinstance(stage_node, str):
+                    yield stage_node
+                    return
             for v in value.values():
-                yield from self._iter_node_refs(v)
+                yield from RuntimeGraphBuilder._iter_spec_refs(v)
         elif isinstance(value, list):
             for v in value:
-                yield from self._iter_node_refs(v)
+                yield from RuntimeGraphBuilder._iter_spec_refs(v)
 
     def _row_condition(
         self,
