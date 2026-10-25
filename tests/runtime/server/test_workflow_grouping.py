@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,10 @@ from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
+from lumilake_server.runtime import python_step
+from lumilake_server.runtime.job_manager.base import WorkflowItem
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
 
 
@@ -290,3 +295,57 @@ def test_merge_group_compiled_graph_single_slice_skips_rewrite_strictness() -> N
     assert merged_compiled.inputs == {"Stock": ["NVDA"]}
     assert merged_compiled._coalesce_rewrite_hits == {}
     assert merged_compiled._coalesce_rewrite_skipped is True
+
+
+def _with_python_step(
+    item: WorkflowItem, expected_s: float, timeout_s: float
+) -> WorkflowItem:
+    step = RuntimeOp(
+        node_id="sim",
+        task_type=python_step.TASK_TYPE,
+        backend=python_step.BACKEND,
+        model="",
+        data_spec={
+            "expected_runtime_s": expected_s,
+            "row_count": 1,
+            "timeout_s": timeout_s,
+        },
+        model_spec={},
+        inference_spec={},
+    )
+    graph = RuntimeGraph(nodes={"sim": step}, node_order=["sim"], output_node_map={})
+    return replace(item, runtime_graph=graph)
+
+
+def test_group_workflows_splits_slices_beyond_a_python_step_timeout() -> None:
+    """A python step runs its coalesced rows in sequence, so a group may hold
+    only as many slices as fit in the step's timeout."""
+    workflows = [
+        _with_python_step(item, expected_s=988, timeout_s=2964)
+        for item in make_workflow_slices_from_inputs(
+            request_id="req-sim",
+            public_graph_name="sim",
+            entities=["a", "b", "c", "d", "e"],
+        )
+    ]
+
+    grouped = LumilakeServer._group_workflows_by_parent_workflow(workflows)
+
+    parent = LumilakeServer._request_workflow_parent_id(workflows[0])
+    assert {key: [w.workflow_id for w in items] for key, items in grouped.items()} == {
+        parent: ["req-sim-0", "req-sim-1", "req-sim-2"],
+        f"{parent}::1": ["req-sim-3", "req-sim-4"],
+    }
+
+
+def test_group_workflows_keeps_a_slice_that_alone_exceeds_the_timeout() -> None:
+    workflows = [
+        _with_python_step(item, expected_s=700, timeout_s=600)
+        for item in make_workflow_slices_from_inputs(
+            request_id="req-slow", public_graph_name="slow", entities=["a", "b"]
+        )
+    ]
+
+    grouped = LumilakeServer._group_workflows_by_parent_workflow(workflows)
+
+    assert [len(items) for items in grouped.values()] == [1, 1]
