@@ -712,7 +712,7 @@ def _build_prompt_content(
         fmt_op = _build_format_op(scope, node_name, template, format_kwargs)
         return fmt_op["_id"], [fmt_op]
 
-    if not escape:
+    if already_escaped or not escape:
         return stripped, []
     return _escape_literal_braces(stripped), []
 
