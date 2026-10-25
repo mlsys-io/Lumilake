@@ -281,6 +281,15 @@ def _parse_n8n_workflow(
                 raise ValueError(f"Output node {node_name} missing op id")
             output_op = _make_output_op(scope, output_name, upstream)
             add_op(output_op)
+    for node_name, node in code_nodes.items():
+        notes = _parse_notes(node.get("notes", ""))
+        if notes.get("is-output", False):
+            output_name = notes.get("output-field") or node_name
+            upstream = op_ids.get(node_name)
+            if not upstream:
+                raise ValueError(f"Output node {node_name} missing op id")
+            output_op = _make_output_op(scope, output_name, upstream)
+            add_op(output_op)
 
     graph = {op["_id"]: op for op in ordered_ops}
     return N8NGraphSpec(graph=graph, inputs=inputs)
@@ -1633,6 +1642,16 @@ def _make_code_ops(
         if not isinstance(cache, bool):
             raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
         op["cache"] = cache
+    is_output = notes.get("is-output")
+    if is_output is not None and not isinstance(is_output, bool):
+        raise ValueError(f"Code node '{node_name}' notes 'is-output' must be a bool")
+    output_field = notes.get("output-field")
+    if output_field is not None and (
+        not isinstance(output_field, str) or not output_field.strip()
+    ):
+        raise ValueError(
+            f"Code node '{node_name}' notes 'output-field' must be a non-empty string"
+        )
     return [op], op["_id"]
 
 
