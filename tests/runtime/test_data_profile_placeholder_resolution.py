@@ -12,6 +12,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
     FormatOp,
+    LambdaOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -553,6 +554,63 @@ class TestUnsupportedUpstreamRejection:
         assert "FormatOp" in message
         assert "sample_value" in message
         assert "LUMILAKE_DISABLE_DATA_PROFILE" in message
+
+
+class TestLambdaOpUpstreamSampleValue:
+    def _build(self, lambda_op: LambdaOp, path: str | None = None) -> Any:
+        retrieval = DataRetrievalOp(
+            data_spec={
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE k='{k}'",
+                "params": [
+                    (
+                        {"label": "k", "node": lambda_op.id, "path": path}
+                        if path
+                        else {"label": "k", "node": lambda_op.id}
+                    )
+                ],
+            },
+            inputs=[lambda_op],
+        )
+        llm = LLMChatOp(
+            [OpMessage(role="user", content=retrieval)],
+            config=GenerationConfig(model="x"),
+        )
+        compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
+        return _build_profile_node(compiled, retrieval.id)
+
+    def test_lambda_upstream_without_sample_value_is_rejected(self) -> None:
+        stock = input_placeholder("Stock")
+        terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+        with pytest.raises(ValueError) as excinfo:
+            self._build(terms)
+        message = str(excinfo.value)
+        assert "LambdaOp" in message
+        assert "sample_value" in message
+        assert "LUMILAKE_DISABLE_DATA_PROFILE" in message
+
+    def test_lambda_upstream_sample_value_is_used_directly(self) -> None:
+        stock = input_placeholder("Stock")
+        terms = LambdaOp(
+            [stock],
+            fn=lambda inputs: str(inputs[0]).upper(),
+            sample_value="K-123",
+        )
+        node = self._build(terms)
+        sample = node.data_spec["params"][0]["data"]["items"][0]
+        assert sample == "K-123"
+
+    def test_lambda_upstream_sample_value_projects_by_path(self) -> None:
+        stock = input_placeholder("Stock")
+        terms = LambdaOp(
+            [stock],
+            fn=lambda inputs: str(inputs[0]).upper(),
+            sample_value={"key": "K-7", "label": "alpha"},
+        )
+        node = self._build(terms, path="items.output.key")
+        sample = node.data_spec["params"][0]["data"]["items"][0]
+        assert sample == "K-7"
 
 
 class TestApplyLimitToSampleSql:
