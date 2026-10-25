@@ -403,6 +403,7 @@ class LumilakeServer:
         self._execution_contexts: dict[str, ExecutionBatchContext] = {}
         self._request_execution_ids: dict[str, set[str]] = {}
         self._request_execution_history_ids: dict[str, set[str]] = {}
+        self._unreleased_execution_members: dict[str, set[str]] = {}
 
         self._progress: dict[str, JobProgress] = {}
         self._optimizer_type = envs.LUMILAKE_DEFAULT_OPTIMIZER
@@ -685,14 +686,35 @@ class LumilakeServer:
             {wf for (rid, _), wf in batch_snapshot.items() if rid in execution_ids}
         )
 
+    def task_ids_for_request(self, request_id: str) -> dict[str, list[str]]:
+        """Owned FlowMesh task ids per workflow id for this job.
+
+        Computed at dispatch time from the dedup mapping and stored alongside
+        ``_batch_workflow_id``; used to restrict per-job usage to the job's own
+        tasks when several jobs share one FlowMesh workflow.
+        """
+        return self.runtime_manager.task_ids_for_request(request_id)
+
     def release_request_workflows(self, request_id: str) -> None:
         """Drop the runtime manager's per-batch FM workflow id entries for
-        this request once ``trace_ids`` have been persisted to JobStorage."""
+        this request once ``trace_ids`` have been persisted to JobStorage. An
+        execution shared by several requests is dropped once all of them are
+        released."""
         execution_ids = self._request_execution_ids.get(
             request_id, set()
         ) | self._request_execution_history_ids.get(request_id, set())
-        if execution_ids:
-            self.runtime_manager.release_executions(execution_ids)
+        released: set[str] = set()
+        for execution_id in execution_ids:
+            members = self._unreleased_execution_members.get(execution_id)
+            if members is not None:
+                members.discard(request_id)
+                if members:
+                    continue
+                self._unreleased_execution_members.pop(execution_id)
+            released.add(execution_id)
+        if released:
+            self.runtime_manager.release_executions(released)
+        self.runtime_manager.release_request_task_ids(request_id)
         self.runtime_manager.clear_dispatch_token(request_id)
 
     def optimization_seconds_for_request(self, request_id: str) -> float | None:
@@ -1895,6 +1917,7 @@ class LumilakeServer:
             self._request_execution_history_ids.setdefault(request_id, set()).add(
                 execution_request_id
             )
+        self._unreleased_execution_members[execution_request_id] = set(request_ids)
         retry_batches: list[BatchSelection] = []
         try:
             retry_batches = await self._run_batch_inner(
@@ -2791,12 +2814,25 @@ class LumilakeServer:
                     node_prefix=group_key,
                 )
 
-        merged_graph, output_mapping = self.optimizer.optimize_graphs(
+        merged_graph, output_mapping, dedup_mapping = self.optimizer.optimize_graphs(
             runtime_graphs_by_name
         )
-        merged_data_profile_graph, _ = self.optimizer.optimize_graphs(
+        merged_data_profile_graph, _, _ = self.optimizer.optimize_graphs(
             data_profile_graphs_by_name
         )
+        # Attribute every canonical (post-dedup) node to the member requests
+        # whose pre-dedup graphs contributed it. A task that was deduplicated
+        # across jobs counts toward each job that requested it; usage sums it
+        # once per owning job, which is exactly once per requesting job.
+        task_owner_members: dict[str, set[str]] = {}
+        for group_key, graph in runtime_graphs_by_name.items():
+            group_request_id = group_key.split("::")[1]
+            for runtime_ids in graph.dsl_to_runtime.values():
+                for node_id in runtime_ids:
+                    canonical = dedup_mapping.get(node_id, node_id)
+                    task_owner_members.setdefault(canonical, set()).add(
+                        group_request_id
+                    )
         total_nodes = merged_graph.node_count
         output_nodes = len(merged_graph.output_node_map)
         self.runtime_manager.mark_batch_pending(
@@ -2862,6 +2898,7 @@ class LumilakeServer:
             data_profile_sources=data_profile_sources,
             hardware_requirements=batch.config.hardware_requirements,
             member_request_ids=set(member_request_ids),
+            task_owner_members=task_owner_members,
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph
@@ -3547,7 +3584,7 @@ class LumilakeServer:
             selection_only_elapsed = max(0.0, select_elapsed - clustering_elapsed)
             batch_runtime_graphs = batch.runtime_graphs
 
-        merged_graph, _ = self.optimizer.optimize_graphs(batch_runtime_graphs)
+        merged_graph, _, _ = self.optimizer.optimize_graphs(batch_runtime_graphs)
         merged_nodes = set(merged_graph.nodes)
         if not merged_nodes:
             raise ValueError("Preview merged graph has no runtime nodes")

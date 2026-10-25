@@ -1011,7 +1011,7 @@ def test_merged_workflow_result_stays_single_task_after_optimize() -> None:
     input rows resolve to one output entry."""
     runtime_graph, llm_id = _build_yaml_two_row_graph()
 
-    optimized_graph, output_mapping = HaloOptimizer().optimize_graphs(
+    optimized_graph, output_mapping, _ = HaloOptimizer().optimize_graphs(
         {"yaml-api-two-rows": runtime_graph}
     )
 
@@ -2095,7 +2095,7 @@ def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
         },
     )
 
-    optimized_graph, _ = HaloOptimizer().optimize_graphs({"wf": graph})
+    optimized_graph, _, _ = HaloOptimizer().optimize_graphs({"wf": graph})
 
     assert row0.node_id in optimized_graph.nodes
     assert row1.node_id in optimized_graph.nodes

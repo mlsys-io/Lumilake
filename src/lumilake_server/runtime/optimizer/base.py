@@ -156,8 +156,14 @@ def _remap_node_spec(spec: dict[str, Any], mapping: dict[str, str]) -> dict[str,
     return cast(dict[str, Any], remapped)
 
 
-def _dedupe_runtime_graph(graph: RuntimeGraph) -> RuntimeGraph:
-    """Merge identical runtime ops with identical dependencies (non-output nodes)."""
+def _dedupe_runtime_graph(
+    graph: RuntimeGraph,
+) -> tuple[RuntimeGraph, dict[str, str]]:
+    """Merge identical runtime ops with identical dependencies (non-output nodes).
+
+    Returns the deduplicated graph and the ``node_id -> canonical node_id``
+    mapping (identity for nodes that were not deduplicated).
+    """
     output_nodes = set(graph.output_node_map)
     canonical_by_signature: dict[tuple[object, ...], str] = {}
     mapping: dict[str, str] = {}
@@ -175,7 +181,7 @@ def _dedupe_runtime_graph(graph: RuntimeGraph) -> RuntimeGraph:
             mapping[node_id] = canonical
 
     if all(node_id == mapped for node_id, mapped in mapping.items()):
-        return graph
+        return graph, mapping
 
     new_nodes: dict[str, RuntimeOp] = {}
     new_order: list[str] = []
@@ -220,12 +226,15 @@ def _dedupe_runtime_graph(graph: RuntimeGraph) -> RuntimeGraph:
         for op_id, runtime_ids in graph.dsl_to_runtime.items()
     }
 
-    return RuntimeGraph(
-        nodes=new_nodes,
-        node_order=new_order,
-        output_node_map=new_output_node_map,
-        output_paths=new_output_paths,
-        dsl_to_runtime=new_dsl_to_runtime,
+    return (
+        RuntimeGraph(
+            nodes=new_nodes,
+            node_order=new_order,
+            output_node_map=new_output_node_map,
+            output_paths=new_output_paths,
+            dsl_to_runtime=new_dsl_to_runtime,
+        ),
+        mapping,
     )
 
 
@@ -272,8 +281,12 @@ class BaseOptimizer(ABC):
     def optimize_graphs(
         self,
         graphs: dict[str, RuntimeGraph],
-    ) -> tuple[RuntimeGraph, dict[str, tuple[str, str]]]:
-        """Optimize and merge runtime graphs prior to scheduling."""
+    ) -> tuple[RuntimeGraph, dict[str, tuple[str, str]], dict[str, str]]:
+        """Optimize and merge runtime graphs prior to scheduling.
+
+        Returns the merged, deduplicated graph, the output mapping, and the
+        dedup ``node_id -> canonical node_id`` mapping (identity for nodes
+        that were not deduplicated)."""
         merged_graph, output_mapping = merge_runtime_graphs(graphs)
-        optimized_graph = _dedupe_runtime_graph(merged_graph)
-        return optimized_graph, output_mapping
+        optimized_graph, dedup_mapping = _dedupe_runtime_graph(merged_graph)
+        return optimized_graph, output_mapping, dedup_mapping

@@ -723,7 +723,18 @@ class RuntimeGraphBuilder:
                     " Python step reads LLM, data-retrieval, Lambda, input or data"
                     " ops"
                 )
-            plan.append({"kind": "stage", "node": dep})
+            entry: dict[str, Any] = {"kind": "stage", "node": dep}
+            if (
+                isinstance(inp, LLMChatOp)
+                and not isinstance(inp, LLMVisionOp)
+                and inp.rowwise_template
+            ):
+                # A rowwise LLM groups its per-row outputs back into one item;
+                # flatten it to one value per row for the python step. A VLM's
+                # regroup step already emits one list per symbol, so it is
+                # excluded.
+                entry["flatten"] = True
+            plan.append(entry)
             if dep not in dependencies:
                 dependencies.append(dep)
 
@@ -1505,6 +1516,20 @@ class RuntimeGraphBuilder:
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
+                entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
+                if (
+                    isinstance(inp, LLMChatOp)
+                    and not isinstance(inp, LLMVisionOp)
+                    and inp.rowwise_template
+                ):
+                    # A rowwise LLM groups its per-row outputs back into one
+                    # item; the python step must flatten it to one value per
+                    # row before the list-mode Lambda sees it. A VLM's regroup
+                    # step already emits one list per symbol, so it is excluded.
+                    entry["flatten"] = True
+                plan.append(entry)
+                dependencies.append(inp.id)
+            elif isinstance(inp, DataRetrievalOp):
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, InputOp):
@@ -1519,7 +1544,7 @@ class RuntimeGraphBuilder:
             else:
                 raise ValueError(
                     f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
-                    f"list-mode LambdaOp, InputOp, or DataOp "
+                    f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
         data_spec: dict[str, Any] = {

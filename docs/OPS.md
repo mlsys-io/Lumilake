@@ -189,6 +189,11 @@ results. The job's final response mixes the failed slice's rows (empty
 output plus an error entry) with the other slice's real per-row
 values.
 
+A local `LLMChatOp` with a `rowwise_template` runs one generation per input
+row. When it is the workflow output, its per-row results are returned as one
+output value per input row (FlowMesh groups them back into one item per table
+internally; the runtime flattens that back to per-row values at aggregation).
+
 ### LLMVisionOp
 
 `LLMVisionOp` runs vision-language generation over images. When it declares a
@@ -208,8 +213,9 @@ upstream values. YAML carries the function as source code (`code`) plus
 a `fn_name`. The function must accept the input tuple in the same
 order as `inputs:` and return a string. For `def` source, `fn_name` names the
 top-level function to call; imports, constants and helper functions may come
-before it, and a name the code does not define is rejected. For a `lambda`
-expression `fn_name` is only a label.
+before it, and a name the code references without binding, importing or
+defining is rejected at submit if the namespace does not provide it. For a
+`lambda` expression `fn_name` is only a label.
 
 ```yaml
 inputs:
@@ -269,12 +275,24 @@ read at `value.items.output`. A list-mode `LambdaOp` is read through a node
 column (`rowwise_columns` / `aggregate_table`), not through an LLM message
 chain.
 
+A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one
+value per input row: the row-wise LLM groups its per-row outputs back into one
+item internally, and the standalone `python` step flattens that grouped item
+back to one value per row before the function sees its whole-list input.
+
 `mode: aligned` is the same calling convention as `list` (whole columns in, a
 list out, read at `value.items.output`), with one added guarantee: the function
 returns exactly one value per input row, and the standalone task raises if the
 returned list's length does not match the row count. Because its output is
 row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run
 value, so its dependents keep one item per row and can be split across slices.
+
+A list-mode `LambdaOp` runs once over the whole input lists of one run, so its
+single whole-list result cannot be partitioned per slice. A submission whose
+`input_batch_size` would split a list-mode `LambdaOp` output across more than
+one slice is rejected at submit with a message naming the output and the fix
+(submit one input value per job, or raise `input_batch_size` so the whole input
+set runs in a single slice).
 
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source
@@ -298,7 +316,10 @@ standalone task embeds the same materializer the server validates against. This
 namespace fixes which names resolve; it is **not** a security boundary. In the
 standalone task the container is the boundary, which is why that task also
 allows standard-library imports; `np` / `pd` resolve only if the task image
-provides them.
+provides them. A name the code references that the namespace does not provide
+(and that is not bound, imported or defined in the code) is rejected at submit
+with the name and the fix, instead of failing with `NameError` when the task
+runs.
 
 Optional per-op limits for the standalone `python` task:
 

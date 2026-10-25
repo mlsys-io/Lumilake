@@ -31,6 +31,7 @@ import builtins
 import json
 import math
 import re
+import symtable
 import sys
 import types
 from collections.abc import Callable
@@ -88,6 +89,11 @@ SAFE_BUILTIN_NAMES = _SAFE_BUILTIN_BASE_NAMES + EXCEPTION_BUILTIN_NAMES
 # code that references them is rejected at submit.
 INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 
+# Names the standalone LambdaOp namespace provides beyond the safe builtins.
+# ``np``/``pd`` are provided only when the code names them, so they are checked
+# separately; the rest are always present.
+NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
+
 _SOURCE_NAME = "<lambda_op>"
 _LIBRARY_ROOTS = ("numpy", "pandas")
 
@@ -135,6 +141,38 @@ def _imported_names(module: ast.AST) -> list[tuple[str, int]]:
     return found
 
 
+def _unbound_global_names(code: str) -> list[str]:
+    """Names the code references but never binds, imports, or provides itself.
+
+    The standalone LambdaOp namespace supplies only ``SAFE_BUILTIN_NAMES`` plus
+    ``json``/``re``/``math``/``Message``/``ops`` (and ``np``/``pd`` when named).
+    Any other free name would raise ``NameError`` at run time on the worker, so
+    it is rejected at submit. A name referenced at module scope without being
+    bound or imported is free, and a name referenced in any nested scope that
+    is not bound anywhere in the module is free too.
+    """
+    table = symtable.symtable(code.strip(), _SOURCE_NAME, "exec")
+    module_symbols = {s.get_name() for s in table.get_symbols()}
+    free: set[str] = set()
+    for symbol in table.get_symbols():
+        if (
+            symbol.is_referenced()
+            and not symbol.is_assigned()
+            and not symbol.is_imported()
+        ):
+            free.add(symbol.get_name())
+
+    def _walk(scope: symtable.SymbolTable) -> None:
+        for child in scope.get_children():
+            for symbol in child.get_symbols():
+                if symbol.is_global() and symbol.get_name() not in module_symbols:
+                    free.add(symbol.get_name())
+            _walk(child)
+
+    _walk(table)
+    return sorted(free)
+
+
 def _param_count(args: ast.arguments) -> int:
     count = len(args.posonlyargs) + len(args.args) + len(args.kwonlyargs)
     return count + (1 if args.vararg else 0) + (1 if args.kwarg else 0)
@@ -177,6 +215,29 @@ def _check_def(stmt: ast.FunctionDef) -> str:
     return stmt.name
 
 
+def _check_free_names(code: str) -> None:
+    """Reject free names the standalone namespace does not provide.
+
+    The namespace supplies ``SAFE_BUILTIN_NAMES``, ``json``/``re``/``math``/
+    ``Message``/``ops``, and ``np``/``pd`` when the code names them. Any other
+    name the code references without binding, importing, or defining would
+    raise ``NameError`` on the worker, so reject it at submit with the name.
+    """
+    allowed = set(SAFE_BUILTIN_NAMES) | set(NAMESPACE_GLOBAL_NAMES)
+    free = _unbound_global_names(code)
+    # ``np``/``pd`` are provided lazily only when the code names them, so they
+    # are always allowed; ``__import__`` is bound to the restricted import hook.
+    allowed |= {"np", "pd", "__import__"}
+    unavailable = sorted(name for name in free if name not in allowed)
+    if unavailable:
+        raise ValueError(
+            f"it references {unavailable[0]!r}, which the LambdaOp namespace"
+            " does not provide. Only the safe builtins, json, re, math, np, pd"
+            " and Message are available; bind or import the name, or define it"
+            " as a helper"
+        )
+
+
 def validate_source(code: str, fn_name: str | None = None) -> str:
     """Check LambdaOp source without running any of it; return the function name.
 
@@ -192,12 +253,14 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     """
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
+        _check_free_names(code)
         return _check_lambda(tree)
     for name, level in _imported_names(tree):
         if level != 0:
             raise ValueError("LambdaOp code must not use relative imports")
         if not _importable(name):
             raise ValueError(_not_importable_message(name))
+    _check_free_names(code)
     defs = [
         stmt
         for stmt in tree.body

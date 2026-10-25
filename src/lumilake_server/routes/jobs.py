@@ -100,7 +100,10 @@ from lumilake_server.runtime.protocol import (
     RequestCancelledError,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph import _API_CREDENTIAL_PLACEHOLDER
+from lumilake_server.runtime.runtime_graph import (
+    _API_CREDENTIAL_PLACEHOLDER,
+    RuntimeGraph,
+)
 from lumilake_server.runtime.server import LumilakeServer
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import DBLocation, IOLocation, S3Location
@@ -574,6 +577,7 @@ class JobRecord:
     result: LumilakeResponse | None = None
     folder_inputs: dict[str, str] = field(default_factory=dict)
     trace_ids: list[str] = field(default_factory=list)
+    job_task_ids: dict[str, list[str]] = field(default_factory=dict)
     workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
@@ -1083,6 +1087,41 @@ def _validate_runtime_graphs(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Workflow is not runnable: {exc}",
             ) from exc
+
+
+def _validate_list_lambda_slice_span(
+    runtime_graphs: dict[str, RuntimeGraph],
+    workflow_slices: dict[str, list[WorkflowSliceMeta]],
+) -> None:
+    """Reject at submit time a list-mode Lambda output that would span more
+    than one slice.
+
+    A list-mode Lambda runs once over the whole input lists of one run, so its
+    single whole-list result cannot be partitioned per slice. Today that only
+    surfaces at demux time, after the run has been dispatched; reject it here
+    so the job fails fast with a message naming the op and the fix.
+    """
+    for graph_name, graph in runtime_graphs.items():
+        list_lambda_dependent = graph.list_lambda_cardinality_nodes()
+        if not list_lambda_dependent:
+            continue
+        slices = workflow_slices.get(graph_name, [])
+        if len(slices) <= 1:
+            continue
+        for node_id, output_name in graph.output_node_map.items():
+            if node_id not in list_lambda_dependent:
+                continue
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Workflow '{graph_name}' output '{output_name}' is produced "
+                    f"by a list-mode Lambda, which runs once over the whole "
+                    f"input lists of one run and cannot be split across "
+                    f"{len(slices)} slice(s). Submit one input value per job, "
+                    "or raise input_batch_size so the whole input set runs in "
+                    "a single slice."
+                ),
+            )
 
 
 _GPU_ZERO_CONFLICT = (
@@ -2556,6 +2595,13 @@ async def _run_job(
                 record.trace_ids = list(
                     dict.fromkeys([*record.trace_ids, *final_trace_ids])
                 )
+        job_task_ids: dict[str, list[str]] = {}
+        try:
+            job_task_ids = server.task_ids_for_request(job_id)
+        except Exception:
+            logger.exception("Failed to resolve task ids for job %s", job_id)
+        async with jobs_lock:
+            record.job_task_ids = job_task_ids
         workflow_dispatches = server.workflow_dispatches_for_request(job_id)
         async with jobs_lock:
             record.workflow_dispatches = list(workflow_dispatches)
@@ -3269,6 +3315,20 @@ async def submit_job(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=_GPU_ZERO_CONFLICT,
             )
+        _validate_list_lambda_slice_span(
+            {
+                name: server._runtime_builder.build(compiled, node_prefix=name)
+                for name, compiled in graphs.items()
+            },
+            {
+                name: [
+                    meta
+                    for slice_name, meta in workflow_slices.items()
+                    if meta.public_graph_name == name
+                ]
+                for name in graphs
+            },
+        )
 
     if is_dynamic and dynamic_spec is not None:
         _validate_dynamic_submission(resolved_inputs)
@@ -3570,7 +3630,17 @@ async def get_job_progress(
 
     if record.status not in TERMINAL_JOB_STATUSES:
         fm = flowmesh_for(request)
-        computed = await _compute_job_usage(fm, _job_workflow_ids(record), hook_logger)
+        # ``trace_ids`` and ``job_task_ids`` are persisted only once the job
+        # finishes.
+        task_ids_by_workflow = record.job_task_ids or server.task_ids_for_request(
+            job_id
+        )
+        computed = await _compute_job_usage(
+            fm,
+            list(dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])),
+            hook_logger,
+            task_ids_by_workflow=task_ids_by_workflow or None,
+        )
         needs_save = False
         async with jobs_lock:
             if record.progress.usage != computed:
@@ -3909,11 +3979,25 @@ def _inference_usage(result: InferenceResult) -> WorkflowUsage:
 
 
 async def _fetch_workflow_usage(
-    fm: AsyncFlowMesh, workflow: Workflow, logger: Logger
+    fm: AsyncFlowMesh,
+    workflow: Workflow,
+    owned_task_ids: set[str] | None,
+    logger: Logger,
 ) -> WorkflowUsage | None:
-    """Sum usage over a workflow's completed task results, or ``None`` when
-    any is unavailable. Raises NotFoundError for a missing task result."""
-    results = await _fetch_task_results(fm, workflow.completed_tasks, logger)
+    """Sum usage over a workflow's completed task results that belong to the
+    job, or ``None`` when any is unavailable. Raises NotFoundError for a
+    missing task result.
+
+    ``owned_task_ids`` restricts the summed tasks to the ones this job's
+    graphs mapped to after dedup; ``None`` keeps every completed task (jobs
+    dispatched before per-job task attribution)."""
+    if owned_task_ids is None:
+        completed = workflow.completed_tasks
+    else:
+        completed = [
+            task_id for task_id in workflow.completed_tasks if task_id in owned_task_ids
+        ]
+    results = await _fetch_task_results(fm, completed, logger)
     contributions: list[WorkflowUsage] = []
     for task_id, result in results:
         contribution = _task_usage_from_result(result)
@@ -3976,11 +4060,23 @@ def _sum_usage(usages: list[WorkflowUsage]) -> WorkflowUsage:
 
 
 async def _compute_job_usage(
-    fm: AsyncFlowMesh, workflow_ids: list[str], logger: Logger
+    fm: AsyncFlowMesh,
+    workflow_ids: list[str],
+    logger: Logger,
+    task_ids_by_workflow: dict[str, list[str]] | None = None,
 ) -> WorkflowUsage | None:
-    """Sum usage over the workflows, or ``None`` when any is unavailable."""
+    """Sum usage over the workflows, or ``None`` when any is unavailable.
+
+    ``task_ids_by_workflow`` restricts each workflow's summed tasks to the
+    job's own tasks; when absent, every completed task counts (jobs dispatched
+    before per-job task attribution)."""
     usages: list[WorkflowUsage] = []
     for workflow_id in workflow_ids:
+        owned = (
+            set(task_ids_by_workflow[workflow_id])
+            if task_ids_by_workflow is not None and workflow_id in task_ids_by_workflow
+            else None
+        )
         try:
             workflow = await fm.workflows.retrieve(workflow_id)
         except NotFoundError:
@@ -3997,7 +4093,7 @@ async def _compute_job_usage(
             ) from exc
         else:
             try:
-                usage = await _fetch_workflow_usage(fm, workflow, logger)
+                usage = await _fetch_workflow_usage(fm, workflow, owned, logger)
             except NotFoundError:
                 usage = None
         if usage is None:
@@ -4016,7 +4112,12 @@ async def _persist_terminal_usage(
     """Persist the summed usage onto a terminal job's progress; ``None`` when
     it cannot be read, never a partial sum."""
     try:
-        computed = await _compute_job_usage(fm, _job_workflow_ids(record), logger)
+        computed = await _compute_job_usage(
+            fm,
+            _job_workflow_ids(record),
+            logger,
+            task_ids_by_workflow=record.job_task_ids or None,
+        )
     except HTTPException:
         logger.exception(
             "Failed to read workflow usage at terminal time; storing null job usage"
@@ -4089,7 +4190,12 @@ async def list_job_workflows(
                 detail="upstream workflow enumeration failed",
             ) from exc
         try:
-            usage_model = await _fetch_workflow_usage(fm, wf, hook_logger)
+            owned = (
+                set(record.job_task_ids[workflow_id])
+                if workflow_id in record.job_task_ids
+                else None
+            )
+            usage_model = await _fetch_workflow_usage(fm, wf, owned, hook_logger)
         except NotFoundError:
             usage_model = None
         collected.append(

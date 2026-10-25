@@ -42,6 +42,11 @@ class RequestInfo:
     API credentials are stored per job id, so dispatch resolves them through
     these ids rather than the synthetic ``exec-*`` request id."""
 
+    task_owner_members: dict[str, set[str]] = field(default_factory=dict)
+    """Attribution of each canonical (post-dedup) node id to the member
+    request ids whose pre-dedup graphs contributed it. Used to compute
+    per-job usage for jobs sharing a FlowMesh workflow."""
+
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)
     data_profile_graph: RuntimeGraph = field(init=False)

@@ -134,6 +134,9 @@ class RecordingRuntimeManager:
     def release_executions(self, execution_ids: set[str]) -> None:
         return None
 
+    def release_request_task_ids(self, request_id: str) -> None:
+        return None
+
 
 class ArtifactRuntimeManager(RecordingRuntimeManager):
     async def process_request(

@@ -30,10 +30,10 @@ def test_materialized_function_keeps_the_contract() -> None:
 
 
 def test_materialized_function_sees_only_the_restricted_builtins() -> None:
-    with pytest.raises(NameError, match="open"):
-        lambda_runtime.materialize("def f(a):\n    return open('/x')")(("x",))
-    with pytest.raises(NameError, match="eval"):
-        lambda_runtime.materialize("lambda a: eval('1')")(("x",))
+    with pytest.raises(ValueError, match="'open'.*does not provide"):
+        lambda_runtime.validate_source("def f(a):\n    return open('/x')", "f")
+    with pytest.raises(ValueError, match="'eval'.*does not provide"):
+        lambda_runtime.validate_source("lambda a: eval('1')")
 
 
 def test_materialized_function_can_raise_a_builtin_exception() -> None:
@@ -53,14 +53,14 @@ def test_materialized_function_can_catch_a_builtin_exception() -> None:
 
 
 def test_materialized_function_still_cannot_reference_systemexit() -> None:
-    with pytest.raises(NameError, match="SystemExit"):
-        lambda_runtime.materialize("def f(a):\n    raise SystemExit('x')")(("x",))
+    with pytest.raises(ValueError, match="'SystemExit'.*does not provide"):
+        lambda_runtime.validate_source("def f(a):\n    raise SystemExit('x')", "f")
 
 
 def test_validation_parses_but_never_executes() -> None:
-    code = "def f(a):\n    return a[0]\nran_module_body"
+    code = "def f(a):\n    return a[0]\n1/0"
     assert lambda_runtime.validate_source(code) == "f"
-    with pytest.raises(NameError, match="ran_module_body"):
+    with pytest.raises(ZeroDivisionError):
         lambda_runtime.materialize(code)
 
 
@@ -135,7 +135,7 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         "for i in range(1):\n    pass\ndef main(x):\n    return 'a'",
         "if True:\n    K = 1\ndef main(x):\n    return 'a'",
         "try:\n    K = 1\nexcept:\n    pass\ndef main(x):\n    return 'a'",
-        "with open('/dev/null') as f:\n    pass\ndef main(x):\n    return 'a'",
+        "with str() as f:\n    pass\ndef main(x):\n    return 'a'",
     ],
 )
 def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
@@ -211,6 +211,49 @@ def test_standalone_source_still_accepts_exception_classes() -> None:
 
 
 @pytest.mark.parametrize(
+    "code, name",
+    [
+        ("def f(a):\n    return open(a[0])", "open"),
+        ("def f(a):\n    return eval(a[0])", "eval"),
+        ("def f(a):\n    return a[0] + os.sep", "os"),
+        ("lambda a: a[0] + foo", "foo"),
+        ("def f(a):\n    return a[0] + np_typo", "np_typo"),
+        ('PREFIX = os.environ["X"]\ndef f(a):\n    return PREFIX', "os"),
+        (
+            "def f(a):\n    def helper(x):\n        return missing\n"
+            "    return helper(a)",
+            "missing",
+        ),
+    ],
+)
+def test_standalone_source_rejects_unprovided_free_names(code: str, name: str) -> None:
+    """A name the LambdaOp namespace does not provide would raise NameError on
+    the worker, so it must be rejected at submit with the name."""
+    with pytest.raises(ValueError, match=f"'{name}'.*does not provide"):
+        lambda_runtime.validate_source(code, "f")
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def f(a):\n    return len(a) + str(a[0])",
+        "def f(a):\n    return math.sqrt(a[0])",
+        "def f(a):\n    return json.dumps(a[0])",
+        "def f(a):\n    return np.array(a)",
+        "def f(a):\n    return pd.Series(a)",
+        "K = 3\ndef f(a):\n    return a[0] + K",
+        "def helper(a):\n    return a\ndef f(a):\n    return helper(a)",
+        "import math\ndef f(a):\n    return math.sqrt(a[0])",
+        "def f(a):\n    return isinstance(a[0], ValueError)",
+    ],
+)
+def test_standalone_source_accepts_provided_or_bound_names(code: str) -> None:
+    """Safe builtins, namespace globals, np/pd, module constants, helper defs
+    and imports all resolve in the standalone namespace."""
+    assert lambda_runtime.validate_source(code, "f") == "f"
+
+
+@pytest.mark.parametrize(
     "code, message",
     [
         ("def f(a, b):\n    return a", "exactly 1 parameter"),
@@ -226,7 +269,7 @@ def test_invalid_source_is_rejected(code: str, message: str) -> None:
 
 
 def test_deserialized_lambda_op_never_runs_its_code() -> None:
-    code = "def f(a):\n    return a[0]\nraise SystemExit('ran in the server')"
+    code = "def f(a):\n    return a[0]\n1/0"
     op = LambdaOp._from_json(
         {"fn_name": "f", "_code": code, "_inputs": [], "timeout_s": 5}, {}
     )
