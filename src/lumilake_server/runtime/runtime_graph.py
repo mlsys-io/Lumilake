@@ -1956,16 +1956,16 @@ class RuntimeGraphBuilder:
         counts only outside literal list items. Recurse into nested mappings
         and lists, disabling ``expr`` below a ``type: list`` payload."""
         if isinstance(value, dict):
-            if value.get("type") == "list":
-                yield from RuntimeGraphBuilder._iter_spec_refs(
-                    value.get("items"), allow_expr=False
-                )
-                return
             node = value.get("node")
             if isinstance(node, str) and (
                 "path" in value or (allow_expr and "expr" in value)
             ):
                 yield node
+                return
+            if value.get("type") == "list":
+                yield from RuntimeGraphBuilder._iter_spec_refs(
+                    value.get("items"), allow_expr=False
+                )
                 return
             if value.get("kind") == "stage":
                 stage_node = value.get("node")

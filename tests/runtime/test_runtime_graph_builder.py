@@ -1326,3 +1326,24 @@ def test_inlined_row_lambda_literal_item_with_path_rejected() -> None:
 
     with pytest.raises(ValueError, match="inlined into the LLM"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
+    """A row-mode LambdaOp inlined into an LLM message chain and also used as
+    EmbeddingOp content emits a top-level list data-source reference, so it
+    must be rejected rather than leaving a dangling read."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    emb = EmbeddingOp(content=shout, config=GenerationConfig(model="bge-small"))
+    output = as_output("vectors", emb)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
+        RuntimeGraphBuilder().build(compiled)
