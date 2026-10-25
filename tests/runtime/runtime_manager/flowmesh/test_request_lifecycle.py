@@ -256,9 +256,11 @@ async def _run_failing_request(
     monkeypatch: pytest.MonkeyPatch,
     status_by_task: dict[str, str],
     error_by_task: dict[str, str | None],
+    cancelled_workflows: list[str] | None = None,
 ) -> tuple[FlowmeshRuntimeManager, str, str, str]:
     """Run the two-row request against fake FlowMesh task states; return the
-    manager, both row node ids and the error ``process_request`` raised."""
+    manager, both row node ids and the error ``process_request`` raised.
+    Workflow cancels are appended to ``cancelled_workflows``."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
@@ -277,6 +279,10 @@ async def _run_failing_request(
                 tasks=[SimpleNamespace(task_id=tid) for tid in task_ids],
                 workflow_id="wf-1",
             )
+
+        async def cancel(self, workflow_id: str) -> None:
+            if cancelled_workflows is not None:
+                cancelled_workflows.append(workflow_id)
 
     class _FakeResults:
         async def retrieve(self, task_id: str) -> Any:
@@ -341,15 +347,18 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     successfully. This pins the fail-fast raise in process_request's poll
     loop; without it a FAILED row would be silently ignored (or a partial
     result quietly returned) instead of aborting the request."""
+    cancelled: list[str] = []
     manager, _, row1_id, message = await _run_failing_request(
         monkeypatch,
         {"task-row0": "PENDING", "task-row1": "FAILED"},
         {"task-row1": "python task failed: ImportError: boom"},
+        cancelled,
     )
     assert message == (
         f"Task task-row1 failed (node {row1_id}): python task failed:"
         " ImportError: boom; aborting workflow (1 task(s) failed in total)"
     )
+    assert cancelled == ["wf-1"]
 
     batch_key = ("req-failfast", "batch-1")
     assert manager._execution_task_status[batch_key]["task-row0"] == "PENDING"
@@ -756,6 +765,9 @@ async def test_fail_fast_reports_every_failed_task_reason(
                 tasks=[SimpleNamespace(task_id=tid) for tid in task_ids],
                 workflow_id="wf-1",
             )
+
+        async def cancel(self, workflow_id: str) -> None:
+            pass
 
     class _FakeResults:
         async def retrieve(self, task_id: str) -> Any:
