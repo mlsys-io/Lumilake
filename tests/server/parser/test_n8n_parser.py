@@ -404,8 +404,9 @@ def test_prompt_content_escapes_literal_braces_with_ref() -> None:
     assert rendered == 'Return JSON like {"population": 5} for op_sql'
 
 
-def test_prompt_content_no_ref_keeps_text_unchanged() -> None:
-    """A prompt with no refs is not a format template and stays verbatim."""
+def test_prompt_content_no_ref_escapes_literal_braces() -> None:
+    """A no-ref prompt is a graph_template message, so literal braces are
+    escaped and the message renders verbatim via format_map."""
     text = 'Return JSON like {"population": 5}'
     content, extra_ops = _build_prompt_content(
         text,
@@ -415,4 +416,72 @@ def test_prompt_content_no_ref_keeps_text_unchanged() -> None:
         scope="g0",
     )
     assert extra_ops == []
+    assert content == 'Return JSON like {{"population": 5}}'
+    assert content.format_map({}) == text
+
+
+def test_prompt_content_no_ref_unescaped_when_not_format_rendered() -> None:
+    """Image-generation content is not format-rendered, so it stays verbatim."""
+    text = 'Return JSON like {"population": 5}'
+    content, extra_ops = _build_prompt_content(
+        text,
+        node_name="Chain",
+        op_ids={},
+        upstream_main=None,
+        scope="g0",
+        escape=False,
+    )
+    assert extra_ops == []
     assert content == text
+
+
+def test_prompt_content_literal_df_escaped_with_ref() -> None:
+    """A literal {df} in a non-aggregate prompt is escaped, so the FormatOp
+    renders without a KeyError for 'df'."""
+    content, extra_ops = _build_prompt_content(
+        "Use the literal token {df}; context: {{ $('SQL') }}",
+        node_name="Chain",
+        op_ids={"SQL": "op_sql"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == "Use the literal token {df}; context: op_sql"
+
+
+def test_aggregate_prompt_escapes_literal_braces() -> None:
+    """An aggregate prompt with a JSON example and a table ref renders
+    verbatim through the graph_template message format_map."""
+    prompt = (
+        'Summarize the table and return JSON {"population": 5}.\n'
+        "```table\nsummary: {{ $('SQL').item.summary }}\n```"
+    )
+    aggregate_prompt, table_spec = _build_aggregate_prompt_content(
+        prompt,
+        op_ids={"SQL": "op_sql"},
+        upstream_main=None,
+        node_map={"SQL": {"type": "n8n-nodes-base.postgres"}},
+    )
+    assert table_spec
+    rendered = aggregate_prompt.format_map({"df": '{"summary": "the value"}'})
+    assert rendered == (
+        'Summarize the table and return JSON {"population": 5}.\n'
+        '{"summary": "the value"}'
+    )
+
+
+def test_aggregate_prompt_no_table_escapes_literal_braces() -> None:
+    """An aggregate prompt without a table block is still a graph_template
+    message and escapes literal braces."""
+    aggregate_prompt, table_spec = _build_aggregate_prompt_content(
+        'Return JSON {"population": 5}',
+        op_ids={},
+        upstream_main=None,
+        node_map={},
+    )
+    assert table_spec == []
+    assert aggregate_prompt == 'Return JSON {{"population": 5}}'
+    assert aggregate_prompt.format_map({}) == 'Return JSON {"population": 5}'
