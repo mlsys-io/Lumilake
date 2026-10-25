@@ -666,6 +666,23 @@ def _make_chain_ops(
     return ops, llm_op["_id"]
 
 
+_ESCAPE_BRACES_PATTERN = re.compile(
+    r"(\{\{\s*\$\('([^']+)'\)(?:\.[^}]*)?\s*\}\}|\$\('([^']+)'\)(?:\.[\w\.\[\]]+)?|\{df\})|([{}])"
+)
+
+
+def _escape_literal_braces(text: str) -> str:
+    """Escape literal ``{``/``}`` to ``{{``/``}}``, leaving n8n ``{{ ... }}``
+    expression wrappers intact so they can be swapped for placeholders."""
+
+    def _repl(match: re.Match) -> str:
+        if match.group(1) is not None:
+            return match.group(1)
+        return match.group(0) * 2
+
+    return _ESCAPE_BRACES_PATTERN.sub(_repl, text)
+
+
 def _build_prompt_content(
     prompt_text: str,
     node_name: str,
@@ -679,7 +696,7 @@ def _build_prompt_content(
 
     refs = _extract_refs(stripped)
     if refs:
-        template = stripped
+        template = _escape_literal_braces(stripped)
         format_kwargs: dict[str, str] = {}
         for idx, (full, ref_name) in enumerate(refs):
             if ref_name not in op_ids:
@@ -1308,7 +1325,7 @@ def _make_lake_retrieval_op(
 def _build_rowwise_prompt_content(prompt_text: str) -> str:
     stripped = _strip_expr(prompt_text or "")
     refs = _extract_rowwise_ref_bindings(stripped)
-    template = stripped
+    template = _escape_literal_braces(stripped)
     for node_name, path, label in refs:
         escaped_name = re.escape(node_name)
         full_pattern = None
