@@ -14,6 +14,7 @@ from lumilake_server.ops import (
     LLMChatOp,
     LLMVisionOp,
     OpMessage,
+    SingleDtype,
     as_output,
     input_placeholder,
 )
@@ -1111,4 +1112,239 @@ def test_two_output_ops_on_one_list_lambda_rejected() -> None:
     compiled = Graph.from_ops([out_a, out_b]).compile(Stock=["NVDA", "AAPL"])
 
     with pytest.raises(ValueError, match="Multiple OutputOps"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def _row_lambda_fn(row: tuple[SingleDtype, ...]) -> str:
+    return str(row[0]).upper()
+
+
+def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
+    """A rowwise LLM reading a standalone row-mode LambdaOp must bind the
+    column to ``value.items.output`` (the PythonResult field), not
+    ``items.output``."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    shout_node = runtime_graph.nodes[shout.id]
+    assert shout_node.task_type == "python"
+    assert shout_node.data_spec.get("mode", "row") == "row"
+    llm_node = runtime_graph.nodes[llm.id]
+    columns = llm_node.data_spec["columns"]
+    assert {
+        "label": "r",
+        "node": shout.id,
+        "path": "value.items.output",
+    } in columns
+    assert shout.id in llm_node.dependencies
+
+
+def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
+    """An aggregate LLM reading a standalone row-mode LambdaOp must bind the
+    table column to ``value.items.output``."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Summarize {df}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    shout_node = runtime_graph.nodes[shout.id]
+    assert shout_node.task_type == "python"
+    llm_node = runtime_graph.nodes[llm.id]
+    template = llm_node.data_spec["template"]
+    df_col = next(col for col in template["columns"] if col.get("label") == "df")
+    table_columns = df_col["data"]["columns"]
+    assert {
+        "label": "r",
+        "node": shout.id,
+        "path": "value.items.output",
+    } in table_columns
+    assert shout.id in llm_node.dependencies
+
+
+def test_inlined_row_lambda_referenced_by_column_rejected() -> None:
+    """A row-mode LambdaOp inlined into its consuming LLM's message chain has
+    no runtime python task, so a node column referencing it must be rejected
+    rather than emitting a path to a node that does not exist."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
+    """A row-mode LambdaOp inlined into an LLM message chain but also read by
+    an output LambdaOp is materialized as a real python task, so the graph
+    must build without the inlined-reference error."""
+    stock = input_placeholder("Stock")
+    inner = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=inner)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": inner.id, "path": "items.output"}],
+    )
+    llm.inputs.append(inner)
+    outer = LambdaOp([inner], fn=_row_lambda_fn)
+    output = as_output("result", outer)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert inner.id in runtime_graph.nodes
+    assert outer.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_referenced_by_condition_rejected() -> None:
+    """A row-mode LambdaOp inlined into an LLM's message chain has no runtime
+    python task, so a condition referencing it must be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        condition={"node": shout.id, "expr": "gate == 'on'"},
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_inlined_row_lambda_literal_items_not_treated_as_ref() -> None:
+    """Literal list items carrying a ``node`` key without ``path``/``expr`` are
+    data, not runtime references, so an inlined LambdaOp in that payload must
+    not be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[
+            {
+                "label": "r",
+                "data": {
+                    "type": "list",
+                    "items": [{"node": shout.id, "kind": "literal"}],
+                },
+            }
+        ],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert llm.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_literal_item_with_expr_not_treated_as_ref() -> None:
+    """A literal list item carrying ``node`` plus ``expr`` is ordinary data
+    (FlowMesh reads only ``node``+``path`` inside literal items), so an inlined
+    LambdaOp in that payload must not be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[
+            {
+                "label": "r",
+                "data": {
+                    "type": "list",
+                    "items": [{"node": shout.id, "expr": "literal"}],
+                },
+            }
+        ],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert llm.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_literal_item_with_path_rejected() -> None:
+    """A literal list item carrying ``node`` plus ``path`` is a FlowMesh read,
+    so an inlined LambdaOp in that payload must be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[
+            {
+                "label": "r",
+                "data": {
+                    "type": "list",
+                    "items": [{"node": shout.id, "path": "items.output"}],
+                },
+            }
+        ],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
+    """A row-mode LambdaOp inlined into an LLM message chain and also used as
+    EmbeddingOp content emits a top-level list data-source reference, so it
+    must be rejected rather than leaving a dangling read."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "data": {"type": "list", "items": ["NVDA"]}}],
+    )
+    llm.inputs.append(shout)
+    emb = EmbeddingOp(content=shout, config=GenerationConfig(model="bge-small"))
+    output = as_output("vectors", emb)
+    llm_output = as_output("result", llm)
+    compiled = Graph.from_ops([output, llm_output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
         RuntimeGraphBuilder().build(compiled)
