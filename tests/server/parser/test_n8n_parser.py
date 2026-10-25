@@ -13,7 +13,10 @@ from lumilake_server.parser.n8n import (
     N8N_POSTGRES_NODE,
     N8N_S3_NODE,
     _build_aggregate_prompt_content,
+    _build_prompt_content,
+    _build_rowwise_prompt_content,
     _extract_rowwise_columns,
+    _make_chain_ops,
     _referenced_op_path,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -375,3 +378,236 @@ def test_n8n_code_node_rejects_an_empty_image() -> None:
     }
     with pytest.raises(ValueError, match="image"):
         parse_n8n_payload(payload)
+
+
+def test_rowwise_prompt_escapes_literal_braces() -> None:
+    """A rowwise prompt with a literal JSON example renders verbatim."""
+    template = _build_rowwise_prompt_content(
+        "Return JSON like {\"population\": 5} for {{ $('SQL').item.synopsis }}"
+    )
+    rendered = template.format_map({"synopsis": "the value"})
+    assert rendered == 'Return JSON like {"population": 5} for the value'
+
+
+def test_prompt_content_escapes_literal_braces_with_ref() -> None:
+    """A non-rowwise prompt with a ref and a JSON example renders verbatim."""
+    content, extra_ops = _build_prompt_content(
+        "Return JSON like {\"population\": 5} for {{ $('SQL') }}",
+        node_name="Chain",
+        op_ids={"SQL": "op_sql"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == 'Return JSON like {"population": 5} for op_sql'
+
+
+def test_prompt_content_no_ref_escapes_literal_braces() -> None:
+    """A no-ref prompt is a graph_template message, so literal braces are
+    escaped and the message renders verbatim via format_map."""
+    text = 'Return JSON like {"population": 5}'
+    content, extra_ops = _build_prompt_content(
+        text,
+        node_name="Chain",
+        op_ids={},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert extra_ops == []
+    assert content == 'Return JSON like {{"population": 5}}'
+    assert content.format_map({}) == text
+
+
+def test_prompt_content_no_ref_unescaped_when_not_format_rendered() -> None:
+    """Image-generation content is not format-rendered, so it stays verbatim."""
+    text = 'Return JSON like {"population": 5}'
+    content, extra_ops = _build_prompt_content(
+        text,
+        node_name="Chain",
+        op_ids={},
+        upstream_main=None,
+        scope="g0",
+        escape=False,
+    )
+    assert extra_ops == []
+    assert content == text
+
+
+def test_prompt_content_image_ref_escapes_literal_braces() -> None:
+    """An image-generation prompt with a ref and literal JSON braces escapes
+    the braces, so the FormatOp renders without a KeyError."""
+    content, extra_ops = _build_prompt_content(
+        'Draw {"kind": "chart"} from {{ $(\'Render Prompt\') }}',
+        node_name="Chain",
+        op_ids={"Render Prompt": "op_render"},
+        upstream_main=None,
+        scope="g0",
+        escape=False,
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == 'Draw {"kind": "chart"} from op_render'
+
+
+def test_prompt_content_image_ref_escapes_literal_df() -> None:
+    """An image-generation prompt with a ref and a literal {df} escapes it,
+    so the FormatOp renders without a KeyError for 'df'."""
+    content, extra_ops = _build_prompt_content(
+        "Draw {df} from {{ $('Render Prompt') }}",
+        node_name="Chain",
+        op_ids={"Render Prompt": "op_render"},
+        upstream_main=None,
+        scope="g0",
+        escape=False,
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == "Draw {df} from op_render"
+
+
+def test_prompt_content_literal_df_escaped_with_ref() -> None:
+    """A literal {df} in a non-aggregate prompt is escaped, so the FormatOp
+    renders without a KeyError for 'df'."""
+    content, extra_ops = _build_prompt_content(
+        "Use the literal token {df}; context: {{ $('SQL') }}",
+        node_name="Chain",
+        op_ids={"SQL": "op_sql"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == "Use the literal token {df}; context: op_sql"
+
+
+def test_aggregate_prompt_escapes_literal_braces() -> None:
+    """An aggregate prompt with a JSON example and a table ref renders
+    verbatim through the graph_template message format_map."""
+    prompt = (
+        'Summarize the table and return JSON {"population": 5}.\n'
+        "```table\nsummary: {{ $('SQL').item.summary }}\n```"
+    )
+    aggregate_prompt, table_spec = _build_aggregate_prompt_content(
+        prompt,
+        op_ids={"SQL": "op_sql"},
+        upstream_main=None,
+        node_map={"SQL": {"type": "n8n-nodes-base.postgres"}},
+    )
+    assert table_spec
+    rendered = aggregate_prompt.format_map({"df": '{"summary": "the value"}'})
+    assert rendered == (
+        'Summarize the table and return JSON {"population": 5}.\n'
+        '{"summary": "the value"}'
+    )
+
+
+def test_aggregate_prompt_no_table_escapes_literal_braces() -> None:
+    """An aggregate prompt without a table block is still a graph_template
+    message and escapes literal braces."""
+    aggregate_prompt, table_spec = _build_aggregate_prompt_content(
+        'Return JSON {"population": 5}',
+        op_ids={},
+        upstream_main=None,
+        node_map={},
+    )
+    assert table_spec == []
+    assert aggregate_prompt == 'Return JSON {{"population": 5}}'
+    assert aggregate_prompt.format_map({}) == 'Return JSON {"population": 5}'
+
+
+def _aggregate_chain_node(text: str) -> dict:
+    return {
+        "parameters": {
+            "text": text,
+            "messages": {"messageValues": []},
+        },
+        "type": "@n8n/n8n-nodes-langchain.chainLlm",
+        "name": "Digest",
+        "notes": '{"op-type": "text-generation", "mode": "aggregate"}',
+    }
+
+
+def _aggregate_message_content(ops: list[dict]) -> str:
+    """The user message content of the aggregate chain's MessageOp."""
+    for op in ops:
+        if op.get("_op") == "MessageOp":
+            for msg in op.get("messages") or []:
+                if msg.get("role") == "user":
+                    return msg["content"]
+    raise AssertionError("no user MessageOp found")
+
+
+def _render_aggregate_format_ops(
+    ops: list[dict],
+    df_value: str,
+    ref_values: dict[str, str] | None = None,
+) -> list[str]:
+    """Render every FormatOp in the chain ops the way the runtime does, with
+    the aggregate {df} column and any ref columns supplied."""
+    rendered = []
+    for op in ops:
+        if op.get("_op") != "FormatOp":
+            continue
+        kwargs = dict(op.get("format_kwargs") or {})
+        kwargs["df"] = df_value
+        for key, value in (ref_values or {}).items():
+            kwargs[key] = value
+        rendered.append(op["template"].format(**kwargs))
+    return rendered
+
+
+def test_aggregate_chain_no_ref_escapes_once() -> None:
+    """An aggregate prompt with a table block but no n8n ref escapes literal
+    braces exactly once, so the message renders the JSON literally."""
+    node = _aggregate_chain_node(
+        'Return JSON {"a": 1}.\n```table\nx: {{ $json.x }}\n```'
+    )
+    ops, _ = _make_chain_ops(
+        node=node,
+        node_name="Digest",
+        incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
+        node_map={},
+        op_ids={},
+        inputs={},
+        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+        scope="g0",
+    )
+    content = _aggregate_message_content(ops)
+    assert content == 'Return JSON {{"a": 1}}.\n{df}'
+    assert content.format_map({"df": '{"x": "v"}'}) == (
+        'Return JSON {"a": 1}.\n{"x": "v"}'
+    )
+
+
+def test_aggregate_chain_with_ref_escapes_once() -> None:
+    """An aggregate prompt with a table block and an n8n ref escapes literal
+    braces once and keeps {df} live, rendering the JSON literally."""
+    node = _aggregate_chain_node(
+        "Return JSON {\"a\": 1} for {{ $('Stock') }}.\n"
+        "```table\nx: {{ $('SQL').item.x }}\n```"
+    )
+    ops, _ = _make_chain_ops(
+        node=node,
+        node_name="Digest",
+        incoming={
+            "Digest": [{"type": "ai_languageModel", "node": "Model"}],
+        },
+        node_map={"SQL": {"type": N8N_POSTGRES_NODE}},
+        op_ids={"Stock": "op_stock", "SQL": "op_sql"},
+        inputs={},
+        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+        scope="g0",
+    )
+    rendered = _render_aggregate_format_ops(
+        ops, df_value='{"x": "v"}', ref_values={"ref0": "NVDA"}
+    )
+    assert rendered == ['Return JSON {"a": 1} for NVDA.\n{"x": "v"}']
