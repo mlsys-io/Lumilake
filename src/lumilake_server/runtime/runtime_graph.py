@@ -1865,7 +1865,8 @@ class RuntimeGraphBuilder:
         under ``value.items``, so a declared ``items.output`` read becomes
         ``value.items.output``. A list-mode Lambda returns raw values, so a
         field read (``items.output.<f>``) maps to ``value.items.output.<f>``;
-        a row-mode Lambda emits text, so a field read is rejected.
+        a row-mode Lambda emits the raw value under ``value.items.value``, so
+        a field read maps to ``value.items.value.<f>``.
         """
         if not path.startswith("items.output"):
             raise ValueError(
@@ -1873,11 +1874,7 @@ class RuntimeGraphBuilder:
                 " 'items.output' (the whole output) is supported."
             )
         if not upstream.takes_whole_columns and path != "items.output":
-            raise ValueError(
-                f"{consumer} reads '{path}' from row-mode Lambda '{node_ref}'; "
-                "a row-mode Lambda emits text, so only 'items.output' (the "
-                "whole output) is supported."
-            )
+            return "value.items.value." + path[len("items.output.") :]
         return "value." + path
 
     def _node_ref_column(
