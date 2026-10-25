@@ -1338,7 +1338,7 @@ def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=[{"label": "r", "data": {"type": "list", "items": ["NVDA"]}}],
     )
     llm.inputs.append(shout)
     emb = EmbeddingOp(content=shout, config=GenerationConfig(model="bge-small"))
