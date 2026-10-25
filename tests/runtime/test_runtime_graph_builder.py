@@ -1198,3 +1198,75 @@ def test_inlined_row_lambda_referenced_by_column_rejected() -> None:
 
     with pytest.raises(ValueError, match="inlined into the LLM"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
+    """A row-mode LambdaOp inlined into an LLM message chain but also read by
+    an output LambdaOp is materialized as a real python task, so the graph
+    must build without the inlined-reference error."""
+    stock = input_placeholder("Stock")
+    inner = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=inner)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": inner.id, "path": "items.output"}],
+    )
+    llm.inputs.append(inner)
+    outer = LambdaOp([inner], fn=_row_lambda_fn)
+    output = as_output("result", outer)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert inner.id in runtime_graph.nodes
+    assert outer.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_referenced_by_condition_rejected() -> None:
+    """A row-mode LambdaOp inlined into an LLM's message chain has no runtime
+    python task, so a condition referencing it must be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        condition={"node": shout.id, "expr": "gate == 'on'"},
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="inlined into the LLM"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_inlined_row_lambda_literal_items_not_treated_as_ref() -> None:
+    """Literal list items carrying a ``node`` key without ``path``/``expr`` are
+    data, not runtime references, so an inlined LambdaOp in that payload must
+    not be rejected."""
+    stock = input_placeholder("Stock")
+    shout = LambdaOp([stock], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[
+            {
+                "label": "r",
+                "data": {
+                    "type": "list",
+                    "items": [{"node": shout.id, "kind": "literal"}],
+                },
+            }
+        ],
+    )
+    llm.inputs.append(shout)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert llm.id in runtime_graph.nodes
