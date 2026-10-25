@@ -703,13 +703,21 @@ def _build_prompt_content(
     if refs:
         template = stripped if already_escaped else _escape_literal_braces(stripped)
         format_kwargs: dict[str, str] = {}
+        format_paths: dict[str, str] = {}
         for idx, (full, ref_name) in enumerate(refs):
             if ref_name not in op_ids:
                 raise ValueError(f"Unknown reference '{ref_name}' in prompt")
             key = f"ref{idx}"
             template = template.replace(full, f"{{{key}}}")
             format_kwargs[key] = op_ids[ref_name]
-        fmt_op = _build_format_op(scope, node_name, template, format_kwargs)
+            detail_matches = _extract_ref_details(full)
+            ref_path = detail_matches[0][1] if detail_matches else None
+            runtime_path = _to_runtime_output_path(ref_path)
+            if runtime_path and runtime_path != "items.output":
+                format_paths[key] = runtime_path
+        fmt_op = _build_format_op(
+            scope, node_name, template, format_kwargs, format_paths
+        )
         return fmt_op["_id"], [fmt_op]
 
     if already_escaped or not escape:
@@ -736,9 +744,13 @@ def _build_message_op(
 
 
 def _build_format_op(
-    scope: str, node_name: str, template: str, format_kwargs: dict[str, str]
+    scope: str,
+    node_name: str,
+    template: str,
+    format_kwargs: dict[str, str],
+    format_paths: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    op: dict[str, Any] = {
         "_id": _make_id(scope, "format", node_name),
         "_op": "FormatOp",
         "_max_iter": None,
@@ -747,6 +759,9 @@ def _build_format_op(
         "format_args": [],
         "format_kwargs": format_kwargs,
     }
+    if format_paths:
+        op["format_paths"] = format_paths
+    return op
 
 
 def _build_data_op(scope: str, node_name: str, content: str) -> dict[str, Any]:

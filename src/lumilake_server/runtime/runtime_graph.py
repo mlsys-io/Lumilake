@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -1943,6 +1944,41 @@ class RuntimeGraphBuilder:
             path = "value." + path
         return {"label": label, "node": node_ref, "path": path}
 
+    def _project_input_field(
+        self, values: list[str], path: str, input_name: str
+    ) -> list[str]:
+        """Project a field path out of literal input values (JSON object
+        strings) server-side, so an InputOp field ref binds a literal list."""
+        parts = path.split(".")
+        if parts[:2] != ["items", "output"]:
+            raise ValueError(
+                f"InputOp '{input_name}' field path must start with"
+                f" 'items.output', got '{path}'"
+            )
+        field_parts = parts[2:]
+        projected: list[str] = []
+        for value in values:
+            current: Any = value
+            for part in field_parts:
+                if isinstance(current, str):
+                    try:
+                        current = json.loads(current)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"InputOp '{input_name}' value is not JSON at field"
+                            f" path '{path}': {value!r}"
+                        ) from exc
+                if not isinstance(current, dict) or part not in current:
+                    raise ValueError(
+                        f"InputOp '{input_name}' value missing field at path"
+                        f" '{path}': {value!r}"
+                    )
+                current = current[part]
+            projected.append(
+                current if isinstance(current, str) else json.dumps(current)
+            )
+        return projected
+
     def _referenced_row_lambdas(
         self,
         nodes: dict[str, RuntimeOp],
@@ -3080,10 +3116,48 @@ class RuntimeGraphBuilder:
                     f" multiple in {op.id}: {multi}"
                 )
                 template = op.template
-                format_kwargs = [
-                    {"label": k, "value": _unwrap_msg(message_labels[v.id][0])}
-                    for k, v in op.format_kwargs.items()
-                ]
+                format_kwargs = []
+                for k, v in op.format_kwargs.items():
+                    field_path = op.format_paths.get(k)
+                    if field_path:
+                        upstream = graph_dict.get(v.id)
+                        if isinstance(upstream, InputOp):
+                            values = inputs_dict.get(upstream.name)
+                            if values is None:
+                                raise ValueError(
+                                    f"FormatOp '{op.id}' references InputOp"
+                                    f" '{upstream.name}' with field path"
+                                    f" '{field_path}' but no values were supplied"
+                                    " for that input."
+                                )
+                            label = f"ref_{op.id}_{k}"
+                            columns[label] = {
+                                "label": label,
+                                "data": {
+                                    "type": "list",
+                                    "items": self._project_input_field(
+                                        values, field_path, upstream.name
+                                    ),
+                                },
+                            }
+                        else:
+                            label = f"ref_{op.id}_{k}"
+                            columns[label] = self._node_ref_column(
+                                consumer_id=llm_op_id,
+                                label=label,
+                                node_ref=v.id,
+                                path=field_path,
+                                upstream=upstream,
+                                inputs_dict=inputs_dict,
+                                graph_dict=graph_dict,
+                                dsl_to_runtime=dsl_to_runtime,
+                                kind="prompt field",
+                            )
+                        format_kwargs.append({"label": k, "value": label})
+                    else:
+                        format_kwargs.append(
+                            {"label": k, "value": _unwrap_msg(message_labels[v.id][0])}
+                        )
                 label = f"format_{op.id}"
                 steps[label] = (template, format_kwargs, False)
                 ancestor_buffer[op.id] = [(Roles.USER, label)]

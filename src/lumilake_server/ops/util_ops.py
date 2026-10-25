@@ -78,6 +78,7 @@ class SubmittedFunction:
 @Op.registry.register("FormatOp")
 class FormatOp(FunctionalOp):
     template: str
+    format_paths: dict[str, str] = {}
 
     def __init__(
         self, template: str, *args: list[str] | Op, **kwargs: list[str] | Op
@@ -120,15 +121,22 @@ class FormatOp(FunctionalOp):
     def _serialize(self) -> dict[str, Any]:
         format_args = [arg.id for arg in self.format_args]
         format_kwargs = {k: v.id for k, v in self.format_kwargs.items()}
-        return dict(
-            template=self.template, format_args=format_args, format_kwargs=format_kwargs
+        serialized = dict(
+            template=self.template,
+            format_args=format_args,
+            format_kwargs=format_kwargs,
         )
+        if self.format_paths:
+            serialized["format_paths"] = self.format_paths
+        return serialized
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "FormatOp":
         format_args = [other_ops[arg] for arg in data["format_args"]]
         format_kwargs = {k: other_ops[v] for k, v in data["format_kwargs"].items()}
-        return cls(data["template"], *format_args, **format_kwargs)
+        op = cls(data["template"], *format_args, **format_kwargs)
+        op.format_paths = data.get("format_paths", {})
+        return op
 
 
 def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) -> Op:
