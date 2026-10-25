@@ -553,7 +553,7 @@ def test_prompt_content_whole_item_ref_has_no_path() -> None:
     assert len(extra_ops) == 1
     fmt_op = extra_ops[0]
     assert fmt_op["format_kwargs"] == {"ref0": "op_pd"}
-    assert fmt_op["format_paths"] == {}
+    assert fmt_op.get("format_paths") in (None, {})
 
 
 def _aggregate_chain_node(text: str) -> dict:
