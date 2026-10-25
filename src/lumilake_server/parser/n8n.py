@@ -644,7 +644,12 @@ def _make_chain_ops(
             prompt_text, op_ids, upstream_main, node_map
         )
         msg_content, extra_ops = _build_prompt_content(
-            aggregate_prompt, node_name, op_ids, upstream_main, scope, escape=False
+            aggregate_prompt,
+            node_name,
+            op_ids,
+            upstream_main,
+            scope,
+            already_escaped=True,
         )
     else:
         msg_content, extra_ops = _build_prompt_content(
@@ -688,6 +693,7 @@ def _build_prompt_content(
     upstream_main: str | None,
     scope: str,
     escape: bool = True,
+    already_escaped: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     stripped = _strip_expr(prompt_text or "")
     if not stripped and upstream_main and upstream_main in op_ids:
@@ -695,7 +701,7 @@ def _build_prompt_content(
 
     refs = _extract_refs(stripped)
     if refs:
-        template = _escape_literal_braces(stripped) if escape else stripped
+        template = stripped if already_escaped else _escape_literal_braces(stripped)
         format_kwargs: dict[str, str] = {}
         for idx, (full, ref_name) in enumerate(refs):
             if ref_name not in op_ids:
