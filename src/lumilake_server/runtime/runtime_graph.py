@@ -1,6 +1,6 @@
 import hashlib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Self, cast
@@ -646,6 +646,7 @@ class RuntimeGraphBuilder:
                     output_node_map[lambda_id] = output_name
                     if path_override:
                         output_paths[lambda_id] = path_override
+            self._check_inlined_lambda_refs(nodes, graph_dict, set(standalone))
 
         all_node_ids = set(graph_dict.keys())
         unvisited_node_ids = all_node_ids - visited_node_ids
@@ -1830,8 +1831,6 @@ class RuntimeGraphBuilder:
                 return _API_ROW_PATH
             return _API_ITEM_PATH
         if isinstance(op, LambdaOp) and not op.takes_whole_columns:
-            # A standalone row-mode LambdaOp runs as a python task whose
-            # PythonResult carries its items under ``value``.
             return "value.items.output"
         return "items.output"
 
@@ -1891,8 +1890,6 @@ class RuntimeGraphBuilder:
                 )
             path = "value." + path
         elif isinstance(upstream, LambdaOp):
-            # A standalone row-mode LambdaOp runs as a python task whose
-            # PythonResult carries its items under ``value``.
             if not path.startswith("items.output"):
                 raise ValueError(
                     f"Column '{label}' of consumer '{consumer_id}' reads"
@@ -1909,6 +1906,46 @@ class RuntimeGraphBuilder:
                 )
             path = "value." + path
         return {"label": label, "node": node_ref, "path": path}
+
+    def _check_inlined_lambda_refs(
+        self,
+        nodes: dict[str, RuntimeOp],
+        graph_dict: dict[str, Op],
+        standalone: set[str],
+    ) -> None:
+        """Reject node-column references to a row-mode LambdaOp that was
+        inlined into its consuming LLM and therefore has no runtime python
+        task to read from."""
+        inlined = {
+            op_id
+            for op_id, op in graph_dict.items()
+            if isinstance(op, LambdaOp)
+            and not op.takes_whole_columns
+            and op_id not in standalone
+        }
+        if not inlined:
+            return
+        for node in nodes.values():
+            for ref in self._iter_node_refs(node.data_spec):
+                if ref in inlined:
+                    raise ValueError(
+                        f"LambdaOp '{ref}' is inlined into the LLM that consumes"
+                        " it and has no runtime output; a node column cannot"
+                        f" reference it (referenced by runtime node"
+                        f" '{node.node_id}')."
+                    )
+
+    def _iter_node_refs(self, value: Any) -> Iterator[str]:
+        """Yield every ``node`` reference in a data_spec, recursively."""
+        if isinstance(value, dict):
+            ref = value.get("node")
+            if isinstance(ref, str):
+                yield ref
+            for v in value.values():
+                yield from self._iter_node_refs(v)
+        elif isinstance(value, list):
+            for v in value:
+                yield from self._iter_node_refs(v)
 
     def _row_condition(
         self,
