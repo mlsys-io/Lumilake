@@ -58,6 +58,15 @@ Lumilake annotations as a JSON object with kebab-case keys:
 A Code node with an `image` always runs as its own standalone `python` task.
 `expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
 
+In an n8n `chainLlm` prompt, a reference like `{{ $('Node').item.<field> }}`
+renders that node's item field (nested traversal works, e.g.
+`item.output.<field>` or `item.json.<field>`). A field reference to a row-mode
+Code node runs that node as a standalone `python` task and binds the field as a
+column; a field reference to a workflow input projects the field server-side;
+a field reference to an upstream LLM's structured output binds the field
+column. A whole-item reference (`item`, `item.json` or `item.output` with no
+field) keeps the item as a whole.
+
 ## Output projection (`path:`)
 
 `outputs[]` entries accept an optional `path:` selector that picks which field
