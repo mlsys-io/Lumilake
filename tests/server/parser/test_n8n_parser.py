@@ -435,6 +435,42 @@ def test_prompt_content_no_ref_unescaped_when_not_format_rendered() -> None:
     assert content == text
 
 
+def test_prompt_content_image_ref_escapes_literal_braces() -> None:
+    """An image-generation prompt with a ref and literal JSON braces escapes
+    the braces, so the FormatOp renders without a KeyError."""
+    content, extra_ops = _build_prompt_content(
+        'Draw {"kind": "chart"} from {{ $(\'Render Prompt\') }}',
+        node_name="Chain",
+        op_ids={"Render Prompt": "op_render"},
+        upstream_main=None,
+        scope="g0",
+        escape=False,
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == 'Draw {"kind": "chart"} from op_render'
+
+
+def test_prompt_content_image_ref_escapes_literal_df() -> None:
+    """An image-generation prompt with a ref and a literal {df} escapes it,
+    so the FormatOp renders without a KeyError for 'df'."""
+    content, extra_ops = _build_prompt_content(
+        "Draw {df} from {{ $('Render Prompt') }}",
+        node_name="Chain",
+        op_ids={"Render Prompt": "op_render"},
+        upstream_main=None,
+        scope="g0",
+        escape=False,
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == "Draw {df} from op_render"
+
+
 def test_prompt_content_literal_df_escaped_with_ref() -> None:
     """A literal {df} in a non-aggregate prompt is escaped, so the FormatOp
     renders without a KeyError for 'df'."""
