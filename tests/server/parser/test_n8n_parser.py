@@ -16,6 +16,7 @@ from lumilake_server.parser.n8n import (
     _build_prompt_content,
     _build_rowwise_prompt_content,
     _extract_rowwise_columns,
+    _make_chain_ops,
     _referenced_op_path,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -521,3 +522,92 @@ def test_aggregate_prompt_no_table_escapes_literal_braces() -> None:
     assert table_spec == []
     assert aggregate_prompt == 'Return JSON {{"population": 5}}'
     assert aggregate_prompt.format_map({}) == 'Return JSON {"population": 5}'
+
+
+def _aggregate_chain_node(text: str) -> dict:
+    return {
+        "parameters": {
+            "text": text,
+            "messages": {"messageValues": []},
+        },
+        "type": "@n8n/n8n-nodes-langchain.chainLlm",
+        "name": "Digest",
+        "notes": '{"op-type": "text-generation", "mode": "aggregate"}',
+    }
+
+
+def _aggregate_message_content(ops: list[dict]) -> str:
+    """The user message content of the aggregate chain's MessageOp."""
+    for op in ops:
+        if op.get("_op") == "MessageOp":
+            for msg in op.get("messages") or []:
+                if msg.get("role") == "user":
+                    return msg["content"]
+    raise AssertionError("no user MessageOp found")
+
+
+def _render_aggregate_format_ops(
+    ops: list[dict],
+    df_value: str,
+    ref_values: dict[str, str] | None = None,
+) -> list[str]:
+    """Render every FormatOp in the chain ops the way the runtime does, with
+    the aggregate {df} column and any ref columns supplied."""
+    rendered = []
+    for op in ops:
+        if op.get("_op") != "FormatOp":
+            continue
+        kwargs = dict(op.get("format_kwargs") or {})
+        kwargs["df"] = df_value
+        for key, value in (ref_values or {}).items():
+            kwargs[key] = value
+        rendered.append(op["template"].format(**kwargs))
+    return rendered
+
+
+def test_aggregate_chain_no_ref_escapes_once() -> None:
+    """An aggregate prompt with a table block but no n8n ref escapes literal
+    braces exactly once, so the message renders the JSON literally."""
+    node = _aggregate_chain_node(
+        'Return JSON {"a": 1}.\n```table\nx: {{ $json.x }}\n```'
+    )
+    ops, _ = _make_chain_ops(
+        node=node,
+        node_name="Digest",
+        incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
+        node_map={},
+        op_ids={},
+        inputs={},
+        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+        scope="g0",
+    )
+    content = _aggregate_message_content(ops)
+    assert content == 'Return JSON {{"a": 1}}.\n{df}'
+    assert content.format_map({"df": '{"x": "v"}'}) == (
+        'Return JSON {"a": 1}.\n{"x": "v"}'
+    )
+
+
+def test_aggregate_chain_with_ref_escapes_once() -> None:
+    """An aggregate prompt with a table block and an n8n ref escapes literal
+    braces once and keeps {df} live, rendering the JSON literally."""
+    node = _aggregate_chain_node(
+        "Return JSON {\"a\": 1} for {{ $('Stock') }}.\n"
+        "```table\nx: {{ $('SQL').item.x }}\n```"
+    )
+    ops, _ = _make_chain_ops(
+        node=node,
+        node_name="Digest",
+        incoming={
+            "Digest": [{"type": "ai_languageModel", "node": "Model"}],
+        },
+        node_map={"SQL": {"type": N8N_POSTGRES_NODE}},
+        op_ids={"Stock": "op_stock", "SQL": "op_sql"},
+        inputs={},
+        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+        scope="g0",
+    )
+    rendered = _render_aggregate_format_ops(
+        ops, df_value='{"x": "v"}', ref_values={"ref0": "NVDA"}
+    )
+    assert rendered == ['Return JSON {"a": 1} for NVDA.\n{"x": "v"}']
