@@ -1052,9 +1052,14 @@ class HaloOptimizer(BaseOptimizer):
         return 0.05 * float(timeout)
 
     def _python_row_count(self, raw: dict[str, Any]) -> int:
-        """The number of input rows a python step processes. In row and aligned
-        mode every plan entry carries 1 or a common n (validated at build), so
-        the max is that n; for a list-mode step it is the longest input column."""
+        """The number of input rows a python step processes: the ``row_count``
+        its build recorded (the common row count of a row or aligned step, the
+        longest input of a list step) or, when an input's count was unknown at
+        build, the largest literal count with each upstream stage taken as the
+        graph-wide input count."""
+        row_count = raw.get("row_count")
+        if isinstance(row_count, int) and not isinstance(row_count, bool):
+            return row_count
         plan = raw.get("plan")
         if not isinstance(plan, list):
             return max(1, int(self._input_query_count))

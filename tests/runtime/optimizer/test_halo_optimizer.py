@@ -291,6 +291,20 @@ def test_python_exec_cost_counts_stage_rows_alongside_a_broadcast_literal() -> N
     assert optimizer._python_exec_cost(node) == 20
 
 
+def test_python_exec_cost_prefers_the_recorded_row_count() -> None:
+    optimizer = HaloOptimizer()
+    optimizer._input_query_count = 10
+    node = _python_node(
+        {
+            "timeout_s": 600,
+            "expected_runtime_s": 2,
+            "row_count": 7,
+            "plan": [{"kind": "stage", "node": "upstream"}],
+        }
+    )
+    assert optimizer._python_exec_cost(node) == 14
+
+
 def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
     optimizer = HaloOptimizer()
     assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30

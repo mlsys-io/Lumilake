@@ -205,6 +205,47 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     assert len(_python_nodes(graph)) == 1
 
 
+def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    row = LambdaOp(
+        [a, b],
+        fn=lambda inputs: str(inputs[0]) + str(inputs[1]),
+        expected_runtime_s=2,
+    )
+    whole = LambdaOp(
+        [a, b],
+        fn=lambda inputs: [len(inputs[0]) + len(inputs[1])],
+        mode="list",
+        expected_runtime_s=2,
+    )
+    plain = LambdaOp([a, b], fn=lambda inputs: str(inputs[0]) + str(inputs[1]))
+    compiled = Graph.from_ops(
+        [as_output("row", row), as_output("whole", whole), as_output("plain", plain)]
+    ).compile(A=["a1", "a2", "a3"], B=["b"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert graph.nodes[row.id].data_spec["row_count"] == 3
+    assert graph.nodes[whole.id].data_spec["row_count"] == 3
+    assert "row_count" not in graph.nodes[plain.id].data_spec
+    assert "row_count" not in graph.nodes[row.id].to_flowmesh_node()["spec"]
+
+
+def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
+    a = input_placeholder("A")
+    inner = LambdaOp([a], fn=lambda inputs: list(inputs[0]), mode="list")
+    outer = LambdaOp(
+        [inner, a],
+        fn=lambda inputs: [len(inputs[0])],
+        mode="list",
+        expected_runtime_s=2,
+    )
+    compiled = Graph.from_ops([as_output("out", outer)]).compile(A=["a1", "a2"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert "row_count" not in graph.nodes[outer.id].data_spec
+
+
 # ------------------------------------------------------------------ #
 # The generated wrapper, executed
 # ------------------------------------------------------------------ #
@@ -486,8 +527,6 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
 
 
 def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
-    # An aligned lambda with input columns of unequal lengths is rejected before
-    # the user function runs, mirroring the row-mode check.
     code = "def f(columns):\n    return columns[0]\n"
     plan: python_step.ColumnPlan = [
         {"kind": "literal", "values": ["a", "b", "c"]},

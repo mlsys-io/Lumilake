@@ -691,7 +691,7 @@ class RuntimeGraphBuilder:
 
         plan: python_step.ColumnPlan = []
         dependencies: list[str] = []
-        row_counts: list[tuple[str, int]] = []
+        row_counts: list[tuple[str, int | None]] = []
         for inp in op.inputs:
             if isinstance(inp, LambdaOp):
                 dep = self._build_python_step(
@@ -728,9 +728,9 @@ class RuntimeGraphBuilder:
                     " Python step reads LLM, data-retrieval, Lambda, input or data"
                     " ops"
                 )
-            count = self._static_output_row_count(inp, inputs_dict, graph_dict)
-            if count is not None:
-                row_counts.append((inp.id, count))
+            row_counts.append(
+                (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
+            )
             entry: dict[str, Any] = {"kind": "stage", "node": dep}
             if (
                 isinstance(inp, LLMChatOp)
@@ -746,14 +746,7 @@ class RuntimeGraphBuilder:
             if dep not in dependencies:
                 dependencies.append(dep)
 
-        multi = {count for _, count in row_counts if count > 1}
-        if len(multi) > 1:
-            counts = ", ".join(f"{name}={count}" for name, count in row_counts)
-            raise ValueError(
-                f"LambdaOp '{op_id}' combines inputs of different row counts"
-                f" ({counts}); every multi-row input must carry the same number"
-                " of rows"
-            )
+        row_count = self._python_step_row_count(op_id, row_counts, combines_rows=True)
 
         data_spec: dict[str, Any] = {
             "code": op.code,
@@ -771,6 +764,8 @@ class RuntimeGraphBuilder:
             data_spec["image"] = op.image
         if op.expected_runtime_s is not None:
             data_spec["expected_runtime_s"] = op.expected_runtime_s
+            if row_count is not None:
+                data_spec["row_count"] = row_count
         if op.cache is not None:
             data_spec["cache"] = op.cache
         runtime_op = self._create_runtime_op(
@@ -1534,7 +1529,7 @@ class RuntimeGraphBuilder:
         """Compile a list-mode LambdaOp to one FlowMesh ``python`` task."""
         plan: python_step.ColumnPlan = []
         dependencies: list[str] = []
-        row_counts: list[tuple[str, int]] = []
+        row_counts: list[tuple[str, int | None]] = []
         for inp in op.inputs:
             if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
                 plan.append({"kind": "stage", "node": inp.id})
@@ -1573,19 +1568,16 @@ class RuntimeGraphBuilder:
                     f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
-            if op.mode == "aligned" and not isinstance(inp, (InputOp, DataOp)):
-                count = self._static_output_row_count(inp, inputs_dict, graph_dict)
-                if count is not None:
-                    row_counts.append((inp.id, count))
-        if op.mode == "aligned":
-            multi = {count for _, count in row_counts if count > 1}
-            if len(multi) > 1:
-                counts = ", ".join(f"{name}={count}" for name, count in row_counts)
-                raise ValueError(
-                    f"LambdaOp '{op_id}' combines inputs of different row counts"
-                    f" ({counts}); every multi-row input must carry the same number"
-                    " of rows"
+            if not isinstance(inp, (InputOp, DataOp)):
+                row_counts.append(
+                    (
+                        inp.id,
+                        self._static_output_row_count(inp, inputs_dict, graph_dict),
+                    )
                 )
+        row_count = self._python_step_row_count(
+            op_id, row_counts, combines_rows=op.mode == "aligned"
+        )
         data_spec: dict[str, Any] = {
             "code": op.code,
             "fn_name": op.fn.__name__,
@@ -1603,6 +1595,8 @@ class RuntimeGraphBuilder:
             data_spec["image"] = op.image
         if op.expected_runtime_s is not None:
             data_spec["expected_runtime_s"] = op.expected_runtime_s
+            if row_count is not None:
+                data_spec["row_count"] = row_count
         if op.cache is not None:
             data_spec["cache"] = op.cache
         return self._create_runtime_op(
@@ -2707,6 +2701,31 @@ class RuntimeGraphBuilder:
         for column in template_spec.get("columns", []) or []:
             visit_column(column)
         return deps
+
+    def _python_step_row_count(
+        self,
+        op_id: str,
+        row_counts: Sequence[tuple[str, int | None]],
+        combines_rows: bool,
+    ) -> int | None:
+        """The rows a python step processes, or ``None`` when an input's count
+        is unknown at build time. A step that combines its inputs row by row
+        needs every multi-row input to carry the same count."""
+        if combines_rows:
+            multi = {
+                count for _, count in row_counts if count is not None and count > 1
+            }
+            if len(multi) > 1:
+                counts = ", ".join(f"{name}={count}" for name, count in row_counts)
+                raise ValueError(
+                    f"LambdaOp '{op_id}' combines inputs of different row counts"
+                    f" ({counts}); every multi-row input must carry the same number"
+                    " of rows"
+                )
+        known = [count for _, count in row_counts if count is not None]
+        if len(known) != len(row_counts):
+            return None
+        return max([1, *known])
 
     def _static_output_row_count(
         self,
