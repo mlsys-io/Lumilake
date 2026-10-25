@@ -369,6 +369,21 @@ def test_n8n_code_node_rejects_a_non_bool_cache() -> None:
         parse_n8n_payload(payload)
 
 
+def test_n8n_code_node_sample_value_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"sample-value": "K-123"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.sample_value == "K-123"
+
+
 def test_n8n_code_node_rejects_an_empty_image() -> None:
     workflow = _code_node_workflow('{"image":"  "}')
     payload = {

@@ -1610,6 +1610,9 @@ def _make_code_ops(
         if not isinstance(cache, bool):
             raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
         op["cache"] = cache
+    sample_value = notes.get("sample-value")
+    if sample_value is not None:
+        op["sample_value"] = sample_value
     return [op], op["_id"]
 
 
