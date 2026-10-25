@@ -380,6 +380,58 @@ def test_n8n_code_node_rejects_an_empty_image() -> None:
         parse_n8n_payload(payload)
 
 
+def test_n8n_code_node_is_output_emits_output_op() -> None:
+    workflow = _code_node_workflow(
+        '{"is-output": true, "output-field": "selected_papers"}'
+    )
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    output_ops = list(graph.iter_ops(OutputOp))
+    assert len(output_ops) == 1
+    assert output_ops[0].name == "selected_papers"
+
+
+def test_n8n_code_node_is_output_defaults_to_node_name() -> None:
+    workflow = _code_node_workflow('{"is-output": true}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    output_ops = list(graph.iter_ops(OutputOp))
+    assert len(output_ops) == 1
+    assert output_ops[0].name == "Code"
+
+
+def test_n8n_code_node_rejects_a_non_bool_is_output() -> None:
+    workflow = _code_node_workflow('{"is-output": "yes"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="is-output"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_rejects_an_empty_output_field() -> None:
+    workflow = _code_node_workflow('{"is-output": true, "output-field": "  "}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="output-field"):
+        parse_n8n_payload(payload)
+
+
 def test_rowwise_prompt_escapes_literal_braces() -> None:
     """A rowwise prompt with a literal JSON example renders verbatim."""
     template = _build_rowwise_prompt_content(
