@@ -345,10 +345,14 @@ its own standalone `python` task and may set `timeout_s` up to FlowMesh's
 
 `expected_runtime_s` is a planning hint only: it is seconds per input row of
 the task, and HALO uses it to estimate the step's run time. It is never
-enforced as a limit. `cache` is also opt-in: Lumilake sends `cache: true` to
-FlowMesh only when the op sets it. `sample_value` is never executed: it only
-supplies a representative value so data-profile preflight can resolve a
-placeholder whose upstream is this `LambdaOp`.
+enforced as a limit. When a job's input slices are coalesced into one
+workflow, the step runs their rows in sequence, so Lumilake coalesces only as
+many slices as keep the step's expected run time within its `timeout_s`; the
+rest run as separate copies of the workflow in the same batch. `cache` is also
+opt-in: Lumilake sends `cache: true` to FlowMesh only when the op sets it.
+`sample_value` is never executed: it only supplies a representative value so
+data-profile preflight can resolve a placeholder whose upstream is this
+`LambdaOp`.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see
