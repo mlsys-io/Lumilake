@@ -10,6 +10,7 @@ from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    DataRetrievalOp,
     FormatOp,
     LambdaOp,
     LLMChatOp,
@@ -122,6 +123,34 @@ def test_lambda_read_by_llm_stays_inlined() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
     graph = RuntimeGraphBuilder().build(compiled)
     assert _python_nodes(graph) == {}
+
+
+def test_lambda_fed_to_llm_and_retrieval_runs_as_python_step() -> None:
+    """A row-mode LambdaOp feeding both an LLM and a DataRetrievalOp must
+    materialize as a python step so the retrieval node can reference it."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE q = :q",
+            "params": [{"label": "q", "node": terms.id, "path": "items.output"}],
+        },
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert terms.id in _python_nodes(graph)
+    assert graph.nodes[retrieval.id].dependencies == (terms.id,)
 
 
 def test_documented_yaml_example_builds() -> None:
