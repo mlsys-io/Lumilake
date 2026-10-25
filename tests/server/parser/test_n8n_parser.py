@@ -13,6 +13,8 @@ from lumilake_server.parser.n8n import (
     N8N_POSTGRES_NODE,
     N8N_S3_NODE,
     _build_aggregate_prompt_content,
+    _build_prompt_content,
+    _build_rowwise_prompt_content,
     _extract_rowwise_columns,
     _referenced_op_path,
 )
@@ -375,3 +377,42 @@ def test_n8n_code_node_rejects_an_empty_image() -> None:
     }
     with pytest.raises(ValueError, match="image"):
         parse_n8n_payload(payload)
+
+
+def test_rowwise_prompt_escapes_literal_braces() -> None:
+    """A rowwise prompt with a literal JSON example renders verbatim."""
+    template = _build_rowwise_prompt_content(
+        "Return JSON like {\"population\": 5} for {{ $('SQL').item.synopsis }}"
+    )
+    rendered = template.format_map({"synopsis": "the value"})
+    assert rendered == 'Return JSON like {"population": 5} for the value'
+
+
+def test_prompt_content_escapes_literal_braces_with_ref() -> None:
+    """A non-rowwise prompt with a ref and a JSON example renders verbatim."""
+    content, extra_ops = _build_prompt_content(
+        "Return JSON like {\"population\": 5} for {{ $('SQL') }}",
+        node_name="Chain",
+        op_ids={"SQL": "op_sql"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    rendered = fmt_op["template"].format(**fmt_op["format_kwargs"])
+    assert rendered == 'Return JSON like {"population": 5} for op_sql'
+
+
+def test_prompt_content_no_ref_keeps_text_unchanged() -> None:
+    """A prompt with no refs is not a format template and stays verbatim."""
+    text = 'Return JSON like {"population": 5}'
+    content, extra_ops = _build_prompt_content(
+        text,
+        node_name="Chain",
+        op_ids={},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert extra_ops == []
+    assert content == text
