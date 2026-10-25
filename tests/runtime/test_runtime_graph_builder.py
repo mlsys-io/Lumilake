@@ -623,6 +623,79 @@ def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:
     assert all(col.get("path") != "items.metadata.prompt" for col in upstream_columns)
 
 
+def test_plain_prompt_field_ref_binds_column_with_path() -> None:
+    """A plain chainLlm prompt reading a field of a row-mode Code node binds a
+    column whose path ends in the field, instead of inlining the whole item."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {"pythonCode": "return {'question': 'hi'}"},
+                "type": "n8n-nodes-base.code",
+                "name": "Protocol Details",
+                "id": "code-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Q: {{ $('Protocol Details').item.question }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Protocol Details", "type": "main", "index": 0}]]
+            },
+            "Protocol Details": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    assert any(col.get("path", "").endswith(".question") for col in columns)
+
+
 def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
     images = input_placeholder("Images")
     vision = LLMVisionOp(
