@@ -54,6 +54,7 @@ Lumilake annotations as a JSON object with kebab-case keys:
 | `memory-mb` | integer | Task memory limit, as YAML `memory_mb`. |
 | `expected-runtime-s` | number | HALO planning hint: seconds per input row; never enforced. |
 | `cache` | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
+| `sample-value` | any JSON | Representative value for data-profile preflight placeholders; never executed. |
 
 A Code node with an `image` always runs as its own standalone `python` task.
 `expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
@@ -113,7 +114,7 @@ params:
     path: items.table.id
 ```
 
-For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns.
+For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns. For a `LambdaOp` upstream, set `sample_value` on the op (or the Code node's `sample-value` note) the same way — preflight never executes user code, so it needs a representative value to resolve the placeholder.
 
 An `aggregate_table` column may reference a workflow input by `node` with an empty `path` (`path: ""`), in which case the input's literal values are inlined as the column's list rather than read from a runtime envelope.
 
