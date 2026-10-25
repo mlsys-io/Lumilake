@@ -1343,7 +1343,8 @@ def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
     llm.inputs.append(shout)
     emb = EmbeddingOp(content=shout, config=GenerationConfig(model="bge-small"))
     output = as_output("vectors", emb)
-    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    llm_output = as_output("result", llm)
+    compiled = Graph.from_ops([output, llm_output]).compile(Stock=["NVDA"])
 
     with pytest.raises(ValueError, match="inlined into the LLM"):
         RuntimeGraphBuilder().build(compiled)
