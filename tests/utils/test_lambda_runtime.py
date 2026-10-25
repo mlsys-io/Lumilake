@@ -7,7 +7,7 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LambdaOp
+from lumilake_server.ops import LambdaOp, as_output
 from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -100,16 +100,23 @@ def test_stdlib_imports_inside_the_function_work() -> None:
 
 
 @pytest.mark.parametrize(
-    "code, message",
+    "code",
     [
-        ("import requests\ndef f(a):\n    return a", "'requests' is not available"),
-        ("def f(a):\n    from httpx import get\n    return a", "'httpx' is not"),
-        ("def f(a):\n    from . import x\n    return a", "relative imports"),
+        "import requests\ndef f(a):\n    return a",
+        "def f(a):\n    from httpx import get\n    return a",
     ],
 )
-def test_non_stdlib_imports_are_rejected_at_validation(code: str, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        lambda_runtime.validate_source(code, "f")
+def test_non_stdlib_imports_are_accepted_for_standalone_code(code: str) -> None:
+    # A standalone task runs in its own container, so any module the image
+    # provides may be imported; validation only checks the shape of the code.
+    assert lambda_runtime.validate_source(code, "f") == "f"
+
+
+def test_relative_imports_are_rejected() -> None:
+    with pytest.raises(ValueError, match="relative imports"):
+        lambda_runtime.validate_source(
+            "def f(a):\n    from . import x\n    return a", "f"
+        )
 
 
 def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
@@ -373,6 +380,126 @@ def test_submitted_lambda_in_api_mode_fails_closed() -> None:
 def test_yaml_rejects_a_non_numeric_limit() -> None:
     with pytest.raises(ValueError, match="timeout_s"):
         parse_yaml_payload(_CHAIN.replace("timeout_s: 10", "timeout_s: soon"))
+
+
+def test_yaml_image_reaches_the_op() -> None:
+    spec = parse_yaml_payload(
+        _CHAIN.replace("memory_mb: 256", "memory_mb: 256\n    image: my/lambda:1")
+    )["chain"]
+    (lambda_dict,) = [d for d in spec["graph"].values() if d["_op"] == "LambdaOp"]
+    assert lambda_dict["image"] == "my/lambda:1"
+    graph = Graph.from_json(spec["graph"])
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+    assert op.image == "my/lambda:1"
+
+
+def test_yaml_rejects_an_empty_image() -> None:
+    with pytest.raises(ValueError, match="image"):
+        parse_yaml_payload(
+            _CHAIN.replace("memory_mb: 256", "memory_mb: 256\n    image: '  '")
+        )
+
+
+def test_native_graph_image_round_trip() -> None:
+    graph = Graph.from_ops(
+        [
+            as_output(
+                "out",
+                LambdaOp(
+                    [["x"]],
+                    fn=SubmittedFunction("def f(a):\n    return a[0]", "f"),
+                    code="def f(a):\n    return a[0]",
+                    image="my/lambda:1",
+                ),
+            )
+        ]
+    )
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+    assert op.image == "my/lambda:1"
+    (round_tripped,) = [
+        o
+        for o in Graph.from_json(graph.serialize()).iter_ops()
+        if isinstance(o, LambdaOp)
+    ]
+    assert round_tripped.image == "my/lambda:1"
+
+
+def test_yaml_expected_runtime_reaches_the_op() -> None:
+    payload = _CHAIN.replace(
+        "    memory_mb: 256\n",
+        "    memory_mb: 256\n    expected_runtime_s: 5\n",
+    )
+    spec = parse_yaml_payload(payload)["chain"]
+    (lambda_dict,) = [d for d in spec["graph"].values() if d["_op"] == "LambdaOp"]
+    assert lambda_dict["expected_runtime_s"] == 5
+    graph = Graph.from_json(spec["graph"])
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+    assert op.expected_runtime_s == 5
+    assert op._serialize()["expected_runtime_s"] == 5
+
+
+def test_yaml_rejects_a_bad_expected_runtime() -> None:
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        parse_yaml_payload(
+            _CHAIN.replace(
+                "    memory_mb: 256\n",
+                "    memory_mb: 256\n    expected_runtime_s: true\n",
+            )
+        )
+
+
+def test_native_graph_expected_runtime_round_trip() -> None:
+    op = LambdaOp._from_json(
+        {
+            "fn_name": "shout",
+            "_code": _SHOUT,
+            "_inputs": [],
+            "timeout_s": 5,
+            "expected_runtime_s": 3,
+        },
+        {},
+    )
+    assert op.expected_runtime_s == 3
+    assert op._serialize()["expected_runtime_s"] == 3
+
+
+def test_yaml_cache_reaches_the_op() -> None:
+    payload = _CHAIN.replace(
+        "    memory_mb: 256\n",
+        "    memory_mb: 256\n    cache: true\n",
+    )
+    spec = parse_yaml_payload(payload)["chain"]
+    (lambda_dict,) = [d for d in spec["graph"].values() if d["_op"] == "LambdaOp"]
+    assert lambda_dict["cache"] is True
+    graph = Graph.from_json(spec["graph"])
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+    assert op.cache is True
+    assert op._serialize()["cache"] is True
+
+
+def test_yaml_rejects_a_non_bool_cache() -> None:
+    with pytest.raises(ValueError, match="cache"):
+        parse_yaml_payload(
+            _CHAIN.replace(
+                "    memory_mb: 256\n",
+                "    memory_mb: 256\n    cache: 1\n",
+            )
+        )
+
+
+def test_native_graph_cache_round_trip() -> None:
+    op = LambdaOp._from_json(
+        {
+            "fn_name": "shout",
+            "_code": _SHOUT,
+            "_inputs": [],
+            "timeout_s": 5,
+            "cache": False,
+        },
+        {},
+    )
+    assert op.cache is False
+    assert op._serialize()["cache"] is False
 
 
 _STANDALONE = """

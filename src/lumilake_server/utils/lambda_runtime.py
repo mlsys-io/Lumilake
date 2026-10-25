@@ -5,7 +5,7 @@ or as module source that defines a one-parameter ``def`` named by ``fn_name``.
 The source may put imports, constants and helper functions before that ``def``.
 It sees a fixed namespace: a small set of builtins plus ``json``, ``re``,
 ``math``, ``np`` and ``pd`` (``np``/``pd`` imported only when the code names
-them), and it may ``import`` any standard-library module, numpy or pandas.
+them), and it may ``import`` any module the container image provides.
 
 The namespace fixes what names resolve; it is not a security boundary, because
 the object graph reaches every class without a single builtin. Caller-supplied
@@ -13,7 +13,7 @@ code is therefore never materialized in the Lumilake server process: it runs
 only where the deployment isolates it, as a FlowMesh ``python`` task
 (``runtime/python_step.py``) in a per-task container with no network and an
 unprivileged uid. That container, not this namespace, is what makes allowing
-standard-library imports safe.
+imports safe.
 
 A LambdaOp that feeds an LLM is different: it is inlined into the LLM's FlowMesh
 task as a ``graph_template`` function and evaluated by the FlowMesh worker's own
@@ -32,7 +32,6 @@ import json
 import math
 import re
 import symtable
-import sys
 import types
 from collections.abc import Callable
 from typing import Any
@@ -95,19 +94,6 @@ INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
 
 _SOURCE_NAME = "<lambda_op>"
-_LIBRARY_ROOTS = ("numpy", "pandas")
-
-
-def _importable(name: str) -> bool:
-    root = name.partition(".")[0]
-    return root in sys.stdlib_module_names or root in _LIBRARY_ROOTS
-
-
-def _not_importable_message(name: str) -> str:
-    return (
-        f"import of {name!r} is not available in a LambdaOp function; only the"
-        " Python standard library, numpy and pandas can be imported"
-    )
 
 
 def _lambda_import(
@@ -117,16 +103,15 @@ def _lambda_import(
     fromlist: Any = (),
     level: int = 0,
 ) -> Any:
-    """``__import__`` for LambdaOp code: the standard library, numpy and pandas.
+    """``__import__`` for standalone LambdaOp code: any module the image provides.
 
     CPython resolves ``__import__`` in the calling frame's builtins, which are
     restricted here, so both the caller's own ``import`` statements and the
-    lazy imports numpy/pandas make from C land in this hook.
+    lazy imports numpy/pandas make from C land in this hook. A standalone task
+    runs in its own container, so the image is the only import boundary.
     """
     if level != 0:
         raise ImportError("relative imports are not available in a LambdaOp function")
-    if not _importable(name):
-        raise ImportError(_not_importable_message(name))
     return builtins.__import__(name, globals, locals, fromlist, level)
 
 
@@ -249,7 +234,8 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     top-level one-parameter function of that name. Imports, constants and
     helper functions may come before it. Without ``fn_name`` the first
     top-level function is used. A lambda has no name, so ``fn_name`` labels it
-    only. Every import must name the standard library, numpy or pandas.
+    only. Imports are not restricted here: a standalone task runs in its own
+    container, so the image is the only import boundary.
     """
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
@@ -258,8 +244,6 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     for name, level in _imported_names(tree):
         if level != 0:
             raise ValueError("LambdaOp code must not use relative imports")
-        if not _importable(name):
-            raise ValueError(_not_importable_message(name))
     _check_free_names(code)
     defs = [
         stmt

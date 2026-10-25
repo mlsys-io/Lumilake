@@ -624,7 +624,9 @@ class RuntimeGraphBuilder:
                 if isinstance(op, LambdaOp)
                 and not op.takes_whole_columns
                 and (
-                    op_id not in visited_node_ids or op_id in output_source_to_outputop
+                    op_id not in visited_node_ids
+                    or op_id in output_source_to_outputop
+                    or op.image is not None
                 )
             ]
             for lambda_id in standalone:
@@ -689,6 +691,7 @@ class RuntimeGraphBuilder:
 
         plan: python_step.ColumnPlan = []
         dependencies: list[str] = []
+        row_counts: list[tuple[str, int | None]] = []
         for inp in op.inputs:
             if isinstance(inp, LambdaOp):
                 dep = self._build_python_step(
@@ -712,10 +715,12 @@ class RuntimeGraphBuilder:
             elif isinstance(inp, InputOp):
                 visited_node_ids.add(inp.id)
                 plan.append({"kind": "literal", "values": inputs_dict[inp.name]})
+                row_counts.append((inp.id, len(inputs_dict[inp.name])))
                 continue
             elif isinstance(inp, DataOp):
                 visited_node_ids.add(inp.id)
                 plan.append({"kind": "literal", "values": list(inp.data)})
+                row_counts.append((inp.id, len(inp.data)))
                 continue
             else:
                 raise ValueError(
@@ -723,6 +728,9 @@ class RuntimeGraphBuilder:
                     " Python step reads LLM, data-retrieval, Lambda, input or data"
                     " ops"
                 )
+            row_counts.append(
+                (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
+            )
             entry: dict[str, Any] = {"kind": "stage", "node": dep}
             if (
                 isinstance(inp, LLMChatOp)
@@ -738,6 +746,8 @@ class RuntimeGraphBuilder:
             if dep not in dependencies:
                 dependencies.append(dep)
 
+        row_count = self._python_step_row_count(op_id, row_counts, combines_rows=True)
+
         data_spec: dict[str, Any] = {
             "code": op.code,
             "fn_name": op.fn.__name__,
@@ -750,6 +760,14 @@ class RuntimeGraphBuilder:
         }
         if op.memory_mb is not None:
             data_spec["memory_mb"] = op.memory_mb
+        if op.image is not None:
+            data_spec["image"] = op.image
+        if op.expected_runtime_s is not None:
+            data_spec["expected_runtime_s"] = op.expected_runtime_s
+            if row_count is not None:
+                data_spec["row_count"] = row_count
+        if op.cache is not None:
+            data_spec["cache"] = op.cache
         runtime_op = self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
@@ -1511,6 +1529,7 @@ class RuntimeGraphBuilder:
         """Compile a list-mode LambdaOp to one FlowMesh ``python`` task."""
         plan: python_step.ColumnPlan = []
         dependencies: list[str] = []
+        row_counts: list[tuple[str, int | None]] = []
         for inp in op.inputs:
             if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
                 plan.append({"kind": "stage", "node": inp.id})
@@ -1539,14 +1558,26 @@ class RuntimeGraphBuilder:
                         f"LambdaOp '{op_id}' input '{inp.id}' has no values supplied."
                     )
                 plan.append({"kind": "literal", "values": list(values)})
+                row_counts.append((inp.id, len(values)))
             elif isinstance(inp, DataOp):
                 plan.append({"kind": "literal", "values": list(inp.data)})
+                row_counts.append((inp.id, len(inp.data)))
             else:
                 raise ValueError(
                     f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
                     f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
+            if not isinstance(inp, (InputOp, DataOp)):
+                row_counts.append(
+                    (
+                        inp.id,
+                        self._static_output_row_count(inp, inputs_dict, graph_dict),
+                    )
+                )
+        row_count = self._python_step_row_count(
+            op_id, row_counts, combines_rows=op.mode == "aligned"
+        )
         data_spec: dict[str, Any] = {
             "code": op.code,
             "fn_name": op.fn.__name__,
@@ -1560,6 +1591,14 @@ class RuntimeGraphBuilder:
         }
         if op.memory_mb is not None:
             data_spec["memory_mb"] = op.memory_mb
+        if op.image is not None:
+            data_spec["image"] = op.image
+        if op.expected_runtime_s is not None:
+            data_spec["expected_runtime_s"] = op.expected_runtime_s
+            if row_count is not None:
+                data_spec["row_count"] = row_count
+        if op.cache is not None:
+            data_spec["cache"] = op.cache
         return self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,
@@ -2663,6 +2702,31 @@ class RuntimeGraphBuilder:
             visit_column(column)
         return deps
 
+    def _python_step_row_count(
+        self,
+        op_id: str,
+        row_counts: Sequence[tuple[str, int | None]],
+        combines_rows: bool,
+    ) -> int | None:
+        """The rows a python step processes, or ``None`` when an input's count
+        is unknown at build time. A step that combines its inputs row by row
+        needs every multi-row input to carry the same count."""
+        if combines_rows:
+            multi = {
+                count for _, count in row_counts if count is not None and count > 1
+            }
+            if len(multi) > 1:
+                counts = ", ".join(f"{name}={count}" for name, count in row_counts)
+                raise ValueError(
+                    f"LambdaOp '{op_id}' combines inputs of different row counts"
+                    f" ({counts}); every multi-row input must carry the same number"
+                    " of rows"
+                )
+        known = [count for _, count in row_counts if count is not None]
+        if len(known) != len(row_counts):
+            return None
+        return max([1, *known])
+
     def _static_output_row_count(
         self,
         op: Op,
@@ -2890,6 +2954,14 @@ class RuntimeGraphBuilder:
                 ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             elif isinstance(op, LambdaOp):
+                if op.image is not None:
+                    raise ValueError(
+                        f"LLMOp '{llm_op_id}' consumes image-bearing LambdaOp"
+                        f" '{op.id}' through its message chain; a LambdaOp with"
+                        " an image always runs as its own FlowMesh python task,"
+                        " so read it through a node column (rowwise_columns /"
+                        " aggregate_table) instead."
+                    )
                 if op.takes_whole_columns:
                     raise ValueError(
                         f"LLMOp '{llm_op_id}' consumes list-mode LambdaOp '{op.id}' "

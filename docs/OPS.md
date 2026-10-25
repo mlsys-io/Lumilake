@@ -248,11 +248,11 @@ Where the function runs depends on what reads it:
   only on a CPU worker that advertises the `python` task type (a Docker-backed
   worker on a FlowMesh version that supports it). While every such worker is
   busy the batch waits for capacity; with no such worker in the cluster the
-  schedule fails before dispatch. The code may `import` any standard-library
-  module (plus numpy/pandas where the image has them), at module level or in
-  the function body; import statements naming anything else are rejected at
-  submit. A dynamic `__import__` of a non-allowed module is not statically
-  rejected and fails when the task runs. If the function
+  schedule fails before dispatch. The code may `import` any module the task
+  image provides (the default image carries the standard library, numpy and
+  pandas), at module level or in the function body; only relative imports are
+  rejected at submit. A `LambdaOp` with an `image` always runs as its own
+  standalone `python` task. If the function
   raises, the job's error names the step and the exception, for example
   `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
 - **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
@@ -286,6 +286,8 @@ returns exactly one value per input row, and the standalone task raises if the
 returned list's length does not match the row count. Because its output is
 row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run
 value, so its dependents keep one item per row and can be split across slices.
+In both `row` and `aligned` mode, inputs with unequal multi-row counts are
+rejected at submit: every multi-row input must carry the same number of rows.
 
 A list-mode `LambdaOp` runs once over the whole input lists of one run, so its
 single whole-list result cannot be partitioned per slice. A submission whose
@@ -314,22 +316,32 @@ classes user code reasonably raises or catches (`Exception`, `ArithmeticError`,
 exception classes, so inline code that references one is rejected at submit. The
 standalone task embeds the same materializer the server validates against. This
 namespace fixes which names resolve; it is **not** a security boundary. In the
-standalone task the container is the boundary, which is why that task also
-allows standard-library imports; `np` / `pd` resolve only if the task image
-provides them. A name the code references that the namespace does not provide
-(and that is not bound, imported or defined in the code) is rejected at submit
-with the name and the fix, instead of failing with `NameError` when the task
-runs.
+standalone task the container is the boundary, which is why that task allows
+importing any module the image provides; `np` / `pd` resolve only if the task
+image provides them. A name the code references that the namespace does not
+provide (and that is not bound, imported or defined in the code) is rejected at
+submit with the name and the fix, instead of failing with `NameError` when the
+task runs.
 
 Optional per-op limits for the standalone `python` task:
 
 | Field | Default | Bounds | Meaning |
 |---|---|---|---|
-| `timeout_s` | 600 | (0, 600] | Task timeout in seconds (`timeoutSeconds`). |
+| `timeout_s` | 600 | (0, 600] without `image`; (0, 3600] with `image` | Task timeout in seconds (`timeoutSeconds`). |
 | `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
+| `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
+| `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
+| `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 
 The limits apply only to the standalone `python` task; they have no effect on a
-`LambdaOp` that an LLM op inlines.
+`LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as
+its own standalone `python` task and may set `timeout_s` up to FlowMesh's
+3600 s cap; without an `image` the cap stays at 600 s.
+
+`expected_runtime_s` is a planning hint only: it is seconds per input row of
+the task, and HALO uses it to estimate the step's run time. It is never
+enforced as a limit. `cache` is also opt-in: Lumilake sends `cache: true` to
+FlowMesh only when the op sets it.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from lumilake_server.common import retrieval_items_path
+from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
 
@@ -1544,6 +1545,46 @@ def _make_code_ops(
         "fn_name": fn_name,
         "_code": fn_code,
     }
+    mode = notes.get("mode")
+    if mode is not None:
+        if mode not in LambdaOp.LAMBDA_MODES:
+            raise ValueError(
+                f"Code node '{node_name}' notes 'mode' must be one of "
+                f"{LambdaOp.LAMBDA_MODES} (got {mode!r})"
+            )
+        op["mode"] = mode
+    image = notes.get("image")
+    if image is not None:
+        if not isinstance(image, str) or not image.strip():
+            raise ValueError(
+                f"Code node '{node_name}' notes 'image' must be a non-empty string"
+            )
+        op["image"] = image
+    # Bounds are checked when the op is built.
+    for key, field, kind in (
+        ("timeout-s", "timeout_s", (int, float)),
+        ("memory-mb", "memory_mb", int),
+    ):
+        value = notes.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, kind):
+            raise ValueError(f"Code node '{node_name}' notes '{key}' must be a number")
+        op[field] = value
+    expected_runtime_s = notes.get("expected-runtime-s")
+    if expected_runtime_s is not None:
+        if isinstance(expected_runtime_s, bool) or not isinstance(
+            expected_runtime_s, (int, float)
+        ):
+            raise ValueError(
+                f"Code node '{node_name}' notes 'expected-runtime-s' must be a number"
+            )
+        op["expected_runtime_s"] = expected_runtime_s
+    cache = notes.get("cache")
+    if cache is not None:
+        if not isinstance(cache, bool):
+            raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
+        op["cache"] = cache
     return [op], op["_id"]
 
 

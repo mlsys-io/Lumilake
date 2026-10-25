@@ -206,3 +206,172 @@ def test_referenced_op_path_agent_uses_table() -> None:
     assert _referenced_op_path(N8N_POSTGRES_NODE, "symbol") == "items.table.symbol"
     assert _referenced_op_path(N8N_S3_NODE, None) == "items.content"
     assert _referenced_op_path(None, None) == "items.output"
+
+
+def _code_node_workflow(notes: str) -> dict:
+    return {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": N8N_CHAT_TRIGGER,
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"pythonCode": "return 'hi'"},
+                "type": "n8n-nodes-base.code",
+                "name": "Code",
+                "id": "code-node",
+                "typeVersion": 1,
+                "notes": notes,
+            },
+        ],
+        "connections": {
+            "Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}
+        },
+    }
+
+
+def test_n8n_code_node_image_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"image":"my/lambda:1"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.image == "my/lambda:1"
+
+
+def test_n8n_code_node_expected_runtime_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"expected-runtime-s": 5}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.expected_runtime_s == 5
+
+
+def test_n8n_code_node_mode_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"mode":"list"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.mode == "list"
+
+
+def test_n8n_code_node_rejects_an_unknown_mode() -> None:
+    workflow = _code_node_workflow('{"mode":"rowwise"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="'mode'"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_limits_reach_the_op() -> None:
+    workflow = _code_node_workflow(
+        '{"image":"my/lambda:1","timeout-s":1800,"memory-mb":4096}'
+    )
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.timeout_s == 1800
+    assert op.memory_mb == 4096
+
+
+def test_n8n_code_node_rejects_a_bad_timeout() -> None:
+    workflow = _code_node_workflow('{"timeout-s": "long"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="timeout-s"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_timeout_without_image_is_capped() -> None:
+    workflow = _code_node_workflow('{"timeout-s": 1800}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="timeout_s"):
+        Graph.from_json(parse_n8n_payload(payload)["graph"]["graph"])
+
+
+def test_n8n_code_node_rejects_a_bad_expected_runtime() -> None:
+    workflow = _code_node_workflow('{"expected-runtime-s": "soon"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="expected-runtime-s"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_cache_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"cache": true}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.cache is True
+
+
+def test_n8n_code_node_rejects_a_non_bool_cache() -> None:
+    workflow = _code_node_workflow('{"cache": "yes"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="cache"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_rejects_an_empty_image() -> None:
+    workflow = _code_node_workflow('{"image":"  "}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="image"):
+        parse_n8n_payload(payload)

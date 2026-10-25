@@ -236,8 +236,14 @@ _ALIGNED_MAIN = """\
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
-    values = fn(tuple(columns))
     n = max((len(c) for c in columns), default=0)
+    for entry, col in zip(_PLAN, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "input %r has %d rows; expected 1 or %d"
+                % (entry.get("node", "literal"), len(col), n)
+            )
+    values = fn(tuple(columns))
     if len(values) != n:
         raise ValueError(
             "aligned lambda {op_id!r} returned %d values for %d rows"
@@ -306,6 +312,10 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         "entrypoint": "main",
         "timeoutSeconds": data_spec["timeout_s"],
     }
+    if data_spec.get("image"):
+        spec["image"] = data_spec["image"]
+    if data_spec.get("cache") is not None:
+        spec["cache"] = data_spec["cache"]
     stages = list(
         dict.fromkeys(entry["node"] for entry in plan if entry["kind"] == "stage")
     )

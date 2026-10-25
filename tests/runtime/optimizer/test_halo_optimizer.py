@@ -231,6 +231,88 @@ def test_halo_optimizer_fails_before_scheduling_without_a_python_worker(
         )
 
 
+def _python_node(raw: dict[str, object]) -> Node:
+    return Node(
+        id="p1",
+        type="python",
+        engine="python",
+        model="",
+        inputs=(),
+        outputs=(),
+        db_queries=(),
+        raw=raw,
+    )
+
+
+def test_python_exec_cost_uses_expected_runtime_when_present() -> None:
+    optimizer = HaloOptimizer()
+    assert (
+        optimizer._python_exec_cost(
+            _python_node({"timeout_s": 600, "expected_runtime_s": 5})
+        )
+        == 5
+    )
+    optimizer._input_query_count = 10
+    assert (
+        optimizer._python_exec_cost(
+            _python_node({"timeout_s": 600, "expected_runtime_s": 5})
+        )
+        == 50
+    )
+
+
+def test_python_exec_cost_scales_with_literal_plan_rows() -> None:
+    optimizer = HaloOptimizer()
+    node = _python_node(
+        {
+            "timeout_s": 600,
+            "expected_runtime_s": 2,
+            "plan": [
+                {"kind": "literal", "values": list(range(10))},
+            ],
+        }
+    )
+    assert optimizer._python_exec_cost(node) == 20
+
+
+def test_python_exec_cost_counts_stage_rows_alongside_a_broadcast_literal() -> None:
+    optimizer = HaloOptimizer()
+    optimizer._input_query_count = 10
+    node = _python_node(
+        {
+            "timeout_s": 600,
+            "expected_runtime_s": 2,
+            "plan": [
+                {"kind": "stage", "node": "upstream"},
+                {"kind": "literal", "values": ["prefix"]},
+            ],
+        }
+    )
+    assert optimizer._python_exec_cost(node) == 20
+
+
+def test_python_exec_cost_prefers_the_recorded_row_count() -> None:
+    optimizer = HaloOptimizer()
+    optimizer._input_query_count = 10
+    node = _python_node(
+        {
+            "timeout_s": 600,
+            "expected_runtime_s": 2,
+            "row_count": 7,
+            "plan": [{"kind": "stage", "node": "upstream"}],
+        }
+    )
+    assert optimizer._python_exec_cost(node) == 14
+
+
+def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
+    optimizer = HaloOptimizer()
+    assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
+    assert optimizer._python_exec_cost(_python_node({})) == 30
+    optimizer._input_query_count = 10
+    assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
+
+
 def test_halo_dp_places_generated_python_steps_on_the_advertising_worker() -> None:
     """Runtime graphs the builder generates: several standalone python steps and
     plain CPU workers ahead of the one that advertises python, so the DP's CPU

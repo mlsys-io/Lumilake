@@ -149,6 +149,103 @@ outputs:
     assert len(_python_nodes(graph)) == 1
 
 
+def test_row_mode_rejects_unequal_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp([a, b], fn=lambda inputs: str(inputs[0]) + str(inputs[1]))
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2"], B=["b1", "b2", "b3"]
+    )
+    with pytest.raises(ValueError, match="different row counts"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_mode_accepts_one_and_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp([a, b], fn=lambda inputs: str(inputs[0]) + str(inputs[1]))
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2", "a3"], B=["b"]
+    )
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert len(_python_nodes(graph)) == 1
+
+
+def test_aligned_mode_rejects_unequal_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp(
+        [a, b],
+        fn=lambda inputs: [
+            str(inputs[0][i]) + str(inputs[1][i]) for i in range(len(inputs[0]))
+        ],
+        mode="aligned",
+    )
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2"], B=["b1", "b2", "b3"]
+    )
+    with pytest.raises(ValueError, match="different row counts"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp(
+        [a, b],
+        fn=lambda inputs: [
+            str(inputs[0][i]) + str(inputs[1][i]) for i in range(len(inputs[0]))
+        ],
+        mode="list",
+    )
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2"], B=["b1", "b2", "b3"]
+    )
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert len(_python_nodes(graph)) == 1
+
+
+def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    row = LambdaOp(
+        [a, b],
+        fn=lambda inputs: str(inputs[0]) + str(inputs[1]),
+        expected_runtime_s=2,
+    )
+    whole = LambdaOp(
+        [a, b],
+        fn=lambda inputs: [len(inputs[0]) + len(inputs[1])],
+        mode="list",
+        expected_runtime_s=2,
+    )
+    plain = LambdaOp([a, b], fn=lambda inputs: str(inputs[0]) + str(inputs[1]))
+    compiled = Graph.from_ops(
+        [as_output("row", row), as_output("whole", whole), as_output("plain", plain)]
+    ).compile(A=["a1", "a2", "a3"], B=["b"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert graph.nodes[row.id].data_spec["row_count"] == 3
+    assert graph.nodes[whole.id].data_spec["row_count"] == 3
+    assert "row_count" not in graph.nodes[plain.id].data_spec
+    assert "row_count" not in graph.nodes[row.id].to_flowmesh_node()["spec"]
+
+
+def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
+    a = input_placeholder("A")
+    inner = LambdaOp([a], fn=lambda inputs: list(inputs[0]), mode="list")
+    outer = LambdaOp(
+        [inner, a],
+        fn=lambda inputs: [len(inputs[0])],
+        mode="list",
+        expected_runtime_s=2,
+    )
+    compiled = Graph.from_ops([as_output("out", outer)]).compile(A=["a1", "a2"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert "row_count" not in graph.nodes[outer.id].data_spec
+
+
 # ------------------------------------------------------------------ #
 # The generated wrapper, executed
 # ------------------------------------------------------------------ #
@@ -429,6 +526,16 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
         _run_wrapper(code, plan, {}, fn_name="bad", mode="aligned")
 
 
+def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
+    code = "def f(columns):\n    return columns[0]\n"
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["a", "b", "c"]},
+        {"kind": "literal", "values": ["x", "y"]},
+    ]
+    with pytest.raises(ValueError, match="expected 1 or 3"):
+        _run_wrapper(code, plan, {}, fn_name="f", mode="aligned")
+
+
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
     out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
@@ -478,8 +585,15 @@ def test_wrapper_keeps_the_restricted_namespace() -> None:
     assert out == {"items": [{"output": "[2, 1]"}]}
     with pytest.raises(ValueError, match="'open'.*does not provide"):
         _run_wrapper("def f(inputs):\n    return open('/etc/passwd').read()", [], {})
-    with pytest.raises(ImportError, match="'requests' is not available"):
-        _run_wrapper("def f(inputs):\n    return __import__('requests')", [], {})
+
+
+def test_wrapper_allows_importing_any_module_the_container_image_provides() -> None:
+    # The container is the isolation boundary for a standalone task: any module
+    # the image provides may be imported, so __import__ is not restricted.
+    out = _run_wrapper(
+        "def f(inputs):\n    import requests\n    return requests.__name__", [], {}
+    )
+    assert out == {"items": [{"output": "requests"}]}
 
 
 def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
@@ -489,10 +603,6 @@ def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
         {},
     )
     assert out == {"items": [{"output": "4"}]}
-    with pytest.raises(ImportError, match="'requests'"):
-        _run_wrapper(
-            "def f(inputs):\n    np\n    return __import__('requests')", [], {}
-        )
 
 
 # ------------------------------------------------------------------ #
@@ -576,10 +686,159 @@ def test_lambda_op_rejects_a_bad_memory_limit(value: Any) -> None:
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), memory_mb=value)
 
 
+def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
+    _, shout, compiled = _llm_then_lambda(image="ghcr.io/me/sim:latest")
+    graph = RuntimeGraphBuilder().build(compiled)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["image"] == "ghcr.io/me/sim:latest"
+
+    _, plain, compiled_plain = _llm_then_lambda()
+    plain_spec = (
+        RuntimeGraphBuilder()
+        .build(compiled_plain)
+        .nodes[plain.id]
+        .to_flowmesh_node()["spec"]
+    )
+    assert "image" not in plain_spec
+
+
+def test_image_lambda_read_by_an_llm_message_chain_is_rejected() -> None:
+    stock = input_placeholder("Stock")
+    shout = LambdaOp(
+        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    with pytest.raises(
+        ValueError, match="image-bearing LambdaOp '.*' through its message chain"
+    ):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
+    stock = input_placeholder("Stock")
+    shout = LambdaOp(
+        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Result: {r}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Result: {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    llm.inputs.append(shout)
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert shout.id in _python_nodes(graph)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["image"] == "ghcr.io/me/sim:latest"
+
+
+def test_image_lambda_allows_a_larger_timeout_cap() -> None:
+    with pytest.raises(ValueError, match="timeout_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), timeout_s=601)
+    LambdaOp(
+        [["x"]],
+        fn=lambda inputs: str(inputs[0]),
+        timeout_s=3600,
+        image="ghcr.io/me/sim:latest",
+    )
+    with pytest.raises(ValueError, match="timeout_s"):
+        LambdaOp(
+            [["x"]],
+            fn=lambda inputs: str(inputs[0]),
+            timeout_s=3601,
+            image="ghcr.io/me/sim:latest",
+        )
+
+
+@pytest.mark.parametrize("image", ["", "   "])
+def test_lambda_op_rejects_an_empty_image(image: str) -> None:
+    with pytest.raises(ValueError, match="image"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), image=image)
+
+
+def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -> None:
+    _, shout, compiled = _llm_then_lambda(expected_runtime_s=5)
+    graph = RuntimeGraphBuilder().build(compiled)
+    node = graph.nodes[shout.id]
+    assert node.data_spec["expected_runtime_s"] == 5
+    # The hint is planning-only and never reaches the FlowMesh task spec.
+    assert "expected_runtime_s" not in node.to_flowmesh_node()["spec"]
+
+    _, plain, compiled_plain = _llm_then_lambda()
+    plain_node = RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
+    assert "expected_runtime_s" not in plain_node.data_spec
+
+
+def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> None:
+    _, shout, compiled = _llm_then_lambda(cache=True)
+    graph = RuntimeGraphBuilder().build(compiled)
+    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    assert spec["cache"] is True
+
+    _, plain, compiled_plain = _llm_then_lambda()
+    plain_spec = (
+        RuntimeGraphBuilder()
+        .build(compiled_plain)
+        .nodes[plain.id]
+        .to_flowmesh_node()["spec"]
+    )
+    assert "cache" not in plain_spec
+
+
+def test_lambda_op_rejects_a_non_bool_cache() -> None:
+    for bad in (1, "yes", 0.0):
+        with pytest.raises(ValueError, match="cache"):
+            LambdaOp(
+                [["x"]],
+                fn=lambda inputs: str(inputs[0]),
+                cache=bad,  # type: ignore[call-overload]
+            )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"expected_runtime_s": 0},
+        {"expected_runtime_s": -1},
+        {"expected_runtime_s": True},
+        {"expected_runtime_s": "5"},
+        {"expected_runtime_s": 601},
+    ],
+)
+def test_lambda_op_rejects_a_bad_expected_runtime(kwargs: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), **kwargs)
+
+
+def test_lambda_op_expected_runtime_must_not_exceed_the_effective_timeout() -> None:
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), expected_runtime_s=601)
+    with pytest.raises(ValueError, match="expected_runtime_s"):
+        LambdaOp(
+            [["x"]],
+            fn=lambda inputs: str(inputs[0]),
+            timeout_s=45,
+            expected_runtime_s=46,
+        )
+    LambdaOp(
+        [["x"]],
+        fn=lambda inputs: str(inputs[0]),
+        timeout_s=45,
+        expected_runtime_s=45,
+    )
+
+
 def test_halo_costs_a_default_python_step_at_five_percent_of_its_timeout() -> None:
+    optimizer = HaloOptimizer()
+
     def cost(raw: dict[str, Any]) -> float:
         node = Node(id="n", type="python", engine="python", model="", raw=raw)
-        return HaloOptimizer._python_exec_cost(node)
+        return optimizer._python_exec_cost(node)
 
     assert cost({}) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
     assert cost({"timeout_s": 100}) == 5.0
