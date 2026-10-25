@@ -524,6 +524,38 @@ def test_aggregate_prompt_no_table_escapes_literal_braces() -> None:
     assert aggregate_prompt.format_map({}) == 'Return JSON {"population": 5}'
 
 
+def test_prompt_content_field_ref_records_runtime_path() -> None:
+    """A plain prompt field ref keeps the field path on the FormatOp."""
+    content, extra_ops = _build_prompt_content(
+        "Q: {{ $('Protocol Details').item.question }}",
+        node_name="Chain",
+        op_ids={"Protocol Details": "op_pd"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    assert fmt_op["format_kwargs"] == {"ref0": "op_pd"}
+    assert fmt_op["format_paths"] == {"ref0": "items.output.question"}
+    assert fmt_op["template"] == "Q: {ref0}"
+
+
+def test_prompt_content_whole_item_ref_has_no_path() -> None:
+    """A whole-item ref keeps today's FormatOp behaviour with no field path."""
+    content, extra_ops = _build_prompt_content(
+        "Q: {{ $('Protocol Details').item }}",
+        node_name="Chain",
+        op_ids={"Protocol Details": "op_pd"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["format_kwargs"] == {"ref0": "op_pd"}
+    assert fmt_op["format_paths"] == {}
+
+
 def _aggregate_chain_node(text: str) -> dict:
     return {
         "parameters": {
