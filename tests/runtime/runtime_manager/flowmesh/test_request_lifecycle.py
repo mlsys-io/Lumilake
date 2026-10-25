@@ -674,12 +674,47 @@ async def test_failed_output_task_reports_the_flowmesh_error(
     """A failed output task (e.g. a standalone LambdaOp whose code raised)
     must surface FlowMesh's recorded error, not only the task id."""
     error = "python task failed: ImportError: __import__ not found"
+    cancelled: list[str] = []
     _, row0_id, row1_id, message = await _run_failing_request(
         monkeypatch,
         {"task-row0": "FAILED", "task-row1": "DONE"},
         {"task-row0": error},
+        cancelled,
     )
     assert message == f"Output task task-row0 failed (node {row0_id}): {error}"
+    assert cancelled == ["wf-1"]
+
+
+@pytest.mark.asyncio
+async def test_poll_timeout_cancels_the_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "LUMILAKE_POLL_TIMEOUT_SECONDS", 0.0)
+    cancelled: list[str] = []
+    _, _, _, message = await _run_failing_request(
+        monkeypatch, {"task-row0": "PENDING", "task-row1": "PENDING"}, {}, cancelled
+    )
+    assert message.startswith("Timeout waiting for output nodes")
+    assert cancelled == ["wf-1"]
+
+
+@pytest.mark.asyncio
+async def test_error_after_submission_cancels_the_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any error once FlowMesh has accepted the workflow, not only a task
+    failure, must cancel it so its dispatched tasks stop holding workers."""
+
+    async def _fail(*_args: Any) -> Any:
+        raise RuntimeError("task metadata unavailable")
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "_resolve_task_node_maps", _fail)
+    cancelled: list[str] = []
+    _, _, _, message = await _run_failing_request(
+        monkeypatch, {"task-row0": "PENDING", "task-row1": "PENDING"}, {}, cancelled
+    )
+    assert message == "task metadata unavailable"
+    assert cancelled == ["wf-1"]
 
 
 @pytest.mark.asyncio
