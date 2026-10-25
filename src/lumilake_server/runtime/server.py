@@ -1402,15 +1402,20 @@ class LumilakeServer:
     def _chunk_within_python_timeouts(ordered: list[Any]) -> list[list[Any]]:
         """Split one parent's slices so that no coalesced python step is expected
         to outrun its ``timeout_s``: its rows run in sequence at
-        ``expected_runtime_s`` each."""
+        ``expected_runtime_s`` each. A slice whose row count is unknown gets its
+        own chunk."""
         chunks: list[list[Any]] = []
         load = 0.0
         for item in ordered:
             share = max(
                 (
-                    node.data_spec["expected_runtime_s"]
-                    * node.data_spec.get("row_count", 1)
-                    / node.data_spec["timeout_s"]
+                    (
+                        node.data_spec["expected_runtime_s"]
+                        * node.data_spec["row_count"]
+                        / node.data_spec["timeout_s"]
+                        if "row_count" in node.data_spec
+                        else math.inf
+                    )
                     for node in item.runtime_graph.nodes.values()
                     if node.task_type == python_step.TASK_TYPE
                     and "expected_runtime_s" in node.data_spec

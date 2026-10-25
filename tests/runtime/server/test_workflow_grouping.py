@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
@@ -298,18 +299,20 @@ def test_merge_group_compiled_graph_single_slice_skips_rewrite_strictness() -> N
 
 
 def _with_python_step(
-    item: WorkflowItem, expected_s: float, timeout_s: float
+    item: WorkflowItem, expected_s: float, timeout_s: float, row_count: int | None = 1
 ) -> WorkflowItem:
+    data_spec: dict[str, Any] = {
+        "expected_runtime_s": expected_s,
+        "timeout_s": timeout_s,
+    }
+    if row_count is not None:
+        data_spec["row_count"] = row_count
     step = RuntimeOp(
         node_id="sim",
         task_type=python_step.TASK_TYPE,
         backend=python_step.BACKEND,
         model="",
-        data_spec={
-            "expected_runtime_s": expected_s,
-            "row_count": 1,
-            "timeout_s": timeout_s,
-        },
+        data_spec=data_spec,
         model_spec={},
         inference_spec={},
     )
@@ -349,3 +352,18 @@ def test_group_workflows_keeps_a_slice_that_alone_exceeds_the_timeout() -> None:
     grouped = LumilakeServer._group_workflows_by_parent_workflow(workflows)
 
     assert [len(items) for items in grouped.values()] == [1, 1]
+
+
+def test_group_workflows_keeps_a_slice_of_unknown_row_count_alone() -> None:
+    """Without a static row count a slice may hold many rows, so it is never
+    coalesced with another slice."""
+    workflows = [
+        _with_python_step(item, expected_s=50, timeout_s=600, row_count=None)
+        for item in make_workflow_slices_from_inputs(
+            request_id="req-dyn", public_graph_name="dyn", entities=["a", "b", "c"]
+        )
+    ]
+
+    grouped = LumilakeServer._group_workflows_by_parent_workflow(workflows)
+
+    assert [len(items) for items in grouped.values()] == [1, 1, 1]

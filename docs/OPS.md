@@ -343,8 +343,9 @@ the task, and HALO uses it to estimate the step's run time. It is never
 enforced as a limit. When a job's input slices are coalesced into one
 workflow, the step runs their rows in sequence, so Lumilake coalesces only as
 many slices as keep the step's expected run time within its `timeout_s`; the
-rest run as separate copies of the workflow in the same batch. `cache` is also opt-in: Lumilake sends `cache: true` to
-FlowMesh only when the op sets it.
+rest run as separate copies of the workflow in the same batch. A slice whose
+row count cannot be known before it runs is never coalesced. `cache` is also
+opt-in: Lumilake sends `cache: true` to FlowMesh only when the op sets it.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see
