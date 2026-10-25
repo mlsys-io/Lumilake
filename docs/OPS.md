@@ -286,6 +286,8 @@ returns exactly one value per input row, and the standalone task raises if the
 returned list's length does not match the row count. Because its output is
 row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run
 value, so its dependents keep one item per row and can be split across slices.
+In both `row` and `aligned` mode, inputs with unequal multi-row counts are
+rejected at submit: every multi-row input must carry the same number of rows.
 
 A list-mode `LambdaOp` runs once over the whole input lists of one run, so its
 single whole-list result cannot be partitioned per slice. A submission whose
