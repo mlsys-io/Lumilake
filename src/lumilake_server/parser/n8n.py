@@ -695,7 +695,7 @@ def _build_prompt_content(
 
     refs = _extract_refs(stripped)
     if refs:
-        template = _escape_literal_braces(stripped)
+        template = _escape_literal_braces(stripped) if escape else stripped
         format_kwargs: dict[str, str] = {}
         for idx, (full, ref_name) in enumerate(refs):
             if ref_name not in op_ids:
