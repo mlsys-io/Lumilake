@@ -78,7 +78,7 @@ class SubmittedFunction:
 @Op.registry.register("FormatOp")
 class FormatOp(FunctionalOp):
     template: str
-    format_paths: dict[str, str] = {}
+    format_paths: dict[str, str]
 
     def __init__(
         self, template: str, *args: list[str] | Op, **kwargs: list[str] | Op
@@ -107,6 +107,7 @@ class FormatOp(FunctionalOp):
 
         super().__init__(inputs)
         self.template = template
+        self.format_paths = {}
         self._format_args = format_args
         self._format_kwargs = format_kwargs
 
