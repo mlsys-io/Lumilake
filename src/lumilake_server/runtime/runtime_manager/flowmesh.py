@@ -1450,6 +1450,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     f"Task {tid} failed{self._task_failure_reason(tid, task_node_map)}"
                     for tid in failed_tasks
                 )
+                await self._abort_workflow(workflow_id)
                 raise RuntimeError(
                     f"{reasons}; aborting workflow"
                     f" ({len(failed_tasks)} task(s) failed in total)"
@@ -1459,6 +1460,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         # Check timeout
         if not output_terminal:
+            await self._abort_workflow(workflow_id)
             raise RuntimeError(
                 f"Timeout waiting for output nodes to complete after {poll_timeout}s"
             )
@@ -1467,6 +1469,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         for tid, status in output_task_status.items():
             if status == "FAILED":
                 reason = self._task_failure_reason(tid, task_node_map)
+                await self._abort_workflow(workflow_id)
                 raise RuntimeError(f"Output task {tid} failed{reason}")
 
         # Aggregate results from output nodes
@@ -2886,6 +2889,18 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         for key in self._request_task_ids.copy():
             if key[0] == request_id:
                 self._request_task_ids.pop(key, None)
+
+    async def _abort_workflow(self, workflow_id: str) -> None:
+        """Cancel the workflow of a failing request so its remaining tasks stop
+        holding workers."""
+        try:
+            await self.fm.workflows.cancel(workflow_id)
+        except APIError as e:
+            self.logger.warning(
+                "Failed to cancel workflow %s: %s",
+                workflow_id,
+                _sanitize_flowmesh_api_error(e),
+            )
 
     async def cancel_request(self, request_id: str) -> None:
         """Cancel all FM workflows for a request. Uses the scheduler
