@@ -1690,6 +1690,23 @@ class RuntimeGraphBuilder:
                 "label": label,
                 "data": {"type": "list", "items": [sample]},
             }
+        if isinstance(upstream, LambdaOp):
+            sample_value = upstream.sample_value
+            if sample_value is None:
+                raise ValueError(
+                    "Data profile preflight cannot sample upstream LambdaOp "
+                    f"'{node_id}' for placeholder '{label}' at node "
+                    f"'{owner_node_id}': user code is not executed during "
+                    "preflight. Set 'sample_value' on the LambdaOp (or the "
+                    "Code node's 'sample-value' note) to supply a "
+                    "representative value, or set "
+                    "LUMILAKE_DISABLE_DATA_PROFILE=1."
+                )
+            sample = self._project_sample_value(sample_value, param.get("path"))
+            return {
+                "label": label,
+                "data": {"type": "list", "items": [sample]},
+            }
         raise ValueError(
             "Data profile preflight does not support upstream op kind "
             f"'{type(upstream).__name__}' for placeholder '{label}' at "

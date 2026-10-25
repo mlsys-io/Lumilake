@@ -162,6 +162,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None: ...
 
     @overload
@@ -176,6 +177,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None: ...
 
     @overload
@@ -190,6 +192,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None: ...
 
     def __init__(
@@ -203,6 +206,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -230,6 +234,9 @@ class LambdaOp(Op):
         self.expected_runtime_s = expected_runtime_s
         # Opt-in task caching; passed to FlowMesh only when set.
         self.cache = cache
+        # A representative value for data-profile preflight placeholders; never
+        # executed at runtime.
+        self.sample_value = sample_value
         if code:
             self.code: str = code
         else:
@@ -284,6 +291,8 @@ class LambdaOp(Op):
             data["expected_runtime_s"] = self.expected_runtime_s
         if self.cache is not None:
             data["cache"] = self.cache
+        if self.sample_value is not None:
+            data["sample_value"] = self.sample_value
         return data
 
     @classmethod
@@ -298,6 +307,7 @@ class LambdaOp(Op):
         image = data.get("image")
         expected_runtime_s = data.get("expected_runtime_s")
         cache = data.get("cache")
+        sample_value = data.get("sample_value")
         try:
             fn = SubmittedFunction(code, fn_name)
         except ValueError as exc:
@@ -314,6 +324,7 @@ class LambdaOp(Op):
             image=image,
             expected_runtime_s=expected_runtime_s,
             cache=cache,
+            sample_value=sample_value,
         )
 
 
