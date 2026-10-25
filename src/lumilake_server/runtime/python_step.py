@@ -236,8 +236,14 @@ _ALIGNED_MAIN = """\
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
-    values = fn(tuple(columns))
     n = max((len(c) for c in columns), default=0)
+    for entry, col in zip(_PLAN, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "input %r has %d rows; expected 1 or %d"
+                % (entry.get("node", "literal"), len(col), n)
+            )
+    values = fn(tuple(columns))
     if len(values) != n:
         raise ValueError(
             "aligned lambda {op_id!r} returned %d values for %d rows"
