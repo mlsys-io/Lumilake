@@ -617,9 +617,9 @@ class RuntimeGraphBuilder:
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
             # One that is an output, that no LLM reached, that has an image, or
-            # that a non-LLM runtime node references runs on its own as a python
-            # step — see runtime/python_step.py.
-            non_llm_refs = self._non_llm_lambda_refs(nodes, graph_dict)
+            # that a runtime node references runs on its own as a python step —
+            # see runtime/python_step.py.
+            referenced = self._referenced_row_lambdas(nodes, graph_dict)
             standalone = [
                 op_id
                 for op_id, op in graph_dict.items()
@@ -629,7 +629,7 @@ class RuntimeGraphBuilder:
                     op_id not in visited_node_ids
                     or op_id in output_source_to_outputop
                     or op.image is not None
-                    or op_id in non_llm_refs
+                    or op_id in referenced
                 )
             ]
             for lambda_id in standalone:
@@ -1911,19 +1911,14 @@ class RuntimeGraphBuilder:
             path = "value." + path
         return {"label": label, "node": node_ref, "path": path}
 
-    def _non_llm_lambda_refs(
+    def _referenced_row_lambdas(
         self,
         nodes: dict[str, RuntimeOp],
         graph_dict: dict[str, Op],
     ) -> set[str]:
-        """Row-mode LambdaOps referenced by a runtime node that is not an LLM
-        task. Such a LambdaOp must run as a python step so the referencing node
-        can read its output, even when an LLM also inlines it."""
-        llm_task_types = {"inference", "api", "embedding", "omni_text2image"}
+        """Row-mode LambdaOps referenced by any built runtime node."""
         refs: set[str] = set()
         for node in nodes.values():
-            if node.task_type in llm_task_types:
-                continue
             for ref in RuntimeGraphBuilder._iter_runtime_refs(node):
                 op = graph_dict.get(ref)
                 if isinstance(op, LambdaOp) and not op.takes_whole_columns:

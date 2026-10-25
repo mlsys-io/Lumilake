@@ -1180,10 +1180,10 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
     assert shout.id in llm_node.dependencies
 
 
-def test_inlined_row_lambda_referenced_by_column_rejected() -> None:
-    """A row-mode LambdaOp inlined into its consuming LLM's message chain has
-    no runtime python task, so a node column referencing it must be rejected
-    rather than emitting a path to a node that does not exist."""
+def test_inlined_row_lambda_referenced_by_column_materializes() -> None:
+    """A row-mode LambdaOp inlined into its consuming LLM's message chain but
+    also referenced by a node column is materialized as a python task, so the
+    column reads the step's output instead of a node that does not exist."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1196,8 +1196,10 @@ def test_inlined_row_lambda_referenced_by_column_rejected() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
 
 
 def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
@@ -1223,9 +1225,10 @@ def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
     assert outer.id in runtime_graph.nodes
 
 
-def test_inlined_row_lambda_referenced_by_condition_rejected() -> None:
-    """A row-mode LambdaOp inlined into an LLM's message chain has no runtime
-    python task, so a condition referencing it must be rejected."""
+def test_inlined_row_lambda_referenced_by_condition_materializes() -> None:
+    """A row-mode LambdaOp inlined into an LLM's message chain but also
+    referenced by a condition is materialized as a python task, so the
+    condition reads the step's output."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1239,8 +1242,10 @@ def test_inlined_row_lambda_referenced_by_condition_rejected() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
 
 
 def test_inlined_row_lambda_literal_items_not_treated_as_ref() -> None:
@@ -1301,9 +1306,9 @@ def test_inlined_row_lambda_literal_item_with_expr_not_treated_as_ref() -> None:
     assert llm.id in runtime_graph.nodes
 
 
-def test_inlined_row_lambda_literal_item_with_path_rejected() -> None:
+def test_inlined_row_lambda_literal_item_with_path_materializes() -> None:
     """A literal list item carrying ``node`` plus ``path`` is a FlowMesh read,
-    so an inlined LambdaOp in that payload must be rejected."""
+    so an inlined LambdaOp in that payload is materialized as a python task."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1324,14 +1329,16 @@ def test_inlined_row_lambda_literal_item_with_path_rejected() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
 
 
-def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
+def test_inlined_row_lambda_as_embedding_content_materializes() -> None:
     """A row-mode LambdaOp inlined into an LLM message chain and also used as
-    EmbeddingOp content emits a top-level list data-source reference, so it
-    must be rejected rather than leaving a dangling read."""
+    EmbeddingOp content is materialized as a python task so the embedding
+    reads its output."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1346,5 +1353,7 @@ def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
     llm_output = as_output("result", llm)
     compiled = Graph.from_ops([output, llm_output]).compile(Stock=["NVDA"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
