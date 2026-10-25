@@ -261,7 +261,11 @@ Where the function runs depends on what reads it:
   standalone form above for code that should run in its own container. The
   worker's namespace has no `import`, and it calls the first name the code
   binds, so here the code must not import anything and `fn_name` must be the
-  first definition; code that breaks either rule is rejected at submit.
+  first definition; code that breaks either rule is rejected at submit. If a
+  non-LLM runtime node (such as a data-retrieval op) also reads the same
+  `LambdaOp`, it is additionally compiled to its own standalone `python` task so
+  that node can reference its output; the LLM still inlines it, so the function
+  is evaluated once per reader.
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error
