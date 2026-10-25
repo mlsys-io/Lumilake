@@ -1228,3 +1228,36 @@ def test_retrieval_param_paths_resolve_against_python_result() -> None:
     assert whole["path"] == "value.items.output"
     result = {"value": {"items": [{"output": "NVDA", "value": {"field": "x"}}]}}
     assert _walk(result, whole["path"].split(".")) == ["NVDA"]
+
+
+def _flowmesh_walk(value: Any, expr: str) -> Any:
+    """Resolve ``expr`` against a result with FlowMesh's graph-template walker
+    semantics: attribute access maps over lists of dicts and never JSON-decodes
+    strings (a JSON string is opaque, so a field path into it fails)."""
+    parts = expr.split(".")
+    for token in parts[1:]:
+        if isinstance(value, dict) and token in value:
+            value = value[token]
+        elif isinstance(value, list) and all(
+            isinstance(v, dict) and token in v for v in value
+        ):
+            value = [v[token] for v in value]
+        else:
+            raise KeyError(
+                f"{token} in {parts} is not a valid key - "
+                f"{type(value).__name__}, {value}"
+            )
+    return value
+
+
+def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> None:
+    # A row-mode LambdaOp whose result is a dict must expose the raw value so a
+    # prompt field ref can read a field of it. FlowMesh's graph-template walker
+    # never JSON-decodes strings, so the step must emit the raw value under its
+    # own key (``value``) rather than only the textified ``output``.
+    out = _run_wrapper(
+        "def q(row):\n    return {'question': 'what?'}\n",
+        [{"kind": "literal", "values": ["x"]}],
+        {},
+    )
+    assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
