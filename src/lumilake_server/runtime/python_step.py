@@ -219,7 +219,12 @@ def main(inputs):
                 % (entry.get("node", "literal"), len(col), n)
             )
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
-    return {{"items": [{{"output": _text(fn(row))}} for row in rows]}}
+    return {{
+        "items": [
+            {{"output": _text(r), "value": r}}
+            for r in (fn(row) for row in rows)
+        ]
+    }}
 """
 
 _LIST_MAIN = """\

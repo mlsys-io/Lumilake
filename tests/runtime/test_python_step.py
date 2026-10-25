@@ -353,7 +353,9 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
         [{"kind": "stage", "node": "llm"}, {"kind": "literal", "values": ["x"]}],
         {"llm": llm_dir},
     )
-    assert out == {"items": [{"output": "a-x"}, {"output": "b-x"}]}
+    assert out == {
+        "items": [{"output": "a-x", "value": "a-x"}, {"output": "b-x", "value": "b-x"}]
+    }
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
@@ -364,7 +366,7 @@ def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
         [{"kind": "stage", "node": "py"}, {"kind": "stage", "node": "api"}],
         {"py": py_dir, "api": api_dir},
     )
-    assert out == {"items": [{"output": "pt"}]}
+    assert out == {"items": [{"output": "pt", "value": "pt"}]}
 
 
 def test_wrapper_flattens_rowwise_llm_grouped_item(tmp_path: Path) -> None:
@@ -453,7 +455,9 @@ def test_wrapper_flattens_api_rowwise_llm_rows_standalone(tmp_path: Path) -> Non
         {"llm": llm_dir},
         mode="row",
     )
-    assert out == {"items": [{"output": "r0"}, {"output": "r1"}]}
+    assert out == {
+        "items": [{"output": "r0", "value": "r0"}, {"output": "r1", "value": "r1"}]
+    }
 
 
 def test_wrapper_flatten_keeps_a_list_value_as_one_value(tmp_path: Path) -> None:
@@ -541,7 +545,9 @@ def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
 def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
     code = "def a(inputs):\n    return 'a'\n"
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
-    assert _run_wrapper(code, plan, {}, fn_name="a") == {"items": [{"output": "a"}]}
+    assert _run_wrapper(code, plan, {}, fn_name="a") == {
+        "items": [{"output": "a", "value": "a"}]
+    }
     with pytest.raises(ValueError, match="no top-level function named 'b'"):
         _run_wrapper(code, plan, {}, fn_name="b")
 
@@ -597,7 +603,7 @@ def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
     out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
-    assert out == {"items": [{"output": "x"}]}
+    assert out == {"items": [{"output": "x", "value": "x"}]}
 
 
 def test_wrapper_requires_a_function() -> None:
@@ -631,7 +637,9 @@ _PLAN_X: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
 )
 def test_wrapper_runs_stdlib_imports_and_a_preamble(code: str, output: str) -> None:
     out = _run_wrapper(code, _PLAN_X, {}, fn_name="main")
-    assert out == {"items": [{"output": output}]}
+    # ``output`` is the textified result; ``value`` carries the raw value.
+    assert out["items"][0]["output"] == output
+    assert out["items"][0]["value"] == (float(output) if output == "4.0" else output)
 
 
 def test_wrapper_keeps_the_restricted_namespace() -> None:
@@ -640,7 +648,7 @@ def test_wrapper_keeps_the_restricted_namespace() -> None:
         [{"kind": "literal", "values": ["x"]}],
         {},
     )
-    assert out == {"items": [{"output": "[2, 1]"}]}
+    assert out == {"items": [{"output": "[2, 1]", "value": "[2, 1]"}]}
     with pytest.raises(ValueError, match="'open'.*does not provide"):
         _run_wrapper("def f(inputs):\n    return open('/etc/passwd').read()", [], {})
 
@@ -651,7 +659,7 @@ def test_wrapper_allows_importing_any_module_the_container_image_provides() -> N
     out = _run_wrapper(
         "def f(inputs):\n    import requests\n    return requests.__name__", [], {}
     )
-    assert out == {"items": [{"output": "requests"}]}
+    assert out == {"items": [{"output": "requests", "value": "requests"}]}
 
 
 def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
@@ -660,7 +668,7 @@ def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
         [],
         {},
     )
-    assert out == {"items": [{"output": "4"}]}
+    assert out == {"items": [{"output": "4", "value": "4"}]}
 
 
 # ------------------------------------------------------------------ #
@@ -712,7 +720,7 @@ def test_python_step_carries_the_declared_fn_name() -> None:
     code = node.to_flowmesh_node()["spec"]["code"]
     namespace: dict[str, Any] = {}
     exec(code, namespace)
-    assert namespace["main"]({}) == {"items": [{"output": "NVDA"}]}
+    assert namespace["main"]({}) == {"items": [{"output": "NVDA", "value": "NVDA"}]}
 
 
 def test_python_step_timeout_and_memory_reach_the_task() -> None:

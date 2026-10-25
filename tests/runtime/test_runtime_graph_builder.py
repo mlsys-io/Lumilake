@@ -696,7 +696,7 @@ def test_plain_prompt_field_ref_binds_column_with_path() -> None:
     assert runtime_graph.nodes[code_id].task_type == "python"
     columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
     assert any(
-        col.get("node") == code_id and col.get("path", "").endswith(".question")
+        col.get("node") == code_id and col.get("path") == "value.items.value.question"
         for col in columns
     )
 
