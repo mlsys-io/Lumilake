@@ -149,6 +149,62 @@ outputs:
     assert len(_python_nodes(graph)) == 1
 
 
+def test_row_mode_rejects_unequal_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp([a, b], fn=lambda inputs: str(inputs[0]) + str(inputs[1]))
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2"], B=["b1", "b2", "b3"]
+    )
+    with pytest.raises(ValueError, match="different row counts"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_mode_accepts_one_and_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp([a, b], fn=lambda inputs: str(inputs[0]) + str(inputs[1]))
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2", "a3"], B=["b"]
+    )
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert len(_python_nodes(graph)) == 1
+
+
+def test_aligned_mode_rejects_unequal_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp(
+        [a, b],
+        fn=lambda inputs: [
+            str(inputs[0][i]) + str(inputs[1][i]) for i in range(len(inputs[0]))
+        ],
+        mode="aligned",
+    )
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2"], B=["b1", "b2", "b3"]
+    )
+    with pytest.raises(ValueError, match="different row counts"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
+    a = input_placeholder("A")
+    b = input_placeholder("B")
+    combine = LambdaOp(
+        [a, b],
+        fn=lambda inputs: [
+            str(inputs[0][i]) + str(inputs[1][i]) for i in range(len(inputs[0]))
+        ],
+        mode="list",
+    )
+    compiled = Graph.from_ops([as_output("out", combine)]).compile(
+        A=["a1", "a2"], B=["b1", "b2", "b3"]
+    )
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert len(_python_nodes(graph)) == 1
+
+
 # ------------------------------------------------------------------ #
 # The generated wrapper, executed
 # ------------------------------------------------------------------ #
@@ -427,6 +483,18 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
         ValueError, match="aligned lambda 'op-1' returned 1 values for 3 rows"
     ):
         _run_wrapper(code, plan, {}, fn_name="bad", mode="aligned")
+
+
+def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
+    # An aligned lambda with input columns of unequal lengths is rejected before
+    # the user function runs, mirroring the row-mode check.
+    code = "def f(columns):\n    return columns[0]\n"
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["a", "b", "c"]},
+        {"kind": "literal", "values": ["x", "y"]},
+    ]
+    with pytest.raises(ValueError, match="expected 1 or 3"):
+        _run_wrapper(code, plan, {}, fn_name="f", mode="aligned")
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
