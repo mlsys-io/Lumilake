@@ -582,7 +582,7 @@ def _make_chain_ops(
         if system_messages:
             prompt_text = "\n\n".join(system_messages) + "\n\n" + (prompt_text or "")
         msg_content, extra_ops = _build_prompt_content(
-            prompt_text, node_name, op_ids, upstream_main, scope
+            prompt_text, node_name, op_ids, upstream_main, scope, escape=False
         )
         ops.extend(extra_ops)
         content_op_id = msg_content if _is_op_id(msg_content) else None
@@ -644,7 +644,7 @@ def _make_chain_ops(
             prompt_text, op_ids, upstream_main, node_map
         )
         msg_content, extra_ops = _build_prompt_content(
-            aggregate_prompt, node_name, op_ids, upstream_main, scope
+            aggregate_prompt, node_name, op_ids, upstream_main, scope, escape=False
         )
     else:
         msg_content, extra_ops = _build_prompt_content(
@@ -666,16 +666,14 @@ def _make_chain_ops(
     return ops, llm_op["_id"]
 
 
-_ESCAPE_BRACES_PATTERN = re.compile(
-    r"(\{\{\s*\$\('([^']+)'\)(?:\.[^}]*)?\s*\}\}|\$\('([^']+)'\)(?:\.[\w\.\[\]]+)?|\{df\})|([{}])"
-)
+_ESCAPE_BRACES_PATTERN = re.compile(rf"({REF_PATTERN.pattern})|([{{}}])")
 
 
 def _escape_literal_braces(text: str) -> str:
     """Escape literal ``{``/``}`` to ``{{``/``}}``, leaving n8n ``{{ ... }}``
     expression wrappers intact so they can be swapped for placeholders."""
 
-    def _repl(match: re.Match) -> str:
+    def _repl(match: re.Match[str]) -> str:
         if match.group(1) is not None:
             return match.group(1)
         return match.group(0) * 2
@@ -689,6 +687,7 @@ def _build_prompt_content(
     op_ids: dict[str, str],
     upstream_main: str | None,
     scope: str,
+    escape: bool = True,
 ) -> tuple[str, list[dict[str, Any]]]:
     stripped = _strip_expr(prompt_text or "")
     if not stripped and upstream_main and upstream_main in op_ids:
@@ -707,7 +706,9 @@ def _build_prompt_content(
         fmt_op = _build_format_op(scope, node_name, template, format_kwargs)
         return fmt_op["_id"], [fmt_op]
 
-    return stripped, []
+    if not escape:
+        return stripped, []
+    return _escape_literal_braces(stripped), []
 
 
 def _build_message_op(
@@ -1445,7 +1446,7 @@ def _build_aggregate_prompt_content(
     table_spec: list[dict[str, Any]] = []
     table_match = TABLE_BLOCK_PATTERN.search(stripped)
     if not table_match:
-        return stripped, table_spec
+        return _escape_literal_braces(stripped), table_spec
 
     block = table_match.group(1)
     for raw_line in block.splitlines():
@@ -1492,7 +1493,8 @@ def _build_aggregate_prompt_content(
                     }
                 )
 
-    rewritten = TABLE_BLOCK_PATTERN.sub("{df}", stripped)
+    escaped = _escape_literal_braces(stripped)
+    rewritten = TABLE_BLOCK_PATTERN.sub("{df}", escaped)
     return rewritten, table_spec
 
 
