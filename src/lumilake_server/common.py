@@ -32,6 +32,13 @@ def project_input_values(
         keys = normalized.split(".")
     if not keys or keys == [""]:
         return list(values)
+    return project_input_keys(values, keys, path, node_name)
+
+
+def project_input_keys(
+    values: list[str], keys: list[str], path: str | None, node_name: str
+) -> list[Any]:
+    """Walk ``keys`` into each literal input value (a JSON object string)."""
     projected: list[Any] = []
     for value in values:
         try:

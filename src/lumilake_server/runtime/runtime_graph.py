@@ -15,7 +15,7 @@ from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import (
     ApiConfig,
-    project_input_values,
+    project_input_keys,
     retrieval_items_path,
 )
 from lumilake_server.graphs import CompiledGraph
@@ -1972,8 +1972,10 @@ class RuntimeGraphBuilder:
                 f"InputOp '{input_name}' field path must start with"
                 f" 'items.output', got '{path}'"
             )
-        item_path = "item" + path[len("items.output") :]
-        projected = project_input_values(values, item_path, input_name)
+        if path == "items.output":
+            return list(values)
+        keys = path[len("items.output.") :].split(".")
+        projected = project_input_keys(values, keys, path, input_name)
         return [
             value if isinstance(value, str) else json.dumps(value)
             for value in projected
