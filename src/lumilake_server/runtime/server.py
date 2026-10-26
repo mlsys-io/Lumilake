@@ -1725,8 +1725,13 @@ class LumilakeServer:
             input_ref = owner.get("input_ref")
             if isinstance(input_ref, dict):
                 key = input_ref.get("key")
-                if isinstance(key, str) and key in varying_input_keys:
-                    return key
+                if not isinstance(key, str):
+                    raise ValueError(
+                        f"Invalid input_ref key for '{label}' in {group_context}"
+                    )
+                # An explicit input_ref pins the column to that input; a
+                # non-varying key must not fall through to label matching.
+                return key if key in varying_input_keys else None
             if label in varying_input_keys:
                 return label
             return inferred_aliases.get(label)
