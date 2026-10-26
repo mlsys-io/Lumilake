@@ -384,6 +384,17 @@ def test_n8n_code_node_sample_value_reaches_the_op() -> None:
     assert op.sample_value == "K-123"
 
 
+def test_n8n_code_node_rejects_a_null_sample_value() -> None:
+    workflow = _code_node_workflow('{"sample-value": null}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="Code"):
+        parse_n8n_payload(payload)
+
+
 def test_n8n_code_node_rejects_an_empty_image() -> None:
     workflow = _code_node_workflow('{"image":"  "}')
     payload = {
