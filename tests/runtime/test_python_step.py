@@ -153,6 +153,35 @@ def test_lambda_fed_to_llm_and_retrieval_runs_as_python_step() -> None:
     assert graph.nodes[retrieval.id].dependencies == (terms.id,)
 
 
+def test_lambda_named_only_by_retrieval_dependency_materializes() -> None:
+    """A row-mode LambdaOp that is a DataRetrievalOp input (so it lands in the
+    retrieval node's dependencies) but is not referenced by any data_spec must
+    still materialize as a python step, so no FlowMesh dependsOn points at an
+    unemitted node."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT 1",
+        },
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert terms.id in _python_nodes(graph)
+    assert graph.nodes[retrieval.id].dependencies == (terms.id,)
+
+
 def test_documented_yaml_example_builds() -> None:
     """docs/OPS.md's LambdaOp example: a LambdaOp as the workflow output."""
     payload = """
