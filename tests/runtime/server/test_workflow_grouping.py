@@ -431,3 +431,101 @@ def test_merge_group_compiled_graph_coalesces_projected_input_columns() -> None:
         assert _runtime_columns(merged.graph, merged.inputs) == _runtime_columns(
             direct.graph, direct.inputs
         )
+
+
+def test_merge_group_compiled_graph_non_varying_input_ref_not_rewritten() -> None:
+    """A rowwise column bound from a fixed (non-varying) input must not be
+    re-projected even when its label collides with a varying key."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "p",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Stock",
+                "id": "s",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"model": "gpt-4o"},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": "Judge: {{ $('Paper').item.Stock }} {{ $('Stock').item }}",
+                    "messages": {"messageValues": [{"message": "You are a judge."}]},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Relevance Judge",
+                "id": "rj",
+                "typeVersion": 1,
+                "notes": '{"op-type":"text-generation","mode":"rowwise"}',
+            },
+        ],
+        "connections": {
+            "Paper": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Stock": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Relevance Judge",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        }
+                    ]
+                ]
+            },
+        },
+    }
+    workflows: list[object] = []
+    for idx, stock in enumerate(["S0", "S1"]):
+        graph_name = f"relwork__slice_{idx + 1}"
+        payload = {
+            "graphs": [
+                {
+                    "name": graph_name,
+                    "workflow": workflow,
+                    "inputs": {"Paper": ['{"Stock": "paper"}'], "Stock": [stock]},
+                }
+            ]
+        }
+        parsed = parse_n8n_payload(payload)
+        spec = parsed[graph_name]
+        compiled_graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+        wf = make_workflow(
+            workflow_id=f"relwork-{idx}",
+            request_id="req-relwork",
+            graph_name=graph_name,
+            public_graph_name="related-work",
+            template_hash="template-relwork",
+            dsl_inputs=compiled_graph.inputs,
+            varying_input_keys=("Stock",),
+            slice_index=idx,
+            slice_start=idx,
+            slice_length=1,
+            total_length=2,
+        )
+        wf.dsl_graph = compiled_graph
+        workflows.append(wf)
+
+    merged = LumilakeServer._merge_group_compiled_graph(workflows)
+
+    # The Paper-bound column keeps its single projected value; Stock is not
+    # projected from it.
+    columns = _rowwise_columns(merged.graph)
+    paper_col = next(col for col in columns if col["label"] == "Stock")
+    assert paper_col["data"]["items"] == ["paper"]
