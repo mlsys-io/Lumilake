@@ -13,7 +13,11 @@ from sqlparse.tokens import Keyword
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_server.common import ApiConfig, retrieval_items_path
+from lumilake_server.common import (
+    ApiConfig,
+    project_input_values,
+    retrieval_items_path,
+)
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.ops import (
     DataOp,
@@ -1946,35 +1950,17 @@ class RuntimeGraphBuilder:
     ) -> list[str]:
         """Project a field path out of literal input values (JSON object
         strings) server-side, so an InputOp field ref binds a literal list."""
-        parts = path.split(".")
-        if parts[:2] != ["items", "output"]:
+        if path != "items.output" and not path.startswith("items.output."):
             raise ValueError(
                 f"InputOp '{input_name}' field path must start with"
                 f" 'items.output', got '{path}'"
             )
-        field_parts = parts[2:]
-        projected: list[str] = []
-        for value in values:
-            current: Any = value
-            for part in field_parts:
-                if isinstance(current, str):
-                    try:
-                        current = json.loads(current)
-                    except json.JSONDecodeError as exc:
-                        raise ValueError(
-                            f"InputOp '{input_name}' value is not JSON at field"
-                            f" path '{path}': {value!r}"
-                        ) from exc
-                if not isinstance(current, dict) or part not in current:
-                    raise ValueError(
-                        f"InputOp '{input_name}' value missing field at path"
-                        f" '{path}': {value!r}"
-                    )
-                current = current[part]
-            projected.append(
-                current if isinstance(current, str) else json.dumps(current)
-            )
-        return projected
+        item_path = "item" + path[len("items.output") :]
+        projected = project_input_values(values, item_path, input_name)
+        return [
+            value if isinstance(value, str) else json.dumps(value)
+            for value in projected
+        ]
 
     def _referenced_row_lambdas(
         self,
