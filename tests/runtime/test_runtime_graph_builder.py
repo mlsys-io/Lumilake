@@ -932,6 +932,96 @@ def test_plain_prompt_field_ref_from_llm_structured_output_binds_column() -> Non
     )
 
 
+def test_plain_prompt_item_output_field_ref_binds_single_output_segment() -> None:
+    """An ``item.output.<field>`` ref on an upstream LLM's structured output
+    binds ``items.output.<field>``, not a doubled ``output`` segment."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Extract the population.",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Criteria Parser",
+                "id": "parser-node",
+                "typeVersion": 1.9,
+                "notes": (
+                    '{"op-type":"text-generation","is-output":false,'
+                    '"structural-outputs":[{"name":"population","type":"number"}]}'
+                ),
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Pop: {{ $('Criteria Parser').item.output.population }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Criteria Parser", "type": "main", "index": 0}]]
+            },
+            "Criteria Parser": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Criteria Parser",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        },
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    assert any(
+        col.get("node") == parser_id and col.get("path") == "items.output.population"
+        for col in columns
+    )
+
+
 def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
     images = input_placeholder("Images")
     vision = LLMVisionOp(
