@@ -2046,8 +2046,8 @@ def test_rowwise_input_field_ref_groups_one_value_per_input_row() -> None:
     }
 
     # Faithful grouping reproduction: a grouped list yields items[i] per group,
-    # and a scalar entry broadcasts across that group's rows. The old flat
-    # (ungrouped) list of both rows fails the row-count check.
+    # and a scalar entry broadcasts across that group's rows. An ungrouped list
+    # of both rows fails the row-count check.
     per_group = _grouped_column_values(["t0", "t1"], True, [3, 2])
     assert per_group == [["t0"] * 3, ["t1"] * 2]
     with pytest.raises(ValueError):
