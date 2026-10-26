@@ -10,6 +10,7 @@ from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    DataRetrievalOp,
     FormatOp,
     LambdaOp,
     LLMChatOp,
@@ -122,6 +123,63 @@ def test_lambda_read_by_llm_stays_inlined() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
     graph = RuntimeGraphBuilder().build(compiled)
     assert _python_nodes(graph) == {}
+
+
+def test_lambda_fed_to_llm_and_retrieval_runs_as_python_step() -> None:
+    """A row-mode LambdaOp feeding both an LLM and a DataRetrievalOp must
+    materialize as a python step so the retrieval node can reference it."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE q = :q",
+            "params": [{"label": "q", "node": terms.id, "path": "items.output"}],
+        },
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert terms.id in _python_nodes(graph)
+    assert graph.nodes[retrieval.id].dependencies == (terms.id,)
+
+
+def test_lambda_named_only_by_retrieval_dependency_materializes() -> None:
+    """A row-mode LambdaOp that is a DataRetrievalOp input (so it lands in the
+    retrieval node's dependencies) but is not referenced by any data_spec must
+    still materialize as a python step, so no FlowMesh dependsOn points at an
+    unemitted node."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT 1",
+        },
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert terms.id in _python_nodes(graph)
+    assert graph.nodes[retrieval.id].dependencies == (terms.id,)
 
 
 def test_documented_yaml_example_builds() -> None:
@@ -295,7 +353,9 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
         [{"kind": "stage", "node": "llm"}, {"kind": "literal", "values": ["x"]}],
         {"llm": llm_dir},
     )
-    assert out == {"items": [{"output": "a-x"}, {"output": "b-x"}]}
+    assert out == {
+        "items": [{"output": "a-x", "value": "a-x"}, {"output": "b-x", "value": "b-x"}]
+    }
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
@@ -306,7 +366,7 @@ def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
         [{"kind": "stage", "node": "py"}, {"kind": "stage", "node": "api"}],
         {"py": py_dir, "api": api_dir},
     )
-    assert out == {"items": [{"output": "pt"}]}
+    assert out == {"items": [{"output": "pt", "value": "pt"}]}
 
 
 def test_wrapper_flattens_rowwise_llm_grouped_item(tmp_path: Path) -> None:
@@ -395,7 +455,9 @@ def test_wrapper_flattens_api_rowwise_llm_rows_standalone(tmp_path: Path) -> Non
         {"llm": llm_dir},
         mode="row",
     )
-    assert out == {"items": [{"output": "r0"}, {"output": "r1"}]}
+    assert out == {
+        "items": [{"output": "r0", "value": "r0"}, {"output": "r1", "value": "r1"}]
+    }
 
 
 def test_wrapper_flatten_keeps_a_list_value_as_one_value(tmp_path: Path) -> None:
@@ -483,7 +545,9 @@ def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
 def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
     code = "def a(inputs):\n    return 'a'\n"
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
-    assert _run_wrapper(code, plan, {}, fn_name="a") == {"items": [{"output": "a"}]}
+    assert _run_wrapper(code, plan, {}, fn_name="a") == {
+        "items": [{"output": "a", "value": "a"}]
+    }
     with pytest.raises(ValueError, match="no top-level function named 'b'"):
         _run_wrapper(code, plan, {}, fn_name="b")
 
@@ -539,7 +603,7 @@ def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
     out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
-    assert out == {"items": [{"output": "x"}]}
+    assert out == {"items": [{"output": "x", "value": "x"}]}
 
 
 def test_wrapper_requires_a_function() -> None:
@@ -573,7 +637,9 @@ _PLAN_X: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
 )
 def test_wrapper_runs_stdlib_imports_and_a_preamble(code: str, output: str) -> None:
     out = _run_wrapper(code, _PLAN_X, {}, fn_name="main")
-    assert out == {"items": [{"output": output}]}
+    # ``output`` is the textified result; ``value`` carries the raw value.
+    assert out["items"][0]["output"] == output
+    assert out["items"][0]["value"] == (float(output) if output == "4.0" else output)
 
 
 def test_wrapper_keeps_the_restricted_namespace() -> None:
@@ -582,7 +648,7 @@ def test_wrapper_keeps_the_restricted_namespace() -> None:
         [{"kind": "literal", "values": ["x"]}],
         {},
     )
-    assert out == {"items": [{"output": "[2, 1]"}]}
+    assert out == {"items": [{"output": "[2, 1]", "value": "[2, 1]"}]}
     with pytest.raises(ValueError, match="'open'.*does not provide"):
         _run_wrapper("def f(inputs):\n    return open('/etc/passwd').read()", [], {})
 
@@ -593,7 +659,7 @@ def test_wrapper_allows_importing_any_module_the_container_image_provides() -> N
     out = _run_wrapper(
         "def f(inputs):\n    import requests\n    return requests.__name__", [], {}
     )
-    assert out == {"items": [{"output": "requests"}]}
+    assert out == {"items": [{"output": "requests", "value": "requests"}]}
 
 
 def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
@@ -602,7 +668,7 @@ def test_wrapper_imports_numpy_and_pandas_only_when_named() -> None:
         [],
         {},
     )
-    assert out == {"items": [{"output": "4"}]}
+    assert out == {"items": [{"output": "4", "value": "4"}]}
 
 
 # ------------------------------------------------------------------ #
@@ -654,7 +720,7 @@ def test_python_step_carries_the_declared_fn_name() -> None:
     code = node.to_flowmesh_node()["spec"]["code"]
     namespace: dict[str, Any] = {}
     exec(code, namespace)
-    assert namespace["main"]({}) == {"items": [{"output": "NVDA"}]}
+    assert namespace["main"]({}) == {"items": [{"output": "NVDA", "value": "NVDA"}]}
 
 
 def test_python_step_timeout_and_memory_reach_the_task() -> None:
@@ -1122,3 +1188,84 @@ def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
         _run_reshape(
             "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
         )
+
+
+def _walk(value: Any, parts: list[str]) -> Any:
+    for idx, part in enumerate(parts):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list):
+            rest = parts[idx:]
+            return [_walk(v, rest) for v in value]
+        else:
+            raise KeyError(part)
+    return value
+
+
+def test_retrieval_param_paths_resolve_against_python_result() -> None:
+    """The emitted retrieval param path must resolve against a python step's
+    PythonResult-shaped result (``{"value": {"items": [...]}}``), so a wrong
+    path fails the way it fails in FlowMesh."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE q = :q",
+            "params": [
+                {"label": "whole", "node": terms.id, "path": "items.output"},
+            ],
+        },
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    params = graph.nodes[retrieval.id].data_spec["params"]
+    (whole,) = [p for p in params if p.get("label") == "whole"]
+
+    # The whole-item read maps to the python step's textified output.
+    assert whole["path"] == "value.items.output"
+    result = {"value": {"items": [{"output": "NVDA", "value": {"field": "x"}}]}}
+    assert _walk(result, whole["path"].split(".")) == ["NVDA"]
+
+
+def _flowmesh_walk(value: Any, expr: str) -> Any:
+    """Resolve ``expr`` against a result with FlowMesh's graph-template walker
+    semantics: attribute access maps over lists of dicts and never JSON-decodes
+    strings (a JSON string is opaque, so a field path into it fails)."""
+    parts = expr.split(".")
+    for token in parts[1:]:
+        if isinstance(value, dict) and token in value:
+            value = value[token]
+        elif isinstance(value, list) and all(
+            isinstance(v, dict) and token in v for v in value
+        ):
+            value = [v[token] for v in value]
+        else:
+            raise KeyError(
+                f"{token} in {parts} is not a valid key - "
+                f"{type(value).__name__}, {value}"
+            )
+    return value
+
+
+def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> None:
+    # A row-mode LambdaOp whose result is a dict must expose the raw value so a
+    # prompt field ref can read a field of it. FlowMesh's graph-template walker
+    # never JSON-decodes strings, so the step must emit the raw value under its
+    # own key (``value``) rather than only the textified ``output``.
+    out = _run_wrapper(
+        "def q(row):\n    return {'question': 'what?'}\n",
+        [{"kind": "literal", "values": ["x"]}],
+        {},
+    )
+    assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -12,7 +13,11 @@ from sqlparse.tokens import Keyword
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_server.common import ApiConfig, retrieval_items_path
+from lumilake_server.common import (
+    ApiConfig,
+    project_input_keys,
+    retrieval_items_path,
+)
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.ops import (
     DataOp,
@@ -616,8 +621,10 @@ class RuntimeGraphBuilder:
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
-            # One that is an output, or that no LLM reached, runs on its own as
-            # a python step — see runtime/python_step.py.
+            # One that is an output, that no LLM reached, that has an image, or
+            # that a runtime node references runs on its own as a python step —
+            # see runtime/python_step.py.
+            referenced = self._referenced_row_lambdas(nodes, graph_dict)
             standalone = [
                 op_id
                 for op_id, op in graph_dict.items()
@@ -627,6 +634,7 @@ class RuntimeGraphBuilder:
                     op_id not in visited_node_ids
                     or op_id in output_source_to_outputop
                     or op.image is not None
+                    or op_id in referenced
                 )
             ]
             for lambda_id in standalone:
@@ -1461,6 +1469,19 @@ class RuntimeGraphBuilder:
                                 " silently drop every row but the first."
                             )
                         param_row_counts[str(param.get("label"))] = row_count
+                if isinstance(upstream, LambdaOp):
+                    param = {
+                        **param,
+                        "path": self._lambda_read_path(
+                            consumer=(
+                                f"DataRetrievalOp '{op_id}' template param "
+                                f"{param.get('label')!r}"
+                            ),
+                            node_ref=node,
+                            path=param.get("path", ""),
+                            upstream=upstream,
+                        ),
+                    }
                 if node not in seen:
                     seen.add(node)
                     dependencies.append(node)
@@ -1669,6 +1690,23 @@ class RuntimeGraphBuilder:
                 "label": label,
                 "data": {"type": "list", "items": [sample]},
             }
+        if isinstance(upstream, LambdaOp):
+            sample_value = upstream.sample_value
+            if sample_value is None:
+                raise ValueError(
+                    "Data profile preflight cannot sample upstream LambdaOp "
+                    f"'{node_id}' for placeholder '{label}' at node "
+                    f"'{owner_node_id}': user code is not executed during "
+                    "preflight. Set 'sample_value' on the LambdaOp (or the "
+                    "Code node's 'sample-value' note) to supply a "
+                    "representative value, or set "
+                    "LUMILAKE_DISABLE_DATA_PROFILE=1."
+                )
+            sample = self._project_sample_value(sample_value, param.get("path"))
+            return {
+                "label": label,
+                "data": {"type": "list", "items": [sample]},
+            }
         raise ValueError(
             "Data profile preflight does not support upstream op kind "
             f"'{type(upstream).__name__}' for placeholder '{label}' at "
@@ -1835,6 +1873,31 @@ class RuntimeGraphBuilder:
             return "value.items.output"
         return "items.output"
 
+    def _lambda_read_path(
+        self,
+        consumer: str,
+        node_ref: str,
+        path: str,
+        upstream: LambdaOp,
+    ) -> str:
+        """Map a read of a LambdaOp's output to the python step's read path.
+
+        A LambdaOp runs as a python step whose result wraps each row's output
+        under ``value.items``, so a declared ``items.output`` read becomes
+        ``value.items.output``. A list-mode Lambda returns raw values, so a
+        field read (``items.output.<f>``) maps to ``value.items.output.<f>``;
+        a row-mode Lambda emits the raw value under ``value.items.value``, so
+        a field read maps to ``value.items.value.<f>``.
+        """
+        if not path.startswith("items.output"):
+            raise ValueError(
+                f"{consumer} reads '{path}' from Lambda '{node_ref}'; only"
+                " 'items.output' (the whole output) is supported."
+            )
+        if not upstream.takes_whole_columns and path != "items.output":
+            return "value.items.value." + path[len("items.output.") :]
+        return "value." + path
+
     def _node_ref_column(
         self,
         *,
@@ -1882,22 +1945,13 @@ class RuntimeGraphBuilder:
                     " 'items.output' (the whole output) is supported."
                 )
             path = self._upstream_output_path(upstream)
-        elif isinstance(upstream, LambdaOp) and upstream.takes_whole_columns:
-            if not path.startswith("items.output"):
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from list-mode Lambda '{node_ref}'; only"
-                    " 'items.output' (the whole output) is supported."
-                )
-            path = "value." + path
         elif isinstance(upstream, LambdaOp):
-            if not path.startswith("items.output"):
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from row-mode Lambda '{node_ref}'; only"
-                    " 'items.output' (the whole output) is supported."
-                )
-            path = "value." + path
+            path = self._lambda_read_path(
+                consumer=f"Column '{label}' of consumer '{consumer_id}'",
+                node_ref=node_ref,
+                path=path,
+                upstream=upstream,
+            )
         elif upstream is not None and upstream.id in self._flattened_vlm_ids:
             if not path.startswith("items.output"):
                 raise ValueError(
@@ -1907,6 +1961,44 @@ class RuntimeGraphBuilder:
                 )
             path = "value." + path
         return {"label": label, "node": node_ref, "path": path}
+
+    def _project_input_field(
+        self, values: list[str], path: str, input_name: str
+    ) -> list[str]:
+        """Project a field path out of literal input values (JSON object
+        strings) server-side, so an InputOp field ref binds a literal list."""
+        if path != "items.output" and not path.startswith("items.output."):
+            raise ValueError(
+                f"InputOp '{input_name}' field path must start with"
+                f" 'items.output', got '{path}'"
+            )
+        if path == "items.output":
+            return list(values)
+        keys = path[len("items.output.") :].split(".")
+        projected = project_input_keys(values, keys, path, input_name)
+        return [
+            value if isinstance(value, str) else json.dumps(value)
+            for value in projected
+        ]
+
+    def _referenced_row_lambdas(
+        self,
+        nodes: dict[str, RuntimeOp],
+        graph_dict: dict[str, Op],
+    ) -> set[str]:
+        """Row-mode LambdaOps referenced by any built runtime node, either in
+        its data_spec/condition or as a runtime dependency."""
+        refs: set[str] = set()
+        for node in nodes.values():
+            for ref in RuntimeGraphBuilder._iter_runtime_refs(node):
+                op = graph_dict.get(ref)
+                if isinstance(op, LambdaOp) and not op.takes_whole_columns:
+                    refs.add(ref)
+            for dep in node.dependencies:
+                op = graph_dict.get(dep)
+                if isinstance(op, LambdaOp) and not op.takes_whole_columns:
+                    refs.add(dep)
+        return refs
 
     def _check_inlined_lambda_refs(
         self,
@@ -3013,9 +3105,29 @@ class RuntimeGraphBuilder:
                     assert (
                         len(op.inputs) >= 1
                     ), "FormatOp should have at least one input"
-                message_labels = {
-                    inp_op.id: _trace_ancestors(inp_op) for inp_op in op.inputs
+                # A field-referenced input binds a column (value.items.value.<field>)
+                # and runs as its own python step; it must not also be traced into
+                # the message chain as an inline function step. But an input read
+                # both by field and as a whole item still needs tracing for the
+                # whole-item kwarg, so only skip it when every reference is a field.
+                field_ref_ids = {op.format_kwargs[k].id for k in op.format_paths}
+                whole_ref_ids = {
+                    op.format_kwargs[k].id
+                    for k in op.format_kwargs
+                    if k not in op.format_paths
                 }
+                skip_trace_ids = field_ref_ids - whole_ref_ids
+                message_labels = {
+                    inp_op.id: _trace_ancestors(inp_op)
+                    for inp_op in op.inputs
+                    if inp_op.id not in skip_trace_ids
+                }
+                # A field-referenced InputOp is projected server-side into a
+                # literal column and never materializes a runtime node; mark it
+                # visited so the traversal does not treat it as orphaned.
+                for field_ref_id in field_ref_ids:
+                    if isinstance(graph_dict.get(field_ref_id), InputOp):
+                        visited_node_ids.add(field_ref_id)
                 multi = [
                     (len(msgs), inp_id, msgs)
                     for inp_id, msgs in message_labels.items()
@@ -3026,10 +3138,48 @@ class RuntimeGraphBuilder:
                     f" multiple in {op.id}: {multi}"
                 )
                 template = op.template
-                format_kwargs = [
-                    {"label": k, "value": _unwrap_msg(message_labels[v.id][0])}
-                    for k, v in op.format_kwargs.items()
-                ]
+                format_kwargs = []
+                for k, v in op.format_kwargs.items():
+                    field_path = op.format_paths.get(k)
+                    if field_path:
+                        upstream = graph_dict.get(v.id)
+                        if isinstance(upstream, InputOp):
+                            values = inputs_dict.get(upstream.name)
+                            if values is None:
+                                raise ValueError(
+                                    f"FormatOp '{op.id}' references InputOp"
+                                    f" '{upstream.name}' with field path"
+                                    f" '{field_path}' but no values were supplied"
+                                    " for that input."
+                                )
+                            label = f"ref_{op.id}_{k}"
+                            columns[label] = {
+                                "label": label,
+                                "data": {
+                                    "type": "list",
+                                    "items": self._project_input_field(
+                                        values, field_path, upstream.name
+                                    ),
+                                },
+                            }
+                        else:
+                            label = f"ref_{op.id}_{k}"
+                            columns[label] = self._node_ref_column(
+                                consumer_id=llm_op_id,
+                                label=label,
+                                node_ref=v.id,
+                                path=field_path,
+                                upstream=upstream,
+                                inputs_dict=inputs_dict,
+                                graph_dict=graph_dict,
+                                dsl_to_runtime=dsl_to_runtime,
+                                kind="prompt field",
+                            )
+                        format_kwargs.append({"label": k, "value": label})
+                    else:
+                        format_kwargs.append(
+                            {"label": k, "value": _unwrap_msg(message_labels[v.id][0])}
+                        )
                 label = f"format_{op.id}"
                 steps[label] = (template, format_kwargs, False)
                 ancestor_buffer[op.id] = [(Roles.USER, label)]

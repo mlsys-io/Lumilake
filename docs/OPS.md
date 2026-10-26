@@ -261,7 +261,11 @@ Where the function runs depends on what reads it:
   standalone form above for code that should run in its own container. The
   worker's namespace has no `import`, and it calls the first name the code
   binds, so here the code must not import anything and `fn_name` must be the
-  first definition; code that breaks either rule is rejected at submit.
+  first definition; code that breaks either rule is rejected at submit. If a
+  runtime node (such as a data-retrieval op) also reads the same
+  `LambdaOp`, it is additionally compiled to its own standalone `python` task so
+  that node can reference its output; the LLM still inlines it, so the function
+  is evaluated once per reader.
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error
@@ -332,6 +336,7 @@ Optional per-op limits for the standalone `python` task:
 | `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
 | `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
 | `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
+| `sample_value` | none | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
 
 The limits apply only to the standalone `python` task; they have no effect on a
 `LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as
@@ -341,7 +346,9 @@ its own standalone `python` task and may set `timeout_s` up to FlowMesh's
 `expected_runtime_s` is a planning hint only: it is seconds per input row of
 the task, and HALO uses it to estimate the step's run time. It is never
 enforced as a limit. `cache` is also opt-in: Lumilake sends `cache: true` to
-FlowMesh only when the op sets it.
+FlowMesh only when the op sets it. `sample_value` is never executed: it only
+supplies a representative value so data-profile preflight can resolve a
+placeholder whose upstream is this `LambdaOp`.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see

@@ -369,6 +369,32 @@ def test_n8n_code_node_rejects_a_non_bool_cache() -> None:
         parse_n8n_payload(payload)
 
 
+def test_n8n_code_node_sample_value_reaches_the_op() -> None:
+    workflow = _code_node_workflow('{"sample-value": "K-123"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert op.sample_value == "K-123"
+
+
+def test_n8n_code_node_rejects_a_null_sample_value() -> None:
+    workflow = _code_node_workflow('{"sample-value": null}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="Code"):
+        parse_n8n_payload(payload)
+
+
 def test_n8n_code_node_rejects_an_empty_image() -> None:
     workflow = _code_node_workflow('{"image":"  "}')
     payload = {
@@ -377,6 +403,122 @@ def test_n8n_code_node_rejects_an_empty_image() -> None:
         ]
     }
     with pytest.raises(ValueError, match="image"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_is_output_emits_output_op() -> None:
+    workflow = _code_node_workflow(
+        '{"is-output": true, "output-field": "selected_papers"}'
+    )
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    output_ops = list(graph.iter_ops(OutputOp))
+    assert len(output_ops) == 1
+    assert output_ops[0].name == "selected_papers"
+
+
+def test_n8n_code_node_is_output_maps_through_runtime_builder() -> None:
+    workflow = _code_node_workflow(
+        '{"is-output": true, "output-field": "selected_papers"}'
+    )
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (lambda_op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert runtime_graph.output_node_map[lambda_op.id] == "selected_papers"
+
+
+def test_n8n_code_node_rejects_duplicate_output_name() -> None:
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": N8N_CHAT_TRIGGER,
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"pythonCode": "return 'a'"},
+                "type": "n8n-nodes-base.code",
+                "name": "First",
+                "id": "first-node",
+                "typeVersion": 1,
+                "notes": '{"is-output": true, "output-field": "result"}',
+            },
+            {
+                "parameters": {"pythonCode": "return 'b'"},
+                "type": "n8n-nodes-base.code",
+                "name": "Second",
+                "id": "second-node",
+                "typeVersion": 1,
+                "notes": '{"is-output": true, "output-field": "result"}',
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [
+                    [{"node": "First", "type": "main", "index": 0}],
+                    [{"node": "Second", "type": "main", "index": 0}],
+                ]
+            }
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="Duplicate output name 'result'"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_is_output_defaults_to_node_name() -> None:
+    workflow = _code_node_workflow('{"is-output": true}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    output_ops = list(graph.iter_ops(OutputOp))
+    assert len(output_ops) == 1
+    assert output_ops[0].name == "Code"
+
+
+def test_n8n_code_node_rejects_a_non_bool_is_output() -> None:
+    workflow = _code_node_workflow('{"is-output": "yes"}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="is-output"):
+        parse_n8n_payload(payload)
+
+
+def test_n8n_code_node_rejects_an_empty_output_field() -> None:
+    workflow = _code_node_workflow('{"is-output": true, "output-field": "  "}')
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="output-field"):
         parse_n8n_payload(payload)
 
 
@@ -522,6 +664,55 @@ def test_aggregate_prompt_no_table_escapes_literal_braces() -> None:
     assert table_spec == []
     assert aggregate_prompt == 'Return JSON {{"population": 5}}'
     assert aggregate_prompt.format_map({}) == 'Return JSON {"population": 5}'
+
+
+def test_prompt_content_field_ref_records_runtime_path() -> None:
+    """A plain prompt field ref keeps the field path on the FormatOp."""
+    content, extra_ops = _build_prompt_content(
+        "Q: {{ $('Protocol Details').item.question }}",
+        node_name="Chain",
+        op_ids={"Protocol Details": "op_pd"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["_op"] == "FormatOp"
+    assert fmt_op["format_kwargs"] == {"ref0": "op_pd"}
+    assert fmt_op["format_paths"] == {"ref0": "items.output.question"}
+    assert fmt_op["template"] == "Q: {ref0}"
+
+
+def test_prompt_content_item_output_field_ref_records_runtime_path() -> None:
+    """An ``item.output.<field>`` ref binds the field path, not a doubled
+    ``output`` segment."""
+    content, extra_ops = _build_prompt_content(
+        "Q: {{ $('Criteria Parser').item.output.population }}",
+        node_name="Chain",
+        op_ids={"Criteria Parser": "op_cp"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["format_kwargs"] == {"ref0": "op_cp"}
+    assert fmt_op["format_paths"] == {"ref0": "items.output.population"}
+    assert fmt_op["template"] == "Q: {ref0}"
+
+
+def test_prompt_content_whole_item_ref_has_no_path() -> None:
+    """A whole-item ref keeps today's FormatOp behaviour with no field path."""
+    content, extra_ops = _build_prompt_content(
+        "Q: {{ $('Protocol Details').item }}",
+        node_name="Chain",
+        op_ids={"Protocol Details": "op_pd"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["format_kwargs"] == {"ref0": "op_pd"}
+    assert fmt_op.get("format_paths") in (None, {})
 
 
 def _aggregate_chain_node(text: str) -> dict:

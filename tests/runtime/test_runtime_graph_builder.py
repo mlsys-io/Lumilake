@@ -623,6 +623,563 @@ def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:
     assert all(col.get("path") != "items.metadata.prompt" for col in upstream_columns)
 
 
+def test_plain_prompt_field_ref_binds_column_with_path() -> None:
+    """A plain chainLlm prompt reading a field of a row-mode Code node binds a
+    column whose path ends in the field, instead of inlining the whole item."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {"pythonCode": "return {'question': 'hi'}"},
+                "type": "n8n-nodes-base.code",
+                "name": "Protocol Details",
+                "id": "code-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Q: {{ $('Protocol Details').item.question }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Protocol Details", "type": "main", "index": 0}]]
+            },
+            "Protocol Details": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    code_id = next(nid for nid in runtime_graph.nodes if "Protocol" in nid)
+    assert runtime_graph.nodes[code_id].task_type == "python"
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    assert any(
+        col.get("node") == code_id and col.get("path") == "value.items.value.question"
+        for col in columns
+    )
+
+
+def test_plain_prompt_field_ref_emits_no_inline_function_step() -> None:
+    """A field-referenced row-mode Code node must not also be traced into the
+    LLM's inline function chain: it runs as a python step and the column reads
+    value.items.value.<field>, so no inline graph-template function step for it
+    may be emitted (FlowMesh would reject its dict return)."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {"pythonCode": "return {'question': 'hi'}"},
+                "type": "n8n-nodes-base.code",
+                "name": "Protocol Details",
+                "id": "code-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Q: {{ $('Protocol Details').item.question }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Protocol Details", "type": "main", "index": 0}]]
+            },
+            "Protocol Details": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    code_id = next(nid for nid in runtime_graph.nodes if "Protocol" in nid)
+    steps = runtime_graph.nodes[chain_id].data_spec["template"]["options"]["format"][
+        "steps"
+    ]
+    assert not any(step.get("function") and code_id in step["label"] for step in steps)
+
+
+def test_plain_prompt_field_ref_from_input_projects_literal() -> None:
+    """A plain prompt reading a field of a JSON-object input projects the
+    field server-side into a literal column."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Title: {{ $('Paper').item.title }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Paper": {"main": [[{"node": "Chain", "type": "main", "index": 0}]]},
+            "Model": {
+                "ai_languageModel": [
+                    [{"node": "Chain", "type": "ai_languageModel", "index": 0}]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {
+                "name": "graph",
+                "workflow": workflow,
+                "inputs": {"Paper": ['{"title": "A paper"}']},
+            }
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    assert any(col.get("data", {}).get("items") == ["A paper"] for col in columns)
+
+
+def test_plain_prompt_field_ref_to_input_field_named_output() -> None:
+    """An input field named ``output`` is read as a field, not as the
+    whole-item alias."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Title: {{ $('Paper').item.json.output.title }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Paper": {"main": [[{"node": "Chain", "type": "main", "index": 0}]]},
+            "Model": {
+                "ai_languageModel": [
+                    [{"node": "Chain", "type": "ai_languageModel", "index": 0}]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {
+                "name": "graph",
+                "workflow": workflow,
+                "inputs": {"Paper": ['{"output": {"title": "A paper"}}']},
+            }
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    assert any(col.get("data", {}).get("items") == ["A paper"] for col in columns)
+
+
+def test_plain_prompt_field_ref_from_llm_structured_output_binds_column() -> None:
+    """A plain prompt reading a field of an upstream LLM's structured output
+    binds a column whose path ends in the field."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Extract the population.",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Criteria Parser",
+                "id": "parser-node",
+                "typeVersion": 1.9,
+                "notes": (
+                    '{"op-type":"text-generation","is-output":false,'
+                    '"structural-outputs":[{"name":"population","type":"number"}]}'
+                ),
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Pop: {{ $('Criteria Parser').item.population }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Criteria Parser", "type": "main", "index": 0}]]
+            },
+            "Criteria Parser": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Criteria Parser",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        },
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    assert any(
+        col.get("node") == parser_id and col.get("path", "").endswith(".population")
+        for col in columns
+    )
+
+
+def test_plain_prompt_item_output_field_ref_binds_single_output_segment() -> None:
+    """An ``item.output.<field>`` ref on an upstream LLM's structured output
+    binds ``items.output.<field>``, not a doubled ``output`` segment."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Extract the population.",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Criteria Parser",
+                "id": "parser-node",
+                "typeVersion": 1.9,
+                "notes": (
+                    '{"op-type":"text-generation","is-output":false,'
+                    '"structural-outputs":[{"name":"population","type":"number"}]}'
+                ),
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Pop: {{ $('Criteria Parser').item.output.population }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Criteria Parser", "type": "main", "index": 0}]]
+            },
+            "Criteria Parser": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Criteria Parser",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        },
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    assert any(
+        col.get("node") == parser_id and col.get("path") == "items.output.population"
+        for col in columns
+    )
+
+
+def test_plain_prompt_mixed_field_and_whole_item_ref_same_node() -> None:
+    """A prompt reading the same upstream both by field and as a whole item
+    must build: the whole-item kwarg still needs the op traced, while the field
+    kwarg binds a column."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Extract the population.",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Criteria Parser",
+                "id": "parser-node",
+                "typeVersion": 1.9,
+                "notes": (
+                    '{"op-type":"text-generation","is-output":false,'
+                    '"structural-outputs":[{"name":"population","type":"number"}]}'
+                ),
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": (
+                        "=Pop: {{ $('Criteria Parser').item.population }} "
+                        "Whole: {{ $('Criteria Parser').item }}"
+                    ),
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Criteria Parser", "type": "main", "index": 0}]]
+            },
+            "Criteria Parser": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Criteria Parser",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        },
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    # The field ref binds a column; the whole-item ref keeps the op traced.
+    assert any(
+        col.get("node") == parser_id and col.get("path") == "items.output.population"
+        for col in columns
+    )
+
+
 def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
     images = input_placeholder("Images")
     vision = LLMVisionOp(
@@ -1180,10 +1737,10 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
     assert shout.id in llm_node.dependencies
 
 
-def test_inlined_row_lambda_referenced_by_column_rejected() -> None:
-    """A row-mode LambdaOp inlined into its consuming LLM's message chain has
-    no runtime python task, so a node column referencing it must be rejected
-    rather than emitting a path to a node that does not exist."""
+def test_inlined_row_lambda_referenced_by_column_materializes() -> None:
+    """A row-mode LambdaOp inlined into its consuming LLM's message chain but
+    also referenced by a node column is materialized as a python task, so the
+    column reads the step's output instead of a node that does not exist."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1196,8 +1753,10 @@ def test_inlined_row_lambda_referenced_by_column_rejected() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
 
 
 def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
@@ -1223,9 +1782,10 @@ def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
     assert outer.id in runtime_graph.nodes
 
 
-def test_inlined_row_lambda_referenced_by_condition_rejected() -> None:
-    """A row-mode LambdaOp inlined into an LLM's message chain has no runtime
-    python task, so a condition referencing it must be rejected."""
+def test_inlined_row_lambda_referenced_by_condition_materializes() -> None:
+    """A row-mode LambdaOp inlined into an LLM's message chain but also
+    referenced by a condition is materialized as a python task, so the
+    condition reads the step's output."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1239,8 +1799,10 @@ def test_inlined_row_lambda_referenced_by_condition_rejected() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
 
 
 def test_inlined_row_lambda_literal_items_not_treated_as_ref() -> None:
@@ -1301,9 +1863,9 @@ def test_inlined_row_lambda_literal_item_with_expr_not_treated_as_ref() -> None:
     assert llm.id in runtime_graph.nodes
 
 
-def test_inlined_row_lambda_literal_item_with_path_rejected() -> None:
+def test_inlined_row_lambda_literal_item_with_path_materializes() -> None:
     """A literal list item carrying ``node`` plus ``path`` is a FlowMesh read,
-    so an inlined LambdaOp in that payload must be rejected."""
+    so an inlined LambdaOp in that payload is materialized as a python task."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1324,14 +1886,16 @@ def test_inlined_row_lambda_literal_item_with_path_rejected() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
 
 
-def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
+def test_inlined_row_lambda_as_embedding_content_materializes() -> None:
     """A row-mode LambdaOp inlined into an LLM message chain and also used as
-    EmbeddingOp content emits a top-level list data-source reference, so it
-    must be rejected rather than leaving a dangling read."""
+    EmbeddingOp content is materialized as a python task so the embedding
+    reads its output."""
     stock = input_placeholder("Stock")
     shout = LambdaOp([stock], fn=_row_lambda_fn)
     llm = LLMChatOp(
@@ -1346,5 +1910,377 @@ def test_inlined_row_lambda_as_embedding_content_rejected() -> None:
     llm_output = as_output("result", llm)
     compiled = Graph.from_ops([output, llm_output]).compile(Stock=["NVDA"])
 
-    with pytest.raises(ValueError, match="inlined into the LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert shout.id in runtime_graph.nodes
+    assert runtime_graph.nodes[shout.id].task_type == "python"
+
+
+def _walk(value: Any, parts: list[str]) -> Any:
+    for idx, part in enumerate(parts):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list):
+            rest = parts[idx:]
+            return [_walk(v, rest) for v in value]
+        else:
+            raise KeyError(part)
+    return value
+
+
+def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None:
+    """A retrieval param reading a row LambdaOp's whole output (items.output)
+    must bind to the python step's ``value.items.output``, the same mapping
+    _node_ref_column applies to a row LambdaOp."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=_row_lambda_fn)
+    retrieval = DataRetrievalOp(
+        data_spec=_sql_spec(
+            "SELECT * FROM t WHERE q = :q",
+            [{"label": "q", "node": terms.id, "path": "items.output"}],
+        ),
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert terms.id in runtime_graph.nodes
+    assert runtime_graph.nodes[terms.id].task_type == "python"
+    params = runtime_graph.nodes[retrieval.id].data_spec["params"]
+    (param,) = [p for p in params if p.get("label") == "q"]
+    assert param["node"] == terms.id
+    assert param["path"] == "value.items.output"
+
+
+def test_retrieval_param_reading_row_lambda_field_maps_to_value() -> None:
+    """A retrieval param reading a field (items.output.<f>) of a row LambdaOp
+    must bind to the python step's raw value under ``value.items.value.<f>``
+    (the row wrapper keeps the raw fn return under ``value``), and that path
+    must resolve against a PythonResult-shaped result."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=_row_lambda_fn)
+    retrieval = DataRetrievalOp(
+        data_spec=_sql_spec(
+            "SELECT * FROM t WHERE q = :q",
+            [{"label": "q", "node": terms.id, "path": "items.output.field"}],
+        ),
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    params = runtime_graph.nodes[retrieval.id].data_spec["params"]
+    (param,) = [p for p in params if p.get("label") == "q"]
+    assert param["node"] == terms.id
+    assert param["path"] == "value.items.value.field"
+
+    # The emitted path must resolve against the python step's row wrapper.
+    result = {"value": {"items": [{"output": "text", "value": {"field": "x"}}]}}
+    assert _walk(result, param["path"].split(".")) == ["x"]
+
+
+def _grouped_column_values(
+    values: list[Any], grouped: bool, group_sizes: list[int]
+) -> list[list[Any]]:
+    """Reproduce FlowMesh's per-column dataframe grouping: an ungrouped column
+    is one group broadcast to every group, where a single value broadcasts to
+    the group's row count and any other length must match it; a grouped list
+    yields items[i] per group, where a scalar item broadcasts to the group's
+    row count and any other length must match it."""
+    if not grouped:
+        resolved: list[list[Any]] = []
+        for size in group_sizes:
+            if len(values) == 1:
+                resolved.append(values * size)
+            elif len(values) == size:
+                resolved.append(values)
+            else:
+                raise ValueError(
+                    "dataframe column values must resolve to the same number of"
+                    " rows per group"
+                )
+        return resolved
+    if len(values) != len(group_sizes):
+        raise ValueError("grouped column has wrong number of groups")
+    resolved = []
+    for item, size in zip(values, group_sizes):
+        group_vals = item if isinstance(item, list) else [item]
+        if len(group_vals) == 1:
+            resolved.append(group_vals * size)
+        elif len(group_vals) == size:
+            resolved.append(group_vals)
+        else:
+            raise ValueError(
+                "dataframe column values must resolve to the same number of rows"
+                " per group"
+            )
+    return resolved
+
+
+def test_rowwise_input_field_ref_groups_one_value_per_input_row() -> None:
+    """A per-row prompt reading an input field with multiple coalesced rows
+    must bind a node column that groups one value per input row, so each
+    group's single value broadcasts across that row's candidates."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "p",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"model": "gpt-4o"},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": "Judge: {{ $('Paper').item.title }}",
+                    "messages": {"messageValues": [{"message": "You are a judge."}]},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Relevance Judge",
+                "id": "rj",
+                "typeVersion": 1,
+                "notes": '{"op-type":"text-generation","mode":"rowwise"}',
+            },
+        ],
+        "connections": {
+            "Paper": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Relevance Judge",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        }
+                    ]
+                ]
+            },
+        },
+    }
+    inputs = {
+        "Paper": ['{"title": "t0", "year": 2020}', '{"title": "t1", "year": 2021}']
+    }
+    payload = {"graphs": [{"name": "g", "workflow": workflow, "inputs": inputs}]}
+    spec = parse_n8n_payload(payload)["g"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (llm_id,) = [
+        nid
+        for nid, node in runtime_graph.nodes.items()
+        if node.task_type == "inference"
+    ]
+    columns = runtime_graph.nodes[llm_id].data_spec["columns"]
+    title_col = next(col for col in columns if col["label"] == "title")
+    # A multi-row input ref must be a grouped list with one projected value per
+    # input row, in the same order as the other columns' groups, so each row's
+    # value broadcasts across that row's candidates.
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "grouped": True, "items": ["t0", "t1"]},
+    }
+
+    # Faithful grouping reproduction: a grouped list yields items[i] per group,
+    # and a scalar entry broadcasts across that group's rows. An ungrouped list
+    # of both rows fails the row-count check.
+    per_group = _grouped_column_values(["t0", "t1"], True, [3, 2])
+    assert per_group == [["t0"] * 3, ["t1"] * 2]
+    with pytest.raises(ValueError):
+        _grouped_column_values(["t0", "t1"], False, [3, 2])
+
+
+def _rowwise_chat_columns(prompt_text: str, inputs: dict[str, list[str]]) -> list[dict]:
+    """Build the rowwise LLM's dataframe columns for a chatTrigger input read
+    from ``prompt_text`` with the given literal input rows."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "p",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"model": "gpt-4o"},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": prompt_text,
+                    "messages": {"messageValues": [{"message": "You are a judge."}]},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Relevance Judge",
+                "id": "rj",
+                "typeVersion": 1,
+                "notes": '{"op-type":"text-generation","mode":"rowwise"}',
+            },
+        ],
+        "connections": {
+            "Paper": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Relevance Judge",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        }
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {"graphs": [{"name": "g", "workflow": workflow, "inputs": inputs}]}
+    spec = parse_n8n_payload(payload)["g"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    (llm_id,) = [
+        nid
+        for nid, node in runtime_graph.nodes.items()
+        if node.task_type == "inference"
+    ]
+    return runtime_graph.nodes[llm_id].data_spec["columns"]
+
+
+def test_rowwise_input_field_ref_single_row_projects_field() -> None:
+    """A per-row prompt reading an input field with a single input row must
+    project the field (not emit the whole JSON row), and stay an ungrouped
+    literal list."""
+    columns = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.title }}",
+        {"Paper": ['{"title": "T0", "abstract": "A"}']},
+    )
+    title_col = next(col for col in columns if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "items": ["T0"]},
+    }
+
+
+def test_rowwise_input_whole_item_ref_single_row_keeps_whole_value() -> None:
+    """A per-row prompt reading a whole input item with a single input row must
+    keep the whole JSON value, not project a field."""
+    columns = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item }}",
+        {"Paper": ['{"title": "T0", "abstract": "A"}']},
+    )
+    whole_col = next(col for col in columns if col["label"] == "output")
+    assert whole_col == {
+        "label": "output",
+        "data": {"type": "list", "items": ['{"title": "T0", "abstract": "A"}']},
+    }
+
+
+def test_rowwise_input_nested_field_ref_projects_full_path() -> None:
+    """A per-row prompt reading a nested input field must walk the full path
+    (not reduce to the final label), for both single-row and grouped multi-row
+    inputs."""
+    row = '{"meta": {"title": "T0"}, "abstract": "A"}'
+    single = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.meta.title }}", {"Paper": [row]}
+    )
+    title_col = next(col for col in single if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "items": ["T0"]},
+    }
+
+    multi = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.meta.title }}",
+        {"Paper": [row, '{"meta": {"title": "T1"}, "abstract": "B"}']},
+    )
+    title_col = next(col for col in multi if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "grouped": True, "items": ["T0", "T1"]},
+    }
+
+
+def test_rowwise_input_item_json_ref_keeps_whole_value() -> None:
+    """The documented whole-item form $('Paper').item.json must keep the whole
+    JSON value (not look for a field named 'json'), for both single-row and
+    grouped multi-row inputs."""
+    row = '{"title": "T0", "abstract": "A"}'
+    single = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.json }}", {"Paper": [row]}
+    )
+    whole_col = next(col for col in single if col["label"] == "output")
+    assert whole_col == {
+        "label": "output",
+        "data": {"type": "list", "items": [row]},
+    }
+
+    multi = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.json }}",
+        {"Paper": [row, '{"title": "T1", "abstract": "B"}']},
+    )
+    whole_col = next(col for col in multi if col["label"] == "output")
+    assert whole_col == {
+        "label": "output",
+        "data": {
+            "type": "list",
+            "grouped": True,
+            "items": [row, '{"title": "T1", "abstract": "B"}'],
+        },
+    }
+
+
+def test_rowwise_input_item_output_field_ref_projects_full_path() -> None:
+    """The item.output.<f> form must walk the nested keys like item.<f> (not
+    look for a field named 'output'), for both single-row and grouped
+    multi-row inputs."""
+    row = '{"title": "T0", "abstract": "A"}'
+    single = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.output.title }}", {"Paper": [row]}
+    )
+    title_col = next(col for col in single if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "items": ["T0"]},
+    }
+
+    multi = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.output.title }}",
+        {"Paper": [row, '{"title": "T1", "abstract": "B"}']},
+    )
+    title_col = next(col for col in multi if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "grouped": True, "items": ["T0", "T1"]},
+    }

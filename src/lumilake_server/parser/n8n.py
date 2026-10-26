@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from lumilake_server.common import retrieval_items_path
+from lumilake_server.common import InputRef, project_input_values, retrieval_items_path
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -272,15 +272,24 @@ def _parse_n8n_workflow(
             raise ValueError(f"Unresolved n8n dependencies: {missing}")
 
     # Outputs last
-    for node_name, node in chain_nodes.items():
+    output_owners: dict[str, str] = {}
+    for node_name, node in {**chain_nodes, **code_nodes}.items():
         notes = _parse_notes(node.get("notes", ""))
-        if notes.get("is-output", False):
-            output_name = notes.get("output-field") or node_name
-            upstream = op_ids.get(node_name)
-            if not upstream:
-                raise ValueError(f"Output node {node_name} missing op id")
-            output_op = _make_output_op(scope, output_name, upstream)
-            add_op(output_op)
+        if not notes.get("is-output", False):
+            continue
+        output_name = notes.get("output-field") or node_name
+        upstream = op_ids.get(node_name)
+        if not upstream:
+            raise ValueError(f"Output node {node_name} missing op id")
+        owner = output_owners.get(output_name)
+        if owner is not None:
+            raise ValueError(
+                f"Duplicate output name '{output_name}' from nodes "
+                f"'{owner}' and '{node_name}'"
+            )
+        output_owners[output_name] = node_name
+        output_op = _make_output_op(scope, output_name, upstream)
+        add_op(output_op)
 
     graph = {op["_id"]: op for op in ordered_ops}
     return N8NGraphSpec(graph=graph, inputs=inputs)
@@ -703,13 +712,21 @@ def _build_prompt_content(
     if refs:
         template = stripped if already_escaped else _escape_literal_braces(stripped)
         format_kwargs: dict[str, str] = {}
+        format_paths: dict[str, str] = {}
         for idx, (full, ref_name) in enumerate(refs):
             if ref_name not in op_ids:
                 raise ValueError(f"Unknown reference '{ref_name}' in prompt")
             key = f"ref{idx}"
             template = template.replace(full, f"{{{key}}}")
             format_kwargs[key] = op_ids[ref_name]
-        fmt_op = _build_format_op(scope, node_name, template, format_kwargs)
+            detail_matches = _extract_ref_details(full)
+            ref_path = detail_matches[0][1] if detail_matches else None
+            runtime_path = _to_runtime_output_path(ref_path)
+            if runtime_path and runtime_path != "items.output":
+                format_paths[key] = runtime_path
+        fmt_op = _build_format_op(
+            scope, node_name, template, format_kwargs, format_paths
+        )
         return fmt_op["_id"], [fmt_op]
 
     if already_escaped or not escape:
@@ -736,9 +753,13 @@ def _build_message_op(
 
 
 def _build_format_op(
-    scope: str, node_name: str, template: str, format_kwargs: dict[str, str]
+    scope: str,
+    node_name: str,
+    template: str,
+    format_kwargs: dict[str, str],
+    format_paths: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    op: dict[str, Any] = {
         "_id": _make_id(scope, "format", node_name),
         "_op": "FormatOp",
         "_max_iter": None,
@@ -747,6 +768,9 @@ def _build_format_op(
         "format_args": [],
         "format_kwargs": format_kwargs,
     }
+    if format_paths:
+        op["format_paths"] = format_paths
+    return op
 
 
 def _build_data_op(scope: str, node_name: str, content: str) -> dict[str, Any]:
@@ -1394,10 +1418,18 @@ def _extract_rowwise_columns(
                 raise ValueError(
                     f"Rowwise reference to input '{node_name}' has no provided values"
                 )
+            values = inputs[node_name]
+            projected = project_input_values(values, path, node_name)
+            input_ref: InputRef = {"key": node_name, "path": path}
+            data: dict[str, Any] = {"type": "list", "items": projected}
+            # A multi-row input ref groups one projected value per input row.
+            if len(values) > 1:
+                data["grouped"] = True
             columns.append(
                 {
                     "label": label,
-                    "data": {"type": "list", "items": inputs[node_name]},
+                    "data": data,
+                    "input_ref": input_ref,
                 }
             )
         elif node_type == N8N_AGENT_NODE:
@@ -1508,12 +1540,12 @@ def _path_to_label(path: str | None) -> str | None:
     if not path:
         return None
     normalized = path.strip()
+    if normalized in {"item", "item.output", "item.json"}:
+        return "output"
     if normalized.startswith("item.json."):
         normalized = normalized[len("item.json.") :]
     elif normalized.startswith("item."):
         normalized = normalized[len("item.") :]
-    elif normalized == "item":
-        return "output"
     if not normalized:
         return None
     return normalized.split(".")[-1]
@@ -1610,6 +1642,25 @@ def _make_code_ops(
         if not isinstance(cache, bool):
             raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
         op["cache"] = cache
+    is_output = notes.get("is-output")
+    if is_output is not None and not isinstance(is_output, bool):
+        raise ValueError(f"Code node '{node_name}' notes 'is-output' must be a bool")
+    output_field = notes.get("output-field")
+    if output_field is not None and (
+        not isinstance(output_field, str) or not output_field.strip()
+    ):
+        raise ValueError(
+            f"Code node '{node_name}' notes 'output-field' must be a non-empty string"
+        )
+    sample_value = notes.get("sample-value")
+    if sample_value is None:
+        if "sample-value" in notes:
+            raise ValueError(
+                f"Code node '{node_name}' notes 'sample-value' must be a "
+                "non-null JSON value"
+            )
+    else:
+        op["sample_value"] = sample_value
     return [op], op["_id"]
 
 
@@ -2113,6 +2164,9 @@ def _to_runtime_output_path(path: str | None) -> str | None:
         return None
     if normalized in {"item", "item.output"}:
         return "items.output"
+    if normalized.startswith("item.output."):
+        suffix = normalized[len("item.output.") :]
+        return f"items.output.{suffix}" if suffix else "items.output"
     if normalized.startswith("item.json."):
         suffix = normalized[len("item.json.") :]
         return f"items.output.{suffix}" if suffix else "items.output"

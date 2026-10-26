@@ -78,6 +78,7 @@ class SubmittedFunction:
 @Op.registry.register("FormatOp")
 class FormatOp(FunctionalOp):
     template: str
+    format_paths: dict[str, str]
 
     def __init__(
         self, template: str, *args: list[str] | Op, **kwargs: list[str] | Op
@@ -106,6 +107,7 @@ class FormatOp(FunctionalOp):
 
         super().__init__(inputs)
         self.template = template
+        self.format_paths = {}
         self._format_args = format_args
         self._format_kwargs = format_kwargs
 
@@ -120,15 +122,22 @@ class FormatOp(FunctionalOp):
     def _serialize(self) -> dict[str, Any]:
         format_args = [arg.id for arg in self.format_args]
         format_kwargs = {k: v.id for k, v in self.format_kwargs.items()}
-        return dict(
-            template=self.template, format_args=format_args, format_kwargs=format_kwargs
+        serialized = dict(
+            template=self.template,
+            format_args=format_args,
+            format_kwargs=format_kwargs,
         )
+        if self.format_paths:
+            serialized["format_paths"] = self.format_paths
+        return serialized
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "FormatOp":
         format_args = [other_ops[arg] for arg in data["format_args"]]
         format_kwargs = {k: other_ops[v] for k, v in data["format_kwargs"].items()}
-        return cls(data["template"], *format_args, **format_kwargs)
+        op = cls(data["template"], *format_args, **format_kwargs)
+        op.format_paths = data.get("format_paths", {})
+        return op
 
 
 def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) -> Op:
@@ -153,6 +162,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None: ...
 
     @overload
@@ -167,6 +177,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None: ...
 
     @overload
@@ -181,6 +192,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None: ...
 
     def __init__(
@@ -194,6 +206,7 @@ class LambdaOp(Op):
         image: str | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
+        sample_value: Any | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -221,6 +234,9 @@ class LambdaOp(Op):
         self.expected_runtime_s = expected_runtime_s
         # Opt-in task caching; passed to FlowMesh only when set.
         self.cache = cache
+        # A representative value for data-profile preflight placeholders; never
+        # executed at runtime.
+        self.sample_value = sample_value
         if code:
             self.code: str = code
         else:
@@ -275,6 +291,8 @@ class LambdaOp(Op):
             data["expected_runtime_s"] = self.expected_runtime_s
         if self.cache is not None:
             data["cache"] = self.cache
+        if self.sample_value is not None:
+            data["sample_value"] = self.sample_value
         return data
 
     @classmethod
@@ -289,6 +307,7 @@ class LambdaOp(Op):
         image = data.get("image")
         expected_runtime_s = data.get("expected_runtime_s")
         cache = data.get("cache")
+        sample_value = data.get("sample_value")
         try:
             fn = SubmittedFunction(code, fn_name)
         except ValueError as exc:
@@ -305,6 +324,7 @@ class LambdaOp(Op):
             image=image,
             expected_runtime_s=expected_runtime_s,
             cache=cache,
+            sample_value=sample_value,
         )
 
 

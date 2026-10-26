@@ -290,3 +290,242 @@ def test_merge_group_compiled_graph_single_slice_skips_rewrite_strictness() -> N
     assert merged_compiled.inputs == {"Stock": ["NVDA"]}
     assert merged_compiled._coalesce_rewrite_hits == {}
     assert merged_compiled._coalesce_rewrite_skipped is True
+
+
+def _rowwise_prompt_workflow(prompt_text: str) -> dict:
+    return {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "p",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"model": "gpt-4o"},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": prompt_text,
+                    "messages": {"messageValues": [{"message": "You are a judge."}]},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Relevance Judge",
+                "id": "rj",
+                "typeVersion": 1,
+                "notes": '{"op-type":"text-generation","mode":"rowwise"}',
+            },
+        ],
+        "connections": {
+            "Paper": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Relevance Judge",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        }
+                    ]
+                ]
+            },
+        },
+    }
+
+
+def _rowwise_slices(
+    *, prompt_text: str, rows: list[str], request_id: str = "req-relwork"
+) -> list[object]:
+    workflows: list[object] = []
+    total_length = len(rows)
+    for idx, row in enumerate(rows):
+        graph_name = f"relwork__slice_{idx + 1}"
+        payload = {
+            "graphs": [
+                {
+                    "name": graph_name,
+                    "workflow": _rowwise_prompt_workflow(prompt_text),
+                    "inputs": {"Paper": [row]},
+                }
+            ]
+        }
+        parsed = parse_n8n_payload(payload)
+        spec = parsed[graph_name]
+        compiled_graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+        workflow = make_workflow(
+            workflow_id=f"relwork-{idx}",
+            request_id=request_id,
+            graph_name=graph_name,
+            public_graph_name="related-work",
+            template_hash="template-relwork",
+            dsl_inputs=compiled_graph.inputs,
+            varying_input_keys=("Paper",),
+            slice_index=idx,
+            slice_start=idx,
+            slice_length=1,
+            total_length=total_length,
+        )
+        workflow.dsl_graph = compiled_graph
+        workflows.append(workflow)
+    return workflows
+
+
+def _rowwise_columns(compiled_graph: Graph) -> list[dict]:
+    for op in compiled_graph.as_dict().values():
+        if not isinstance(op, LLMChatOp):
+            continue
+        if op.rowwise_columns:
+            return op.rowwise_columns
+    raise AssertionError("No rowwise LLM found")
+
+
+def _runtime_columns(graph: Graph, inputs: dict[str, list[str]]) -> list[dict]:
+    from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+
+    runtime_graph = RuntimeGraphBuilder().build(graph.compile(**inputs))
+    for node in runtime_graph.nodes.values():
+        data_spec = node.data_spec
+        if isinstance(data_spec, dict) and data_spec.get("type") == "dataframe":
+            return data_spec["columns"]
+    raise AssertionError("No dataframe node found")
+
+
+def test_merge_group_compiled_graph_coalesces_projected_input_columns() -> None:
+    """Coalescing N single-row slices must produce the same runtime columns as
+    parsing the same N rows in one graph: each field projected per row, grouped
+    when more than one row, in merged order, for field, nested-field and
+    whole-item refs."""
+    rows = [
+        '{"title": "T0", "meta": {"year": 2020}}',
+        '{"title": "T1", "meta": {"year": 2021}}',
+    ]
+    for prompt_text in (
+        "Judge: {{ $('Paper').item.title }}",
+        "Judge: {{ $('Paper').item.meta.year }}",
+        "Judge: {{ $('Paper').item.json }}",
+    ):
+        workflows = _rowwise_slices(prompt_text=prompt_text, rows=rows)
+        merged = LumilakeServer._merge_group_compiled_graph(workflows)
+
+        direct = Graph.from_json(
+            parse_n8n_payload(
+                {
+                    "graphs": [
+                        {
+                            "name": "g",
+                            "workflow": _rowwise_prompt_workflow(prompt_text),
+                            "inputs": {"Paper": rows},
+                        }
+                    ]
+                }
+            )["g"]["graph"]
+        ).compile(Paper=rows)
+
+        assert _runtime_columns(merged.graph, merged.inputs) == _runtime_columns(
+            direct.graph, direct.inputs
+        )
+
+
+def test_merge_group_compiled_graph_non_varying_input_ref_not_rewritten() -> None:
+    """A rowwise column bound from a fixed (non-varying) input must not be
+    re-projected even when its label collides with a varying key."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "p",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Stock",
+                "id": "s",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"model": "gpt-4o"},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": "Judge: {{ $('Paper').item.Stock }} {{ $('Stock').item }}",
+                    "messages": {"messageValues": [{"message": "You are a judge."}]},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Relevance Judge",
+                "id": "rj",
+                "typeVersion": 1,
+                "notes": '{"op-type":"text-generation","mode":"rowwise"}',
+            },
+        ],
+        "connections": {
+            "Paper": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Stock": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Relevance Judge",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        }
+                    ]
+                ]
+            },
+        },
+    }
+    workflows: list[object] = []
+    for idx, stock in enumerate(["S0", "S1"]):
+        graph_name = f"relwork__slice_{idx + 1}"
+        payload = {
+            "graphs": [
+                {
+                    "name": graph_name,
+                    "workflow": workflow,
+                    "inputs": {"Paper": ['{"Stock": "paper"}'], "Stock": [stock]},
+                }
+            ]
+        }
+        parsed = parse_n8n_payload(payload)
+        spec = parsed[graph_name]
+        compiled_graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+        wf = make_workflow(
+            workflow_id=f"relwork-{idx}",
+            request_id="req-relwork",
+            graph_name=graph_name,
+            public_graph_name="related-work",
+            template_hash="template-relwork",
+            dsl_inputs=compiled_graph.inputs,
+            varying_input_keys=("Stock",),
+            slice_index=idx,
+            slice_start=idx,
+            slice_length=1,
+            total_length=2,
+        )
+        wf.dsl_graph = compiled_graph
+        workflows.append(wf)
+
+    merged = LumilakeServer._merge_group_compiled_graph(workflows)
+
+    # The Paper-bound column keeps its single projected value; Stock is not
+    # projected from it.
+    columns = _rowwise_columns(merged.graph)
+    paper_col = next(col for col in columns if col["label"] == "Stock")
+    assert paper_col["data"]["items"] == ["paper"]

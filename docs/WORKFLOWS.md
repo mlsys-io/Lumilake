@@ -48,15 +48,26 @@ Lumilake annotations as a JSON object with kebab-case keys:
 |---|---|---|
 | `inputs` | list of node names | Upstreams; defaults to the node's main incoming edges. |
 | `is-output` | bool | Emit this node's value as a workflow output. |
+| `output-field` | string | Output name when `is-output` is set; defaults to the node name. |
 | `mode` | string | `row` (default), `list` or `aligned`, as YAML `LambdaOp` `mode`. |
 | `image` | string | Container image for the standalone `python` task. |
 | `timeout-s` | number | Task timeout, as YAML `timeout_s` (at most 3600 with an `image`, else 600). |
 | `memory-mb` | integer | Task memory limit, as YAML `memory_mb`. |
 | `expected-runtime-s` | number | HALO planning hint: seconds per input row; never enforced. |
 | `cache` | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
+| `sample-value` | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
 
 A Code node with an `image` always runs as its own standalone `python` task.
 `expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
+
+In an n8n `chainLlm` prompt, a reference like `{{ $('Node').item.<field> }}`
+renders that node's item field (nested traversal works, e.g.
+`item.output.<field>` or `item.json.<field>`). A field reference to a row-mode
+Code node runs that node as a standalone `python` task and binds the field as a
+column; a field reference to a workflow input projects the field server-side;
+a field reference to an upstream LLM's structured output binds the field
+column. A whole-item reference (`item`, `item.json` or `item.output` with no
+field) keeps the item as a whole.
 
 ## Output projection (`path:`)
 
@@ -113,7 +124,7 @@ params:
     path: items.table.id
 ```
 
-For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns.
+For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns. For a `LambdaOp` upstream, set `sample_value` on the op (or the Code node's `sample-value` note) the same way — preflight never executes user code, so it needs a representative value to resolve the placeholder.
 
 An `aggregate_table` column may reference a workflow input by `node` with an empty `path` (`path: ""`), in which case the input's literal values are inlined as the column's list rather than read from a runtime envelope.
 

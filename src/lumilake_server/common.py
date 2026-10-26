@@ -1,7 +1,62 @@
+import json
 from dataclasses import asdict, dataclass, fields
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypedDict
 
 RETRIEVAL_MODES = ("sql", "s3", "agent")
+
+
+class InputRef(TypedDict):
+    """The input key and ref path a rowwise column was projected from."""
+
+    key: str
+    path: str | None
+
+
+def project_input_values(
+    values: list[str], path: str | None, node_name: str
+) -> list[Any]:
+    """Project a field out of literal input values (JSON object strings) for a
+    rowwise column, or keep the whole item when no field is read. The whole-item
+    forms are ``item``, ``item.output`` and the documented ``item.json``; any
+    other path walks the nested JSON keys in order."""
+    normalized = (path or "").strip()
+    if normalized in {"item", "item.output", "item.json"}:
+        return list(values)
+    if normalized.startswith("item.json."):
+        keys = normalized[len("item.json.") :].split(".")
+    elif normalized.startswith("item.output."):
+        keys = normalized[len("item.output.") :].split(".")
+    elif normalized.startswith("item."):
+        keys = normalized[len("item.") :].split(".")
+    else:
+        keys = normalized.split(".")
+    if not keys or keys == [""]:
+        return list(values)
+    return project_input_keys(values, keys, path, node_name)
+
+
+def project_input_keys(
+    values: list[str], keys: list[str], path: str | None, node_name: str
+) -> list[Any]:
+    """Walk ``keys`` into each literal input value (a JSON object string)."""
+    projected: list[Any] = []
+    for value in values:
+        try:
+            obj = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Input '{node_name}' value is not JSON at field path"
+                f" '{path}': {value!r}"
+            ) from exc
+        for key in keys:
+            if not isinstance(obj, dict) or key not in obj:
+                raise ValueError(
+                    f"Input '{node_name}' value missing field at path"
+                    f" '{path}': {value!r}"
+                )
+            obj = obj[key]
+        projected.append(obj)
+    return projected
 
 
 def retrieval_items_path(mode: str) -> str:
