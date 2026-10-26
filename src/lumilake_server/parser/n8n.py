@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from lumilake_server.common import retrieval_items_path
+from lumilake_server.common import InputRef, project_input_values, retrieval_items_path
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -1410,8 +1410,8 @@ def _extract_rowwise_columns(
                     f"Rowwise reference to input '{node_name}' has no provided values"
                 )
             values = inputs[node_name]
-            projected = _project_input_values(values, path, node_name)
-            input_ref = {"key": node_name, "path": path}
+            projected = project_input_values(values, path, node_name)
+            input_ref: InputRef = {"key": node_name, "path": path}
             if len(values) > 1:
                 # A flat literal list cannot broadcast one value per input row
                 # across each row's candidates, so a multi-row input ref emits a
@@ -1454,46 +1454,6 @@ def _extract_rowwise_columns(
                 }
             )
     return columns
-
-
-def _project_input_values(
-    values: list[str], path: str | None, node_name: str
-) -> list[Any]:
-    """Project a field out of literal input values (JSON object strings) for a
-    rowwise column, or keep the whole item when no field is read. The whole-item
-    forms are ``item``, ``item.output`` and the documented ``item.json``; any
-    other path walks the nested JSON keys in order."""
-    normalized = (path or "").strip()
-    if normalized in {"item", "item.output", "item.json"}:
-        return list(values)
-    if normalized.startswith("item.json."):
-        keys = normalized[len("item.json.") :].split(".")
-    elif normalized.startswith("item.output."):
-        keys = normalized[len("item.output.") :].split(".")
-    elif normalized.startswith("item."):
-        keys = normalized[len("item.") :].split(".")
-    else:
-        keys = normalized.split(".")
-    if not keys or keys == [""]:
-        return list(values)
-    projected: list[Any] = []
-    for value in values:
-        try:
-            obj = json.loads(value)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Input '{node_name}' value is not JSON at field path"
-                f" '{path}': {value!r}"
-            ) from exc
-        for key in keys:
-            if not isinstance(obj, dict) or key not in obj:
-                raise ValueError(
-                    f"Input '{node_name}' value missing field at path"
-                    f" '{path}': {value!r}"
-                )
-            obj = obj[key]
-        projected.append(obj)
-    return projected
 
 
 def _extract_rowwise_ref_bindings(

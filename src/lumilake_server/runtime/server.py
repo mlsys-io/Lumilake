@@ -26,6 +26,7 @@ from lumilake.log import (
     init_child_logger,
     log_on_exception_async,
 )
+from lumilake_server.common import InputRef, project_input_values
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
@@ -1763,18 +1764,19 @@ class LumilakeServer:
             replacement = merged_inputs[rewrite_target_key]
             input_ref = owner.get("input_ref")
             if isinstance(input_ref, dict):
-                from lumilake_server.parser.n8n import _project_input_values
-
                 ref_key = input_ref.get("key")
                 ref_path = input_ref.get("path")
-                if not isinstance(ref_key, str):
+                if not isinstance(ref_key, str) or not isinstance(
+                    ref_path, (str, type(None))
+                ):
                     raise ValueError(
-                        f"Invalid input_ref key for '{label}' in {group_context}"
+                        f"Invalid input_ref for '{label}' in {group_context}"
                     )
-                projected = _project_input_values(
+                ref: InputRef = {"key": ref_key, "path": ref_path}
+                projected = project_input_values(
                     replacement,
-                    ref_path,
-                    ref_key,
+                    ref["path"],
+                    ref["key"],
                 )
                 data["items"] = list(projected)
                 if len(replacement) > 1:
