@@ -1411,6 +1411,7 @@ def _extract_rowwise_columns(
                 )
             values = inputs[node_name]
             projected = _project_input_values(values, path, node_name)
+            input_ref = {"key": node_name, "path": path}
             if len(values) > 1:
                 # A flat literal list cannot broadcast one value per input row
                 # across each row's candidates, so a multi-row input ref emits a
@@ -1424,6 +1425,7 @@ def _extract_rowwise_columns(
                             "grouped": True,
                             "items": projected,
                         },
+                        "input_ref": input_ref,
                     }
                 )
             else:
@@ -1431,6 +1433,7 @@ def _extract_rowwise_columns(
                     {
                         "label": label,
                         "data": {"type": "list", "items": projected},
+                        "input_ref": input_ref,
                     }
                 )
         elif node_type == N8N_AGENT_NODE:
