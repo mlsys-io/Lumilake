@@ -1357,3 +1357,67 @@ def test_inlined_row_lambda_as_embedding_content_materializes() -> None:
 
     assert shout.id in runtime_graph.nodes
     assert runtime_graph.nodes[shout.id].task_type == "python"
+
+
+def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None:
+    """A retrieval param reading a row LambdaOp's whole output (items.output)
+    must bind to the python step's ``value.items.output``, the same mapping
+    _node_ref_column applies to a row LambdaOp."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=_row_lambda_fn)
+    retrieval = DataRetrievalOp(
+        data_spec=_sql_spec(
+            "SELECT * FROM t WHERE q = :q",
+            [{"label": "q", "node": terms.id, "path": "items.output"}],
+        ),
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert terms.id in runtime_graph.nodes
+    assert runtime_graph.nodes[terms.id].task_type == "python"
+    params = runtime_graph.nodes[retrieval.id].data_spec["params"]
+    (param,) = [p for p in params if p.get("label") == "q"]
+    assert param["node"] == terms.id
+    assert param["path"] == "value.items.output"
+
+
+def test_retrieval_param_reading_row_lambda_field_is_rejected() -> None:
+    """A retrieval param reading a field (items.output.<f>) of a row LambdaOp
+    cannot work on this branch (the python step emits text, not the raw value),
+    so it is rejected at build time with a clear error naming the node and
+    field."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=_row_lambda_fn)
+    retrieval = DataRetrievalOp(
+        data_spec=_sql_spec(
+            "SELECT * FROM t WHERE q = :q",
+            [{"label": "q", "node": terms.id, "path": "items.output.field"}],
+        ),
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError) as excinfo:
+        RuntimeGraphBuilder().build(compiled)
+    message = str(excinfo.value)
+    assert terms.id in message
+    assert "field" in message

@@ -1180,3 +1180,48 @@ def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
         _run_reshape(
             "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
         )
+
+
+def _walk(value: Any, parts: list[str]) -> Any:
+    for part in parts:
+        if isinstance(value, dict):
+            value = value[part]
+        else:
+            raise KeyError(part)
+    return value
+
+
+def test_retrieval_param_paths_resolve_against_python_result() -> None:
+    """The emitted retrieval param path must resolve against a python step's
+    PythonResult-shaped result (``{"value": {"items": [...]}}``), so a wrong
+    path fails the way it fails in FlowMesh."""
+    stock = input_placeholder("Stock")
+    terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE q = :q",
+            "params": [
+                {"label": "whole", "node": terms.id, "path": "items.output"},
+            ],
+        },
+        inputs=[terms],
+    )
+    llm = LLMChatOp(
+        [
+            OpMessage(role="user", content=terms),
+            OpMessage(role="user", content=retrieval),
+        ],
+        config=GenerationConfig(model=_MODEL),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    params = graph.nodes[retrieval.id].data_spec["params"]
+    (whole,) = [p for p in params if p.get("label") == "whole"]
+
+    # The whole-item read maps to the python step's textified output.
+    assert whole["path"] == "value.items.output"
+    result = {"value": {"items": [{"output": "NVDA", "value": {"field": "x"}}]}}
+    assert _walk(result, whole["path"].split(".")) == "NVDA"
