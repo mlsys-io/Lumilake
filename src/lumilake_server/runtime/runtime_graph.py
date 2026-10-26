@@ -3100,9 +3100,21 @@ class RuntimeGraphBuilder:
                     assert (
                         len(op.inputs) >= 1
                     ), "FormatOp should have at least one input"
+                # A field-referenced input binds a column (value.items.value.<field>)
+                # and runs as its own python step; it must not also be traced into
+                # the message chain as an inline function step.
+                field_ref_ids = {op.format_kwargs[k].id for k in op.format_paths}
                 message_labels = {
-                    inp_op.id: _trace_ancestors(inp_op) for inp_op in op.inputs
+                    inp_op.id: _trace_ancestors(inp_op)
+                    for inp_op in op.inputs
+                    if inp_op.id not in field_ref_ids
                 }
+                # A field-referenced InputOp is projected server-side into a
+                # literal column and never materializes a runtime node; mark it
+                # visited so the traversal does not treat it as orphaned.
+                for field_ref_id in field_ref_ids:
+                    if isinstance(graph_dict.get(field_ref_id), InputOp):
+                        visited_node_ids.add(field_ref_id)
                 multi = [
                     (len(msgs), inp_id, msgs)
                     for inp_id, msgs in message_labels.items()
