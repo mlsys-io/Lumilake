@@ -1465,6 +1465,8 @@ def _project_input_values(
         return list(values)
     if normalized.startswith("item.json."):
         keys = normalized[len("item.json.") :].split(".")
+    elif normalized.startswith("item.output."):
+        keys = normalized[len("item.output.") :].split(".")
     elif normalized.startswith("item."):
         keys = normalized[len("item.") :].split(".")
     else:
