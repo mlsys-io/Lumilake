@@ -1916,13 +1916,18 @@ class RuntimeGraphBuilder:
         nodes: dict[str, RuntimeOp],
         graph_dict: dict[str, Op],
     ) -> set[str]:
-        """Row-mode LambdaOps referenced by any built runtime node."""
+        """Row-mode LambdaOps referenced by any built runtime node, either in
+        its data_spec/condition or as a runtime dependency."""
         refs: set[str] = set()
         for node in nodes.values():
             for ref in RuntimeGraphBuilder._iter_runtime_refs(node):
                 op = graph_dict.get(ref)
                 if isinstance(op, LambdaOp) and not op.takes_whole_columns:
                     refs.add(ref)
+            for dep in node.dependencies:
+                op = graph_dict.get(dep)
+                if isinstance(op, LambdaOp) and not op.takes_whole_columns:
+                    refs.add(dep)
         return refs
 
     def _check_inlined_lambda_refs(
