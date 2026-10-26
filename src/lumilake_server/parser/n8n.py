@@ -1611,7 +1611,13 @@ def _make_code_ops(
             raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
         op["cache"] = cache
     sample_value = notes.get("sample-value")
-    if sample_value is not None:
+    if sample_value is None:
+        if "sample-value" in notes:
+            raise ValueError(
+                f"Code node '{node_name}' notes 'sample-value' must be a "
+                "non-null JSON value"
+            )
+    else:
         op["sample_value"] = sample_value
     return [op], op["_id"]
 

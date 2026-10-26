@@ -332,7 +332,7 @@ Optional per-op limits for the standalone `python` task:
 | `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
 | `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
 | `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
-| `sample_value` | none | any JSON | Representative value for data-profile preflight placeholders; never executed. |
+| `sample_value` | none | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
 
 The limits apply only to the standalone `python` task; they have no effect on a
 `LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as
