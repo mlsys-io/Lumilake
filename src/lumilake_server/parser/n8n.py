@@ -1412,30 +1412,17 @@ def _extract_rowwise_columns(
             values = inputs[node_name]
             projected = project_input_values(values, path, node_name)
             input_ref: InputRef = {"key": node_name, "path": path}
+            data: dict[str, Any] = {"type": "list", "items": projected}
+            # A multi-row input ref groups one projected value per input row.
             if len(values) > 1:
-                # A flat literal list cannot broadcast one value per input row
-                # across each row's candidates, so a multi-row input ref emits a
-                # grouped list with one projected value per input row, in the
-                # same order as the other columns' groups.
-                columns.append(
-                    {
-                        "label": label,
-                        "data": {
-                            "type": "list",
-                            "grouped": True,
-                            "items": projected,
-                        },
-                        "input_ref": input_ref,
-                    }
-                )
-            else:
-                columns.append(
-                    {
-                        "label": label,
-                        "data": {"type": "list", "items": projected},
-                        "input_ref": input_ref,
-                    }
-                )
+                data["grouped"] = True
+            columns.append(
+                {
+                    "label": label,
+                    "data": data,
+                    "input_ref": input_ref,
+                }
+            )
         elif node_type == N8N_AGENT_NODE:
             columns.append(
                 {
