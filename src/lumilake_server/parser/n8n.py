@@ -2128,6 +2128,9 @@ def _to_runtime_output_path(path: str | None) -> str | None:
         return None
     if normalized in {"item", "item.output"}:
         return "items.output"
+    if normalized.startswith("item.output."):
+        suffix = normalized[len("item.output.") :]
+        return f"items.output.{suffix}" if suffix else "items.output"
     if normalized.startswith("item.json."):
         suffix = normalized[len("item.json.") :]
         return f"items.output.{suffix}" if suffix else "items.output"

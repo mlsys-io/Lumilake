@@ -541,6 +541,23 @@ def test_prompt_content_field_ref_records_runtime_path() -> None:
     assert fmt_op["template"] == "Q: {ref0}"
 
 
+def test_prompt_content_item_output_field_ref_records_runtime_path() -> None:
+    """An ``item.output.<field>`` ref binds the field path, not a doubled
+    ``output`` segment."""
+    content, extra_ops = _build_prompt_content(
+        "Q: {{ $('Criteria Parser').item.output.population }}",
+        node_name="Chain",
+        op_ids={"Criteria Parser": "op_cp"},
+        upstream_main=None,
+        scope="g0",
+    )
+    assert len(extra_ops) == 1
+    fmt_op = extra_ops[0]
+    assert fmt_op["format_kwargs"] == {"ref0": "op_cp"}
+    assert fmt_op["format_paths"] == {"ref0": "items.output.population"}
+    assert fmt_op["template"] == "Q: {ref0}"
+
+
 def test_prompt_content_whole_item_ref_has_no_path() -> None:
     """A whole-item ref keeps today's FormatOp behaviour with no field path."""
     content, extra_ops = _build_prompt_content(
