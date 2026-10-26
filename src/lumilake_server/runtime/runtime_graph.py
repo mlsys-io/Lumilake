@@ -1464,6 +1464,19 @@ class RuntimeGraphBuilder:
                                 " silently drop every row but the first."
                             )
                         param_row_counts[str(param.get("label"))] = row_count
+                if isinstance(upstream, LambdaOp):
+                    param = {
+                        **param,
+                        "path": self._lambda_read_path(
+                            consumer=(
+                                f"DataRetrievalOp '{op_id}' template param "
+                                f"{param.get('label')!r}"
+                            ),
+                            node_ref=node,
+                            path=param.get("path", ""),
+                            upstream=upstream,
+                        ),
+                    }
                 if node not in seen:
                     seen.add(node)
                     dependencies.append(node)
@@ -1838,6 +1851,35 @@ class RuntimeGraphBuilder:
             return "value.items.output"
         return "items.output"
 
+    def _lambda_read_path(
+        self,
+        *,
+        consumer: str,
+        node_ref: str,
+        path: str,
+        upstream: LambdaOp,
+    ) -> str:
+        """Map a read of a LambdaOp's output to the python step's read path.
+
+        A LambdaOp runs as a python step whose result wraps each row's output
+        under ``value.items``, so a declared ``items.output`` read becomes
+        ``value.items.output``. A list-mode Lambda returns raw values, so a
+        field read (``items.output.<f>``) maps to ``value.items.output.<f>``;
+        a row-mode Lambda emits text, so a field read is rejected.
+        """
+        if not isinstance(path, str) or not path.startswith("items.output"):
+            raise ValueError(
+                f"{consumer} reads '{path}' from Lambda '{node_ref}'; only"
+                " 'items.output' (the whole output) is supported."
+            )
+        if not upstream.takes_whole_columns and path != "items.output":
+            raise ValueError(
+                f"{consumer} reads '{path}' from row-mode Lambda '{node_ref}'; "
+                "a row-mode Lambda emits text, so only 'items.output' (the "
+                "whole output) is supported."
+            )
+        return "value." + path
+
     def _node_ref_column(
         self,
         *,
@@ -1886,21 +1928,19 @@ class RuntimeGraphBuilder:
                 )
             path = self._upstream_output_path(upstream)
         elif isinstance(upstream, LambdaOp) and upstream.takes_whole_columns:
-            if not path.startswith("items.output"):
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from list-mode Lambda '{node_ref}'; only"
-                    " 'items.output' (the whole output) is supported."
-                )
-            path = "value." + path
+            path = self._lambda_read_path(
+                consumer=f"Column '{label}' of consumer '{consumer_id}'",
+                node_ref=node_ref,
+                path=path,
+                upstream=upstream,
+            )
         elif isinstance(upstream, LambdaOp):
-            if not path.startswith("items.output"):
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from row-mode Lambda '{node_ref}'; only"
-                    " 'items.output' (the whole output) is supported."
-                )
-            path = "value." + path
+            path = self._lambda_read_path(
+                consumer=f"Column '{label}' of consumer '{consumer_id}'",
+                node_ref=node_ref,
+                path=path,
+                upstream=upstream,
+            )
         elif upstream is not None and upstream.id in self._flattened_vlm_ids:
             if not path.startswith("items.output"):
                 raise ValueError(
