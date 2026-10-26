@@ -2052,3 +2052,147 @@ def test_rowwise_input_field_ref_groups_one_value_per_input_row() -> None:
     assert per_group == [["t0"] * 3, ["t1"] * 2]
     with pytest.raises(ValueError):
         _grouped_column_values(["t0", "t1"], False, [3, 2])
+
+
+def _rowwise_chat_columns(prompt_text: str, inputs: dict[str, list[str]]) -> list[dict]:
+    """Build the rowwise LLM's dataframe columns for a chatTrigger input read
+    from ``prompt_text`` with the given literal input rows."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "p",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"model": "gpt-4o"},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": prompt_text,
+                    "messages": {"messageValues": [{"message": "You are a judge."}]},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Relevance Judge",
+                "id": "rj",
+                "typeVersion": 1,
+                "notes": '{"op-type":"text-generation","mode":"rowwise"}',
+            },
+        ],
+        "connections": {
+            "Paper": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Relevance Judge",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        }
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {"graphs": [{"name": "g", "workflow": workflow, "inputs": inputs}]}
+    spec = parse_n8n_payload(payload)["g"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    (llm_id,) = [
+        nid
+        for nid, node in runtime_graph.nodes.items()
+        if node.task_type == "inference"
+    ]
+    return runtime_graph.nodes[llm_id].data_spec["columns"]
+
+
+def test_rowwise_input_field_ref_single_row_projects_field() -> None:
+    """A per-row prompt reading an input field with a single input row must
+    project the field (not emit the whole JSON row), and stay an ungrouped
+    literal list."""
+    columns = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.title }}",
+        {"Paper": ['{"title": "T0", "abstract": "A"}']},
+    )
+    title_col = next(col for col in columns if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "items": ["T0"]},
+    }
+
+
+def test_rowwise_input_whole_item_ref_single_row_keeps_whole_value() -> None:
+    """A per-row prompt reading a whole input item with a single input row must
+    keep the whole JSON value, not project a field."""
+    columns = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item }}",
+        {"Paper": ['{"title": "T0", "abstract": "A"}']},
+    )
+    whole_col = next(col for col in columns if col["label"] == "output")
+    assert whole_col == {
+        "label": "output",
+        "data": {"type": "list", "items": ['{"title": "T0", "abstract": "A"}']},
+    }
+
+
+def test_rowwise_input_nested_field_ref_projects_full_path() -> None:
+    """A per-row prompt reading a nested input field must walk the full path
+    (not reduce to the final label), for both single-row and grouped multi-row
+    inputs."""
+    row = '{"meta": {"title": "T0"}, "abstract": "A"}'
+    single = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.meta.title }}", {"Paper": [row]}
+    )
+    title_col = next(col for col in single if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "items": ["T0"]},
+    }
+
+    multi = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.meta.title }}",
+        {"Paper": [row, '{"meta": {"title": "T1"}, "abstract": "B"}']},
+    )
+    title_col = next(col for col in multi if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "grouped": True, "items": ["T0", "T1"]},
+    }
+
+
+def test_rowwise_input_item_json_ref_keeps_whole_value() -> None:
+    """The documented whole-item form $('Paper').item.json must keep the whole
+    JSON value (not look for a field named 'json'), for both single-row and
+    grouped multi-row inputs."""
+    row = '{"title": "T0", "abstract": "A"}'
+    single = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.json }}", {"Paper": [row]}
+    )
+    whole_col = next(col for col in single if col["label"] == "output")
+    assert whole_col == {
+        "label": "output",
+        "data": {"type": "list", "items": [row]},
+    }
+
+    multi = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.json }}",
+        {"Paper": [row, '{"title": "T1", "abstract": "B"}']},
+    )
+    whole_col = next(col for col in multi if col["label"] == "output")
+    assert whole_col == {
+        "label": "output",
+        "data": {
+            "type": "list",
+            "grouped": True,
+            "items": [row, '{"title": "T1", "abstract": "B"}'],
+        },
+    }
