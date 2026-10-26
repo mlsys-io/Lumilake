@@ -1921,14 +1921,28 @@ def _grouped_column_values(
     values: list[Any], grouped: bool, group_sizes: list[int]
 ) -> list[list[Any]]:
     """Reproduce FlowMesh's per-column dataframe grouping: an ungrouped column
-    is one group broadcast to every group; within a group a single value
-    broadcasts to the group's row count, any other length must match it."""
+    is one group broadcast to every group, where a single value broadcasts to
+    the group's row count and any other length must match it; a grouped list
+    yields items[i] per group, where a scalar item broadcasts to the group's
+    row count and any other length must match it."""
     if not grouped:
-        return [values] * len(group_sizes)
+        resolved: list[list[Any]] = []
+        for size in group_sizes:
+            if len(values) == 1:
+                resolved.append(values * size)
+            elif len(values) == size:
+                resolved.append(values)
+            else:
+                raise ValueError(
+                    "dataframe column values must resolve to the same number of"
+                    " rows per group"
+                )
+        return resolved
     if len(values) != len(group_sizes):
         raise ValueError("grouped column has wrong number of groups")
-    resolved: list[list[Any]] = []
-    for group_vals, size in zip(values, group_sizes):
+    resolved = []
+    for item, size in zip(values, group_sizes):
+        group_vals = item if isinstance(item, list) else [item]
         if len(group_vals) == 1:
             resolved.append(group_vals * size)
         elif len(group_vals) == size:
@@ -2006,17 +2020,18 @@ def test_rowwise_input_field_ref_groups_one_value_per_input_row() -> None:
     ]
     columns = runtime_graph.nodes[llm_id].data_spec["columns"]
     title_col = next(col for col in columns if col["label"] == "title")
-    # The field must be projected and grouped one value per input row, not a
-    # flat literal list of every input row (which cannot broadcast per group).
-    assert "node" in title_col
-    assert title_col["path"] == "value.items.value"
-    assert title_col["node"] in runtime_graph.nodes
-    assert runtime_graph.nodes[title_col["node"]].task_type == "python"
+    # A multi-row input ref must be a grouped list with one projected value per
+    # input row, in the same order as the other columns' groups, so each row's
+    # value broadcasts across that row's candidates.
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "grouped": True, "items": ["t0", "t1"]},
+    }
 
-    # Faithful grouping reproduction: the synthetic step yields one value per
-    # input row, so each group's single value broadcasts across that row's
-    # candidates without a row-count mismatch.
-    projected = [["t0"], ["t1"]]
-    per_group = _grouped_column_values(projected, True, [3, 2])
+    # Faithful grouping reproduction: a grouped list yields items[i] per group,
+    # and a scalar entry broadcasts across that group's rows. The old flat
+    # (ungrouped) list of both rows fails the row-count check.
+    per_group = _grouped_column_values(["t0", "t1"], True, [3, 2])
     assert per_group == [["t0"] * 3, ["t1"] * 2]
-
+    with pytest.raises(ValueError):
+        _grouped_column_values(["t0", "t1"], False, [3, 2])
