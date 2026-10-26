@@ -272,24 +272,24 @@ def _parse_n8n_workflow(
             raise ValueError(f"Unresolved n8n dependencies: {missing}")
 
     # Outputs last
-    for node_name, node in chain_nodes.items():
+    output_owners: dict[str, str] = {}
+    for node_name, node in {**chain_nodes, **code_nodes}.items():
         notes = _parse_notes(node.get("notes", ""))
-        if notes.get("is-output", False):
-            output_name = notes.get("output-field") or node_name
-            upstream = op_ids.get(node_name)
-            if not upstream:
-                raise ValueError(f"Output node {node_name} missing op id")
-            output_op = _make_output_op(scope, output_name, upstream)
-            add_op(output_op)
-    for node_name, node in code_nodes.items():
-        notes = _parse_notes(node.get("notes", ""))
-        if notes.get("is-output", False):
-            output_name = notes.get("output-field") or node_name
-            upstream = op_ids.get(node_name)
-            if not upstream:
-                raise ValueError(f"Output node {node_name} missing op id")
-            output_op = _make_output_op(scope, output_name, upstream)
-            add_op(output_op)
+        if not notes.get("is-output", False):
+            continue
+        output_name = notes.get("output-field") or node_name
+        upstream = op_ids.get(node_name)
+        if not upstream:
+            raise ValueError(f"Output node {node_name} missing op id")
+        owner = output_owners.get(output_name)
+        if owner is not None:
+            raise ValueError(
+                f"Duplicate output name '{output_name}' from nodes "
+                f"'{owner}' and '{node_name}'"
+            )
+        output_owners[output_name] = node_name
+        output_op = _make_output_op(scope, output_name, upstream)
+        add_op(output_op)
 
     graph = {op["_id"]: op for op in ordered_ops}
     return N8NGraphSpec(graph=graph, inputs=inputs)
