@@ -1409,12 +1409,29 @@ def _extract_rowwise_columns(
                 raise ValueError(
                     f"Rowwise reference to input '{node_name}' has no provided values"
                 )
-            columns.append(
-                {
-                    "label": label,
-                    "data": {"type": "list", "items": inputs[node_name]},
-                }
-            )
+            values = inputs[node_name]
+            if len(values) > 1:
+                # A flat literal list cannot broadcast one value per input row
+                # across each row's candidates, so a multi-row input ref emits a
+                # grouped list with one projected value per input row, in the
+                # same order as the other columns' groups.
+                columns.append(
+                    {
+                        "label": label,
+                        "data": {
+                            "type": "list",
+                            "grouped": True,
+                            "items": _project_input_values(values, path, node_name),
+                        },
+                    }
+                )
+            else:
+                columns.append(
+                    {
+                        "label": label,
+                        "data": {"type": "list", "items": values},
+                    }
+                )
         elif node_type == N8N_AGENT_NODE:
             columns.append(
                 {
@@ -1433,6 +1450,35 @@ def _extract_rowwise_columns(
                 }
             )
     return columns
+
+
+def _project_input_values(
+    values: list[str], path: str | None, node_name: str
+) -> list[Any]:
+    """Project a field out of literal input values (JSON object strings) for a
+    grouped rowwise column, or keep the whole item when no field is read."""
+    normalized = (path or "").strip()
+    if normalized in {"item", "item.output"}:
+        return list(values)
+    field = _path_to_label(path)
+    if not field:
+        return list(values)
+    projected: list[Any] = []
+    for value in values:
+        try:
+            obj = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Input '{node_name}' value is not JSON at field path"
+                f" '{path}': {value!r}"
+            ) from exc
+        if not isinstance(obj, dict) or field not in obj:
+            raise ValueError(
+                f"Input '{node_name}' value missing field at path"
+                f" '{path}': {value!r}"
+            )
+        projected.append(obj[field])
+    return projected
 
 
 def _extract_rowwise_ref_bindings(
