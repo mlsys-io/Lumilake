@@ -2196,3 +2196,28 @@ def test_rowwise_input_item_json_ref_keeps_whole_value() -> None:
             "items": [row, '{"title": "T1", "abstract": "B"}'],
         },
     }
+
+
+def test_rowwise_input_item_output_field_ref_projects_full_path() -> None:
+    """The item.output.<f> form must walk the nested keys like item.<f> (not
+    look for a field named 'output'), for both single-row and grouped
+    multi-row inputs."""
+    row = '{"title": "T0", "abstract": "A"}'
+    single = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.output.title }}", {"Paper": [row]}
+    )
+    title_col = next(col for col in single if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "items": ["T0"]},
+    }
+
+    multi = _rowwise_chat_columns(
+        "Judge: {{ $('Paper').item.output.title }}",
+        {"Paper": [row, '{"title": "T1", "abstract": "B"}']},
+    )
+    title_col = next(col for col in multi if col["label"] == "title")
+    assert title_col == {
+        "label": "title",
+        "data": {"type": "list", "grouped": True, "items": ["T0", "T1"]},
+    }
