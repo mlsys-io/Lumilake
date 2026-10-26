@@ -1022,6 +1022,101 @@ def test_plain_prompt_item_output_field_ref_binds_single_output_segment() -> Non
     )
 
 
+def test_plain_prompt_mixed_field_and_whole_item_ref_same_node() -> None:
+    """A prompt reading the same upstream both by field and as a whole item
+    must build: the whole-item kwarg still needs the op traced, while the field
+    kwarg binds a column."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Extract the population.",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Criteria Parser",
+                "id": "parser-node",
+                "typeVersion": 1.9,
+                "notes": (
+                    '{"op-type":"text-generation","is-output":false,'
+                    '"structural-outputs":[{"name":"population","type":"number"}]}'
+                ),
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": (
+                        "=Pop: {{ $('Criteria Parser').item.population }} "
+                        "Whole: {{ $('Criteria Parser').item }}"
+                    ),
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Criteria Parser", "type": "main", "index": 0}]]
+            },
+            "Criteria Parser": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Criteria Parser",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        },
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
+    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    # The field ref binds a column; the whole-item ref keeps the op traced.
+    assert any(
+        col.get("node") == parser_id and col.get("path") == "items.output.population"
+        for col in columns
+    )
+
+
 def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
     images = input_placeholder("Images")
     vision = LLMVisionOp(
