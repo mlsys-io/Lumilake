@@ -1610,7 +1610,7 @@ class LumilakeServer:
     @staticmethod
     def _iter_input_bound_list_specs(
         graph: Graph,
-    ) -> Generator[tuple[str, dict[str, Any]], None, None]:
+    ) -> Generator[tuple[str, dict[str, Any], dict[str, Any]], None, None]:
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
                 params = op.data_spec.get("params")
@@ -1626,7 +1626,7 @@ class LumilakeServer:
                         items = data.get("items")
                         if data_type != "list" or not isinstance(items, list):
                             continue
-                        yield label, data
+                        yield label, data, param
             if isinstance(op, LLMChatOp):
                 columns = op.rowwise_columns
                 if not isinstance(columns, list):
@@ -1642,7 +1642,7 @@ class LumilakeServer:
                     items = data.get("items")
                     if data_type != "list" or not isinstance(items, list):
                         continue
-                    yield label, data
+                    yield label, data, column
 
     @classmethod
     def _validate_merged_varying_inputs(
@@ -1721,8 +1721,20 @@ class LumilakeServer:
         rewrite_hits: dict[str, int] = {key: 0 for key in varying_input_keys}
         inferred_aliases: dict[str, str] = {}
 
-        for label, data in cls._iter_input_bound_list_specs(graph):
+        def _rewrite_target_key(label: str, owner: dict[str, Any]) -> str | None:
+            input_ref = owner.get("input_ref")
+            if isinstance(input_ref, dict):
+                key = input_ref.get("key")
+                if isinstance(key, str) and key in varying_input_keys:
+                    return key
             if label in varying_input_keys:
+                return label
+            return inferred_aliases.get(label)
+
+        for label, data, owner in cls._iter_input_bound_list_specs(graph):
+            if label in varying_input_keys:
+                continue
+            if isinstance(owner.get("input_ref"), dict):
                 continue
             items = data["items"]
             if not isinstance(items, list):
@@ -1739,16 +1751,31 @@ class LumilakeServer:
             if len(matched_keys) == 1:
                 inferred_aliases[label] = matched_keys[0]
 
-        for label, data in cls._iter_input_bound_list_specs(graph):
-            rewrite_target_key: str | None = None
-            if label in varying_input_keys:
-                rewrite_target_key = label
-            elif label in inferred_aliases:
-                rewrite_target_key = inferred_aliases[label]
+        for label, data, owner in cls._iter_input_bound_list_specs(graph):
+            rewrite_target_key = _rewrite_target_key(label, owner)
             if rewrite_target_key is None:
                 continue
             replacement = merged_inputs[rewrite_target_key]
-            data["items"] = list(replacement)
+            input_ref = owner.get("input_ref")
+            if isinstance(input_ref, dict):
+                from lumilake_server.parser.n8n import _project_input_values
+
+                ref_key = input_ref.get("key")
+                ref_path = input_ref.get("path")
+                if not isinstance(ref_key, str):
+                    raise ValueError(
+                        f"Invalid input_ref key for '{label}' in {group_context}"
+                    )
+                projected = _project_input_values(
+                    replacement,
+                    ref_path,
+                    ref_key,
+                )
+                data["items"] = list(projected)
+                if len(replacement) > 1:
+                    data["grouped"] = True
+            else:
+                data["items"] = list(replacement)
             rewrite_hits[rewrite_target_key] += 1
 
         for key, hit_count in rewrite_hits.items():
@@ -1764,12 +1791,8 @@ class LumilakeServer:
                     "Expected at least one input-bound list field keyed by this label."
                 )
 
-        for label, data in cls._iter_input_bound_list_specs(graph):
-            validation_target_key: str | None = None
-            if label in varying_input_keys:
-                validation_target_key = label
-            elif label in inferred_aliases:
-                validation_target_key = inferred_aliases[label]
+        for label, data, owner in cls._iter_input_bound_list_specs(graph):
+            validation_target_key = _rewrite_target_key(label, owner)
             if validation_target_key is None:
                 continue
             items = data["items"]
