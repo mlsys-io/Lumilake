@@ -1410,6 +1410,7 @@ def _extract_rowwise_columns(
                     f"Rowwise reference to input '{node_name}' has no provided values"
                 )
             values = inputs[node_name]
+            projected = _project_input_values(values, path, node_name)
             if len(values) > 1:
                 # A flat literal list cannot broadcast one value per input row
                 # across each row's candidates, so a multi-row input ref emits a
@@ -1421,7 +1422,7 @@ def _extract_rowwise_columns(
                         "data": {
                             "type": "list",
                             "grouped": True,
-                            "items": _project_input_values(values, path, node_name),
+                            "items": projected,
                         },
                     }
                 )
@@ -1429,7 +1430,7 @@ def _extract_rowwise_columns(
                 columns.append(
                     {
                         "label": label,
-                        "data": {"type": "list", "items": values},
+                        "data": {"type": "list", "items": projected},
                     }
                 )
         elif node_type == N8N_AGENT_NODE:
@@ -1456,12 +1457,19 @@ def _project_input_values(
     values: list[str], path: str | None, node_name: str
 ) -> list[Any]:
     """Project a field out of literal input values (JSON object strings) for a
-    grouped rowwise column, or keep the whole item when no field is read."""
+    rowwise column, or keep the whole item when no field is read. The whole-item
+    forms are ``item``, ``item.output`` and the documented ``item.json``; any
+    other path walks the nested JSON keys in order."""
     normalized = (path or "").strip()
-    if normalized in {"item", "item.output"}:
+    if normalized in {"item", "item.output", "item.json"}:
         return list(values)
-    field = _path_to_label(path)
-    if not field:
+    if normalized.startswith("item.json."):
+        keys = normalized[len("item.json.") :].split(".")
+    elif normalized.startswith("item."):
+        keys = normalized[len("item.") :].split(".")
+    else:
+        keys = normalized.split(".")
+    if not keys or keys == [""]:
         return list(values)
     projected: list[Any] = []
     for value in values:
@@ -1472,12 +1480,14 @@ def _project_input_values(
                 f"Input '{node_name}' value is not JSON at field path"
                 f" '{path}': {value!r}"
             ) from exc
-        if not isinstance(obj, dict) or field not in obj:
-            raise ValueError(
-                f"Input '{node_name}' value missing field at path"
-                f" '{path}': {value!r}"
-            )
-        projected.append(obj[field])
+        for key in keys:
+            if not isinstance(obj, dict) or key not in obj:
+                raise ValueError(
+                    f"Input '{node_name}' value missing field at path"
+                    f" '{path}': {value!r}"
+                )
+            obj = obj[key]
+        projected.append(obj)
     return projected
 
 
@@ -1569,12 +1579,12 @@ def _path_to_label(path: str | None) -> str | None:
     if not path:
         return None
     normalized = path.strip()
+    if normalized in {"item", "item.output", "item.json"}:
+        return "output"
     if normalized.startswith("item.json."):
         normalized = normalized[len("item.json.") :]
     elif normalized.startswith("item."):
         normalized = normalized[len("item.") :]
-    elif normalized == "item":
-        return "output"
     if not normalized:
         return None
     return normalized.split(".")[-1]
