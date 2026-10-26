@@ -1653,7 +1653,13 @@ def _make_code_ops(
             f"Code node '{node_name}' notes 'output-field' must be a non-empty string"
         )
     sample_value = notes.get("sample-value")
-    if sample_value is not None:
+    if sample_value is None:
+        if "sample-value" in notes:
+            raise ValueError(
+                f"Code node '{node_name}' notes 'sample-value' must be a "
+                "non-null JSON value"
+            )
+    else:
         op["sample_value"] = sample_value
     return [op], op["_id"]
 

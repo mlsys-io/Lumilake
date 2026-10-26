@@ -55,7 +55,7 @@ Lumilake annotations as a JSON object with kebab-case keys:
 | `memory-mb` | integer | Task memory limit, as YAML `memory_mb`. |
 | `expected-runtime-s` | number | HALO planning hint: seconds per input row; never enforced. |
 | `cache` | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
-| `sample-value` | any JSON | Representative value for data-profile preflight placeholders; never executed. |
+| `sample-value` | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
 
 A Code node with an `image` always runs as its own standalone `python` task.
 `expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
