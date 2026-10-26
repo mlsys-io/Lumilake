@@ -1853,6 +1853,18 @@ def test_inlined_row_lambda_as_embedding_content_materializes() -> None:
     assert runtime_graph.nodes[shout.id].task_type == "python"
 
 
+def _walk(value: Any, parts: list[str]) -> Any:
+    for idx, part in enumerate(parts):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list):
+            rest = parts[idx:]
+            return [_walk(v, rest) for v in value]
+        else:
+            raise KeyError(part)
+    return value
+
+
 def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None:
     """A retrieval param reading a row LambdaOp's whole output (items.output)
     must bind to the python step's ``value.items.output``, the same mapping
@@ -1886,11 +1898,11 @@ def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None
     assert param["path"] == "value.items.output"
 
 
-def test_retrieval_param_reading_row_lambda_field_is_rejected() -> None:
+def test_retrieval_param_reading_row_lambda_field_maps_to_value() -> None:
     """A retrieval param reading a field (items.output.<f>) of a row LambdaOp
-    cannot work on this branch (the python step emits text, not the raw value),
-    so it is rejected at build time with a clear error naming the node and
-    field."""
+    must bind to the python step's raw value under ``value.items.value.<f>``
+    (the row wrapper keeps the raw fn return under ``value``), and that path
+    must resolve against a PythonResult-shaped result."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=_row_lambda_fn)
     retrieval = DataRetrievalOp(
@@ -1910,11 +1922,16 @@ def test_retrieval_param_reading_row_lambda_field_is_rejected() -> None:
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
 
-    with pytest.raises(ValueError) as excinfo:
-        RuntimeGraphBuilder().build(compiled)
-    message = str(excinfo.value)
-    assert terms.id in message
-    assert "field" in message
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    params = runtime_graph.nodes[retrieval.id].data_spec["params"]
+    (param,) = [p for p in params if p.get("label") == "q"]
+    assert param["node"] == terms.id
+    assert param["path"] == "value.items.value.field"
+
+    # The emitted path must resolve against the python step's row wrapper.
+    result = {"value": {"items": [{"output": "text", "value": {"field": "x"}}]}}
+    assert _walk(result, param["path"].split(".")) == ["x"]
 
 
 def _grouped_column_values(
