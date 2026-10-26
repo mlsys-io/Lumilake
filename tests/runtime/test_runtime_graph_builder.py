@@ -701,6 +701,84 @@ def test_plain_prompt_field_ref_binds_column_with_path() -> None:
     )
 
 
+def test_plain_prompt_field_ref_emits_no_inline_function_step() -> None:
+    """A field-referenced row-mode Code node must not also be traced into the
+    LLM's inline function chain: it runs as a python step and the column reads
+    value.items.value.<field>, so no inline graph-template function step for it
+    may be emitted (FlowMesh would reject its dict return)."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {"pythonCode": "return {'question': 'hi'}"},
+                "type": "n8n-nodes-base.code",
+                "name": "Protocol Details",
+                "id": "code-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "promptType": "define",
+                    "text": "=Q: {{ $('Protocol Details').item.question }}",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Chain",
+                "id": "chain-node",
+                "typeVersion": 1.9,
+                "notes": '{"op-type":"text-generation","is-output":false}',
+            },
+            {
+                "parameters": {
+                    "model": "meta-llama/Llama-3.1-8B-Instruct",
+                    "options": {"maxTokens": 64},
+                },
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "model-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": "Protocol Details", "type": "main", "index": 0}]]
+            },
+            "Protocol Details": {
+                "main": [[{"node": "Chain", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {"node": "Chain", "type": "ai_languageModel", "index": 0},
+                    ]
+                ]
+            },
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    parsed = parse_n8n_payload(payload)
+    spec = parsed["graph"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
+    code_id = next(nid for nid in runtime_graph.nodes if "Protocol" in nid)
+    steps = runtime_graph.nodes[chain_id].data_spec["template"]["options"]["format"][
+        "steps"
+    ]
+    assert not any(step.get("function") and code_id in step["label"] for step in steps)
+
+
 def test_plain_prompt_field_ref_from_input_projects_literal() -> None:
     """A plain prompt reading a field of a JSON-object input projects the
     field server-side into a literal column."""
