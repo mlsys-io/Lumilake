@@ -1915,3 +1915,108 @@ def test_retrieval_param_reading_row_lambda_field_is_rejected() -> None:
     message = str(excinfo.value)
     assert terms.id in message
     assert "field" in message
+
+
+def _grouped_column_values(
+    values: list[Any], grouped: bool, group_sizes: list[int]
+) -> list[list[Any]]:
+    """Reproduce FlowMesh's per-column dataframe grouping: an ungrouped column
+    is one group broadcast to every group; within a group a single value
+    broadcasts to the group's row count, any other length must match it."""
+    if not grouped:
+        return [values] * len(group_sizes)
+    if len(values) != len(group_sizes):
+        raise ValueError("grouped column has wrong number of groups")
+    resolved: list[list[Any]] = []
+    for group_vals, size in zip(values, group_sizes):
+        if len(group_vals) == 1:
+            resolved.append(group_vals * size)
+        elif len(group_vals) == size:
+            resolved.append(group_vals)
+        else:
+            raise ValueError(
+                "dataframe column values must resolve to the same number of rows"
+                " per group"
+            )
+    return resolved
+
+
+def test_rowwise_input_field_ref_groups_one_value_per_input_row() -> None:
+    """A per-row prompt reading an input field with multiple coalesced rows
+    must bind a node column that groups one value per input row, so each
+    group's single value broadcasts across that row's candidates."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Paper",
+                "id": "p",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"model": "gpt-4o"},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": "Judge: {{ $('Paper').item.title }}",
+                    "messages": {"messageValues": [{"message": "You are a judge."}]},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Relevance Judge",
+                "id": "rj",
+                "typeVersion": 1,
+                "notes": '{"op-type":"text-generation","mode":"rowwise"}',
+            },
+        ],
+        "connections": {
+            "Paper": {
+                "main": [[{"node": "Relevance Judge", "type": "main", "index": 0}]]
+            },
+            "Model": {
+                "ai_languageModel": [
+                    [
+                        {
+                            "node": "Relevance Judge",
+                            "type": "ai_languageModel",
+                            "index": 0,
+                        }
+                    ]
+                ]
+            },
+        },
+    }
+    inputs = {
+        "Paper": ['{"title": "t0", "year": 2020}', '{"title": "t1", "year": 2021}']
+    }
+    payload = {"graphs": [{"name": "g", "workflow": workflow, "inputs": inputs}]}
+    spec = parse_n8n_payload(payload)["g"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (llm_id,) = [
+        nid
+        for nid, node in runtime_graph.nodes.items()
+        if node.task_type == "inference"
+    ]
+    columns = runtime_graph.nodes[llm_id].data_spec["columns"]
+    title_col = next(col for col in columns if col["label"] == "title")
+    # The field must be projected and grouped one value per input row, not a
+    # flat literal list of every input row (which cannot broadcast per group).
+    assert "node" in title_col
+    assert title_col["path"] == "value.items.value"
+    assert title_col["node"] in runtime_graph.nodes
+    assert runtime_graph.nodes[title_col["node"]].task_type == "python"
+
+    # Faithful grouping reproduction: the synthetic step yields one value per
+    # input row, so each group's single value broadcasts across that row's
+    # candidates without a row-count mismatch.
+    projected = [["t0"], ["t1"]]
+    per_group = _grouped_column_values(projected, True, [3, 2])
+    assert per_group == [["t0"] * 3, ["t1"] * 2]
+
