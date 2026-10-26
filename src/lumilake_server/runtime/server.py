@@ -30,6 +30,7 @@ from lumilake_server.common import InputRef, project_input_values
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
@@ -1378,12 +1379,13 @@ class LumilakeServer:
             return {}
         # Keep slices from the same request workflow together; do not split one
         # request's slices into cross-request composite groups.
-        grouped: dict[str, list[Any]] = {}
+        by_parent: dict[str, list[Any]] = {}
         for workflow in workflows:
             parent_workflow_id = cls._request_workflow_parent_id(workflow)
-            grouped.setdefault(parent_workflow_id, []).append(workflow)
-        for parent_workflow_id, items in grouped.items():
-            grouped[parent_workflow_id] = sorted(
+            by_parent.setdefault(parent_workflow_id, []).append(workflow)
+        grouped: dict[str, list[Any]] = {}
+        for parent_workflow_id, items in by_parent.items():
+            ordered = sorted(
                 items,
                 key=lambda item: (
                     item.request_id,
@@ -1392,7 +1394,42 @@ class LumilakeServer:
                     item.workflow_id,
                 ),
             )
+            for idx, chunk in enumerate(cls._chunk_within_python_timeouts(ordered)):
+                key = parent_workflow_id if idx == 0 else f"{parent_workflow_id}::{idx}"
+                grouped[key] = chunk
         return grouped
+
+    @staticmethod
+    def _chunk_within_python_timeouts(ordered: list[Any]) -> list[list[Any]]:
+        """Split one parent's slices so that no coalesced python step is expected
+        to outrun its ``timeout_s``: its rows run in sequence at
+        ``expected_runtime_s`` each. A slice whose row count is unknown gets its
+        own chunk."""
+        chunks: list[list[Any]] = []
+        load = 0.0
+        for item in ordered:
+            share = max(
+                (
+                    (
+                        node.data_spec["expected_runtime_s"]
+                        * node.data_spec["row_count"]
+                        / node.data_spec["timeout_s"]
+                        if "row_count" in node.data_spec
+                        else math.inf
+                    )
+                    for node in item.runtime_graph.nodes.values()
+                    if node.task_type == python_step.TASK_TYPE
+                    and "expected_runtime_s" in node.data_spec
+                ),
+                default=0.0,
+            )
+            if chunks and load + share <= 1.0:
+                chunks[-1].append(item)
+                load += share
+            else:
+                chunks.append([item])
+                load = share
+        return chunks
 
     async def _collect_cancelled_requests(
         self,

@@ -1,5 +1,7 @@
 import json
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
@@ -8,6 +10,10 @@ from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
+from lumilake_server.runtime import python_step
+from lumilake_server.runtime.job_manager.base import WorkflowItem
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
 
 
@@ -529,3 +535,74 @@ def test_merge_group_compiled_graph_non_varying_input_ref_not_rewritten() -> Non
     columns = _rowwise_columns(merged.graph)
     paper_col = next(col for col in columns if col["label"] == "Stock")
     assert paper_col["data"]["items"] == ["paper"]
+
+
+def _with_python_step(
+    item: WorkflowItem, expected_s: float, timeout_s: float, row_count: int | None = 1
+) -> WorkflowItem:
+    data_spec: dict[str, Any] = {
+        "expected_runtime_s": expected_s,
+        "timeout_s": timeout_s,
+    }
+    if row_count is not None:
+        data_spec["row_count"] = row_count
+    step = RuntimeOp(
+        node_id="sim",
+        task_type=python_step.TASK_TYPE,
+        backend=python_step.BACKEND,
+        model="",
+        data_spec=data_spec,
+        model_spec={},
+        inference_spec={},
+    )
+    graph = RuntimeGraph(nodes={"sim": step}, node_order=["sim"], output_node_map={})
+    return replace(item, runtime_graph=graph)
+
+
+def test_group_workflows_splits_slices_beyond_a_python_step_timeout() -> None:
+    """A python step runs its coalesced rows in sequence, so a group may hold
+    only as many slices as fit in the step's timeout."""
+    workflows = [
+        _with_python_step(item, expected_s=988, timeout_s=2964)
+        for item in make_workflow_slices_from_inputs(
+            request_id="req-sim",
+            public_graph_name="sim",
+            entities=["a", "b", "c", "d", "e"],
+        )
+    ]
+
+    grouped = LumilakeServer._group_workflows_by_parent_workflow(workflows)
+
+    parent = LumilakeServer._request_workflow_parent_id(workflows[0])
+    assert {key: [w.workflow_id for w in items] for key, items in grouped.items()} == {
+        parent: ["req-sim-0", "req-sim-1", "req-sim-2"],
+        f"{parent}::1": ["req-sim-3", "req-sim-4"],
+    }
+
+
+def test_group_workflows_keeps_a_slice_that_alone_exceeds_the_timeout() -> None:
+    workflows = [
+        _with_python_step(item, expected_s=700, timeout_s=600)
+        for item in make_workflow_slices_from_inputs(
+            request_id="req-slow", public_graph_name="slow", entities=["a", "b"]
+        )
+    ]
+
+    grouped = LumilakeServer._group_workflows_by_parent_workflow(workflows)
+
+    assert [len(items) for items in grouped.values()] == [1, 1]
+
+
+def test_group_workflows_keeps_a_slice_of_unknown_row_count_alone() -> None:
+    """Without a static row count a slice may hold many rows, so it is never
+    coalesced with another slice."""
+    workflows = [
+        _with_python_step(item, expected_s=50, timeout_s=600, row_count=None)
+        for item in make_workflow_slices_from_inputs(
+            request_id="req-dyn", public_graph_name="dyn", entities=["a", "b", "c"]
+        )
+    ]
+
+    grouped = LumilakeServer._group_workflows_by_parent_workflow(workflows)
+
+    assert [len(items) for items in grouped.values()] == [1, 1, 1]

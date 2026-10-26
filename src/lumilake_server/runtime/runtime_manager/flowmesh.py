@@ -1216,6 +1216,26 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             - flat_outputs: dict[op_id, output_text] for optimizer remapping
             - prompts: dict[op_id, prompt_metadata] for history tracking
         """
+        submitted: list[str] = []
+        try:
+            return await self._process_request(
+                request_info, schedule, worker_ids, data_profile_results, submitted
+            )
+        except Exception:
+            for workflow_id in submitted:
+                await self._abort_workflow(workflow_id)
+            raise
+
+    async def _process_request(
+        self,
+        request_info: RequestInfo,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+        submitted: list[str],
+    ) -> dict[str, Any]:
+        """``process_request`` body; appends the FlowMesh workflow id to
+        ``submitted`` as soon as the workflow is accepted."""
         if await self.is_request_cancelled(request_info.request_id):
             self.logger.info(
                 "Skipping request %s (cancelled before submission)",
@@ -1297,6 +1317,15 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 sanitized.body,
             )
             raise sanitized from None
+        submitted.append(workflow_id)
+
+        # Store FM workflow id for cancel + trace forwarding.
+        async with self._task_status_lock:
+            self._batch_workflow_id[
+                (request_info.request_id, request_info.batch_id)
+            ] = workflow_id
+        if await self.is_request_cancelled(request_info.request_id):
+            raise RequestCancelledError(request_info.request_id)
 
         self.logger.info(f"Flowmesh accepted {len(task_ids)} tasks: {task_ids}")
         node_names = [
@@ -1307,12 +1336,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_node_map, node_task_map = await self._resolve_task_node_maps(
             task_ids, node_names
         )
-
-        # Store FM workflow id for cancel + trace forwarding.
-        async with self._task_status_lock:
-            self._batch_workflow_id[
-                (request_info.request_id, request_info.batch_id)
-            ] = workflow_id
 
         total_nodes = len(task_ids)
         output_nodes = len(output_node_indices)
@@ -2886,6 +2909,18 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         for key in self._request_task_ids.copy():
             if key[0] == request_id:
                 self._request_task_ids.pop(key, None)
+
+    async def _abort_workflow(self, workflow_id: str) -> None:
+        """Cancel the workflow of a failing request so its remaining tasks stop
+        holding workers."""
+        try:
+            await self.fm.workflows.cancel(workflow_id)
+        except APIError as e:
+            self.logger.warning(
+                "Failed to cancel workflow %s: %s",
+                workflow_id,
+                _sanitize_flowmesh_api_error(e),
+            )
 
     async def cancel_request(self, request_id: str) -> None:
         """Cancel all FM workflows for a request. Uses the scheduler

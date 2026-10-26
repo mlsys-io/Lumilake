@@ -179,7 +179,10 @@ same declared output. Rows dispatch and complete independently, but
 within a single FlowMesh workflow request the failure semantics are
 all-or-nothing: if any row's task fails, that workflow request fails
 and no partial per-row results are returned for it, even for rows that
-already completed successfully.
+already completed successfully. Lumilake then cancels that FlowMesh
+workflow, so its tasks still pending or running stop holding workers; the
+same happens when the request times out or fails for any other reason
+after FlowMesh accepted it.
 
 This guarantee holds per FlowMesh workflow request, not per job. A
 job's input rows can be split across multiple `input_batch_size`
@@ -345,10 +348,15 @@ its own standalone `python` task and may set `timeout_s` up to FlowMesh's
 
 `expected_runtime_s` is a planning hint only: it is seconds per input row of
 the task, and HALO uses it to estimate the step's run time. It is never
-enforced as a limit. `cache` is also opt-in: Lumilake sends `cache: true` to
-FlowMesh only when the op sets it. `sample_value` is never executed: it only
-supplies a representative value so data-profile preflight can resolve a
-placeholder whose upstream is this `LambdaOp`.
+enforced as a limit. When a job's input slices are coalesced into one
+workflow, the step runs their rows in sequence, so Lumilake coalesces only as
+many slices as keep the step's expected run time within its `timeout_s`; the
+rest run as separate copies of the workflow in the same batch. A slice whose
+row count cannot be known before it runs is never coalesced. `cache` is also
+opt-in: Lumilake sends `cache: true` to FlowMesh only when the op sets it.
+`sample_value` is never executed: it only supplies a representative value so
+data-profile preflight can resolve a placeholder whose upstream is this
+`LambdaOp`.
 
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see
