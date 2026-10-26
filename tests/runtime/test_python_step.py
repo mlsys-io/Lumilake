@@ -1183,9 +1183,12 @@ def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
 
 
 def _walk(value: Any, parts: list[str]) -> Any:
-    for part in parts:
-        if isinstance(value, dict):
+    for idx, part in enumerate(parts):
+        if isinstance(value, dict) and part in value:
             value = value[part]
+        elif isinstance(value, list):
+            rest = parts[idx:]
+            return [_walk(v, rest) for v in value]
         else:
             raise KeyError(part)
     return value
@@ -1224,4 +1227,4 @@ def test_retrieval_param_paths_resolve_against_python_result() -> None:
     # The whole-item read maps to the python step's textified output.
     assert whole["path"] == "value.items.output"
     result = {"value": {"items": [{"output": "NVDA", "value": {"field": "x"}}]}}
-    assert _walk(result, whole["path"].split(".")) == "NVDA"
+    assert _walk(result, whole["path"].split(".")) == ["NVDA"]
