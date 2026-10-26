@@ -3102,12 +3102,20 @@ class RuntimeGraphBuilder:
                     ), "FormatOp should have at least one input"
                 # A field-referenced input binds a column (value.items.value.<field>)
                 # and runs as its own python step; it must not also be traced into
-                # the message chain as an inline function step.
+                # the message chain as an inline function step. But an input read
+                # both by field and as a whole item still needs tracing for the
+                # whole-item kwarg, so only skip it when every reference is a field.
                 field_ref_ids = {op.format_kwargs[k].id for k in op.format_paths}
+                whole_ref_ids = {
+                    op.format_kwargs[k].id
+                    for k in op.format_kwargs
+                    if k not in op.format_paths
+                }
+                skip_trace_ids = field_ref_ids - whole_ref_ids
                 message_labels = {
                     inp_op.id: _trace_ancestors(inp_op)
                     for inp_op in op.inputs
-                    if inp_op.id not in field_ref_ids
+                    if inp_op.id not in skip_trace_ids
                 }
                 # A field-referenced InputOp is projected server-side into a
                 # literal column and never materializes a runtime node; mark it
