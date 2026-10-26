@@ -1853,7 +1853,6 @@ class RuntimeGraphBuilder:
 
     def _lambda_read_path(
         self,
-        *,
         consumer: str,
         node_ref: str,
         path: str,
@@ -1867,7 +1866,7 @@ class RuntimeGraphBuilder:
         field read (``items.output.<f>``) maps to ``value.items.output.<f>``;
         a row-mode Lambda emits text, so a field read is rejected.
         """
-        if not isinstance(path, str) or not path.startswith("items.output"):
+        if not path.startswith("items.output"):
             raise ValueError(
                 f"{consumer} reads '{path}' from Lambda '{node_ref}'; only"
                 " 'items.output' (the whole output) is supported."
@@ -1927,13 +1926,6 @@ class RuntimeGraphBuilder:
                     " 'items.output' (the whole output) is supported."
                 )
             path = self._upstream_output_path(upstream)
-        elif isinstance(upstream, LambdaOp) and upstream.takes_whole_columns:
-            path = self._lambda_read_path(
-                consumer=f"Column '{label}' of consumer '{consumer_id}'",
-                node_ref=node_ref,
-                path=path,
-                upstream=upstream,
-            )
         elif isinstance(upstream, LambdaOp):
             path = self._lambda_read_path(
                 consumer=f"Column '{label}' of consumer '{consumer_id}'",
