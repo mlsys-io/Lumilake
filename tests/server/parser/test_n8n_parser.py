@@ -396,6 +396,70 @@ def test_n8n_code_node_is_output_emits_output_op() -> None:
     assert output_ops[0].name == "selected_papers"
 
 
+def test_n8n_code_node_is_output_maps_through_runtime_builder() -> None:
+    workflow = _code_node_workflow(
+        '{"is-output": true, "output-field": "selected_papers"}'
+    )
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    spec = parse_n8n_payload(payload)["graph"]
+    graph = Graph.from_json(spec["graph"])
+    compiled = graph.compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    from lumilake_server.ops import LambdaOp as _LambdaOp
+
+    (lambda_op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
+    assert runtime_graph.output_node_map[lambda_op.id] == "selected_papers"
+
+
+def test_n8n_code_node_rejects_duplicate_output_name() -> None:
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": N8N_CHAT_TRIGGER,
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"pythonCode": "return 'a'"},
+                "type": "n8n-nodes-base.code",
+                "name": "First",
+                "id": "first-node",
+                "typeVersion": 1,
+                "notes": '{"is-output": true, "output-field": "result"}',
+            },
+            {
+                "parameters": {"pythonCode": "return 'b'"},
+                "type": "n8n-nodes-base.code",
+                "name": "Second",
+                "id": "second-node",
+                "typeVersion": 1,
+                "notes": '{"is-output": true, "output-field": "result"}',
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [
+                    [{"node": "First", "type": "main", "index": 0}],
+                    [{"node": "Second", "type": "main", "index": 0}],
+                ]
+            }
+        },
+    }
+    payload = {
+        "graphs": [
+            {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+        ]
+    }
+    with pytest.raises(ValueError, match="Duplicate output name 'result'"):
+        parse_n8n_payload(payload)
+
+
 def test_n8n_code_node_is_output_defaults_to_node_name() -> None:
     workflow = _code_node_workflow('{"is-output": true}')
     payload = {
