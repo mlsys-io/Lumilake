@@ -88,8 +88,6 @@ def _sanitize_node_prefix(prefix: str) -> str:
     return safe or "graph"
 
 
-_DEFAULT_API_URL = "https://lum.id/llm/v1/chat/completions"
-
 _API_ROW_PATH = "items.rows.json.choices[0].message.content"
 _API_ITEM_PATH = "items.json.choices[0].message.content"
 
@@ -2511,7 +2509,7 @@ class RuntimeGraphBuilder:
         the data_spec matches the local path, and the executor substitutes each
         row's rendered messages into the ``{{prompt}}`` body placeholder."""
         model = llm_op.config.resolved_model()
-        url = api_config.url or _DEFAULT_API_URL
+        url = api_config.url or envs.LUMILAKE_API_DEFAULT_URL
         headers = self._api_request_headers(llm_op_id, api_config, url)
         body: dict[str, Any] = {"model": model, "messages": "{{prompt}}"}
         body.update(llm_op.config.inference_spec())

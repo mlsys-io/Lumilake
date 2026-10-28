@@ -114,8 +114,12 @@ ops:
       max_tokens: 256
 ```
 
-`config.api.url` is optional and defaults to the serving endpoint
-`https://lum.id/llm/v1/chat/completions`. `config.model` is required in both
+`config.api.url` is optional and defaults to `LUMILAKE_API_DEFAULT_URL`,
+whose own default is the serving endpoint
+`https://lum.id/llm/v1/chat/completions`. An operator can point every
+API-mode op that leaves the URL unset at a local OpenAI-compatible endpoint
+by setting `LUMILAKE_API_DEFAULT_URL`; an explicit `config.api.url` always
+wins over it. `config.model` is required in both
 local and API mode — `config.api` is a backend switch and does not relax the
 model requirement, so the workflow spec reads the same either way. The request
 model resolves from `config.api.model`, then the top-level `config.model`.
@@ -130,7 +134,8 @@ large documents, which can exceed the executor's default.
 
 The credential is resolved server-side, not supplied by the caller. If
 `config.api.url`'s origin is on the trusted-origin allowlist (the default
-`https://lum.id`, extendable via `LUMILAKE_API_TRUSTED_ORIGINS`), the server
+`https://lum.id`, the origin of `LUMILAKE_API_DEFAULT_URL`, and everything
+listed in `LUMILAKE_API_TRUSTED_ORIGINS`), the server
 attaches `Authorization: Bearer <LUMILAKE_RUNTIME_TOKEN>` itself; for any
 other origin the caller must set `config.api.authorization` explicitly, or
 the request is rejected before dispatch. This header does become part of

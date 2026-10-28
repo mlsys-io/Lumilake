@@ -12,6 +12,7 @@ import os
 import re
 from collections.abc import Mapping
 from typing import overload
+from urllib.parse import urlsplit
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -60,8 +61,18 @@ route handlers — those forward the per-request bearer.
 """
 LUMILAKE_API_TRUSTED_ORIGINS: str = os.environ.get("LUMILAKE_API_TRUSTED_ORIGINS", "")
 """Comma-separated origins (scheme://host[:port]) the server may attach its
-own PAT to for API-mode LLMChatOp calls. Defaults to the lum.id/llm origin.
+own PAT to for API-mode LLMChatOp calls, in addition to the always-trusted
+``https://lum.id`` and the origin of ``LUMILAKE_API_DEFAULT_URL``.
 A caller-selected endpoint outside this set must carry its own credential.
+"""
+LUMILAKE_API_DEFAULT_URL: str = (
+    os.environ.get("LUMILAKE_API_DEFAULT_URL", "").strip()
+    or "https://lum.id/llm/v1/chat/completions"
+)
+"""Chat-completions endpoint an API-mode LLMChatOp targets when its
+``config.api.url`` is unset. An unset or empty value means the hosted
+serving endpoint. Its origin is always trusted, so the server attaches
+``LUMILAKE_RUNTIME_TOKEN`` to it like any allowlisted origin.
 """
 LUMILAKE_REQUIRE_IDENTITY_PROVIDER: bool = os.environ.get(
     "LUMILAKE_REQUIRE_IDENTITY_PROVIDER", ""
@@ -382,6 +393,11 @@ HARDWARE_GPU_MEMORY_REQUIREMENT: str = os.environ.get(
 )
 
 
+def _absolute_http_url(value: str) -> bool:
+    parts = urlsplit(value)
+    return parts.scheme.lower() in {"http", "https"} and bool(parts.hostname)
+
+
 def validate() -> None:
     """Enforce required env vars and valid value ranges.
 
@@ -402,6 +418,11 @@ def validate() -> None:
         )
     if LUMILAKE_SERVER_PORT <= 0:
         raise ValueError("LUMILAKE_SERVER_PORT must be a positive integer")
+    if not _absolute_http_url(LUMILAKE_API_DEFAULT_URL):
+        raise ValueError(
+            "LUMILAKE_API_DEFAULT_URL must be an absolute http or https URL "
+            f"with a host; got {LUMILAKE_API_DEFAULT_URL!r}"
+        )
 
     if LUMILAKE_JOB_MANAGER_TYPE not in ("priority",):
         raise ValueError("LUMILAKE_JOB_MANAGER_TYPE must be 'priority'")

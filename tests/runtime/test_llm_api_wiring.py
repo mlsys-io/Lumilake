@@ -1,4 +1,6 @@
+import importlib
 import textwrap
+import types
 from typing import Any
 
 import pytest
@@ -39,6 +41,7 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", _RUNTIME_TOKEN)
+    monkeypatch.setattr(envs, "LUMILAKE_API_DEFAULT_URL", _DEFAULT_API_URL)
 
 
 def _build_api_graph(**config_kwargs: Any) -> tuple[RuntimeGraph, str]:
@@ -829,6 +832,116 @@ def test_api_trusted_origins_env_var_is_additive_to_default(
     assert (
         vendor_node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
     )
+
+
+def _reload_envs_with_default_url(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None
+) -> types.ModuleType:
+    """Reload ``lumilake.envs`` so the module-level read of
+    LUMILAKE_API_DEFAULT_URL runs again, with ``raw`` as its process value.
+
+    ``raw=None`` leaves the variable unset. The autouse fixture's attribute
+    patches are lost to the reload, so the values the builder needs are
+    re-applied on the reloaded module.
+    """
+    if raw is None:
+        monkeypatch.delenv("LUMILAKE_API_DEFAULT_URL", raising=False)
+    else:
+        monkeypatch.setenv("LUMILAKE_API_DEFAULT_URL", raw)
+    reloaded = importlib.reload(envs)
+    monkeypatch.setattr(reloaded, "LUMID_DATA_URL", _LUMID_URL)
+    monkeypatch.setattr(reloaded, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
+    monkeypatch.setattr(reloaded, "RUNTIME_TOKEN", _RUNTIME_TOKEN)
+    return reloaded
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_api_default_url_env_blank_resolves_to_serving_endpoint(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None
+) -> None:
+    """An unset, empty or whitespace-only LUMILAKE_API_DEFAULT_URL resolves to
+    the hosted serving endpoint and passes startup validation."""
+    reloaded = _reload_envs_with_default_url(monkeypatch, raw)
+    assert reloaded.LUMILAKE_API_DEFAULT_URL == _DEFAULT_API_URL
+
+    runtime_graph, llm_id = _build_api_graph(api=ApiConfig())
+    assert runtime_graph.nodes[llm_id].api_spec["url"] == _DEFAULT_API_URL
+
+    monkeypatch.setattr(reloaded, "LUMILAKE_SERVER_HOST", "0.0.0.0")
+    monkeypatch.setattr(reloaded, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
+    monkeypatch.setattr(reloaded, "LUMILAKE_SERVER_PORT", 9000)
+    monkeypatch.setattr(reloaded, "LUMILAKE_JOB_MANAGER_TYPE", "priority")
+    monkeypatch.setattr(reloaded, "LUMILAKE_RUNTIME_MANAGER_TYPE", "default")
+    monkeypatch.setattr(reloaded, "LUMILAKE_STARVATION_LIMIT", 3)
+    monkeypatch.setattr(reloaded, "LUMILAKE_BATCH_ACCUMULATION_SECONDS", 0.0)
+    monkeypatch.setattr(reloaded, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
+    monkeypatch.setattr(reloaded, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
+    monkeypatch.setattr(reloaded, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 60.0)
+    reloaded.validate()
+
+
+def test_api_default_url_env_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-empty LUMILAKE_API_DEFAULT_URL is read from the process
+    environment, so a reloaded module carries the operator's endpoint."""
+    local_url = "http://llm-gateway.internal:8000/v1/chat/completions"
+    reloaded = _reload_envs_with_default_url(monkeypatch, local_url)
+    assert reloaded.LUMILAKE_API_DEFAULT_URL == local_url
+
+
+def test_api_default_url_env_targets_operator_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With LUMILAKE_API_DEFAULT_URL set, an op with no config.api.url targets
+    it and receives the runtime token, since its origin is always trusted."""
+    local_url = "http://llm-gateway.internal:8000/v1/chat/completions"
+    monkeypatch.setattr(envs, "LUMILAKE_API_DEFAULT_URL", local_url)
+
+    runtime_graph, llm_id = _build_api_graph(api=ApiConfig())
+
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["url"] == local_url
+    assert node.api_spec["headers"]["Authorization"] == _API_CREDENTIAL_PLACEHOLDER
+
+
+def test_api_default_url_env_does_not_override_explicit_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit config.api.url always wins over the operator default."""
+    monkeypatch.setattr(
+        envs, "LUMILAKE_API_DEFAULT_URL", "http://llm-gateway.internal:8000/v1"
+    )
+
+    runtime_graph, llm_id = _build_api_graph(
+        api=ApiConfig(url="https://lum.id/llm/v1/chat/completions")
+    )
+
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["url"] == _DEFAULT_API_URL
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["not-a-url", "lum.id/llm/v1/chat/completions", "ftp://llm.example/v1"],
+)
+def test_api_default_url_env_rejects_invalid_value(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
+    monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
+    monkeypatch.setattr(envs, "LUMILAKE_JOB_MANAGER_TYPE", "priority")
+    monkeypatch.setattr(envs, "LUMILAKE_RUNTIME_MANAGER_TYPE", "default")
+    monkeypatch.setattr(envs, "LUMILAKE_STARVATION_LIMIT", 3)
+    monkeypatch.setattr(envs, "LUMILAKE_BATCH_ACCUMULATION_SECONDS", 0.0)
+    monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
+    monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
+    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 60.0)
+    monkeypatch.setattr(envs, "LUMILAKE_API_DEFAULT_URL", raw)
+
+    with pytest.raises(ValueError, match="LUMILAKE_API_DEFAULT_URL"):
+        envs.validate()
 
 
 def test_api_multi_row_input_emits_single_task() -> None:
