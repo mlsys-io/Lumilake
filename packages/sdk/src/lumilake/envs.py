@@ -65,12 +65,14 @@ own PAT to for API-mode LLMChatOp calls, in addition to the always-trusted
 ``https://lum.id`` and the origin of ``LUMILAKE_API_DEFAULT_URL``.
 A caller-selected endpoint outside this set must carry its own credential.
 """
-LUMILAKE_API_DEFAULT_URL: str = os.environ.get(
-    "LUMILAKE_API_DEFAULT_URL", "https://lum.id/llm/v1/chat/completions"
-).strip()
+LUMILAKE_API_DEFAULT_URL: str = (
+    os.environ.get("LUMILAKE_API_DEFAULT_URL", "").strip()
+    or "https://lum.id/llm/v1/chat/completions"
+)
 """Chat-completions endpoint an API-mode LLMChatOp targets when its
-``config.api.url`` is unset. Its origin is always trusted, so the server
-attaches ``LUMILAKE_RUNTIME_TOKEN`` to it like any allowlisted origin.
+``config.api.url`` is unset. An unset or empty value means the hosted
+serving endpoint. Its origin is always trusted, so the server attaches
+``LUMILAKE_RUNTIME_TOKEN`` to it like any allowlisted origin.
 """
 LUMILAKE_REQUIRE_IDENTITY_PROVIDER: bool = os.environ.get(
     "LUMILAKE_REQUIRE_IDENTITY_PROVIDER", ""
