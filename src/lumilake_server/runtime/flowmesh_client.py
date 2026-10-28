@@ -92,7 +92,10 @@ def _origin(url: str) -> tuple[str, str, int | None]:
 
 
 def _trusted_origins() -> set[tuple[str, str, int | None]]:
-    origins = {_origin(_DEFAULT_API_ORIGIN)}
+    origins = {
+        _origin(_DEFAULT_API_ORIGIN),
+        _origin(envs.LUMILAKE_API_DEFAULT_URL),
+    }
     raw = envs.LUMILAKE_API_TRUSTED_ORIGINS.strip()
     if raw:
         origins.update(_origin(item.strip()) for item in raw.split(",") if item.strip())

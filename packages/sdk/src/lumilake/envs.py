@@ -61,7 +61,8 @@ route handlers — those forward the per-request bearer.
 """
 LUMILAKE_API_TRUSTED_ORIGINS: str = os.environ.get("LUMILAKE_API_TRUSTED_ORIGINS", "")
 """Comma-separated origins (scheme://host[:port]) the server may attach its
-own PAT to for API-mode LLMChatOp calls. Defaults to the lum.id/llm origin.
+own PAT to for API-mode LLMChatOp calls, in addition to the always-trusted
+``https://lum.id`` and the origin of ``LUMILAKE_API_DEFAULT_URL``.
 A caller-selected endpoint outside this set must carry its own credential.
 """
 LUMILAKE_API_DEFAULT_URL: str = os.environ.get(
