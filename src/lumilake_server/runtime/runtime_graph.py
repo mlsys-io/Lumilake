@@ -436,6 +436,11 @@ class RuntimeGraphBuilder:
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
             if isinstance(op, LLMOp):
+                if not isinstance(op, LLMChatOp) and op.config.output_check is not None:
+                    raise ValueError(
+                        f"{type(op).__name__} '{op_id}' does not support "
+                        "config.output_check; use it only on LLMChatOp."
+                    )
                 llm_ops[op_id] = op
                 visited_node_ids.add(op_id)
             elif isinstance(op, DataRetrievalOp):

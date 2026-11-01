@@ -161,6 +161,21 @@ def test_local_output_check_reaches_inference_spec() -> None:
     assert "output_check" not in node.model_spec
 
 
+def test_non_chat_llm_op_rejects_output_check() -> None:
+    image = ImageGenerationOp(
+        "draw a lake",
+        config=GenerationConfig(
+            model="image-model",
+            output_check=OutputCheck(text_regex="ok"),
+        ),
+    )
+    compiled = Graph.from_ops([as_output("image", image)]).compile()
+    with pytest.raises(
+        ValueError, match=r"ImageGenerationOp .* does not support config.output_check"
+    ):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_api_key_redacted_on_serialization() -> None:
     """The Authorization header carries only the constant placeholder in the
     graph; the real credential never appears in the serialized spec."""
