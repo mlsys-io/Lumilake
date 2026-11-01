@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.common import ApiConfig, GenerationConfig, Message
+from lumilake_server.common import ApiConfig, GenerationConfig, Message, OutputCheck
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -127,6 +127,38 @@ def test_api_samplers_flow_into_body() -> None:
     body = node.api_spec["json"]
     assert body["max_tokens"] == 64
     assert body["temperature"] == 0.5
+
+
+def test_api_output_check_stays_out_of_request_body() -> None:
+    runtime_graph, llm_id = _build_api_graph(
+        output_check=OutputCheck(max_attempts=3, text_regex="^ok$")
+    )
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["output_check"] == {
+        "max_attempts": 3,
+        "json_schema": None,
+        "text_regex": "^ok$",
+    }
+    assert "output_check" not in node.api_spec["json"]
+
+
+def test_local_output_check_reaches_inference_spec() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            output_check=OutputCheck(max_attempts=4, text_regex="yes"),
+        ),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    node = RuntimeGraphBuilder().build(compiled).nodes[llm.id]
+    assert node.inference_spec["output_check"] == {
+        "max_attempts": 4,
+        "json_schema": None,
+        "text_regex": "yes",
+    }
+    assert "output_check" not in node.model_spec
 
 
 def test_api_key_redacted_on_serialization() -> None:

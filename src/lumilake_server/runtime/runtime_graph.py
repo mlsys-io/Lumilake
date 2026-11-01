@@ -2,7 +2,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Self, cast
 
@@ -2313,6 +2313,12 @@ class RuntimeGraphBuilder:
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
+        if (
+            isinstance(llm_op, LLMChatOp)
+            and llm_op.config.api is None
+            and llm_op.config.output_check is not None
+        ):
+            inference_spec["output_check"] = asdict(llm_op.config.output_check)
 
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             data_spec, row_dependencies = self._rowwise_data_spec(
@@ -2528,6 +2534,10 @@ class RuntimeGraphBuilder:
                     "api mode takes structural_outputs as a JSON-schema object; "
                     f"got {type(llm_op.structural_outputs).__name__}"
                 )
+        if isinstance(llm_op, LLMChatOp) and llm_op.config.output_check is not None:
+            api_spec_output_check = asdict(llm_op.config.output_check)
+        else:
+            api_spec_output_check = None
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,
@@ -2539,6 +2549,8 @@ class RuntimeGraphBuilder:
                 "raise_for_status": True,
             },
         }
+        if api_spec_output_check is not None:
+            api_spec["output_check"] = api_spec_output_check
         if api_config.timeout_sec is not None:
             api_spec["timeout_sec"] = api_config.timeout_sec
         if api_config.retries is not None:
