@@ -129,7 +129,9 @@ the request body.
 `config.num_beams` selects local vLLM beam search when it is greater than `1`.
 FlowMesh uses vLLM's offline beam-search path, returns the highest-scoring
 sequence, and rejects this setting for API-backed ops. A width of `1` or an
-unset value uses ordinary generation. At present the vLLM beam-search helper
+unset value uses ordinary generation. Beam search cannot be combined with
+`output_check`: deterministic retries would return the same beam result. At
+present the vLLM beam-search helper
 does not apply `repetition_penalty`, logit renormalization, `min_tokens`, or a
 distinct token budget per prompt; use `max_tokens` as the per-prompt ceiling.
 
