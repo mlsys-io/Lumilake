@@ -43,3 +43,15 @@ def test_generation_config_rejects_non_dict_api() -> None:
     non-``ApiConfig``, non-``None`` value for ``api``."""
     with pytest.raises(ValueError, match="api must be a mapping or ApiConfig"):
         GenerationConfig(model="local-model", api="x")  # type: ignore[arg-type]
+
+
+def test_generation_config_num_beams_flows_to_inference_spec_only() -> None:
+    cfg = GenerationConfig(model="local-model", num_beams=3, temperature=0.5)
+    assert cfg.inference_spec()["num_beams"] == 3
+    assert "num_beams" not in cfg.openai_kwargs()
+
+
+@pytest.mark.parametrize("num_beams", [0, -1, True, "3"])
+def test_generation_config_rejects_invalid_num_beams(num_beams: object) -> None:
+    with pytest.raises(ValueError, match="num_beams"):
+        GenerationConfig(model="local-model", num_beams=num_beams)  # type: ignore[arg-type]

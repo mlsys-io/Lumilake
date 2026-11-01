@@ -2510,6 +2510,11 @@ class RuntimeGraphBuilder:
         row's rendered messages into the ``{{prompt}}`` body placeholder."""
         model = llm_op.config.resolved_model()
         url = api_config.url or envs.LUMILAKE_API_DEFAULT_URL
+        if llm_op.config.num_beams is not None:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' num_beams is available only for local "
+                "vLLM generation, not API mode."
+            )
         headers = self._api_request_headers(llm_op_id, api_config, url)
         body: dict[str, Any] = {"model": model, "messages": "{{prompt}}"}
         body.update(llm_op.config.inference_spec())
