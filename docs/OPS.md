@@ -126,6 +126,30 @@ model resolves from `config.api.model`, then the top-level `config.model`.
 Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
 the request body.
 
+`config.output_check` validates generated text for both API-backed and local
+`LLMChatOp` runs. Set exactly one of `json_schema` or `text_regex`, plus
+`max_attempts` (default `1`, maximum `10`). A failed row is re-asked with the
+same prompt and sampler settings while successful rows are not rerun. API
+requests do not receive any additional response-format or constrained-decoding
+field. A local run with a seed advances it by the retry number so deterministic
+sampling produces a new attempt. When all attempts fail, the last response is
+kept with `validation_ok: false`; results also report per-row `attempts` and an
+aggregate `retry_summary`.
+
+```yaml
+config:
+  model: Qwen/Qwen2.5-0.5B-Instruct
+  temperature: 1
+  output_check:
+    max_attempts: 5
+    json_schema:
+      type: object
+      required: [will, message]
+      properties:
+        will: {type: string}
+        message: {type: string}
+```
+
 `config.api.timeout_sec` sets the per-request timeout for the API call,
 in seconds. When set, it is emitted into the FlowMesh `api` task spec and
 overrides the executor's default; when unset, no timeout key is emitted and

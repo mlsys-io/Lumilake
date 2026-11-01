@@ -38,6 +38,12 @@ outputs:
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
+`LLMChatOp.config.output_check` retries only rows whose generated text fails a
+declared JSON Schema or regular-expression check. It applies in local and API
+mode, leaves the prompt and request body unchanged, and reports attempts plus a
+retry summary. See [`docs/OPS.md`](OPS.md#llmchatop-via-external-api) for the
+configuration and retry behavior.
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its
