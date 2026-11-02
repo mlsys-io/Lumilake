@@ -363,7 +363,7 @@ def _run_reshape(
 def _materialize_task_runtime() -> str:
     path = Path(tempfile.mkdtemp()) / "lumilake-runtime.py"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(python_step.runtime_bytes())
+    path.write_bytes(python_step.runtime_blob().body)
     return str(path)
 
 
@@ -949,7 +949,7 @@ async def test_flowmesh_spec_uploads_python_blobs_idempotently(
 ) -> None:
     storage = InMemoryJobStorage()
     runtime_key = python_step.runtime_blob().key
-    storage.save_blob(runtime_key, python_step.runtime_bytes(), "text/x-python")
+    storage.save_blob(runtime_key, python_step.runtime_blob().body, "text/x-python")
     uploads: list[str] = []
 
     def recording_save_blob(key: str, data: bytes, content_type: str) -> str:
@@ -1099,6 +1099,16 @@ def test_flowmesh_spec_generates_from_final_sliced_plan() -> None:
 
     assert first == second
     assert plan == [{"kind": "literal", "values": ["sliced"]}]
+
+
+def test_runtime_blob_uses_canonical_runtime_and_is_cached() -> None:
+    first = python_step.runtime_blob()
+    second = python_step.runtime_blob()
+
+    assert first is second
+    assert b"def validate_source(" in first.body
+    assert b"def _column(entry, inputs, text):" in first.body
+    assert b"class _validate_source" not in first.body
 
 
 @pytest.mark.asyncio

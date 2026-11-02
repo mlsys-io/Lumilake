@@ -88,16 +88,16 @@ class RuntimeOp:
     ) -> dict[str, Any]:
         spec_payload: dict[str, Any] = {"taskType": self.task_type}
         if self.task_type == python_step.TASK_TYPE:
-            blobs = (
-                {blob.key: blob for blob in python_step.graph_blobs(self.data_spec)}
-                if published_blobs is None
-                else published_blobs
-            )
-            spec_payload = python_step.flowmesh_spec(
-                self.node_id,
-                self.data_spec,
-                published_blobs=blobs,
-            )
+            if published_blobs is None:
+                spec_payload = python_step.local_flowmesh_spec(
+                    self.node_id, self.data_spec
+                )
+            else:
+                spec_payload = python_step.flowmesh_spec(
+                    self.node_id,
+                    self.data_spec,
+                    published_blobs=published_blobs,
+                )
         else:
             spec_payload["data"] = self.data_spec
         if self.task_type == "api":
