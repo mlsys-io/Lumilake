@@ -316,8 +316,6 @@ def wrapper_source(
     user_code: str,
     plan: ColumnPlan,
     mode: str = "row",
-    *,
-    runtime_mount: str = TASK_RUNTIME_MOUNT,
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode == "list":
@@ -329,7 +327,7 @@ def wrapper_source(
     return (_PRELUDE + main).format(
         op_id=op_id,
         module=TASK_RUNTIME_MODULE,
-        mount=runtime_mount,
+        mount=TASK_RUNTIME_MOUNT,
         code=user_code,
         fn_name=fn_name,
         plan=json.dumps(plan),

@@ -351,13 +351,8 @@ def _run_wrapper(
     namespace: dict[str, Any] = {}
     runtime_mount = runtime_mount or _materialize_task_runtime()
     exec(
-        python_step.wrapper_source(
-            "op-1",
-            declared,
-            code,
-            plan,
-            mode,
-            runtime_mount=runtime_mount,
+        python_step.wrapper_source("op-1", declared, code, plan, mode).replace(
+            python_step.TASK_RUNTIME_MOUNT, runtime_mount
         ),
         namespace,
     )
