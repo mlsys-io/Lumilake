@@ -1681,7 +1681,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             generated = python_step.flowmesh_spec(
                 node_name,
                 data_spec,
-                published_blobs=published_blobs,
+                published_blobs,
             )
             node["spec"] = {
                 key: value
