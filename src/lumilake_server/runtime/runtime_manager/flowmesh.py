@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -388,14 +388,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             object_name = await asyncio.to_thread(
                 storage.save_blob, key, blob.body, blob.content_type
             )
-            published[key] = python_step.PublishedBlob(
-                key=blob.key,
-                object_name=object_name,
-                body=blob.body,
-                content_type=blob.content_type,
-                sha256=blob.sha256,
-                mount_path=blob.mount_path,
-            )
+            published[key] = replace(blob, object_name=object_name)
 
         await asyncio.gather(*(_publish(key, blob) for key, blob in blobs.items()))
         return published
