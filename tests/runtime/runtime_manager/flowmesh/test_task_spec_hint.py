@@ -8,6 +8,20 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
+def _op(
+    node_id: str, *, task_type: str, backend: str, data_spec: dict[str, Any]
+) -> RuntimeOp:
+    return RuntimeOp(
+        node_id=node_id,
+        task_type=task_type,
+        backend=backend,
+        model="",
+        data_spec=data_spec,
+        model_spec={},
+        inference_spec={},
+    )
+
+
 @pytest.mark.asyncio
 async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
     flowmesh_manager,
@@ -47,4 +61,51 @@ async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
     schedule_hint = annotations.get("schedule_hint")
     assert isinstance(schedule_hint, dict)
     assert schedule_hint.get("node_execution_order") == ["n1"]
+    assert schedule_hint.get("selected_worker") == {"selected": {"n1": ["gpu-0"]}}
     assert "node_schedule_in_epoch_order" not in schedule_hint
+
+
+@pytest.mark.asyncio
+async def test_build_task_spec_pins_only_gpu_nodes(flowmesh_manager) -> None:
+    graph = RuntimeGraph(
+        nodes={
+            "cpu": _op(
+                "cpu",
+                task_type="python",
+                backend="python",
+                data_spec={
+                    "code": "lambda inputs: inputs",
+                    "fn_name": "main",
+                    "plan": [],
+                    "timeout_s": 60,
+                },
+            ),
+            "gpu": _op(
+                "gpu",
+                task_type="inference",
+                backend="vllm",
+                data_spec={"type": "list", "items": ["a"]},
+            ),
+        },
+        node_order=["cpu", "gpu"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+    schedule = Schedule(
+        worker_assignment={
+            "cpu-0": ["cpu", "gpu"],
+            "gpu-0": ["gpu"],
+        }
+    )
+    request_info = cast(
+        Any, SimpleNamespace(request_id="req-2", hardware_requirements=None)
+    )
+
+    spec, _, _ = await flowmesh_manager._build_task_spec(
+        request_info=request_info,
+        runtime_graph=graph,
+        schedule=schedule,
+    )
+    schedule_hint = spec["metadata"]["annotations"]["schedule_hint"]
+    assert schedule_hint["node_execution_order"] == ["cpu", "gpu__shard_0"]
+    assert schedule_hint["selected_worker"] == {"selected": {"gpu__shard_0": ["cpu-0"]}}

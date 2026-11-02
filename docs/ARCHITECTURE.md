@@ -58,7 +58,10 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 2. The server resolves inputs from inline values, SQL queries, or S3 prefixes.
 3. The parser builds Lumilake runtime graph specs.
 4. HALO optimizes the runtime graph and assigns work to available FlowMesh workers.
-5. The runtime manager dispatches the plan to FlowMesh.
+5. The runtime manager dispatches the plan to FlowMesh with a topological
+   `node_execution_order`. HALO's worker choice is retained as
+   `selected_worker` for GPU nodes; CPU-eligible nodes stay unpinned so
+   FlowMesh can place them on any idle eligible CPU worker.
 6. Progress, results, traces, and artifacts are stored through the archive layer.
 
 Standalone `python` tasks receive their shared Lambda runtime through a
