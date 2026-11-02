@@ -256,7 +256,12 @@ Where the function runs depends on what reads it:
   only on a CPU worker that advertises the `python` task type (a Docker-backed
   worker on a FlowMesh version that supports it). While every such worker is
   busy the batch waits for capacity; with no such worker in the cluster the
-  schedule fails before dispatch. The code may `import` any module the task
+  schedule fails before dispatch. Lumilake mounts the shared Lambda runtime from
+  a content-addressed blob rather than embedding it in each task, and uploads
+  literal payloads above 1 KiB once per digest as mounted JSON. Smaller
+  literals stay inline. The generated stub holds only the op id, user code,
+  function name, and plan; the worker fetches blobs through
+  `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`). The code may `import` any module the task
   image provides (the default image carries the standard library, numpy and
   pandas), at module level or in the function body; only relative imports are
   rejected at submit. A `LambdaOp` with an `image` always runs as its own
