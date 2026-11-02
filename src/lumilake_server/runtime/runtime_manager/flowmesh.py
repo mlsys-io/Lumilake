@@ -1668,15 +1668,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         final_plans: list[python_step.ColumnPlan] = []
         for node in nodes:
             node_name = node["name"]
-            raw_node_id = flowmesh_to_raw.get(node_name)
-            raw_node = runtime_graph.nodes.get(raw_node_id or "")
-            if raw_node is None or raw_node.task_type != python_step.TASK_TYPE:
-                continue
             view_spec = node["spec"]
-            data_spec = view_spec["data"]
-            plan = data_spec["plan"]
+            if view_spec["taskType"] != python_step.TASK_TYPE:
+                continue
+            data_spec: dict[str, Any] = view_spec["data"]
             python_nodes.append((node, view_spec, node_name, data_spec))
-            final_plans.append(plan)
+            final_plans.append(data_spec["plan"])
 
         published_blobs = await self._publish_python_task_blobs(final_plans)
 
