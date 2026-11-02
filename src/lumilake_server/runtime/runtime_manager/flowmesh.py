@@ -1959,12 +1959,15 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         node_set = set(node_names)
         node_to_workers: dict[str, list[str]] = {}
         seen_nodes: set[str] = set()
-        first_seen_rank: dict[str, int] = {}
-        next_rank = 0
+        # A node ranks by its earliest slot in any worker's list, so the ready
+        # order interleaves the workers' lists instead of draining one first.
+        slot_rank: dict[str, tuple[int, int]] = {}
 
-        for worker, worker_nodes in worker_assignment.items():
+        for worker_index, (worker, worker_nodes) in enumerate(
+            worker_assignment.items()
+        ):
             local_seen: set[str] = set()
-            for node_name in worker_nodes:
+            for slot, node_name in enumerate(worker_nodes):
                 if node_name in local_seen:
                     raise ValueError(
                         "Invalid schedule hint: duplicate node found within worker "
@@ -1979,10 +1982,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 candidates = node_to_workers.setdefault(node_name, [])
                 if worker not in candidates:
                     candidates.append(worker)
-                if node_name not in seen_nodes:
-                    seen_nodes.add(node_name)
-                    first_seen_rank[node_name] = next_rank
-                    next_rank += 1
+                seen_nodes.add(node_name)
+                rank = (slot, worker_index)
+                if node_name not in slot_rank or rank < slot_rank[node_name]:
+                    slot_rank[node_name] = rank
 
         if seen_nodes != node_set:
             missing = sorted(node_set - seen_nodes)
@@ -2022,14 +2025,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 in_degree[node_id] += 1
                 children[dep].append(node_id)
 
-        heap: list[tuple[int, int, str]] = []
+        heap: list[tuple[tuple[int, int], int, str]] = []
         for node_id in node_names:
             if in_degree[node_id] != 0:
                 continue
             heapq.heappush(
                 heap,
                 (
-                    first_seen_rank.get(node_id, 10**9),
+                    slot_rank[node_id],
                     order_index[node_id],
                     node_id,
                 ),
@@ -2046,7 +2049,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 heapq.heappush(
                     heap,
                     (
-                        first_seen_rank.get(child, 10**9),
+                        slot_rank[child],
                         order_index[child],
                         child,
                     ),

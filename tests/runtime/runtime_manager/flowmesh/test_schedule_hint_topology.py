@@ -71,6 +71,19 @@ def test_build_flat_schedule_hint_keeps_cpu_assignment_without_cpu_workers() -> 
     assert selected == {"cpu": ["gpu-0"], "gpu": ["gpu-0"]}
 
 
+def test_build_flat_schedule_hint_interleaves_worker_lists() -> None:
+    order, _ = FlowmeshRuntimeManager._build_flat_schedule_hint(
+        worker_assignment={
+            "cpu-0": ["a0", "a1", "a2"],
+            "cpu-1": ["b0", "b1"],
+        },
+        node_names=["a0", "a1", "a2", "b0", "b1"],
+        gpu_node_names=set(),
+        node_dependencies={},
+    )
+    assert order == ["a0", "b0", "a1", "b1", "a2"]
+
+
 def test_build_index_partitions_supports_non_dividable_worker_count() -> None:
     assert FlowmeshRuntimeManager._build_index_partitions(4, 3) == [
         (0, 2),
