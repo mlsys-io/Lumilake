@@ -87,9 +87,6 @@ class JobStorage:
     def save_blob(self, key: str, data: bytes, content_type: str) -> str:
         raise NotImplementedError
 
-    def blob_exists(self, key: str) -> bool:
-        raise NotImplementedError
-
     def list_summaries(
         self,
         *,
@@ -246,9 +243,6 @@ class InMemoryJobStorage(JobStorage):
     def save_blob(self, key: str, data: bytes, content_type: str) -> str:
         self._blobs[key] = (data, content_type)
         return key
-
-    def blob_exists(self, key: str) -> bool:
-        return key in self._blobs
 
     def list_summaries(
         self,
@@ -426,17 +420,9 @@ class PersistentJobStorage(JobStorage):
             raise KeyError(filename) from exc
 
     def save_blob(self, key: str, data: bytes, content_type: str) -> str:
-        object_name = self.key_prefix and f"{self.key_prefix}/{key}" or key
+        object_name = f"{self.key_prefix}/{key}" if self.key_prefix else key
         self._put_blob(object_name, data, content_type)
         return object_name
-
-    def blob_exists(self, key: str) -> bool:
-        object_name = self.key_prefix and f"{self.key_prefix}/{key}" or key
-        try:
-            self._get_blob(object_name)
-        except ArchiveNotFound:
-            return False
-        return True
 
     def _put_json(self, object_name: str, body: bytes) -> None:
         self._put_blob(object_name, body, "application/json")

@@ -65,7 +65,7 @@ def _rewrite(
     graph: RuntimeGraph,
     worker_assignment: dict[str, list[str]],
 ):
-    nodes = graph.to_flowmesh_nodes()
+    nodes = graph.to_flowmesh_views()
     return manager._rewrite_nodes_for_shard_intent(
         nodes=nodes,
         worker_assignment=worker_assignment,
