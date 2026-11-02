@@ -370,6 +370,39 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             "application/json",
         )
 
+    async def _publish_python_task_blobs(
+        self,
+        nodes: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Store each referenced task blob once and return worker-facing URLs."""
+        referenced = {
+            blob["blobKey"]
+            for node in nodes
+            for blob in (node.get("spec", {}).get("blobs") or [])
+            if isinstance(blob, dict) and isinstance(blob.get("blobKey"), str)
+        }
+        if not referenced:
+            return {}
+        storage = get_job_storage()
+        blobs = {
+            "lambda-runtime": python_step.runtime_bytes(),
+        }
+        urls: dict[str, str] = {}
+        for key in sorted(referenced):
+            prefix, _, filename = key.partition("/")
+            body = blobs.get(prefix)
+            if body is None:
+                raise RuntimeError(f"unknown python task blob {key!r}")
+            if not storage.blob_exists(key):
+                content_type = (
+                    "text/x-python"
+                    if prefix == "lambda-runtime"
+                    else "application/json"
+                )
+                await asyncio.to_thread(storage.save_blob, key, body, content_type)
+            urls[key] = python_step.runtime_blob_url(key)
+        return urls
+
     async def fetch_task_status(
         self,
         task_id: str,
@@ -1600,6 +1633,35 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             - Flowmesh node name -> raw runtime node ID mapping
         """
         nodes = runtime_graph.to_flowmesh_nodes()
+        blob_urls = await self._publish_python_task_blobs(nodes)
+        for node in nodes:
+            node_spec = node.get("spec")
+            if not isinstance(node_spec, dict) or not node_spec.get("blobs"):
+                continue
+            runtime_blob = next(
+                (
+                    entry
+                    for entry in node_spec["blobs"]
+                    if entry.get("blobKey", "").startswith("lambda-runtime/")
+                ),
+                None,
+            )
+            if runtime_blob is None:
+                continue
+            key = runtime_blob["blobKey"]
+            if key not in blob_urls:
+                raise RuntimeError(f"python task blob {key!r} was not published")
+            sha256 = key.rsplit("/", 1)[-1].removesuffix(".py")
+            node_spec["blobs"] = [
+                {
+                    "url": blob_urls[key],
+                    "sha256": sha256,
+                    "headers": {
+                        "Authorization": f"Bearer {envs.LUMID_DATA_TOKEN}",
+                    },
+                    "mountPath": runtime_blob["mountPath"],
+                }
+            ]
         self._apply_per_node_resource_hints(
             nodes, runtime_graph, request_info.hardware_requirements
         )
