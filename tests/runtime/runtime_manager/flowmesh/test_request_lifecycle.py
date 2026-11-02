@@ -222,6 +222,7 @@ def _task_info(
 @pytest.fixture(autouse=True)
 def _worker_lumid_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
     monkeypatch.setattr(flowmesh_module, "get_job_storage", InMemoryJobStorage)
 
 
