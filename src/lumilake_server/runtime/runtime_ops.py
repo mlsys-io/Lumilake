@@ -82,15 +82,21 @@ class RuntimeOp:
         return cls.from_schema(node_id, RuntimeOpSchema.model_validate(payload))
 
     def to_flowmesh_node(
-        self, *, blob_urls: Mapping[str, str] | None = None
+        self,
+        *,
+        published_blobs: Mapping[str, python_step.PublishedBlob] | None = None,
     ) -> dict[str, Any]:
         spec_payload: dict[str, Any] = {"taskType": self.task_type}
         if self.task_type == python_step.TASK_TYPE:
-            resolved_urls = blob_urls or {}
+            blobs = (
+                {blob.key: blob for blob in python_step.graph_blobs(self.data_spec)}
+                if published_blobs is None
+                else published_blobs
+            )
             spec_payload = python_step.flowmesh_spec(
                 self.node_id,
                 self.data_spec,
-                blob_urls=resolved_urls,
+                published_blobs=blobs,
             )
         else:
             spec_payload["data"] = self.data_spec
@@ -111,6 +117,33 @@ class RuntimeOp:
         }
         # FlowMesh requires condition.node in dependsOn — it gates on the
         # task's result.
+        deps: list[str] = [*self.dependencies]
+        if self.condition is not None and self.condition["node"] not in deps:
+            deps.append(self.condition["node"])
+        if deps:
+            spec["dependsOn"] = deps
+        if self.output_spec:
+            spec["spec"]["output"] = self.output_spec
+        if self.condition:
+            spec["spec"]["condition"] = self.condition
+        return spec
+
+    def to_flowmesh_view(self) -> dict[str, Any]:
+        """The node payload before Python task code and mounts are resolved."""
+        spec_payload: dict[str, Any] = {"taskType": self.task_type}
+        spec_payload["data"] = self.data_spec
+        if self.task_type == "api":
+            spec_payload["api"] = self.api_spec
+        elif self.task_type in {
+            "inference",
+            "diffusion",
+            "embedding",
+            "omni_text2image",
+        }:
+            spec_payload["model"] = self.model_spec
+        if self.task_type in {"inference", "diffusion", "omni_text2image"}:
+            spec_payload["inference"] = self.inference_spec
+        spec: dict[str, Any] = {"name": self.node_id, "spec": spec_payload}
         deps: list[str] = [*self.dependencies]
         if self.condition is not None and self.condition["node"] not in deps:
             deps.append(self.condition["node"])

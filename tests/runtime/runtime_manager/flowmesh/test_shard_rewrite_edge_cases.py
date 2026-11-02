@@ -68,7 +68,7 @@ def _rewrite(
     *,
     reverse_nodes: bool = False,
 ):
-    nodes = graph.to_flowmesh_nodes()
+    nodes = graph.to_flowmesh_views()
     if reverse_nodes:
         nodes = list(reversed(nodes))
     return manager._rewrite_nodes_for_shard_intent(

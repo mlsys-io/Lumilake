@@ -27,7 +27,7 @@ from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
-from lumilake_server.utils.job_storage import InMemoryJobStorage
+from lumilake_server.utils.job_storage import InMemoryJobStorage, PersistentJobStorage
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -944,11 +944,11 @@ async def test_flowmesh_spec_mounts_one_runtime_blob_for_many_steps(
 
 
 @pytest.mark.asyncio
-async def test_flowmesh_spec_skips_runtime_upload_when_digest_exists(
+async def test_flowmesh_spec_uploads_python_blobs_idempotently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage = InMemoryJobStorage()
-    runtime_key = python_step.runtime_blob_entry()["blobKey"]
+    runtime_key = python_step.runtime_blob().key
     storage.save_blob(runtime_key, python_step.runtime_bytes(), "text/x-python")
     uploads: list[str] = []
 
@@ -980,7 +980,7 @@ async def test_flowmesh_spec_skips_runtime_upload_when_digest_exists(
         runtime_graph=graph,
     )
 
-    assert uploads == []
+    assert uploads == [runtime_key]
     blob = spec["spec"]["graph"]["nodes"][0]["spec"]["blobs"][0]
     assert blob["sha256"] == runtime_key.rsplit("/", 1)[-1].removesuffix(".py")
     assert blob["mountPath"] == python_step.TASK_RUNTIME_MOUNT
@@ -1069,10 +1069,74 @@ async def test_small_literal_stays_inline(
         runtime_graph=graph,
     )
 
-    assert uploads == [python_step.runtime_blob_entry()["blobKey"]]
+    assert uploads == [python_step.runtime_blob().key]
     task_spec = spec["spec"]["graph"]["nodes"][0]["spec"]
     assert '"values": ["x"]' in task_spec["code"]
     assert len(task_spec["blobs"]) == 1
+
+
+def test_flowmesh_spec_generates_from_final_sliced_plan() -> None:
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["sliced"]},
+    ]
+    data_spec = {
+        "code": "def f(inputs):\n    return str(inputs[0])\n",
+        "fn_name": "f",
+        "plan": plan,
+        "mode": "row",
+        "timeout_s": 10,
+    }
+    published = {
+        blob.key: blob
+        for blob in [
+            python_step.runtime_blob(),
+            *python_step.literal_blobs(plan).values(),
+        ]
+    }
+
+    first = python_step.flowmesh_spec("task", data_spec, published_blobs=published)
+    second = python_step.flowmesh_spec("task", data_spec, published_blobs=published)
+
+    assert first == second
+    assert plan == [{"kind": "literal", "values": ["sliced"]}]
+
+
+@pytest.mark.asyncio
+async def test_persistent_storage_blob_url_uses_stored_object_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored: dict[str, tuple[bytes, str]] = {}
+
+    def fake_put(key: str, data: bytes, content_type: str) -> None:
+        stored[key] = (data, content_type)
+
+    monkeypatch.setattr(envs, "S3_ARCHIVE_PREFIX", "archive/artifacts")
+    monkeypatch.setattr(
+        "lumilake_server.utils.job_storage.lumid_data_client.put_blob", fake_put
+    )
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: PersistentJobStorage(),
+    )
+    manager = FlowmeshRuntimeManager()
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops(
+            [as_output("out", LambdaOp([input_placeholder("A")], fn=lambda i: i[0]))]
+        ).compile(A=["a"])
+    )
+
+    spec, _, _ = await manager._build_task_spec(
+        request_info=type(
+            "Request", (), {"request_id": "req", "hardware_requirements": None}
+        )(),
+        runtime_graph=graph,
+    )
+
+    runtime_key = python_step.runtime_blob().key
+    object_name = f"archive/artifacts/{runtime_key}"
+    assert set(stored) == {object_name}
+    blob_url = spec["spec"]["graph"]["nodes"][0]["spec"]["blobs"][0]["url"]
+    assert blob_url == f"http://lumid-data/blobs/archive/artifacts/{runtime_key}"
 
 
 def test_lambda_op_rejects_a_non_bool_cache() -> None:

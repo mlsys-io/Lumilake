@@ -57,7 +57,7 @@ class TestTopologicalOrderFilter:
 
 
 class TestFlowmeshDepsFilter:
-    """``to_flowmesh_nodes`` must strip deps that reference DSL ops never
+    """``to_flowmesh_views`` must strip deps that reference DSL ops never
     materialized as FlowMesh tasks — FlowMesh holds a task in PENDING
     forever when any listed dep is unknown to it."""
 
@@ -71,7 +71,7 @@ class TestFlowmeshDepsFilter:
             output_node_map={"answer": "b"},
             dsl_to_runtime={},
         )
-        flowmesh_nodes = graph.to_flowmesh_nodes()
+        flowmesh_nodes = graph.to_flowmesh_views()
         a_payload = next(n for n in flowmesh_nodes if n["name"] == "a")
         b_payload = next(n for n in flowmesh_nodes if n["name"] == "b")
         # ``a``'s only dep was the DSL op → removed, no ``dependsOn`` key.
@@ -89,6 +89,6 @@ class TestFlowmeshDepsFilter:
             output_node_map={},
             dsl_to_runtime={},
         )
-        payloads = graph.to_flowmesh_nodes()
+        payloads = graph.to_flowmesh_views()
         b_payload = next(n for n in payloads if n["name"] == "b")
         assert b_payload["dependsOn"] == ["a"]
