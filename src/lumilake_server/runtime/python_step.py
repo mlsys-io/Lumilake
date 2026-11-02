@@ -4,6 +4,7 @@ A LambdaOp that is an output, or feeds only other LambdaOps, runs as its own
 FlowMesh ``python`` task in a per-task container.
 """
 
+import copy
 import hashlib
 import inspect
 import json
@@ -282,7 +283,7 @@ def resolve_plan(
     published: Mapping[str, PublishedBlob],
 ) -> tuple[ColumnPlan, list[PublishedBlob]]:
     """Return a final plan with large literals mounted, plus its blobs."""
-    task_plan = json.loads(json.dumps(plan))
+    task_plan = copy.deepcopy(plan)
     mounts: list[PublishedBlob] = []
     for entry in task_plan:
         if entry["kind"] != "literal" or "values" not in entry:
@@ -291,8 +292,8 @@ def resolve_plan(
         if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
             continue
         blob = published[f"literals/{hashlib.sha256(encoded).hexdigest()}.json"]
-        entry.pop("values", None)
-        entry["path"] = blob.mount_path
+        del entry["values"]
+        entry["file"] = blob.mount_path
         mounts.append(blob)
     return task_plan, mounts
 
