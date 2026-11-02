@@ -372,22 +372,15 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     async def _publish_python_task_blobs(
         self,
-        runtime_graph: RuntimeGraph,
+        plans: Sequence[python_step.ColumnPlan],
     ) -> dict[str, python_step.PublishedBlob]:
         """Store each task blob once and return its persisted metadata."""
-        python_nodes = [
-            node
-            for node in runtime_graph.nodes.values()
-            if node.task_type == python_step.TASK_TYPE
-        ]
-        if not python_nodes:
+        if not plans:
             return {}
         storage = get_job_storage()
-        blobs = {python_step.runtime_blob().key: python_step.runtime_blob()}
-        for node in python_nodes:
-            plan = node.data_spec.get("plan")
-            if not isinstance(plan, list):
-                continue
+        runtime_blob = python_step.runtime_blob()
+        blobs = {runtime_blob.key: runtime_blob}
+        for plan in plans:
             blobs.update(python_step.literal_blobs(plan))
         published: dict[str, python_step.PublishedBlob] = {}
         for key, blob in blobs.items():
@@ -1634,7 +1627,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             - Flowmesh node name -> raw runtime node ID mapping
         """
         nodes = runtime_graph.to_flowmesh_views()
-        published_blobs = await self._publish_python_task_blobs(runtime_graph)
         self._apply_per_node_resource_hints(
             nodes, runtime_graph, request_info.hardware_requirements
         )
@@ -1667,6 +1659,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             active_worker_assignment = rewrite.worker_assignment
             flowmesh_to_raw = rewrite.flowmesh_to_raw
 
+        final_plans: list[python_step.ColumnPlan] = []
+        python_node_names: set[str] = set()
         for node in nodes:
             node_name = node["name"]
             if not isinstance(node_name, str):
@@ -1681,6 +1675,24 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             data_spec = view_spec["data"]
             if not isinstance(data_spec, dict):
                 raise ValueError(f"Python node {raw_node_id!r} has invalid data")
+            plan = data_spec["plan"]
+            if not isinstance(plan, list):
+                raise ValueError(f"Python node {raw_node_id!r} has invalid plan")
+            final_plans.append(plan)
+            python_node_names.add(node_name)
+
+        published_blobs = await self._publish_python_task_blobs(final_plans)
+
+        for node in nodes:
+            node_name = node["name"]
+            if not isinstance(node_name, str) or node_name not in python_node_names:
+                continue
+            view_spec = node.get("spec")
+            if not isinstance(view_spec, dict):
+                raise ValueError(f"Python node {node_name!r} has no spec")
+            data_spec = view_spec["data"]
+            if not isinstance(data_spec, dict):
+                raise ValueError(f"Python node {node_name!r} has invalid data")
             generated = python_step.flowmesh_spec(
                 node_name,
                 data_spec,
