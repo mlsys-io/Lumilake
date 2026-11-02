@@ -1991,10 +1991,20 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 "Invalid internal schedule: worker assignment does not cover graph"
                 f" nodes. Missing: {missing}, extra: {extra}"
             )
+        # CPU steps may run on any worker this plan gives no GPU step, so they
+        # neither queue behind one busy CPU worker nor land on a GPU worker.
+        cpu_worker_ids = [
+            worker
+            for worker, worker_nodes in worker_assignment.items()
+            if not any(node_name in gpu_node_names for node_name in worker_nodes)
+        ]
         per_node_selected_worker_candidates = {
-            node_name: list(node_to_workers[node_name])
+            node_name: (
+                list(node_to_workers[node_name])
+                if node_name in gpu_node_names or not cpu_worker_ids
+                else list(cpu_worker_ids)
+            )
             for node_name in node_names
-            if node_name in gpu_node_names
         }
 
         order_index = {node_id: idx for idx, node_id in enumerate(node_names)}

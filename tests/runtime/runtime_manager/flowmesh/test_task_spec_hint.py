@@ -66,7 +66,9 @@ async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
 
 
 @pytest.mark.asyncio
-async def test_build_task_spec_pins_only_gpu_nodes(flowmesh_manager) -> None:
+async def test_build_task_spec_restricts_cpu_nodes_to_cpu_workers(
+    flowmesh_manager,
+) -> None:
     graph = RuntimeGraph(
         nodes={
             "cpu": _op(
@@ -93,7 +95,8 @@ async def test_build_task_spec_pins_only_gpu_nodes(flowmesh_manager) -> None:
     )
     schedule = Schedule(
         worker_assignment={
-            "cpu-0": ["cpu", "gpu"],
+            "cpu-0": ["cpu"],
+            "cpu-1": [],
             "gpu-0": ["gpu"],
         }
     )
@@ -107,5 +110,7 @@ async def test_build_task_spec_pins_only_gpu_nodes(flowmesh_manager) -> None:
         schedule=schedule,
     )
     schedule_hint = spec["metadata"]["annotations"]["schedule_hint"]
-    assert schedule_hint["node_execution_order"] == ["cpu", "gpu__shard_0"]
-    assert schedule_hint["selected_worker"] == {"selected": {"gpu__shard_0": ["cpu-0"]}}
+    assert schedule_hint["node_execution_order"] == ["cpu", "gpu"]
+    assert schedule_hint["selected_worker"] == {
+        "selected": {"cpu": ["cpu-0", "cpu-1"], "gpu": ["gpu-0"]}
+    }

@@ -40,10 +40,11 @@ def test_build_flat_schedule_hint_is_topological() -> None:
     }
 
 
-def test_build_flat_schedule_hint_pins_only_gpu_nodes() -> None:
+def test_build_flat_schedule_hint_restricts_cpu_nodes_to_cpu_workers() -> None:
     order, selected = FlowmeshRuntimeManager._build_flat_schedule_hint(
         worker_assignment={
-            "cpu-0": ["cpu", "gpu"],
+            "cpu-0": ["cpu"],
+            "cpu-1": [],
             "gpu-0": ["gpu"],
         },
         node_names=["cpu", "gpu"],
@@ -54,7 +55,20 @@ def test_build_flat_schedule_hint_pins_only_gpu_nodes() -> None:
         },
     )
     assert order == ["cpu", "gpu"]
-    assert selected == {"gpu": ["cpu-0", "gpu-0"]}
+    assert selected == {"cpu": ["cpu-0", "cpu-1"], "gpu": ["gpu-0"]}
+
+
+def test_build_flat_schedule_hint_keeps_cpu_assignment_without_cpu_workers() -> None:
+    _, selected = FlowmeshRuntimeManager._build_flat_schedule_hint(
+        worker_assignment={"gpu-0": ["cpu", "gpu"]},
+        node_names=["cpu", "gpu"],
+        gpu_node_names={"gpu"},
+        node_dependencies={
+            "cpu": [],
+            "gpu": ["cpu"],
+        },
+    )
+    assert selected == {"cpu": ["gpu-0"], "gpu": ["gpu-0"]}
 
 
 def test_build_index_partitions_supports_non_dividable_worker_count() -> None:
