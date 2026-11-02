@@ -15,6 +15,8 @@ from lumilake import envs
 
 TASK_RUNTIME_MOUNT = "/mnt/blobs/lumilake-runtime.py"
 TASK_RUNTIME_MODULE = "lumilake_runtime"
+LITERAL_INLINE_MAX_BYTES = 1024
+LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
 TASK_TYPE = "python"
 BACKEND = "python"
@@ -225,11 +227,99 @@ def runtime_blob_entry() -> dict[str, Any]:
     }
 
 
+def literal_blobs(plan: ColumnPlan) -> dict[str, bytes]:
+    """Content-addressed JSON blobs for literal payloads above the inline cutoff."""
+    blobs: dict[str, bytes] = {}
+    for entry in plan:
+        if entry["kind"] != "literal" or "values" not in entry:
+            continue
+        encoded = json.dumps(entry["values"], ensure_ascii=False).encode("utf-8")
+        if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
+            continue
+        digest = hashlib.sha256(encoded).hexdigest()
+        blobs[f"literals/{digest}.json"] = encoded
+    return blobs
+
+
 def runtime_blob_url(blob_key: str) -> str:
     base = envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL
     if not base:
         raise RuntimeError("LUMID_DATA_URL is required for LambdaOp task blobs")
     return f"{base.rstrip('/')}/blobs/{quote(blob_key.lstrip('/'), safe='/')}"
+
+
+def bind_runtime_blob(spec: dict[str, Any], blob_url: str) -> None:
+    runtime_blob = runtime_blob_entry()
+    blob_key = runtime_blob["blobKey"]
+    existing = [
+        blob
+        for blob in (spec.get("blobs") or [])
+        if not blob.get("blobKey", "").startswith("lambda-runtime/")
+    ]
+    spec["blobs"] = [
+        {
+            "url": blob_url,
+            "sha256": blob_key.rsplit("/", 1)[-1].removesuffix(".py"),
+            "headers": {"Authorization": f"Bearer {envs.LUMID_DATA_TOKEN}"},
+            "mountPath": runtime_blob["mountPath"],
+        }
+    ] + existing
+
+
+def bind_blob_urls(
+    node_id: str,
+    spec: dict[str, Any],
+    *,
+    plan: ColumnPlan,
+    blob_urls: Mapping[str, str],
+) -> None:
+    runtime_blob = runtime_blob_entry()
+    runtime_key = runtime_blob["blobKey"]
+    if runtime_key not in blob_urls:
+        raise RuntimeError(f"python task blob {runtime_key!r} was not published")
+    bind_runtime_blob(spec, blob_urls[runtime_key])
+    if plan:
+        bind_literal_blobs(node_id, spec, plan=plan, blob_urls=blob_urls)
+
+
+def bind_literal_blobs(
+    node_id: str,
+    spec: dict[str, Any],
+    *,
+    plan: ColumnPlan,
+    blob_urls: Mapping[str, str],
+) -> None:
+    """Move large literal payloads into mounted JSON files in the task code."""
+    code = spec["code"]
+    task_plan = json.loads(json.dumps(plan))
+    for entry in task_plan:
+        if entry["kind"] != "literal" or "values" not in entry:
+            continue
+        encoded = json.dumps(entry["values"], ensure_ascii=False).encode("utf-8")
+        if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
+            continue
+        digest = hashlib.sha256(encoded).hexdigest()
+        key = f"literals/{digest}.json"
+        if key not in blob_urls:
+            raise RuntimeError(f"literal blob {key!r} was not published")
+        mount_path = f"{LITERAL_MOUNT_ROOT}/{digest}.json"
+        entry.pop("values", None)
+        entry["path"] = mount_path
+        existing = spec.get("blobs") or []
+        spec["blobs"] = existing + [
+            {
+                "url": blob_urls[key],
+                "sha256": digest,
+                "headers": {"Authorization": f"Bearer {envs.LUMID_DATA_TOKEN}"},
+                "mountPath": mount_path,
+            }
+        ]
+    if task_plan != plan:
+        spec["code"] = code.replace(
+            f"_PLAN = json.loads({json.dumps(plan)!r})",
+            f"_PLAN = json.loads({json.dumps(task_plan)!r})",
+            1,
+        )
 
 
 def wrapper_source(
