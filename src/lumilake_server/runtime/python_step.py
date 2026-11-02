@@ -299,10 +299,13 @@ def resolve_plan(
 
 
 def _blob_entry(blob: PublishedBlob) -> dict[str, Any]:
+    token = envs.LUMID_DATA_TOKEN
+    if not token:
+        raise RuntimeError("LUMID_DATA_TOKEN is required for LambdaOp task blobs")
     return {
         "url": blob_url(blob.object_name),
         "sha256": blob.sha256,
-        "headers": {"Authorization": f"Bearer {envs.LUMID_DATA_TOKEN}"},
+        "headers": {"Authorization": f"Bearer {token}"},
         "mountPath": blob.mount_path,
     }
 
