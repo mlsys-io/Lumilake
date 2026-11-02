@@ -344,26 +344,10 @@ def wrapper_source(
 def flowmesh_spec(
     node_id: str,
     data_spec: dict[str, Any],
-    *,
     published_blobs: Mapping[str, PublishedBlob],
 ) -> dict[str, Any]:
     """The FlowMesh ``python`` task spec for a runtime python step."""
-    return build_spec(
-        node_id,
-        data_spec,
-        resolve_plan(data_spec["plan"], published_blobs),
-        runtime=published_blobs[runtime_blob().key],
-    )
-
-
-def build_spec(
-    node_id: str,
-    data_spec: dict[str, Any],
-    resolved: tuple[ColumnPlan, list[PublishedBlob]],
-    *,
-    runtime: PublishedBlob | None = None,
-) -> dict[str, Any]:
-    plan, literal_mounts = resolved
+    plan, literal_mounts = resolve_plan(data_spec["plan"], published_blobs)
     mode = data_spec.get("mode", "row")
     if mode == "flatten":
         code = flatten_source(node_id, plan, data_spec["template"])
@@ -383,7 +367,7 @@ def build_spec(
         spec["image"] = data_spec["image"]
     if data_spec.get("cache") is not None:
         spec["cache"] = data_spec["cache"]
-    runtime = runtime or runtime_blob()
+    runtime = published_blobs[runtime_blob().key]
     spec["blobs"] = [_blob_entry(runtime)] + [
         _blob_entry(blob) for blob in literal_mounts
     ]

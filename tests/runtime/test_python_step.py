@@ -54,7 +54,7 @@ def _generated_python_spec(node: Any) -> dict[str, Any]:
     return python_step.flowmesh_spec(
         node.node_id,
         node.data_spec,
-        published_blobs=published,
+        published,
     )
 
 
@@ -1144,8 +1144,8 @@ def test_flowmesh_spec_generates_from_final_sliced_plan() -> None:
         ]
     }
 
-    first = python_step.flowmesh_spec("task", data_spec, published_blobs=published)
-    second = python_step.flowmesh_spec("task", data_spec, published_blobs=published)
+    first = python_step.flowmesh_spec("task", data_spec, published)
+    second = python_step.flowmesh_spec("task", data_spec, published)
 
     assert first == second
     assert plan == [{"kind": "literal", "values": ["sliced"]}]
