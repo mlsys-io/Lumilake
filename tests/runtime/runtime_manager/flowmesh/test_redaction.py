@@ -32,6 +32,11 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
+@pytest.fixture(autouse=True)
+def _lumid_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+
+
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
     """FlowMesh's rejection body can echo back the task spec we submitted,
     Authorization header included. _sanitize_flowmesh_api_error must strip
