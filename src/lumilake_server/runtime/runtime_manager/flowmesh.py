@@ -383,7 +383,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         for plan in plans:
             blobs.update(python_step.literal_blobs(plan))
         published: dict[str, python_step.PublishedBlob] = {}
-        for key, blob in blobs.items():
+
+        async def _publish(key: str, blob: python_step.PublishedBlob) -> None:
             object_name = await asyncio.to_thread(
                 storage.save_blob, key, blob.body, blob.content_type
             )
@@ -395,6 +396,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 sha256=blob.sha256,
                 mount_path=blob.mount_path,
             )
+
+        await asyncio.gather(*(_publish(key, blob) for key, blob in blobs.items()))
         return published
 
     async def fetch_task_status(
@@ -1659,40 +1662,23 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             active_worker_assignment = rewrite.worker_assignment
             flowmesh_to_raw = rewrite.flowmesh_to_raw
 
+        python_nodes: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
         final_plans: list[python_step.ColumnPlan] = []
-        python_node_names: set[str] = set()
         for node in nodes:
             node_name = node["name"]
-            if not isinstance(node_name, str):
-                raise ValueError("FlowMesh node is missing a valid 'name'")
             raw_node_id = flowmesh_to_raw.get(node_name)
             raw_node = runtime_graph.nodes.get(raw_node_id or "")
             if raw_node is None or raw_node.task_type != python_step.TASK_TYPE:
                 continue
-            view_spec = node.get("spec")
-            if not isinstance(view_spec, dict):
-                raise ValueError(f"Python node {raw_node_id!r} has no spec")
+            view_spec = node["spec"]
             data_spec = view_spec["data"]
-            if not isinstance(data_spec, dict):
-                raise ValueError(f"Python node {raw_node_id!r} has invalid data")
             plan = data_spec["plan"]
-            if not isinstance(plan, list):
-                raise ValueError(f"Python node {raw_node_id!r} has invalid plan")
+            python_nodes.append((node, node_name, data_spec))
             final_plans.append(plan)
-            python_node_names.add(node_name)
 
         published_blobs = await self._publish_python_task_blobs(final_plans)
 
-        for node in nodes:
-            node_name = node["name"]
-            if not isinstance(node_name, str) or node_name not in python_node_names:
-                continue
-            view_spec = node.get("spec")
-            if not isinstance(view_spec, dict):
-                raise ValueError(f"Python node {node_name!r} has no spec")
-            data_spec = view_spec["data"]
-            if not isinstance(data_spec, dict):
-                raise ValueError(f"Python node {node_name!r} has invalid data")
+        for node, node_name, data_spec in python_nodes:
             generated = python_step.flowmesh_spec(
                 node_name,
                 data_spec,
