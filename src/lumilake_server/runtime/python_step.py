@@ -249,25 +249,32 @@ def runtime_blob() -> PublishedBlob:
     )
 
 
+def literal_blob(entry: dict[str, Any]) -> PublishedBlob | None:
+    """The mounted blob for one literal entry, or None when it stays inline."""
+    encoded = json.dumps(entry["values"], ensure_ascii=False).encode("utf-8")
+    if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
+        return None
+    digest = hashlib.sha256(encoded).hexdigest()
+    key = f"literals/{digest}.json"
+    return PublishedBlob(
+        key=key,
+        object_name=key,
+        body=encoded,
+        content_type="application/json",
+        sha256=digest,
+        mount_path=f"{LITERAL_MOUNT_ROOT}/{digest}.json",
+    )
+
+
 def literal_blobs(plan: ColumnPlan) -> dict[str, PublishedBlob]:
     """Content-addressed JSON blobs for literal payloads above the inline cutoff."""
     blobs: dict[str, PublishedBlob] = {}
     for entry in plan:
-        if entry["kind"] != "literal" or "values" not in entry:
+        if entry["kind"] != "literal":
             continue
-        encoded = json.dumps(entry["values"], ensure_ascii=False).encode("utf-8")
-        if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
-            continue
-        digest = hashlib.sha256(encoded).hexdigest()
-        key = f"literals/{digest}.json"
-        blobs[key] = PublishedBlob(
-            key=key,
-            object_name=key,
-            body=encoded,
-            content_type="application/json",
-            sha256=digest,
-            mount_path=f"{LITERAL_MOUNT_ROOT}/{digest}.json",
-        )
+        blob = literal_blob(entry)
+        if blob is not None:
+            blobs[blob.key] = blob
     return blobs
 
 
@@ -286,12 +293,12 @@ def resolve_plan(
     task_plan = copy.deepcopy(plan)
     mounts: list[PublishedBlob] = []
     for entry in task_plan:
-        if entry["kind"] != "literal" or "values" not in entry:
+        if entry["kind"] != "literal":
             continue
-        encoded = json.dumps(entry["values"], ensure_ascii=False).encode("utf-8")
-        if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
+        blob = literal_blob(entry)
+        if blob is None:
             continue
-        blob = published[f"literals/{hashlib.sha256(encoded).hexdigest()}.json"]
+        blob = published[blob.key]
         del entry["values"]
         entry["file"] = blob.mount_path
         mounts.append(blob)
