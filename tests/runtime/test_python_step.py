@@ -1087,6 +1087,44 @@ async def test_small_literal_stays_inline(
     assert len(task_spec["blobs"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_python_nodes_keep_their_own_non_data_spec_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        InMemoryJobStorage,
+    )
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops(
+            [
+                as_output(
+                    "first",
+                    LambdaOp([["a"]], fn=lambda inputs: str(inputs[0]), memory_mb=128),
+                ),
+                as_output(
+                    "second",
+                    LambdaOp([["b"]], fn=lambda inputs: str(inputs[0]), memory_mb=256),
+                ),
+            ]
+        ).compile()
+    )
+
+    spec, _, _ = await FlowmeshRuntimeManager()._build_task_spec(
+        request_info=type(
+            "Request", (), {"request_id": "req", "hardware_requirements": None}
+        )(),
+        runtime_graph=graph,
+    )
+
+    resources = {
+        node["spec"]["resources"]["hardware"]["memory"]
+        for node in spec["spec"]["graph"]["nodes"]
+        if node["spec"]["taskType"] == "python"
+    }
+    assert resources == {"128Mi", "256Mi"}
+
+
 def test_flowmesh_spec_generates_from_final_sliced_plan() -> None:
     plan: python_step.ColumnPlan = [
         {"kind": "literal", "values": ["sliced"]},
