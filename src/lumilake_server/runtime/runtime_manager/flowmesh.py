@@ -373,8 +373,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     async def _publish_python_task_blobs(
         self,
         runtime_graph: RuntimeGraph,
-    ) -> dict[str, str]:
-        """Store each referenced task blob once and return worker-facing URLs."""
+    ) -> dict[str, python_step.PublishedBlob]:
+        """Store each task blob once and return its persisted metadata."""
         python_nodes = [
             node
             for node in runtime_graph.nodes.values()
@@ -383,29 +383,26 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         if not python_nodes:
             return {}
         storage = get_job_storage()
-        runtime_key = python_step.runtime_blob_entry()["blobKey"]
-        blobs = {runtime_key: python_step.runtime_bytes()}
+        blobs = {python_step.runtime_blob().key: python_step.runtime_blob()}
         for node in python_nodes:
             plan = node.data_spec.get("plan")
             if not isinstance(plan, list):
                 continue
             blobs.update(python_step.literal_blobs(plan))
-        referenced = set(blobs)
-        urls: dict[str, str] = {}
-        for key in sorted(referenced):
-            prefix, _, _ = key.partition("/")
-            body = blobs.get(key)
-            if body is None:
-                raise RuntimeError(f"unknown python task blob {key!r}")
-            if not storage.blob_exists(key):
-                content_type = (
-                    "text/x-python"
-                    if prefix == "lambda-runtime"
-                    else "application/json"
-                )
-                await asyncio.to_thread(storage.save_blob, key, body, content_type)
-            urls[key] = python_step.runtime_blob_url(key)
-        return urls
+        published: dict[str, python_step.PublishedBlob] = {}
+        for key, blob in blobs.items():
+            object_name = await asyncio.to_thread(
+                storage.save_blob, key, blob.body, blob.content_type
+            )
+            published[key] = python_step.PublishedBlob(
+                key=blob.key,
+                object_name=object_name,
+                body=blob.body,
+                content_type=blob.content_type,
+                sha256=blob.sha256,
+                mount_path=blob.mount_path,
+            )
+        return published
 
     async def fetch_task_status(
         self,
@@ -1636,8 +1633,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             - Output node indices
             - Flowmesh node name -> raw runtime node ID mapping
         """
-        nodes = runtime_graph.to_flowmesh_nodes()
-        blob_urls = await self._publish_python_task_blobs(runtime_graph)
+        nodes = runtime_graph.to_flowmesh_views()
+        published_blobs = await self._publish_python_task_blobs(runtime_graph)
         self._apply_per_node_resource_hints(
             nodes, runtime_graph, request_info.hardware_requirements
         )
@@ -1671,27 +1668,29 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             flowmesh_to_raw = rewrite.flowmesh_to_raw
 
         for node in nodes:
-            raw_node_id = flowmesh_to_raw.get(str(node.get("name", "")))
+            node_name = node["name"]
+            if not isinstance(node_name, str):
+                raise ValueError("FlowMesh node is missing a valid 'name'")
+            raw_node_id = flowmesh_to_raw.get(node_name)
             raw_node = runtime_graph.nodes.get(raw_node_id or "")
-            node_spec = node.get("spec")
-            if (
-                raw_node is None
-                or raw_node.task_type != python_step.TASK_TYPE
-                or not isinstance(node_spec, dict)
-            ):
+            if raw_node is None or raw_node.task_type != python_step.TASK_TYPE:
                 continue
-            plan = raw_node.data_spec.get("plan")
-            if flowmesh_to_raw.get(str(node.get("name", ""))) != raw_node.node_id:
-                python_step.bind_runtime_blob(
-                    node_spec, blob_urls[python_step.runtime_blob_entry()["blobKey"]]
-                )
-                continue
-            python_step.bind_blob_urls(
-                raw_node.node_id,
-                node_spec,
-                plan=plan if isinstance(plan, list) else [],
-                blob_urls=blob_urls,
+            view_spec = node.get("spec")
+            if not isinstance(view_spec, dict):
+                raise ValueError(f"Python node {raw_node_id!r} has no spec")
+            data_spec = view_spec["data"]
+            if not isinstance(data_spec, dict):
+                raise ValueError(f"Python node {raw_node_id!r} has invalid data")
+            generated = python_step.flowmesh_spec(
+                node_name,
+                data_spec,
+                published_blobs=published_blobs,
             )
+            node["spec"] = {
+                key: value
+                for key, value in view_spec.items()
+                if key not in {"data", "code", "blobs"}
+            } | generated
 
         spec: dict[str, Any] = {
             "apiVersion": "mloc/v1",
