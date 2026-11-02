@@ -58,6 +58,19 @@ def _generated_python_spec(node: Any) -> dict[str, Any]:
     )
 
 
+def test_wrapper_loads_literal_file(tmp_path: Path) -> None:
+    values = tmp_path / "values.json"
+    values.write_text(json.dumps(["mounted"]))
+
+    out = _run_wrapper(
+        "def identity(inputs):\n    return str(inputs[0])\n",
+        [{"kind": "literal", "file": str(values)}],
+        {},
+    )
+
+    assert out == {"items": [{"output": "mounted", "value": "mounted"}]}
+
+
 def test_lambda_over_input_is_a_standalone_python_task() -> None:
     stock = input_placeholder("Stock")
     lower = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
@@ -1035,7 +1048,7 @@ async def test_two_tasks_sharing_a_large_literal_upload_it_once(
         plan_json = ast.literal_eval(plan_source)
         plan = json.loads(plan_json)
         assert "values" not in plan[0]
-        assert plan[0]["path"].startswith("/mnt/blobs/literals/")
+        assert plan[0]["file"].startswith("/mnt/blobs/literals/")
 
 
 @pytest.mark.asyncio
