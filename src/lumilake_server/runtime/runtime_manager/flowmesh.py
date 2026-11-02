@@ -375,12 +375,17 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         runtime_graph: RuntimeGraph,
     ) -> dict[str, str]:
         """Store each referenced task blob once and return worker-facing URLs."""
+        python_nodes = [
+            node
+            for node in runtime_graph.nodes.values()
+            if node.task_type == python_step.TASK_TYPE
+        ]
+        if not python_nodes:
+            return {}
         storage = get_job_storage()
         runtime_key = python_step.runtime_blob_entry()["blobKey"]
         blobs = {runtime_key: python_step.runtime_bytes()}
-        for node in runtime_graph.nodes.values():
-            if node.task_type != python_step.TASK_TYPE:
-                continue
+        for node in python_nodes:
             plan = node.data_spec.get("plan")
             if not isinstance(plan, list):
                 continue
