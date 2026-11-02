@@ -1662,7 +1662,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             active_worker_assignment = rewrite.worker_assignment
             flowmesh_to_raw = rewrite.flowmesh_to_raw
 
-        python_nodes: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+        python_nodes: list[
+            tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]
+        ] = []
         final_plans: list[python_step.ColumnPlan] = []
         for node in nodes:
             node_name = node["name"]
@@ -1673,12 +1675,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             view_spec = node["spec"]
             data_spec = view_spec["data"]
             plan = data_spec["plan"]
-            python_nodes.append((node, node_name, data_spec))
+            python_nodes.append((node, view_spec, node_name, data_spec))
             final_plans.append(plan)
 
         published_blobs = await self._publish_python_task_blobs(final_plans)
 
-        for node, node_name, data_spec in python_nodes:
+        for node, view_spec, node_name, data_spec in python_nodes:
             generated = python_step.flowmesh_spec(
                 node_name,
                 data_spec,
