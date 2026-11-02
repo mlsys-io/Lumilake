@@ -199,7 +199,7 @@ class RuntimeGraph:
     def deserialize(cls, payload: Mapping[str, Any]) -> "RuntimeGraph":
         return cls.from_schema(RuntimeGraphSchema.model_validate(payload))
 
-    def to_flowmesh_views(self) -> list[dict[str, Any]]:
+    def to_flowmesh_nodes(self) -> list[dict[str, Any]]:
         # ``RuntimeOp.dependencies`` may reference DSL op ids that aren't
         # materialized as runtime/FlowMesh nodes (e.g. an ``InputOp``
         # consumed only as a retrieval param). FlowMesh schedules tasks
@@ -210,7 +210,7 @@ class RuntimeGraph:
         valid_node_ids = set(self.nodes)
         exported: list[dict[str, Any]] = []
         for node_id in self.node_order:
-            node_payload = self.nodes[node_id].to_flowmesh_view()
+            node_payload = self.nodes[node_id].to_flowmesh_node()
             if "dependsOn" in node_payload:
                 filtered = [
                     dep for dep in node_payload["dependsOn"] if dep in valid_node_ids

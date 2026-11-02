@@ -1626,7 +1626,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             - Output node indices
             - Flowmesh node name -> raw runtime node ID mapping
         """
-        nodes = runtime_graph.to_flowmesh_views()
+        nodes = runtime_graph.to_flowmesh_nodes()
         self._apply_per_node_resource_hints(
             nodes, runtime_graph, request_info.hardware_requirements
         )
