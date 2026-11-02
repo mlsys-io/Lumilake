@@ -31,6 +31,12 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
+
+@pytest.fixture(autouse=True)
+def _lumid_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+
+
 _TRUSTED_URL = "https://lum.id/llm/v1/chat/completions"
 _UNTRUSTED_URL = "https://api.example.com/v1/chat/completions"
 
