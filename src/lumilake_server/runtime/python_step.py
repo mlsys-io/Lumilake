@@ -347,13 +347,6 @@ def flowmesh_spec(
     )
 
 
-def local_flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
-    """A direct node view for callers that do not go through dispatch."""
-    plan = data_spec["plan"]
-    blobs = {runtime_blob().key: runtime_blob(), **literal_blobs(plan)}
-    return build_spec(node_id, data_spec, resolve_plan(plan, blobs))
-
-
 def build_spec(
     node_id: str,
     data_spec: dict[str, Any],
