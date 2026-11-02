@@ -18,7 +18,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import quote
 
@@ -31,6 +31,9 @@ from lumilake_server.utils.http_client import aget_json, arequest, get, post_jso
 logger = logging.getLogger(__name__)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+_RATE_LIMIT_RETRIES = 4
+_RATE_LIMIT_MAX_WAIT_S = 60.0
 
 
 def _validate_sql_identifier(name: str, kind: str) -> None:
@@ -74,6 +77,39 @@ def _default_headers() -> dict[str, str]:
     if trace_id:
         headers["X-Request-ID"] = trace_id
     return headers
+
+
+def _rate_limit_wait_s(resp: requests.Response, attempt: int) -> float:
+    try:
+        wait = float(resp.headers["Retry-After"])
+    except (KeyError, ValueError):
+        wait = 2.0**attempt
+    return min(max(wait, 0.0), _RATE_LIMIT_MAX_WAIT_S)
+
+
+def _send_rate_limited(
+    send: Callable[[], requests.Response], method: str, url: str
+) -> requests.Response:
+    """Send a blob request, waiting out HTTP 429 per ``Retry-After``.
+
+    lumid-data-app rate-limits each token with a fixed window, so a burst of
+    archive writes from one job can briefly exceed it.
+    """
+    for attempt in range(_RATE_LIMIT_RETRIES):
+        resp = send()
+        if resp.status_code != 429:
+            return resp
+        wait = _rate_limit_wait_s(resp, attempt)
+        logger.warning(
+            "%s %s rate-limited by lumid-data-app; retrying in %.1fs (%d/%d)",
+            method,
+            url,
+            wait,
+            attempt + 1,
+            _RATE_LIMIT_RETRIES,
+        )
+        time.sleep(wait)
+    return send()
 
 
 def profile(
@@ -171,17 +207,23 @@ async def list_blobs(prefix: str) -> tuple[dict[str, int | None], list[str]]:
 def put_blob(key: str, body: bytes, content_type: str) -> None:
     """PUT /blobs/<key> — upload ``body`` as ``content_type``.
 
-    Raises ``RuntimeError`` on HTTP 413 (quota exceeded).
+    Retries HTTP 429 per ``Retry-After``; raises ``RuntimeError`` on HTTP 413
+    (quota exceeded).
     """
     url = f"{_base_url()}/blobs/{_encode_blob_key(key)}"
     logger.info("PUT %s body_bytes=%d", url, len(body))
     start = time.monotonic()
-    resp = requests.put(
+    headers = {**_default_headers(), "Content-Type": content_type}
+    resp = _send_rate_limited(
+        lambda: requests.put(
+            url,
+            data=body,
+            headers=headers,
+            timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
+            allow_redirects=False,
+        ),
+        "PUT",
         url,
-        data=body,
-        headers={**_default_headers(), "Content-Type": content_type},
-        timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
-        allow_redirects=False,
     )
     logger.debug(
         "PUT %s status=%d elapsed=%.3fs",
@@ -200,16 +242,22 @@ def put_blob(key: str, body: bytes, content_type: str) -> None:
 def get_blob(key: str) -> tuple[bytes, str]:
     """GET /blobs/<key> — return ``(body, content_type)``.
 
-    Raises ``BlobNotFound`` when the server returns 404.
+    Retries HTTP 429 per ``Retry-After``; raises ``BlobNotFound`` when the
+    server returns 404.
     """
     url = f"{_base_url()}/blobs/{_encode_blob_key(key)}"
     logger.info("GET %s", url)
     start = time.monotonic()
-    resp = requests.get(
+    headers = _default_headers()
+    resp = _send_rate_limited(
+        lambda: requests.get(
+            url,
+            headers=headers,
+            timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
+            allow_redirects=False,
+        ),
+        "GET",
         url,
-        headers=_default_headers(),
-        timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
-        allow_redirects=False,
     )
     logger.debug(
         "GET %s status=%d elapsed=%.3fs",

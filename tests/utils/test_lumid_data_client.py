@@ -284,6 +284,50 @@ class TestAcatalogColumnExists:
         assert result is False
 
 
+class TestRateLimitRetry:
+    def test_put_blob_waits_retry_after_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _base_url_and_token(monkeypatch)
+        sleeps: list[float] = []
+        monkeypatch.setattr(m.time, "sleep", sleeps.append)
+        limited = _make_sync_response(429, headers={"Retry-After": "7"})
+        ok = _make_sync_response(200)
+        with patch("lumilake_server.utils.lumid_data_client.requests") as mock_req:
+            mock_req.put.side_effect = [limited, ok]
+            put_blob("k.json", b"{}", "application/json")
+        assert mock_req.put.call_count == 2
+        assert sleeps == [7.0]
+        ok.raise_for_status.assert_called_once()
+
+    def test_get_blob_backs_off_without_retry_after(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _base_url_and_token(monkeypatch)
+        sleeps: list[float] = []
+        monkeypatch.setattr(m.time, "sleep", sleeps.append)
+        limited = _make_sync_response(429)
+        ok = _make_sync_response(200, content=b"x", headers={"Content-Type": "a/b"})
+        with patch("lumilake_server.utils.lumid_data_client.requests") as mock_req:
+            mock_req.get.side_effect = [limited, limited, ok]
+            assert get_blob("k.txt") == (b"x", "a/b")
+        assert sleeps == [1.0, 2.0]
+
+    def test_put_blob_raises_after_retries_exhausted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _base_url_and_token(monkeypatch)
+        sleeps: list[float] = []
+        monkeypatch.setattr(m.time, "sleep", sleeps.append)
+        limited = _make_sync_response(429, headers={"Retry-After": "600"})
+        with patch("lumilake_server.utils.lumid_data_client.requests") as mock_req:
+            mock_req.put.return_value = limited
+            with pytest.raises(RuntimeError, match="HTTP 429"):
+                put_blob("k.json", b"{}", "application/json")
+        assert mock_req.put.call_count == m._RATE_LIMIT_RETRIES + 1
+        assert sleeps == [m._RATE_LIMIT_MAX_WAIT_S] * m._RATE_LIMIT_RETRIES
+
+
 class TestRequestIdForwarding:
     def test_put_blob_forwards_x_request_id(
         self, monkeypatch: pytest.MonkeyPatch
