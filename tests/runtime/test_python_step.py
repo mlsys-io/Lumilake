@@ -1128,6 +1128,16 @@ def test_runtime_blob_uses_canonical_runtime_and_is_cached() -> None:
     assert b"class _validate_source" not in first.body
 
 
+def test_blob_entry_requires_lumid_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", None)
+    blob = python_step.runtime_blob()
+
+    with pytest.raises(RuntimeError, match="LUMID_DATA_TOKEN"):
+        python_step._blob_entry(blob)
+
+
 @pytest.mark.asyncio
 async def test_persistent_storage_blob_url_uses_stored_object_name(
     monkeypatch: pytest.MonkeyPatch,

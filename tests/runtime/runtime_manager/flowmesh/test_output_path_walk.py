@@ -181,6 +181,26 @@ def test_redact_preserves_empty_token_field():
     assert redact_sensitive(spec) == {"lumid_data_token": ""}
 
 
+def test_redact_strips_python_blob_authorization_header():
+    spec = {
+        "spec": {
+            "blobs": [
+                {
+                    "url": "http://lumid-data/blobs/runtime.py",
+                    "headers": {"Authorization": "Bearer lumid-secret"},
+                }
+            ]
+        }
+    }
+
+    redacted = redact_sensitive(spec)
+
+    assert (
+        redacted["spec"]["blobs"][0]["headers"]["Authorization"]
+        == REDACTED_TOKEN_PLACEHOLDER
+    )
+
+
 def test_coerce_output_value_serializes_primitive_leaves():
     # Regression: a path that descends into a JSON-stringified DataFrame
     # column can yield a primitive leaf; the list[str] contract requires
