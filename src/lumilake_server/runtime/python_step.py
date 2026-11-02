@@ -5,14 +5,17 @@ FlowMesh ``python`` task in a per-task container.
 """
 
 import hashlib
+import inspect
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from functools import cache
 from typing import Any
 from urllib.parse import quote
 
 from lumilake import envs
+from lumilake_server.runtime import lambda_task_helpers
+from lumilake_server.utils import lambda_runtime
 
 TASK_RUNTIME_MOUNT = "/mnt/blobs/lumilake-runtime.py"
 TASK_RUNTIME_MODULE = "lumilake_runtime"
@@ -225,14 +228,14 @@ def regroup_source(node_id: str, plan: ColumnPlan) -> str:
     )
 
 
-def runtime_bytes() -> bytes:
-    """The worker-side runtime source mounted by every generated task."""
-    path = Path(__file__).with_name("lambda_task_runtime.py")
-    return path.read_bytes()
-
-
+@cache
 def runtime_blob() -> PublishedBlob:
-    body = runtime_bytes()
+    """The worker-side runtime source mounted by every generated task."""
+    body = (
+        inspect.getsource(lambda_runtime)
+        + "\n\n"
+        + inspect.getsource(lambda_task_helpers)
+    ).encode("utf-8")
     digest = hashlib.sha256(body).hexdigest()
     key = f"lambda-runtime/{digest}.py"
     return PublishedBlob(
@@ -265,12 +268,6 @@ def literal_blobs(plan: ColumnPlan) -> dict[str, PublishedBlob]:
             mount_path=f"{LITERAL_MOUNT_ROOT}/{digest}.json",
         )
     return blobs
-
-
-def graph_blobs(data_spec: dict[str, Any]) -> list[PublishedBlob]:
-    """The runtime and large-literal blobs needed by one python task."""
-    plan = data_spec["plan"]
-    return [runtime_blob(), *literal_blobs(plan).values()]
 
 
 def blob_url(object_name: str) -> str:
@@ -342,7 +339,29 @@ def flowmesh_spec(
     published_blobs: Mapping[str, PublishedBlob],
 ) -> dict[str, Any]:
     """The FlowMesh ``python`` task spec for a runtime python step."""
-    plan, literal_mounts = resolve_plan(data_spec["plan"], published_blobs)
+    return build_spec(
+        node_id,
+        data_spec,
+        resolve_plan(data_spec["plan"], published_blobs),
+        runtime=published_blobs[runtime_blob().key],
+    )
+
+
+def local_flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
+    """A direct node view for callers that do not go through dispatch."""
+    plan = data_spec["plan"]
+    blobs = {runtime_blob().key: runtime_blob(), **literal_blobs(plan)}
+    return build_spec(node_id, data_spec, resolve_plan(plan, blobs))
+
+
+def build_spec(
+    node_id: str,
+    data_spec: dict[str, Any],
+    resolved: tuple[ColumnPlan, list[PublishedBlob]],
+    *,
+    runtime: PublishedBlob | None = None,
+) -> dict[str, Any]:
+    plan, literal_mounts = resolved
     mode = data_spec.get("mode", "row")
     if mode == "flatten":
         code = flatten_source(node_id, plan, data_spec["template"])
@@ -362,8 +381,8 @@ def flowmesh_spec(
         spec["image"] = data_spec["image"]
     if data_spec.get("cache") is not None:
         spec["cache"] = data_spec["cache"]
-    runtime_mount = published_blobs[runtime_blob().key]
-    spec["blobs"] = [_blob_entry(runtime_mount)] + [
+    runtime = runtime or runtime_blob()
+    spec["blobs"] = [_blob_entry(runtime)] + [
         _blob_entry(blob) for blob in literal_mounts
     ]
     stages = list(
