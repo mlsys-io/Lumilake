@@ -81,10 +81,17 @@ class RuntimeOp:
     def deserialize(cls, node_id: str, payload: Mapping[str, Any]) -> "RuntimeOp":
         return cls.from_schema(node_id, RuntimeOpSchema.model_validate(payload))
 
-    def to_flowmesh_node(self) -> dict[str, Any]:
+    def to_flowmesh_node(
+        self, *, blob_urls: Mapping[str, str] | None = None
+    ) -> dict[str, Any]:
         spec_payload: dict[str, Any] = {"taskType": self.task_type}
         if self.task_type == python_step.TASK_TYPE:
-            spec_payload = python_step.flowmesh_spec(self.node_id, self.data_spec)
+            resolved_urls = blob_urls or {}
+            spec_payload = python_step.flowmesh_spec(
+                self.node_id,
+                self.data_spec,
+                blob_urls=resolved_urls,
+            )
         else:
             spec_payload["data"] = self.data_spec
         if self.task_type == "api":
