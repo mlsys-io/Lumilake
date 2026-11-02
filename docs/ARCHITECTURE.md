@@ -61,6 +61,13 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 5. The runtime manager dispatches the plan to FlowMesh.
 6. Progress, results, traces, and artifacts are stored through the archive layer.
 
+Standalone `python` tasks receive their shared Lambda runtime through a
+content-addressed FlowMesh blob instead of embedding it in every task's source.
+Large literal plan entries are also uploaded once by digest and mounted as JSON
+files; literals at or below 1 KiB stay inline. FlowMesh verifies each blob by
+SHA-256 and caches the verified bytes per worker. Destructive shard rewrites
+keep sliced literals inline so each shard receives its own values.
+
 ## Storage Model
 
 Lumilake separates compute data from job archive data.
@@ -68,4 +75,5 @@ Lumilake separates compute data from job archive data.
 - **`DataRetrievalOp`** (all modes — `sql`, `s3`, `agent`) routes through lumid-data-app using the `type: lumid` FlowMesh connector. `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`).
 - **Data profiling** (EXPLAIN cost estimation via `POST /profile`, S3 object listing via `GET /blobs`, and live sampling via `POST /retrieve`) also routes through lumid-data-app, gated by the same URL + effective-token contract.
 - **Archive** (job records, runtime artifacts) is written under `S3_ARCHIVE_PREFIX`, a logical blob-key prefix in lumid-data-app's store. All archive reads and writes route through lumid-data-app using `LUMID_DATA_URL` / `LUMID_DATA_TOKEN`.
+- **Dispatch blobs** (the shared Lambda runtime and large literal payloads) use the same archive prefix and lumid-data-app HTTP interface as runtime artifacts. Their keys are content-addressed, so a digest is uploaded at most once and can be mounted by every standalone `python` task that needs it.
 - **Server-side input resolution** (resolving `InputOp` SQL/S3 inputs) routes through lumid-data-app. `S3_DATA_PREFIX` is a logical blob-key prefix in lumid-data-app's store used as the base for S3-input key expansion. `DBLocation` output is not supported; submitting a job with a `DBLocation` output returns 422.
