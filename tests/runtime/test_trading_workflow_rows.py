@@ -285,6 +285,6 @@ def test_per_row_vlm_nodes_export_to_flowmesh(symbols: list[str]) -> None:
             final = python_step.flowmesh_spec(
                 node_id,
                 flowmesh_node["spec"]["data"],
-                published_blobs=published,
+                published,
             )
             compile(final["code"], node_id, "exec")
