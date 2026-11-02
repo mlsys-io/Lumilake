@@ -1,5 +1,6 @@
 """A LambdaOp that no LLM consumes compiles to its own FlowMesh python task."""
 
+import ast
 import json
 import tempfile
 from pathlib import Path
@@ -983,6 +984,95 @@ async def test_flowmesh_spec_skips_runtime_upload_when_digest_exists(
     blob = spec["spec"]["graph"]["nodes"][0]["spec"]["blobs"][0]
     assert blob["sha256"] == runtime_key.rsplit("/", 1)[-1].removesuffix(".py")
     assert blob["mountPath"] == python_step.TASK_RUNTIME_MOUNT
+
+
+@pytest.mark.asyncio
+async def test_two_tasks_sharing_a_large_literal_upload_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    uploads: list[str] = []
+    save_blob = storage.save_blob
+
+    def recording_save_blob(key: str, data: bytes, content_type: str) -> str:
+        uploads.append(key)
+        return save_blob(key, data, content_type)
+
+    monkeypatch.setattr(storage, "save_blob", recording_save_blob)
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: storage,
+    )
+    shared = ["x" * 2000]
+    manager = FlowmeshRuntimeManager()
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops(
+            [
+                as_output("first", LambdaOp([shared], fn=lambda inputs: inputs[0])),
+                as_output("second", LambdaOp([shared], fn=lambda inputs: inputs[0])),
+            ]
+        ).compile()
+    )
+
+    spec, _, _ = await manager._build_task_spec(
+        request_info=type(
+            "Request", (), {"request_id": "req", "hardware_requirements": None}
+        )(),
+        runtime_graph=graph,
+    )
+
+    literal_keys = [key for key in uploads if key.startswith("literals/")]
+    assert len(literal_keys) == 1
+    assert len(uploads) == 2
+    for node in spec["spec"]["graph"]["nodes"]:
+        plan_source = (
+            node["spec"]["code"].split("_PLAN = json.loads(", 1)[1].split(")\n", 1)[0]
+        )
+        plan_json = ast.literal_eval(plan_source)
+        plan = json.loads(plan_json)
+        assert "values" not in plan[0]
+        assert plan[0]["path"].startswith("/mnt/blobs/literals/")
+
+
+@pytest.mark.asyncio
+async def test_small_literal_stays_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    uploads: list[str] = []
+    save_blob = storage.save_blob
+
+    def recording_save_blob(key: str, data: bytes, content_type: str) -> str:
+        uploads.append(key)
+        return save_blob(key, data, content_type)
+
+    monkeypatch.setattr(storage, "save_blob", recording_save_blob)
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: storage,
+    )
+    manager = FlowmeshRuntimeManager()
+
+    def small_literal(inputs: tuple[str | list[Message], ...]) -> str:
+        return str(inputs[0])
+
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops(
+            [as_output("out", LambdaOp([["x"]], fn=small_literal))]
+        ).compile()
+    )
+
+    spec, _, _ = await manager._build_task_spec(
+        request_info=type(
+            "Request", (), {"request_id": "req", "hardware_requirements": None}
+        )(),
+        runtime_graph=graph,
+    )
+
+    assert uploads == [python_step.runtime_blob_entry()["blobKey"]]
+    task_spec = spec["spec"]["graph"]["nodes"][0]["spec"]
+    assert '"values": ["x"]' in task_spec["code"]
+    assert len(task_spec["blobs"]) == 1
 
 
 def test_lambda_op_rejects_a_non_bool_cache() -> None:
