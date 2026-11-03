@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from flowmesh.exceptions import APIError
@@ -79,6 +79,15 @@ def _resolve_gpu_count(hardware: HardwareRequirements | None) -> int:
     if hardware is not None and hardware.gpu is not None:
         return hardware.gpu
     return envs.HARDWARE_GPU_REQUIREMENT
+
+
+def _dump_yaml_artifact(data: dict[str, Any] | str) -> str:
+    if isinstance(data, str):
+        return data
+    return cast(
+        str,
+        yaml.dump(data, default_flow_style=False, sort_keys=False),
+    )
 
 
 def _resolve_gpu_memory(hardware: HardwareRequirements | None) -> str:
@@ -339,31 +348,27 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     def result_dir(self, request_info: RequestInfo) -> Path:
         return Path(request_info.request_id) / request_info.batch_id
 
-    def _save_yaml_artifact(
+    async def _save_yaml_artifact(
         self,
         request_info: RequestInfo,
         filename: str,
         data: dict[str, Any] | str,
     ) -> str:
-        yaml_data = (
-            yaml.dump(data, default_flow_style=False, sort_keys=False)
-            if isinstance(data, dict)
-            else data
-        )
-        return self.save_runtime_artifact(
+        yaml_data = await asyncio.to_thread(_dump_yaml_artifact, data)
+        return await self.save_runtime_artifact_async(
             request_info,
             filename,
             yaml_data.encode("utf-8"),
             "application/x-yaml",
         )
 
-    def _save_json_artifact(
+    async def _save_json_artifact(
         self,
         request_info: RequestInfo,
         filename: str,
         data: Any,
     ) -> str:
-        return self.save_runtime_artifact(
+        return await self.save_runtime_artifact_async(
             request_info,
             filename,
             json.dumps(data, indent=2).encode("utf-8"),
@@ -1199,7 +1204,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             raise _sanitize_flowmesh_api_error(e) from None
         if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
-        response_uri = self._save_json_artifact(
+        response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
             redact_sensitive(response_data),
@@ -1300,7 +1305,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             default_flow_style=False,
             sort_keys=False,
         )
-        graph_uri = self._save_yaml_artifact(
+        graph_uri = await self._save_yaml_artifact(
             request_info,
             "lumilake-runtime-graph.yaml",
             {
@@ -1312,7 +1317,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 "flowmesh_nodes": flowmesh_node_count,
             },
         )
-        job_uri = self._save_yaml_artifact(
+        job_uri = await self._save_yaml_artifact(
             request_info,
             "flowmesh_job.yaml",
             archive_task_yaml,
@@ -1403,7 +1408,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             metadata["raw_nodes"] = raw_node_count
             metadata["flowmesh_nodes"] = flowmesh_node_count
 
-        mapping_uri = self._save_json_artifact(
+        mapping_uri = await self._save_json_artifact(
             request_info,
             "task-node-map.json",
             raw_task_node_map,
