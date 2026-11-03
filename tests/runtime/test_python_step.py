@@ -308,14 +308,35 @@ def test_list_mode_lambda_opt_in_declares_empty_preservation() -> None:
     assert graph.nodes[preserve.id].skip_when_all_inputs_empty is True
 
 
-def test_row_mode_lambda_declares_empty_preservation() -> None:
+def test_row_mode_lambda_over_a_stage_declares_empty_preservation() -> None:
     stock = input_placeholder("Stock")
-    lower = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model=_MODEL),
+    )
+    lower = LambdaOp([llm], fn=lambda inputs: str(inputs[0]).lower())
     compiled = Graph.from_ops([as_output("lowered", lower)]).compile(Stock=["NVDA"])
 
     graph = RuntimeGraphBuilder().build(compiled)
 
     assert graph.nodes[lower.id].skip_when_all_inputs_empty is True
+
+
+def test_row_mode_lambda_with_literal_does_not_declare_empty_preservation() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model=_MODEL),
+    )
+    join = LambdaOp(
+        [llm, ["literal"]],
+        fn=lambda inputs: str(inputs[0]) + str(inputs[1]),
+    )
+    compiled = Graph.from_ops([as_output("joined", join)]).compile(Stock=[])
+
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert graph.nodes[join.id].skip_when_all_inputs_empty is False
 
 
 def test_aligned_lambda_requires_explicit_empty_preservation() -> None:

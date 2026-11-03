@@ -787,7 +787,10 @@ class RuntimeGraphBuilder:
             backend=python_step.BACKEND,
             model="",
             dependencies=dependencies,
-            skip_when_all_inputs_empty=True,
+            skip_when_all_inputs_empty=not (
+                any(entry["kind"] == "literal" for entry in plan)
+                and any(entry["kind"] == "stage" for entry in plan)
+            ),
         )
         nodes[op_id] = runtime_op
         node_order.append(op_id)
