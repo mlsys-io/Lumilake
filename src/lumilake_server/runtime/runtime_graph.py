@@ -787,6 +787,7 @@ class RuntimeGraphBuilder:
             backend=python_step.BACKEND,
             model="",
             dependencies=dependencies,
+            skip_when_all_inputs_empty=True,
         )
         nodes[op_id] = runtime_op
         node_order.append(op_id)

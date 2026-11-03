@@ -308,9 +308,23 @@ def test_list_mode_lambda_opt_in_declares_empty_preservation() -> None:
     assert graph.nodes[preserve.id].skip_when_all_inputs_empty is True
 
 
-def test_row_mode_lambda_does_not_declare_empty_preservation() -> None:
+def test_row_mode_lambda_declares_empty_preservation() -> None:
     stock = input_placeholder("Stock")
     lower = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
+    compiled = Graph.from_ops([as_output("lowered", lower)]).compile(Stock=["NVDA"])
+
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert graph.nodes[lower.id].skip_when_all_inputs_empty is True
+
+
+def test_aligned_lambda_requires_explicit_empty_preservation() -> None:
+    stock = input_placeholder("Stock")
+    lower = LambdaOp(
+        [stock],
+        fn=lambda inputs: [str(value).lower() for value in inputs[0]],
+        mode="aligned",
+    )
     compiled = Graph.from_ops([as_output("lowered", lower)]).compile(Stock=["NVDA"])
 
     graph = RuntimeGraphBuilder().build(compiled)
