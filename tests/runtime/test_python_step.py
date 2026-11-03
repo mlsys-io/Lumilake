@@ -626,6 +626,34 @@ def test_wrapper_list_mode_decode_rows_decodes_each_row() -> None:
     assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
 
 
+def test_retry_lambda_returns_the_declared_empty_value(tmp_path: Path) -> None:
+    parsed = _stage(tmp_path, "parsed", {"value": {"items": []}})
+    initial = _stage(tmp_path, "initial", {"value": {"items": []}})
+    code = (
+        "def retry_prompts(inputs):\n"
+        "    parsed, initial = inputs\n"
+        "    output = []\n"
+        "    for row_index, (row, prompt_row) in enumerate(zip(parsed, initial)):\n"
+        "        if not row.get('valid'):\n"
+        "            output.append(prompt_row)\n"
+        "    return output\n"
+    )
+    plan: python_step.ColumnPlan = [
+        {"kind": "stage", "node": "parsed"},
+        {"kind": "stage", "node": "initial"},
+    ]
+
+    out = _run_wrapper(
+        code,
+        plan,
+        {"parsed": parsed, "initial": initial},
+        fn_name="retry_prompts",
+        mode="list",
+    )
+
+    assert out == {"items": []}
+
+
 def test_wrapper_aligned_mode_returns_one_value_per_row(tmp_path: Path) -> None:
     # An aligned lambda gets whole columns and returns a list, but must return
     # exactly one value per input row; the wrapper emits one item per row.
