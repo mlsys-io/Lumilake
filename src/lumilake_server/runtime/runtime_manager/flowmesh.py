@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from flowmesh.exceptions import APIError
-from flowmesh.models.tasks import TaskStatusView
+from flowmesh.models.tasks import TaskInfo, TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
@@ -422,6 +422,15 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
 
+    async def fetch_workflow_tasks(self, workflow_id: str) -> list[TaskInfo]:
+        try:
+            return await _retry_transient_read(
+                lambda: self.fm.tasks.list(workflow_id=workflow_id),
+                f"workflow {workflow_id} tasks",
+            )
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
+
     async def _find_submitted_workflow(
         self, submit_id: str, since: datetime
     ) -> Workflow | None:
@@ -493,6 +502,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     async def _resolve_task_node_maps(
         self,
+        workflow_id: str,
         task_ids: list[str],
         expected_node_names: list[str],
     ) -> tuple[dict[str, str], dict[str, str]]:
@@ -500,16 +510,18 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_to_node: dict[str, str] = {}
         node_to_task: dict[str, str] = {}
 
-        descriptions = await asyncio.gather(
-            *(self.fetch_task_description(task_id) for task_id in task_ids),
-            return_exceptions=True,
-        )
-        for task_id, task_desc in zip(task_ids, descriptions):
-            if isinstance(task_desc, BaseException):
-                raise RuntimeError(
-                    f"Failed to fetch FlowMesh task description for task_id={task_id}"
-                ) from task_desc
-            node_name = task_desc.get("graph_node_name")
+        try:
+            tasks = await self.fetch_workflow_tasks(workflow_id)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to list FlowMesh tasks for workflow_id={workflow_id}"
+            ) from e
+        tasks_by_id = {task.task_id: task for task in tasks}
+        for task_id in task_ids:
+            task = tasks_by_id.get(task_id)
+            if task is None:
+                continue
+            node_name = task.graph_node_name
             if not isinstance(node_name, str) or node_name not in expected_set:
                 raise RuntimeError(
                     "FlowMesh task description missing valid graph_node_name for "
@@ -1362,7 +1374,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             if node.get("name")
         ]
         task_node_map, node_task_map = await self._resolve_task_node_maps(
-            task_ids, node_names
+            workflow_id, task_ids, node_names
         )
 
         total_nodes = len(task_ids)

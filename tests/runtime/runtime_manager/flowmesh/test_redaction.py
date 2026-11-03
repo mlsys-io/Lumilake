@@ -311,18 +311,19 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
             graph_node_name=row_id,
         )
 
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": row_id}
+    async def _fetch_workflow_tasks(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[Any]:
+        assert workflow_id == "wf-1"
+        return [SimpleNamespace(task_id="task-row0", graph_node_name=row_id)]
 
     monkeypatch.setattr(
         manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
     )
     monkeypatch.setattr(
         manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
+        "fetch_workflow_tasks",
+        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     with pytest.raises(APIError) as excinfo:
