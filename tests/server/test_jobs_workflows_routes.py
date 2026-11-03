@@ -1208,6 +1208,55 @@ async def test_progress_usage_null_when_task_unmappable(
 
 
 @pytest.mark.anyio
+async def test_progress_computes_usage_before_terminal_finalizer(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed job awaiting terminal usage still reports computed usage."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    record.status = "completed"
+    record.terminal_usage_finalized = False
+    wf1 = _FakeWorkflow("wf-1", "DONE", completed_tasks=["tsk-00000001"])
+    fake_fm = _FakeFlowMesh(
+        _FakeWorkflows(
+            workflows={"wf-1": wf1},
+            logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+        ),
+        task_results={
+            "tsk-00000001": _api_result(
+                "tsk-00000001",
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
+            ),
+        },
+    )
+    monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(
+            lambda cls: _FakeProgressServer({"execution": {"completed": True}})
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/progress", headers={"Authorization": "Bearer token"}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["progress"]["usage"] == {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "reasoning_tokens": 10,
+        "calls": 4,
+        "retries": 2,
+        "truncated_calls": 0,
+        "wall_sec": 3.5,
+    }
+
+
+@pytest.mark.anyio
 async def test_progress_terminal_usage_survives_persistence(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1215,6 +1264,7 @@ async def test_progress_terminal_usage_survives_persistence(
     _seed_job(job_routes, "j-1", ["wf-1"])
     record = job_routes.jobs["j-1"]
     record.status = "completed"
+    record.terminal_usage_finalized = True
     record.progress.usage = job_routes_module.WorkflowUsage(
         prompt_tokens=100,
         completion_tokens=50,
