@@ -21,7 +21,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-import yaml
 from flowmesh.exceptions import APIError
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
@@ -48,6 +47,7 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.yaml import dump_yaml
 
 from .base import BaseRuntimeManager
 
@@ -86,7 +86,7 @@ def _dump_yaml_artifact(data: dict[str, Any] | str) -> str:
         return data
     return cast(
         str,
-        yaml.dump(data, default_flow_style=False, sort_keys=False),
+        dump_yaml(data, default_flow_style=False, sort_keys=False),
     )
 
 
@@ -1299,8 +1299,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         }
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
-        task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
-        archive_task_yaml = yaml.dump(
+        task_yaml = dump_yaml(task_spec, default_flow_style=False, sort_keys=False)
+        archive_task_yaml = dump_yaml(
             redact_sensitive(task_spec),
             default_flow_style=False,
             sort_keys=False,

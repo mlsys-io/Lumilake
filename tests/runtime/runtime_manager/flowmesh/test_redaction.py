@@ -8,11 +8,13 @@ a persisted artifact.
 """
 
 import asyncio
+import copy
 import types
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
@@ -31,6 +33,7 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
     _sanitize_flowmesh_api_error,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+from lumilake_server.utils.yaml import dump_yaml
 
 
 @pytest.fixture(autouse=True)
@@ -592,6 +595,21 @@ async def test_string_yaml_archive_skips_yaml_dump(
         "data": payload.encode("utf-8"),
         "content_type": "application/x-yaml",
     }
+
+
+def test_yaml_dump_equivalent_to_safe_dump_and_uses_libyaml() -> None:
+    payload = {
+        "apiVersion": "mloc/v1",
+        "kind": "InferenceTask",
+        "metadata": {"name": "job", "annotations": {"x": [1, 2]}},
+    }
+    original = copy.deepcopy(payload)
+    expected = yaml.safe_dump(original, sort_keys=False)
+    actual = dump_yaml(payload, default_flow_style=False, sort_keys=False)
+
+    assert yaml.safe_load(actual) == yaml.safe_load(expected)
+    assert payload == original
+    assert yaml.CSafeDumper if yaml.__with_libyaml__ else yaml.SafeDumper
 
 
 def test_api_result_dump_keeps_json_row_key() -> None:
