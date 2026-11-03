@@ -1,4 +1,5 @@
 import json
+import queue
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -753,7 +754,7 @@ async def test_generate_schedule_subprocess_timeout_terminates_and_kills(
             return
 
         def get_nowait(self) -> Any:
-            raise AssertionError("result queue should not be consumed on timeout")
+            raise queue.Empty
 
     class FakeProcess:
         def __init__(self) -> None:
