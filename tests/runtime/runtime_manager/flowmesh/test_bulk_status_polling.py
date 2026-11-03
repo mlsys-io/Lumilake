@@ -22,6 +22,33 @@ def _status(task_id: str, status: str, error: str | None = None) -> TaskStatusVi
 
 
 @pytest.mark.asyncio
+async def test_workflow_status_update_keeps_unmapped_incomplete_task_open(
+    flowmesh_manager: FlowmeshRuntimeManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _list_statuses(*, workflow_id: str) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [_status("task-1", "DONE")]
+
+    class _FakeTasks:
+        list_statuses = staticmethod(_list_statuses)
+
+    class _FakeFm:
+        tasks = _FakeTasks()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+
+    task_status = {"task-1": "PENDING", "task-2": "PENDING"}
+
+    completed = await flowmesh_manager._update_workflow_task_statuses(
+        task_status, {"task-1": "wf-1"}
+    )
+
+    assert not completed
+    assert task_status == {"task-1": "DONE", "task-2": "PENDING"}
+
+
+@pytest.mark.asyncio
 async def test_update_task_status_polls_many_tasks_in_one_bulk_request(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,

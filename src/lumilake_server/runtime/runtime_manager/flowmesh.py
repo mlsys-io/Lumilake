@@ -560,7 +560,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_status: dict[str, str],
         task_workflows: Mapping[str, str],
     ) -> bool:
-        completed = True
+        completed = all(
+            task_id in task_workflows or status in TERMINAL_STATUSES
+            for task_id, status in task_status.items()
+        )
         for workflow_id in dict.fromkeys(
             task_workflows[task_id]
             for task_id in task_status
