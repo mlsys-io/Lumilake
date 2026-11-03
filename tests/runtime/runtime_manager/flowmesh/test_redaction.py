@@ -295,21 +295,23 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: fake_fm))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return TaskStatusView(
-            task_id=task_id,
-            workflow_id="wf-1",
-            status="DONE",
-            submitted_at="2026-01-01T00:00:00Z",
-            submitted_ts=0.0,
-            attempts=1,
-            max_attempts=1,
-            completed=True,
-            failed=False,
-            graph_node_name=row_id,
-        )
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        return [
+            TaskStatusView(
+                task_id="task-row0",
+                workflow_id=workflow_id,
+                status="DONE",
+                submitted_at="2026-01-01T00:00:00Z",
+                submitted_ts=0.0,
+                attempts=1,
+                max_attempts=1,
+                completed=True,
+                failed=False,
+                graph_node_name=row_id,
+            )
+        ]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -318,7 +320,9 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
         return [SimpleNamespace(task_id="task-row0", graph_node_name=row_id)]
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
