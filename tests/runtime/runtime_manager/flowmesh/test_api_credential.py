@@ -136,21 +136,23 @@ async def test_dispatched_request_carries_resolved_caller_credential(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return TaskStatusView(
-            task_id=task_id,
-            workflow_id="wf-1",
-            status="DONE",
-            submitted_at="2026-01-01T00:00:00Z",
-            submitted_ts=0.0,
-            attempts=1,
-            max_attempts=1,
-            completed=True,
-            failed=False,
-            graph_node_name=row_id,
-        )
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        return [
+            TaskStatusView(
+                task_id="task-1",
+                workflow_id=workflow_id,
+                status="DONE",
+                submitted_at="2026-01-01T00:00:00Z",
+                submitted_ts=0.0,
+                attempts=1,
+                max_attempts=1,
+                completed=True,
+                failed=False,
+                graph_node_name=row_id,
+            )
+        ]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -159,7 +161,9 @@ async def test_dispatched_request_carries_resolved_caller_credential(
         return [SimpleNamespace(task_id="task-1", graph_node_name=row_id)]
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
