@@ -546,6 +546,7 @@ def test_api_rowwise_template_emits_single_task() -> None:
     assert node.api_spec["timeout_sec"] == 300.0
     assert node.api_spec["json"]["model"] == "gpt-4o"
     assert node.model == "gpt-4o"
+    assert node.skip_when_all_inputs_empty is True
     assert node.to_flowmesh_node()["spec"]["data"] == node.data_spec
     assert node.to_flowmesh_node()["spec"]["data"]["type"] == "dataframe"
 
@@ -2402,7 +2403,7 @@ def test_api_rowwise_data_spec_matches_local_path() -> None:
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
 
-    def build(api: bool) -> tuple[dict, tuple | None]:
+    def build(api: bool) -> tuple[dict, tuple | None, bool]:
         cfg = GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig() if api else None,
@@ -2421,12 +2422,14 @@ def test_api_rowwise_data_spec_matches_local_path() -> None:
         runtime_graph = RuntimeGraphBuilder().build(compiled)
         (row,) = runtime_graph.dsl_to_runtime[llm.id]
         node = runtime_graph.nodes[row]
-        return node.data_spec, node.dependencies
+        return node.data_spec, node.dependencies, node.skip_when_all_inputs_empty
 
-    api_data, api_deps = build(api=True)
-    local_data, local_deps = build(api=False)
+    api_data, api_deps, api_skip = build(api=True)
+    local_data, local_deps, local_skip = build(api=False)
     assert api_data == local_data
     assert api_deps == local_deps
+    assert api_skip is True
+    assert local_skip is True
 
 
 def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:

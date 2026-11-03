@@ -290,6 +290,17 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     )
     graph = RuntimeGraphBuilder().build(compiled)
     assert len(_python_nodes(graph)) == 1
+    assert graph.nodes[combine.id].skip_when_all_inputs_empty is True
+
+
+def test_row_mode_lambda_does_not_declare_empty_preservation() -> None:
+    stock = input_placeholder("Stock")
+    lower = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
+    compiled = Graph.from_ops([as_output("lowered", lower)]).compile(Stock=["NVDA"])
+
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert graph.nodes[lower.id].skip_when_all_inputs_empty is False
 
 
 def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:

@@ -50,6 +50,24 @@ def test_diffusion_includes_model_and_inference() -> None:
     assert "inference" in spec
 
 
+def test_empty_input_declaration_is_projected_only_when_set() -> None:
+    default = _build_runtime_op("inference").to_flowmesh_node()
+    op = _build_runtime_op("inference")
+    declared = RuntimeOp(
+        node_id=op.node_id,
+        task_type=op.task_type,
+        backend=op.backend,
+        model=op.model,
+        data_spec=op.data_spec,
+        model_spec=op.model_spec,
+        inference_spec=op.inference_spec,
+        skip_when_all_inputs_empty=True,
+    ).to_flowmesh_node()
+
+    assert "skipWhenAllInputsEmpty" not in default["spec"]
+    assert declared["spec"]["skipWhenAllInputsEmpty"] is True
+
+
 def test_condition_node_is_added_to_dependsOn() -> None:
     op = RuntimeOp(
         node_id="map-gated",
