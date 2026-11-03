@@ -290,7 +290,22 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     )
     graph = RuntimeGraphBuilder().build(compiled)
     assert len(_python_nodes(graph)) == 1
-    assert graph.nodes[combine.id].skip_when_all_inputs_empty is True
+    assert graph.nodes[combine.id].skip_when_all_inputs_empty is False
+
+
+def test_list_mode_lambda_opt_in_declares_empty_preservation() -> None:
+    a = input_placeholder("A")
+    preserve = LambdaOp(
+        [a],
+        fn=lambda inputs: list(inputs[0]),
+        mode="list",
+        preserves_empty=True,
+    )
+    compiled = Graph.from_ops([as_output("out", preserve)]).compile(A=[])
+
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert graph.nodes[preserve.id].skip_when_all_inputs_empty is True
 
 
 def test_row_mode_lambda_does_not_declare_empty_preservation() -> None:

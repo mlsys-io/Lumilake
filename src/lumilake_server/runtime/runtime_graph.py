@@ -1632,7 +1632,7 @@ class RuntimeGraphBuilder:
             backend=python_step.BACKEND,
             model="",
             dependencies=dependencies if dependencies else None,
-            skip_when_all_inputs_empty=op.mode == "list",
+            skip_when_all_inputs_empty=op.preserves_empty,
         )
 
     def _resolve_profile_param(

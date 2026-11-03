@@ -448,6 +448,32 @@ def test_yaml_rejects_a_bad_expected_runtime() -> None:
         )
 
 
+def test_yaml_preserves_empty_reaches_the_op() -> None:
+    payload = _CHAIN.replace(
+        "    memory_mb: 256\n",
+        "    memory_mb: 256\n    preserves_empty: true\n",
+    )
+
+    spec = parse_yaml_payload(payload)["chain"]
+    (lambda_dict,) = [d for d in spec["graph"].values() if d["_op"] == "LambdaOp"]
+    graph = Graph.from_json(spec["graph"])
+    (op,) = [o for o in graph.iter_ops() if isinstance(o, LambdaOp)]
+
+    assert lambda_dict["preserves_empty"] is True
+    assert op.preserves_empty is True
+    assert op._serialize()["preserves_empty"] is True
+
+
+def test_yaml_rejects_a_bad_preserves_empty() -> None:
+    with pytest.raises(ValueError, match="preserves_empty"):
+        parse_yaml_payload(
+            _CHAIN.replace(
+                "    memory_mb: 256\n",
+                "    memory_mb: 256\n    preserves_empty: not-bool\n",
+            )
+        )
+
+
 def test_native_graph_expected_runtime_round_trip() -> None:
     op = LambdaOp._from_json(
         {

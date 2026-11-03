@@ -1047,6 +1047,11 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         if not isinstance(cache, bool):
             raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a bool")
         op_dict["cache"] = cache
+    preserves_empty = entry.fields.get("preserves_empty")
+    if preserves_empty is not None:
+        if not isinstance(preserves_empty, bool):
+            raise ValueError(f"LambdaOp '{entry.id}' 'preserves_empty' must be a bool")
+        op_dict["preserves_empty"] = preserves_empty
 
 
 def _build_generation_config(

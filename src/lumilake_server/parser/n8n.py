@@ -1642,6 +1642,13 @@ def _make_code_ops(
         if not isinstance(cache, bool):
             raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
         op["cache"] = cache
+    preserves_empty = notes.get("preserves-empty")
+    if preserves_empty is not None:
+        if not isinstance(preserves_empty, bool):
+            raise ValueError(
+                f"Code node '{node_name}' notes 'preserves-empty' must be a bool"
+            )
+        op["preserves_empty"] = preserves_empty
     is_output = notes.get("is-output")
     if is_output is not None and not isinstance(is_output, bool):
         raise ValueError(f"Code node '{node_name}' notes 'is-output' must be a bool")

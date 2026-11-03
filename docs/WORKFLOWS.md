@@ -56,9 +56,14 @@ Lumilake annotations as a JSON object with kebab-case keys:
 | `expected-runtime-s` | number | HALO planning hint: seconds per input row; never enforced. |
 | `cache` | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 | `sample-value` | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
+| `preserves-empty` | bool | Opt-in for whole-list `list`/`aligned` code whose empty inputs always return an empty list. |
 
 A Code node with an `image` always runs as its own standalone `python` task.
 `expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
+`preserves-empty` is false by default and should only be set after verifying
+that the function never returns a default record or other non-empty value on
+empty input. In YAML the corresponding `LambdaOp` field is
+`preserves_empty: true`.
 
 In an n8n `chainLlm` prompt, a reference like `{{ $('Node').item.<field> }}`
 renders that node's item field (nested traversal works, e.g.

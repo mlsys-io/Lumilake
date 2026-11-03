@@ -313,6 +313,15 @@ one slice is rejected at submit with a message naming the output and the fix
 (submit one input value per job, or raise `input_batch_size` so the whole input
 set runs in a single slice).
 
+`preserves_empty: true` is an explicit opt-in for a whole-list `list` or
+`aligned` `LambdaOp` whose function is known to return an empty list whenever
+every input list is empty. With it, FlowMesh may complete the task without
+dispatch and write `{"items": []}`. It is false by default because whole-list
+functions may legitimately aggregate an empty list into a non-empty value.
+Row-mode `LambdaOp`s and row-wise LLM/API ops use their per-row semantics
+automatically and do not need this field. Do not set it for a function that can
+return a default record or any other non-empty value on empty input.
+
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source
 that defines a one-parameter `def` named `fn_name`), and a `LambdaOp` whose inputs are
@@ -350,6 +359,7 @@ Optional per-op limits for the standalone `python` task:
 | `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
 | `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 | `sample_value` | none | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
+| `preserves_empty` | false | bool | Opt-in for whole-list `list`/`aligned` Lambdas: every input empty implies an empty list result. |
 
 The limits apply only to the standalone `python` task; they have no effect on a
 `LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as

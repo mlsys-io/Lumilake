@@ -163,6 +163,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        preserves_empty: bool = False,
     ) -> None: ...
 
     @overload
@@ -178,6 +179,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        preserves_empty: bool = False,
     ) -> None: ...
 
     @overload
@@ -193,6 +195,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        preserves_empty: bool = False,
     ) -> None: ...
 
     def __init__(
@@ -207,6 +210,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        preserves_empty: bool = False,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -216,6 +220,10 @@ class LambdaOp(Op):
             raise ValueError("LambdaOp image must be a non-empty string")
         if cache is not None and not isinstance(cache, bool):
             raise ValueError(f"LambdaOp cache must be a bool, got {cache!r}")
+        if not isinstance(preserves_empty, bool):
+            raise ValueError(
+                f"LambdaOp preserves_empty must be a bool, got {preserves_empty!r}"
+            )
         _validate_limits(timeout_s, memory_mb, image, expected_runtime_s)
         input_ops: list[Op] = []
         for inp in inputs:
@@ -237,6 +245,7 @@ class LambdaOp(Op):
         # A representative value for data-profile preflight placeholders; never
         # executed at runtime.
         self.sample_value = sample_value
+        self.preserves_empty = preserves_empty
         if code:
             self.code: str = code
         else:
@@ -293,6 +302,8 @@ class LambdaOp(Op):
             data["cache"] = self.cache
         if self.sample_value is not None:
             data["sample_value"] = self.sample_value
+        if self.preserves_empty:
+            data["preserves_empty"] = True
         return data
 
     @classmethod
@@ -308,6 +319,7 @@ class LambdaOp(Op):
         expected_runtime_s = data.get("expected_runtime_s")
         cache = data.get("cache")
         sample_value = data.get("sample_value")
+        preserves_empty = data.get("preserves_empty", False)
         try:
             fn = SubmittedFunction(code, fn_name)
         except ValueError as exc:
@@ -325,6 +337,7 @@ class LambdaOp(Op):
             expected_runtime_s=expected_runtime_s,
             cache=cache,
             sample_value=sample_value,
+            preserves_empty=preserves_empty,
         )
 
 
