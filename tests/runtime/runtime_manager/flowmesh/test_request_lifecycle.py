@@ -163,10 +163,11 @@ async def test_api_backend_returns_chat_history_like_local_backend(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -175,7 +176,9 @@ async def test_api_backend_returns_chat_history_like_local_backend(
         return _workflow_tasks({"task-row0": row_id})
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
@@ -317,15 +320,19 @@ async def _run_failing_request(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(
-            task_id,
-            status_by_task[task_id],
-            error=error_by_task.get(task_id),
-            graph_node_name=node_by_task[task_id],
-        )
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [
+            _task_info(
+                task_id,
+                status,
+                error=error_by_task.get(task_id),
+                graph_node_name=node_by_task[task_id],
+            )
+            for task_id, status in status_by_task.items()
+        ]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -334,7 +341,9 @@ async def _run_failing_request(
         return _workflow_tasks(node_by_task)
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
@@ -498,10 +507,11 @@ async def test_api_output_node_reads_content(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -510,7 +520,9 @@ async def test_api_output_node_reads_content(
         return _workflow_tasks({"task-row0": row_id})
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
@@ -586,10 +598,11 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -598,7 +611,9 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
         return _workflow_tasks({"task-row0": row_id})
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
@@ -654,10 +669,11 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -666,7 +682,9 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
         return _workflow_tasks({"task-row0": row_id})
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
@@ -845,15 +863,19 @@ async def test_fail_fast_reports_every_failed_task_reason(
     }
     error_by_task = {"task-row1": "python task failed: ValueError: bad input"}
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(
-            task_id,
-            status_by_task[task_id],
-            error=error_by_task.get(task_id),
-            graph_node_name=node_by_task[task_id],
-        )
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [
+            _task_info(
+                task_id,
+                status,
+                error=error_by_task.get(task_id),
+                graph_node_name=node_by_task[task_id],
+            )
+            for task_id, status in status_by_task.items()
+        ]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -862,7 +884,9 @@ async def test_fail_fast_reports_every_failed_task_reason(
         return _workflow_tasks(node_by_task)
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
@@ -983,10 +1007,14 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
         "task-llm": llm_row_id,
     }
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [
+            _task_info(task_id, "DONE", graph_node_name=node_id)
+            for task_id, node_id in node_by_task.items()
+        ]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -995,7 +1023,9 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
         return _workflow_tasks(node_by_task)
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
@@ -1082,10 +1112,14 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
         "task-llm": llm_row_id,
     }
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        assert workflow_id == "wf-1"
+        return [
+            _task_info(task_id, "DONE", graph_node_name=node_id)
+            for task_id, node_id in node_by_task.items()
+        ]
 
     async def _fetch_workflow_tasks(
         _self: FlowmeshRuntimeManager, workflow_id: str
@@ -1094,7 +1128,9 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
         return _workflow_tasks(node_by_task)
 
     monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+        manager,
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
     monkeypatch.setattr(
         manager,
