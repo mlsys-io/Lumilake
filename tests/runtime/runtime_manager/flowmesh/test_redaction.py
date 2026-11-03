@@ -7,6 +7,7 @@ must scrub the credential before it reaches a log, a re-raised exception, or
 a persisted artifact.
 """
 
+import asyncio
 import types
 from types import SimpleNamespace
 from typing import Any
@@ -413,7 +414,7 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
     )
     saved: dict[str, Any] = {}
 
-    def _fake_save_json_artifact(
+    async def _fake_save_json_artifact(
         _self: FlowmeshRuntimeManager,
         _request_info: Any,
         _filename: str,
@@ -489,7 +490,7 @@ async def test_archive_task_response_archives_grouped_api_result(
     )
     saved: dict[str, Any] = {}
 
-    def _fake_save_json_artifact(
+    async def _fake_save_json_artifact(
         _self: FlowmeshRuntimeManager,
         _request_info: Any,
         _filename: str,
@@ -511,6 +512,86 @@ async def test_archive_task_response_archives_grouped_api_result(
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
     assert saved["data"]["items"][0]["rows"][1]["text"] == '{"kind": "second"}'
+
+
+@pytest.mark.asyncio
+async def test_yaml_archive_offloads_serialization_and_write_from_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large runtime artifacts must not block the event loop while serializing
+    and uploading. A heartbeat task should run before the archive future is
+    allowed to complete."""
+    manager = FlowmeshRuntimeManager()
+    request_info = RequestInfo(
+        request_id="req-archive", runtime_graphs={}, data_profile_graphs={}
+    )
+    request_info.batch_id = "batch-archive"
+    heartbeat_ran = False
+    archive_started = asyncio.Event()
+    release_archive = asyncio.Event()
+
+    async def heartbeat() -> None:
+        nonlocal heartbeat_ran
+        await archive_started.wait()
+        heartbeat_ran = True
+
+    async def blocked_archive(*_args: Any, **_kwargs: Any) -> str:
+        archive_started.set()
+        await release_archive.wait()
+        return "memory://archived.yaml"
+
+    monkeypatch.setattr(
+        manager,
+        "save_runtime_artifact_async",
+        blocked_archive,
+    )
+    task = asyncio.create_task(heartbeat())
+    archive_task = asyncio.create_task(
+        manager._save_yaml_artifact(request_info, "flowmesh_job.yaml", {"x": 1})
+    )
+    await archive_started.wait()
+    await asyncio.sleep(0)
+    assert heartbeat_ran
+    release_archive.set()
+    assert await archive_task == "memory://archived.yaml"
+    await task
+
+
+@pytest.mark.asyncio
+async def test_string_yaml_archive_skips_yaml_dump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-serialized YAML must be uploaded as-is rather than dumped again."""
+    manager = FlowmeshRuntimeManager()
+    request_info = RequestInfo(
+        request_id="req-archive", runtime_graphs={}, data_profile_graphs={}
+    )
+    request_info.batch_id = "batch-archive"
+    uploaded: dict[str, Any] = {}
+
+    async def capture_artifact(
+        _request_info: RequestInfo,
+        filename: str,
+        data: bytes,
+        content_type: str,
+    ) -> str:
+        uploaded.update(
+            filename=filename,
+            data=data,
+            content_type=content_type,
+        )
+        return "memory://archived.yaml"
+
+    monkeypatch.setattr(manager, "save_runtime_artifact_async", capture_artifact)
+    payload = "apiVersion: mloc/v1\nkind: InferenceTask\n"
+
+    await manager._save_yaml_artifact(request_info, "flowmesh_job.yaml", payload)
+
+    assert uploaded == {
+        "filename": "flowmesh_job.yaml",
+        "data": payload.encode("utf-8"),
+        "content_type": "application/x-yaml",
+    }
 
 
 def test_api_result_dump_keeps_json_row_key() -> None:
