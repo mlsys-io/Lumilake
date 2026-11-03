@@ -403,6 +403,17 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
 
+    async def fetch_workflow_task_statuses(
+        self, workflow_id: str
+    ) -> list[TaskStatusView]:
+        try:
+            return await _retry_transient_read(
+                lambda: self.fm.tasks.list_statuses(workflow_id=workflow_id),
+                f"workflow {workflow_id} task statuses",
+            )
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
+
     async def _find_submitted_workflow(
         self, submit_id: str, since: datetime
     ) -> Workflow | None:
@@ -525,20 +536,53 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
         return task_to_node, node_to_task
 
+    async def _update_workflow_task_statuses(
+        self,
+        task_status: dict[str, str],
+        task_workflows: Mapping[str, str],
+    ) -> bool:
+        completed = True
+        for workflow_id in dict.fromkeys(
+            task_workflows[task_id]
+            for task_id in task_status
+            if task_id in task_workflows
+        ):
+            workflow_status = {
+                task_id: task_status[task_id]
+                for task_id, task_workflow_id in task_workflows.items()
+                if task_workflow_id == workflow_id and task_id in task_status
+            }
+            if not await self.update_task_status(workflow_status, workflow_id):
+                completed = False
+            for task_id, status in workflow_status.items():
+                task_status[task_id] = status
+        return completed
+
     async def update_task_status(
         self,
         task_status: dict[str, str],
+        workflow_id: str,
     ) -> bool:
-        completed = True
-        for task_id, status in list(task_status.items()):
-            if status not in TERMINAL_STATUSES:
-                task_info = await self.fetch_task_status(task_id)
-                async with self._task_status_lock:
-                    task_status[task_id] = task_info.status
-                    if task_info.status == "FAILED":
-                        self._record_task_error(task_id, task_info)
-                if task_info.status not in TERMINAL_STATUSES:
-                    completed = False
+        pending_task_ids = {
+            task_id
+            for task_id, status in task_status.items()
+            if status not in TERMINAL_STATUSES
+        }
+        if not pending_task_ids:
+            return True
+
+        task_infos = await self.fetch_workflow_task_statuses(workflow_id)
+        async with self._task_status_lock:
+            for task_info in task_infos:
+                if task_info.task_id not in pending_task_ids:
+                    continue
+                task_status[task_info.task_id] = task_info.status
+                if task_info.status == "FAILED":
+                    self._record_task_error(task_info.task_id, task_info)
+            completed = all(
+                task_status[task_id] in TERMINAL_STATUSES
+                for task_id in pending_task_ids
+            )
         return completed
 
     def _record_task_error(self, task_id: str, task_info: TaskStatusView) -> None:
@@ -863,8 +907,19 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             for batch_key in data_profile_batch_keys:
                 all_data_profile_tasks.update(self._data_profile_task_status[batch_key])
 
-            data_profile_completed = await self.update_task_status(
-                all_data_profile_tasks
+            data_profile_task_workflows: dict[str, str] = {}
+            for batch_key in data_profile_batch_keys:
+                workflow_id = self._batch_workflow_id.get(batch_key)
+                if workflow_id is None:
+                    continue
+                data_profile_task_workflows.update(
+                    {
+                        task_id: workflow_id
+                        for task_id in self._data_profile_task_status[batch_key]
+                    }
+                )
+            data_profile_completed = await self._update_workflow_task_statuses(
+                all_data_profile_tasks, data_profile_task_workflows
             )
             aggregated_status["data probing"] = {
                 "completed": data_profile_completed,
@@ -880,7 +935,20 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             for batch_key in execution_batch_keys:
                 all_execution_tasks.update(self._execution_task_status[batch_key])
 
-            execution_completed = await self.update_task_status(all_execution_tasks)
+            execution_task_workflows: dict[str, str] = {}
+            for batch_key in execution_batch_keys:
+                workflow_id = self._batch_workflow_id.get(batch_key)
+                if workflow_id is None:
+                    continue
+                execution_task_workflows.update(
+                    {
+                        task_id: workflow_id
+                        for task_id in self._execution_task_status[batch_key]
+                    }
+                )
+            execution_completed = await self._update_workflow_task_statuses(
+                all_execution_tasks, execution_task_workflows
+            )
             aggregated_status["execution"] = {
                 "completed": execution_completed,
                 "details": self._formulate_details(all_execution_tasks),
@@ -1418,7 +1486,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     request_info.request_id,
                 )
                 raise RequestCancelledError(request_info.request_id)
-            await self.update_task_status(self._execution_task_status[batch_key])
+            batch_workflow_id = self._batch_workflow_id.get(batch_key)
+            if batch_workflow_id is None:
+                raise RuntimeError(
+                    f"Missing FlowMesh workflow id for batch {batch_key}"
+                )
+            await self.update_task_status(
+                self._execution_task_status[batch_key], batch_workflow_id
+            )
 
             # Download responses for newly completed tasks
             for tid in task_ids:
