@@ -1,9 +1,20 @@
 import asyncio
+from typing import Any, cast
 
 import httpx
 import pytest
 
 from lumilake_server.runtime import flowmesh_client
+
+
+@pytest.mark.asyncio
+async def test_shared_client_has_bounded_pool_and_keepalive() -> None:
+    client = flowmesh_client._shared_http_client()
+    transport = cast(Any, client._transport)
+
+    assert transport._pool._max_connections == 100
+    assert transport._pool._max_keepalive_connections == 20
+    assert transport._pool._keepalive_expiry == 5.0
 
 
 @pytest.mark.asyncio
