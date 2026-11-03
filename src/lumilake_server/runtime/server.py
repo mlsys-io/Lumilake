@@ -3416,7 +3416,14 @@ class LumilakeServer:
                 process.pid,
                 optimizer_type,
             )
+            payload: Any = None
             while process.is_alive():
+                try:
+                    payload = result_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                if payload is not None:
+                    break
                 should_cancel = await self.runtime_manager.is_request_cancelled(
                     request_id
                 )
@@ -3479,13 +3486,15 @@ class LumilakeServer:
                 await asyncio.sleep(0.2)
 
             process.join(timeout=1)
-            try:
-                payload = result_queue.get_nowait()
-            except queue.Empty as exc:
-                raise RuntimeError(
-                    "Optimizer subprocess exited without result payload: "
-                    f"request={request_id} batch={batch_id} exitcode={process.exitcode}"
-                ) from exc
+            if payload is None:
+                try:
+                    payload = result_queue.get(timeout=1)
+                except queue.Empty as exc:
+                    raise RuntimeError(
+                        "Optimizer subprocess exited without result payload: "
+                        f"request={request_id} batch={batch_id}"
+                        f" exitcode={process.exitcode}"
+                    ) from exc
             if not isinstance(payload, dict):
                 raise RuntimeError(
                     "Optimizer subprocess returned invalid payload type: "
