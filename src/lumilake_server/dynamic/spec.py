@@ -49,7 +49,7 @@ class DriverSettings(BaseModel):
     poll_interval: StrictFloat = 2.0
     job_timeout: StrictFloat = Field(default=600.0, gt=0)
     max_rounds: StrictInt = Field(default=10, ge=1)
-    max_nodes_per_round: StrictInt = Field(default=8, ge=1)
+    max_nodes_per_round: StrictInt = Field(default=20, ge=1)
     threshold: StrictFloat | None = None
     chat_template_kwargs: dict[StrictStr, Any] | None = None
     output_location: dict[StrictStr, Any] | None = None

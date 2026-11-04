@@ -296,7 +296,11 @@ The `driver:` YAML settings the server accepts are:
 - `preview_width` — observation preview character limit, default `900`; must be a positive integer.
 - `job_timeout` — per-job wait timeout in seconds, default `600.0`; must be greater than zero.
 - `max_rounds` — round limit, default `10`.
-- `max_nodes_per_round` — per-round subgraph node limit, default `8`.
+- `max_nodes_per_round` — per-round subgraph node limit, default `20`.
+  Submission computes a conservative round bound from declared library nodes
+  (row-gated templates expand to four internal nodes) and the in-graph
+  observation/proposer pair. The bound must stay within a hard ceiling of
+  `100`; admission still enforces the exact configured planner cap.
 - `threshold` — sufficiency threshold, default `None`.
 - `chat_template_kwargs` — chat-template kwargs for the proposer, default
   `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:

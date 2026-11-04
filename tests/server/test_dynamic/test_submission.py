@@ -250,6 +250,9 @@ class _FakeRuntimeServer:
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.0
 
+    def task_ids_for_request(self, job_id: str) -> dict[str, list[str]]:
+        return {}
+
     def workflow_dispatches_for_request(
         self, request_id: str
     ) -> list[WorkflowDispatch]:
@@ -762,6 +765,39 @@ async def test_dynamic_submit_empty_symbol_returns_422(app: FastAPI) -> None:
             headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
         )
     assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_dynamic_submit_rejects_static_round_bound_above_ceiling(
+    app: FastAPI,
+) -> None:
+    library_lines = [
+        "library:",
+        *[
+            (
+                f"  r{index}:\n    op: DataRetrievalOp\n"
+                f"    row_gate: {{node: router_{index}, branch: a}}"
+            )
+            for index in range(30)
+        ],
+    ]
+    spec = (
+        "name: dynamic\n"
+        "type: dynamic\n"
+        "goal: test static bound\n"
+        "driver:\n"
+        "  model: Qwen/Qwen3-8B\n"
+        "  max_nodes_per_round: 20\n" + "\n".join(library_lines)
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(spec),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422
+    assert "hard ceiling" in resp.text
 
 
 _STATIC_YAML = """

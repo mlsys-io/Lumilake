@@ -57,6 +57,7 @@ from lumilake.log import Logger, init_child_logger, set_trace_id
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
+    MAX_STATIC_ROUND_NODE_BOUND,
     STOP,
     DriverProtocolError,
     StopPlan,
@@ -69,6 +70,7 @@ from lumilake_server.dynamic.driver import (
     resolve_subgraph,
     result_outputs,
     round_output_location,
+    static_round_node_upper_bound,
     validate_emitted_subgraph,
     validate_library,
     validate_plan,
@@ -343,6 +345,17 @@ def _render_dynamic_round0(
     declared_output_location = spec.driver.output_location
     try:
         validate_library(spec.library)
+        static_bound = static_round_node_upper_bound(
+            spec.library,
+            include_proposer=spec.driver.api is None,
+        )
+        if static_bound > MAX_STATIC_ROUND_NODE_BOUND:
+            raise DriverProtocolError(
+                "declared round topology has a conservative node upper bound of "
+                f"{static_bound}, exceeding the hard ceiling "
+                f"{MAX_STATIC_ROUND_NODE_BOUND}; lower max_nodes_per_round or "
+                "reduce the declared library"
+            )
         if spec.driver.api is not None:
             return None, declared_output_location
         round_build = build_round(
