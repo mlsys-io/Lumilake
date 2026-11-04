@@ -67,6 +67,8 @@ def _row_content(row):
 def _column(entry, inputs, text):
     if entry["kind"] == "literal":
         return [text(v) for v in entry["values"]]
+    if entry.get("allow_empty") and not inputs.get(entry["node"]):
+        return []
     with open(os.path.join(inputs[entry["node"]], "results.json")) as fh:
         envelope = json.load(fh)
     result = envelope.get("result", envelope)
@@ -250,7 +252,7 @@ def main(inputs):
                 except ValueError:
                     pass
             row[entry.get("label", "value")] = value
-        source_value = row.get("source", "")
+        source_value = row.get("route", row.get("source", row.get("value", "")))
         if isinstance(source_value, dict):
             source_value = json.dumps(source_value)
         if not isinstance(source_value, str):
@@ -267,9 +269,19 @@ def main(inputs):
         statuses.append(
             {
                 "output": json.dumps(
-                    {"selected": True, "branch": branch, "row": i}
+                    {
+                        "selected": True,
+                        "done": {terminal} and branch == {terminal_branch},
+                        "branch": branch,
+                        "row": i,
+                    }
                 ),
-                "value": {"selected": True, "branch": branch, "row": i},
+                "value": {
+                    "selected": True,
+                    "done": {terminal} and branch == {terminal_branch},
+                    "branch": branch,
+                    "row": i,
+                },
             }
         )
     return {"items": statuses}
@@ -281,6 +293,8 @@ def main(inputs):
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     statuses = columns[0]
     outputs = columns[1]
+    if not outputs:
+        return {"items": []}
     selected = []
     for index, value in enumerate(statuses):
         if isinstance(value, str):
@@ -307,6 +321,8 @@ def main(inputs):
             except ValueError:
                 pass
         row = dict(value)
+        if row.get("done"):
+            continue
         if row.get("branch") == {branch}:
             row["output"] = outputs[output_index]
             output_index += 1
@@ -331,6 +347,8 @@ def main(inputs):
                 pass
         if not isinstance(value, dict):
             raise ValueError("row status %d is not an object" % index)
+        if value.get("done") and not {include_done}:
+            continue
         if value.get("branch") != {branch}:
             continue
         row = {}
@@ -408,13 +426,45 @@ def row_select_source(
     *,
     labels: list[str],
     branch: str,
+    include_done: bool = False,
 ) -> str:
     """Generated list-mode step that keeps only one routed branch."""
-    return (
-        (_RESHAPE_PRELUDE + _ROW_SELECT_MAIN)
-        .format(op_id=node_id, plan=json.dumps(plan))
-        .replace("{_LABELS}", repr(labels))
+    prelude = _RESHAPE_PRELUDE.format(op_id=node_id, plan=json.dumps(plan))
+    prelude += f"\n_LABELS = {labels!r}\n"
+    main = (
+        _ROW_SELECT_MAIN.replace("{_LABELS}", "_LABELS")
         .replace("{branch}", repr(branch))
+        .replace("{include_done}", repr(include_done))
+    )
+    return prelude + main
+
+
+def row_status_source(
+    node_id: str,
+    plan: ColumnPlan,
+    *,
+    rules: list[dict[str, str]],
+    default_branch: str,
+    terminal_branch: str | None = None,
+) -> str:
+    """Generated row-status step with the router rules rendered directly."""
+    rendered_rules = ",\n        ".join(repr(rule) for rule in rules)
+    main = _ROW_STATUS_MAIN.replace(
+        "rules = {rules}",
+        f"rules = [\n        {rendered_rules},\n    ]",
+    )
+    main = main.replace("{default_branch}", repr(default_branch))
+    main = main.replace("{terminal_branch}", repr(terminal_branch or ""))
+    main = main.replace("{terminal}", "True" if terminal_branch else "False")
+    return (
+        _PRELUDE.format(
+            op_id=node_id,
+            runtime=inspect.getsource(lambda_runtime),
+            code="",
+            fn_name="row_status",
+            plan=json.dumps(plan),
+        )
+        + main
     )
 
 
@@ -424,34 +474,14 @@ def wrapper_source(
     user_code: str,
     plan: ColumnPlan,
     mode: str = "row",
-    branch: str | None = None,
-    rules: list[dict[str, str]] | None = None,
-    default_branch: str | None = None,
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode == "list":
         main = _LIST_MAIN
-    elif mode == "row_status":
-        if rules is None or default_branch is None:
-            raise ValueError("row_status mode requires rules and default_branch")
-        main = _ROW_STATUS_MAIN.replace("{rules}", json.dumps(rules)).replace(
-            "{default_branch}", repr(default_branch)
-        )
     elif mode == "aligned":
         main = _ALIGNED_MAIN
     else:
         main = _ROW_MAIN
-    if mode == "row_status":
-        return (
-            _PRELUDE.format(
-                op_id=op_id,
-                runtime=inspect.getsource(lambda_runtime),
-                code=user_code,
-                fn_name=fn_name,
-                plan=json.dumps(plan),
-            )
-            + main
-        )
     return (_PRELUDE + main).format(
         op_id=op_id,
         runtime=inspect.getsource(lambda_runtime),
@@ -481,16 +511,15 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
             plan,
             labels=data_spec["labels"],
             branch=data_spec["branch"],
+            include_done=data_spec.get("include_done", False),
         )
     elif mode == "row_status":
-        code = wrapper_source(
+        code = row_status_source(
             node_id,
-            data_spec["fn_name"],
-            data_spec["code"],
             plan,
-            mode,
             rules=data_spec["rules"],
             default_branch=data_spec["default_branch"],
+            terminal_branch=data_spec.get("terminal_branch"),
         )
     else:
         code = wrapper_source(

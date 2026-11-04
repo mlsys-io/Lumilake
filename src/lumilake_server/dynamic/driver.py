@@ -82,6 +82,9 @@ FIXED_ROUND_NODE_IDS: frozenset[str] = frozenset(
     }
 )
 
+MAX_ROUND_OP_EXPANSION = 4
+MAX_STATIC_ROUND_NODE_BOUND = 100
+
 _OP_CLASSES: dict[str, type] = {
     name: obj for name, obj in vars(ops_pkg).items() if isinstance(obj, type)
 }
@@ -103,6 +106,29 @@ class DriverProtocolError(Exception):
     Distinct from :class:`RuntimeError` so callers can distinguish a malformed
     plan/config from a job that legitimately failed.
     """
+
+
+def _template_round_expansion(template: dict[str, Any]) -> int:
+    """Upper-bound runtime nodes one declared template can expand into."""
+    return MAX_ROUND_OP_EXPANSION if template.get("row_gate") is not None else 1
+
+
+def static_round_node_upper_bound(
+    library: dict[str, dict[str, Any]] | None,
+    *,
+    include_proposer: bool,
+) -> int:
+    """Conservative ceiling for the declared portion of one round.
+
+    The declared round body expands each library template at its maximum
+    runtime-node factor. The in-graph observation/proposer pair contributes two
+    fixed nodes. Admission independently enforces the planner-emitted cap.
+    """
+    declared_body = sum(
+        _template_round_expansion(template) for template in (library or {}).values()
+    )
+    fixed_nodes = 2 if include_proposer else 0
+    return declared_body + fixed_nodes
 
 
 class StopPlan(BaseModel):
@@ -425,6 +451,28 @@ def walk_archived_items(
                 ) from exc
         walked[node_id] = _forward_values(items, parts, node_id)
     return walked
+
+
+def has_live_rows(archived: dict[str, list[str]]) -> bool:
+    """Whether archived routing rows contain at least one non-terminal row.
+
+    Rows emitted by row routing carry a ``done`` flag. A round containing only
+    terminal rows has no work left, so the driver converts it to ``STOP``
+    rather than forwarding an empty row set into the next round.
+    """
+    if not archived:
+        return True
+    for values in archived.values():
+        for value in values:
+            try:
+                item = json.loads(value)
+            except (TypeError, ValueError):
+                return True
+            if not isinstance(item, dict) or "done" not in item:
+                return True
+            if not item["done"]:
+                return True
+    return False
 
 
 def forward_refs(

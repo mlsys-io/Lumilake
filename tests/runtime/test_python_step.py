@@ -339,6 +339,50 @@ def _run_reshape(
     return namespace["main"](inputs)
 
 
+def _run_row_status(
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    *,
+    rules: list[dict[str, str]],
+    default_branch: str,
+    terminal_branch: str | None = None,
+):
+    namespace: dict[str, Any] = {}
+    spec = {
+        "plan": plan,
+        "mode": "row_status",
+        "rules": rules,
+        "default_branch": default_branch,
+        "terminal_branch": terminal_branch,
+        "fn_name": "row_status",
+        "code": "",
+        "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+    }
+    code = python_step.flowmesh_spec("status", spec)["code"]
+    exec(code, namespace)
+    return namespace["main"](inputs)
+
+
+def _run_row_select(
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    *,
+    labels: list[str],
+    branch: str,
+    include_done: bool = False,
+):
+    namespace: dict[str, Any] = {}
+    code = python_step.row_select_source(
+        "select",
+        plan,
+        labels=labels,
+        branch=branch,
+        include_done=include_done,
+    )
+    exec(code, namespace)
+    return namespace["main"](inputs)
+
+
 def _stage(tmp_path: Path, name: str, result: dict[str, Any]) -> str:
     stage = tmp_path / name
     stage.mkdir()
@@ -356,6 +400,41 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     assert out == {
         "items": [{"output": "a-x", "value": "a-x"}, {"output": "b-x", "value": "b-x"}]
     }
+
+
+def test_terminal_row_status_is_excluded_from_a_nonterminal_selection(
+    tmp_path: Path,
+) -> None:
+    source = _stage(
+        tmp_path,
+        "source",
+        {"items": [{"output": "normal"}, {"output": "DIAGNOSIS READY: flu"}]},
+    )
+    status = _run_row_status(
+        [{"kind": "stage", "node": "source"}],
+        {"source": source},
+        rules=[
+            {"branch": "diagnose", "match": "contains", "value": "DIAGNOSIS READY"},
+            {"branch": "patient", "match": "equals", "value": "__never__"},
+        ],
+        default_branch="patient",
+        terminal_branch="diagnose",
+    )
+    status_rows = [json.loads(item["output"]) for item in status["items"]]
+    assert [row["done"] for row in status_rows] == [False, True]
+
+    status_stage = _stage(tmp_path, "status", status)
+    selected = _run_row_select(
+        [
+            {"kind": "stage", "node": "status", "allow_empty": True},
+            {"kind": "stage", "node": "source", "allow_empty": True},
+        ],
+        {"status": status_stage, "source": source},
+        labels=["row"],
+        branch="diagnose",
+        include_done=False,
+    )
+    assert selected == {"items": []}
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:

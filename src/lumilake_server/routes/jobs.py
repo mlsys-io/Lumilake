@@ -63,6 +63,7 @@ from lumilake_server.dynamic.driver import (
     SubgraphPlan,
     build_round,
     compute_observation,
+    has_live_rows,
     plan_to_dict,
     planner_messages,
     resolve_subgraph,
@@ -2233,6 +2234,11 @@ async def _run_dynamic_job(
                 observation = compute_observation(
                     walked_leaves, spec.driver.preview_width
                 )
+                if not has_live_rows(leaf_outputs):
+                    plans.append({"next": STOP})
+                    observations.append(observation)
+                    stopped_by = STOP
+                    break
                 if api is None:
                     plan = validate_plan(outputs)
                 else:

@@ -12,6 +12,7 @@ from lumilake_server.dynamic.driver import (
     build_round,
     compute_observation,
     forward_refs,
+    has_live_rows,
     validate_emitted_subgraph,
     walk_archived_items,
 )
@@ -64,6 +65,15 @@ def test_forward_implicit_llm_reference_binds_default_path():
     assert ops[0]["inputs"] == [llm_id]
     assert ops[0]["format_kwargs"] == {"ref0": llm_id}
     assert inputs == {llm_id: ["hello"]}
+
+
+def test_has_live_rows_ignores_completely_terminal_sets() -> None:
+    terminal = json.dumps({"selected": True, "done": True, "branch": "diagnose"})
+    live = json.dumps({"selected": True, "done": False, "branch": "patient"})
+    assert has_live_rows({"state": [terminal]}) is False
+    assert has_live_rows({"state": [terminal, live]}) is True
+    assert has_live_rows({"state": ["ordinary-output"]}) is True
+    assert has_live_rows({}) is True
 
 
 def test_forward_explicit_sql_column_reference_binds_and_rewrites():

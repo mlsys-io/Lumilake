@@ -37,7 +37,7 @@ class LLMChatOp(LLMOp):
     rowwise_columns: list[dict[str, Any]] | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
-    row_gate: dict[str, str] | None
+    row_gate: dict[str, Any] | None
 
     def __init__(
         self,
@@ -51,7 +51,7 @@ class LLMChatOp(LLMOp):
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
-        row_gate: dict[str, str] | None = None,
+        row_gate: dict[str, Any] | None = None,
         row_gate_op: Op | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)

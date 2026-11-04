@@ -778,6 +778,10 @@ def _emit_llm_like_op(
             raise ValueError(
                 f"{op_kind} '{entry.id}' row_gate requires a non-empty branch"
             )
+        terminal = gate.get("terminal", False)
+        if not isinstance(terminal, bool):
+            raise ValueError(f"{op_kind} '{entry.id}' row_gate terminal must be a bool")
+        gate["terminal"] = terminal
         op_dict["row_gate"] = gate
         if gate["node"] not in op_dict["_inputs"]:
             op_dict["_inputs"].append(gate["node"])
