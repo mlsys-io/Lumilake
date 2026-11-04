@@ -332,6 +332,14 @@ authoritative for its config, so the planner may only override `id` and
 `inputs`. Ops without a `ref` are emitted fully inline. The planner sees the
 library (id, op type, key config) in its system message each round.
 
+Dynamic round bodies may use `RouterOp` plus a rowwise `LLMChatOp` `row_gate`
+instead of splitting one logical branch into several list-mode router stages.
+The router is a declared graph element, so the planner and validator can read
+the branch decision without executing Python or asking the planner to infer
+it from an LLM output. The gated LLM dispatches only rows whose branch
+matches; every input row still contributes one result row, with skipped rows
+carrying `output: null`.
+
 The parent job's result carries the per-round plans. Missing, malformed,
 unknown, or wrongly typed plan output fails the parent; it never becomes a
 successful termination.

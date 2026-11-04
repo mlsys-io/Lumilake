@@ -14,10 +14,12 @@ from lumilake_server.ops import (
     LLMChatOp,
     LLMVisionOp,
     OpMessage,
+    RouterOp,
     SingleDtype,
     as_output,
     input_placeholder,
 )
+from lumilake_server.ops.router_ops import RouterRule
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -494,6 +496,143 @@ def test_local_rowwise_op_emits_condition() -> None:
         "node": "gate",
         "expr": "gate == 'on'",
     }
+
+
+def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="test", match="contains", value="REQUEST TEST"),
+            RouterRule(branch="patient", match="equals", value="__never__"),
+        ],
+        default_branch="patient",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "test"},
+        row_gate_op=router,
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(
+        Rows=["normal", "REQUEST TEST", "normal"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    ids = runtime_graph.dsl_to_runtime[llm.id]
+    assert len(ids) == 4
+    status, selector, selected, merge = [
+        runtime_graph.nodes[node_id] for node_id in ids
+    ]
+    assert status.data_spec["mode"] == "row_status"
+    assert selector.data_spec["mode"] == "row_select"
+    assert selected.task_type == "inference"
+    assert selected.dependencies == (selector.node_id,)
+    assert merge.data_spec["mode"] == "row_skip_merge"
+    assert runtime_graph.output_node_map == {merge.node_id: "result"}
+    assert router.id not in runtime_graph.nodes
+    assert runtime_graph.nodes[selector.node_id].dependencies == (status.node_id,)
+
+
+def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
+    yaml_text = textwrap.dedent("""
+        name: routed
+        inputs:
+          Rows: ["normal", "REQUEST TEST"]
+        ops:
+          - id: source
+            op: LambdaOp
+            inputs: [Rows]
+            fn_name: echo
+            code: |
+              def echo(inputs):
+                  return inputs[0]
+          - id: route
+            op: RouterOp
+            inputs: [source]
+            source: source
+            input_path: items.output
+            rules:
+              - branch: test
+                match: contains
+                value: REQUEST TEST
+              - branch: patient
+                match: equals
+                value: __never__
+            default_branch: patient
+          - id: turn
+            op: LLMChatOp
+            inputs: [source, route]
+            messages:
+              - role: user
+                content: source
+            config:
+              model: meta-llama/Llama-3.1-8B-Instruct
+            rowwise_template: "{row}"
+            rowwise_columns:
+              - label: row
+                node: source
+                path: items.output
+            row_gate:
+              node: route
+              branch: test
+        outputs:
+          - name: result
+            ref: turn
+        """)
+    spec = parse_yaml_payload(yaml_text)["routed"]
+    yaml_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    yaml_route = next(
+        op_id
+        for op_id, op in Graph.from_json(spec["graph"]).as_dict().items()
+        if op.__class__.__name__ == "RouterOp"
+    )
+
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="test", match="contains", value="REQUEST TEST"),
+            RouterRule(branch="patient", match="equals", value="__never__"),
+        ],
+        default_branch="patient",
+    )
+    turn = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "test"},
+        row_gate_op=router,
+    )
+    python_graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("result", turn)]).compile(
+            Rows=["normal", "REQUEST TEST"]
+        )
+    )
+
+    assert len(python_graph.dsl_to_runtime[turn.id]) == 4
+    assert yaml_route not in yaml_graph.nodes
+    yaml_turn_id = next(
+        op_id
+        for op_id, op in Graph.from_json(spec["graph"]).as_dict().items()
+        if isinstance(op, LLMChatOp)
+    )
+    python_types = [
+        python_graph.nodes[node_id].task_type
+        for node_id in python_graph.dsl_to_runtime[turn.id]
+    ]
+    yaml_types = [
+        yaml_graph.nodes[node_id].task_type
+        for node_id in yaml_graph.dsl_to_runtime[yaml_turn_id]
+    ]
+    assert python_types == ["python", "python", "inference", "python"]
+    assert yaml_types == python_types
 
 
 def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:

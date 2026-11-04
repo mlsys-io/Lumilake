@@ -15,6 +15,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
+| `RouterOp` | Declare a deterministic per-row branch decision from a source field. |
 
 ## YAML Use
 
@@ -47,6 +48,53 @@ outputs:
 `format_args` is the positional variant: each id resolves to a `{0}`,
 `{1}`, ... placeholder. Use `format_kwargs` for named placeholders and
 `format_args` for positional ones; the two may be combined.
+
+### RouterOp and row gates
+
+`RouterOp` is a declarative branch selector. It does not execute a Python
+lambda. It reads `input_path` from its `source` node, evaluates ordered
+`rules`, and assigns each row one of its declared branches. A rule is either
+an exact `equals` match or a `contains` match.
+
+```yaml
+ops:
+  - id: route
+    op: RouterOp
+    inputs: [doctor]
+    source: doctor
+    input_path: items.output
+    default_branch: patient
+    rules:
+      - branch: diagnose
+        match: contains
+        value: DIAGNOSIS READY
+      - branch: test
+        match: contains
+        value: REQUEST TEST
+      - branch: patient
+        match: equals
+        value: __never__
+
+  - id: test_turn
+    op: LLMChatOp
+    inputs: [prompt, route]
+    rowwise_template: "{prompt}"
+    rowwise_columns:
+      - label: prompt
+        node: prompt
+        path: items.output
+    row_gate:
+      node: route
+      branch: test
+    config: {model: model-id}
+```
+
+`row_gate` on a rowwise `LLMChatOp` runs the model once for each row whose
+router branch matches. Rows in other branches are not dispatched. The stage
+still emits one result per input row: selected rows carry the model output,
+and skipped rows remain present with `output: null`. A skipped row is
+therefore distinguishable from a failed call, which fails the workflow rather
+than producing a marker.
 
 ### EmbeddingOp
 

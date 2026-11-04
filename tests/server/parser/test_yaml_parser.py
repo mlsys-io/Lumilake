@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import InputOp, LambdaOp, LLMChatOp, MessageOp, OutputOp
+from lumilake_server.ops import (
+    InputOp,
+    LambdaOp,
+    LLMChatOp,
+    MessageOp,
+    OutputOp,
+    RouterOp,
+)
 from lumilake_server.parser import parse_yaml_payload
 
 
@@ -59,6 +66,82 @@ def test_inputs_and_outputs_wiring() -> None:
 
     compiled = graph.compile(**spec["inputs"])
     assert compiled is not None
+
+
+def test_router_op_and_row_gate_are_declarative() -> None:
+    yaml_text = textwrap.dedent("""
+        name: routed
+        inputs:
+          rows: ["normal", "REQUEST TEST"]
+        ops:
+          - id: source
+            op: LambdaOp
+            inputs: [rows]
+            fn_name: echo
+            code: |
+              def echo(inputs):
+                  return inputs[0]
+          - id: route
+            op: RouterOp
+            inputs: [source]
+            source: source
+            input_path: items.output
+            rules:
+              - branch: test
+                match: contains
+                value: REQUEST TEST
+              - branch: patient
+                match: equals
+                value: __never__
+            default_branch: patient
+          - id: turn
+            op: LLMChatOp
+            inputs: [source, route]
+            messages:
+              - role: user
+                content: source
+            config:
+              model: dummy-model
+            rowwise_template: "{row}"
+            rowwise_columns:
+              - label: row
+                node: source
+                path: items.output
+            row_gate:
+              node: route
+              branch: test
+        outputs:
+          - name: result
+            ref: turn
+        """)
+    spec = parse_yaml_payload(yaml_text)["routed"]
+    graph = Graph.from_json(spec["graph"])
+    router = next(iter(graph.iter_ops(RouterOp)))
+    turn = next(iter(graph.iter_ops(LLMChatOp)))
+    assert router.default_branch == "patient"
+    assert router.branches == ["test", "patient"]
+    assert turn.row_gate is not None
+    assert turn.row_gate["branch"] == "test"
+
+
+def test_router_op_rejects_unknown_default_branch() -> None:
+    yaml_text = textwrap.dedent("""
+        name: routed
+        inputs:
+          rows: ["normal"]
+        ops:
+          - id: route
+            op: RouterOp
+            inputs: [rows]
+            source: rows
+            rules:
+              - branch: test
+                match: contains
+                value: TEST
+            default_branch: patient
+        """)
+    with pytest.raises(ValueError, match="default_branch"):
+        parse_yaml_payload(yaml_text)
 
 
 def test_multi_op_topology_inputs() -> None:
