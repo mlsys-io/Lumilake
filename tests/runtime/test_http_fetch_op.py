@@ -180,3 +180,47 @@ def test_http_fetch_fail_open_reaches_api_spec() -> None:
     )
     [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
     assert node.api_spec["response"]["fail_open"] is True
+
+
+def test_fail_open_error_row_is_visible_to_downstream_runtime_node() -> None:
+    yaml_text = textwrap.dedent("""
+        name: fetch_then_consume
+        inputs:
+          Query: ["graph retrieval"]
+        ops:
+          - id: Search
+            op: HttpFetchOp
+            inputs: [Query]
+            query: Query
+            url: "http://fixture.test/search?q={query}"
+            config:
+              fail_open: true
+          - id: Consume
+            op: LLMChatOp
+            inputs: [Search]
+            messages:
+              - role: user
+                content: Search
+            config:
+              model: org/model
+              api: {}
+        outputs:
+          - name: answer
+            ref: Consume
+        """)
+    spec = parse_yaml_payload(yaml_text)["fetch_then_consume"]
+    runtime_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    fetch = next(
+        node for node in runtime_graph.nodes.values() if node.model == "http-fetch"
+    )
+    consumer = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == "api" and node is not fetch
+    )
+
+    assert fetch.api_spec["response"]["fail_open"] is True
+    assert consumer.dependencies == (fetch.node_id,)
+    assert fetch.output_spec is None

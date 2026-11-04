@@ -3170,6 +3170,11 @@ class RuntimeGraphBuilder:
                     columns[op.id] = {"node": op.id, "path": path}
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
+            elif isinstance(op, HttpFetchOp):
+                if op.id not in columns:
+                    columns[op.id] = {"node": op.id, "path": "items.json"}
+                ancestor_buffer[op.id] = [(Roles.USER, op.id)]
+
             elif isinstance(op, MessageOp):
                 ancestor_buffer[op.id] = []
                 for message in op.messages:

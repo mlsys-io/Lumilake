@@ -43,8 +43,8 @@ class HttpFetchOp(FunctionalOp):
     """Fetch JSON over HTTP once per input row.
 
     ``url`` and the optional ``body`` are Python format templates rendered with
-    each row's value as ``{query}``. A successful response is projected through
-    The API executor emits one result item per row.
+    each row's value as ``{query}``. The executor issues one FlowMesh API
+    request per input row and returns one result row for each request.
     """
 
     def __init__(

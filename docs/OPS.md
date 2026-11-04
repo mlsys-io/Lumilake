@@ -106,7 +106,8 @@ POST `body`.
 runtime spec for dispatch and redacted from archived graphs. Each input row
 produces one output row.
 With `config.fail_open: true`, a failed fetch yields an error row with null
-content instead of failing the task.
+content instead of failing the task. A downstream op sees that row as an item
+whose `json` is null and whose `error` contains the failure text.
 
 ### LLMChatOp via external API
 
