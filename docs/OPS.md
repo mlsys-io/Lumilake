@@ -13,6 +13,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
+| `HttpFetchOp` | Fetch JSON over HTTP once per query row, with bounded timeout, retries, concurrency, headers, and a response path. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 
@@ -92,6 +93,18 @@ is the embedding of input text `i`. A downstream op therefore receives
 `slice_length` per-row vector inputs (one embedding per input doc), and a
 consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `row`.
+
+### HttpFetchOp
+
+`HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
+input. `url` must contain `{query}`; the runtime converts it to FlowMesh's
+`{{prompt}}` placeholder and the API executor percent-encodes each row value
+before substituting it into the URL. The same placeholder may appear in a
+POST `body`. `response_path` selects a field from the parsed JSON response.
+`config.headers`, `config.timeout_sec`, `config.retries`, and
+`config.max_concurrency` bound the request; headers are retained in the
+runtime spec for dispatch and redacted from archived graphs. Each input row
+produces one output row.
 
 ### LLMChatOp via external API
 

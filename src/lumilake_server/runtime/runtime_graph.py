@@ -23,6 +23,7 @@ from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
     FormatOp,
+    HttpFetchOp,
     InputOp,
     LambdaOp,
     LLMOp,
@@ -75,6 +76,17 @@ class Roles(Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+
+
+def _replace_query_placeholder(value: Any) -> Any:
+    """Adapt the typed op's ``{query}`` template to FlowMesh's prompt slot."""
+    if isinstance(value, str):
+        return value.replace("{query}", "{{prompt}}")
+    if isinstance(value, dict):
+        return {key: _replace_query_placeholder(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_query_placeholder(item) for item in value]
+    return value
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -432,6 +444,7 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str] = set()
         llm_ops: dict[str, LLMOp] = {}
         retrieval_ops: dict[str, DataRetrievalOp] = {}
+        fetch_ops: dict[str, HttpFetchOp] = {}
         list_lambda_ops: dict[str, LambdaOp] = {}
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
@@ -441,16 +454,22 @@ class RuntimeGraphBuilder:
             elif isinstance(op, DataRetrievalOp):
                 retrieval_ops[op_id] = op
                 visited_node_ids.add(op_id)
+            elif isinstance(op, HttpFetchOp):
+                fetch_ops[op_id] = op
+                visited_node_ids.add(op_id)
             elif isinstance(op, LambdaOp) and op.takes_whole_columns:
                 list_lambda_ops[op_id] = op
                 visited_node_ids.add(op_id)
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
-                if not isinstance(source, (LLMOp, DataRetrievalOp, LambdaOp)):
+                if not isinstance(
+                    source, (LLMOp, DataRetrievalOp, HttpFetchOp, LambdaOp)
+                ):
                     raise ValueError(
                         f"OutputOp '{op.name}' input must be an LLMOp, "
-                        f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
+                        "DataRetrievalOp, HttpFetchOp or LambdaOp "
+                        f"(got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
                 output_source_to_outputop.setdefault(source.id, []).append(
@@ -468,9 +487,10 @@ class RuntimeGraphBuilder:
                 )
 
         has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
-        if not llm_ops and not retrieval_ops and not has_lambda:
+        if not llm_ops and not retrieval_ops and not fetch_ops and not has_lambda:
             raise ValueError(
-                "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
+                "Graph must contain at least one LLMOp, DataRetrievalOp, "
+                "HttpFetchOp or LambdaOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
@@ -539,6 +559,22 @@ class RuntimeGraphBuilder:
                 ]
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.output"
+
+        for fetch_op_id, fetch_op in fetch_ops.items():
+            if task_type_override == "data_profile":
+                continue
+            if isinstance(fetch_op.query, InputOp):
+                visited_node_ids.add(fetch_op.query.id)
+            runtime_op = self._build_node_from_http_fetch_op(
+                fetch_op_id, fetch_op, graph_dict, inputs_dict
+            )
+            nodes[runtime_op.node_id] = runtime_op
+            node_order.append(runtime_op.node_id)
+            dsl_to_runtime[fetch_op_id] = [runtime_op.node_id]
+            if fetch_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[fetch_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items.json"
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -1537,6 +1573,70 @@ class RuntimeGraphBuilder:
             inference_spec={},
             backend="data_retrieval",
             model="data_retrieval",
+            dependencies=dependencies if dependencies else None,
+        )
+
+    def _build_node_from_http_fetch_op(
+        self,
+        op_id: str,
+        op: HttpFetchOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+    ) -> RuntimeOp:
+        query_op = op.query
+        if isinstance(query_op, InputOp):
+            query_values = inputs_dict.get(query_op.name)
+            if query_values is None:
+                raise ValueError(
+                    f"HttpFetchOp '{op_id}' query references InputOp "
+                    f"{query_op.name!r} with no values supplied."
+                )
+            if not query_values:
+                raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
+            data_spec: dict[str, Any] = {
+                "type": "list",
+                "items": list(query_values),
+            }
+            dependencies: list[str] = []
+        elif isinstance(query_op, DataOp):
+            if not query_op.data:
+                raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
+            data_spec = {"type": "list", "items": list(query_op.data)}
+            dependencies = []
+        else:
+            path = self._upstream_output_path(query_op)
+            data_spec = {
+                "type": "list",
+                "node": query_op.id,
+                "path": path,
+            }
+            dependencies = [query_op.id]
+
+        api_spec: dict[str, Any] = {
+            "method": op.method,
+            "url": op.url.replace("{query}", "{{prompt}}"),
+            "headers": dict(op.config.headers),
+            "timeout_sec": op.config.timeout_sec,
+            "retries": op.config.retries,
+            "concurrency": op.config.max_concurrency,
+            "response": {
+                "parse_json": True,
+                "return_body": True,
+                "raise_for_status": True,
+            },
+        }
+        if op.body is not None:
+            api_spec["json"] = _replace_query_placeholder(op.body)
+
+        return self._create_runtime_op(
+            name=op_id,
+            task_type="api",
+            data_spec=data_spec,
+            model_spec={},
+            inference_spec={},
+            api_spec=api_spec,
+            backend="api",
+            model="http-fetch",
             dependencies=dependencies if dependencies else None,
         )
 

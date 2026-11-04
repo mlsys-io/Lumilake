@@ -106,6 +106,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "LLMVisionOp",
         "ImageGenerationOp",
         "EmbeddingOp",
+        "HttpFetchOp",
         "FormatOp",
         "LambdaOp",
     }
@@ -400,6 +401,8 @@ def _build_op_dict(
         _emit_image_generation_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
     elif entry.op == "EmbeddingOp":
         _emit_embedding_op(op_dict, entry, user_id_to_internal)
+    elif entry.op == "HttpFetchOp":
+        _emit_http_fetch_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "FormatOp":
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
@@ -630,6 +633,47 @@ def _emit_embedding_op(
     )
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
     op_dict["_inputs"] = [content_id]
+
+
+def _emit_http_fetch_op(
+    op_dict: dict[str, Any],
+    entry: _OpEntry,
+    user_id_to_internal: dict[str, str],
+) -> None:
+    url = entry.fields.get("url")
+    if not isinstance(url, str) or "{query}" not in url:
+        raise ValueError(
+            f"HttpFetchOp '{entry.id}' requires a 'url' containing '{{query}}'"
+        )
+    query_ref = entry.fields.get("query")
+    if not isinstance(query_ref, str) or query_ref not in user_id_to_internal:
+        raise ValueError(
+            f"HttpFetchOp '{entry.id}' requires a 'query' reference to an op or input"
+        )
+    config = entry.fields.get("config") or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"HttpFetchOp '{entry.id}' config must be a mapping")
+    method = str(entry.fields.get("method", "GET")).upper()
+    if method not in {"GET", "POST"}:
+        raise ValueError(f"HttpFetchOp '{entry.id}' method must be GET or POST")
+    body = entry.fields.get("body")
+    if method == "POST" and body is None:
+        raise ValueError(f"HttpFetchOp '{entry.id}' POST requires body")
+
+    op_dict["url"] = url
+    op_dict["method"] = method
+    op_dict["query"] = user_id_to_internal[query_ref]
+    op_dict["config"] = config
+    if body is not None:
+        op_dict["body"] = body
+    response_path = entry.fields.get("response_path")
+    if response_path is not None:
+        if not isinstance(response_path, str) or not response_path.strip():
+            raise ValueError(
+                f"HttpFetchOp '{entry.id}' response_path must be a non-empty string"
+            )
+        op_dict["response_path"] = response_path.strip()
+    op_dict["_inputs"] = [user_id_to_internal[query_ref]]
 
 
 def _emit_llm_like_op(
@@ -1070,6 +1114,7 @@ def _op_id_prefix(op_type: str) -> str:
         "LLMVisionOp": "llmvision",
         "ImageGenerationOp": "imagegen",
         "EmbeddingOp": "embedding",
+        "HttpFetchOp": "httpfetch",
         "FormatOp": "format",
         "LambdaOp": "lambda",
     }
