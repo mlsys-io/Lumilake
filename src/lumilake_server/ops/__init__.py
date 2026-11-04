@@ -26,6 +26,14 @@ from lumilake_server.ops.llm_ops import (
     llm_vision,
 )
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
+from lumilake_server.ops.score_ops import (
+    ScoreConfig,
+    ScoreItem,
+    ScoreOp,
+    ScorePair,
+    ScoreResult,
+    score,
+)
 from lumilake_server.ops.util_ops import (
     FormatOp,
     LambdaOp,
@@ -53,6 +61,11 @@ __all__ = [
     "OpMessage",
     "OutputOp",
     "SingleDtype",
+    "ScoreConfig",
+    "ScoreItem",
+    "ScoreOp",
+    "ScorePair",
+    "ScoreResult",
     "as_output",
     "data",
     "embedding",
@@ -64,4 +77,5 @@ __all__ = [
     "llm_chat",
     "llm_vision",
     "message_data",
+    "score",
 ]
