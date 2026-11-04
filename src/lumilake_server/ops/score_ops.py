@@ -96,7 +96,9 @@ class ScoreOp(Op):
         candidates: str | list[str] | Op,
         config: ScoreConfig | None = None,
     ) -> None:
-        self.config = config or ScoreConfig(model="")
+        if config is None:
+            raise ValueError("ScoreOp requires config with a non-empty model")
+        self.config = config
         query_op = (
             query if isinstance(query, Op) else DataOp(data=_as_values(query, "query"))
         )
