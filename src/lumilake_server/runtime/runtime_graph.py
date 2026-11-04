@@ -1708,6 +1708,9 @@ class RuntimeGraphBuilder:
                 if isinstance(op_ref, DataRetrievalOp)
                 else self._upstream_output_path(op_ref)
             )
+            if path.startswith("items."):
+                path = path[len("items.") :]
+            path = re.sub(r"\[(\d+)\]", r".\1", path)
             runtime_ids = dsl_to_runtime.get(op_ref.id)
             if not runtime_ids:
                 raise ValueError(

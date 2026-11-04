@@ -50,6 +50,14 @@ def _walk_path(value, parts, where):
             return value
         if isinstance(value, dict) and part in value:
             value = value[part]
+        elif isinstance(value, list):
+            try:
+                index = int(part)
+            except (TypeError, ValueError):
+                raise ValueError("list index must be an integer at %s" % where)
+            if index < 0 or index >= len(value):
+                raise ValueError("list index out of range at %s" % where)
+            value = value[index]
         else:
             raise ValueError("missing %r at %s" % (part, where))
     return value
