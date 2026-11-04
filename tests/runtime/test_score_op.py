@@ -5,6 +5,7 @@ import pytest
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import ScoreConfig, ScoreOp, as_output
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
@@ -20,7 +21,8 @@ def test_score_op_lowers_literal_pairs_in_order() -> None:
         config=ScoreConfig(model="org/reranker", backend="vllm"),
     )
     compiled = Graph.from_ops([as_output("scores", op)]).compile()
-    runtime_op = RuntimeGraphBuilder().build(compiled).nodes[op.id]
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    runtime_op = runtime_graph.nodes[op.id]
 
     assert runtime_op.task_type == "score"
     assert runtime_op.data_spec == {
@@ -31,6 +33,30 @@ def test_score_op_lowers_literal_pairs_in_order() -> None:
         ],
     }
     assert runtime_op.model_spec["vllm"]["convert"] == "classify"
+    assert runtime_op.dependencies == ()
+    assert all(
+        dep in runtime_graph.nodes
+        for dep in runtime_op.to_flowmesh_node().get("dependsOn", [])
+    )
+
+
+def test_score_runtime_node_emits_flowmesh_model_block() -> None:
+    op = ScoreOp(
+        query="question",
+        candidates=["first", "second"],
+        config=ScoreConfig(model="org/reranker", backend="vllm"),
+    )
+    compiled = Graph.from_ops([as_output("scores", op)]).compile()
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    runtime_op = runtime_graph.nodes[op.id]
+    flowmesh_spec = runtime_op.to_flowmesh_node()["spec"]
+
+    assert flowmesh_spec["taskType"] == "score"
+    assert flowmesh_spec["model"]["vllm"]["convert"] == "classify"
+    assert all(
+        dep in runtime_graph.nodes
+        for dep in runtime_op.to_flowmesh_node().get("dependsOn", [])
+    )
 
 
 def test_score_op_yaml_lowers_to_score_task() -> None:
@@ -81,3 +107,82 @@ def test_score_op_empty_candidates_name_op() -> None:
             candidates=[],
             config=ScoreConfig(model="org/reranker"),
         )
+
+
+def test_upstream_score_uses_pairs_node_placeholder() -> None:
+    payload = """
+    name: score_upstream
+    inputs:
+      Unused: []
+    ops:
+      - id: Query
+        op: LLMChatOp
+        messages:
+          - role: user
+            content: "same question"
+        config:
+          model: org/model
+          api: {}
+      - id: Candidates
+        op: LLMChatOp
+        messages:
+          - role: user
+            content: "candidate source"
+        config:
+          model: org/model
+          api: {}
+      - id: Score
+        op: ScoreOp
+        inputs: [Query, Candidates]
+        query: Query
+        candidates: Candidates
+        config:
+          model: org/reranker
+    outputs:
+      - name: scores
+        ref: Score
+    """
+    spec = parse_yaml_payload(payload)["score_upstream"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    score = next(
+        node for node in runtime_graph.nodes.values() if node.task_type == "score"
+    )
+    pairs = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == python_step.TASK_TYPE
+        and node.data_spec.get("mode") == "pairs"
+    )
+
+    assert score.data_spec == {
+        "type": "list",
+        "items": f"${{{pairs.node_id}.value.items}}",
+    }
+    assert score.dependencies == (pairs.node_id,)
+    assert score.to_flowmesh_node()["dependsOn"] == [pairs.node_id]
+    assert pairs.to_flowmesh_node()["dependsOn"] == list(pairs.dependencies)
+    assert all(dep in runtime_graph.nodes for dep in pairs.dependencies)
+    assert all(
+        entry.get("node") in runtime_graph.nodes
+        for entry in pairs.data_spec["plan"]
+        if entry.get("kind") == "stage"
+    )
+
+
+def test_pairs_step_output_shape_broadcasts_single_query() -> None:
+    plan = [
+        {"kind": "literal", "values": ["same question"]},
+        {"kind": "literal", "values": ["first", "second"]},
+    ]
+    code = python_step.pairs_source("pairs", plan)
+    namespace: dict[str, object] = {}
+    exec(code, namespace)
+    main = namespace["main"]
+    assert callable(main)
+    assert main({}) == {
+        "items": [
+            {"query": "same question", "candidate": "first"},
+            {"query": "same question", "candidate": "second"},
+        ]
+    }

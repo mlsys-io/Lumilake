@@ -589,24 +589,6 @@ class RuntimeGraphBuilder:
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.json"
 
-        for score_op_id, score_op in score_ops.items():
-            if task_type_override == "data_profile":
-                continue
-            runtime_op = self._build_node_from_score_op(
-                score_op_id,
-                score_op,
-                graph_dict,
-                inputs_dict,
-                visited_node_ids,
-            )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[score_op_id] = [runtime_op.node_id]
-            if score_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[score_op_id]
-                output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items"
-
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
                 continue
@@ -683,6 +665,27 @@ class RuntimeGraphBuilder:
                         output_paths[output_node_id] = self._upstream_output_path(
                             llm_op
                         )
+
+        for score_op_id, score_op in score_ops.items():
+            if task_type_override == "data_profile":
+                continue
+            score_nodes = self._build_node_from_score_op(
+                score_op_id,
+                score_op,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime,
+            )
+            for runtime_op in score_nodes:
+                nodes[runtime_op.node_id] = runtime_op
+                node_order.append(runtime_op.node_id)
+            runtime_op = score_nodes[-1]
+            dsl_to_runtime[score_op_id] = [runtime_op.node_id]
+            if score_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[score_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items"
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
@@ -1682,7 +1685,10 @@ class RuntimeGraphBuilder:
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         visited_node_ids: set[str],
-    ) -> RuntimeOp:
+        dsl_to_runtime: dict[str, list[str]],
+    ) -> list[RuntimeOp]:
+        extra_ops: list[RuntimeOp] = []
+
         def _source(op_ref: Op) -> tuple[list[str] | None, str | None, str | None]:
             visited_node_ids.add(op_ref.id)
             if isinstance(op_ref, InputOp):
@@ -1702,7 +1708,13 @@ class RuntimeGraphBuilder:
                 if isinstance(op_ref, DataRetrievalOp)
                 else self._upstream_output_path(op_ref)
             )
-            return None, f"${{{op_ref.id}.{path}}}", op_ref.id
+            runtime_ids = dsl_to_runtime.get(op_ref.id)
+            if not runtime_ids:
+                raise ValueError(
+                    f"ScoreOp '{op_id}' input {op_ref.id!r} has no runtime node"
+                )
+            runtime_id = runtime_ids[0]
+            return None, f"{runtime_id}|{path}", runtime_id
 
         query_values, query_ref, query_dep = _source(op.query)
         candidate_values, candidate_ref, candidate_dep = _source(op.candidates)
@@ -1728,19 +1740,49 @@ class RuntimeGraphBuilder:
                     {"query": pair.query, "candidate": pair.candidate} for pair in items
                 ],
             }
+            dependencies = [dep for dep in (query_dep, candidate_dep) if dep]
         else:
-            query_source: Any = query_ref or query_values or [""]
-            candidate_source: Any = candidate_ref or candidate_values or [""]
+            pairs_node_id = f"{op_id}__pairs"
+            query_plan: dict[str, Any]
+            candidate_plan: dict[str, Any]
+            if query_ref is not None:
+                query_node, query_path = query_ref.split("|", 1)
+                query_plan = {"kind": "stage", "node": query_node, "path": query_path}
+            else:
+                query_plan = {"kind": "literal", "values": query_values or []}
+            if candidate_ref is not None:
+                candidate_node, candidate_path = candidate_ref.split("|", 1)
+                candidate_plan = {
+                    "kind": "stage",
+                    "node": candidate_node,
+                    "path": candidate_path,
+                }
+            else:
+                candidate_plan = {
+                    "kind": "literal",
+                    "values": candidate_values or [],
+                }
+            pairs_data_spec = {
+                "mode": "pairs",
+                "plan": [query_plan, candidate_plan],
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+            }
+            pairs_op = self._create_runtime_op(
+                name=pairs_node_id,
+                task_type=python_step.TASK_TYPE,
+                data_spec=pairs_data_spec,
+                model_spec={},
+                inference_spec={},
+                backend=python_step.BACKEND,
+                model="",
+                dependencies=[dep for dep in (query_dep, candidate_dep) if dep] or None,
+            )
+            extra_ops.append(pairs_op)
             data_spec = {
                 "type": "list",
-                "items": [
-                    {
-                        "query": query_source,
-                        "candidate": candidate_source,
-                    }
-                ],
+                "items": f"${{{pairs_node_id}.value.items}}",
             }
-        dependencies = [dep for dep in (query_dep, candidate_dep) if dep]
+            dependencies = [pairs_node_id]
         backend = op.config.backend
         backend_config = (
             {"convert": "classify", **op.config.vllm}
@@ -1752,7 +1794,7 @@ class RuntimeGraphBuilder:
             api=None,
             extra_engine_kwargs=dict(op.config.vllm) if backend == "vllm" else None,
         )
-        return self._create_runtime_op(
+        score_op = self._create_runtime_op(
             name=op_id,
             task_type="score",
             data_spec=data_spec,
@@ -1762,6 +1804,7 @@ class RuntimeGraphBuilder:
             model=op.config.model,
             dependencies=dependencies or None,
         )
+        return [*extra_ops, score_op]
 
     def _build_node_from_list_lambda_op(
         self,

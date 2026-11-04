@@ -206,6 +206,24 @@ def main(inputs):
     return {{"items": [{{"output": result[r]}} for r in range(n)]}}
 """
 
+_PAIRS_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    queries, candidates = columns
+    if len(queries) == 1:
+        queries = queries * len(candidates)
+    if len(queries) != len(candidates):
+        raise ValueError(
+            "%s: query column has %d values but candidate column has %d"
+            % (_NODE, len(queries), len(candidates))
+        )
+    return {{"items": [
+        {{"query": query, "candidate": candidate}}
+        for query, candidate in zip(queries, candidates)
+    ]}}
+"""
+
 _ROW_MAIN = """\
 
 def main(inputs):
@@ -276,6 +294,14 @@ def regroup_source(node_id: str, plan: ColumnPlan) -> str:
     )
 
 
+def pairs_source(node_id: str, plan: ColumnPlan) -> str:
+    """The python-task code for reshaping query and candidate columns to pairs."""
+    return (_RESHAPE_PRELUDE + _PAIRS_MAIN).format(
+        op_id=node_id,
+        plan=json.dumps(plan),
+    )
+
+
 def wrapper_source(
     op_id: str,
     fn_name: str,
@@ -307,6 +333,8 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         code = flatten_source(node_id, plan, data_spec["template"])
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
+    elif mode == "pairs":
+        code = pairs_source(node_id, plan)
     else:
         code = wrapper_source(
             node_id, data_spec["fn_name"], data_spec["code"], plan, mode
