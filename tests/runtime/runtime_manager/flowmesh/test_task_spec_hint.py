@@ -3,9 +3,11 @@ from typing import Any, cast
 
 import pytest
 
+from lumilake import envs
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
 def _op(
@@ -68,7 +70,14 @@ async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
 @pytest.mark.asyncio
 async def test_build_task_spec_restricts_cpu_nodes_to_cpu_workers(
     flowmesh_manager,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: InMemoryJobStorage(),
+    )
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     graph = RuntimeGraph(
         nodes={
             "cpu": _op(
