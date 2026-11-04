@@ -69,3 +69,15 @@ def test_generation_config_coerces_output_check_mapping() -> None:
 def test_output_check_rejects_invalid_configuration(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="output_check"):
         OutputCheck(**kwargs)  # type: ignore[arg-type]
+
+
+def test_generation_config_num_beams_flows_to_inference_spec_only() -> None:
+    cfg = GenerationConfig(model="local-model", num_beams=3, temperature=0.5)
+    assert cfg.inference_spec()["num_beams"] == 3
+    assert "num_beams" not in cfg.openai_kwargs()
+
+
+@pytest.mark.parametrize("num_beams", [0, -1, True, "3"])
+def test_generation_config_rejects_invalid_num_beams(num_beams: object) -> None:
+    with pytest.raises(ValueError, match="num_beams"):
+        GenerationConfig(model="local-model", num_beams=num_beams)  # type: ignore[arg-type]
