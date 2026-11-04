@@ -1,6 +1,9 @@
 import json
+import re
 from dataclasses import asdict, dataclass, fields
 from typing import Any, ClassVar, TypedDict
+
+from jsonschema import Draft202012Validator
 
 RETRIEVAL_MODES = ("sql", "s3", "agent")
 
@@ -103,12 +106,44 @@ class ApiConfig:
 
 
 @dataclass
+class OutputCheck:
+    """Validation applied to generated text after a model call."""
+
+    max_attempts: int = 1
+    json_schema: dict[str, Any] | None = None
+    text_regex: str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.max_attempts, bool) or not isinstance(
+            self.max_attempts, int
+        ):
+            raise ValueError("output_check.max_attempts must be an integer")
+        if not 1 <= self.max_attempts <= 10:
+            raise ValueError("output_check.max_attempts must be in [1, 10]")
+        if (self.json_schema is None) == (self.text_regex is None):
+            raise ValueError(
+                "output_check requires exactly one of json_schema or text_regex"
+            )
+        if self.json_schema is not None:
+            try:
+                Draft202012Validator.check_schema(self.json_schema)
+            except Exception as exc:
+                raise ValueError(f"output_check.json_schema is invalid: {exc}") from exc
+        if self.text_regex is not None:
+            try:
+                re.compile(self.text_regex)
+            except re.error as exc:
+                raise ValueError(f"output_check.text_regex is invalid: {exc}") from exc
+
+
+@dataclass
 class GenerationConfig:
     """LLM generation parameters; ``model`` is required in both local and API
     mode, so ``config.api`` routes the op externally without relaxing it."""
 
     model: str = ""
     api: ApiConfig | None = None
+    output_check: OutputCheck | None = None
     frequency_penalty: float | None = None
     logit_bias: dict[str, int] | None = None
     logprobs: int | None = None
@@ -139,6 +174,7 @@ class GenerationConfig:
     # Stripped by openai_kwargs() — OpenAI Chat API rejects these.
     _NON_OPENAI_FIELDS: ClassVar[tuple[str, ...]] = (
         "api",
+        "output_check",
         "ignore_eos",
         "chat_template_kwargs",
         "repetition_penalty",
@@ -157,6 +193,7 @@ class GenerationConfig:
         {
             "model",
             "api",
+            "output_check",
             "stream",
             "stream_options",
             "extra_sampling_params",
@@ -182,6 +219,15 @@ class GenerationConfig:
             raise ValueError(
                 "GenerationConfig.api must be a mapping or ApiConfig, got "
                 f"{type(self.api).__name__}."
+            )
+        if isinstance(self.output_check, dict):
+            self.output_check = OutputCheck(**self.output_check)
+        elif self.output_check is not None and not isinstance(
+            self.output_check, OutputCheck
+        ):
+            raise ValueError(
+                "GenerationConfig.output_check must be a mapping or OutputCheck, "
+                f"got {type(self.output_check).__name__}."
             )
         if not self.model:
             raise ValueError(

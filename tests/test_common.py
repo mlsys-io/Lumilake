@@ -1,6 +1,6 @@
 import pytest
 
-from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig, OutputCheck
 
 
 def test_generation_config_requires_model_without_api() -> None:
@@ -43,3 +43,29 @@ def test_generation_config_rejects_non_dict_api() -> None:
     non-``ApiConfig``, non-``None`` value for ``api``."""
     with pytest.raises(ValueError, match="api must be a mapping or ApiConfig"):
         GenerationConfig(model="local-model", api="x")  # type: ignore[arg-type]
+
+
+def test_generation_config_coerces_output_check_mapping() -> None:
+    cfg = GenerationConfig(
+        model="local-model",
+        output_check={"max_attempts": 3, "text_regex": "^ok$"},  # type: ignore[arg-type]
+    )
+    assert cfg.output_check == OutputCheck(max_attempts=3, text_regex="^ok$")
+    assert "output_check" not in cfg.inference_spec()
+    assert "output_check" not in cfg.openai_kwargs()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_attempts": 0, "text_regex": "ok"},
+        {"max_attempts": 11, "text_regex": "ok"},
+        {"text_regex": "ok", "json_schema": {"type": "object"}},
+        {},
+        {"text_regex": "("},
+        {"json_schema": {"type": "not-a-type"}},
+    ],
+)
+def test_output_check_rejects_invalid_configuration(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="output_check"):
+        OutputCheck(**kwargs)  # type: ignore[arg-type]
