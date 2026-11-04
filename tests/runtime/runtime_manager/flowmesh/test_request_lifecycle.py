@@ -169,21 +169,10 @@ async def test_api_backend_returns_chat_history_like_local_backend(
         assert workflow_id == "wf-1"
         return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks({"task-row0": row_id})
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     result = await manager.process_request(
@@ -334,21 +323,10 @@ async def _run_failing_request(
             for task_id, status in status_by_task.items()
         ]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks(node_by_task)
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -513,21 +491,10 @@ async def test_api_output_node_reads_content(
         assert workflow_id == "wf-1"
         return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks({"task-row0": row_id})
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     result_ = await manager.process_request(
@@ -604,21 +571,10 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
         assert workflow_id == "wf-1"
         return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks({"task-row0": row_id})
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     result_ = await manager.process_request(
@@ -675,21 +631,10 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
         assert workflow_id == "wf-1"
         return [_task_info("task-row0", "DONE", graph_node_name=row_id)]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks({"task-row0": row_id})
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     result_ = await manager.process_request(
@@ -877,21 +822,10 @@ async def test_fail_fast_reports_every_failed_task_reason(
             for task_id, status in status_by_task.items()
         ]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks(node_by_task)
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -1016,21 +950,10 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
             for task_id, node_id in node_by_task.items()
         ]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks(node_by_task)
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     result_ = await manager.process_request(
@@ -1121,21 +1044,10 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
             for task_id, node_id in node_by_task.items()
         ]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return _workflow_tasks(node_by_task)
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     result_ = await manager.process_request(

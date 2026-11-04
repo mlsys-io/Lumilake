@@ -160,21 +160,10 @@ async def test_dispatched_request_carries_resolved_caller_credential(
             )
         ]
 
-    async def _fetch_workflow_tasks(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[Any]:
-        assert workflow_id == "wf-1"
-        return [SimpleNamespace(task_id="task-1", graph_node_name=row_id)]
-
     monkeypatch.setattr(
         manager,
         "fetch_workflow_task_statuses",
         types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_tasks",
-        types.MethodType(_fetch_workflow_tasks, manager),
     )
 
     await manager.process_request(

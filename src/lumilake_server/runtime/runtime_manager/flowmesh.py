@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from flowmesh.exceptions import APIError
-from flowmesh.models.tasks import TaskInfo, TaskStatusView
+from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
@@ -422,15 +422,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
 
-    async def fetch_workflow_tasks(self, workflow_id: str) -> list[TaskInfo]:
-        try:
-            return await _retry_transient_read(
-                lambda: self.fm.tasks.list(workflow_id=workflow_id),
-                f"workflow {workflow_id} tasks",
-            )
-        except APIError as e:
-            raise _sanitize_flowmesh_api_error(e) from None
-
     async def fetch_workflow_task_statuses(
         self, workflow_id: str
     ) -> list[TaskStatusView]:
@@ -522,7 +513,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         node_to_task: dict[str, str] = {}
 
         try:
-            tasks = await self.fetch_workflow_tasks(workflow_id)
+            tasks = await self.fetch_workflow_task_statuses(workflow_id)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to list FlowMesh tasks for workflow_id={workflow_id}"
