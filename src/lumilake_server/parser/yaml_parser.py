@@ -107,6 +107,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "ImageGenerationOp",
         "EmbeddingOp",
         "HttpFetchOp",
+        "ScoreOp",
         "FormatOp",
         "LambdaOp",
     }
@@ -403,6 +404,8 @@ def _build_op_dict(
         _emit_embedding_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "HttpFetchOp":
         _emit_http_fetch_op(op_dict, entry, user_id_to_internal)
+    elif entry.op == "ScoreOp":
+        _emit_score_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "FormatOp":
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
@@ -667,6 +670,27 @@ def _emit_http_fetch_op(
     if body is not None:
         op_dict["body"] = body
     op_dict["_inputs"] = [user_id_to_internal[query_ref]]
+
+
+def _emit_score_op(
+    op_dict: dict[str, Any],
+    entry: _OpEntry,
+    user_id_to_internal: dict[str, str],
+) -> None:
+    query_ref = entry.fields.get("query")
+    candidates_ref = entry.fields.get("candidates")
+    config = entry.fields.get("config")
+    if not isinstance(config, dict) or not config.get("model"):
+        raise ValueError(f"ScoreOp '{entry.id}' requires config.model")
+    if not isinstance(query_ref, str) or query_ref not in user_id_to_internal:
+        raise ValueError(f"ScoreOp '{entry.id}' requires a 'query' reference")
+    if not isinstance(candidates_ref, str) or candidates_ref not in user_id_to_internal:
+        raise ValueError(f"ScoreOp '{entry.id}' requires a 'candidates' reference")
+
+    op_dict["query"] = user_id_to_internal[query_ref]
+    op_dict["candidates"] = user_id_to_internal[candidates_ref]
+    op_dict["config"] = dict(config)
+    op_dict["_inputs"] = [op_dict["query"], op_dict["candidates"]]
 
 
 def _emit_llm_like_op(
@@ -1108,6 +1132,7 @@ def _op_id_prefix(op_type: str) -> str:
         "ImageGenerationOp": "imagegen",
         "EmbeddingOp": "embedding",
         "HttpFetchOp": "httpfetch",
+        "ScoreOp": "score",
         "FormatOp": "format",
         "LambdaOp": "lambda",
     }
