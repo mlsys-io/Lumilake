@@ -666,13 +666,6 @@ def _emit_http_fetch_op(
     op_dict["config"] = config
     if body is not None:
         op_dict["body"] = body
-    response_path = entry.fields.get("response_path")
-    if response_path is not None:
-        if not isinstance(response_path, str) or not response_path.strip():
-            raise ValueError(
-                f"HttpFetchOp '{entry.id}' response_path must be a non-empty string"
-            )
-        op_dict["response_path"] = response_path.strip()
     op_dict["_inputs"] = [user_id_to_internal[query_ref]]
 
 

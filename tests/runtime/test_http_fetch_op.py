@@ -1,6 +1,7 @@
 """Focused tests for the typed HttpFetchOp and its YAML form."""
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -16,7 +17,6 @@ def test_http_fetch_op_serializes_and_round_trips() -> None:
         query=["first", "second"],
         method="POST",
         body={"query": "{query}", "limit": 10},
-        response_path="data",
         config=HttpFetchConfig(
             headers={"Accept": "application/json"},
             timeout_sec=5,
@@ -33,7 +33,7 @@ def test_http_fetch_op_serializes_and_round_trips() -> None:
     assert parsed.url == op.url
     assert parsed.method == "POST"
     assert parsed.body == {"query": "{query}", "limit": 10}
-    assert parsed.response_path == "data"
+    assert parsed.config.fail_open is False
     assert parsed.config.timeout_sec == 5
     assert parsed.config.retries == 1
     assert parsed.config.max_concurrency == 2
@@ -84,7 +84,6 @@ def test_http_fetch_yaml_parses_and_builds_expected_op_dict() -> None:
             query: Query
             url: "http://fixture.test/search?query={query}&limit=10"
             method: GET
-            response_path: data
             config:
               headers:
                 Accept: application/json
@@ -102,7 +101,6 @@ def test_http_fetch_yaml_parses_and_builds_expected_op_dict() -> None:
 
     assert fetch["url"] == "http://fixture.test/search?query={query}&limit=10"
     assert fetch["method"] == "GET"
-    assert fetch["response_path"] == "data"
     assert fetch["config"] == {
         "headers": {"Accept": "application/json"},
         "timeout_sec": 12,
@@ -127,7 +125,6 @@ def test_http_fetch_yaml_lowers_to_flowmesh_api_node() -> None:
             method: POST
             body:
               query: "{query}"
-            response_path: data
             config:
               timeout_sec: 9
               retries: 2
@@ -153,3 +150,33 @@ def test_http_fetch_yaml_lowers_to_flowmesh_api_node() -> None:
     assert node.api_spec["timeout_sec"] == 9
     assert node.api_spec["retries"] == 2
     assert node.api_spec["concurrency"] == 3
+
+
+def test_http_fetch_default_fail_open_is_false(tmp_path: Path) -> None:
+    op = HttpFetchOp(url="http://fixture.test/search?q={query}", query="query")
+    assert op.config.fail_open is False
+
+
+def test_http_fetch_fail_open_reaches_api_spec() -> None:
+    yaml_text = textwrap.dedent("""
+        name: fetch_candidates
+        inputs:
+          Query: ["graph retrieval"]
+        ops:
+          - id: Search
+            op: HttpFetchOp
+            inputs: [Query]
+            query: Query
+            url: "http://fixture.test/search?q={query}"
+            config:
+              fail_open: true
+        outputs:
+          - name: candidates
+            ref: Search
+        """)
+    spec = parse_yaml_payload(yaml_text)["fetch_candidates"]
+    runtime_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
+    assert node.api_spec["response"]["fail_open"] is True

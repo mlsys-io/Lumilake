@@ -1623,6 +1623,7 @@ class RuntimeGraphBuilder:
                 "parse_json": True,
                 "return_body": True,
                 "raise_for_status": True,
+                "fail_open": op.config.fail_open,
             },
         }
         if op.body is not None:

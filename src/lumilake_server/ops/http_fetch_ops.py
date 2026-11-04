@@ -13,6 +13,7 @@ class HttpFetchConfig:
     timeout_sec: float = 30.0
     retries: int = 2
     max_concurrency: int = 8
+    fail_open: bool = False
 
     def __post_init__(self) -> None:
         if self.timeout_sec <= 0:
@@ -33,6 +34,7 @@ class HttpFetchConfig:
             "timeout_sec": self.timeout_sec,
             "retries": self.retries,
             "max_concurrency": self.max_concurrency,
+            "fail_open": self.fail_open,
         }
 
 
@@ -42,7 +44,7 @@ class HttpFetchOp(FunctionalOp):
 
     ``url`` and the optional ``body`` are Python format templates rendered with
     each row's value as ``{query}``. A successful response is projected through
-    ``response_path``; the API executor emits one result item per row.
+    The API executor emits one result item per row.
     """
 
     def __init__(
@@ -52,12 +54,10 @@ class HttpFetchOp(FunctionalOp):
         config: HttpFetchConfig | None = None,
         method: str = "GET",
         body: dict[str, Any] | None = None,
-        response_path: str | None = None,
     ) -> None:
         self.url = url.strip()
         self.method = method.upper()
         self.body = body
-        self.response_path = response_path.strip() if response_path else None
         self.config = config or HttpFetchConfig()
         if not self.url:
             raise ValueError("HttpFetchOp requires a non-empty url template")
@@ -85,8 +85,6 @@ class HttpFetchOp(FunctionalOp):
         }
         if self.body is not None:
             payload["body"] = self.body
-        if self.response_path is not None:
-            payload["response_path"] = self.response_path
         return payload
 
     @classmethod
@@ -99,7 +97,6 @@ class HttpFetchOp(FunctionalOp):
             config=HttpFetchConfig(**data["config"]),
             method=data["method"],
             body=data.get("body"),
-            response_path=data.get("response_path"),
         )
 
 
@@ -118,6 +115,5 @@ def http_fetch(
     config: HttpFetchConfig | None = None,
     method: str = "GET",
     body: dict[str, Any] | None = None,
-    response_path: str | None = None,
 ) -> HttpFetchOp:
-    return HttpFetchOp(url, query, config, method, body, response_path)
+    return HttpFetchOp(url, query, config, method, body)
