@@ -1619,6 +1619,7 @@ class RuntimeGraphBuilder:
             "timeout_sec": op.config.timeout_sec,
             "retries": op.config.retries,
             "concurrency": op.config.max_concurrency,
+            "request_delay_sec": op.config.request_delay_sec,
             "response": {
                 "parse_json": True,
                 "return_body": True,
@@ -1626,6 +1627,8 @@ class RuntimeGraphBuilder:
                 "fail_open": op.config.fail_open,
             },
         }
+        if op.config.cache_dir is not None:
+            api_spec["cache_dir"] = op.config.cache_dir
         if op.body is not None:
             api_spec["json"] = _replace_query_placeholder(op.body)
 

@@ -14,12 +14,16 @@ class HttpFetchConfig:
     retries: int = 2
     max_concurrency: int = 8
     fail_open: bool = False
+    request_delay_sec: float = 0.0
+    cache_dir: str | None = None
 
     def __post_init__(self) -> None:
         if self.timeout_sec <= 0:
             raise ValueError("HttpFetchOp timeout_sec must be greater than zero")
         if self.retries < 0:
             raise ValueError("HttpFetchOp retries must be non-negative")
+        if self.request_delay_sec < 0:
+            raise ValueError("HttpFetchOp request_delay_sec must be non-negative")
         if not 1 <= self.max_concurrency <= 8:
             raise ValueError("HttpFetchOp max_concurrency must be between 1 and 8")
         if not all(
@@ -35,6 +39,8 @@ class HttpFetchConfig:
             "retries": self.retries,
             "max_concurrency": self.max_concurrency,
             "fail_open": self.fail_open,
+            "request_delay_sec": self.request_delay_sec,
+            "cache_dir": self.cache_dir,
         }
 
 

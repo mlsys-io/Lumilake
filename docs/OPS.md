@@ -105,6 +105,9 @@ POST `body`.
 `config.max_concurrency` bound the request; headers are retained in the
 runtime spec for dispatch and redacted from archived graphs. Each input row
 produces one output row.
+`config.request_delay_sec` spaces actual request starts, including retries.
+`config.cache_dir` enables a query-keyed on-disk response cache whose key is
+the method, rendered URL, rendered params, and request body.
 With `config.fail_open: true`, a failed fetch yields an error row with null
 content instead of failing the task. A downstream op sees that row as an item
 whose `json` is null and whose `error` contains the failure text.

@@ -182,6 +182,43 @@ def test_http_fetch_fail_open_reaches_api_spec() -> None:
     assert node.api_spec["response"]["fail_open"] is True
 
 
+def test_semantic_scholar_stage_sets_pacing_and_query_cache(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / "semantic-scholar-cache"
+    yaml_text = textwrap.dedent(f"""
+        name: semantic_scholar_stage
+        inputs:
+          Query: ["graph retrieval", "scientific models"]
+        ops:
+          - id: SSSearch
+            op: HttpFetchOp
+            inputs: [Query]
+            query: Query
+            url: "https://api.semanticscholar.org/graph/v1/paper/search?query={{query}}"
+            config:
+              timeout_sec: 30
+              retries: 2
+              max_concurrency: 1
+              request_delay_sec: 0.5
+              cache_dir: "{cache_dir}"
+              fail_open: true
+        outputs:
+          - name: candidates
+            ref: SSSearch
+        """)
+    spec = parse_yaml_payload(yaml_text)["semantic_scholar_stage"]
+    runtime_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
+
+    assert node.api_spec["request_delay_sec"] == 0.5
+    assert node.api_spec["cache_dir"] == str(cache_dir)
+    assert node.api_spec["concurrency"] == 1
+    assert node.api_spec["response"]["fail_open"] is True
+
+
 def test_fail_open_error_row_is_visible_to_downstream_runtime_node() -> None:
     yaml_text = textwrap.dedent("""
         name: fetch_then_consume
