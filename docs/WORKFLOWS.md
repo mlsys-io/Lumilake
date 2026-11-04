@@ -36,7 +36,7 @@ outputs:
 
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ScoreOp`, `HttpFetchOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
 ## n8n code-node notes
 
@@ -100,6 +100,10 @@ For DataFrame-shaped fields (e.g. `items.table` from SQL retrievals which
 arrive as JSON-encoded DataFrames), the walker decodes the string once and
 continues traversal — so `items.table.symbol` projects the `symbol` column.
 
+Indexed path segments such as `choices[0]` are accepted by the output walker
+and by the internal `pairs` Python step. The pair step normalizes them to
+integer path segments before reading each upstream result item.
+
 The path `items` (exactly, with no field) selects the whole result item rather
 than one field of it. Dynamic workflows use it to archive each leaf and each
 `export`ed op so later rounds can read any field of the stored item; see
@@ -135,6 +139,16 @@ When live sampling is enabled, preflight routes a bounded `LIMIT N` query throug
 ## FlowMesh Version Pairing
 
 When a workflow uses `type: list` data with `s3://` items (typical for VLM / image-generation paths that funnel S3 URLs through a list), Lumilake stamps a `lumid_cfg` field onto the data spec so the FlowMesh worker can retrieve the blobs through lumid-data-app. The FlowMesh worker's `data` mixin must support `lumid_cfg` for this path to function; older workers that only read `s3_cfg` will fail at retrieval. Lumilake logs a warning at stamp time naming this gap. Pair Lumilake with a FlowMesh release that supports `lumid_cfg` on `type: list` items, or restructure the workflow to use a `DataRetrievalOp` (`mode: s3`) which is always routed through the dedicated `type: lumid` connector.
+
+## Internal Python Step Modes
+
+`LambdaOp` user code supports `row`, `list`, and `aligned` modes. The runtime
+also emits internal Python steps for `flatten`, `regroup`, and `pairs`.
+`flatten` renders one prompt per image, `regroup` rebuilds one output list per
+symbol, and `pairs` combines query and candidate columns into a list of
+`{query, candidate}` mappings for `ScoreOp`. `pairs` broadcasts a single query
+across multiple candidates and rejects unequal query/candidate column lengths
+when no broadcast applies.
 
 ## Examples
 
