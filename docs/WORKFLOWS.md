@@ -48,6 +48,11 @@ A rowwise `LLMChatOp` may use `rowwise_messages_column` instead of
 `rowwise_template`. That column holds one serialized list of role/content
 messages per row, sent as the whole conversation in order.
 
+MedAgentBench helper: `lumilake_server.workloads.medagentbench.translate_search`
+turns a model-written FHIR search URL into SQL for `DataRetrievalOp` sql mode,
+and `render_bundle` turns the returned rows back into the HAPI searchset shape
+injected into the tool conversation.
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its
