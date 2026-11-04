@@ -35,6 +35,7 @@ class LLMChatOp(LLMOp):
     aggregate_table: list[dict[str, Any]] | None
     rowwise_template: str | None
     rowwise_columns: list[dict[str, Any]] | None
+    rowwise_messages_column: dict[str, str] | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
     row_gate: dict[str, Any] | None
@@ -48,6 +49,7 @@ class LLMChatOp(LLMOp):
         aggregate_table: list[dict[str, Any]] | None = None,
         rowwise_template: str | None = None,
         rowwise_columns: list[dict[str, Any]] | None = None,
+        rowwise_messages_column: dict[str, str] | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
@@ -61,6 +63,7 @@ class LLMChatOp(LLMOp):
         self.aggregate_table = aggregate_table
         self.rowwise_template = rowwise_template
         self.rowwise_columns = rowwise_columns
+        self.rowwise_messages_column = rowwise_messages_column
         self.system_messages = system_messages
         self.condition = condition
         self.row_gate = row_gate
@@ -93,6 +96,8 @@ class LLMChatOp(LLMOp):
             payload["rowwise_template"] = self.rowwise_template
         if self.rowwise_columns is not None:
             payload["rowwise_columns"] = self.rowwise_columns
+        if self.rowwise_messages_column is not None:
+            payload["rowwise_messages_column"] = self.rowwise_messages_column
         if self.system_messages is not None:
             payload["system_messages"] = self.system_messages
         if self.condition is not None:
@@ -113,6 +118,7 @@ class LLMChatOp(LLMOp):
         aggregate_table = data.get("aggregate_table")
         rowwise_template = data.get("rowwise_template")
         rowwise_columns = data.get("rowwise_columns")
+        rowwise_messages_column = data.get("rowwise_messages_column")
         system_messages = data.get("system_messages")
         condition = data.get("condition")
         row_gate = data.get("row_gate")
@@ -129,6 +135,7 @@ class LLMChatOp(LLMOp):
             aggregate_table,
             rowwise_template,
             rowwise_columns,
+            rowwise_messages_column,
             system_messages,
             cacheable,
             condition,

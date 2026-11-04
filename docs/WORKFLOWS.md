@@ -44,6 +44,10 @@ dispatched to the model. Non-matching rows are retained with `output: null`,
 so the result keeps one row per input row and cannot be confused with a model
 failure.
 
+A rowwise `LLMChatOp` may use `rowwise_messages_column` instead of
+`rowwise_template`. That column holds one serialized list of role/content
+messages per row, sent as the whole conversation in order.
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its

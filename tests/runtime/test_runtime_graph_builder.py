@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.common import GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -496,6 +496,53 @@ def test_local_rowwise_op_emits_condition() -> None:
         "node": "gate",
         "expr": "gate == 'on'",
     }
+
+
+def test_local_rowwise_messages_column_emits_list_message_array_spec() -> None:
+    rows = input_placeholder("Rows")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
+        rowwise_messages_column={
+            "label": "messages_json",
+            "node": rows.id,
+            "path": "",
+        },
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(
+        Rows=['[{"role":"user","content":"hello"}]']
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[llm.id]
+    assert node.data_spec["type"] == "list"
+    assert node.data_spec["items"][0] == [{"role": "user", "content": "hello"}]
+    assert "messages" not in node.data_spec
+
+
+def test_api_rowwise_messages_column_emits_list_message_array_spec() -> None:
+    rows = input_placeholder("Rows")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+        rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
+        rowwise_messages_column={
+            "label": "messages_json",
+            "node": rows.id,
+            "path": "",
+        },
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(
+        Rows=['[{"role":"user","content":"hello"}]']
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[llm.id]
+    assert node.task_type == "api"
+    assert node.data_spec["type"] == "list"
+    assert node.data_spec["items"][0] == [{"role": "user", "content": "hello"}]
 
 
 def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:

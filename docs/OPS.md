@@ -96,6 +96,11 @@ and skipped rows remain present with `output: null`. A skipped row is
 therefore distinguishable from a failed call, which fails the workflow rather
 than producing a marker.
 
+A rowwise `LLMChatOp` may instead declare `rowwise_messages_column`. Its named
+column contains one serialized message array per row, and that array is sent as
+the complete chat history for the row, preserving role order. Use it for
+multi-turn conversations whose history grows between rounds.
+
 ### EmbeddingOp
 
 `EmbeddingOp` embeds text with a FlowMesh-served embedding model and

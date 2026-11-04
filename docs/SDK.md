@@ -344,6 +344,10 @@ it from an LLM output. The gated LLM dispatches only rows whose branch
 matches; every input row still contributes one result row, with skipped rows
 carrying `output: null`.
 
+Rows that carry their own growing conversation can use
+`rowwise_messages_column`. The named column holds one serialized message array
+per row, preserving the complete role/content sequence across round boundaries.
+
 The parent job's result carries the per-round plans. Missing, malformed,
 unknown, or wrongly typed plan output fails the parent; it never becomes a
 successful termination.
