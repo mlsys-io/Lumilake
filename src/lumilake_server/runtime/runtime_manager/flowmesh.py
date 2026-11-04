@@ -52,6 +52,7 @@ from lumilake_server.utils.yaml import dump_yaml
 from .base import BaseRuntimeManager
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+_TASK_RESPONSE_ARCHIVE_CONCURRENCY = 8
 
 
 @dataclass
@@ -1291,6 +1292,27 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         )
         return response_uri
 
+    async def _archive_task_responses(
+        self,
+        request_info: RequestInfo,
+        task_ids: Sequence[str],
+        task_node_map: Mapping[str, str],
+    ) -> None:
+        """Archive newly completed responses with bounded stream concurrency."""
+        semaphore = asyncio.Semaphore(_TASK_RESPONSE_ARCHIVE_CONCURRENCY)
+
+        async def archive(task_id: str) -> None:
+            node_id = task_node_map.get(task_id)
+            if node_id is None:
+                raise RuntimeError(
+                    "Missing task->node mapping for task "
+                    f"{task_id}. Known task ids={sorted(task_node_map.keys())}"
+                )
+            async with semaphore:
+                await self._archive_task_response(request_info, task_id, node_id)
+
+        await asyncio.gather(*(archive(task_id) for task_id in task_ids))
+
     async def process_request(
         self,
         request_info: RequestInfo,
@@ -1517,18 +1539,18 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 self._execution_task_status[batch_key], batch_workflow_id
             )
 
-            # Download responses for newly completed tasks
-            for tid in task_ids:
-                status = self._execution_task_status[batch_key][tid]
-                if status == "DONE" and tid not in downloaded_tasks:
-                    node_id = task_node_map.get(tid)
-                    if node_id is None:
-                        raise RuntimeError(
-                            "Missing task->node mapping for task "
-                            f"{tid}. Known task ids={sorted(task_node_map.keys())}"
-                        )
-                    await self._archive_task_response(request_info, tid, node_id)
-                    downloaded_tasks.add(tid)
+            # Download responses for newly completed tasks in bounded waves.
+            newly_done = [
+                tid
+                for tid in task_ids
+                if self._execution_task_status[batch_key][tid] == "DONE"
+                and tid not in downloaded_tasks
+            ]
+            if newly_done:
+                await self._archive_task_responses(
+                    request_info, newly_done, task_node_map
+                )
+                downloaded_tasks.update(newly_done)
 
             # Count statuses for all nodes and output nodes
             all_statuses = list(self._execution_task_status[batch_key].values())

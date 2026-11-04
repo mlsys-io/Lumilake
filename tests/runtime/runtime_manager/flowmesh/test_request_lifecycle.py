@@ -3,10 +3,11 @@ local backend, reasoning-model failure guidance, and the all-or-nothing
 fan-out contract.
 """
 
+import asyncio
 import json
 import types
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from flowmesh.models.result import APIResult
@@ -224,6 +225,49 @@ def _workflow_tasks(node_by_task: dict[str, str]) -> list[Any]:
         SimpleNamespace(task_id=task_id, graph_node_name=node_id)
         for task_id, node_id in node_by_task.items()
     ]
+
+
+@pytest.mark.asyncio
+async def test_task_response_archiving_is_bounded_and_parallel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Completed task responses are archived concurrently, bounded to eight."""
+    manager = FlowmeshRuntimeManager()
+    request_info = cast(Any, SimpleNamespace(request_id="req-archive"))
+    task_ids = [f"task-{index}" for index in range(12)]
+    task_node_map = {task_id: f"node-{index}" for index, task_id in enumerate(task_ids)}
+    active = 0
+    max_active = 0
+    archived: list[str] = []
+
+    async def _archive_task_response(
+        _self: FlowmeshRuntimeManager,
+        request_info: RequestInfo,
+        task_id: str,
+        node_id: str,
+    ) -> str:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        archived.append(task_id)
+        return task_id
+
+    monkeypatch.setattr(
+        manager,
+        "_archive_task_response",
+        types.MethodType(_archive_task_response, manager),
+    )
+
+    await manager._archive_task_responses(
+        request_info,
+        task_ids,
+        task_node_map,
+    )
+
+    assert archived == task_ids
+    assert max_active == 8
 
 
 def _build_two_row_request() -> tuple[RequestInfo, str, str]:
