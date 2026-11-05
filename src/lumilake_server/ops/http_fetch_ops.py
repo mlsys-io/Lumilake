@@ -84,7 +84,7 @@ class HttpFetchOp(FunctionalOp):
         return self.inputs[0]
 
     def consumer_result_path(self) -> str:
-        return "items"
+        return "items.json"
 
     def consumer_row_count(self, input_counts: Sequence[int | None]) -> int | None:
         return input_counts[0] if input_counts else None

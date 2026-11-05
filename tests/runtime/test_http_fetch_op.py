@@ -7,8 +7,17 @@ from pathlib import Path
 import pytest
 
 from lumilake import envs
+from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import HttpFetchConfig, HttpFetchOp, LambdaOp, Op, as_output
+from lumilake_server.ops import (
+    HttpFetchConfig,
+    HttpFetchOp,
+    LambdaOp,
+    LLMChatOp,
+    Op,
+    OpMessage,
+    as_output,
+)
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -269,6 +278,30 @@ def test_fail_open_error_row_is_visible_to_downstream_runtime_node() -> None:
     assert fetch.api_spec["response"]["fail_open"] is True
     assert consumer.dependencies == (fetch.node_id,)
     assert fetch.output_spec is None
+
+
+def test_llm_reads_fetch_response_body_column() -> None:
+    fetch = HttpFetchOp(
+        url="http://fixture.test/search?q={query}",
+        query=["graph retrieval"],
+        config=HttpFetchConfig(fail_open=True),
+    )
+    consume = LLMChatOp(
+        [OpMessage(role="user", content=fetch)],
+        config=GenerationConfig(model="org/model"),
+    )
+    compiled = Graph.from_ops([as_output("answer", consume)]).compile()
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    fetch_node = next(
+        node for node in runtime_graph.nodes.values() if node.model == "http-fetch"
+    )
+    llm_node = runtime_graph.nodes[consume.id]
+
+    columns = llm_node.data_spec["template"]["columns"]
+    assert any(
+        column.get("node") == fetch_node.node_id and column.get("path") == "items.json"
+        for column in columns
+    )
 
 
 def test_http_fetch_op_feeds_lambda_with_per_row_response(tmp_path: Path) -> None:
