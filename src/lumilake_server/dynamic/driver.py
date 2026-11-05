@@ -23,14 +23,13 @@ from lumilake_server.dynamic.blocks import (
     PROPOSER_NODE_ID,
     fused_round_graph,
 )
-from lumilake_server.ops.data_ops import DataRetrievalOp
-from lumilake_server.ops.llm_ops import LLMOp
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import (
     SUPPORTED_OPS,
     _op_id_prefix,
     parse_yaml_payload,
 )
+from lumilake_server.runtime.runtime_graph import OUTPUT_SOURCE_TYPES
 from lumilake_server.runtime.runtime_manager.flowmesh import (
     _coerce_output_value,
     _walk_output_path,
@@ -94,9 +93,7 @@ if _MISSING_OP_CLASSES:
         f"op types not exported by lumilake_server.ops: {sorted(_MISSING_OP_CLASSES)}"
     )
 _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
-    name
-    for name in SUPPORTED_OPS
-    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp))
+    name for name in SUPPORTED_OPS if issubclass(_OP_CLASSES[name], OUTPUT_SOURCE_TYPES)
 )
 
 
@@ -923,7 +920,7 @@ def validate_emitted_subgraph(
         if types[op_id] not in _OUTPUT_SOURCE_OPS:
             raise DriverProtocolError(
                 f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be "
-                "archived; every leaf must be an LLMOp or DataRetrievalOp"
+                "archived; every leaf must be an LLMOp, DataRetrievalOp or LambdaOp"
             )
 
 
