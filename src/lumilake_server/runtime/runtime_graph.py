@@ -512,6 +512,31 @@ class RuntimeGraphBuilder:
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
 
+        def build_list_lambda(lambda_op_id: str, lambda_op: LambdaOp) -> None:
+            for input_op in lambda_op.inputs:
+                visited_node_ids.add(input_op.id)
+                if isinstance(input_op, HttpFetchOp) and isinstance(
+                    input_op.query, InputOp
+                ):
+                    visited_node_ids.add(input_op.query.id)
+            runtime_op = self._build_node_from_list_lambda_op(
+                lambda_op_id,
+                lambda_op,
+                graph_dict,
+                inputs_dict,
+                dsl_to_runtime,
+            )
+            nodes[runtime_op.node_id] = runtime_op
+            node_order.append(runtime_op.node_id)
+            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
+
+            if lambda_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[
+                    lambda_op_id
+                ]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items.output"
+
         for retrieval_op_id, retrieval_op in retrieval_ops.items():
             self._mark_retrieval_upstream_nodes_visited(
                 op=retrieval_op,
@@ -556,25 +581,7 @@ class RuntimeGraphBuilder:
                 continue
             if any(inp.consumer_result_path() for inp in lambda_op.inputs):
                 continue
-            for input_op in lambda_op.inputs:
-                visited_node_ids.add(input_op.id)
-            runtime_op = self._build_node_from_list_lambda_op(
-                lambda_op_id,
-                lambda_op,
-                graph_dict,
-                inputs_dict,
-                dsl_to_runtime,
-            )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
-
-            if lambda_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[
-                    lambda_op_id
-                ]
-                output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items.output"
+            build_list_lambda(lambda_op_id, lambda_op)
 
         for fetch_op_id, fetch_op in fetch_ops.items():
             if task_type_override == "data_profile":
@@ -695,29 +702,7 @@ class RuntimeGraphBuilder:
                 continue
             if not any(inp.consumer_result_path() for inp in lambda_op.inputs):
                 continue
-            for input_op in lambda_op.inputs:
-                visited_node_ids.add(input_op.id)
-                if isinstance(input_op, HttpFetchOp) and isinstance(
-                    input_op.query, InputOp
-                ):
-                    visited_node_ids.add(input_op.query.id)
-            runtime_op = self._build_node_from_list_lambda_op(
-                lambda_op_id,
-                lambda_op,
-                graph_dict,
-                inputs_dict,
-                dsl_to_runtime,
-            )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
-
-            if lambda_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[
-                    lambda_op_id
-                ]
-                output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items.output"
+            build_list_lambda(lambda_op_id, lambda_op)
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
@@ -3391,14 +3376,6 @@ class RuntimeGraphBuilder:
                 if op.id not in columns:
                     path = retrieval_items_path(op.data_spec["mode"])
                     columns[op.id] = {"node": op.id, "path": path}
-                ancestor_buffer[op.id] = [(Roles.USER, op.id)]
-
-            elif isinstance(op, HttpFetchOp):
-                if op.id not in columns:
-                    columns[op.id] = {
-                        "node": op.id,
-                        "path": self._upstream_output_path(op),
-                    }
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif op.consumer_result_path() is not None:
