@@ -1,26 +1,25 @@
 """Load and verify the MedAgentBench FHIR tables in the isolated fhir schema."""
 
 import csv
+import importlib
 import json
 import os
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlsplit
-
-import requests
+from urllib.request import urlopen
 
 try:
-    from lumilake_server.workloads.medagentbench import translate_search
+    _medagentbench = importlib.import_module("lumilake_server.workloads.medagentbench")
 except ModuleNotFoundError:
-    from medagentbench import (
-        translate_search,  # type: ignore[import-not-found,no-redef]
-    )
+    _medagentbench = importlib.import_module("medagentbench")
+translate_search = cast(Callable[[str], Any], _medagentbench.translate_search)
 
 FHIR_BASE = "http://10.10.40.1:8080/fhir"
 OUTPUT_DIR = Path("/data/lumilake-experiment/medagentbench")
@@ -206,9 +205,8 @@ def load_mrns() -> list[str]:
 
 
 def fetch_bundle(url: str) -> dict[str, Any]:
-    response = requests.get(url, timeout=120)
-    response.raise_for_status()
-    bundle = response.json()
+    with urlopen(url, timeout=120) as response:
+        bundle = json.load(response)
     if not isinstance(bundle, dict):
         raise RuntimeError(f"FHIR response is not an object: {url}")
     return bundle
