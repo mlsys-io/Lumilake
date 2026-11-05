@@ -103,6 +103,17 @@ class ApiConfig:
     authorization: str | None = None
     timeout_sec: float | None = None
     retries: int | None = None
+    concurrency: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.concurrency is None:
+            return
+        if (
+            isinstance(self.concurrency, bool)
+            or not isinstance(self.concurrency, int)
+            or self.concurrency < 1
+        ):
+            raise ValueError("ApiConfig.concurrency must be a positive integer")
 
 
 @dataclass
