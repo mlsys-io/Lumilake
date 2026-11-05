@@ -92,6 +92,31 @@ def test_completion_prompt_from_upstream_lambda_binds_exact_runtime_path() -> No
     assert node.inference_spec["apply_chat_template"] is False
 
 
+def test_completion_prompt_from_list_mode_lambda_skips_message_inference() -> None:
+    prompt = input_placeholder("Prompt")
+    render = LambdaOp(
+        [prompt],
+        fn=lambda inputs: [f"{value}?" for value in inputs[0]],
+        mode="list",
+    )
+    completion = LLMCompletionOp(
+        prompt=render,
+        config=GenerationConfig(model="OpenSciLM/Llama-3.1_OpenScholar-8B"),
+    )
+    compiled = Graph.from_ops([as_output("answer", completion)]).compile(
+        Prompt=["first", "second"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[completion.id]
+
+    assert node.data_spec == {
+        "type": "list",
+        "node": render.id,
+        "path": "items.output",
+    }
+    assert node.inference_spec["apply_chat_template"] is False
+
+
 def test_completion_op_rejects_api_mode() -> None:
     with pytest.raises(ValueError, match="API mode"):
         LLMCompletionOp(

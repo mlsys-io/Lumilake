@@ -2673,14 +2673,20 @@ class RuntimeGraphBuilder:
                 ),
             )
 
-        upstream_llm_ids, template_spec = self._infer_structural_messages(
-            llm_op_id,
-            graph_dict,
-            inputs_dict,
-            visited_node_ids,
-            dsl_to_runtime=dsl_to_runtime,
-            runtime_nodes=runtime_nodes,
-        )
+        if isinstance(llm_op, LLMCompletionOp):
+            # Raw completions read their prompt directly and never build a
+            # chat-message graph, including when the prompt is a list-mode op.
+            upstream_llm_ids: list[str] = []
+            template_spec: dict[str, Any] = {}
+        else:
+            upstream_llm_ids, template_spec = self._infer_structural_messages(
+                llm_op_id,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime=dsl_to_runtime,
+                runtime_nodes=runtime_nodes,
+            )
 
         if task_type_override == "data_profile":
             task_type = "data_profiling"
