@@ -36,7 +36,7 @@ outputs:
 
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, `LambdaOp`, and `RouterOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, `LambdaOp`, and `RouterOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
 `RouterOp` declares deterministic per-row branch selection. A rowwise
 `LLMChatOp` may name a router and branch in `row_gate`; only matching rows are
@@ -63,6 +63,27 @@ Local `LLMChatOp` configs may set `num_beams` to use vLLM offline beam search.
 The setting is local-only and returns the best beam. See
 [`docs/OPS.md`](OPS.md#llmchatop-via-external-api) for the supported sampling
 behavior.
+`LLMCompletionOp` generates from rendered string prompts without applying the
+model chat template. Its `prompt` field references an input or upstream op that
+produces one prompt string per row:
+
+```yaml
+ops:
+  - id: Generate
+    op: LLMCompletionOp
+    inputs: [Prompt]
+    prompt: Prompt
+    config:
+      model: OpenSciLM/Llama-3.1_OpenScholar-8B
+      temperature: 0.7
+      max_tokens: 3000
+      extra_sampling_params:
+        stop_token_ids: [128009]
+```
+
+Use it when the prompt already contains model-specific chat control tokens or
+when the source system sent a raw completion prompt. It compiles to FlowMesh
+string-prompt data with `inference.apply_chat_template: false`.
 
 ## n8n code-node notes
 
