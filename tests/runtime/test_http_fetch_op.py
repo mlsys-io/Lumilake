@@ -1,14 +1,22 @@
 """Focused tests for the typed HttpFetchOp and its YAML form."""
 
+import json
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from lumilake import envs
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import HttpFetchConfig, HttpFetchOp, Op
+from lumilake_server.ops import HttpFetchConfig, HttpFetchOp, LambdaOp, Op, as_output
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+
+
+@pytest.fixture(autouse=True)
+def _runtime_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
 
 
 def test_http_fetch_op_serializes_and_round_trips() -> None:
@@ -261,3 +269,49 @@ def test_fail_open_error_row_is_visible_to_downstream_runtime_node() -> None:
     assert fetch.api_spec["response"]["fail_open"] is True
     assert consumer.dependencies == (fetch.node_id,)
     assert fetch.output_spec is None
+
+
+def test_http_fetch_op_feeds_lambda_with_per_row_response(tmp_path: Path) -> None:
+    def collect(items):
+        return [{f"row_{index}": value} for index, value in enumerate(items[0])]
+
+    fetch = HttpFetchOp(
+        url="http://fixture.test/search?q={query}",
+        query=["first", "second"],
+        config=HttpFetchConfig(fail_open=True),
+    )
+    consume = LambdaOp([fetch], fn=collect, mode="list")
+    compiled = Graph.from_ops([as_output("rows", consume)]).compile()
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    fetch_node = runtime_graph.nodes[fetch.id]
+    fetch_dir = tmp_path / fetch_node.node_id
+    fetch_dir.mkdir()
+    (fetch_dir / "results.json").write_text(
+        json.dumps(
+            {
+                "result": {
+                    "items": [
+                        {"json": {"title": "first"}, "error": None},
+                        {"json": None, "error": "503 Service Unavailable"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    consumer = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == python_step.TASK_TYPE
+    )
+    namespace: dict[str, object] = {"json": json}
+    exec(consumer.to_flowmesh_node()["spec"]["code"], namespace)
+    main = namespace["main"]
+    assert callable(main)
+
+    rows = main({fetch_node.node_id: str(fetch_dir)})["items"]
+
+    assert rows == [
+        {"output": {"row_0": {"json": {"title": "first"}, "error": None}}},
+        {"output": {"row_1": {"json": None, "error": "503 Service Unavailable"}}},
+    ]

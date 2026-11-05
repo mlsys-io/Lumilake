@@ -5,11 +5,25 @@ from pathlib import Path
 
 import pytest
 
+from lumilake import envs
+from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import ScoreConfig, ScoreOp, as_output
+from lumilake_server.ops import (
+    LambdaOp,
+    LLMChatOp,
+    OpMessage,
+    ScoreConfig,
+    ScoreOp,
+    as_output,
+)
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+
+
+@pytest.fixture(autouse=True)
+def _runtime_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
 
 
 def test_score_op_requires_config_with_named_error() -> None:
@@ -171,6 +185,82 @@ def test_upstream_score_uses_pairs_node_placeholder() -> None:
         for entry in pairs.data_spec["plan"]
         if entry.get("kind") == "stage"
     )
+
+
+def test_score_op_feeds_list_lambda_with_ordered_items(tmp_path: Path) -> None:
+    score = ScoreOp(
+        query=["question"],
+        candidates=["first", "second"],
+        config=ScoreConfig(model="org/reranker"),
+    )
+
+    def collect(items):
+        return [{"scores": items[0]}]
+
+    scores = LambdaOp([score], fn=collect, mode="list")
+    compiled = Graph.from_ops([as_output("scores", scores)]).compile()
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    score_node = runtime_graph.nodes[score.id]
+    score_dir = tmp_path / score_node.node_id
+    score_dir.mkdir()
+    (score_dir / "results.json").write_text(
+        json.dumps(
+            {
+                "result": {
+                    "items": [
+                        {"index": 0, "score": 0.9},
+                        {"index": 1, "score": 0.2},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    consumer = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == python_step.TASK_TYPE
+    )
+    namespace: dict[str, object] = {"json": json}
+    exec(consumer.to_flowmesh_node()["spec"]["code"], namespace)
+    main = namespace["main"]
+    assert callable(main)
+
+    rows = main({score_node.node_id: str(score_dir)})["items"]
+
+    assert rows == [
+        {
+            "output": {
+                "scores": [
+                    {"index": 0, "score": 0.9},
+                    {"index": 1, "score": 0.2},
+                ]
+            }
+        }
+    ]
+
+
+def test_score_op_feeds_llm_chat_op() -> None:
+    score = ScoreOp(
+        query=["question"],
+        candidates=["first", "second"],
+        config=ScoreConfig(model="org/reranker"),
+    )
+    answer = LLMChatOp(
+        [OpMessage(role="user", content=score)],
+        config=GenerationConfig(model="org/model"),
+    )
+    compiled = Graph.from_ops([as_output("answer", answer)]).compile()
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    score_node = runtime_graph.nodes[score.id]
+    llm_node = runtime_graph.nodes[answer.id]
+
+    columns = llm_node.data_spec["template"]["columns"]
+    assert any(
+        column.get("node") == score_node.node_id and column.get("path") == "items"
+        for column in columns
+    )
+    assert score_node.node_id in llm_node.dependencies
 
 
 def test_pairs_step_output_shape_broadcasts_single_query() -> None:

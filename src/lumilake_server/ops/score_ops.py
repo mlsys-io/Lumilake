@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -118,6 +119,12 @@ class ScoreOp(Op):
     @property
     def candidates(self) -> Op:
         return self.inputs[1]
+
+    def consumer_result_path(self) -> str:
+        return "items"
+
+    def consumer_row_count(self, input_counts: Sequence[int | None]) -> int | None:
+        return input_counts[1] if len(input_counts) > 1 else None
 
     def _serialize(self) -> dict[str, Any]:
         return {
