@@ -36,7 +36,22 @@ outputs:
 
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, `LambdaOp`, and `RouterOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+
+`RouterOp` declares deterministic per-row branch selection. A rowwise
+`LLMChatOp` may name a router and branch in `row_gate`; only matching rows are
+dispatched to the model. Non-matching rows are retained with `output: null`,
+so the result keeps one row per input row and cannot be confused with a model
+failure.
+
+A rowwise `LLMChatOp` may use `rowwise_messages_column` instead of
+`rowwise_template`. That column holds one serialized list of role/content
+messages per row, sent as the whole conversation in order.
+
+MedAgentBench helper: `lumilake_server.workloads.medagentbench.translate_search`
+turns a model-written FHIR search URL into SQL for `DataRetrievalOp` sql mode,
+and `render_bundle` turns the returned rows back into the HAPI searchset shape
+injected into the tool conversation.
 
 `LLMChatOp.config.output_check` retries only rows whose generated text fails a
 declared JSON Schema or regular-expression check. It applies in local and API

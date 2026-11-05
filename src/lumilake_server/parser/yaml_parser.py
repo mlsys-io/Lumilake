@@ -108,6 +108,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "EmbeddingOp",
         "FormatOp",
         "LambdaOp",
+        "RouterOp",
     }
 )
 
@@ -404,6 +405,8 @@ def _build_op_dict(
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
         _emit_lambda_op(op_dict, entry)
+    elif entry.op == "RouterOp":
+        _emit_router_op(op_dict, entry, user_id_to_internal)
     else:  # pragma: no cover - guarded upstream
         raise ValueError(f"unsupported op type '{entry.op}'")
 
@@ -761,6 +764,51 @@ def _emit_llm_like_op(
         op_dict["rowwise_template"] = entry.fields["rowwise_template"]
     if resolved_rowwise is not None:
         op_dict["rowwise_columns"] = resolved_rowwise
+    rowwise_messages_column = entry.fields.get("rowwise_messages_column")
+    if rowwise_messages_column is not None:
+        if not isinstance(rowwise_messages_column, dict):
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column must be a mapping"
+            )
+        column = dict(rowwise_messages_column)
+        label = column.get("label")
+        node = column.get("node")
+        path = column.get("path")
+        if not isinstance(label, str) or not label:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column requires a label"
+            )
+        if not isinstance(node, str) or node not in user_id_to_internal:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column requires a known node"
+            )
+        if not isinstance(path, str) or not path:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column requires a path"
+            )
+        column["node"] = user_id_to_internal[node]
+        op_dict["rowwise_messages_column"] = column
+    row_gate = entry.fields.get("row_gate")
+    if row_gate is not None:
+        if not isinstance(row_gate, dict):
+            raise ValueError(f"{op_kind} '{entry.id}' row_gate must be a mapping")
+        gate = dict(row_gate)
+        node = gate.get("node")
+        if not isinstance(node, str) or node not in user_id_to_internal:
+            raise ValueError(f"{op_kind} '{entry.id}' row_gate requires a known node")
+        gate["node"] = user_id_to_internal[node]
+        branch = gate.get("branch")
+        if not isinstance(branch, str) or not branch:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' row_gate requires a non-empty branch"
+            )
+        terminal = gate.get("terminal", False)
+        if not isinstance(terminal, bool):
+            raise ValueError(f"{op_kind} '{entry.id}' row_gate terminal must be a bool")
+        gate["terminal"] = terminal
+        op_dict["row_gate"] = gate
+        if gate["node"] not in op_dict["_inputs"]:
+            op_dict["_inputs"].append(gate["node"])
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
     elif "rowwise_template" in entry.fields and isinstance(inline_messages, list):
@@ -779,7 +827,10 @@ def _emit_llm_like_op(
     # rowwise_columns / image_source separately).
     llm_inputs = [msg_internal_id]
     if op_kind == "LLMChatOp":
-        for table in (resolved_aggregate, resolved_rowwise):
+        for table in (
+            resolved_aggregate,
+            resolved_rowwise,
+        ):
             if not table:
                 continue
             for item in table:
@@ -788,6 +839,11 @@ def _emit_llm_like_op(
                 node_id = item.get("node")
                 if isinstance(node_id, str) and node_id not in llm_inputs:
                     llm_inputs.append(node_id)
+        row_gate = op_dict.get("row_gate")
+        if isinstance(row_gate, dict):
+            gate_node = row_gate.get("node")
+            if isinstance(gate_node, str) and gate_node not in llm_inputs:
+                llm_inputs.append(gate_node)
     op_dict["_inputs"] = llm_inputs
 
 
@@ -1054,6 +1110,64 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         op_dict["preserves_empty"] = preserves_empty
 
 
+def _emit_router_op(
+    op_dict: dict[str, Any],
+    entry: _OpEntry,
+    user_id_to_internal: dict[str, str],
+) -> None:
+    rules = entry.fields.get("rules")
+    if not isinstance(rules, list) or not rules:
+        raise ValueError(f"RouterOp '{entry.id}' requires non-empty rules")
+    parsed_rules: list[dict[str, str]] = []
+    branches: list[str] = []
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            raise ValueError(f"RouterOp '{entry.id}' rules[{index}] must be a mapping")
+        branch = rule.get("branch")
+        match = rule.get("match")
+        value = rule.get("value")
+        if not isinstance(branch, str) or not branch:
+            raise ValueError(f"RouterOp '{entry.id}' rules[{index}] requires branch")
+        if match not in {"equals", "contains"}:
+            raise ValueError(
+                f"RouterOp '{entry.id}' rules[{index}] requires match: equals|contains"
+            )
+        if not isinstance(value, str):
+            raise ValueError(
+                f"RouterOp '{entry.id}' rules[{index}] requires string value"
+            )
+        branches.append(branch)
+        parsed_rules.append({"branch": branch, "match": match, "value": value})
+    if len(set(branches)) != len(branches):
+        raise ValueError(f"RouterOp '{entry.id}' rule branches must be unique")
+    default_branch = entry.fields.get("default_branch")
+    if default_branch not in branches:
+        raise ValueError(
+            f"RouterOp '{entry.id}' default_branch must name one of branches"
+        )
+    source = entry.fields.get("source")
+    if not isinstance(source, str) or source not in user_id_to_internal:
+        raise ValueError(f"RouterOp '{entry.id}' requires a known source node")
+    source_path = entry.fields.get("source_path", "items.output")
+    if not isinstance(source_path, str) or not source_path:
+        raise ValueError(
+            f"RouterOp '{entry.id}' source_path must be a non-empty string"
+        )
+    input_path = entry.fields.get("input_path", "items.output")
+    if not isinstance(input_path, str) or not input_path:
+        raise ValueError(f"RouterOp '{entry.id}' input_path must be a non-empty string")
+    source_id = user_id_to_internal[source]
+    if source_id not in op_dict["_inputs"]:
+        op_dict["_inputs"].append(source_id)
+    op_dict.update(
+        rules=parsed_rules,
+        default_branch=default_branch,
+        source_node=source_id,
+        source_path=source_path,
+        input_path=input_path,
+    )
+
+
 def _build_generation_config(
     config: dict[str, Any], entry_id: str, op_kind: str = "LLMChatOp"
 ) -> dict[str, Any]:
@@ -1077,5 +1191,6 @@ def _op_id_prefix(op_type: str) -> str:
         "EmbeddingOp": "embedding",
         "FormatOp": "format",
         "LambdaOp": "lambda",
+        "RouterOp": "router",
     }
     return mapping.get(op_type, op_type.lower())

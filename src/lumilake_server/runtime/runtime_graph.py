@@ -29,6 +29,7 @@ from lumilake_server.ops import (
     MessageOp,
     Op,
     OutputOp,
+    RouterOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
@@ -426,7 +427,7 @@ class RuntimeGraphBuilder:
             op_id
             for op_id, op in graph_dict.items()
             if isinstance(op, LLMVisionOp)
-            and op.rowwise_template
+            and (op.rowwise_template or op.rowwise_messages_column)
             and isinstance(graph_dict.get(op.image_source), DataRetrievalOp)
         }
 
@@ -449,6 +450,8 @@ class RuntimeGraphBuilder:
                 visited_node_ids.add(op_id)
             elif isinstance(op, LambdaOp) and op.takes_whole_columns:
                 list_lambda_ops[op_id] = op
+                visited_node_ids.add(op_id)
+            elif isinstance(op, RouterOp):
                 visited_node_ids.add(op_id)
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
@@ -549,11 +552,64 @@ class RuntimeGraphBuilder:
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
                 continue
+            row_gate = (
+                self._row_gate(
+                    consumer=llm_op_id,
+                    row_gate=llm_op.row_gate,
+                    graph_dict=graph_dict,
+                )
+                if isinstance(llm_op, LLMChatOp)
+                else None
+            )
+            if row_gate is not None:
+                if not isinstance(llm_op, LLMChatOp) or not (
+                    llm_op.rowwise_template or llm_op.rowwise_messages_column
+                ):
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' row_gate requires rowwise_template"
+                    )
+                gated_runtime_ops = self._build_row_gated_llm_ops(
+                    llm_op_id=llm_op_id,
+                    llm_op=llm_op,
+                    row_gate=row_gate,
+                    graph_dict=graph_dict,
+                    inputs_dict=inputs_dict,
+                    task_type_override=task_type_override,
+                    dsl_to_runtime=dsl_to_runtime,
+                    visited_node_ids=visited_node_ids,
+                    nodes=nodes,
+                )
+                gated_mapping = [runtime_op.node_id for runtime_op in gated_runtime_ops]
+                for runtime_op in gated_runtime_ops:
+                    if runtime_op.node_id in nodes:
+                        continue
+                    nodes[runtime_op.node_id] = runtime_op
+                    node_order.append(runtime_op.node_id)
+                dsl_to_runtime[llm_op_id] = gated_mapping
+                if llm_op_id in output_source_to_outputop:
+                    ((output_name, path_override),) = output_source_to_outputop[
+                        llm_op_id
+                    ]
+                    output_node_map[gated_mapping[-1]] = output_name
+                    output_paths[gated_mapping[-1]] = path_override or "items.output"
+                continue
 
             runtime_ops: list[RuntimeOp] = []
             mapping: list[str] = []
             output_node_ids: list[str] = [llm_op_id]
-            if isinstance(llm_op, LLMVisionOp):
+            if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_messages_column:
+                runtime_ops = [
+                    self._build_rowwise_messages_op(
+                        llm_op_id=llm_op_id,
+                        llm_op=llm_op,
+                        graph_dict=graph_dict,
+                        inputs_dict=inputs_dict,
+                        dsl_to_runtime=dsl_to_runtime,
+                        visited_node_ids=visited_node_ids,
+                    )
+                ]
+                mapping = [runtime_ops[0].node_id]
+            elif isinstance(llm_op, LLMVisionOp):
                 runtime_ops, mapping = self._build_vlm_nodes_from_image_op(
                     llm_op_id,
                     llm_op,
@@ -750,7 +806,7 @@ class RuntimeGraphBuilder:
             if (
                 isinstance(inp, LLMChatOp)
                 and not isinstance(inp, LLMVisionOp)
-                and inp.rowwise_template
+                and (inp.rowwise_template or inp.rowwise_messages_column)
             ):
                 # A rowwise LLM groups its per-row outputs back into one item;
                 # flatten it to one value per row for the python step. A VLM's
@@ -1572,7 +1628,7 @@ class RuntimeGraphBuilder:
                 if (
                     isinstance(inp, LLMChatOp)
                     and not isinstance(inp, LLMVisionOp)
-                    and inp.rowwise_template
+                    and (inp.rowwise_template or inp.rowwise_messages_column)
                 ):
                     # A rowwise LLM groups its per-row outputs back into one
                     # item; the python step must flatten it to one value per
@@ -1851,6 +1907,7 @@ class RuntimeGraphBuilder:
         return (
             isinstance(op, LLMChatOp)
             and op.rowwise_template is None
+            and op.rowwise_messages_column is None
             and not RuntimeGraphBuilder._is_api_task(op)
         )
 
@@ -1869,7 +1926,10 @@ class RuntimeGraphBuilder:
         return (
             RuntimeGraphBuilder._is_api_task(op)
             and isinstance(op, LLMChatOp)
-            and op.rowwise_template is not None
+            and (
+                op.rowwise_template is not None
+                or op.rowwise_messages_column is not None
+            )
         )
 
     def _upstream_output_path(self, op: Op) -> str:
@@ -2114,6 +2174,37 @@ class RuntimeGraphBuilder:
             )
         return condition
 
+    def _row_gate(
+        self,
+        *,
+        consumer: str,
+        row_gate: dict[str, Any] | None,
+        graph_dict: dict[str, Op],
+    ) -> dict[str, Any] | None:
+        """Validate and normalize a per-row branch gate declaration."""
+        if row_gate is None:
+            return None
+        node = row_gate.get("node")
+        branch = row_gate.get("branch")
+        if not isinstance(node, str) or not node:
+            raise ValueError(f"LLMChatOp '{consumer}' row_gate requires a node")
+        if not isinstance(branch, str) or not branch:
+            raise ValueError(f"LLMChatOp '{consumer}' row_gate requires a branch")
+        router = graph_dict.get(node)
+        if not isinstance(router, RouterOp):
+            raise ValueError(
+                f"LLMChatOp '{consumer}' row_gate node '{node}' must be a RouterOp"
+            )
+        if branch not in router.branches:
+            raise ValueError(
+                f"LLMChatOp '{consumer}' row_gate branch {branch!r} is not declared "
+                f"by RouterOp '{node}'"
+            )
+        terminal = row_gate.get("terminal", False)
+        if not isinstance(terminal, bool):
+            raise ValueError(f"LLMChatOp '{consumer}' row_gate terminal must be a bool")
+        return {"node": node, "branch": branch, "terminal": terminal}
+
     def _api_prior_prompt(
         self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
     ) -> list[str] | None:
@@ -2333,7 +2424,9 @@ class RuntimeGraphBuilder:
         ):
             inference_spec["output_check"] = asdict(llm_op.config.output_check)
 
-        if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
+        if isinstance(llm_op, LLMChatOp) and (
+            llm_op.rowwise_template or llm_op.rowwise_messages_column
+        ):
             data_spec, row_dependencies = self._rowwise_data_spec(
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
@@ -2426,6 +2519,279 @@ class RuntimeGraphBuilder:
             ),
         )
 
+    def _build_row_gated_llm_ops(
+        self,
+        *,
+        llm_op_id: str,
+        llm_op: LLMChatOp,
+        row_gate: dict[str, Any],
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        task_type_override: str | None,
+        dsl_to_runtime: dict[str, list[str]],
+        visited_node_ids: set[str],
+        nodes: dict[str, RuntimeOp],
+    ) -> list[RuntimeOp]:
+        """Build status, selection, gated LLM, and merge stages for a row gate."""
+        router_id = row_gate["node"]
+        router = graph_dict.get(router_id)
+        if not isinstance(router, RouterOp):
+            raise ValueError(f"row gate node '{router_id}' is not a RouterOp")
+        source_runtime = dsl_to_runtime.get(router.source_node, [])
+        if not source_runtime:
+            source_op = graph_dict.get(router.source_node)
+            if isinstance(source_op, InputOp):
+                values = inputs_dict.get(source_op.name)
+                if values is None:
+                    raise ValueError(
+                        f"RouterOp '{router_id}' source input '{source_op.name}' "
+                        "has no values supplied"
+                    )
+                source_runtime = [source_op.id]
+            if isinstance(source_op, LambdaOp) and not source_op.takes_whole_columns:
+                source_runtime = [
+                    self._build_python_step(
+                        router.source_node,
+                        graph_dict,
+                        inputs_dict,
+                        visited_node_ids,
+                        nodes,
+                        [],
+                        dsl_to_runtime,
+                    )
+                ]
+        if len(source_runtime) != 1:
+            raise ValueError(
+                f"RouterOp '{router_id}' source '{router.source_node}' must compile "
+                "to one runtime node"
+            )
+        status_id = f"{llm_op_id}__row_status"
+        select_id = f"{llm_op_id}__row_select"
+        selected_id = f"{llm_op_id}__selected"
+        merge_id = f"{llm_op_id}__rows"
+        input_path = router.input_path
+        route_path = input_path.removeprefix("items.output.")
+        source_columns: list[dict[str, Any]] = [
+            {
+                "label": "source",
+                "node": router.source_node,
+                "path": input_path,
+            },
+        ]
+        if route_path and route_path != input_path:
+            source_columns.append(
+                {
+                    "label": "route",
+                    "node": router.source_node,
+                    "path": f"items.output.{route_path}",
+                }
+            )
+        status_dependencies: tuple[str, ...] = (source_runtime[0],)
+        source_op = graph_dict.get(router.source_node)
+        if isinstance(source_op, InputOp):
+            values = inputs_dict.get(source_op.name)
+            if values is None:
+                raise ValueError(
+                    f"RouterOp '{router_id}' source input '{source_op.name}' "
+                    "has no values supplied"
+                )
+            source_columns = [
+                {"label": "source", "data": {"type": "list", "items": list(values)}}
+            ]
+            status_dependencies = ()
+        status = RuntimeOp(
+            node_id=status_id,
+            task_type=python_step.TASK_TYPE,
+            backend=python_step.BACKEND,
+            model="",
+            data_spec={
+                "code": "",
+                "fn_name": "row_status",
+                "plan": source_columns,
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+                "mode": "row_status",
+                "rules": [
+                    {
+                        "branch": rule.branch,
+                        "match": rule.match,
+                        "value": rule.value,
+                    }
+                    for rule in router.rules
+                ],
+                "default_branch": router.default_branch,
+                "terminal_branch": row_gate["branch"] if row_gate["terminal"] else None,
+            },
+            model_spec={},
+            inference_spec={},
+            dependencies=status_dependencies,
+        )
+        # Mark the message chain as visited even though the gated model reads
+        # its rows from the filtered selector below.
+        self._infer_structural_messages(
+            llm_op_id,
+            graph_dict,
+            inputs_dict,
+            visited_node_ids,
+            dsl_to_runtime=dsl_to_runtime,
+            runtime_nodes=nodes,
+            api_mode=llm_op.config.api is not None,
+        )
+        labels: list[str] = []
+        select_plan: python_step.ColumnPlan = [{"kind": "stage", "node": status_id}]
+        select_plan[0]["allow_empty"] = True
+        select_dependencies: list[str] = [status_id]
+        for index, column in enumerate(llm_op.rowwise_columns or []):
+            label = column.get("label")
+            if not isinstance(label, str) or not label:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' row gate requires labeled columns"
+                )
+            if label in labels:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' row gate has duplicate label {label!r}"
+                )
+            labels.append(label)
+            data = column.get("data")
+            node_ref = column.get("node")
+            if isinstance(data, dict):
+                items = data.get("items")
+                if not isinstance(items, list):
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' row gate column {label!r} "
+                        "requires a list data payload"
+                    )
+                select_plan.append({"kind": "literal", "values": list(items)})
+                continue
+            if not isinstance(node_ref, str):
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' row gate column {label!r} "
+                    "requires data or node"
+                )
+            upstream = graph_dict.get(node_ref)
+            if isinstance(upstream, InputOp):
+                values = inputs_dict.get(upstream.name)
+                if values is None:
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' row gate column {label!r} "
+                        f"references input {upstream.name!r} with no values"
+                    )
+                select_plan.append({"kind": "literal", "values": list(values)})
+                continue
+            runtime_ids = dsl_to_runtime.get(node_ref, [])
+            if len(runtime_ids) != 1:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' row gate column {label!r} node "
+                    f"{node_ref!r} must compile to one runtime node"
+                )
+            entry: dict[str, Any] = {"kind": "stage", "node": runtime_ids[0]}
+            entry["allow_empty"] = True
+            if (
+                isinstance(upstream, LLMChatOp)
+                and not isinstance(upstream, LLMVisionOp)
+                and (upstream.rowwise_template or upstream.rowwise_messages_column)
+            ):
+                entry["flatten"] = True
+            select_plan.append(entry)
+            if runtime_ids[0] not in select_dependencies:
+                select_dependencies.append(runtime_ids[0])
+        selector = RuntimeOp(
+            node_id=select_id,
+            task_type=python_step.TASK_TYPE,
+            backend=python_step.BACKEND,
+            model="",
+            data_spec={
+                "code": "",
+                "fn_name": "row_select",
+                "plan": select_plan,
+                "labels": labels,
+                "branch": row_gate["branch"],
+                "include_done": bool(row_gate["terminal"]),
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+                "mode": "row_select",
+            },
+            model_spec={},
+            inference_spec={},
+            dependencies=tuple(select_dependencies),
+        )
+        base_data_spec: dict[str, Any] = {
+            "type": "dataframe",
+            "columns": [
+                {
+                    "label": label,
+                    "node": select_id,
+                    "path": f"value.items.output.{label}",
+                }
+                for label in labels
+            ],
+            "messages": [
+                *[
+                    {"role": "system", "content": message}
+                    for message in llm_op.system_messages or []
+                ],
+                {"role": "user", "content": llm_op.rowwise_template},
+            ],
+        }
+        backend = "vllm"
+        task_type = task_type_override or "inference"
+        if llm_op.config.api is not None:
+            backend = "api"
+            task_type = "api"
+        if backend == "api":
+            api_config = llm_op.config.api
+            if api_config is None:
+                raise ValueError("API row gate requires config.api")
+            selected = self._build_api_task(
+                llm_op_id=selected_id,
+                llm_op=llm_op,
+                api_config=api_config,
+                data_spec=base_data_spec,
+                dependencies=[select_id],
+                output_spec=None,
+                condition=None,
+                graph_dict=graph_dict,
+                inputs_dict=inputs_dict,
+                dsl_to_runtime=dsl_to_runtime,
+            )[0]
+        else:
+            selected = RuntimeOp(
+                node_id=selected_id,
+                task_type=task_type,
+                backend=backend,
+                model=llm_op.config.model,
+                data_spec=base_data_spec,
+                model_spec=self._build_model_spec(llm_op.config, backend),
+                inference_spec=llm_op.config.inference_spec(),
+                dependencies=(select_id,),
+                condition=None,
+            )
+        merge = RuntimeOp(
+            node_id=merge_id,
+            task_type=python_step.TASK_TYPE,
+            backend=python_step.BACKEND,
+            model="",
+            data_spec={
+                "code": "",
+                "fn_name": "row_skip_merge",
+                "plan": [
+                    {"kind": "stage", "node": status_id},
+                    {
+                        "kind": "stage",
+                        "node": selected_id,
+                        "flatten": True,
+                        "allow_skipped": True,
+                    },
+                ],
+                "branch": row_gate["branch"],
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+                "mode": "row_skip_merge",
+            },
+            model_spec={},
+            inference_spec={},
+            dependencies=(status_id, selector.node_id, selected_id),
+        )
+        visited_node_ids.update({router_id, llm_op_id})
+        return [status, selector, selected, merge]
+
     def _api_request_headers(
         self, llm_op_id: str, api_config: ApiConfig, url: str
     ) -> dict[str, str]:
@@ -2463,7 +2829,9 @@ class RuntimeGraphBuilder:
         dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Dispatch an API LLM op to its row-wise, aggregate or plain builder."""
-        if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
+        if isinstance(llm_op, LLMChatOp) and (
+            llm_op.rowwise_template or llm_op.rowwise_messages_column
+        ):
             return self._build_api_rowwise_op(
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
@@ -2612,8 +2980,11 @@ class RuntimeGraphBuilder:
     ) -> tuple[dict[str, Any], list[str]]:
         """Build the dataframe data_spec for a rowwise LLMChatOp, shared by the
         local and API paths."""
-        if llm_op.rowwise_template is None:
-            raise ValueError(f"LLMChatOp {llm_op_id} has no rowwise_template")
+        if llm_op.rowwise_template is None and llm_op.rowwise_messages_column is None:
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} has no rowwise_template or "
+                "rowwise_messages_column"
+            )
         columns: list[dict[str, Any]] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for col in llm_op.rowwise_columns or []:
@@ -2658,15 +3029,107 @@ class RuntimeGraphBuilder:
             )
         if not columns:
             raise ValueError(f"LLMChatOp {llm_op_id} has empty rowwise_columns")
+        if llm_op.rowwise_messages_column is not None:
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} rowwise_messages_column is lowered before "
+                "the dataframe builder"
+            )
         messages: list[dict[str, str]] = []
         for system_msg in llm_op.system_messages or []:
             messages.append({"role": "system", "content": system_msg})
+        if llm_op.rowwise_template is None:
+            raise ValueError(f"LLMChatOp {llm_op_id} has no rowwise_template")
         messages.append({"role": "user", "content": llm_op.rowwise_template})
         return {
             "type": "dataframe",
             "columns": columns,
             "messages": messages,
         }, dependencies
+
+    def _build_rowwise_messages_op(
+        self,
+        *,
+        llm_op_id: str,
+        llm_op: LLMChatOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]],
+        visited_node_ids: set[str],
+    ) -> RuntimeOp:
+        """Build one LLM op whose input is a list of complete message arrays."""
+        self._infer_structural_messages(
+            llm_op_id,
+            graph_dict,
+            inputs_dict,
+            visited_node_ids,
+            dsl_to_runtime=dsl_to_runtime,
+            api_mode=llm_op.config.api is not None,
+        )
+        column = llm_op.rowwise_messages_column
+        if column is None:
+            raise ValueError(f"LLMChatOp '{llm_op_id}' has no message column")
+        node_ref = column.get("node")
+        path = column.get("path")
+        if not isinstance(node_ref, str) or not isinstance(path, str):
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' rowwise_messages_column requires "
+                "node and path"
+            )
+        upstream = graph_dict.get(node_ref)
+        if isinstance(upstream, InputOp):
+            visited_node_ids.add(node_ref)
+            values = inputs_dict.get(upstream.name)
+            if values is None:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' rowwise_messages_column references "
+                    f"input {upstream.name!r} with no values"
+                )
+            messages = []
+            for value in values:
+                try:
+                    decoded = json.loads(value)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' rowwise_messages_column input "
+                        f"{upstream.name!r} values must be JSON message arrays"
+                    ) from exc
+                messages.append(decoded)
+            data_spec: dict[str, Any] = {"type": "list", "items": messages}
+            dependencies: list[str] = []
+        else:
+            runtime_ids = dsl_to_runtime.get(node_ref, [])
+            if len(runtime_ids) != 1:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' rowwise_messages_column node "
+                    f"{node_ref!r} must compile to one runtime node"
+                )
+            visited_node_ids.add(node_ref)
+            data_spec = {"type": "list", "node": runtime_ids[0], "path": path}
+            dependencies = [runtime_ids[0]]
+        if llm_op.config.api is None:
+            return self._create_runtime_op(
+                name=llm_op_id,
+                task_type="inference",
+                data_spec=data_spec,
+                model_spec=self._build_model_spec(llm_op.config, "vllm"),
+                inference_spec=llm_op.config.inference_spec(),
+                backend="vllm",
+                model=llm_op.config.model,
+                dependencies=dependencies or None,
+            )
+        api_config = llm_op.config.api
+        return self._build_api_task(
+            llm_op_id=llm_op_id,
+            llm_op=llm_op,
+            api_config=api_config,
+            data_spec=data_spec,
+            dependencies=dependencies or None,
+            output_spec=None,
+            condition=None,
+            graph_dict=graph_dict,
+            inputs_dict=inputs_dict,
+            dsl_to_runtime=dsl_to_runtime,
+        )[0]
 
     def _aggregate_data_spec(
         self,

@@ -12,6 +12,8 @@ from lumilake_server.dynamic.driver import (
     build_round,
     compute_observation,
     forward_refs,
+    has_live_rows,
+    resolve_subgraph,
     validate_emitted_subgraph,
     walk_archived_items,
 )
@@ -64,6 +66,15 @@ def test_forward_implicit_llm_reference_binds_default_path():
     assert ops[0]["inputs"] == [llm_id]
     assert ops[0]["format_kwargs"] == {"ref0": llm_id}
     assert inputs == {llm_id: ["hello"]}
+
+
+def test_has_live_rows_ignores_completely_terminal_sets() -> None:
+    terminal = json.dumps({"selected": True, "done": True, "branch": "diagnose"})
+    live = json.dumps({"selected": True, "done": False, "branch": "patient"})
+    assert has_live_rows({"state": [terminal]}) is False
+    assert has_live_rows({"state": [terminal, live]}) is True
+    assert has_live_rows({"state": ["ordinary-output"]}) is True
+    assert has_live_rows({}) is True
 
 
 def test_forward_explicit_sql_column_reference_binds_and_rewrites():
@@ -284,6 +295,135 @@ def test_validate_accepts_export_in_subgraph():
         }
     ]
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
+
+
+def _llm_column_library() -> dict[str, dict[str, Any]]:
+    return {
+        "DoctorTurn": {
+            "op": "LLMChatOp",
+            "inputs": ["DoctorPrompt"],
+            "messages": [{"role": "user", "content": "doctor"}],
+            "rowwise_template": "{prompt}",
+            "rowwise_columns": [
+                {
+                    "label": "prompt",
+                    "node": "DoctorPrompt",
+                    "path": "items.output.prompt",
+                },
+                {
+                    "label": "doctor_system",
+                    "node": "DoctorPrompt",
+                    "path": "items.output.doctor_system",
+                },
+            ],
+            "column_bindings": [{"label": "prompt", "input": 0}],
+            "config": {
+                "model": "Qwen/Qwen3.8-27B-FP8",
+                "temperature": 0.05,
+                "max_tokens": 200,
+            },
+        }
+    }
+
+
+def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"{prefix}_prompt_1",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "doctor_prompt",
+            "code": "def doctor_prompt(items):\n    return [{'prompt': 'x'}]\n",
+        },
+        {
+            "ref": "DoctorTurn",
+            "id": f"{prefix}_turn_1",
+            "inputs": [f"{prefix}_prompt_1"],
+        },
+    ]
+
+
+def test_column_bindings_remap_independent_library_instances() -> None:
+    library = _llm_column_library()
+    library["DoctorTurn"]["column_bindings"].append(
+        {"label": "doctor_system", "input": 0}
+    )
+    subgraph = _llm_column_subgraph("doctor") + _llm_column_subgraph("patient")
+
+    resolved = resolve_subgraph(subgraph, library)
+    validate_emitted_subgraph(subgraph, {}, max_nodes=4, library=library)
+
+    turns = [op for op in resolved if op["op"] == "LLMChatOp"]
+    assert [
+        {column["node"] for column in turn["rowwise_columns"]} for turn in turns
+    ] == [
+        {"doctor_prompt_1"},
+        {"patient_prompt_1"},
+    ]
+    assert [turn["rowwise_columns"][0]["node"] for turn in turns] == [
+        "doctor_prompt_1",
+        "patient_prompt_1",
+    ]
+    assert {column["node"] for column in library["DoctorTurn"]["rowwise_columns"]} == {
+        "DoctorPrompt"
+    }
+
+
+def test_column_bindings_move_each_bound_column_to_slot_zero() -> None:
+    library = _llm_column_library()
+    library["DoctorTurn"]["column_bindings"].append(
+        {"label": "doctor_system", "input": 0}
+    )
+    subgraph = _llm_column_subgraph("doctor")
+
+    resolved = resolve_subgraph(subgraph, library)
+
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert {column["node"] for column in turn["rowwise_columns"]} == {"doctor_prompt_1"}
+    assert "column_bindings" not in turn
+
+
+def test_column_bindings_reject_unused_input() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("doctor")
+    subgraph[1]["inputs"].append("unused_prompt")
+
+    with pytest.raises(DriverProtocolError, match="unused"):
+        resolve_subgraph(subgraph, library)
+
+
+def test_bound_library_llm_parses_through_native_graph_path() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("doctor")
+    resolved = resolve_subgraph(subgraph, library)
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert "column_bindings" not in turn
+
+    workflow = {
+        "name": "depcheck",
+        "inputs": {"Symbols": []},
+        "ops": resolved,
+        "outputs": [],
+    }
+    parsed = parse_yaml_payload(workflow)
+    assert parsed
+
+
+def test_column_bindings_reject_unknown_label() -> None:
+    library = _llm_column_library()
+    library["DoctorTurn"]["column_bindings"] = [{"label": "missing", "input": 0}]
+
+    with pytest.raises(DriverProtocolError, match="unknown label 'missing'"):
+        resolve_subgraph(_llm_column_subgraph("doctor"), library)
+
+
+def test_column_bindings_reject_bad_slot() -> None:
+    library = _llm_column_library()
+    library["DoctorTurn"]["column_bindings"] = [{"label": "prompt", "input": -1}]
+
+    with pytest.raises(DriverProtocolError, match="invalid input slot -1"):
+        resolve_subgraph(_llm_column_subgraph("doctor"), library)
 
 
 def test_admit_subgraph_forwards_export_to_validation():

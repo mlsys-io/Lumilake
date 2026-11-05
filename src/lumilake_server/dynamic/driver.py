@@ -82,6 +82,9 @@ FIXED_ROUND_NODE_IDS: frozenset[str] = frozenset(
     }
 )
 
+MAX_ROUND_OP_EXPANSION = 4
+MAX_STATIC_ROUND_NODE_BOUND = 100
+
 _OP_CLASSES: dict[str, type] = {
     name: obj for name, obj in vars(ops_pkg).items() if isinstance(obj, type)
 }
@@ -103,6 +106,29 @@ class DriverProtocolError(Exception):
     Distinct from :class:`RuntimeError` so callers can distinguish a malformed
     plan/config from a job that legitimately failed.
     """
+
+
+def _template_round_expansion(template: dict[str, Any]) -> int:
+    """Upper-bound runtime nodes one declared template can expand into."""
+    return MAX_ROUND_OP_EXPANSION if template.get("row_gate") is not None else 1
+
+
+def static_round_node_upper_bound(
+    library: dict[str, dict[str, Any]] | None,
+    *,
+    include_proposer: bool,
+) -> int:
+    """Conservative ceiling for the declared portion of one round.
+
+    The declared round body expands each library template at its maximum
+    runtime-node factor. The in-graph observation/proposer pair contributes two
+    fixed nodes. Admission independently enforces the planner-emitted cap.
+    """
+    declared_body = sum(
+        _template_round_expansion(template) for template in (library or {}).values()
+    )
+    fixed_nodes = 2 if include_proposer else 0
+    return declared_body + fixed_nodes
 
 
 class StopPlan(BaseModel):
@@ -242,6 +268,56 @@ def _apply_param_bindings(
     return {**data_spec, "params": list(by_label.values())}
 
 
+def _apply_column_bindings(
+    template: dict[str, Any], ref: str, inputs: list[Any]
+) -> list[dict[str, Any]] | None:
+    """Substitute instance ids into an LLM template's rowwise columns."""
+    bindings = template.get("column_bindings")
+    if bindings is None:
+        return None
+    if not isinstance(bindings, list):
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings must be a list"
+        )
+    columns = template.get("rowwise_columns")
+    if not isinstance(columns, list):
+        raise DriverProtocolError(
+            f"library entry {ref!r} has column_bindings but no rowwise_columns"
+        )
+    if not all(isinstance(column, dict) for column in columns):
+        raise DriverProtocolError(
+            f"library entry {ref!r} rowwise_columns entries must be mappings"
+        )
+    by_label = {column.get("label"): dict(column) for column in columns}
+    used_slots: set[int] = set()
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise DriverProtocolError(
+                f"library entry {ref!r} column_bindings entries must be mappings"
+            )
+        label = binding.get("label")
+        slot = binding.get("input")
+        if label not in by_label:
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding references unknown "
+                f"label {label!r}; columns: {sorted(by_label)}"
+            )
+        if not isinstance(slot, int) or not 0 <= slot < len(inputs):
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding for {label!r} has "
+                f"invalid input slot {slot!r}"
+            )
+        by_label[label]["node"] = inputs[slot]
+        used_slots.add(slot)
+    unused_slots = set(range(len(inputs))) - used_slots
+    if unused_slots:
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings leave input slot(s) "
+            f"{sorted(unused_slots)} unused"
+        )
+    return list(by_label.values())
+
+
 def resolve_subgraph(
     subgraph: list[dict[str, Any]],
     library: dict[str, dict[str, Any]] | None,
@@ -251,8 +327,9 @@ def resolve_subgraph(
     An op that carries a ``ref`` key names a library template; the resolved op
     is the template's config with the emitted op's ``id`` and ``inputs`` applied
     on top. ``inputs`` wires the template's declared param slots (see
-    :func:`_apply_param_bindings`); a declared ``op`` is asserted to match the
-    template and ignored during merge. The planner may not override the
+    :func:`_apply_param_bindings`) and rowwise LLM columns (see
+    :func:`_apply_column_bindings`); a declared ``op`` is asserted to match
+    the template and ignored during merge. The planner may not override the
     template's other config (``data_spec``, ``model``, etc.). Ops without a
     ``ref`` pass through unchanged (fully-inline ops are allowed), so this is
     idempotent.
@@ -300,8 +377,12 @@ def resolve_subgraph(
                 merged["inputs"] = value
                 if isinstance(template.get("data_spec"), dict):
                     merged["data_spec"] = _apply_param_bindings(template, ref, value)
+                bound_columns = _apply_column_bindings(template, ref, value)
+                if bound_columns is not None:
+                    merged["rowwise_columns"] = bound_columns
                 continue
             merged[key] = value
+        merged.pop("column_bindings", None)
         resolved.append(merged)
     return resolved
 
@@ -425,6 +506,28 @@ def walk_archived_items(
                 ) from exc
         walked[node_id] = _forward_values(items, parts, node_id)
     return walked
+
+
+def has_live_rows(archived: dict[str, list[str]]) -> bool:
+    """Whether archived routing rows contain at least one non-terminal row.
+
+    Rows emitted by row routing carry a ``done`` flag. A round containing only
+    terminal rows has no work left, so the driver converts it to ``STOP``
+    rather than forwarding an empty row set into the next round.
+    """
+    if not archived:
+        return True
+    for values in archived.values():
+        for value in values:
+            try:
+                item = json.loads(value)
+            except (TypeError, ValueError):
+                return True
+            if not isinstance(item, dict) or "done" not in item:
+                return True
+            if not item["done"]:
+                return True
+    return False
 
 
 def forward_refs(

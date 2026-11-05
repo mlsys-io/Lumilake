@@ -296,7 +296,11 @@ The `driver:` YAML settings the server accepts are:
 - `preview_width` — observation preview character limit, default `900`; must be a positive integer.
 - `job_timeout` — per-job wait timeout in seconds, default `600.0`; must be greater than zero.
 - `max_rounds` — round limit, default `10`.
-- `max_nodes_per_round` — per-round subgraph node limit, default `8`.
+- `max_nodes_per_round` — per-round subgraph node limit, default `20`.
+  Submission computes a conservative round bound from declared library nodes
+  (row-gated templates expand to four internal nodes) and the in-graph
+  observation/proposer pair. The bound must stay within a hard ceiling of
+  `100`; admission still enforces the exact configured planner cap.
 - `threshold` — sufficiency threshold, default `None`.
 - `chat_template_kwargs` — chat-template kwargs for the proposer, default
   `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:
@@ -329,8 +333,30 @@ templates the planner can emit by id. Each entry is a full op config (e.g. a
 `DataRetrievalOp` with a real SQL template). The planner references one with
 `{"ref": "<id>", "id": <unique>, "inputs": [...]}`; the template is
 authoritative for its config, so the planner may only override `id` and
-`inputs`. Ops without a `ref` are emitted fully inline. The planner sees the
-library (id, op type, key config) in its system message each round.
+`inputs`. A retrieval template may declare `data_spec.param_bindings`, a list of
+`{"label": <param label>, "input": <inputs index>}` mappings. A rowwise
+`LLMChatOp` template may similarly declare `column_bindings`, a list of
+`{"label": <rowwise column label>, "input": <inputs index>}` mappings. Bindings
+replace the template's placeholder node with the node supplied at that input
+position, so one library entry can be instantiated repeatedly under distinct
+node ids. Each binding moves exactly the column it names; a template that needs
+two columns from the same node declares a binding for each, and both may use the
+same input slot. Every input slot must be valid and used by at least one
+binding, and every binding label must name a rowwise column. Ops without a
+`ref` are emitted fully inline. The planner sees the library (id, op type, key
+config) in its system message each round.
+
+Dynamic round bodies may use `RouterOp` plus a rowwise `LLMChatOp` `row_gate`
+instead of splitting one logical branch into several list-mode router stages.
+The router is a declared graph element, so the planner and validator can read
+the branch decision without executing Python or asking the planner to infer
+it from an LLM output. The gated LLM dispatches only rows whose branch
+matches; every input row still contributes one result row, with skipped rows
+carrying `output: null`.
+
+Rows that carry their own growing conversation can use
+`rowwise_messages_column`. The named column holds one serialized message array
+per row, preserving the complete role/content sequence across round boundaries.
 
 The parent job's result carries the per-round plans. Missing, malformed,
 unknown, or wrongly typed plan output fails the parent; it never becomes a

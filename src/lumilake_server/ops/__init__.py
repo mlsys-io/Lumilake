@@ -25,6 +25,7 @@ from lumilake_server.ops.llm_ops import (
     llm_vision,
 )
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
+from lumilake_server.ops.router_ops import RouterOp
 from lumilake_server.ops.util_ops import (
     FormatOp,
     LambdaOp,
@@ -49,6 +50,7 @@ __all__ = [
     "Op",
     "OpMessage",
     "OutputOp",
+    "RouterOp",
     "SingleDtype",
     "as_output",
     "data",

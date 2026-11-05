@@ -449,6 +449,51 @@ def _materialize_task_runtime() -> str:
     return str(path)
 
 
+def _run_row_status(
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    *,
+    rules: list[dict[str, str]],
+    default_branch: str,
+    terminal_branch: str | None = None,
+):
+    namespace: dict[str, Any] = {}
+    spec = {
+        "plan": plan,
+        "mode": "row_status",
+        "rules": rules,
+        "default_branch": default_branch,
+        "terminal_branch": terminal_branch,
+        "fn_name": "row_status",
+        "code": "",
+        "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+    }
+    runtime = python_step.runtime_blob()
+    code = python_step.flowmesh_spec("status", spec, {runtime.key: runtime})["code"]
+    exec(code, namespace)
+    return namespace["main"](inputs)
+
+
+def _run_row_select(
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    *,
+    labels: list[str],
+    branch: str,
+    include_done: bool = False,
+):
+    namespace: dict[str, Any] = {}
+    code = python_step.row_select_source(
+        "select",
+        plan,
+        labels=labels,
+        branch=branch,
+        include_done=include_done,
+    )
+    exec(code, namespace)
+    return namespace["main"](inputs)
+
+
 def _stage(tmp_path: Path, name: str, result: dict[str, Any]) -> str:
     stage = tmp_path / name
     stage.mkdir()
