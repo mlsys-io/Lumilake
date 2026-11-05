@@ -1908,7 +1908,7 @@ class RuntimeGraphBuilder:
                     entry["flatten"] = True
                 plan.append(entry)
                 dependencies.append(inp.id)
-            elif isinstance(inp, DataRetrievalOp):
+            elif isinstance(inp, (DataRetrievalOp, HttpFetchOp, ScoreOp)):
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, InputOp):
@@ -1925,7 +1925,8 @@ class RuntimeGraphBuilder:
             else:
                 raise ValueError(
                     f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
-                    f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
+                    f"DataRetrievalOp, HttpFetchOp, ScoreOp, list-mode LambdaOp, "
+                    f"InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
             if not isinstance(inp, (InputOp, DataOp)):
@@ -2207,6 +2208,9 @@ class RuntimeGraphBuilder:
 
     def _upstream_output_path(self, op: Op) -> str:
         """Result path for an upstream op's text output."""
+        consumer_path = op.consumer_result_path()
+        if consumer_path is not None:
+            return consumer_path
         if op.id in self._flattened_vlm_ids:
             return "value.items.output"
         if RuntimeGraphBuilder._is_api_task(op):
@@ -3770,6 +3774,12 @@ class RuntimeGraphBuilder:
             ]
             known = [c for c in lambda_counts if c is not None]
             return max(known) if known else None
+        if op.consumer_result_path() is not None:
+            input_counts = [
+                self._static_output_row_count(inp, inputs_dict, graph_dict)
+                for inp in op.inputs
+            ]
+            return op.consumer_row_count(input_counts)
         return None
 
     def _infer_structural_messages(
@@ -3876,6 +3886,14 @@ class RuntimeGraphBuilder:
                 if op.id not in columns:
                     path = retrieval_items_path(op.data_spec["mode"])
                     columns[op.id] = {"node": op.id, "path": path}
+                ancestor_buffer[op.id] = [(Roles.USER, op.id)]
+
+            elif op.consumer_result_path() is not None:
+                if op.id not in columns:
+                    columns[op.id] = {
+                        "node": op.id,
+                        "path": self._upstream_output_path(op),
+                    }
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, MessageOp):

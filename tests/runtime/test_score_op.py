@@ -24,6 +24,8 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 @pytest.fixture(autouse=True)
 def _runtime_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
 
 def test_score_op_requires_config_with_named_error() -> None:
@@ -221,8 +223,18 @@ def test_score_op_feeds_list_lambda_with_ordered_items(tmp_path: Path) -> None:
         for node in runtime_graph.nodes.values()
         if node.task_type == python_step.TASK_TYPE
     )
+    runtime = python_step.runtime_blob()
+    runtime_path = tmp_path / "lumilake-runtime.py"
+    runtime_path.write_bytes(runtime.body)
     namespace: dict[str, object] = {"json": json}
-    exec(consumer.to_flowmesh_node()["spec"]["code"], namespace)
+    plan = consumer.data_spec["plan"]
+    published = python_step.literal_blobs(plan) | {
+        python_step.runtime_blob().key: python_step.runtime_blob()
+    }
+    code = python_step.flowmesh_spec(consumer.node_id, consumer.data_spec, published)[
+        "code"
+    ].replace(python_step.TASK_RUNTIME_MOUNT, str(runtime_path))
+    exec(code, namespace)
     main = namespace["main"]
     assert callable(main)
 
@@ -263,12 +275,16 @@ def test_score_op_feeds_llm_chat_op() -> None:
     assert score_node.node_id in llm_node.dependencies
 
 
-def test_pairs_step_output_shape_broadcasts_single_query() -> None:
+def test_pairs_step_output_shape_broadcasts_single_query(tmp_path: Path) -> None:
     plan = [
         {"kind": "literal", "values": ["same question"]},
         {"kind": "literal", "values": ["first", "second"]},
     ]
     code = python_step.pairs_source("pairs", plan)
+    runtime = python_step.runtime_blob()
+    runtime_path = tmp_path / "lumilake-runtime.py"
+    runtime_path.write_bytes(runtime.body)
+    code = code.replace(python_step.TASK_RUNTIME_MOUNT, str(runtime_path))
     namespace: dict[str, object] = {}
     exec(code, namespace)
     main = namespace["main"]
@@ -292,7 +308,12 @@ def test_upstream_score_resolved_spec_is_dispatchable_shape(
         if node.task_type == python_step.TASK_TYPE
         and node.data_spec.get("mode") == "pairs"
     )
-    pairs_spec = pairs.to_flowmesh_node()["spec"]
+    published = python_step.literal_blobs(pairs.data_spec["plan"]) | {
+        python_step.runtime_blob().key: python_step.runtime_blob()
+    }
+    pairs_spec = python_step.flowmesh_spec(pairs.node_id, pairs.data_spec, published)
+    runtime_path = tmp_path / "lumilake-runtime.py"
+    runtime_path.write_bytes(python_step.runtime_blob().body)
     inputs: dict[str, str] = {}
     for plan, content in zip(
         pairs.data_spec["plan"],
@@ -316,7 +337,10 @@ def test_upstream_score_resolved_spec_is_dispatchable_shape(
         )
         inputs[node_id] = str(node_dir)
     namespace: dict[str, object] = {"json": json}
-    exec(pairs_spec["code"], namespace)
+    exec(
+        pairs_spec["code"].replace(python_step.TASK_RUNTIME_MOUNT, str(runtime_path)),
+        namespace,
+    )
     main = namespace["main"]
     assert callable(main)
     pairs_output = main(inputs)["items"]

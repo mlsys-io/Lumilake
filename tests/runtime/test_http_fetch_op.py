@@ -27,6 +27,8 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 @pytest.fixture(autouse=True)
 def _runtime_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
 
 def test_http_fetch_op_serializes_and_round_trips() -> None:
@@ -309,7 +311,9 @@ def test_semantic_scholar_stage_sets_pacing_and_query_cache(
     assert node.api_spec["response"]["fail_open"] is True
 
 
-def test_fail_open_error_row_is_visible_to_downstream_runtime_node() -> None:
+def test_fail_open_error_row_is_visible_to_downstream_runtime_node(
+    tmp_path: Path,
+) -> None:
     yaml_text = textwrap.dedent("""
         name: fetch_then_consume
         inputs:
@@ -347,6 +351,9 @@ def test_fail_open_error_row_is_visible_to_downstream_runtime_node() -> None:
         for node in runtime_graph.nodes.values()
         if node.task_type == "api" and node is not fetch
     )
+    runtime = python_step.runtime_blob()
+    runtime_path = tmp_path / "lumilake-runtime.py"
+    runtime_path.write_bytes(runtime.body)
 
     assert fetch.api_spec["response"]["fail_open"] is True
     assert consumer.dependencies == (fetch.node_id,)
@@ -411,7 +418,16 @@ def test_http_fetch_op_feeds_lambda_with_per_row_response(tmp_path: Path) -> Non
         if node.task_type == python_step.TASK_TYPE
     )
     namespace: dict[str, object] = {"json": json}
-    exec(consumer.to_flowmesh_node()["spec"]["code"], namespace)
+    plan = consumer.data_spec["plan"]
+    runtime_path = tmp_path / "lumilake-runtime.py"
+    runtime_path.write_bytes(python_step.runtime_blob().body)
+    published = python_step.literal_blobs(plan) | {
+        python_step.runtime_blob().key: python_step.runtime_blob()
+    }
+    code = python_step.flowmesh_spec(consumer.node_id, consumer.data_spec, published)[
+        "code"
+    ].replace(python_step.TASK_RUNTIME_MOUNT, str(runtime_path))
+    exec(code, namespace)
     main = namespace["main"]
     assert callable(main)
 
