@@ -49,9 +49,10 @@ class HttpFetchConfig:
 class HttpFetchOp(FunctionalOp):
     """Fetch JSON over HTTP once per input row.
 
-    ``url`` and the optional ``body`` are Python format templates rendered with
-    each row's value as ``{query}``. The executor issues one FlowMesh API
-    request per input row and returns one result row for each request.
+    ``url``, optional ``params``, and optional ``body`` are Python format
+    templates rendered with each row's value as ``{query}``. The executor
+    issues one FlowMesh API request per input row and returns one result row
+    for each request.
     """
 
     def __init__(
@@ -60,20 +61,29 @@ class HttpFetchOp(FunctionalOp):
         query: str | list[str] | Op,
         config: HttpFetchConfig | None = None,
         method: str = "GET",
+        params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
     ) -> None:
         self.url = url.strip()
         self.method = method.upper()
+        self.params = params
         self.body = body
         self.config = config or HttpFetchConfig()
         if not self.url:
             raise ValueError("HttpFetchOp requires a non-empty url template")
         if self.method not in {"GET", "POST"}:
             raise ValueError("HttpFetchOp method must be GET or POST")
-        if "{query}" not in self.url:
-            raise ValueError("HttpFetchOp url must contain a {query} placeholder")
+        if not any(
+            _contains_query_placeholder(value)
+            for value in (self.url, self.params, self.body)
+        ):
+            raise ValueError(
+                "HttpFetchOp url, params, or body must contain a {query} placeholder"
+            )
         if self.method == "POST" and self.body is None:
             raise ValueError("HttpFetchOp POST requires a body template")
+        if self.params is not None and not isinstance(self.params, dict):
+            raise ValueError("HttpFetchOp params must be a mapping")
         query_op = (
             query if isinstance(query, Op) else DataOp(data=_as_query_list(query))
         )
@@ -96,6 +106,8 @@ class HttpFetchOp(FunctionalOp):
             "query": self.query.id,
             "config": self.config.to_dict(),
         }
+        if self.params is not None:
+            payload["params"] = self.params
         if self.body is not None:
             payload["body"] = self.body
         return payload
@@ -109,6 +121,7 @@ class HttpFetchOp(FunctionalOp):
             query=other_ops[data["query"]],
             config=HttpFetchConfig(**data["config"]),
             method=data["method"],
+            params=data.get("params"),
             body=data.get("body"),
         )
 
@@ -122,11 +135,22 @@ def _as_query_list(query: str | list[str]) -> list[str]:
     return values
 
 
+def _contains_query_placeholder(value: Any) -> bool:
+    if isinstance(value, str):
+        return "{query}" in value
+    if isinstance(value, dict):
+        return any(_contains_query_placeholder(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_query_placeholder(item) for item in value)
+    return False
+
+
 def http_fetch(
     url: str,
     query: str | list[str] | Op,
     config: HttpFetchConfig | None = None,
     method: str = "GET",
+    params: dict[str, Any] | None = None,
     body: dict[str, Any] | None = None,
 ) -> HttpFetchOp:
-    return HttpFetchOp(url, query, config, method, body)
+    return HttpFetchOp(url, query, config, method, params, body)

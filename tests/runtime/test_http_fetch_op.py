@@ -4,6 +4,7 @@ import json
 import textwrap
 from pathlib import Path
 
+import httpx
 import pytest
 
 from lumilake import envs
@@ -33,6 +34,7 @@ def test_http_fetch_op_serializes_and_round_trips() -> None:
         url="http://fixture.test/search?query={query}",
         query=["first", "second"],
         method="POST",
+        params={"query": "{query}", "limit": 10},
         body={"query": "{query}", "limit": 10},
         config=HttpFetchConfig(
             headers={"Accept": "application/json"},
@@ -49,6 +51,7 @@ def test_http_fetch_op_serializes_and_round_trips() -> None:
     assert isinstance(parsed, HttpFetchOp)
     assert parsed.url == op.url
     assert parsed.method == "POST"
+    assert parsed.params == {"query": "{query}", "limit": 10}
     assert parsed.body == {"query": "{query}", "limit": 10}
     assert parsed.config.fail_open is False
     assert parsed.config.timeout_sec == 5
@@ -74,7 +77,10 @@ def test_http_fetch_op_validates_config(config_kwargs: dict, message: str) -> No
     ("kwargs", "message"),
     [
         ({"url": ""}, "non-empty url"),
-        ({"url": "http://fixture.test/search"}, "\\{query\\} placeholder"),
+        (
+            {"url": "http://fixture.test/search", "params": {"limit": 10}},
+            "url, params, or body",
+        ),
         ({"method": "PUT"}, "must be GET or POST"),
         ({"method": "POST"}, "POST requires a body"),
     ],
@@ -83,6 +89,7 @@ def test_http_fetch_op_validates_request(kwargs: dict, message: str) -> None:
     fields = {
         "url": "http://fixture.test/search?query={query}",
         "query": ["first"],
+        "params": {"query": "{query}"},
         **kwargs,
     }
     with pytest.raises(ValueError, match=message):
@@ -128,6 +135,68 @@ def test_http_fetch_yaml_parses_and_builds_expected_op_dict() -> None:
     assert fetch["_inputs"] == [by_op["InputOp"]["_id"]]
 
 
+def test_http_fetch_params_encode_like_requests() -> None:
+    import requests
+
+    query = 'a b,c&d "quoted"'
+    params = {
+        "query": query,
+        "limit": 10,
+        "minCitationCount": 10,
+        "sort": "citationCount:desc",
+        "fields": "title,year,abstract,authors.name,citationCount,year,url,externalIds",
+    }
+    expected = (
+        requests.Request(
+            "GET",
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params=params,
+        )
+        .prepare()
+        .url
+    )
+    spec = parse_yaml_payload(textwrap.dedent("""
+            name: fetch_params
+            inputs:
+                Query: ['a b,c&d "quoted"']
+            ops:
+              - id: Search
+                op: HttpFetchOp
+                inputs: [Query]
+                query: Query
+                url: "https://api.semanticscholar.org/graph/v1/paper/search"
+                params:
+                  query: "{query}"
+                  limit: 10
+                  minCitationCount: 10
+                  sort: "citationCount:desc"
+                  fields: >-
+                    title,year,abstract,authors.name,citationCount,year,url,externalIds
+            outputs:
+              - name: candidates
+                ref: Search
+            """))["fetch_params"]
+    runtime_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    [node] = [
+        node for node in runtime_graph.nodes.values() if node.model == "http-fetch"
+    ]
+
+    assert node.api_spec["params"] == {
+        **params,
+        "query": "{{prompt}}",
+    }
+    assert "{{prompt}}" not in node.api_spec["url"]
+    encoded = str(
+        httpx.URL(
+            node.api_spec["url"],
+            params={**params, "query": query},
+        )
+    )
+    assert encoded == expected
+
+
 def test_http_fetch_yaml_lowers_to_flowmesh_api_node() -> None:
     yaml_text = textwrap.dedent("""
         name: fetch_candidates
@@ -140,6 +209,9 @@ def test_http_fetch_yaml_lowers_to_flowmesh_api_node() -> None:
             query: Query
             url: "http://fixture.test/paper/search/{query}?q={query}"
             method: POST
+            params:
+              query: "{query}"
+              limit: 10
             body:
               query: "{query}"
             config:
@@ -164,6 +236,7 @@ def test_http_fetch_yaml_lowers_to_flowmesh_api_node() -> None:
         "http://fixture.test/paper/search/{{prompt}}?q={{prompt}}"
     )
     assert node.api_spec["json"] == {"query": "{{prompt}}"}
+    assert node.api_spec["params"] == {"query": "{{prompt}}", "limit": 10}
     assert node.api_spec["timeout_sec"] == 9
     assert node.api_spec["retries"] == 2
     assert node.api_spec["concurrency"] == 3

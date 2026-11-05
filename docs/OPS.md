@@ -136,10 +136,10 @@ outputs:
 ### HttpFetchOp
 
 `HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
-input. `url` must contain `{query}`; the runtime converts it to FlowMesh's
-`{{prompt}}` placeholder and the API executor percent-encodes each row value
-before substituting it into the URL. The same placeholder may appear in a
-POST `body`.
+input. The `{query}` placeholder must appear in `url`, `params`, or a POST
+`body`; the runtime converts it to FlowMesh's `{{prompt}}` placeholder. The API
+executor URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so
+query values in `params` use the same form encoding as `requests`.
 `config.headers`, `config.timeout_sec`, `config.retries`, and
 `config.max_concurrency` bound the request; headers are retained in the
 runtime spec for dispatch and redacted from archived graphs. Each input row

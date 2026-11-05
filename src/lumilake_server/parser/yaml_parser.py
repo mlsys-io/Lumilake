@@ -644,10 +644,8 @@ def _emit_http_fetch_op(
     user_id_to_internal: dict[str, str],
 ) -> None:
     url = entry.fields.get("url")
-    if not isinstance(url, str) or "{query}" not in url:
-        raise ValueError(
-            f"HttpFetchOp '{entry.id}' requires a 'url' containing '{{query}}'"
-        )
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError(f"HttpFetchOp '{entry.id}' requires a non-empty 'url'")
     query_ref = entry.fields.get("query")
     if not isinstance(query_ref, str) or query_ref not in user_id_to_internal:
         raise ValueError(
@@ -659,17 +657,35 @@ def _emit_http_fetch_op(
     method = str(entry.fields.get("method", "GET")).upper()
     if method not in {"GET", "POST"}:
         raise ValueError(f"HttpFetchOp '{entry.id}' method must be GET or POST")
+    params = entry.fields.get("params")
     body = entry.fields.get("body")
+    if params is not None and not isinstance(params, dict):
+        raise ValueError(f"HttpFetchOp '{entry.id}' params must be a mapping")
+    if not any(_contains_query_placeholder(value) for value in (url, params, body)):
+        raise ValueError(
+            f"HttpFetchOp '{entry.id}' requires '{{query}}' in url, params, or body"
+        )
     if method == "POST" and body is None:
         raise ValueError(f"HttpFetchOp '{entry.id}' POST requires body")
-
     op_dict["url"] = url
     op_dict["method"] = method
     op_dict["query"] = user_id_to_internal[query_ref]
     op_dict["config"] = config
+    if params is not None:
+        op_dict["params"] = params
     if body is not None:
         op_dict["body"] = body
     op_dict["_inputs"] = [user_id_to_internal[query_ref]]
+
+
+def _contains_query_placeholder(value: Any) -> bool:
+    if isinstance(value, str):
+        return "{query}" in value
+    if isinstance(value, dict):
+        return any(_contains_query_placeholder(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_query_placeholder(item) for item in value)
+    return False
 
 
 def _emit_score_op(
