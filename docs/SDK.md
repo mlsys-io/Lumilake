@@ -209,8 +209,8 @@ emitted that round, and each reference to an earlier node is bound as a
 workflow input carrying that node's stored result. A node's result is
 available to later rounds when it was a leaf of its round (an op no other op
 of that round consumes) or the plan listed it under `export`. A leaf must be
-an `LLMChatOp`, `LLMCompletionOp`, any other `LLMOp`, a `DataRetrievalOp`, or a
-`LambdaOp`; its whole result item is archived under `leaf_<id>`. A reference
+an LLM op, a `DataRetrievalOp` or a `LambdaOp`, the op types that can feed an
+`OutputOp`; its whole result item is archived under `leaf_<id>`. A reference
 to any other earlier node is rejected with an error naming it. A run targets
 one or more non-empty symbols. The parent's result carries the per-round plans.
 
