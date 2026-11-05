@@ -128,8 +128,8 @@ def llm_chat(
     )
 
 
-@Op.registry.register("LLMRawChatOp")
-class LLMRawChatOp(LLMOp):
+@Op.registry.register("LLMCompletionOp")
+class LLMCompletionOp(LLMOp):
     """Generate from rendered string prompts without a chat template."""
 
     def __init__(
@@ -143,7 +143,7 @@ class LLMRawChatOp(LLMOp):
         )
         super().__init__([prompt_op], config, cacheable)
         if self.config.api is not None:
-            raise ValueError("LLMRawChatOp does not support API mode")
+            raise ValueError("LLMCompletionOp does not support API mode")
 
     @property
     def prompt(self) -> Op:
@@ -159,7 +159,7 @@ class LLMRawChatOp(LLMOp):
     @classmethod
     def _from_json(
         cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "LLMRawChatOp":
+    ) -> "LLMCompletionOp":
         return cls(
             prompt=other_ops[data["prompt"]],
             config=GenerationConfig(**data["config"]),
@@ -170,17 +170,17 @@ class LLMRawChatOp(LLMOp):
 def _as_prompt_list(prompt: str | list[str]) -> list[str]:
     values = [prompt] if isinstance(prompt, str) else list(prompt)
     if not values or not all(isinstance(value, str) and value for value in values):
-        raise ValueError("LLMRawChatOp prompt must contain non-empty strings")
+        raise ValueError("LLMCompletionOp prompt must contain non-empty strings")
     return values
 
 
-def llm_raw_chat(
+def llm_completion(
     prompt: str | list[str] | Op,
     config: GenerationConfig | None = None,
     cacheable: bool = False,
-) -> LLMRawChatOp:
+) -> LLMCompletionOp:
     """Run rendered string prompts through raw local generation."""
-    return LLMRawChatOp(prompt=prompt, config=config, cacheable=cacheable)
+    return LLMCompletionOp(prompt=prompt, config=config, cacheable=cacheable)
 
 
 @Op.registry.register("LLMVisionOp")

@@ -6,13 +6,13 @@ import pytest
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LLMRawChatOp, as_output
+from lumilake_server.ops import LambdaOp, LLMCompletionOp, as_output, input_placeholder
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
-def test_raw_chat_op_compiles_to_string_prompt_list_without_chat_template() -> None:
-    op = LLMRawChatOp(
+def test_completion_op_compiles_to_string_prompt_list_without_chat_template() -> None:
+    op = LLMCompletionOp(
         prompt=["first raw prompt", "second raw prompt"],
         config=GenerationConfig(
             model="OpenSciLM/Llama-3.1_OpenScholar-8B",
@@ -35,14 +35,14 @@ def test_raw_chat_op_compiles_to_string_prompt_list_without_chat_template() -> N
     assert node.inference_spec["stop_token_ids"] == [128009]
 
 
-def test_raw_chat_yaml_uses_string_prompt_and_no_chat_template() -> None:
+def test_completion_yaml_uses_string_prompt_and_no_chat_template() -> None:
     yaml_text = textwrap.dedent("""
         name: raw_prompts
         inputs:
           Prompt: ["first raw prompt", "second raw prompt"]
         ops:
           - id: Generate
-            op: LLMRawChatOp
+            op: LLMCompletionOp
             inputs: [Prompt]
             prompt: Prompt
             config:
@@ -70,9 +70,31 @@ def test_raw_chat_yaml_uses_string_prompt_and_no_chat_template() -> None:
     assert node.inference_spec["stop_token_ids"] == [128009]
 
 
-def test_raw_chat_op_rejects_api_mode() -> None:
+def test_completion_prompt_from_upstream_lambda_binds_exact_runtime_path() -> None:
+    prompt = input_placeholder("Prompt")
+    render = LambdaOp([prompt], fn=lambda inputs: str(inputs[0]).upper())
+    completion = LLMCompletionOp(
+        prompt=render,
+        config=GenerationConfig(model="OpenSciLM/Llama-3.1_OpenScholar-8B"),
+    )
+    compiled = Graph.from_ops([as_output("answer", completion)]).compile(
+        Prompt=["first", "second"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[completion.id]
+
+    assert node.data_spec == {
+        "type": "list",
+        "node": render.id,
+        "path": "value.items.output",
+    }
+    assert render.id in node.dependencies
+    assert node.inference_spec["apply_chat_template"] is False
+
+
+def test_completion_op_rejects_api_mode() -> None:
     with pytest.raises(ValueError, match="API mode"):
-        LLMRawChatOp(
+        LLMCompletionOp(
             prompt=["raw"],
             config=GenerationConfig(model="org/model", api={}),  # type: ignore[arg-type]
         )

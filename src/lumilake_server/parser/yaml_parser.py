@@ -103,7 +103,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "DataRetrievalOp",
         "MessageOp",
         "LLMChatOp",
-        "LLMRawChatOp",
+        "LLMCompletionOp",
         "LLMVisionOp",
         "ImageGenerationOp",
         "EmbeddingOp",
@@ -395,8 +395,8 @@ def _build_op_dict(
         _emit_message_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LLMChatOp":
         _emit_llm_chat_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
-    elif entry.op == "LLMRawChatOp":
-        _emit_llm_raw_chat_op(op_dict, entry, user_id_to_internal)
+    elif entry.op == "LLMCompletionOp":
+        _emit_llm_completion_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LLMVisionOp":
         _emit_llm_vision_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
     elif entry.op == "ImageGenerationOp":
@@ -514,22 +514,23 @@ def _emit_llm_chat_op(
     )
 
 
-def _emit_llm_raw_chat_op(
+def _emit_llm_completion_op(
     op_dict: dict[str, Any],
     entry: _OpEntry,
     user_id_to_internal: dict[str, str],
 ) -> None:
     config = entry.fields.get("config")
     if not isinstance(config, dict) or not config.get("model"):
-        raise ValueError(f"LLMRawChatOp '{entry.id}' requires config.model")
+        raise ValueError(f"LLMCompletionOp '{entry.id}' requires config.model")
     prompt_ref = entry.fields.get("prompt")
     if not isinstance(prompt_ref, str) or prompt_ref not in user_id_to_internal:
         raise ValueError(
-            f"LLMRawChatOp '{entry.id}' requires a prompt reference to an op or input"
+            f"LLMCompletionOp '{entry.id}' requires a prompt reference to an op "
+            "or input"
         )
     op_dict["prompt"] = user_id_to_internal[prompt_ref]
     op_dict["config"] = _build_generation_config(
-        config, entry.id, op_kind="LLMRawChatOp"
+        config, entry.id, op_kind="LLMCompletionOp"
     )
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
     op_dict["_inputs"] = [user_id_to_internal[prompt_ref]]
@@ -1091,7 +1092,7 @@ def _op_id_prefix(op_type: str) -> str:
         "DataRetrievalOp": "retrieval",
         "MessageOp": "message",
         "LLMChatOp": "llm",
-        "LLMRawChatOp": "llmraw",
+        "LLMCompletionOp": "llmcompletion",
         "LLMVisionOp": "llmvision",
         "ImageGenerationOp": "imagegen",
         "EmbeddingOp": "embedding",

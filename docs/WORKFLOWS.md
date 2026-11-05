@@ -36,16 +36,16 @@ outputs:
 
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMRawChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
-`LLMRawChatOp` generates from rendered string prompts without applying the
+`LLMCompletionOp` generates from rendered string prompts without applying the
 model chat template. Its `prompt` field references an input or upstream op that
 produces one prompt string per row:
 
 ```yaml
 ops:
   - id: Generate
-    op: LLMRawChatOp
+    op: LLMCompletionOp
     inputs: [Prompt]
     prompt: Prompt
     config:

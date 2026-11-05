@@ -34,7 +34,7 @@ from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
-    LLMRawChatOp,
+    LLMCompletionOp,
     LLMVisionOp,
 )
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
@@ -1840,7 +1840,7 @@ class RuntimeGraphBuilder:
         """Whether a multi-row op's result holds one scalar-per-row item per
         input row, so a ``node``/``path`` reference resolves to one value per
         row."""
-        if isinstance(op, LLMRawChatOp):
+        if isinstance(op, LLMCompletionOp):
             return True
         return (
             isinstance(op, LLMChatOp)
@@ -2321,14 +2321,14 @@ class RuntimeGraphBuilder:
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
 
-        if isinstance(llm_op, LLMRawChatOp):
+        if isinstance(llm_op, LLMCompletionOp):
             prompt_op = llm_op.prompt
             visited_node_ids.add(prompt_op.id)
             if isinstance(prompt_op, InputOp):
                 prompt_values = inputs_dict.get(prompt_op.name)
                 if prompt_values is None:
                     raise ValueError(
-                        f"LLMRawChatOp '{llm_op_id}' prompt input "
+                        f"LLMCompletionOp '{llm_op_id}' prompt input "
                         f"{prompt_op.name!r} has no values supplied"
                     )
                 data_spec = {"type": "list", "items": list(prompt_values)}
@@ -2953,7 +2953,7 @@ class RuntimeGraphBuilder:
             return len(values) if values is not None else None
         if isinstance(op, DataOp):
             return len(op.data)
-        if isinstance(op, LLMRawChatOp):
+        if isinstance(op, LLMCompletionOp):
             return self._static_output_row_count(op.prompt, inputs_dict, graph_dict)
         if isinstance(op, LLMChatOp):
             if op.rowwise_columns:
