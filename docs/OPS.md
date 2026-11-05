@@ -10,6 +10,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
+| `LLMRawChatOp` | Run rendered string prompts through local generation without a chat template. It rejects API mode. |
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
@@ -125,6 +126,15 @@ model requirement, so the workflow spec reads the same either way. The request
 model resolves from `config.api.model`, then the top-level `config.model`.
 Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
 the request body.
+
+`LLMRawChatOp` is the local raw-completion variant. `prompt` references an
+input or upstream op whose strings are passed to FlowMesh as `type: list`
+prompts; the runtime emits `inference.apply_chat_template: false`, so the
+worker calls `llm.generate` on the strings without running
+`tokenizer.apply_chat_template`. Sampling fields are the same typed
+`GenerationConfig` fields as `LLMChatOp`; `stop_token_ids` belongs in
+`extra_sampling_params` because vLLM accepts it as a sampling field rather than
+an OpenAI chat field. `LLMRawChatOp` cannot use `config.api`.
 
 `config.api.timeout_sec` sets the per-request timeout for the API call,
 in seconds. When set, it is emitted into the FlowMesh `api` task spec and

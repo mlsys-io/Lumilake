@@ -19,9 +19,11 @@ from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
     LLMOp,
+    LLMRawChatOp,
     LLMVisionOp,
     image_generation,
     llm_chat,
+    llm_raw_chat,
     llm_vision,
 )
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
@@ -43,6 +45,7 @@ __all__ = [
     "InputOp",
     "LLMChatOp",
     "LLMOp",
+    "LLMRawChatOp",
     "LLMVisionOp",
     "LambdaOp",
     "MessageOp",
@@ -58,6 +61,7 @@ __all__ = [
     "input_placeholder",
     "lambda_op",
     "llm_chat",
+    "llm_raw_chat",
     "llm_vision",
     "message_data",
 ]
