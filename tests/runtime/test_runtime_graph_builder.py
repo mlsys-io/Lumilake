@@ -520,7 +520,10 @@ def test_local_rowwise_messages_column_emits_list_message_array_spec() -> None:
     assert "messages" not in node.data_spec
 
 
-def test_api_rowwise_messages_column_emits_list_message_array_spec() -> None:
+def test_api_rowwise_messages_column_emits_list_message_array_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
     rows = input_placeholder("Rows")
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
