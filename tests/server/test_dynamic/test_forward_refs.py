@@ -309,7 +309,12 @@ def _llm_column_library() -> dict[str, dict[str, Any]]:
                     "label": "prompt",
                     "node": "DoctorPrompt",
                     "path": "items.output.prompt",
-                }
+                },
+                {
+                    "label": "doctor_system",
+                    "node": "DoctorPrompt",
+                    "path": "items.output.doctor_system",
+                },
             ],
             "column_bindings": [{"label": "prompt", "input": 0}],
             "config": {
@@ -347,11 +352,19 @@ def test_column_bindings_remap_independent_library_instances() -> None:
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, library=library)
 
     turns = [op for op in resolved if op["op"] == "LLMChatOp"]
+    assert [
+        {column["node"] for column in turn["rowwise_columns"]} for turn in turns
+    ] == [
+        {"doctor_prompt_1"},
+        {"patient_prompt_1"},
+    ]
     assert [turn["rowwise_columns"][0]["node"] for turn in turns] == [
         "doctor_prompt_1",
         "patient_prompt_1",
     ]
-    assert library["DoctorTurn"]["rowwise_columns"][0]["node"] == "DoctorPrompt"
+    assert {column["node"] for column in library["DoctorTurn"]["rowwise_columns"]} == {
+        "DoctorPrompt"
+    }
 
 
 def test_column_bindings_reject_count_mismatch() -> None:

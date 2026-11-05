@@ -271,7 +271,12 @@ def _apply_param_bindings(
 def _apply_column_bindings(
     template: dict[str, Any], ref: str, inputs: list[Any]
 ) -> list[dict[str, Any]] | None:
-    """Substitute instance ids into an LLM template's rowwise columns."""
+    """Substitute instance ids into an LLM template's rowwise columns.
+
+    A binding names one column and an input slot. Every column that originally
+    read the same template node is moved to that input too, so closely related
+    columns (such as a prompt and its system message) stay paired.
+    """
     bindings = template.get("column_bindings")
     if bindings is None:
         return None
@@ -311,7 +316,10 @@ def _apply_column_bindings(
                 f"library entry {ref!r} column binding for {label!r} has "
                 f"invalid input slot {slot!r}"
             )
-        by_label[label]["node"] = inputs[slot]
+        node = by_label[label].get("node")
+        for column in by_label.values():
+            if column.get("node") == node:
+                column["node"] = inputs[slot]
     return list(by_label.values())
 
 
