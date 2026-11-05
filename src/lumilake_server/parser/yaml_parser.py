@@ -89,6 +89,7 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.ops.http_fetch_ops import contains_query_placeholder
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -661,7 +662,7 @@ def _emit_http_fetch_op(
     body = entry.fields.get("body")
     if params is not None and not isinstance(params, dict):
         raise ValueError(f"HttpFetchOp '{entry.id}' params must be a mapping")
-    if not any(_contains_query_placeholder(value) for value in (url, params, body)):
+    if not any(contains_query_placeholder(value) for value in (url, params, body)):
         raise ValueError(
             f"HttpFetchOp '{entry.id}' requires '{{query}}' in url, params, or body"
         )
@@ -676,16 +677,6 @@ def _emit_http_fetch_op(
     if body is not None:
         op_dict["body"] = body
     op_dict["_inputs"] = [user_id_to_internal[query_ref]]
-
-
-def _contains_query_placeholder(value: Any) -> bool:
-    if isinstance(value, str):
-        return "{query}" in value
-    if isinstance(value, dict):
-        return any(_contains_query_placeholder(item) for item in value.values())
-    if isinstance(value, list):
-        return any(_contains_query_placeholder(item) for item in value)
-    return False
 
 
 def _emit_score_op(

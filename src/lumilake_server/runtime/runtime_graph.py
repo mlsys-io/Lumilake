@@ -91,16 +91,6 @@ def _replace_query_placeholder(value: Any) -> Any:
     return value
 
 
-def _contains_query_placeholder(value: Any) -> bool:
-    if isinstance(value, str):
-        return "{query}" in value
-    if isinstance(value, dict):
-        return any(_contains_query_placeholder(item) for item in value.values())
-    if isinstance(value, list):
-        return any(_contains_query_placeholder(item) for item in value)
-    return False
-
-
 def _default_output_destination() -> dict[str, Any]:
     if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
         return {"type": "http", "timeoutSec": 3600}
@@ -1676,21 +1666,9 @@ class RuntimeGraphBuilder:
             }
             dependencies = [query_op.id]
 
-        url = op.url
-        if "{query}" in url:
-            url = url.replace("{query}", "{{prompt}}")
-        elif not (
-            _contains_query_placeholder(op.params)
-            or _contains_query_placeholder(op.body)
-        ):
-            raise ValueError(
-                f"HttpFetchOp '{op_id}' requires a query placeholder in url, "
-                "params, or body."
-            )
-
         api_spec: dict[str, Any] = {
             "method": op.method,
-            "url": url,
+            "url": op.url.replace("{query}", "{{prompt}}"),
             "headers": dict(op.config.headers),
             "timeout_sec": op.config.timeout_sec,
             "retries": op.config.retries,

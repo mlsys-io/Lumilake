@@ -74,7 +74,7 @@ class HttpFetchOp(FunctionalOp):
         if self.method not in {"GET", "POST"}:
             raise ValueError("HttpFetchOp method must be GET or POST")
         if not any(
-            _contains_query_placeholder(value)
+            contains_query_placeholder(value)
             for value in (self.url, self.params, self.body)
         ):
             raise ValueError(
@@ -135,13 +135,14 @@ def _as_query_list(query: str | list[str]) -> list[str]:
     return values
 
 
-def _contains_query_placeholder(value: Any) -> bool:
+def contains_query_placeholder(value: Any) -> bool:
+    """Whether a URL, params, or body template contains ``{query}``."""
     if isinstance(value, str):
         return "{query}" in value
     if isinstance(value, dict):
-        return any(_contains_query_placeholder(item) for item in value.values())
+        return any(contains_query_placeholder(item) for item in value.values())
     if isinstance(value, list):
-        return any(_contains_query_placeholder(item) for item in value)
+        return any(contains_query_placeholder(item) for item in value)
     return False
 
 
