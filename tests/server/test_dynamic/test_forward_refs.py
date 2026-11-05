@@ -346,6 +346,9 @@ def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
 
 def test_column_bindings_remap_independent_library_instances() -> None:
     library = _llm_column_library()
+    library["DoctorTurn"]["column_bindings"].append(
+        {"label": "doctor_system", "input": 0}
+    )
     subgraph = _llm_column_subgraph("doctor") + _llm_column_subgraph("patient")
 
     resolved = resolve_subgraph(subgraph, library)
@@ -367,13 +370,44 @@ def test_column_bindings_remap_independent_library_instances() -> None:
     }
 
 
-def test_column_bindings_reject_count_mismatch() -> None:
+def test_column_bindings_move_each_bound_column_to_slot_zero() -> None:
+    library = _llm_column_library()
+    library["DoctorTurn"]["column_bindings"].append(
+        {"label": "doctor_system", "input": 0}
+    )
+    subgraph = _llm_column_subgraph("doctor")
+
+    resolved = resolve_subgraph(subgraph, library)
+
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert {column["node"] for column in turn["rowwise_columns"]} == {"doctor_prompt_1"}
+    assert "column_bindings" not in turn
+
+
+def test_column_bindings_reject_unused_input() -> None:
     library = _llm_column_library()
     subgraph = _llm_column_subgraph("doctor")
-    subgraph[1]["inputs"] = []
+    subgraph[1]["inputs"].append("unused_prompt")
 
-    with pytest.raises(DriverProtocolError, match="1 column binding.*0 input"):
+    with pytest.raises(DriverProtocolError, match="unused"):
         resolve_subgraph(subgraph, library)
+
+
+def test_bound_library_llm_parses_through_native_graph_path() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("doctor")
+    resolved = resolve_subgraph(subgraph, library)
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert "column_bindings" not in turn
+
+    workflow = {
+        "name": "depcheck",
+        "inputs": {"Symbols": []},
+        "ops": resolved,
+        "outputs": [],
+    }
+    parsed = parse_yaml_payload(workflow)
+    assert parsed
 
 
 def test_column_bindings_reject_unknown_label() -> None:

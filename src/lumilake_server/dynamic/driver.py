@@ -271,12 +271,7 @@ def _apply_param_bindings(
 def _apply_column_bindings(
     template: dict[str, Any], ref: str, inputs: list[Any]
 ) -> list[dict[str, Any]] | None:
-    """Substitute instance ids into an LLM template's rowwise columns.
-
-    A binding names one column and an input slot. Every column that originally
-    read the same template node is moved to that input too, so closely related
-    columns (such as a prompt and its system message) stay paired.
-    """
+    """Substitute instance ids into an LLM template's rowwise columns."""
     bindings = template.get("column_bindings")
     if bindings is None:
         return None
@@ -289,16 +284,12 @@ def _apply_column_bindings(
         raise DriverProtocolError(
             f"library entry {ref!r} has column_bindings but no rowwise_columns"
         )
-    if len(inputs) != len(bindings):
-        raise DriverProtocolError(
-            f"library entry {ref!r} declares {len(bindings)} column binding(s) "
-            f"but got {len(inputs)} input(s)"
-        )
     if not all(isinstance(column, dict) for column in columns):
         raise DriverProtocolError(
             f"library entry {ref!r} rowwise_columns entries must be mappings"
         )
     by_label = {column.get("label"): dict(column) for column in columns}
+    used_slots: set[int] = set()
     for binding in bindings:
         if not isinstance(binding, dict):
             raise DriverProtocolError(
@@ -316,10 +307,14 @@ def _apply_column_bindings(
                 f"library entry {ref!r} column binding for {label!r} has "
                 f"invalid input slot {slot!r}"
             )
-        node = by_label[label].get("node")
-        for column in by_label.values():
-            if column.get("node") == node:
-                column["node"] = inputs[slot]
+        by_label[label]["node"] = inputs[slot]
+        used_slots.add(slot)
+    unused_slots = set(range(len(inputs))) - used_slots
+    if unused_slots:
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings leave input slot(s) "
+            f"{sorted(unused_slots)} unused"
+        )
     return list(by_label.values())
 
 
@@ -387,6 +382,7 @@ def resolve_subgraph(
                     merged["rowwise_columns"] = bound_columns
                 continue
             merged[key] = value
+        merged.pop("column_bindings", None)
         resolved.append(merged)
     return resolved
 

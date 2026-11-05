@@ -339,10 +339,10 @@ authoritative for its config, so the planner may only override `id` and
 `{"label": <rowwise column label>, "input": <inputs index>}` mappings. Bindings
 replace the template's placeholder node with the node supplied at that input
 position, so one library entry can be instantiated repeatedly under distinct
-node ids. Columns that originally read the same template node move together;
-binding `prompt` therefore also moves a companion column such as a system
-message from that prompt node. The number of inputs must exactly match the
-number of bindings, and every label and input slot must be valid. Ops without a
+node ids. Each binding moves exactly the column it names; a template that needs
+two columns from the same node declares a binding for each, and both may use the
+same input slot. Every input slot must be valid and used by at least one
+binding, and every binding label must name a rowwise column. Ops without a
 `ref` are emitted fully inline. The planner sees the library (id, op type, key
 config) in its system message each round.
 
