@@ -132,6 +132,11 @@ overrides the executor's default; when unset, no timeout key is emitted and
 the executor's own default applies. Use it for long-running extractions over
 large documents, which can exceed the executor's default.
 
+`config.api.concurrency` sets the maximum number of in-flight requests for
+the API task. When set, the positive integer is emitted into the FlowMesh
+`api` spec; FlowMesh bounds the value to its supported maximum. When unset,
+no concurrency key is emitted and FlowMesh's default applies.
+
 The credential is resolved server-side, not supplied by the caller. If
 `config.api.url`'s origin is on the trusted-origin allowlist (the default
 `https://lum.id`, the origin of `LUMILAKE_API_DEFAULT_URL`, and everything
