@@ -306,6 +306,12 @@ def _apply_column_bindings(
             )
         by_label[label]["node"] = inputs[slot]
         used_slots.add(slot)
+    unbound_labels = set(by_label) - {binding["label"] for binding in bindings}
+    if unbound_labels:
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings leave column(s) "
+            f"{sorted(unbound_labels)} unbound"
+        )
     unused_slots = set(range(len(inputs))) - used_slots
     if unused_slots:
         raise DriverProtocolError(
