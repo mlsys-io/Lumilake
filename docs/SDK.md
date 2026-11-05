@@ -333,8 +333,16 @@ templates the planner can emit by id. Each entry is a full op config (e.g. a
 `DataRetrievalOp` with a real SQL template). The planner references one with
 `{"ref": "<id>", "id": <unique>, "inputs": [...]}`; the template is
 authoritative for its config, so the planner may only override `id` and
-`inputs`. Ops without a `ref` are emitted fully inline. The planner sees the
-library (id, op type, key config) in its system message each round.
+`inputs`. A retrieval template may declare `data_spec.param_bindings`, a list of
+`{"label": <param label>, "input": <inputs index>}` mappings. A rowwise
+`LLMChatOp` template may similarly declare `column_bindings`, a list of
+`{"label": <rowwise column label>, "input": <inputs index>}` mappings. Bindings
+replace the template's placeholder node with the node supplied at that input
+position, so one library entry can be instantiated repeatedly under distinct
+node ids. The number of inputs must exactly match the number of bindings, and
+every label and input slot must be valid. Ops without a `ref` are emitted fully
+inline. The planner sees the library (id, op type, key config) in its system
+message each round.
 
 Dynamic round bodies may use `RouterOp` plus a rowwise `LLMChatOp` `row_gate`
 instead of splitting one logical branch into several list-mode router stages.

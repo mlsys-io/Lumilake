@@ -268,6 +268,53 @@ def _apply_param_bindings(
     return {**data_spec, "params": list(by_label.values())}
 
 
+def _apply_column_bindings(
+    template: dict[str, Any], ref: str, inputs: list[Any]
+) -> list[dict[str, Any]] | None:
+    """Substitute instance ids into an LLM template's rowwise columns."""
+    bindings = template.get("column_bindings")
+    if bindings is None:
+        return None
+    if not isinstance(bindings, list):
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings must be a list"
+        )
+    columns = template.get("rowwise_columns")
+    if not isinstance(columns, list):
+        raise DriverProtocolError(
+            f"library entry {ref!r} has column_bindings but no rowwise_columns"
+        )
+    if len(inputs) != len(bindings):
+        raise DriverProtocolError(
+            f"library entry {ref!r} declares {len(bindings)} column binding(s) "
+            f"but got {len(inputs)} input(s)"
+        )
+    if not all(isinstance(column, dict) for column in columns):
+        raise DriverProtocolError(
+            f"library entry {ref!r} rowwise_columns entries must be mappings"
+        )
+    by_label = {column.get("label"): dict(column) for column in columns}
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise DriverProtocolError(
+                f"library entry {ref!r} column_bindings entries must be mappings"
+            )
+        label = binding.get("label")
+        slot = binding.get("input")
+        if label not in by_label:
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding references unknown "
+                f"label {label!r}; columns: {sorted(by_label)}"
+            )
+        if not isinstance(slot, int) or not 0 <= slot < len(inputs):
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding for {label!r} has "
+                f"invalid input slot {slot!r}"
+            )
+        by_label[label]["node"] = inputs[slot]
+    return list(by_label.values())
+
+
 def resolve_subgraph(
     subgraph: list[dict[str, Any]],
     library: dict[str, dict[str, Any]] | None,
@@ -277,8 +324,9 @@ def resolve_subgraph(
     An op that carries a ``ref`` key names a library template; the resolved op
     is the template's config with the emitted op's ``id`` and ``inputs`` applied
     on top. ``inputs`` wires the template's declared param slots (see
-    :func:`_apply_param_bindings`); a declared ``op`` is asserted to match the
-    template and ignored during merge. The planner may not override the
+    :func:`_apply_param_bindings`) and rowwise LLM columns (see
+    :func:`_apply_column_bindings`); a declared ``op`` is asserted to match
+    the template and ignored during merge. The planner may not override the
     template's other config (``data_spec``, ``model``, etc.). Ops without a
     ``ref`` pass through unchanged (fully-inline ops are allowed), so this is
     idempotent.
@@ -326,6 +374,9 @@ def resolve_subgraph(
                 merged["inputs"] = value
                 if isinstance(template.get("data_spec"), dict):
                     merged["data_spec"] = _apply_param_bindings(template, ref, value)
+                bound_columns = _apply_column_bindings(template, ref, value)
+                if bound_columns is not None:
+                    merged["rowwise_columns"] = bound_columns
                 continue
             merged[key] = value
         resolved.append(merged)
