@@ -55,6 +55,14 @@ _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
 _API_CREDENTIAL_PLACEHOLDER = "${credential}"
 
 
+OUTPUT_SOURCE_TYPES = (LLMOp, DataRetrievalOp, LambdaOp)
+
+
+def is_output_source(op: Op) -> bool:
+    """Whether an op can feed an OutputOp in the native runtime graph."""
+    return isinstance(op, OUTPUT_SOURCE_TYPES)
+
+
 class RuntimeGraphSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeGraph``.
 
@@ -450,7 +458,7 @@ class RuntimeGraphBuilder:
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
-                if not isinstance(source, (LLMOp, DataRetrievalOp, LambdaOp)):
+                if not is_output_source(source):
                     raise ValueError(
                         f"OutputOp '{op.name}' input must be an LLMOp, "
                         f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"

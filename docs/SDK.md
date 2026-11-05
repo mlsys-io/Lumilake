@@ -208,9 +208,11 @@ round never recomputes earlier nodes: the round graph contains only the ops
 emitted that round, and each reference to an earlier node is bound as a
 workflow input carrying that node's stored result. A node's result is
 available to later rounds when it was a leaf of its round (an op no other op
-of that round consumes) or the plan listed it under `export`. A reference to
-any other earlier node is rejected with an error naming it. A run targets one
-or more non-empty symbols. The parent's result carries the per-round plans.
+of that round consumes) or the plan listed it under `export`. A leaf must be
+an `LLMChatOp`, `LLMCompletionOp`, any other `LLMOp`, a `DataRetrievalOp`, or a
+`LambdaOp`; its whole result item is archived under `leaf_<id>`. A reference
+to any other earlier node is rejected with an error naming it. A run targets
+one or more non-empty symbols. The parent's result carries the per-round plans.
 
 With several symbols, each round child is sliced like a static submission with
 `input_batch_size: 1`: one graph per symbol, merged back into one batch by the

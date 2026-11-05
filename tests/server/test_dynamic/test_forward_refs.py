@@ -20,6 +20,10 @@ from lumilake_server.dynamic.driver import (
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import _op_id_prefix, parse_yaml_payload
 from lumilake_server.routes.jobs import _admit_subgraph
+from lumilake_server.runtime.runtime_graph import (
+    OUTPUT_SOURCE_TYPES,
+    RuntimeGraphBuilder,
+)
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
@@ -297,6 +301,111 @@ def test_validate_accepts_export_in_subgraph():
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
 
 
+def _list_lambda_leaf() -> dict[str, Any]:
+    return {
+        "id": "states",
+        "op": "LambdaOp",
+        "inputs": ["Symbols"],
+        "mode": "list",
+        "fn_name": "states",
+        "code": "def states(items):\n    return items[0]\n",
+    }
+
+
+def test_validate_accepts_list_lambda_leaf() -> None:
+    validate_emitted_subgraph(
+        [_list_lambda_leaf()],
+        {},
+        max_nodes=4,
+        results={},
+    )
+
+
+def test_build_round_archives_list_lambda_leaf_and_parses_native_graph() -> None:
+    from lumilake_server.graphs import Graph
+
+    leaf = _list_lambda_leaf()
+    build = build_round(
+        [leaf],
+        node_registry={},
+        round_index=0,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=100,
+        model="m",
+        max_tokens=10,
+        temperature=0.0,
+        include_proposer=False,
+    )
+    internal = _internal_id("round_0", "LambdaOp", "states")
+    assert build.leaf_output_names == [f"leaf_{internal}"]
+    assert build.graph[f"output_{internal}"]["path"] == "items"
+
+    compiled = Graph.from_json(build.graph).compile(Symbols=["a", "b"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    assert internal in runtime_graph.nodes
+    assert runtime_graph.output_node_map[internal] == f"leaf_{internal}"
+
+
+def test_build_round_fused_graph_renders_and_archives_list_lambda_leaf() -> None:
+    build = build_round(
+        [_list_lambda_leaf()],
+        node_registry={},
+        round_index=0,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=100,
+        model="m",
+        max_tokens=10,
+        temperature=0.0,
+    )
+    internal = _internal_id("round_0", "LambdaOp", "states")
+    assert build.graph[f"output_{internal}"]["path"] == "items"
+    assert f"render_{internal}" in build.graph
+
+
+def test_output_source_types_still_reject_non_output_ops() -> None:
+    type_names = {cls.__name__ for cls in OUTPUT_SOURCE_TYPES}
+    assert {"LLMOp", "DataRetrievalOp", "LambdaOp"} <= type_names
+    assert "FormatOp" not in type_names
+
+
+def test_runtime_rejects_format_op_leaf_source() -> None:
+    from lumilake_server.graphs import Graph
+
+    graph = {
+        "input_graph_Symbols": {
+            "_id": "input_graph_Symbols",
+            "_op": "InputOp",
+            "_inputs": [],
+            "_max_iter": None,
+            "name": "Symbols",
+        },
+        "format_graph_leaf": {
+            "_id": "format_graph_leaf",
+            "_op": "FormatOp",
+            "_inputs": ["input_graph_Symbols"],
+            "_max_iter": None,
+            "template": "{ref0}",
+            "format_args": ["input_graph_Symbols"],
+            "format_kwargs": {},
+        },
+        "output_graph_leaf": {
+            "_id": "output_graph_leaf",
+            "_op": "OutputOp",
+            "_inputs": ["format_graph_leaf"],
+            "_max_iter": None,
+            "name": "leaf",
+            "path": "items",
+        },
+    }
+    compiled = Graph.from_json(graph).compile(Symbols=["a"])
+    with pytest.raises(ValueError, match="must be an LLMOp"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def _llm_column_library() -> dict[str, dict[str, Any]]:
     return {
         "DoctorTurn": {
@@ -505,6 +614,22 @@ def test_walk_archived_items_preserves_observation_for_llm_leaf():
     obs = compute_observation(walked, preview_width=100)
     assert "rows=1" in obs
     assert "hello" in obs
+
+
+def test_walk_archived_items_uses_output_for_lambda_leaf() -> None:
+    lambda_id = "l0"
+    configs = {
+        lambda_id: {
+            "id": lambda_id,
+            "op": "LambdaOp",
+            "mode": "list",
+            "fn_name": "states",
+            "code": "def states(items):\n    return items[0]\n",
+        }
+    }
+    archived = {lambda_id: [json.dumps({"output": json.dumps([{"done": False}])})]}
+    walked = walk_archived_items(archived, configs)
+    assert walked == {lambda_id: [json.dumps([{"done": False}])]}
 
 
 def test_walk_archived_items_handles_multiple_rows():
