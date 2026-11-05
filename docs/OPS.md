@@ -14,6 +14,8 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
+| `ScoreOp` | Score query/candidate pairs with a FlowMesh cross-encoder and return one score per pair. |
+| `HttpFetchOp` | Fetch JSON over HTTP once per query row, with bounded timeout, retries, concurrency, and headers. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 | `RouterOp` | Declare a deterministic per-row branch decision from a source field. |
@@ -146,6 +148,62 @@ is the embedding of input text `i`. A downstream op therefore receives
 `slice_length` per-row vector inputs (one embedding per input doc), and a
 consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `row`.
+
+### ScoreOp
+
+`ScoreOp` scores query/candidate pairs with a FlowMesh `score` task and
+returns one `items[]` entry per pair, carrying `index` and `score`. The
+required `config` supplies `model` and `backend` (`vllm` or `transformers`);
+the optional `vllm` mapping is passed to the vLLM engine. A vLLM score node
+uses `model.vllm.convert: classify`; a Transformers node uses its
+single-label sequence-classification path.
+
+Literal queries and candidates lower to a non-empty `data.items` list of
+`{query, candidate}` mappings. A single literal query broadcasts across the
+candidates; otherwise the two lists must have equal lengths. When either
+side comes from an upstream op, Lumilake first runs the internal `pairs`
+Python step, which broadcasts a single query or rejects unequal lengths, then
+passes its `value.items` list to the score task. Empty query or candidate
+inputs, empty candidate lists, and mismatched literal pair counts raise with
+the ScoreOp id in the message.
+
+```yaml
+inputs:
+  Query: ["How does retrieval augmentation work?"]
+  Candidates: ["retrieval helps ground answers", "unrelated passage"]
+
+ops:
+  - id: "Rerank"
+    op: ScoreOp
+    inputs: [Query, Candidates]
+    query: Query
+    candidates: Candidates
+    config:
+      model: OpenScholar/OpenScholar_Reranker
+      backend: vllm
+
+outputs:
+  - name: scores
+    ref: "Rerank"
+```
+
+### HttpFetchOp
+
+`HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
+input. The `{query}` placeholder must appear in `url`, `params`, or a POST
+`body`; the runtime converts it to FlowMesh's `{{prompt}}` placeholder. The API
+executor URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so
+query values in `params` use the same form encoding as `requests`.
+`config.headers`, `config.timeout_sec`, `config.retries`, and
+`config.max_concurrency` bound the request; headers are retained in the
+runtime spec for dispatch and redacted from archived graphs. Each input row
+produces one output row.
+`config.request_delay_sec` spaces actual request starts, including retries.
+`config.cache_dir` enables a query-keyed on-disk response cache whose key is
+the method, rendered URL, rendered params, and request body.
+With `config.fail_open: true`, a failed fetch yields an error row with null
+content instead of failing the task. A downstream op sees that row as an item
+whose `json` is null and whose `error` contains the failure text.
 
 ### LLMChatOp via external API
 

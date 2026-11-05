@@ -15,6 +15,7 @@ from lumilake_server.ops.embedding_ops import (
     EmbeddingOp,
     embedding,
 )
+from lumilake_server.ops.http_fetch_ops import HttpFetchConfig, HttpFetchOp, http_fetch
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
@@ -28,6 +29,14 @@ from lumilake_server.ops.llm_ops import (
 )
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.ops.router_ops import RouterOp
+from lumilake_server.ops.score_ops import (
+    ScoreConfig,
+    ScoreItem,
+    ScoreOp,
+    ScorePair,
+    ScoreResult,
+    score,
+)
 from lumilake_server.ops.util_ops import (
     FormatOp,
     LambdaOp,
@@ -42,6 +51,8 @@ __all__ = [
     "EmbeddingOp",
     "FormatOp",
     "FunctionalOp",
+    "HttpFetchConfig",
+    "HttpFetchOp",
     "ImageGenerationOp",
     "InputOp",
     "LLMChatOp",
@@ -55,15 +66,22 @@ __all__ = [
     "OutputOp",
     "RouterOp",
     "SingleDtype",
+    "ScoreConfig",
+    "ScoreItem",
+    "ScoreOp",
+    "ScorePair",
+    "ScoreResult",
     "as_output",
     "data",
     "embedding",
     "format_op",
     "image_generation",
+    "http_fetch",
     "input_placeholder",
     "lambda_op",
     "llm_chat",
     "llm_completion",
     "llm_vision",
     "message_data",
+    "score",
 ]

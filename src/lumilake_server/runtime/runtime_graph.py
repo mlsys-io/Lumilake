@@ -15,6 +15,7 @@ from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import (
     ApiConfig,
+    GenerationConfig,
     project_input_keys,
     retrieval_items_path,
 )
@@ -32,12 +33,14 @@ from lumilake_server.ops import (
     RouterOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
+from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
     LLMCompletionOp,
     LLMVisionOp,
 )
+from lumilake_server.ops.score_ops import ScoreOp
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -60,7 +63,7 @@ _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
 _API_CREDENTIAL_PLACEHOLDER = "${credential}"
 
 
-OUTPUT_SOURCE_TYPES = (LLMOp, DataRetrievalOp, LambdaOp)
+OUTPUT_SOURCE_TYPES = (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp, LambdaOp)
 
 
 class RuntimeGraphSchema(BaseModel):
@@ -84,6 +87,17 @@ class Roles(Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+
+
+def _replace_query_placeholder(value: Any) -> Any:
+    """Adapt the typed op's ``{query}`` template to FlowMesh's prompt slot."""
+    if isinstance(value, str):
+        return value.replace("{query}", "{{prompt}}")
+    if isinstance(value, dict):
+        return {key: _replace_query_placeholder(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_query_placeholder(item) for item in value]
+    return value
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -442,6 +456,8 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str] = set()
         llm_ops: dict[str, LLMOp] = {}
         retrieval_ops: dict[str, DataRetrievalOp] = {}
+        fetch_ops: dict[str, HttpFetchOp] = {}
+        score_ops: dict[str, ScoreOp] = {}
         list_lambda_ops: dict[str, LambdaOp] = {}
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
@@ -456,6 +472,12 @@ class RuntimeGraphBuilder:
             elif isinstance(op, DataRetrievalOp):
                 retrieval_ops[op_id] = op
                 visited_node_ids.add(op_id)
+            elif isinstance(op, HttpFetchOp):
+                fetch_ops[op_id] = op
+                visited_node_ids.add(op_id)
+            elif isinstance(op, ScoreOp):
+                score_ops[op_id] = op
+                visited_node_ids.add(op_id)
             elif isinstance(op, LambdaOp) and op.takes_whole_columns:
                 list_lambda_ops[op_id] = op
                 visited_node_ids.add(op_id)
@@ -467,7 +489,8 @@ class RuntimeGraphBuilder:
                 if not isinstance(source, OUTPUT_SOURCE_TYPES):
                     raise ValueError(
                         f"OutputOp '{op.name}' input must be an LLMOp, "
-                        f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
+                        "DataRetrievalOp, HttpFetchOp, ScoreOp or LambdaOp "
+                        f"(got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
                 output_source_to_outputop.setdefault(source.id, []).append(
@@ -485,9 +508,16 @@ class RuntimeGraphBuilder:
                 )
 
         has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
-        if not llm_ops and not retrieval_ops and not has_lambda:
+        if (
+            not llm_ops
+            and not retrieval_ops
+            and not fetch_ops
+            and not score_ops
+            and not has_lambda
+        ):
             raise ValueError(
-                "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
+                "Graph must contain at least one LLMOp, DataRetrievalOp, "
+                "HttpFetchOp, ScoreOp or LambdaOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
@@ -534,6 +564,22 @@ class RuntimeGraphBuilder:
                 # shape; agent replays a SQL plan so it emits ``table`` too.
                 default_path = retrieval_items_path(mode)
                 output_paths[runtime_op.node_id] = path_override or default_path
+
+        for fetch_op_id, fetch_op in fetch_ops.items():
+            if task_type_override == "data_profile":
+                continue
+            if isinstance(fetch_op.query, (InputOp, DataOp)):
+                visited_node_ids.add(fetch_op.query.id)
+            runtime_op = self._build_node_from_http_fetch_op(
+                fetch_op_id, fetch_op, graph_dict, inputs_dict
+            )
+            nodes[runtime_op.node_id] = runtime_op
+            node_order.append(runtime_op.node_id)
+            dsl_to_runtime[fetch_op_id] = [runtime_op.node_id]
+            if fetch_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[fetch_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items.json"
 
         for lambda_op_id, lambda_op in list_lambda_ops.items():
             if task_type_override == "data_profile":
@@ -686,6 +732,27 @@ class RuntimeGraphBuilder:
                         output_paths[output_node_id] = self._upstream_output_path(
                             llm_op
                         )
+
+        for score_op_id, score_op in score_ops.items():
+            if task_type_override == "data_profile":
+                continue
+            score_nodes = self._build_node_from_score_op(
+                score_op_id,
+                score_op,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime,
+            )
+            for runtime_op in score_nodes:
+                nodes[runtime_op.node_id] = runtime_op
+                node_order.append(runtime_op.node_id)
+            runtime_op = score_nodes[-1]
+            dsl_to_runtime[score_op_id] = [runtime_op.node_id]
+            if score_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[score_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items"
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
@@ -1615,6 +1682,202 @@ class RuntimeGraphBuilder:
             model="data_retrieval",
             dependencies=dependencies if dependencies else None,
         )
+
+    def _build_node_from_http_fetch_op(
+        self,
+        op_id: str,
+        op: HttpFetchOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+    ) -> RuntimeOp:
+        query_op = op.query
+        if isinstance(query_op, InputOp):
+            query_values = inputs_dict.get(query_op.name)
+            if query_values is None:
+                raise ValueError(
+                    f"HttpFetchOp '{op_id}' query references InputOp "
+                    f"{query_op.name!r} with no values supplied."
+                )
+            if not query_values:
+                raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
+            data_spec: dict[str, Any] = {"type": "list", "items": list(query_values)}
+            dependencies: list[str] = []
+        elif isinstance(query_op, DataOp):
+            if not query_op.data:
+                raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
+            data_spec = {"type": "list", "items": list(query_op.data)}
+            dependencies = []
+        else:
+            data_spec = {
+                "type": "list",
+                "node": query_op.id,
+                "path": self._upstream_output_path(query_op),
+            }
+            dependencies = [query_op.id]
+
+        api_spec: dict[str, Any] = {
+            "method": op.method,
+            "url": op.url.replace("{query}", "{{prompt}}"),
+            "headers": dict(op.config.headers),
+            "timeout_sec": op.config.timeout_sec,
+            "retries": op.config.retries,
+            "concurrency": op.config.max_concurrency,
+            "request_delay_sec": op.config.request_delay_sec,
+            "response": {
+                "parse_json": True,
+                "return_body": True,
+                "raise_for_status": True,
+                "fail_open": op.config.fail_open,
+            },
+        }
+        if op.params is not None:
+            api_spec["params"] = _replace_query_placeholder(op.params)
+        if op.config.cache_dir is not None:
+            api_spec["cache_dir"] = op.config.cache_dir
+        if op.body is not None:
+            api_spec["json"] = _replace_query_placeholder(op.body)
+
+        return self._create_runtime_op(
+            name=op_id,
+            task_type="api",
+            data_spec=data_spec,
+            model_spec={},
+            inference_spec={},
+            api_spec=api_spec,
+            backend="api",
+            model="http-fetch",
+            dependencies=dependencies if dependencies else None,
+        )
+
+    def _build_node_from_score_op(
+        self,
+        op_id: str,
+        op: ScoreOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
+        dsl_to_runtime: dict[str, list[str]],
+    ) -> list[RuntimeOp]:
+        extra_ops: list[RuntimeOp] = []
+
+        def _source(op_ref: Op) -> tuple[list[str] | None, str | None, str | None]:
+            visited_node_ids.add(op_ref.id)
+            if isinstance(op_ref, InputOp):
+                values = inputs_dict.get(op_ref.name)
+                if not values:
+                    raise ValueError(
+                        f"ScoreOp '{op_id}' {op_ref.name!r} input has no values "
+                        "supplied"
+                    )
+                return list(values), None, None
+            if isinstance(op_ref, DataOp):
+                if not op_ref.data:
+                    raise ValueError(f"ScoreOp '{op_id}' has empty input")
+                return list(op_ref.data), None, None
+            path = (
+                retrieval_items_path(op_ref.data_spec["mode"])
+                if isinstance(op_ref, DataRetrievalOp)
+                else self._upstream_output_path(op_ref)
+            )
+            if path.startswith("items."):
+                path = path[len("items.") :]
+            path = re.sub(r"\[(\d+)\]", r".\1", path)
+            runtime_ids = dsl_to_runtime.get(op_ref.id)
+            if not runtime_ids:
+                raise ValueError(
+                    f"ScoreOp '{op_id}' input {op_ref.id!r} has no runtime node"
+                )
+            runtime_id = runtime_ids[0]
+            return None, f"{runtime_id}|{path}", runtime_id
+
+        query_values, query_ref, query_dep = _source(op.query)
+        candidate_values, candidate_ref, candidate_dep = _source(op.candidates)
+        data_spec: dict[str, Any]
+        if candidate_values is not None and not candidate_values:
+            raise ValueError(f"ScoreOp '{op_id}' has empty candidate list")
+        if query_values is not None and candidate_values is not None:
+            if len(query_values) != len(candidate_values) and len(query_values) != 1:
+                raise ValueError(
+                    f"ScoreOp '{op_id}' query and candidates must have equal lengths"
+                )
+            queries = (
+                query_values * len(candidate_values)
+                if len(query_values) == 1
+                else query_values
+            )
+            data_spec = {
+                "type": "list",
+                "items": [
+                    {"query": query, "candidate": candidate}
+                    for query, candidate in zip(queries, candidate_values)
+                ],
+            }
+            dependencies = [dep for dep in (query_dep, candidate_dep) if dep]
+        else:
+            pairs_node_id = f"{op_id}__pairs"
+            if query_ref is not None:
+                query_node, query_path = query_ref.split("|", 1)
+                query_plan: dict[str, Any] = {
+                    "kind": "stage",
+                    "node": query_node,
+                    "path": query_path,
+                }
+            else:
+                query_plan = {"kind": "literal", "values": query_values or []}
+            if candidate_ref is not None:
+                candidate_node, candidate_path = candidate_ref.split("|", 1)
+                candidate_plan: dict[str, Any] = {
+                    "kind": "stage",
+                    "node": candidate_node,
+                    "path": candidate_path,
+                }
+            else:
+                candidate_plan = {
+                    "kind": "literal",
+                    "values": candidate_values or [],
+                }
+            pairs_op = self._create_runtime_op(
+                name=pairs_node_id,
+                task_type=python_step.TASK_TYPE,
+                data_spec={
+                    "mode": "pairs",
+                    "plan": [query_plan, candidate_plan],
+                    "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+                },
+                model_spec={},
+                inference_spec={},
+                backend=python_step.BACKEND,
+                model="",
+                dependencies=[dep for dep in (query_dep, candidate_dep) if dep] or None,
+            )
+            extra_ops.append(pairs_op)
+            data_spec = {
+                "type": "list",
+                "items": f"${{{pairs_node_id}.value.items}}",
+            }
+            dependencies = [pairs_node_id]
+        backend = op.config.backend
+        backend_config = (
+            {"convert": "classify", **op.config.vllm}
+            if backend == "vllm"
+            else {"device_map": "cpu"}
+        )
+        model_config = GenerationConfig(
+            model=op.config.model,
+            api=None,
+            extra_engine_kwargs=dict(op.config.vllm) if backend == "vllm" else None,
+        )
+        score_op = self._create_runtime_op(
+            name=op_id,
+            task_type="score",
+            data_spec=data_spec,
+            model_spec=self._build_model_spec(model_config, backend, backend_config),
+            inference_spec={},
+            backend=backend,
+            model=op.config.model,
+            dependencies=dependencies or None,
+        )
+        return [*extra_ops, score_op]
 
     def _build_node_from_list_lambda_op(
         self,

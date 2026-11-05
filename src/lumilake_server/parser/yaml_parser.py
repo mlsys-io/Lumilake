@@ -89,6 +89,7 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.ops.http_fetch_ops import contains_query_placeholder
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -107,6 +108,8 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "LLMVisionOp",
         "ImageGenerationOp",
         "EmbeddingOp",
+        "HttpFetchOp",
+        "ScoreOp",
         "FormatOp",
         "LambdaOp",
         "RouterOp",
@@ -404,6 +407,10 @@ def _build_op_dict(
         _emit_image_generation_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
     elif entry.op == "EmbeddingOp":
         _emit_embedding_op(op_dict, entry, user_id_to_internal)
+    elif entry.op == "HttpFetchOp":
+        _emit_http_fetch_op(op_dict, entry, user_id_to_internal)
+    elif entry.op == "ScoreOp":
+        _emit_score_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "FormatOp":
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
@@ -658,6 +665,67 @@ def _emit_embedding_op(
     )
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
     op_dict["_inputs"] = [content_id]
+
+
+def _emit_http_fetch_op(
+    op_dict: dict[str, Any],
+    entry: _OpEntry,
+    user_id_to_internal: dict[str, str],
+) -> None:
+    url = entry.fields.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError(f"HttpFetchOp '{entry.id}' requires a non-empty 'url'")
+    query_ref = entry.fields.get("query")
+    if not isinstance(query_ref, str) or query_ref not in user_id_to_internal:
+        raise ValueError(
+            f"HttpFetchOp '{entry.id}' requires a 'query' reference to an op or input"
+        )
+    config = entry.fields.get("config") or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"HttpFetchOp '{entry.id}' config must be a mapping")
+    method = str(entry.fields.get("method", "GET")).upper()
+    if method not in {"GET", "POST"}:
+        raise ValueError(f"HttpFetchOp '{entry.id}' method must be GET or POST")
+    params = entry.fields.get("params")
+    body = entry.fields.get("body")
+    if params is not None and not isinstance(params, dict):
+        raise ValueError(f"HttpFetchOp '{entry.id}' params must be a mapping")
+    if not any(contains_query_placeholder(value) for value in (url, params, body)):
+        raise ValueError(
+            f"HttpFetchOp '{entry.id}' requires '{{query}}' in url, params, or body"
+        )
+    if method == "POST" and body is None:
+        raise ValueError(f"HttpFetchOp '{entry.id}' POST requires body")
+    op_dict["url"] = url
+    op_dict["method"] = method
+    op_dict["query"] = user_id_to_internal[query_ref]
+    op_dict["config"] = config
+    if params is not None:
+        op_dict["params"] = params
+    if body is not None:
+        op_dict["body"] = body
+    op_dict["_inputs"] = [user_id_to_internal[query_ref]]
+
+
+def _emit_score_op(
+    op_dict: dict[str, Any],
+    entry: _OpEntry,
+    user_id_to_internal: dict[str, str],
+) -> None:
+    query_ref = entry.fields.get("query")
+    candidates_ref = entry.fields.get("candidates")
+    config = entry.fields.get("config")
+    if not isinstance(config, dict) or not config.get("model"):
+        raise ValueError(f"ScoreOp '{entry.id}' requires config.model")
+    if not isinstance(query_ref, str) or query_ref not in user_id_to_internal:
+        raise ValueError(f"ScoreOp '{entry.id}' requires a 'query' reference")
+    if not isinstance(candidates_ref, str) or candidates_ref not in user_id_to_internal:
+        raise ValueError(f"ScoreOp '{entry.id}' requires a 'candidates' reference")
+
+    op_dict["query"] = user_id_to_internal[query_ref]
+    op_dict["candidates"] = user_id_to_internal[candidates_ref]
+    op_dict["config"] = dict(config)
+    op_dict["_inputs"] = [op_dict["query"], op_dict["candidates"]]
 
 
 def _emit_llm_like_op(
@@ -1215,6 +1283,8 @@ def _op_id_prefix(op_type: str) -> str:
         "LLMVisionOp": "llmvision",
         "ImageGenerationOp": "imagegen",
         "EmbeddingOp": "embedding",
+        "HttpFetchOp": "httpfetch",
+        "ScoreOp": "score",
         "FormatOp": "format",
         "LambdaOp": "lambda",
         "RouterOp": "router",

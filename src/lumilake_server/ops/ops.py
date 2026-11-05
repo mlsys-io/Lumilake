@@ -1,6 +1,6 @@
 import copy
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Self, TypeVar
 
 from lumilake_server.common import Message
@@ -123,6 +123,15 @@ class Op(ABC):
 
     def __hash__(self) -> int:
         return hash(self.id)
+
+    def consumer_result_path(self) -> str | None:
+        """The result path exposed to downstream graph operators."""
+        return None
+
+    def consumer_row_count(self, input_counts: Sequence[int | None]) -> int | None:
+        """The number of result rows exposed to downstream operators."""
+        known = [count for count in input_counts if count is not None]
+        return max(known) if known else None
 
 
 class FunctionalOp(Op):
