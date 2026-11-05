@@ -344,7 +344,8 @@ position, so one library entry can be instantiated repeatedly under distinct
 node ids. Each binding moves exactly the column it names; a template that needs
 two columns from the same node declares a binding for each, and both may use the
 same input slot. Every input slot must be valid and used by at least one
-binding, and every binding label must name a rowwise column. Ops without a
+binding, every binding label must name a rowwise column, and every rowwise
+column must be bound. Ops without a
 `ref` are emitted fully inline. The planner sees the library (id, op type, key
 config) in its system message each round.
 

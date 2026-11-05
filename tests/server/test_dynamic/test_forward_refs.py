@@ -17,6 +17,7 @@ from lumilake_server.dynamic.driver import (
     validate_emitted_subgraph,
     walk_archived_items,
 )
+from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import _op_id_prefix, parse_yaml_payload
 from lumilake_server.routes.jobs import _admit_subgraph
@@ -322,7 +323,6 @@ def test_validate_accepts_list_lambda_leaf() -> None:
 
 
 def test_build_round_archives_list_lambda_leaf_and_parses_native_graph() -> None:
-    from lumilake_server.graphs import Graph
 
     leaf = _list_lambda_leaf()
     build = build_round(
@@ -373,7 +373,6 @@ def test_output_source_types_still_reject_non_output_ops() -> None:
 
 
 def test_runtime_rejects_format_op_leaf_source() -> None:
-    from lumilake_server.graphs import Graph
 
     graph = {
         "input_graph_Symbols": {
@@ -425,7 +424,10 @@ def _llm_column_library() -> dict[str, dict[str, Any]]:
                     "path": "items.output.doctor_system",
                 },
             ],
-            "column_bindings": [{"label": "prompt", "input": 0}],
+            "column_bindings": [
+                {"label": "prompt", "input": 0},
+                {"label": "doctor_system", "input": 0},
+            ],
             "config": {
                 "model": "Qwen/Qwen3.8-27B-FP8",
                 "temperature": 0.05,
@@ -455,9 +457,6 @@ def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
 
 def test_column_bindings_remap_independent_library_instances() -> None:
     library = _llm_column_library()
-    library["DoctorTurn"]["column_bindings"].append(
-        {"label": "doctor_system", "input": 0}
-    )
     subgraph = _llm_column_subgraph("doctor") + _llm_column_subgraph("patient")
 
     resolved = resolve_subgraph(subgraph, library)
@@ -481,9 +480,6 @@ def test_column_bindings_remap_independent_library_instances() -> None:
 
 def test_column_bindings_move_each_bound_column_to_slot_zero() -> None:
     library = _llm_column_library()
-    library["DoctorTurn"]["column_bindings"].append(
-        {"label": "doctor_system", "input": 0}
-    )
     subgraph = _llm_column_subgraph("doctor")
 
     resolved = resolve_subgraph(subgraph, library)
@@ -511,12 +507,29 @@ def test_bound_library_llm_parses_through_native_graph_path() -> None:
 
     workflow = {
         "name": "depcheck",
-        "inputs": {"Symbols": []},
+        "inputs": {"Symbols": ["a"]},
         "ops": resolved,
-        "outputs": [],
+        "outputs": [{"name": "o", "ref": "doctor_turn_1"}],
     }
-    parsed = parse_yaml_payload(workflow)
-    assert parsed
+    spec = next(iter(parse_yaml_payload(workflow).values()))
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    prompt_node = next(
+        node.node_id for node in graph.nodes.values() if node.task_type == "python"
+    )
+    llm = next(node for node in graph.nodes.values() if node.task_type == "inference")
+    assert llm.dependencies == (prompt_node,)
+    assert {column["node"] for column in llm.data_spec["columns"]} == {prompt_node}
+
+
+def test_column_bindings_reject_unbound_column() -> None:
+    library = _llm_column_library()
+    library["DoctorTurn"]["column_bindings"] = [{"label": "prompt", "input": 0}]
+    subgraph = _llm_column_subgraph("doctor")
+
+    with pytest.raises(DriverProtocolError, match="doctor_system"):
+        resolve_subgraph(subgraph, library)
 
 
 def test_column_bindings_reject_unknown_label() -> None:
@@ -1035,7 +1048,6 @@ def test_forward_aligned_materializers_are_row_cardinality():
     # multi-row group: the materializer runtime nodes are aligned (not list),
     # so neither they nor News Report are whole-list-per-run, and News Report's
     # columns still read the materializers at value.items.output.
-    from lumilake_server.graphs import Graph
     from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
     sql_id = "s1"
