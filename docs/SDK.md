@@ -290,6 +290,49 @@ describe the planner request. The engine-sizing fields (`max_model_len`,
 in-graph proposer and have no effect when `api` is set. Without `api`,
 behavior is unchanged.
 
+#### Fixed round templates (`driver.template`)
+
+A workload whose round body is fixed but whose stopping point depends on data
+can supply `driver.template` instead of asking a planner to reproduce the body
+each round:
+
+```yaml
+driver:
+  model: Qwen/Qwen3.8-27B-FP8
+  max_rounds: 20
+  max_nodes_per_round: 20
+  output_location:
+    type: s3
+    prefix: dynamic/agentclinic/
+  template:
+    first:
+      ops:
+        - {ref: CaseLoad, id: CaseLoad_r{{round}}, inputs: []}
+        - {ref: CaseState, id: CaseState_r{{round}}, inputs: ["CaseLoad_r{{round}}", "Symbols"]}
+        - {ref: LiveState, id: LiveState_r{{round}}, inputs: ["CaseState_r{{round}}"]}
+      export: ["LiveState_r{{round}}"]
+    next:
+      ops:
+        - {ref: CaseState, id: CaseState_r{{round}}, inputs: ["LiveState_r{{prev}}", "Symbols"]}
+        - {ref: LiveState, id: LiveState_r{{round}}, inputs: ["CaseState_r{{round}}"]}
+      export: ["LiveState_r{{round}}"]
+    stop_when_empty: "LiveState_r{{prev}}"
+```
+
+`first` runs as round 1. `next` runs as each round `k >= 2`; the placeholders
+`{{round}}` and `{{prev}}` become `k-1` and `k-2` in every `id`, `inputs` entry
+and `export` id, never inside an op's library config. Thus round 2 renders
+`CaseState_r1` reading `LiveState_r0`. `stop_when_empty` names the previous
+round's export; before a later round starts, the server reads that export and
+stops if it has no rows. A non-empty value that cannot be decoded as the
+archived result shape fails the run rather than being treated as empty.
+
+`template` and `api` are mutually exclusive. Template mode calls no planner
+and builds no proposer op; `max_rounds` remains the hard cap. Every rendered
+body passes the same library-reference, id, input, immutability and
+`max_nodes_per_round` checks as a planner plan. The parent result records a
+`source: "template"` and the rendered round number with each plan.
+
 The `driver:` YAML settings the server accepts are:
 
 - `model` — proposer model, required.
@@ -344,7 +387,8 @@ position, so one library entry can be instantiated repeatedly under distinct
 node ids. Each binding moves exactly the column it names; a template that needs
 two columns from the same node declares a binding for each, and both may use the
 same input slot. Every input slot must be valid and used by at least one
-binding, and every binding label must name a rowwise column. Ops without a
+binding, every binding label must name a rowwise column, and every rowwise
+column must be bound. Ops without a
 `ref` are emitted fully inline. The planner sees the library (id, op type, key
 config) in its system message each round.
 

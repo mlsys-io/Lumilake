@@ -1,8 +1,9 @@
 """Validation and graph-assembly helpers for dynamic workflow rounds.
 
-A round is a single job running the emitted subgraph. Without ``driver.api``
-the round graph also holds an observation LambdaOp and a proposer LLMChatOp;
-with it, the server computes the observation and calls the external planner.
+A round is a single job running an emitted or template-supplied subgraph.
+Without ``driver.api`` or ``driver.template`` the round graph also holds an
+observation LambdaOp and a proposer LLMChatOp; with ``api`` the server calls
+the external planner, and with ``template`` it renders a fixed body.
 """
 
 import ast
@@ -23,6 +24,7 @@ from lumilake_server.dynamic.blocks import (
     PROPOSER_NODE_ID,
     fused_round_graph,
 )
+from lumilake_server.dynamic.spec import DriverRoundBody, DriverTemplate
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import (
     SUPPORTED_OPS,
@@ -96,6 +98,9 @@ _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
     name for name in SUPPORTED_OPS if issubclass(_OP_CLASSES[name], OUTPUT_SOURCE_TYPES)
 )
 
+_TEMPLATE_ROUND = "{{round}}"
+_TEMPLATE_PREV = "{{prev}}"
+
 
 class DriverProtocolError(Exception):
     """Raised when a job result or driver configuration violates the contract.
@@ -103,6 +108,13 @@ class DriverProtocolError(Exception):
     Distinct from :class:`RuntimeError` so callers can distinguish a malformed
     plan/config from a job that legitimately failed.
     """
+
+
+def _render_template_string(value: str, round_number: int) -> str:
+    """Substitute the dynamic template placeholders in one id or input."""
+    return value.replace(_TEMPLATE_ROUND, str(round_number)).replace(
+        _TEMPLATE_PREV, str(round_number - 1)
+    )
 
 
 def _template_round_expansion(template: dict[str, Any]) -> int:
@@ -141,6 +153,64 @@ class SubgraphPlan(BaseModel):
 
     ops: list[dict[str, Any]]
     export: list[str] = []
+
+
+def render_template_body(body: DriverRoundBody, round_number: int) -> SubgraphPlan:
+    """Render a fixed body for the one-based round number.
+
+    ``{{round}}`` is the zero-based suffix of this round and ``{{prev}}`` is
+    that suffix minus one. Double braces avoid collisions with JSON or Python
+    braces in library templates.
+    """
+    if round_number < 1:
+        raise DriverProtocolError("template rounds start at 1")
+    suffix = round_number - 1
+    ops = copy.deepcopy(body.ops)
+    for op in ops:
+        op_id = op.get("id")
+        if isinstance(op_id, str):
+            op["id"] = _render_template_string(op_id, suffix)
+        inputs = op.get("inputs")
+        if isinstance(inputs, list):
+            op["inputs"] = [
+                (
+                    _render_template_string(value, suffix)
+                    if isinstance(value, str)
+                    else value
+                )
+                for value in inputs
+            ]
+    export = [_render_template_string(value, suffix) for value in body.export]
+    if not ops:
+        raise DriverProtocolError(f"template round {round_number} has no ops")
+    ids = [op.get("id") for op in ops]
+    if not all(isinstance(op_id, str) and op_id for op_id in ids):
+        raise DriverProtocolError(
+            f"template round {round_number} requires non-empty string ids"
+        )
+    if len(set(ids)) != len(ids):
+        raise DriverProtocolError(f"template round {round_number} has duplicate ids")
+    missing_exports = [value for value in export if value not in ids]
+    if missing_exports:
+        raise DriverProtocolError(
+            f"template round {round_number} exports unknown ids: {missing_exports}"
+        )
+    return SubgraphPlan(ops=ops, export=export)
+
+
+def template_plan_for_round(
+    template: DriverTemplate, round_number: int
+) -> SubgraphPlan:
+    """Select and render ``first`` or ``next`` for a one-based round number."""
+    body = template.first if round_number == 1 else template.next
+    return render_template_body(body, round_number)
+
+
+def template_stop_export(template: DriverTemplate, round_number: int) -> str:
+    """The previous-round export id whose rows gate another template round."""
+    if round_number < 2:
+        raise DriverProtocolError("stop_when_empty applies only after round 1")
+    return _render_template_string(template.stop_when_empty, round_number - 1)
 
 
 class _RawPlan(BaseModel):
@@ -306,6 +376,12 @@ def _apply_column_bindings(
             )
         by_label[label]["node"] = inputs[slot]
         used_slots.add(slot)
+    unbound_labels = set(by_label) - {binding["label"] for binding in bindings}
+    if unbound_labels:
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings leave column(s) "
+            f"{sorted(unbound_labels)} unbound"
+        )
     unused_slots = set(range(len(inputs))) - used_slots
     if unused_slots:
         raise DriverProtocolError(
@@ -394,6 +470,69 @@ def _default_forward_path(op_type: str, op: dict[str, Any]) -> str:
         )
         return retrieval_items_path(mode) if isinstance(mode, str) else "items.output"
     return "items.output"
+
+
+def archived_export_has_rows(
+    archived: list[Any], *, export_id: str, op: dict[str, Any]
+) -> bool:
+    """Whether a previous round's exported Lambda output holds any rows.
+
+    Archive values are JSON strings containing the whole result item. Lambda
+    results store their output under ``value.items``; callers may pass that
+    path through ``walk_archived_items`` or the raw whole item. A row-aligned
+    list Lambda may additionally arrive wrapped as
+    ``{"content": [<json string>]}``. Undecodable non-empty values are errors,
+    never evidence that the loop should stop.
+    """
+    op_type = op.get("op", "")
+    if op_type != "LambdaOp":
+        raise DriverProtocolError(
+            f"stop_when_empty export {export_id!r} must be a LambdaOp, got {op_type!r}"
+        )
+    if not archived:
+        return False
+    values = archived
+    if len(values) == 1 and isinstance(values[0], str):
+        try:
+            decoded = json.loads(values[0])
+        except (TypeError, ValueError) as exc:
+            raise DriverProtocolError(
+                f"archived export {export_id!r} is not valid JSON: {values[0]!r}"
+            ) from exc
+        if isinstance(decoded, dict) and list(decoded) == ["content"]:
+            content = decoded["content"]
+            if not isinstance(content, list):
+                raise DriverProtocolError(
+                    f"archived export {export_id!r} content wrapper is not a list: "
+                    f"{decoded!r}"
+                )
+            values = content
+    rows: list[Any] = []
+    for index, value in enumerate(values):
+        if isinstance(value, str):
+            try:
+                item = json.loads(value)
+            except (TypeError, ValueError) as exc:
+                raise DriverProtocolError(
+                    f"archived export {export_id!r} item {index} is not decodable: "
+                    f"{exc}"
+                ) from exc
+        else:
+            item = value
+        try:
+            output = _walk_output_path(item, ("value", "items"), export_id)
+        except RuntimeError as exc:
+            raise DriverProtocolError(
+                f"archived export {export_id!r} item {index} has no value.items: "
+                f"{item!r}"
+            ) from exc
+        if not isinstance(output, list):
+            raise DriverProtocolError(
+                f"archived export {export_id!r} item {index} value.items is not a "
+                f"list: {output!r}"
+            )
+        rows.extend(output)
+    return bool(rows)
 
 
 def _forward_values(
@@ -926,6 +1065,31 @@ def validate_emitted_subgraph(
 
 _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+
+
+def validate_template_spec(template: DriverTemplate) -> None:
+    """Validate the first/next template bodies and the stop export wiring."""
+    plans = {
+        round_number: template_plan_for_round(template, round_number)
+        for round_number in (1, 2)
+    }
+    first = plans[1]
+    registry = {op["id"]: op for op in first.ops}
+    previous_export = template_stop_export(template, 2)
+    if previous_export not in first.export:
+        raise DriverProtocolError(
+            f"stop_when_empty {previous_export!r} must be exported by round 1"
+        )
+    for round_number, plan in plans.items():
+        validate_emitted_subgraph(
+            plan.ops,
+            registry if round_number > 1 else {},
+            MAX_STATIC_ROUND_NODE_BOUND,
+            export=plan.export,
+            results={previous_export: []} if round_number > 1 else {},
+        )
+        if round_number > 1:
+            registry.update({op["id"]: op for op in plan.ops})
 
 
 def _strip_plan_wrappers(value: str) -> str:

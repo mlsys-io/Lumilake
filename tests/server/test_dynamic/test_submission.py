@@ -72,6 +72,43 @@ _SUBGRAPH_PLAN: dict[str, Any] = {
     ],
 }
 
+_TEMPLATE_DYNAMIC_YAML = """
+name: dynamic-template
+type: dynamic
+goal: advance fixed rounds
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 3
+  max_nodes_per_round: 4
+  output_location:
+    type: s3
+    prefix: dynamic/template/
+  template:
+    first:
+      ops:
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
+      export: ["State_r{{round}}"]
+    next:
+      ops:
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["State_r{{prev}}"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
+      export: ["State_r{{round}}"]
+    stop_when_empty: "State_r{{prev}}"
+"""
+
 
 class _AllowAllIdentity:
     name = "test.identity"
@@ -163,6 +200,7 @@ class _FakeRuntimeServer:
         self.fail_cancel = False
         self.cancel_raises_cancelled = False
         self.omit_leaf_outputs = False
+        self.export_rows: list[list[dict[str, Any]]] | None = None
         self.leaf_item: Callable[[int], dict[str, Any]] = lambda row: {
             "table": {"market_cap": 10 + row},
             "output": {"market_cap": 10 + row},
@@ -220,8 +258,13 @@ class _FakeRuntimeServer:
         # returned plan); emit one value per leaf OutputOp so the loop can
         # validate and accumulate an observation (unless the test asks to omit
         # them).
+        export_names = set(self._export_output_names(graphs))
         if not self.omit_leaf_outputs:
-            leaf_names = self._leaf_output_names(graphs)
+            leaf_names = [
+                name
+                for name in self._leaf_output_names(graphs)
+                if name not in export_names
+            ]
             # The job manager merges a round's per-row slices into one batch,
             # so each leaf holds one item per merged row.
             rows = sum(meta.slice_length for meta in (workflow_slices or {}).values())
@@ -232,16 +275,28 @@ class _FakeRuntimeServer:
                 outputs["round"][name] = [
                     json.dumps(self.leaf_item(row)) for row in range(max(rows, 1))
                 ]
+        if self.export_rows is not None:
+            export_rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
+            for name in [n for n in outputs["round"] if n.startswith("leaf_")]:
+                outputs["round"][name] = [
+                    json.dumps({"output": export_rows, "value": {"items": export_rows}})
+                ]
         return LumilakeResponse(outputs=outputs)
 
     def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
-        from lumilake_server.ops import OutputOp
-
         names: list[str] = []
         for graph in graphs.values():
-            for op in graph.iter_ops(OutputOp):
-                if str(op.name).startswith("leaf_") and op.name not in names:
-                    names.append(op.name)
+            for name in graph.graph.output_ops:
+                if str(name).startswith("leaf_") and name not in names:
+                    names.append(str(name))
+        return names
+
+    def _export_output_names(self, graphs: dict[str, Any]) -> list[str]:
+        names: list[str] = []
+        for graph in graphs.values():
+            for name in graph.graph.output_ops:
+                if str(name).startswith("export_") and name not in names:
+                    names.append(str(name))
         return names
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
@@ -1070,6 +1125,10 @@ async def test_dynamic_api_planner_drives_two_rounds(
         "subgraph",
         "STOP",
     ]
+    assert [plan["source"] for plan in record.result.outputs["round"]["plan"]] == [
+        "api",
+        "api",
+    ]
 
     # The round graph carries only the emitted ops and their archived outputs.
     (graph,) = fake_server.executed_graphs[0].values()
@@ -1115,6 +1174,63 @@ async def test_dynamic_api_planner_drives_two_rounds(
     assert second["messages"][1]["role"] == "user"
     assert second["messages"][1]["content"].startswith(f"{user}\n\n")
     assert "market_cap" in second["messages"][1]["content"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_drives_three_rounds_without_planner(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _unexpected_planner(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("template mode must not call a planner")
+
+    monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    fake_server.export_rows = [
+        [{"case_id": "0", "turn": 0}],
+        [{"case_id": "0", "turn": 1}],
+        [{"case_id": "0", "turn": 2}],
+    ]
+    record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
+
+    assert record.status == "completed", record.error
+    assert len(record.child_job_ids) == 3
+    assert [config.chain_round for config in fake_server.configs] == [1, 2, 3]
+    round_plans = record.result.outputs["round"]["plan"]
+    assert [plan["source"] for plan in round_plans] == ["template"] * 3
+    assert [plan["round"] for plan in round_plans] == [1, 2, 3]
+    assert [plan["next"] for plan in round_plans] == ["subgraph"] * 3
+    assert fake_server.plans is not None
+    # The fake runtime does not call a proposer, so three rounds prove the
+    # template plan source; its recorded round ids also distinguish bodies.
+    assert [round_output["round"] for round_output in round_plans] == [1, 2, 3]
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_stops_before_an_empty_followup_round(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _unexpected_planner(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("template mode must not call a planner")
+
+    monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    fake_server.export_rows = [
+        [{"case_id": "0", "turn": 0}],
+        [],
+    ]
+    record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
+
+    assert record.status == "completed", record.error
+    assert len(record.child_job_ids) == 2
+    assert [config.chain_round for config in fake_server.configs] == [1, 2]
+    round_plans = record.result.outputs["round"]["plan"]
+    assert [(plan["next"], plan["source"], plan["round"]) for plan in round_plans] == [
+        ("subgraph", "template", 1),
+        ("subgraph", "template", 2),
+        ("STOP", "template", 3),
+    ]
 
 
 @pytest.mark.anyio
