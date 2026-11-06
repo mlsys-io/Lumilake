@@ -1,6 +1,7 @@
 """Tests for fixed-round dynamic templates and their data-driven stop."""
 
 import json
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +14,7 @@ from lumilake_server.dynamic.driver import (
     validate_template_spec,
 )
 from lumilake_server.dynamic.spec import DriverSettings, DynamicSpec
+from lumilake_server.routes.jobs import _flatten_leaf_outputs
 
 
 def _body(export_previous: bool) -> dict:
@@ -128,26 +130,37 @@ def test_template_render_rounds_one_two_and_twenty() -> None:
     assert template_stop_export(spec.driver.template, 20) == "LiveState_r18"
 
 
-def _archive(rows: list[dict], *, content_wrapper: bool = False) -> list[str]:
-    item = json.dumps({"task_type": "python", "value": {"items": rows}, "metrics": {}})
-    if content_wrapper:
-        return [json.dumps({"content": [item]})]
-    return [item]
+def _collected_export(rows: list[dict]) -> list[Any]:
+    archived = _flatten_leaf_outputs({"LiveState_r0": [json.dumps({"output": rows})]})
+    return archived["LiveState_r0"]
+
+
+_AGENTCLINIC_LIVE_CASE = {
+    "case_id": "0",
+    "turn": 1,
+    "doctor_hist": "",
+    "patient_hist": "",
+    "meas_hist": (
+        "It’s been about a month now, and it started gradually rather than all "
+        "at once. I’ve noticed the double vision and weakness get worse after "
+        "I’m active, but they really improve after I rest for a few hours.\n\n"
+    ),
+    "examiner_info": "Assess and diagnose the patient presenting with double vision",
+    "correct_diagnosis": "Myasthenia gravis",
+    "completed": False,
+    "correct": False,
+    "route": "patient",
+}
 
 
 @pytest.mark.parametrize(
-    ("archived", "expected"),
-    [
-        ([], False),
-        (_archive([]), False),
-        (_archive([], content_wrapper=True), False),
-        (_archive([{"case_id": "0"}]), True),
-        (_archive([{"case_id": "0"}], content_wrapper=True), True),
-    ],
+    ("rows", "expected"), [([], False), ([_AGENTCLINIC_LIVE_CASE], True)]
 )
-def test_stop_check_empty_and_non_empty_archives(
-    archived: list[str], expected: bool
+def test_stop_check_uses_collected_all_results_shape(
+    rows: list[dict], expected: bool
 ) -> None:
+    archived = _collected_export(rows)
+    assert archived == [{"output": rows}]
     assert (
         archived_export_has_rows(
             archived, export_id="LiveState_r0", op={"op": "LambdaOp"}
@@ -156,10 +169,10 @@ def test_stop_check_empty_and_non_empty_archives(
     )
 
 
-def test_stop_check_rejects_non_empty_undecodable_value() -> None:
-    with pytest.raises(DriverProtocolError, match="not valid JSON"):
+def test_stop_check_rejects_unexpected_value() -> None:
+    with pytest.raises(DriverProtocolError, match="not a Lambda result item"):
         archived_export_has_rows(
-            ["this is not an archived JSON item"],
+            [{"value": {"items": [{"case_id": "0"}]}}],
             export_id="LiveState_r0",
             op={"op": "LambdaOp"},
         )
