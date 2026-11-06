@@ -380,9 +380,9 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
 
 
-def test_llm_config_accepts_output_check() -> None:
+def test_llm_config_accepts_output_enforcement() -> None:
     yaml_text = textwrap.dedent("""
-        name: output_check
+        name: output_enforcement
         ops:
           - id: ask
             op: LLMChatOp
@@ -391,7 +391,8 @@ def test_llm_config_accepts_output_check() -> None:
                 content: "hello"
             config:
               model: dummy-model
-              output_check:
+              output_enforcement:
+                mode: retry
                 max_attempts: 3
                 text_regex: "^ok$"
         outputs:
@@ -399,9 +400,10 @@ def test_llm_config_accepts_output_check() -> None:
             ref: ask
         """)
     specs = parse_yaml_payload(yaml_text)
-    graph_dict = specs["output_check"]["graph"]
+    graph_dict = specs["output_enforcement"]["graph"]
     llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
-    assert llm_op["config"]["output_check"] == {
+    assert llm_op["config"]["output_enforcement"] == {
+        "mode": "retry",
         "max_attempts": 3,
         "text_regex": "^ok$",
     }

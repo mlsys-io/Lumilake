@@ -126,21 +126,14 @@ model resolves from `config.api.model`, then the top-level `config.model`.
 Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
 the request body.
 
-`config.output_check` validates generated text for both API-backed and local
-`LLMChatOp` runs. Set exactly one of `json_schema` or `text_regex`, plus
-`max_attempts` (default `1`, maximum `10`). A failed row is re-asked with the
-same prompt and sampler settings while successful rows are not rerun. API
-requests do not receive any additional response-format or constrained-decoding
-field. A local run with a seed advances it by the retry number so deterministic
-sampling produces a new attempt. When all attempts fail, the last response is
-kept with `validation_ok: false`; results also report per-row `attempts` and an
-aggregate `retry_summary`.
+`config.output_enforcement` validates generated text for both API-backed and local `LLMChatOp` runs. Set `mode` to `retry` (the default) or `constrained`, exactly one of `json_schema` or `text_regex`, and `max_attempts` (default `1`, maximum `10`). Retry mode leaves decoding untouched and re-asks only failed rows with the same prompt and sampler settings; successful rows are not rerun. Constrained mode asks local vLLM inference to enforce the format in one generation and requires `max_attempts: 1`; it is rejected for API ops because the external endpoint has no corresponding constraint. Under deterministic local decoding, retry mode runs one attempt and still reports validation. When all attempts fail, the last response is kept with `validation_ok: false`; results also report per-row `attempts` and an aggregate `retry_summary`.
 
 ```yaml
 config:
   model: Qwen/Qwen2.5-0.5B-Instruct
   temperature: 1
-  output_check:
+  output_enforcement:
+    mode: retry
     max_attempts: 5
     json_schema:
       type: object

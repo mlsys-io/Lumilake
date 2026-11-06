@@ -436,10 +436,23 @@ class RuntimeGraphBuilder:
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
             if isinstance(op, LLMOp):
-                if not isinstance(op, LLMChatOp) and op.config.output_check is not None:
+                if (
+                    not isinstance(op, LLMChatOp)
+                    and op.config.output_enforcement is not None
+                ):
                     raise ValueError(
                         f"{type(op).__name__} '{op_id}' does not support "
-                        "config.output_check; use it only on LLMChatOp."
+                        "config.output_enforcement; use it only on LLMChatOp."
+                    )
+                if (
+                    isinstance(op, LLMChatOp)
+                    and op.config.api is not None
+                    and op.config.output_enforcement is not None
+                    and op.config.output_enforcement.mode == "constrained"
+                ):
+                    raise ValueError(
+                        f"LLMChatOp '{op_id}' cannot use constrained "
+                        "output_enforcement with an API backend; use mode: retry."
                     )
                 llm_ops[op_id] = op
                 visited_node_ids.add(op_id)
@@ -2321,9 +2334,11 @@ class RuntimeGraphBuilder:
         if (
             isinstance(llm_op, LLMChatOp)
             and llm_op.config.api is None
-            and llm_op.config.output_check is not None
+            and llm_op.config.output_enforcement is not None
         ):
-            inference_spec["output_check"] = asdict(llm_op.config.output_check)
+            inference_spec["output_enforcement"] = asdict(
+                llm_op.config.output_enforcement
+            )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             data_spec, row_dependencies = self._rowwise_data_spec(
@@ -2539,10 +2554,13 @@ class RuntimeGraphBuilder:
                     "api mode takes structural_outputs as a JSON-schema object; "
                     f"got {type(llm_op.structural_outputs).__name__}"
                 )
-        if isinstance(llm_op, LLMChatOp) and llm_op.config.output_check is not None:
-            api_spec_output_check = asdict(llm_op.config.output_check)
+        if (
+            isinstance(llm_op, LLMChatOp)
+            and llm_op.config.output_enforcement is not None
+        ):
+            api_spec_output_enforcement = asdict(llm_op.config.output_enforcement)
         else:
-            api_spec_output_check = None
+            api_spec_output_enforcement = None
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,
@@ -2554,8 +2572,8 @@ class RuntimeGraphBuilder:
                 "raise_for_status": True,
             },
         }
-        if api_spec_output_check is not None:
-            api_spec["output_check"] = api_spec_output_check
+        if api_spec_output_enforcement is not None:
+            api_spec["output_enforcement"] = api_spec_output_enforcement
         if api_config.timeout_sec is not None:
             api_spec["timeout_sec"] = api_config.timeout_sec
         if api_config.retries is not None:
