@@ -1,4 +1,5 @@
 import contextlib
+from pathlib import Path
 
 import pytest
 
@@ -352,16 +353,43 @@ def test_halo_optimizer_does_not_filter_other_task_types_by_capability() -> None
     assert schedule.worker_assignment["cpu-plain"] == ["a1"]
 
 
-def test_model_size_resolution_parses_suffix() -> None:
+def test_model_size_resolution_parses_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     optimizer = HaloOptimizer()
+    metadata_calls: list[str] = []
+
+    def resolve(model: str) -> tuple[int, str]:
+        metadata_calls.append(model)
+        return 1, "test"
+
+    monkeypatch.setattr(
+        optimizer,
+        "_safetensors_parameter_count_with_source",
+        resolve,
+    )
     size = optimizer._model_size_b(
         Node(id="n1", type="inference", engine="vllm", model="foo-1.5B", raw={})
     )
     assert size == pytest.approx(1.5)
+    assert metadata_calls == []
 
 
-def test_model_size_resolution_uses_lookup() -> None:
+def test_model_size_resolution_uses_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     optimizer = HaloOptimizer()
+    metadata_calls: list[str] = []
+
+    def resolve(model: str) -> tuple[int, str]:
+        metadata_calls.append(model)
+        return 1, "test"
+
+    monkeypatch.setattr(
+        optimizer,
+        "_safetensors_parameter_count_with_source",
+        resolve,
+    )
     size = optimizer._model_size_b(
         Node(
             id="n1",
@@ -372,11 +400,114 @@ def test_model_size_resolution_uses_lookup() -> None:
         )
     )
     assert size == pytest.approx(3.5)
+    assert metadata_calls == []
 
 
-def test_model_size_resolution_rejects_unknown_model() -> None:
+def test_model_size_resolution_uses_safetensors_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     optimizer = HaloOptimizer()
-    with pytest.raises(ValueError, match="model size is unknown"):
+    monkeypatch.setattr(
+        optimizer,
+        "_safetensors_parameter_count_with_source",
+        lambda model: (1_250_000_000, "test safetensors metadata"),
+    )
+    size = optimizer._model_size_b(
+        Node(
+            id="n1",
+            type="inference",
+            engine="vllm",
+            model="org/model-without-a-size-suffix",
+            raw={},
+        )
+    )
+    assert size == pytest.approx(1.25)
+
+
+def test_model_size_resolution_caches_safetensors_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimizer = HaloOptimizer()
+    calls: list[str] = []
+
+    def resolve(model: str) -> tuple[int, str]:
+        calls.append(model)
+        return 750_000_000, "test safetensors metadata"
+
+    monkeypatch.setattr(
+        optimizer,
+        "_safetensors_parameter_count_with_source",
+        resolve,
+    )
+    node = Node(
+        id="n1",
+        type="inference",
+        engine="vllm",
+        model="org/cache-test-model",
+        raw={},
+    )
+    assert optimizer._model_size_b(node) == pytest.approx(0.75)
+    assert optimizer._model_size_b(node) == pytest.approx(0.75)
+    assert calls == ["org/cache-test-model"]
+
+
+def test_safetensors_resolution_prefers_local_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimizer = HaloOptimizer()
+    monkeypatch.setenv("HF_HOME", "/mnt/data/szy/lumilake-experiment/hf-home")
+    cache_calls: list[tuple[str, str, str | None]] = []
+
+    def cached(model: str, filename: str, *, cache_dir: Path | None = None) -> str:
+        cache_calls.append((model, filename, str(cache_dir)))
+        return "/cache/model.safetensors"
+
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.try_to_load_from_cache",
+        cached,
+    )
+    monkeypatch.setattr(
+        optimizer,
+        "_safetensors_parameter_count",
+        lambda path: 570_000_000,
+    )
+    monkeypatch.setattr(
+        optimizer,
+        "_remote_parameter_count",
+        lambda model: pytest.fail("remote metadata must not be consulted"),
+    )
+    count, source = optimizer._safetensors_parameter_count_with_source(
+        "org/cached-model"
+    )
+    assert count == 570_000_000
+    assert source == "local HF cache"
+    assert cache_calls == [
+        (
+            "org/cached-model",
+            "model.safetensors",
+            "/mnt/data/szy/lumilake-experiment/hf-home/hub",
+        )
+    ]
+
+
+def test_model_size_resolution_rejects_unknown_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimizer = HaloOptimizer()
+
+    def fail(_model: str) -> tuple[int, str]:
+        raise ValueError(
+            "safetensors metadata failed: "
+            "local HF cache: weights missing; "
+            "Hugging Face safetensors metadata: HTTP 404"
+        )
+
+    monkeypatch.setattr(
+        optimizer,
+        "_safetensors_parameter_count_with_source",
+        fail,
+    )
+    with pytest.raises(ValueError) as exc_info:
         optimizer._model_size_b(
             Node(
                 id="n1",
@@ -386,6 +517,13 @@ def test_model_size_resolution_rejects_unknown_model() -> None:
                 raw={},
             )
         )
+    message = str(exc_info.value)
+    assert "MODEL_SIZE catalog" in message
+    assert "name suffix" in message
+    assert "safetensors metadata" in message
+    assert "local HF cache" in message
+    assert "Hugging Face safetensors metadata" in message
+    assert "unknown/model-without-size" in message
 
 
 def test_model_size_resolution_rejects_missing_model() -> None:
