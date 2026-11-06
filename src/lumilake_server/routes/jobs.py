@@ -481,6 +481,25 @@ def _flatten_leaf_outputs(
     return flattened
 
 
+def _decode_archived_items(values: list[str]) -> list[Any]:
+    """Decode one archive value per stored whole result item.
+
+    ``_flatten_leaf_outputs`` deliberately keeps a decoded value inside its
+    outer list so ``round_results`` preserves the archive representation.
+    ``all_results`` instead forwards decoded whole items, so decode each value
+    directly and reject malformed archives rather than nesting them further.
+    """
+    items: list[Any] = []
+    for value in values:
+        try:
+            items.append(json.loads(value))
+        except (TypeError, ValueError) as exc:
+            raise DriverProtocolError(
+                f"archived result item is not valid JSON: {value!r}"
+            ) from exc
+    return items
+
+
 def _dispatch_workflow_to_graph_specs(
     *,
     workflow_format: str,
@@ -2348,8 +2367,9 @@ async def _run_dynamic_job(
                     )
                     plans.append({**plan_to_dict(next_plan), "source": "api"})
                 observations.append(observation)
-                # Decode the archived whole items into results keyed by user id
-                # so a later round can forward references to them.
+                # Decode one whole item per archive value into results keyed by
+                # user id so later rounds and the stop check see the same flat
+                # list of Lambda/Ops result items.
                 leaf_internal_to_user = dict(
                     zip(
                         (
@@ -2361,7 +2381,7 @@ async def _run_dynamic_job(
                 )
                 for internal_id, values in leaf_outputs.items():
                     all_results[leaf_internal_to_user[internal_id]] = (
-                        _flatten_leaf_outputs({internal_id: values})[internal_id]
+                        _decode_archived_items(values)
                     )
                 export_internal_to_user = dict(
                     zip(
@@ -2374,7 +2394,7 @@ async def _run_dynamic_job(
                 )
                 for internal_id, values in export_outputs.items():
                     all_results[export_internal_to_user[internal_id]] = (
-                        _flatten_leaf_outputs({internal_id: values})[internal_id]
+                        _decode_archived_items(values)
                     )
                 if isinstance(next_plan, StopPlan):
                     stopped_by = STOP
