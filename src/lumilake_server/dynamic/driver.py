@@ -477,12 +477,10 @@ def archived_export_has_rows(
 ) -> bool:
     """Whether a previous round's exported Lambda output holds any rows.
 
-    Archive values are JSON strings containing the whole result item. Lambda
-    results store their output under ``value.items``; callers may pass that
-    path through ``walk_archived_items`` or the raw whole item. A row-aligned
-    list Lambda may additionally arrive wrapped as
-    ``{"content": [<json string>]}``. Undecodable non-empty values are errors,
-    never evidence that the loop should stop.
+    ``all_results`` stores decoded whole result items after
+    ``walk_archived_items``: a completed list Lambda contributes one mapping
+    such as ``{"output": [row, ...]}`` (or ``{"output": []}``). Unexpected or
+    undecodable values are errors, never evidence that the loop should stop.
     """
     op_type = op.get("op", "")
     if op_type != "LambdaOp":
@@ -491,44 +489,18 @@ def archived_export_has_rows(
         )
     if not archived:
         return False
-    values = archived
-    if len(values) == 1 and isinstance(values[0], str):
-        try:
-            decoded = json.loads(values[0])
-        except (TypeError, ValueError) as exc:
-            raise DriverProtocolError(
-                f"archived export {export_id!r} is not valid JSON: {values[0]!r}"
-            ) from exc
-        if isinstance(decoded, dict) and list(decoded) == ["content"]:
-            content = decoded["content"]
-            if not isinstance(content, list):
-                raise DriverProtocolError(
-                    f"archived export {export_id!r} content wrapper is not a list: "
-                    f"{decoded!r}"
-                )
-            values = content
     rows: list[Any] = []
-    for index, value in enumerate(values):
-        if isinstance(value, str):
-            try:
-                item = json.loads(value)
-            except (TypeError, ValueError) as exc:
-                raise DriverProtocolError(
-                    f"archived export {export_id!r} item {index} is not decodable: "
-                    f"{exc}"
-                ) from exc
-        else:
-            item = value
-        try:
-            output = _walk_output_path(item, ("value", "items"), export_id)
-        except RuntimeError as exc:
+    for index, item in enumerate(archived):
+        if not isinstance(item, dict) or "output" not in item:
             raise DriverProtocolError(
-                f"archived export {export_id!r} item {index} has no value.items: "
+                f"archived export {export_id!r} item {index} is not a Lambda "
+                "result item with 'output': "
                 f"{item!r}"
-            ) from exc
+            )
+        output = item["output"]
         if not isinstance(output, list):
             raise DriverProtocolError(
-                f"archived export {export_id!r} item {index} value.items is not a "
+                f"archived export {export_id!r} item {index} output is not a "
                 f"list: {output!r}"
             )
         rows.extend(output)
