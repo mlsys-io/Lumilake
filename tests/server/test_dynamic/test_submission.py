@@ -109,6 +109,53 @@ driver:
     stop_when_empty: "State_r{{prev}}"
 """
 
+_LIBRARY_TEMPLATE_DYNAMIC_YAML = """
+name: dynamic-library-template
+type: dynamic
+goal: validate resolved round templates
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 2
+  max_nodes_per_round: 4
+  output_location:
+    type: s3
+    prefix: dynamic/template/
+  template:
+    first:
+      ops:
+        - ref: LiveState
+          id: "LiveState_r{{round}}"
+          inputs: ["Symbols"]
+      export: ["LiveState_r{{round}}"]
+    next:
+      ops:
+        - ref: CaseState
+          id: "CaseState_r{{round}}"
+          inputs: ["LiveState_r{{prev}}"]
+        - ref: LiveState
+          id: "LiveState_r{{round}}"
+          inputs: ["CaseState_r{{round}}"]
+      export: ["LiveState_r{{round}}"]
+    stop_when_empty: "LiveState_r{{prev}}"
+library:
+  LiveState:
+    op: LambdaOp
+    inputs: ["Symbols"]
+    mode: list
+    fn_name: state
+    code: |
+      def state(columns):
+          return columns[0]
+  CaseState:
+    op: LambdaOp
+    inputs: ["Symbols"]
+    mode: list
+    fn_name: state
+    code: |
+      def state(columns):
+          return columns[0]
+"""
+
 
 class _AllowAllIdentity:
     name = "test.identity"
@@ -1605,3 +1652,38 @@ async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
         )
     assert resp.status_code == 422
     await _run_background(app)
+
+
+@pytest.mark.anyio
+async def test_library_template_submit_passes_resolved_validation(
+    app: FastAPI, job_routes: Any
+) -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_LIBRARY_TEMPLATE_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["status"] == "pending"
+
+
+@pytest.mark.anyio
+async def test_template_preview_reports_bad_ref_validation_error(
+    app: FastAPI,
+) -> None:
+    bad_yaml = _LIBRARY_TEMPLATE_DYNAMIC_YAML.replace(
+        "ref: LiveState", "ref: MissingLibraryEntry", 1
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs/preview",
+            json=_submit_body(bad_yaml),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert "unknown library entry 'MissingLibraryEntry'" in detail
+    assert "preview is not available" not in detail
