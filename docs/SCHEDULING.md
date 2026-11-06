@@ -321,6 +321,18 @@ or lanes.
 
 ## 7. Where cost estimation belongs
 
+### HALO model sizing
+
+HALO resolves a GPU model's parameter count before estimating GPU cost. It
+tries, in order: the `MODEL_SIZE` catalog, the model-name suffix (`7B`, `1.5B`,
+`560M`), and the model's exact safetensors tensor-shape metadata. Metadata is
+read from the local Hugging Face cache when present and otherwise obtained with
+`huggingface_hub.get_safetensors_metadata`, summing parameter counts across
+dtypes and shards. Results are cached for the optimizer process. File byte size
+is not a sizing source because dtype width makes it inaccurate. If all three
+sources fail, HALO raises a model-size validation error naming the model and
+the sources tried; it does not substitute a fallback size.
+
 HALO already estimates execution cost, but it does so *inside* the optimizer,
 downstream of selection, and it minimises makespan **within** a batch. Nothing
 optimised **across** batches. Selection needs a different quantity — how much

@@ -114,6 +114,7 @@ server-runtime = [
     "sqlparse==0.6.0",
     "lumid-hooks==0.2.0",
     "flowmesh-sdk==0.1.13",
+    "huggingface-hub==2.3.0",
     # Security floors for transitive dependencies.
     "anyio==4.15.1",
     "certifi==2026.10.23",
