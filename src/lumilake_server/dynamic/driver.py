@@ -1067,29 +1067,33 @@ _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
 
-def validate_template_spec(template: DriverTemplate) -> None:
+def validate_template_spec(
+    template: DriverTemplate,
+    library: dict[str, dict[str, Any]] | None = None,
+) -> None:
     """Validate the first/next template bodies and the stop export wiring."""
     plans = {
         round_number: template_plan_for_round(template, round_number)
         for round_number in (1, 2)
     }
     first = plans[1]
-    registry = {op["id"]: op for op in first.ops}
     previous_export = template_stop_export(template, 2)
     if previous_export not in first.export:
         raise DriverProtocolError(
             f"stop_when_empty {previous_export!r} must be exported by round 1"
         )
+    registry: dict[str, dict[str, Any]] = {}
     for round_number, plan in plans.items():
         validate_emitted_subgraph(
             plan.ops,
             registry if round_number > 1 else {},
             MAX_STATIC_ROUND_NODE_BOUND,
+            library,
             export=plan.export,
             results={previous_export: []} if round_number > 1 else {},
         )
-        if round_number > 1:
-            registry.update({op["id"]: op for op in plan.ops})
+        resolved = resolve_subgraph(plan.ops, library)
+        registry.update({op["id"]: op for op in resolved})
 
 
 def _strip_plan_wrappers(value: str) -> str:

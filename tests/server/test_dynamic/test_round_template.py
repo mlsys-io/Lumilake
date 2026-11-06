@@ -10,6 +10,7 @@ from lumilake_server.dynamic.driver import (
     archived_export_has_rows,
     template_plan_for_round,
     template_stop_export,
+    validate_template_spec,
 )
 from lumilake_server.dynamic.spec import DriverSettings, DynamicSpec
 
@@ -162,3 +163,97 @@ def test_stop_check_rejects_non_empty_undecodable_value() -> None:
             export_id="LiveState_r0",
             op={"op": "LambdaOp"},
         )
+
+
+def test_template_validates_ref_only_bodies_with_overridden_inputs() -> None:
+    library = {
+        "LiveState": {
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "state",
+            "code": "def state(columns):\n    return columns[0]\n",
+        },
+        "CaseState": {
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "state",
+            "code": "def state(columns):\n    return columns[0]\n",
+        },
+    }
+    template = DynamicSpec.model_validate(
+        {
+            "type": "dynamic",
+            "goal": "ref-only templates",
+            "driver": {
+                "model": "Qwen/Qwen3-8B",
+                "template": {
+                    "first": {
+                        "ops": [
+                            {
+                                "ref": "LiveState",
+                                "id": "LiveState_r{{round}}",
+                                "inputs": ["Symbols"],
+                            }
+                        ],
+                        "export": ["LiveState_r{{round}}"],
+                    },
+                    "next": {
+                        "ops": [
+                            {
+                                "ref": "CaseState",
+                                "id": "CaseState_r{{round}}",
+                                "inputs": ["LiveState_r{{prev}}"],
+                            },
+                            {
+                                "ref": "LiveState",
+                                "id": "LiveState_r{{round}}",
+                                "inputs": ["CaseState_r{{round}}"],
+                            },
+                        ],
+                        "export": ["LiveState_r{{round}}"],
+                    },
+                    "stop_when_empty": "LiveState_r{{prev}}",
+                },
+            },
+            "library": library,
+        }
+    )
+    assert template.driver.template is not None
+    validate_template_spec(template.driver.template, template.library)
+
+
+def test_template_validator_rejects_unknown_library_ref() -> None:
+    template = DynamicSpec.model_validate(
+        {
+            "type": "dynamic",
+            "goal": "bad ref",
+            "driver": {
+                "model": "Qwen/Qwen3-8B",
+                "template": {
+                    "first": {
+                        "ops": [{"ref": "Missing", "id": "x_r{{round}}", "inputs": []}],
+                        "export": ["x_r{{round}}"],
+                    },
+                    "next": {
+                        "ops": [{"ref": "Missing", "id": "x_r{{round}}", "inputs": []}],
+                        "export": ["x_r{{round}}"],
+                    },
+                    "stop_when_empty": "x_r{{prev}}",
+                },
+            },
+            "library": {
+                "Known": {
+                    "op": "LambdaOp",
+                    "inputs": [],
+                    "mode": "list",
+                    "fn_name": "state",
+                    "code": "def state(columns):\n    return columns[0]\n",
+                }
+            },
+        }
+    )
+    assert template.driver.template is not None
+    with pytest.raises(DriverProtocolError, match="unknown library entry"):
+        validate_template_spec(template.driver.template, template.library)

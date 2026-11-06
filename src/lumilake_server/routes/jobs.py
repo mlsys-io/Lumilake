@@ -351,7 +351,7 @@ def _render_dynamic_round0(
     try:
         validate_library(spec.library)
         if spec.driver.template is not None:
-            validate_template_spec(spec.driver.template)
+            validate_template_spec(spec.driver.template, spec.library)
         static_bound = static_round_node_upper_bound(
             spec.library,
             include_proposer=(spec.driver.api is None and spec.driver.template is None),
@@ -2922,6 +2922,16 @@ async def preview_job(
                     ),
                 )
             if dynamic_spec.driver.template is not None:
+                try:
+                    validate_library(dynamic_spec.library)
+                    validate_template_spec(
+                        dynamic_spec.driver.template, dynamic_spec.library
+                    )
+                except (DriverProtocolError, ValueError) as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail=f"Invalid dynamic workflow spec for index: {exc}",
+                    ) from exc
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=(
