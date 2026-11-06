@@ -160,7 +160,11 @@ The path `items` (exactly, with no field) selects the whole result item rather
 than one field of it. Dynamic workflows use it to archive each leaf and each
 `export`ed op so later rounds can read any field of the stored item. Only LLM
 ops, `DataRetrievalOp` and `LambdaOp` can feed an `OutputOp`, so a dynamic leaf
-must be one of them; see [`docs/SDK.md`](SDK.md#dynamic-workflows).
+must be one of them. Dynamic templates may declare fixed `first`/`next` bodies
+instead of using a planner; see
+[`docs/SDK.md`](SDK.md#fixed-round-templates-drivertemplate). In that mode an
+export such as `LiveState_r{{prev}}` is also the data-driven stop probe: the
+server checks the previous round's archived rows before running the next body.
 
 > **n8n note.** n8n-imported workflows do **not** support the `path:`
 > selector — n8n's UI has no equivalent annotation. They fall back to the

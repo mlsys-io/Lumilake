@@ -18,6 +18,7 @@ from pydantic import (
     StrictStr,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 
@@ -35,6 +36,25 @@ class DriverApi(BaseModel):
     authorization: StrictStr | None = None
     timeout_sec: StrictFloat | None = Field(default=None, gt=0)
     retries: StrictInt | None = Field(default=None, ge=0)
+
+
+class DriverRoundBody(BaseModel):
+    """A fixed round body in template-driven dynamic mode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ops: list[dict[str, Any]]
+    export: list[StrictStr] = []
+
+
+class DriverTemplate(BaseModel):
+    """Fixed first/next round bodies for a data-driven dynamic loop."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    first: DriverRoundBody
+    next: DriverRoundBody
+    stop_when_empty: StrictStr
 
 
 class DriverSettings(BaseModel):
@@ -58,6 +78,13 @@ class DriverSettings(BaseModel):
     dtype: StrictStr | None = None
     extra_engine_kwargs: dict[StrictStr, Any] | None = None
     api: DriverApi | None = None
+    template: DriverTemplate | None = None
+
+    @model_validator(mode="after")
+    def _api_and_template_are_exclusive(self) -> "DriverSettings":
+        if self.api is not None and self.template is not None:
+            raise ValueError("driver.api and driver.template are mutually exclusive")
+        return self
 
     @field_validator("dtype")
     @classmethod
