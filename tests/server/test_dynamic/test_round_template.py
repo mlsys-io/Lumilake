@@ -9,12 +9,13 @@ from pydantic import ValidationError
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     archived_export_has_rows,
+    forward_refs,
     template_plan_for_round,
     template_stop_export,
     validate_template_spec,
 )
 from lumilake_server.dynamic.spec import DriverSettings, DynamicSpec
-from lumilake_server.routes.jobs import _flatten_leaf_outputs
+from lumilake_server.routes.jobs import _decode_archived_items, _extract_leaf_outputs
 
 
 def _body(export_previous: bool) -> dict:
@@ -131,8 +132,15 @@ def test_template_render_rounds_one_two_and_twenty() -> None:
 
 
 def _collected_export(rows: list[dict]) -> list[Any]:
-    archived = _flatten_leaf_outputs({"LiveState_r0": [json.dumps({"output": rows})]})
-    return archived["LiveState_r0"]
+    outputs = {
+        "round_1": {
+            "leaf_lambda_round_1_LiveState_r0_7634": [json.dumps({"output": rows})]
+        }
+    }
+    names = ["leaf_lambda_round_1_LiveState_r0_7634"]
+    leaf_outputs = _extract_leaf_outputs(outputs, names)
+    values = leaf_outputs[names[0][len("leaf_") :]]
+    return _decode_archived_items(values)
 
 
 _AGENTCLINIC_LIVE_CASE = {
@@ -176,6 +184,17 @@ def test_stop_check_rejects_unexpected_value() -> None:
             export_id="LiveState_r0",
             op={"op": "LambdaOp"},
         )
+
+
+def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
+    collected = _collected_export([_AGENTCLINIC_LIVE_CASE])
+    ops, inputs = forward_refs(
+        [{"id": "CaseState_r1", "op": "LambdaOp", "inputs": ["LiveState_r0"]}],
+        {"LiveState_r0": collected},
+        {"LiveState_r0": {"op": "LambdaOp"}},
+    )
+    assert ops[0]["inputs"] == ["LiveState_r0"]
+    assert inputs == {"LiveState_r0": [json.dumps([_AGENTCLINIC_LIVE_CASE])]}
 
 
 def test_template_validates_ref_only_bodies_with_overridden_inputs() -> None:
