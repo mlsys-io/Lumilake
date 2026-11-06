@@ -486,17 +486,21 @@ def _decode_archived_items(values: list[str]) -> list[Any]:
 
     ``_flatten_leaf_outputs`` deliberately keeps a decoded value inside its
     outer list so ``round_results`` preserves the archive representation.
-    ``all_results`` instead forwards decoded whole items, so decode each value
-    directly and reject malformed archives rather than nesting them further.
+    ``all_results`` instead forwards decoded whole items, so a decoded list of
+    result items is flattened by one level and malformed archives are rejected.
     """
     items: list[Any] = []
     for value in values:
         try:
-            items.append(json.loads(value))
+            decoded = json.loads(value)
         except (TypeError, ValueError) as exc:
             raise DriverProtocolError(
                 f"archived result item is not valid JSON: {value!r}"
             ) from exc
+        if isinstance(decoded, list):
+            items.extend(decoded)
+        else:
+            items.append(decoded)
     return items
 
 

@@ -477,9 +477,9 @@ def archived_export_has_rows(
 ) -> bool:
     """Whether a previous round's exported Lambda output holds any rows.
 
-    ``all_results`` stores one decoded whole result item per archive value. A
-    completed list Lambda contributes one mapping ``{"output": [row, ...]}``
-    (or ``{"output": []}``). Unexpected or undecodable values are errors, never
+    ``all_results`` stores decoded whole result items. A completed list Lambda
+    contributes one mapping ``{"output": [row, ...]}`` (or
+    ``{"output": []}``). Unexpected or undecodable values are errors, never
     evidence that the loop should stop.
     """
     op_type = op.get("op", "")
