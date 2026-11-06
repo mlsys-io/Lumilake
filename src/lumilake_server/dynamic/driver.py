@@ -1083,6 +1083,7 @@ def validate_template_spec(
             f"stop_when_empty {previous_export!r} must be exported by round 1"
         )
     registry: dict[str, dict[str, Any]] = {}
+    available_results: dict[str, list[dict[str, Any]]] = {}
     for round_number, plan in plans.items():
         validate_emitted_subgraph(
             plan.ops,
@@ -1090,10 +1091,12 @@ def validate_template_spec(
             MAX_STATIC_ROUND_NODE_BOUND,
             library,
             export=plan.export,
-            results={previous_export: []} if round_number > 1 else {},
+            results=available_results,
         )
         resolved = resolve_subgraph(plan.ops, library)
         registry.update({op["id"]: op for op in resolved})
+        for op_id in [*_current_leaves(plan.ops), *plan.export]:
+            available_results.setdefault(op_id, [])
 
 
 def _strip_plan_wrappers(value: str) -> str:

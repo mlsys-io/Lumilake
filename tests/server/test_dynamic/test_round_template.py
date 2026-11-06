@@ -257,3 +257,62 @@ def test_template_validator_rejects_unknown_library_ref() -> None:
     assert template.driver.template is not None
     with pytest.raises(DriverProtocolError, match="unknown library entry"):
         validate_template_spec(template.driver.template, template.library)
+
+
+def test_template_validator_forwards_a_prior_round_leaf() -> None:
+    library = {
+        "Source": {
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "state",
+            "code": "def state(columns):\n    return columns[0]\n",
+        },
+        "Tally": {
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "state",
+            "code": "def state(columns):\n    return columns[0]\n",
+        },
+    }
+    template = DynamicSpec.model_validate(
+        {
+            "type": "dynamic",
+            "goal": "forward a leaf",
+            "driver": {
+                "model": "Qwen/Qwen3-8B",
+                "template": {
+                    "first": {
+                        "ops": [
+                            {
+                                "ref": "Source",
+                                "id": "State_r{{round}}",
+                                "inputs": ["Symbols"],
+                            },
+                            {
+                                "ref": "Tally",
+                                "id": "Tally_r{{round}}",
+                                "inputs": ["State_r{{round}}"],
+                            },
+                        ],
+                        "export": ["State_r{{round}}"],
+                    },
+                    "next": {
+                        "ops": [
+                            {
+                                "ref": "Tally",
+                                "id": "Tally_r{{round}}",
+                                "inputs": ["Tally_r{{prev}}"],
+                            }
+                        ],
+                        "export": ["Tally_r{{round}}"],
+                    },
+                    "stop_when_empty": "State_r{{prev}}",
+                },
+            },
+            "library": library,
+        }
+    )
+    assert template.driver.template is not None
+    validate_template_spec(template.driver.template, template.library)
