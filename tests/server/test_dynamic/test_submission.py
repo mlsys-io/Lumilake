@@ -1247,10 +1247,14 @@ async def test_dynamic_template_drives_three_rounds_without_planner(
     assert [plan["source"] for plan in round_plans] == ["template"] * 3
     assert [plan["round"] for plan in round_plans] == [1, 2, 3]
     assert [plan["next"] for plan in round_plans] == ["subgraph"] * 3
-    assert fake_server.plans is not None
-    # The fake runtime does not call a proposer, so three rounds prove the
-    # template plan source; its recorded round ids also distinguish bodies.
-    assert [round_output["round"] for round_output in round_plans] == [1, 2, 3]
+    graph_names = [
+        {op.name for op in graph.iter_ops(OutputOp)}
+        for graphs in fake_server.executed_graphs
+        for graph in graphs.values()
+    ]
+    assert len(graph_names) == 3
+    assert all(names for names in graph_names)
+    assert [len(names) for names in graph_names] == [len(graph_names[0])] * 3
 
 
 @pytest.mark.anyio
