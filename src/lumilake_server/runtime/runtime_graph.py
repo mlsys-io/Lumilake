@@ -444,16 +444,6 @@ class RuntimeGraphBuilder:
                         f"{type(op).__name__} '{op_id}' does not support "
                         "config.output_enforcement; use it only on LLMChatOp."
                     )
-                if (
-                    isinstance(op, LLMChatOp)
-                    and op.config.api is not None
-                    and op.config.output_enforcement is not None
-                    and op.config.output_enforcement.mode == "constrained"
-                ):
-                    raise ValueError(
-                        f"LLMChatOp '{op_id}' cannot use constrained "
-                        "output_enforcement with an API backend; use mode: retry."
-                    )
                 llm_ops[op_id] = op
                 visited_node_ids.add(op_id)
             elif isinstance(op, DataRetrievalOp):
