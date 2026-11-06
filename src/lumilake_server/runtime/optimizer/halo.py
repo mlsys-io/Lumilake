@@ -1213,7 +1213,7 @@ class HaloOptimizer(BaseOptimizer):
             raise ValueError("Hugging Face returned no safetensors parameters")
         return parameter_count
 
-    def _safetensors_parameter_count_with_source(self, model_name: str) -> int:
+    def _safetensors_parameter_count_for_model(self, model_name: str) -> int:
         """Resolve exact parameters from local cache, then Hugging Face."""
         attempts: list[str] = []
         for source, resolver in (
@@ -1276,7 +1276,7 @@ class HaloOptimizer(BaseOptimizer):
                 return resolved_size
 
         try:
-            parameter_count = self._safetensors_parameter_count_with_source(normalized)
+            parameter_count = self._safetensors_parameter_count_for_model(normalized)
         except ValueError as exc:
             raise ValueError(
                 "Halo model size is unknown after trying the MODEL_SIZE catalog, "

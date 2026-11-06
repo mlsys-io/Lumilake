@@ -364,7 +364,7 @@ def test_model_size_resolution_parses_suffix(
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         resolve,
     )
     size = optimizer._model_size_b(
@@ -386,7 +386,7 @@ def test_model_size_resolution_uses_lookup(
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         resolve,
     )
     size = optimizer._model_size_b(
@@ -408,7 +408,7 @@ def test_model_size_resolution_uses_safetensors_metadata(
     optimizer = HaloOptimizer()
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         lambda model: 1_250_000_000,
     )
     size = optimizer._model_size_b(
@@ -435,7 +435,7 @@ def test_model_size_resolution_caches_safetensors_metadata(
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         resolve,
     )
     node = Node(
@@ -474,7 +474,7 @@ def test_safetensors_resolution_uses_default_hf_cache_lookup(
         "_remote_parameter_count",
         lambda model: pytest.fail("remote metadata must not be consulted"),
     )
-    count = optimizer._safetensors_parameter_count_with_source("org/cached-model")
+    count = optimizer._safetensors_parameter_count_for_model("org/cached-model")
     assert count == 570_000_000
     assert cache_calls == [("org/cached-model", "model.safetensors")]
 
@@ -493,7 +493,7 @@ def test_model_size_resolution_rejects_unknown_model(
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         fail,
     )
     with pytest.raises(ValueError) as exc_info:
