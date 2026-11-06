@@ -1,5 +1,4 @@
 import contextlib
-from pathlib import Path
 
 import pytest
 
@@ -359,9 +358,9 @@ def test_model_size_resolution_parses_suffix(
     optimizer = HaloOptimizer()
     metadata_calls: list[str] = []
 
-    def resolve(model: str) -> tuple[int, str]:
+    def resolve(model: str) -> int:
         metadata_calls.append(model)
-        return 1, "test"
+        return 1
 
     monkeypatch.setattr(
         optimizer,
@@ -381,9 +380,9 @@ def test_model_size_resolution_uses_lookup(
     optimizer = HaloOptimizer()
     metadata_calls: list[str] = []
 
-    def resolve(model: str) -> tuple[int, str]:
+    def resolve(model: str) -> int:
         metadata_calls.append(model)
-        return 1, "test"
+        return 1
 
     monkeypatch.setattr(
         optimizer,
@@ -410,7 +409,7 @@ def test_model_size_resolution_uses_safetensors_metadata(
     monkeypatch.setattr(
         optimizer,
         "_safetensors_parameter_count_with_source",
-        lambda model: (1_250_000_000, "test safetensors metadata"),
+        lambda model: 1_250_000_000,
     )
     size = optimizer._model_size_b(
         Node(
@@ -430,9 +429,9 @@ def test_model_size_resolution_caches_safetensors_metadata(
     optimizer = HaloOptimizer()
     calls: list[str] = []
 
-    def resolve(model: str) -> tuple[int, str]:
+    def resolve(model: str) -> int:
         calls.append(model)
-        return 750_000_000, "test safetensors metadata"
+        return 750_000_000
 
     monkeypatch.setattr(
         optimizer,
@@ -451,15 +450,14 @@ def test_model_size_resolution_caches_safetensors_metadata(
     assert calls == ["org/cache-test-model"]
 
 
-def test_safetensors_resolution_prefers_local_cache(
+def test_safetensors_resolution_uses_default_hf_cache_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     optimizer = HaloOptimizer()
-    monkeypatch.setenv("HF_HOME", "/mnt/data/szy/lumilake-experiment/hf-home")
-    cache_calls: list[tuple[str, str, str | None]] = []
+    cache_calls: list[tuple[str, str]] = []
 
-    def cached(model: str, filename: str, *, cache_dir: Path | None = None) -> str:
-        cache_calls.append((model, filename, str(cache_dir)))
+    def cached(model: str, filename: str) -> str:
+        cache_calls.append((model, filename))
         return "/cache/model.safetensors"
 
     monkeypatch.setattr(
@@ -476,18 +474,9 @@ def test_safetensors_resolution_prefers_local_cache(
         "_remote_parameter_count",
         lambda model: pytest.fail("remote metadata must not be consulted"),
     )
-    count, source = optimizer._safetensors_parameter_count_with_source(
-        "org/cached-model"
-    )
+    count = optimizer._safetensors_parameter_count_with_source("org/cached-model")
     assert count == 570_000_000
-    assert source == "local HF cache"
-    assert cache_calls == [
-        (
-            "org/cached-model",
-            "model.safetensors",
-            "/mnt/data/szy/lumilake-experiment/hf-home/hub",
-        )
-    ]
+    assert cache_calls == [("org/cached-model", "model.safetensors")]
 
 
 def test_model_size_resolution_rejects_unknown_model(
@@ -495,7 +484,7 @@ def test_model_size_resolution_rejects_unknown_model(
 ) -> None:
     optimizer = HaloOptimizer()
 
-    def fail(_model: str) -> tuple[int, str]:
+    def fail(_model: str) -> int:
         raise ValueError(
             "safetensors metadata failed: "
             "local HF cache: weights missing; "
