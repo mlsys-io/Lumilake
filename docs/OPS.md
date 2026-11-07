@@ -97,21 +97,22 @@ consumer needing raw floats loads `embeddings.safetensors` and indexes by
 
 ### ScoreOp
 
-`ScoreOp` scores query/candidate pairs with a FlowMesh `score` task and
-returns one `items[]` entry per pair, carrying `index` and `score`. The
+`ScoreOp` scores query/candidate pairs with a FlowMesh `classification` task
+and returns one `items[]` entry per pair, carrying `index` and `score`. The
 required `config` supplies `model` and `backend` (`vllm` or `transformers`);
-the optional `vllm` mapping is passed to the vLLM engine. A vLLM score node
-uses `model.vllm.convert: classify`; a Transformers node uses its
-single-label sequence-classification path.
+the optional `vllm` mapping is passed to the vLLM engine. A vLLM node uses
+`model.vllm.convert: classify` and reports the head's sigmoid probability;
+setting `config.vllm.apply_sigmoid: false` reports the raw logit instead. A
+Transformers node uses its single-label sequence-classification path.
 
 Literal queries and candidates lower to a non-empty `data.items` list of
-`{query, candidate}` mappings. A single literal query broadcasts across the
-candidates; otherwise the two lists must have equal lengths. When either
-side comes from an upstream op, Lumilake first runs the internal `pairs`
-Python step, which broadcasts a single query or rejects unequal lengths, then
-passes its `value.items` list to the score task. Empty query or candidate
-inputs, empty candidate lists, and mismatched literal pair counts raise with
-the ScoreOp id in the message.
+`{text, text_pair}` mappings, the query as `text`. A single literal query
+broadcasts across the candidates; otherwise the two lists must have equal
+lengths. When either side comes from an upstream op, Lumilake first runs the
+internal `pairs` Python step, which broadcasts a single query or rejects
+unequal lengths, then passes its `value.items` list to the classification
+task. Empty query or candidate inputs, empty candidate lists, and mismatched
+literal pair counts raise with the ScoreOp id in the message.
 
 ```yaml
 inputs:
