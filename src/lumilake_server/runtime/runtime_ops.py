@@ -93,7 +93,7 @@ class RuntimeOp:
             "inference",
             "diffusion",
             "embedding",
-            "score",
+            "classification",
             "omni_text2image",
         }:
             spec_payload["model"] = self.model_spec

@@ -1762,7 +1762,7 @@ class RuntimeGraphBuilder:
             data_spec = {
                 "type": "list",
                 "items": [
-                    {"query": pair.query, "candidate": pair.candidate} for pair in items
+                    {"text": pair.query, "text_pair": pair.candidate} for pair in items
                 ],
             }
             dependencies = [dep for dep in (query_dep, candidate_dep) if dep]
@@ -1821,7 +1821,7 @@ class RuntimeGraphBuilder:
         )
         score_op = self._create_runtime_op(
             name=op_id,
-            task_type="score",
+            task_type="classification",
             data_spec=data_spec,
             model_spec=self._build_model_spec(model_config, backend, backend_config),
             inference_spec={},
