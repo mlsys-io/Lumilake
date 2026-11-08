@@ -383,9 +383,7 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    tally_node = next(
-        n for n in runtime_graph.nodes.values() if n.task_type == "python"
-    )
+    tally_node = runtime_graph.nodes[tally.id]
     assert tally_node.data_spec["mode"] == "list"
     (vision_plan,) = tally_node.data_spec["plan"]
     assert vision_plan == {"kind": "stage", "node": vision.id}

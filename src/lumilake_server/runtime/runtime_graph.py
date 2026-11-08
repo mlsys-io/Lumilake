@@ -581,9 +581,23 @@ class RuntimeGraphBuilder:
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.json"
 
-        for lambda_op_id, lambda_op in list_lambda_ops.items():
-            if task_type_override == "data_profile":
-                continue
+        gated_row_gates: dict[str, dict[str, Any]] = {}
+        if task_type_override != "data_profile":
+            gated_row_gates = {
+                llm_op_id: row_gate
+                for llm_op_id, llm_op in llm_ops.items()
+                if isinstance(llm_op, LLMChatOp)
+                and (
+                    row_gate := self._row_gate(
+                        consumer=llm_op_id,
+                        row_gate=llm_op.row_gate,
+                        graph_dict=graph_dict,
+                    )
+                )
+                is not None
+            }
+
+        def build_list_lambda(lambda_op_id: str, lambda_op: LambdaOp) -> None:
             for input_op in lambda_op.inputs:
                 visited_node_ids.add(input_op.id)
             runtime_op = self._build_node_from_list_lambda_op(
@@ -591,6 +605,8 @@ class RuntimeGraphBuilder:
                 lambda_op,
                 graph_dict,
                 inputs_dict,
+                dsl_to_runtime,
+                gated_row_gates,
             )
             nodes[runtime_op.node_id] = runtime_op
             node_order.append(runtime_op.node_id)
@@ -603,18 +619,39 @@ class RuntimeGraphBuilder:
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.output"
 
+        def build_list_lambda_tree(lambda_op_id: str) -> bool:
+            """Build a list-mode LambdaOp and the list-mode LambdaOps it reads
+            once every runtime-backed op it reads has a runtime node, and
+            report whether it was built."""
+            if lambda_op_id in dsl_to_runtime:
+                return True
+            lambda_op = list_lambda_ops[lambda_op_id]
+            for inp in lambda_op.inputs:
+                if isinstance(inp, (InputOp, DataOp)):
+                    continue
+                if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
+                    if not build_list_lambda_tree(inp.id):
+                        return False
+                elif (
+                    isinstance(inp, (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp))
+                    and inp.id not in dsl_to_runtime
+                ):
+                    return False
+            build_list_lambda(lambda_op_id, lambda_op)
+            return True
+
+        def build_ready_list_lambdas() -> None:
+            if task_type_override == "data_profile":
+                return
+            for lambda_op_id in list_lambda_ops:
+                build_list_lambda_tree(lambda_op_id)
+
+        build_ready_list_lambdas()
+
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
                 continue
-            row_gate = (
-                self._row_gate(
-                    consumer=llm_op_id,
-                    row_gate=llm_op.row_gate,
-                    graph_dict=graph_dict,
-                )
-                if isinstance(llm_op, LLMChatOp)
-                else None
-            )
+            row_gate = gated_row_gates.get(llm_op_id)
             if row_gate is not None:
                 if not isinstance(llm_op, LLMChatOp) or not (
                     llm_op.rowwise_template or llm_op.rowwise_messages_column
@@ -622,6 +659,12 @@ class RuntimeGraphBuilder:
                     raise ValueError(
                         f"LLMChatOp '{llm_op_id}' row_gate requires rowwise_template"
                     )
+                router = graph_dict.get(row_gate["node"])
+                if (
+                    isinstance(router, RouterOp)
+                    and router.source_node in list_lambda_ops
+                ):
+                    build_list_lambda_tree(router.source_node)
                 gated_runtime_ops = self._build_row_gated_llm_ops(
                     llm_op_id=llm_op_id,
                     llm_op=llm_op,
@@ -753,6 +796,8 @@ class RuntimeGraphBuilder:
                 ((output_name, path_override),) = output_source_to_outputop[score_op_id]
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items"
+
+        build_ready_list_lambdas()
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
@@ -1885,32 +1930,24 @@ class RuntimeGraphBuilder:
         op: LambdaOp,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]],
+        gated_row_gates: dict[str, dict[str, Any]],
     ) -> RuntimeOp:
-        """Compile a list-mode LambdaOp to one FlowMesh ``python`` task."""
+        """Compile a list-mode LambdaOp to one FlowMesh ``python`` task, binding
+        each non-literal input to the last runtime node its DSL op compiled
+        to, so a row gate or a per-row VLM contributes its merge node."""
         plan: python_step.ColumnPlan = []
         dependencies: list[str] = []
         row_counts: list[tuple[str, int | None]] = []
         for inp in op.inputs:
-            if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
-                plan.append({"kind": "stage", "node": inp.id})
-                dependencies.append(inp.id)
-            elif isinstance(inp, LLMOp):
-                entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
-                if (
-                    isinstance(inp, LLMChatOp)
-                    and not isinstance(inp, LLMVisionOp)
-                    and (inp.rowwise_template or inp.rowwise_messages_column)
-                ):
-                    # A rowwise LLM groups its per-row outputs back into one
-                    # item; the python step must flatten it to one value per
-                    # row before the list-mode Lambda sees it. A VLM's regroup
-                    # step already emits one list per symbol, so it is excluded.
-                    entry["flatten"] = True
-                plan.append(entry)
-                dependencies.append(inp.id)
-            elif isinstance(inp, (DataRetrievalOp, HttpFetchOp, ScoreOp)):
-                plan.append({"kind": "stage", "node": inp.id})
-                dependencies.append(inp.id)
+            if isinstance(inp, (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp)):
+                self._append_list_lambda_stage(
+                    op_id, inp, plan, dependencies, dsl_to_runtime, gated_row_gates
+                )
+            elif isinstance(inp, LambdaOp) and inp.takes_whole_columns:
+                self._append_list_lambda_stage(
+                    op_id, inp, plan, dependencies, dsl_to_runtime, gated_row_gates
+                )
             elif isinstance(inp, InputOp):
                 values = inputs_dict.get(inp.name)
                 if values is None:
@@ -1929,13 +1966,14 @@ class RuntimeGraphBuilder:
                     f"InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
-            if not isinstance(inp, (InputOp, DataOp)):
-                row_counts.append(
-                    (
-                        inp.id,
-                        self._static_output_row_count(inp, inputs_dict, graph_dict),
-                    )
+            if isinstance(inp, (InputOp, DataOp)):
+                continue
+            row_counts.append(
+                (
+                    inp.id,
+                    self._static_output_row_count(inp, inputs_dict, graph_dict),
                 )
+            )
         row_count = self._python_step_row_count(
             op_id, row_counts, combines_rows=op.mode == "aligned"
         )
@@ -1971,6 +2009,43 @@ class RuntimeGraphBuilder:
             dependencies=dependencies if dependencies else None,
             skip_when_all_inputs_empty=op.preserves_empty,
         )
+
+    def _append_list_lambda_stage(
+        self,
+        op_id: str,
+        inp: Op,
+        plan: python_step.ColumnPlan,
+        dependencies: list[str],
+        dsl_to_runtime: dict[str, list[str]],
+        gated_row_gates: dict[str, dict[str, Any]],
+    ) -> None:
+        """Append the plan stage and dependency of one non-literal list-mode
+        Lambda input, bound to the last runtime node the input compiled to."""
+        runtime_ids = dsl_to_runtime.get(inp.id)
+        if not runtime_ids:
+            raise ValueError(
+                f"LambdaOp '{op_id}' reads '{inp.id}', which has no runtime node"
+            )
+        rowwise = isinstance(inp, LLMChatOp) and bool(
+            inp.rowwise_template or inp.rowwise_messages_column
+        )
+        gated = inp.id in gated_row_gates
+        if len(runtime_ids) > 1 and not isinstance(inp, LLMVisionOp):
+            if not gated or not rowwise:
+                raise ValueError(
+                    f"LambdaOp '{op_id}' reads '{inp.id}', which compiled to"
+                    f" {len(runtime_ids)} runtime nodes; a list-mode Lambda reads"
+                    " one runtime node per input"
+                )
+        dep = runtime_ids[-1]
+        entry: dict[str, Any] = {"kind": "stage", "node": dep}
+        if gated:
+            entry["path"] = "value.output"
+        elif rowwise and not isinstance(inp, LLMVisionOp):
+            entry["flatten"] = True
+        plan.append(entry)
+        if dep not in dependencies:
+            dependencies.append(dep)
 
     def _resolve_profile_param(
         self,
