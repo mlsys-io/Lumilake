@@ -498,6 +498,99 @@ def test_column_bindings_reject_unused_input() -> None:
         resolve_subgraph(subgraph, library)
 
 
+def _llm_messages_column_library() -> dict[str, dict[str, Any]]:
+    return {
+        "AgentTurn": {
+            "op": "LLMChatOp",
+            "inputs": ["TurnPrompt"],
+            "messages": [{"role": "user", "content": "agent"}],
+            "rowwise_messages_column": {
+                "label": "messages_json",
+                "node": "TurnPrompt",
+                "path": "items.output.messages_json",
+            },
+            "column_bindings": [{"label": "messages_json", "input": 0}],
+            "config": {
+                "model": "Qwen/Qwen3.8-27B-FP8",
+                "temperature": 0.0,
+                "max_tokens": 2048,
+            },
+        }
+    }
+
+
+def test_column_bindings_remap_the_rowwise_messages_column() -> None:
+    library = _llm_messages_column_library()
+    subgraph = [
+        {
+            "id": "turn_prompt_1",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "turn_prompt",
+            "code": "def turn_prompt(items):\n    return [{'messages_json': '[]'}]\n",
+        },
+        {"ref": "AgentTurn", "id": "agent_turn_1", "inputs": ["turn_prompt_1"]},
+    ]
+
+    resolved = resolve_subgraph(subgraph, library)
+    validate_emitted_subgraph(subgraph, {}, max_nodes=2, library=library)
+
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert turn["rowwise_messages_column"] == {
+        "label": "messages_json",
+        "node": "turn_prompt_1",
+        "path": "items.output.messages_json",
+    }
+    assert "rowwise_columns" not in turn
+    assert "column_bindings" not in turn
+    assert library["AgentTurn"]["rowwise_messages_column"]["node"] == "TurnPrompt"
+
+
+def test_column_bindings_can_mix_columns_and_the_messages_column() -> None:
+    library = _llm_messages_column_library()
+    library["AgentTurn"]["rowwise_columns"] = [
+        {"label": "task_id", "node": "TurnPrompt", "path": "items.output.task_id"}
+    ]
+    library["AgentTurn"]["rowwise_messages_column"]["label"] = "messages_json"
+    library["AgentTurn"]["column_bindings"] = [
+        {"label": "task_id", "input": 0},
+        {"label": "messages_json", "input": 0},
+    ]
+    subgraph = [
+        {
+            "id": "turn_prompt_1",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "turn_prompt",
+            "code": "def turn_prompt(items):\n    return [{'task_id': '0'}]\n",
+        },
+        {"ref": "AgentTurn", "id": "agent_turn_1", "inputs": ["turn_prompt_1"]},
+    ]
+
+    resolved = resolve_subgraph(subgraph, library)
+
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert turn["rowwise_columns"] == [
+        {"label": "task_id", "node": "turn_prompt_1", "path": "items.output.task_id"}
+    ]
+    assert turn["rowwise_messages_column"]["node"] == "turn_prompt_1"
+
+
+def test_column_bindings_reject_a_duplicate_label_across_column_groups() -> None:
+    library = _llm_messages_column_library()
+    library["AgentTurn"]["rowwise_columns"] = [
+        {"label": "messages_json", "node": "TurnPrompt", "path": "items.output.x"}
+    ]
+
+    with pytest.raises(DriverProtocolError, match="declares column label"):
+        resolve_subgraph(
+            [{"ref": "AgentTurn", "id": "agent_turn_1", "inputs": ["TurnPrompt"]}],
+            library,
+        )
+
+
 def test_bound_library_llm_parses_through_native_graph_path() -> None:
     library = _llm_column_library()
     subgraph = _llm_column_subgraph("doctor")

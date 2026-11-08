@@ -381,14 +381,16 @@ authoritative for its config, so the planner may only override `id` and
 `inputs`. A retrieval template may declare `data_spec.param_bindings`, a list of
 `{"label": <param label>, "input": <inputs index>}` mappings. A rowwise
 `LLMChatOp` template may similarly declare `column_bindings`, a list of
-`{"label": <rowwise column label>, "input": <inputs index>}` mappings. Bindings
+`{"label": <rowwise column label>, "input": <inputs index>}` mappings, where
+the bindable labels are its `rowwise_columns` labels and the label of its
+`rowwise_messages_column`. Bindings
 replace the template's placeholder node with the node supplied at that input
 position, so one library entry can be instantiated repeatedly under distinct
 node ids. Each binding moves exactly the column it names; a template that needs
 two columns from the same node declares a binding for each, and both may use the
 same input slot. Every input slot must be valid and used by at least one
-binding, every binding label must name a rowwise column, and every rowwise
-column must be bound. Ops without a
+binding, every binding label must name a rowwise column or the messages
+column, and every declared column must be bound. Ops without a
 `ref` are emitted fully inline. The planner sees the library (id, op type, key
 config) in its system message each round.
 
