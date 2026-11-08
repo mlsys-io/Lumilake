@@ -337,8 +337,13 @@ def _apply_param_bindings(
 
 def _apply_column_bindings(
     template: dict[str, Any], ref: str, inputs: list[Any]
-) -> list[dict[str, Any]] | None:
-    """Substitute instance ids into an LLM template's rowwise columns."""
+) -> dict[str, Any] | None:
+    """Substitute instance ids into an LLM template's rowwise column refs.
+
+    The bindable columns are the template's ``rowwise_columns`` entries and its
+    ``rowwise_messages_column``. The returned mapping holds the rowwise fields
+    the bound instance declares, each carrying its bound node.
+    """
     bindings = template.get("column_bindings")
     if bindings is None:
         return None
@@ -347,15 +352,34 @@ def _apply_column_bindings(
             f"library entry {ref!r} column_bindings must be a list"
         )
     columns = template.get("rowwise_columns")
-    if not isinstance(columns, list):
+    messages_column = template.get("rowwise_messages_column")
+    if columns is not None and not isinstance(columns, list):
         raise DriverProtocolError(
-            f"library entry {ref!r} has column_bindings but no rowwise_columns"
+            f"library entry {ref!r} rowwise_columns must be a list"
         )
-    if not all(isinstance(column, dict) for column in columns):
+    if messages_column is not None and not isinstance(messages_column, dict):
+        raise DriverProtocolError(
+            f"library entry {ref!r} rowwise_messages_column must be a mapping"
+        )
+    if columns is None and messages_column is None:
+        raise DriverProtocolError(
+            f"library entry {ref!r} has column_bindings but no rowwise column"
+        )
+    declared = columns or []
+    if not all(isinstance(column, dict) for column in declared):
         raise DriverProtocolError(
             f"library entry {ref!r} rowwise_columns entries must be mappings"
         )
-    by_label = {column.get("label"): dict(column) for column in columns}
+    by_label = {column.get("label"): dict(column) for column in declared}
+    messages_label = None
+    if messages_column is not None:
+        messages_label = messages_column.get("label")
+        if messages_label in by_label:
+            raise DriverProtocolError(
+                f"library entry {ref!r} declares column label "
+                f"{messages_label!r} twice"
+            )
+        by_label[messages_label] = dict(messages_column)
     used_slots: set[int] = set()
     for binding in bindings:
         if not isinstance(binding, dict):
@@ -388,7 +412,14 @@ def _apply_column_bindings(
             f"library entry {ref!r} column_bindings leave input slot(s) "
             f"{sorted(unused_slots)} unused"
         )
-    return list(by_label.values())
+    bound: dict[str, Any] = {}
+    if columns is not None:
+        bound["rowwise_columns"] = [
+            by_label[column.get("label")] for column in declared
+        ]
+    if messages_column is not None:
+        bound["rowwise_messages_column"] = by_label[messages_label]
+    return bound
 
 
 def resolve_subgraph(
@@ -452,7 +483,7 @@ def resolve_subgraph(
                     merged["data_spec"] = _apply_param_bindings(template, ref, value)
                 bound_columns = _apply_column_bindings(template, ref, value)
                 if bound_columns is not None:
-                    merged["rowwise_columns"] = bound_columns
+                    merged.update(bound_columns)
                 continue
             merged[key] = value
         merged.pop("column_bindings", None)
