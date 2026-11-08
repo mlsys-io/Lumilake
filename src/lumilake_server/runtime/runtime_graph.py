@@ -1808,7 +1808,7 @@ class RuntimeGraphBuilder:
             data_spec = {
                 "type": "list",
                 "items": [
-                    {"query": query, "candidate": candidate}
+                    {"text": query, "text_pair": candidate}
                     for query, candidate in zip(queries, candidate_values)
                 ],
             }
@@ -1869,7 +1869,7 @@ class RuntimeGraphBuilder:
         )
         score_op = self._create_runtime_op(
             name=op_id,
-            task_type="score",
+            task_type="classification",
             data_spec=data_spec,
             model_spec=self._build_model_spec(model_config, backend, backend_config),
             inference_spec={},

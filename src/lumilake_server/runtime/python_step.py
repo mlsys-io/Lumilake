@@ -168,7 +168,7 @@ def main(inputs):
             % (_NODE, len(queries), len(candidates))
         )
     return {{"items": [
-        {{"query": query, "candidate": candidate}}
+        {{"text": query, "text_pair": candidate}}
         for query, candidate in zip(queries, candidates)
     ]}}
 """

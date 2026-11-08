@@ -9,7 +9,7 @@ from lumilake_server.ops.ops import Op
 
 @dataclass(frozen=True)
 class ScoreConfig:
-    """Model and backend settings for a FlowMesh score task."""
+    """Model and backend settings for a FlowMesh classification task."""
 
     model: str
     backend: Literal["vllm", "transformers"] = "vllm"
@@ -47,7 +47,7 @@ class ScorePair:
 
 @dataclass(frozen=True)
 class ScoreItem:
-    """One FlowMesh score result item."""
+    """One FlowMesh classification result item."""
 
     index: int
     score: float
@@ -143,7 +143,7 @@ class ScoreOp(Op):
 
     @staticmethod
     def parse_response(result: dict[str, Any]) -> ScoreResult:
-        """Parse FlowMesh score items in contiguous index order."""
+        """Parse FlowMesh classification items in contiguous index order."""
         if not isinstance(result, dict):
             raise ValueError(
                 f"ScoreOp response must be a mapping (got {type(result).__name__})"

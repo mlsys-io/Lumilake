@@ -203,7 +203,7 @@ When a workflow uses `type: list` data with `s3://` items (typical for VLM / ima
 also emits internal Python steps for `flatten`, `regroup`, and `pairs`.
 `flatten` renders one prompt per image, `regroup` rebuilds one output list per
 symbol, and `pairs` combines query and candidate columns into a list of
-`{query, candidate}` mappings for `ScoreOp`. `pairs` broadcasts a single query
+`{text, text_pair}` mappings for `ScoreOp`. `pairs` broadcasts a single query
 across multiple candidates and rejects unequal query/candidate column lengths
 when no broadcast applies.
 

@@ -43,12 +43,12 @@ def test_score_op_lowers_literal_pairs_in_order() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     runtime_op = runtime_graph.nodes[op.id]
 
-    assert runtime_op.task_type == "score"
+    assert runtime_op.task_type == "classification"
     assert runtime_op.data_spec == {
         "type": "list",
         "items": [
-            {"query": "first question", "candidate": "first candidate"},
-            {"query": "second question", "candidate": "second candidate"},
+            {"text": "first question", "text_pair": "first candidate"},
+            {"text": "second question", "text_pair": "second candidate"},
         ],
     }
     assert runtime_op.model_spec["vllm"]["convert"] == "classify"
@@ -70,7 +70,7 @@ def test_score_runtime_node_emits_flowmesh_model_block() -> None:
     runtime_op = runtime_graph.nodes[op.id]
     flowmesh_spec = runtime_op.to_flowmesh_node()["spec"]
 
-    assert flowmesh_spec["taskType"] == "score"
+    assert flowmesh_spec["taskType"] == "classification"
     assert flowmesh_spec["model"]["vllm"]["convert"] == "classify"
     assert all(
         dep in runtime_graph.nodes
@@ -78,7 +78,7 @@ def test_score_runtime_node_emits_flowmesh_model_block() -> None:
     )
 
 
-def test_score_op_yaml_lowers_to_score_task() -> None:
+def test_score_op_yaml_lowers_to_classification_task() -> None:
     payload = """
     name: score_pairs
     inputs:
@@ -101,12 +101,14 @@ def test_score_op_yaml_lowers_to_score_task() -> None:
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     [runtime_op] = [
-        node for node in runtime_graph.nodes.values() if node.task_type == "score"
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == "classification"
     ]
 
     assert runtime_op.data_spec["items"] == [
-        {"query": "first question", "candidate": "first candidate"},
-        {"query": "second question", "candidate": "second candidate"},
+        {"text": "first question", "text_pair": "first candidate"},
+        {"text": "second question", "text_pair": "second candidate"},
     ]
 
 
@@ -165,7 +167,9 @@ def test_upstream_score_uses_pairs_node_placeholder() -> None:
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     score = next(
-        node for node in runtime_graph.nodes.values() if node.task_type == "score"
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == "classification"
     )
     pairs = next(
         node
@@ -291,8 +295,8 @@ def test_pairs_step_output_shape_broadcasts_single_query(tmp_path: Path) -> None
     assert callable(main)
     assert main({}) == {
         "items": [
-            {"query": "same question", "candidate": "first"},
-            {"query": "same question", "candidate": "second"},
+            {"text": "same question", "text_pair": "first"},
+            {"text": "same question", "text_pair": "second"},
         ]
     }
 
@@ -301,7 +305,9 @@ def test_upstream_score_resolved_spec_is_dispatchable_shape(
     tmp_path: Path,
 ) -> None:
     upstream = _upstream_score_runtime_graph()
-    score = next(node for node in upstream.nodes.values() if node.task_type == "score")
+    score = next(
+        node for node in upstream.nodes.values() if node.task_type == "classification"
+    )
     pairs = next(
         node
         for node in upstream.nodes.values()
@@ -350,10 +356,10 @@ def test_upstream_score_resolved_spec_is_dispatchable_shape(
     assert isinstance(resolved_items, list) and resolved_items
     assert all(
         isinstance(item, dict)
-        and isinstance(item.get("query"), str)
-        and item["query"].strip()
-        and isinstance(item.get("candidate"), str)
-        and item["candidate"].strip()
+        and isinstance(item.get("text"), str)
+        and item["text"].strip()
+        and isinstance(item.get("text_pair"), str)
+        and item["text_pair"].strip()
         for item in resolved_items
     )
     model = score_spec["model"]
