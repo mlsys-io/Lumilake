@@ -2292,9 +2292,23 @@ class RuntimeGraphBuilder:
             if RuntimeGraphBuilder._is_rowwise_api_task(op):
                 return _API_ROW_PATH
             return _API_ITEM_PATH
-        if isinstance(op, LambdaOp) and not op.takes_whole_columns:
-            return "value.items.output"
+        if isinstance(op, LambdaOp):
+            return RuntimeGraphBuilder._lambda_result_path(op, "items.output")
         return "items.output"
+
+    @staticmethod
+    def _lambda_result_path(upstream: LambdaOp, path: str) -> str:
+        """Map a declared ``items.output[...]`` read of a LambdaOp's result to
+        the matching path inside the python step's result envelope.
+
+        A list-mode Lambda emits its values as items, so a field read
+        (``items.output.<f>``) maps to ``value.items.output.<f>``; a row-mode
+        Lambda emits each row's value under ``value.items.value``, so a field
+        read maps to ``value.items.value.<f>``.
+        """
+        if not upstream.takes_whole_columns and path != "items.output":
+            return "value.items.value." + path[len("items.output.") :]
+        return "value." + path
 
     def _lambda_read_path(
         self,
@@ -2303,23 +2317,13 @@ class RuntimeGraphBuilder:
         path: str,
         upstream: LambdaOp,
     ) -> str:
-        """Map a read of a LambdaOp's output to the python step's read path.
-
-        A LambdaOp runs as a python step whose result wraps each row's output
-        under ``value.items``, so a declared ``items.output`` read becomes
-        ``value.items.output``. A list-mode Lambda returns raw values, so a
-        field read (``items.output.<f>``) maps to ``value.items.output.<f>``;
-        a row-mode Lambda emits the raw value under ``value.items.value``, so
-        a field read maps to ``value.items.value.<f>``.
-        """
+        """Map a read of a LambdaOp's output to the python step's read path."""
         if not path.startswith("items.output"):
             raise ValueError(
                 f"{consumer} reads '{path}' from Lambda '{node_ref}'; only"
                 " 'items.output' (the whole output) is supported."
             )
-        if not upstream.takes_whole_columns and path != "items.output":
-            return "value.items.value." + path[len("items.output.") :]
-        return "value." + path
+        return RuntimeGraphBuilder._lambda_result_path(upstream, path)
 
     def _node_ref_column(
         self,

@@ -2171,6 +2171,38 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
     assert shout.id in llm_node.dependencies
 
 
+def test_rowwise_llm_reads_standalone_list_lambda_via_value_path() -> None:
+    """A rowwise LLM reading a standalone whole-column (list-mode) LambdaOp
+    must bind the column to ``value.items.output``, the field of the python
+    step's PythonResult that holds the emitted items."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": explode.id, "path": "items.output"}],
+    )
+    llm.inputs.append(explode)
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    explode_node = runtime_graph.nodes[explode.id]
+    assert explode_node.task_type == "python"
+    assert explode_node.data_spec["mode"] == "list"
+    llm_node = runtime_graph.nodes[llm.id]
+    assert {
+        "label": "r",
+        "node": explode.id,
+        "path": "value.items.output",
+    } in llm_node.data_spec["columns"]
+
+    result = {"value": {"items": [{"output": "x"}, {"output": "y"}]}}
+    assert _walk(result, "value.items.output".split(".")) == ["x", "y"]
+
+
 def test_inlined_row_lambda_referenced_by_column_materializes() -> None:
     """A row-mode LambdaOp inlined into its consuming LLM's message chain but
     also referenced by a node column is materialized as a python task, so the
