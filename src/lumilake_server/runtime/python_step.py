@@ -392,16 +392,14 @@ def row_skip_merge_code(
     *,
     branch: str,
 ) -> str:
-    return (
-        (_RESHAPE_PRELUDE + _ROW_SKIP_MERGE_MAIN)
-        .format(
-            op_id=node_id,
-            module=TASK_RUNTIME_MODULE,
-            mount=TASK_RUNTIME_MOUNT,
-            plan=json.dumps(plan),
-        )
-        .replace("{branch}", repr(branch))
+    """Generated list-mode step that merges gated rows back into one list."""
+    prelude = _RESHAPE_PRELUDE.format(
+        op_id=node_id,
+        module=TASK_RUNTIME_MODULE,
+        mount=TASK_RUNTIME_MOUNT,
+        plan=json.dumps(plan),
     )
+    return prelude + _ROW_SKIP_MERGE_MAIN.replace("{branch}", repr(branch))
 
 
 def row_select_source(

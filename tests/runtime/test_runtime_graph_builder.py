@@ -585,6 +585,9 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     assert runtime_graph.output_node_map == {merge.node_id: "result"}
     assert router.id not in runtime_graph.nodes
     assert runtime_graph.nodes[selector.node_id].dependencies == (status.node_id,)
+    assert status.data_spec["plan"] == [
+        {"kind": "literal", "label": "source", "values": list(compiled.inputs["Rows"])}
+    ]
 
 
 def test_terminal_row_gate_marks_done_and_allows_an_empty_selected_set() -> None:
@@ -720,6 +723,24 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
     ]
     assert python_types == ["python", "python", "inference", "python"]
     assert yaml_types == python_types
+
+    yaml_status = yaml_graph.nodes[yaml_graph.dsl_to_runtime[yaml_turn_id][0]]
+    python_status = python_graph.nodes[python_graph.dsl_to_runtime[turn.id][0]]
+    # A row_status plan reads each source envelope item, so its path drops the
+    # DSL ``items.`` prefix that the router carries, and its node is the
+    # runtime node the router's source compiled to.
+    (yaml_entry,) = yaml_status.data_spec["plan"]
+    assert yaml_entry["kind"] == "stage"
+    assert yaml_entry["label"] == "source"
+    assert yaml_entry["path"] == "output"
+    assert yaml_entry["node"] in yaml_graph.nodes
+    assert python_status.data_spec["plan"] == [
+        {
+            "kind": "literal",
+            "label": "source",
+            "values": ["normal", "REQUEST TEST"],
+        }
+    ]
 
 
 def _gated_row_list_lambda_graph() -> tuple[Any, str, str, str]:

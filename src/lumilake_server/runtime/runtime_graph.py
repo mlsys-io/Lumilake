@@ -2962,26 +2962,32 @@ class RuntimeGraphBuilder:
         select_id = f"{llm_op_id}__row_select"
         selected_id = f"{llm_op_id}__selected"
         merge_id = f"{llm_op_id}__rows"
+        # A python-task plan path is walked from each envelope item, so the
+        # DSL form ``items.output.<field>`` becomes ``output.<field>``.
         input_path = router.input_path
+        plan_path = input_path.removeprefix("items.")
         route_path = input_path.removeprefix("items.output.")
         source_columns: list[dict[str, Any]] = [
             {
+                "kind": "stage",
                 "label": "source",
-                "node": router.source_node,
-                "path": input_path,
+                "node": source_runtime[0],
+                "path": plan_path,
             },
         ]
         if route_path and route_path != input_path:
             source_columns.append(
                 {
+                    "kind": "stage",
                     "label": "route",
-                    "node": router.source_node,
-                    "path": f"items.output.{route_path}",
+                    "node": source_runtime[0],
+                    "path": f"output.{route_path}",
                 }
             )
         status_dependencies: tuple[str, ...] = (source_runtime[0],)
         source_op = graph_dict.get(router.source_node)
         if isinstance(source_op, InputOp):
+            visited_node_ids.add(source_op.id)
             values = inputs_dict.get(source_op.name)
             if values is None:
                 raise ValueError(
@@ -2989,7 +2995,13 @@ class RuntimeGraphBuilder:
                     "has no values supplied"
                 )
             source_columns = [
-                {"label": "source", "data": {"type": "list", "items": list(values)}}
+                {
+                    "kind": "literal",
+                    "label": "source",
+                    "values": self._project_input_field(
+                        values, input_path, source_op.name
+                    ),
+                }
             ]
             status_dependencies = ()
         status = RuntimeOp(
