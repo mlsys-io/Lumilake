@@ -2089,3 +2089,126 @@ def test_gated_rows_read_the_selector_label_paths() -> None:
                     wrapped,
                     f"{selector.node_id}.value.items.output.{column['label']}",
                 )
+
+
+def test_gated_selector_reads_lambda_rows_at_their_declared_fields(
+    tmp_path: Path,
+) -> None:
+    # A rowwise column declares where its value lives on the source rows. A
+    # list-mode Lambda row is a whole dict, so the selector must walk the
+    # declared path; reading the label instead would hand every column the row.
+    rows = input_placeholder("Rows")
+    classify = LambdaOp(
+        [rows],
+        fn=lambda items: [
+            {
+                "function_name": f"fn_{index}",
+                "function_code": f"return {index}",
+                "status": "fail",
+            }
+            for index in range(len(items[0]))
+        ],
+        mode="list",
+    )
+    gate = RouterOp(
+        classify,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Repair")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Repair",
+        rowwise_columns=[
+            {
+                "label": "entry_name",
+                "node": classify.id,
+                "path": "items.output.function_name",
+            },
+            {
+                "label": "source_code",
+                "node": classify.id,
+                "path": "items.output.function_code",
+            },
+        ],
+        row_gate={"node": gate.id, "branch": "fail"},
+        row_gate_op=gate,
+    )
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("result", llm)]).compile(Rows=["a", "b", "c"])
+    )
+    (classify_id,) = graph.dsl_to_runtime[classify.id]
+    (selector,) = [
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_select"
+    ]
+    status, *columns = selector.data_spec["plan"]
+    assert status["kind"] == "stage"
+    assert columns == [
+        {
+            "kind": "stage",
+            "node": classify_id,
+            "allow_empty": True,
+            "path": "output.function_name",
+        },
+        {
+            "kind": "stage",
+            "node": classify_id,
+            "allow_empty": True,
+            "path": "output.function_code",
+        },
+    ]
+
+    stage = tmp_path / classify_id
+    stage.mkdir()
+    payload = {
+        "items": [
+            {
+                "output": {
+                    "function_name": f"fn_{index}",
+                    "function_code": f"return {index}",
+                    "status": "fail",
+                }
+            }
+            for index in range(3)
+        ]
+    }
+    (stage / "results.json").write_text(
+        json.dumps({"task_id": classify_id, "result": payload})
+    )
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": [json.dumps({"branch": "fail"})] * 3},
+        *columns,
+    ]
+    out = _run_row_select(
+        plan,
+        {classify_id: str(stage)},
+        labels=selector.data_spec["labels"],
+        branch="fail",
+        include_done=False,
+    )
+    assert out["items"] == [
+        {"entry_name": "fn_0", "source_code": "return 0"},
+        {"entry_name": "fn_1", "source_code": "return 1"},
+        {"entry_name": "fn_2", "source_code": "return 2"},
+    ]
+
+    # A plan entry that walked the label instead of the declared field would
+    # read two labels out of the same ``output`` mapping and find no such key.
+    relabeled = [
+        {**entry, "path": f"output.{label}"}
+        for entry, label in zip(columns, selector.data_spec["labels"])
+    ]
+    with pytest.raises(ValueError, match="missing 'entry_name'"):
+        _run_row_select(
+            [plan[0], *relabeled],
+            {classify_id: str(stage)},
+            labels=selector.data_spec["labels"],
+            branch="fail",
+            include_done=False,
+        )
