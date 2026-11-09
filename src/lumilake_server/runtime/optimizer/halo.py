@@ -1,6 +1,5 @@
 import json
 import math
-import os
 import re
 import struct
 from collections.abc import Mapping, Sequence
@@ -9,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from huggingface_hub import get_safetensors_metadata, try_to_load_from_cache
+from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.utils import NotASafetensorsRepoError, SafetensorsParsingError
 
 from lumilake import envs
 from lumilake_server.data_profile_models import (
@@ -123,7 +124,6 @@ class HaloOptimizer(BaseOptimizer):
         }
         self._default_model_size_b = 20.0
         self._model_size_cache: dict[str, float] = {}
-        self._model_size_sources: dict[str, str] = {}
         self._model_init_sec_per_b = 0.75
         self._llm_base_sec_per_b = 0.25
         self._llm_input_sec = 0.15
@@ -1174,51 +1174,40 @@ class HaloOptimizer(BaseOptimizer):
                 isinstance(dimension, int) and dimension >= 0 for dimension in shape
             ):
                 raise ValueError(f"{path} has an invalid shape for tensor {name!r}")
-            tensor_parameters = math.prod(shape) if shape else 1
-            parameter_count += int(tensor_parameters)
+            parameter_count += math.prod(shape)
         return parameter_count
-
-    @staticmethod
-    def _hf_cache_dir() -> Path | None:
-        """Return the configured HF cache directory, if one is set."""
-        hf_home = os.environ.get("HF_HOME", "").strip()
-        if hf_home:
-            return Path(hf_home) / "hub"
-        hf_hub_cache = os.environ.get("HF_HUB_CACHE", "").strip()
-        return Path(hf_hub_cache) if hf_hub_cache else None
 
     def _cached_parameter_count(self, model_name: str) -> int:
         """Read a model's exact parameter count from the local HF cache."""
-        cache_dir = self._hf_cache_dir()
-        cached_weight = try_to_load_from_cache(
-            model_name, _HF_SAFETENSORS_FILE, cache_dir=cache_dir
-        )
+        cached_weight = try_to_load_from_cache(model_name, _HF_SAFETENSORS_FILE)
         if isinstance(cached_weight, str):
-            return self._safetensors_parameter_count(Path(cached_weight))
-
-        cached_index = try_to_load_from_cache(
-            model_name, _HF_SAFETENSORS_INDEX_FILE, cache_dir=cache_dir
-        )
-        if not isinstance(cached_index, str):
-            raise ValueError("weights are not present in the local HF cache")
-        with Path(cached_index).open(encoding="utf-8") as handle:
-            index = json.load(handle)
-        if not isinstance(index, dict):
-            raise ValueError("the cached safetensors index is not an object")
-        raw_weight_map = index.get("weight_map")
-        if not isinstance(raw_weight_map, dict):
-            raise ValueError("the cached safetensors index has no weight_map")
-        filenames = sorted({str(filename) for filename in raw_weight_map.values()})
-        if not filenames:
-            raise ValueError("the cached safetensors index has no shards")
-        parameter_count = 0
-        for filename in filenames:
-            cached_shard = try_to_load_from_cache(
-                model_name, filename, cache_dir=cache_dir
+            parameter_count = self._safetensors_parameter_count(Path(cached_weight))
+        else:
+            cached_index = try_to_load_from_cache(
+                model_name, _HF_SAFETENSORS_INDEX_FILE
             )
-            if not isinstance(cached_shard, str):
-                raise ValueError(f"cached safetensors shard {filename!r} is missing")
-            parameter_count += self._safetensors_parameter_count(Path(cached_shard))
+            if not isinstance(cached_index, str):
+                raise ValueError("weights are not present in the local HF cache")
+            with Path(cached_index).open(encoding="utf-8") as handle:
+                index = json.load(handle)
+            if not isinstance(index, dict):
+                raise ValueError("the cached safetensors index is not an object")
+            raw_weight_map = index.get("weight_map")
+            if not isinstance(raw_weight_map, dict):
+                raise ValueError("the cached safetensors index has no weight_map")
+            filenames = sorted({str(filename) for filename in raw_weight_map.values()})
+            if not filenames:
+                raise ValueError("the cached safetensors index has no shards")
+            parameter_count = 0
+            for filename in filenames:
+                cached_shard = try_to_load_from_cache(model_name, filename)
+                if not isinstance(cached_shard, str):
+                    raise ValueError(
+                        f"cached safetensors shard {filename!r} is missing"
+                    )
+                parameter_count += self._safetensors_parameter_count(Path(cached_shard))
+        if parameter_count <= 0:
+            raise ValueError("local HF cache returned no safetensors parameters")
         return parameter_count
 
     def _remote_parameter_count(self, model_name: str) -> int:
@@ -1229,9 +1218,7 @@ class HaloOptimizer(BaseOptimizer):
             raise ValueError("Hugging Face returned no safetensors parameters")
         return parameter_count
 
-    def _safetensors_parameter_count_with_source(
-        self, model_name: str
-    ) -> tuple[int, str]:
+    def _safetensors_parameter_count_for_model(self, model_name: str) -> int:
         """Resolve exact parameters from local cache, then Hugging Face."""
         attempts: list[str] = []
         for source, resolver in (
@@ -1240,17 +1227,19 @@ class HaloOptimizer(BaseOptimizer):
         ):
             try:
                 parameter_count = resolver(model_name)
-            except Exception as exc:
+            except (
+                HfHubHTTPError,
+                NotASafetensorsRepoError,
+                SafetensorsParsingError,
+                OSError,
+                ValueError,
+            ) as exc:
                 attempts.append(f"{source}: {exc}")
                 continue
-            if parameter_count <= 0:
-                attempts.append(f"{source}: no parameters")
-                continue
-            return parameter_count, source
-        self._model_size_metadata_error = "; ".join(attempts)
+            return parameter_count
         raise ValueError(
             "safetensors metadata failed for model "
-            f"{model_name!r}: {self._model_size_metadata_error}"
+            f"{model_name!r}: {'; '.join(attempts)}"
         )
 
     def _model_size_b(self, node: Node) -> float:
@@ -1274,7 +1263,6 @@ class HaloOptimizer(BaseOptimizer):
         lookup_size = self._model_size_lookup.get(normalized.lower())
         if lookup_size is not None:
             self._model_size_cache[normalized] = lookup_size
-            self._model_size_sources[normalized] = "MODEL_SIZE catalog"
             return lookup_size
 
         suffix_match = self._model_suffix_pattern.search(normalized)
@@ -1287,13 +1275,10 @@ class HaloOptimizer(BaseOptimizer):
                 unit = suffix_match.group(2).lower()
                 resolved_size = raw_size / 1000.0 if unit == "m" else raw_size
                 self._model_size_cache[normalized] = resolved_size
-                self._model_size_sources[normalized] = "name suffix"
                 return resolved_size
 
         try:
-            parameter_count, source = self._safetensors_parameter_count_with_source(
-                normalized
-            )
+            parameter_count = self._safetensors_parameter_count_for_model(normalized)
         except ValueError as exc:
             raise ValueError(
                 "Halo model size is unknown after trying the MODEL_SIZE catalog, "
@@ -1302,7 +1287,6 @@ class HaloOptimizer(BaseOptimizer):
             ) from exc
         safetensors_size = parameter_count / 1_000_000_000.0
         self._model_size_cache[normalized] = safetensors_size
-        self._model_size_sources[normalized] = source
         return safetensors_size
 
 

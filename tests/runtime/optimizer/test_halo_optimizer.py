@@ -1,7 +1,10 @@
 import contextlib
+import json
+import struct
 from pathlib import Path
 
 import pytest
+from huggingface_hub.utils import NotASafetensorsRepoError
 
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
@@ -359,13 +362,13 @@ def test_model_size_resolution_parses_suffix(
     optimizer = HaloOptimizer()
     metadata_calls: list[str] = []
 
-    def resolve(model: str) -> tuple[int, str]:
+    def resolve(model: str) -> int:
         metadata_calls.append(model)
-        return 1, "test"
+        return 1
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         resolve,
     )
     size = optimizer._model_size_b(
@@ -381,13 +384,13 @@ def test_model_size_resolution_uses_lookup(
     optimizer = HaloOptimizer()
     metadata_calls: list[str] = []
 
-    def resolve(model: str) -> tuple[int, str]:
+    def resolve(model: str) -> int:
         metadata_calls.append(model)
-        return 1, "test"
+        return 1
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         resolve,
     )
     size = optimizer._model_size_b(
@@ -409,8 +412,8 @@ def test_model_size_resolution_uses_safetensors_metadata(
     optimizer = HaloOptimizer()
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
-        lambda model: (1_250_000_000, "test safetensors metadata"),
+        "_safetensors_parameter_count_for_model",
+        lambda model: 1_250_000_000,
     )
     size = optimizer._model_size_b(
         Node(
@@ -430,13 +433,13 @@ def test_model_size_resolution_caches_safetensors_metadata(
     optimizer = HaloOptimizer()
     calls: list[str] = []
 
-    def resolve(model: str) -> tuple[int, str]:
+    def resolve(model: str) -> int:
         calls.append(model)
-        return 750_000_000, "test safetensors metadata"
+        return 750_000_000
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         resolve,
     )
     node = Node(
@@ -451,15 +454,14 @@ def test_model_size_resolution_caches_safetensors_metadata(
     assert calls == ["org/cache-test-model"]
 
 
-def test_safetensors_resolution_prefers_local_cache(
+def test_safetensors_resolution_uses_default_hf_cache_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     optimizer = HaloOptimizer()
-    monkeypatch.setenv("HF_HOME", "/mnt/data/szy/lumilake-experiment/hf-home")
-    cache_calls: list[tuple[str, str, str | None]] = []
+    cache_calls: list[tuple[str, str]] = []
 
-    def cached(model: str, filename: str, *, cache_dir: Path | None = None) -> str:
-        cache_calls.append((model, filename, str(cache_dir)))
+    def cached(model: str, filename: str) -> str:
+        cache_calls.append((model, filename))
         return "/cache/model.safetensors"
 
     monkeypatch.setattr(
@@ -476,18 +478,187 @@ def test_safetensors_resolution_prefers_local_cache(
         "_remote_parameter_count",
         lambda model: pytest.fail("remote metadata must not be consulted"),
     )
-    count, source = optimizer._safetensors_parameter_count_with_source(
-        "org/cached-model"
-    )
+    count = optimizer._safetensors_parameter_count_for_model("org/cached-model")
     assert count == 570_000_000
-    assert source == "local HF cache"
-    assert cache_calls == [
-        (
-            "org/cached-model",
-            "model.safetensors",
-            "/mnt/data/szy/lumilake-experiment/hf-home/hub",
+    assert cache_calls == [("org/cached-model", "model.safetensors")]
+
+
+def test_safetensors_parameter_count_reads_real_header(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "model.safetensors"
+    header = {
+        "__metadata__": {"format": "pt"},
+        "scalar": {"dtype": "F32", "shape": [], "data_offsets": [0, 4]},
+        "matrix": {"dtype": "F32", "shape": [2, 3], "data_offsets": [4, 28]},
+    }
+    header_bytes = json.dumps(header).encode("utf-8")
+    path.write_bytes(struct.pack("<Q", len(header_bytes)) + header_bytes + b"\0" * 28)
+
+    assert HaloOptimizer._safetensors_parameter_count(path) == 7
+
+
+def test_safetensors_parameter_count_rejects_truncated_header(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "truncated.safetensors"
+    path.write_bytes(struct.pack("<Q", 100) + b"{}")
+
+    with pytest.raises(ValueError, match="truncated safetensors header"):
+        HaloOptimizer._safetensors_parameter_count(path)
+
+
+def test_safetensors_parameter_count_rejects_invalid_shape(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "invalid-shape.safetensors"
+    header = {"tensor": {"dtype": "F32", "shape": [-1], "data_offsets": [0, 0]}}
+    header_bytes = json.dumps(header).encode("utf-8")
+    path.write_bytes(struct.pack("<Q", len(header_bytes)) + header_bytes)
+
+    with pytest.raises(ValueError, match="invalid shape"):
+        HaloOptimizer._safetensors_parameter_count(path)
+
+
+def test_cached_safetensors_sums_parameter_counts_across_shards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    optimizer = HaloOptimizer()
+    index = tmp_path / "model.safetensors.index.json"
+    index.write_text(
+        json.dumps(
+            {"weight_map": {"a": "shard-a.safetensors", "b": "shard-b.safetensors"}}
+        ),
+        encoding="utf-8",
+    )
+    shard_a = tmp_path / "shard-a.safetensors"
+    shard_b = tmp_path / "shard-b.safetensors"
+    for path, shape, data_size in ((shard_a, [2, 3], 24), (shard_b, [4], 16)):
+        header = {
+            "tensor": {"dtype": "F32", "shape": shape, "data_offsets": [0, data_size]}
+        }
+        header_bytes = json.dumps(header).encode("utf-8")
+        path.write_bytes(
+            struct.pack("<Q", len(header_bytes)) + header_bytes + b"\0" * data_size
         )
-    ]
+
+    files = {
+        "model.safetensors": None,
+        "model.safetensors.index.json": str(index),
+        "shard-a.safetensors": str(shard_a),
+        "shard-b.safetensors": str(shard_b),
+    }
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.try_to_load_from_cache",
+        lambda model, filename: files[filename],
+    )
+    assert optimizer._cached_parameter_count("org/sharded-model") == 10
+
+
+def test_cached_safetensors_rejects_missing_shard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    optimizer = HaloOptimizer()
+    index = tmp_path / "model.safetensors.index.json"
+    index.write_text(
+        json.dumps(
+            {"weight_map": {"a": "shard-a.safetensors", "b": "shard-b.safetensors"}}
+        ),
+        encoding="utf-8",
+    )
+    shard_a = tmp_path / "shard-a.safetensors"
+    header_bytes = json.dumps(
+        {"tensor": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}}
+    ).encode("utf-8")
+    shard_a.write_bytes(struct.pack("<Q", len(header_bytes)) + header_bytes + b"\0" * 8)
+
+    files = {
+        "model.safetensors": None,
+        "model.safetensors.index.json": str(index),
+        "shard-a.safetensors": str(shard_a),
+        "shard-b.safetensors": None,
+    }
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.try_to_load_from_cache",
+        lambda model, filename: files[filename],
+    )
+
+    with pytest.raises(ValueError, match="shard-b.safetensors"):
+        optimizer._cached_parameter_count("org/sharded-model")
+
+
+def test_safetensors_resolution_falls_back_to_hub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimizer = HaloOptimizer()
+
+    class Metadata:
+        parameter_count = {"F32": 123_456_789}
+
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.try_to_load_from_cache",
+        lambda model, filename: None,
+    )
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.get_safetensors_metadata",
+        lambda model: Metadata(),
+    )
+
+    assert (
+        optimizer._safetensors_parameter_count_for_model("org/hub-model") == 123_456_789
+    )
+
+
+def test_zero_count_cache_falls_through_to_hub(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    optimizer = HaloOptimizer()
+    empty = tmp_path / "empty.safetensors"
+    header_bytes = json.dumps({"__metadata__": {"format": "pt"}}).encode("utf-8")
+    empty.write_bytes(struct.pack("<Q", len(header_bytes)) + header_bytes)
+
+    class Metadata:
+        parameter_count = {"F32": 20_000_000}
+
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.try_to_load_from_cache",
+        lambda model, filename: str(empty),
+    )
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.get_safetensors_metadata",
+        lambda model: Metadata(),
+    )
+
+    assert (
+        optimizer._safetensors_parameter_count_for_model("org/empty-model")
+        == 20_000_000
+    )
+
+
+def test_safetensors_resolution_reports_both_failed_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimizer = HaloOptimizer()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.try_to_load_from_cache",
+        lambda model, filename: None,
+    )
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.get_safetensors_metadata",
+        lambda model: (_ for _ in ()).throw(
+            NotASafetensorsRepoError("not a safetensors repository")
+        ),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        optimizer._safetensors_parameter_count_for_model("org/missing-model")
+    message = str(exc_info.value)
+    assert "org/missing-model" in message
+    assert "local HF cache" in message
+    assert "Hugging Face safetensors metadata" in message
 
 
 def test_model_size_resolution_rejects_unknown_model(
@@ -495,7 +666,7 @@ def test_model_size_resolution_rejects_unknown_model(
 ) -> None:
     optimizer = HaloOptimizer()
 
-    def fail(_model: str) -> tuple[int, str]:
+    def fail(_model: str) -> int:
         raise ValueError(
             "safetensors metadata failed: "
             "local HF cache: weights missing; "
@@ -504,7 +675,7 @@ def test_model_size_resolution_rejects_unknown_model(
 
     monkeypatch.setattr(
         optimizer,
-        "_safetensors_parameter_count_with_source",
+        "_safetensors_parameter_count_for_model",
         fail,
     )
     with pytest.raises(ValueError) as exc_info:

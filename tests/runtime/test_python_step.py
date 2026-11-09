@@ -17,9 +17,11 @@ from lumilake_server.ops import (
     LambdaOp,
     LLMChatOp,
     OpMessage,
+    RouterOp,
     as_output,
     input_placeholder,
 )
+from lumilake_server.ops.router_ops import RouterRule
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
@@ -450,27 +452,17 @@ def _materialize_task_runtime() -> str:
 
 
 def _run_row_status(
-    plan: python_step.ColumnPlan,
+    data_spec: dict[str, Any],
     inputs: dict[str, str],
-    *,
-    rules: list[dict[str, str]],
-    default_branch: str,
-    terminal_branch: str | None = None,
 ):
     namespace: dict[str, Any] = {}
-    spec = {
-        "plan": plan,
-        "mode": "row_status",
-        "rules": rules,
-        "default_branch": default_branch,
-        "terminal_branch": terminal_branch,
-        "fn_name": "row_status",
-        "code": "",
-        "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-    }
     runtime = python_step.runtime_blob()
-    code = python_step.flowmesh_spec("status", spec, {runtime.key: runtime})["code"]
-    exec(code, namespace)
+    published = {runtime.key: runtime, **python_step.literal_blobs(data_spec["plan"])}
+    code = python_step.flowmesh_spec("status", data_spec, published)["code"]
+    exec(
+        code.replace(python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()),
+        namespace,
+    )
     return namespace["main"](inputs)
 
 
@@ -490,7 +482,10 @@ def _run_row_select(
         branch=branch,
         include_done=include_done,
     )
-    exec(code, namespace)
+    exec(
+        code.replace(python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()),
+        namespace,
+    )
     return namespace["main"](inputs)
 
 
@@ -1756,3 +1751,464 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
+
+
+def _stage_json(
+    node_id: str, payload: dict[str, Any], *, value_envelope: bool
+) -> dict[str, Any]:
+    result = {"value": payload} if value_envelope else payload
+    return {"task_id": node_id, "result": result}
+
+
+def _gated_chain_graph() -> Any:
+    """A three-stage classify/repair/assemble chain, each stage gated on a
+    ``status`` field of the previous stage's list-mode output."""
+    rows = input_placeholder("Rows")
+    classify = LambdaOp(
+        [rows],
+        fn=lambda items: [
+            {
+                "function_name": f"fn_{index}",
+                "function_code": "return 0",
+                "error": "",
+                "status": "ok",
+            }
+            for index in range(len(items[0]))
+        ],
+        mode="list",
+    )
+    classify_router = RouterOp(
+        classify,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    repair = LLMChatOp(
+        [OpMessage(role="user", content="Repair")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Repair code",
+        rowwise_columns=[
+            {"label": field, "node": classify.id, "path": f"items.output.{field}"}
+            for field in ("function_name", "function_code", "error")
+        ],
+        row_gate={"node": classify_router.id, "branch": "fail"},
+        row_gate_op=classify_router,
+    )
+    repair.inputs.append(classify)
+    collect = LambdaOp(
+        [repair],
+        fn=lambda items: [
+            {"assembled": len(items[0]), "status": "ok"},
+        ],
+        mode="list",
+    )
+    collect_router = RouterOp(
+        collect,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    assemble = LLMChatOp(
+        [OpMessage(role="user", content="Assemble")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Assemble {assembled}",
+        rowwise_columns=[
+            {"label": "assembled", "node": collect.id, "path": "items.output.assembled"}
+        ],
+        row_gate={"node": collect_router.id, "branch": "fail"},
+        row_gate_op=collect_router,
+    )
+    assemble.inputs.append(collect)
+    return Graph.from_ops([as_output("result", assemble)]).compile(Rows=["a", "b", "c"])
+
+
+def _inputop_gated_graph() -> Any:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Repair")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Repair {status}",
+        rowwise_columns=[
+            {"label": "status", "node": rows.id, "path": "items.output.status"}
+        ],
+        row_gate={"node": router.id, "branch": "fail"},
+        row_gate_op=router,
+    )
+    return Graph.from_ops([as_output("result", llm)]).compile(
+        Rows=['{"status": "fail"}', '{"status": "ok"}']
+    )
+
+
+def _assert_plans_are_column_plans(graph: Any) -> None:
+    for node in graph.nodes.values():
+        if node.task_type != "python":
+            continue
+        plan = node.data_spec["plan"]
+        python_step.literal_blobs(plan)
+        for entry in plan:
+            assert entry["kind"] in {"stage", "literal"}
+            if entry["kind"] == "stage":
+                assert entry["node"] in graph.nodes
+
+
+@pytest.mark.asyncio
+async def test_gated_chain_builds_flowmesh_task_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: storage,
+    )
+    manager = FlowmeshRuntimeManager()
+    graph = RuntimeGraphBuilder().build(_gated_chain_graph())
+
+    spec, _, _ = await manager._build_task_spec(
+        request_info=type(
+            "Request", (), {"request_id": "req", "hardware_requirements": None}
+        )(),
+        runtime_graph=graph,
+    )
+
+    assert spec["spec"]["graph"]["nodes"]
+    _assert_plans_are_column_plans(graph)
+
+
+@pytest.mark.asyncio
+async def test_inputop_gated_router_plan_is_a_column_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = InMemoryJobStorage()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: storage,
+    )
+    manager = FlowmeshRuntimeManager()
+    graph = RuntimeGraphBuilder().build(_inputop_gated_graph())
+
+    spec, _, _ = await manager._build_task_spec(
+        request_info=type(
+            "Request", (), {"request_id": "req", "hardware_requirements": None}
+        )(),
+        runtime_graph=graph,
+    )
+
+    assert spec["spec"]["graph"]["nodes"]
+    _assert_plans_are_column_plans(graph)
+    status_nodes = [
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_status"
+    ]
+    (status,) = status_nodes
+    assert status.data_spec["plan"] == [
+        {"kind": "literal", "label": "source", "values": ["fail", "ok"]}
+    ]
+    assert status.dependencies == ()
+
+
+def _row_status_stage(
+    tmp_path: Path, name: str, rows: list[dict[str, Any]], *, value_envelope: bool
+) -> str:
+    stage = tmp_path / name
+    stage.mkdir()
+    payload = {"items": [{"output": json.dumps(row)} for row in rows]}
+    (stage / "results.json").write_text(
+        json.dumps(_stage_json(name, payload, value_envelope=value_envelope))
+    )
+    return str(stage)
+
+
+def test_gated_chain_row_status_replays_worker_side(tmp_path: Path) -> None:
+    graph = RuntimeGraphBuilder().build(_gated_chain_graph())
+    status_nodes = [
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_status"
+    ]
+    assert len(status_nodes) == 2
+
+    first, second = status_nodes
+    first_source = first.data_spec["plan"][0]["node"]
+    first_dir = _row_status_stage(
+        tmp_path,
+        first_source,
+        [
+            {"function_name": "fn_0", "status": "fail"},
+            {"function_name": "fn_1", "status": "ok"},
+        ],
+        value_envelope=True,
+    )
+    out = _run_row_status(first.data_spec, {first_source: first_dir})
+    assert [json.loads(item["output"])["branch"] for item in out["items"]] == [
+        "fail",
+        "ok",
+    ]
+
+    second_source = second.data_spec["plan"][0]["node"]
+    second_dir = _row_status_stage(
+        tmp_path,
+        second_source,
+        [{"assembled": 2, "status": "ok"}, {"assembled": 1, "status": "fail"}],
+        value_envelope=False,
+    )
+    out = _run_row_status(second.data_spec, {second_source: second_dir})
+    assert [json.loads(item["output"])["branch"] for item in out["items"]] == [
+        "ok",
+        "fail",
+    ]
+
+
+def test_row_status_rejects_mismatched_row_counts(tmp_path: Path) -> None:
+    first = _row_status_stage(
+        tmp_path, "a", [{"status": "ok"}, {"status": "ok"}], value_envelope=False
+    )
+    second = _row_status_stage(
+        tmp_path,
+        "b",
+        [{"status": "ok"}, {"status": "ok"}, {"status": "ok"}],
+        value_envelope=False,
+    )
+    data_spec = {
+        "plan": [
+            {"kind": "stage", "label": "source", "node": "a", "path": "output.status"},
+            {"kind": "stage", "label": "route", "node": "b", "path": "output.status"},
+        ],
+        "mode": "row_status",
+        "rules": [{"branch": "ok", "match": "equals", "value": "ok"}],
+        "default_branch": "ok",
+        "terminal_branch": None,
+        "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+    }
+
+    with pytest.raises(ValueError, match="expected 1 or 3"):
+        _run_row_status(data_spec, {"a": first, "b": second})
+
+
+def test_row_status_plan_path_does_not_accept_dsl_path(tmp_path: Path) -> None:
+    stage = _row_status_stage(tmp_path, "src", [{"status": "ok"}], value_envelope=False)
+    data_spec = {
+        "plan": [
+            {
+                "kind": "stage",
+                "label": "source",
+                "node": "src",
+                "path": "items.output.status",
+            }
+        ],
+        "mode": "row_status",
+        "rules": [{"branch": "ok", "match": "equals", "value": "ok"}],
+        "default_branch": "ok",
+        "terminal_branch": None,
+        "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+    }
+
+    with pytest.raises(ValueError, match="missing 'items'"):
+        _run_row_status(data_spec, {"src": stage})
+
+
+def test_gated_rows_read_the_selector_label_paths() -> None:
+    # A selector emits one flat ``{label: value}`` row per kept item, so a gated
+    # model reads its columns at ``value.items.<label>`` on the selector's
+    # result. FlowMesh's walker never JSON-decodes, so any other path fails.
+    graph = RuntimeGraphBuilder().build(_gated_chain_graph())
+    selectors: dict[str, Any] = {
+        node.node_id: node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_select"
+    }
+    gated = [
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("columns")
+        and any(column.get("node") in selectors for column in node.data_spec["columns"])
+    ]
+    assert len(gated) == len(selectors) == 2
+
+    for node in gated:
+        selector = selectors[node.data_spec["columns"][0]["node"]]
+        labels = selector.data_spec["labels"]
+        assert [c["label"] for c in node.data_spec["columns"]] == labels
+        assert [c["path"] for c in node.data_spec["columns"]] == [
+            f"value.items.{label}" for label in labels
+        ]
+
+        plan: python_step.ColumnPlan = [
+            {
+                "kind": "literal",
+                "values": [
+                    json.dumps({"branch": branch}) for branch in ("fail", "ok", "fail")
+                ],
+            },
+            *[
+                {"kind": "literal", "values": [f"{label}_{i}" for i in range(3)]}
+                for label in labels
+            ],
+        ]
+        payload = _run_row_select(
+            plan,
+            {},
+            labels=labels,
+            branch=selector.data_spec["branch"],
+            include_done=selector.data_spec["include_done"],
+        )
+        assert payload["items"] == [
+            {label: f"{label}_0" for label in labels},
+            {label: f"{label}_2" for label in labels},
+        ]
+
+        # ``_flowmesh_walk`` spends its first token on the node id, as the live
+        # column path does.
+        wrapped = {"value": payload}
+        for column in node.data_spec["columns"]:
+            expected = [f"{column['label']}_0", f"{column['label']}_2"]
+            assert (
+                _flowmesh_walk(wrapped, f"{selector.node_id}.{column['path']}")
+                == expected
+            )
+            bare = f"{selector.node_id}.{column['path'].removeprefix('value.')}"
+            assert _flowmesh_walk(payload, bare) == expected
+
+            with pytest.raises(KeyError, match="is not a valid key - list"):
+                _flowmesh_walk(
+                    wrapped,
+                    f"{selector.node_id}.value.items.output.{column['label']}",
+                )
+
+
+def test_gated_selector_reads_lambda_rows_at_their_declared_fields(
+    tmp_path: Path,
+) -> None:
+    # A rowwise column declares where its value lives on the source rows. A
+    # list-mode Lambda row is a whole dict, so the selector must walk the
+    # declared path; reading the label instead would hand every column the row.
+    rows = input_placeholder("Rows")
+    classify = LambdaOp(
+        [rows],
+        fn=lambda items: [
+            {
+                "function_name": f"fn_{index}",
+                "function_code": f"return {index}",
+                "status": "fail",
+            }
+            for index in range(len(items[0]))
+        ],
+        mode="list",
+    )
+    gate = RouterOp(
+        classify,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Repair")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Repair",
+        rowwise_columns=[
+            {
+                "label": "entry_name",
+                "node": classify.id,
+                "path": "items.output.function_name",
+            },
+            {
+                "label": "source_code",
+                "node": classify.id,
+                "path": "items.output.function_code",
+            },
+        ],
+        row_gate={"node": gate.id, "branch": "fail"},
+        row_gate_op=gate,
+    )
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("result", llm)]).compile(Rows=["a", "b", "c"])
+    )
+    (classify_id,) = graph.dsl_to_runtime[classify.id]
+    (selector,) = [
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_select"
+    ]
+    status, *columns = selector.data_spec["plan"]
+    assert status["kind"] == "stage"
+    assert columns == [
+        {
+            "kind": "stage",
+            "node": classify_id,
+            "allow_empty": True,
+            "path": "output.function_name",
+        },
+        {
+            "kind": "stage",
+            "node": classify_id,
+            "allow_empty": True,
+            "path": "output.function_code",
+        },
+    ]
+
+    stage = tmp_path / classify_id
+    stage.mkdir()
+    payload = {
+        "items": [
+            {
+                "output": {
+                    "function_name": f"fn_{index}",
+                    "function_code": f"return {index}",
+                    "status": "fail",
+                }
+            }
+            for index in range(3)
+        ]
+    }
+    (stage / "results.json").write_text(
+        json.dumps({"task_id": classify_id, "result": payload})
+    )
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": [json.dumps({"branch": "fail"})] * 3},
+        *columns,
+    ]
+    out = _run_row_select(
+        plan,
+        {classify_id: str(stage)},
+        labels=selector.data_spec["labels"],
+        branch="fail",
+        include_done=False,
+    )
+    assert out["items"] == [
+        {"entry_name": "fn_0", "source_code": "return 0"},
+        {"entry_name": "fn_1", "source_code": "return 1"},
+        {"entry_name": "fn_2", "source_code": "return 2"},
+    ]
+
+    # A plan entry that walked the label instead of the declared field would
+    # read two labels out of the same ``output`` mapping and find no such key.
+    relabeled = [
+        {**entry, "path": f"output.{label}"}
+        for entry, label in zip(columns, selector.data_spec["labels"])
+    ]
+    with pytest.raises(ValueError, match="missing 'entry_name'"):
+        _run_row_select(
+            [plan[0], *relabeled],
+            {classify_id: str(stage)},
+            labels=selector.data_spec["labels"],
+            branch="fail",
+            include_done=False,
+        )

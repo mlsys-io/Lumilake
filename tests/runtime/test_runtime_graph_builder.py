@@ -585,6 +585,9 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     assert runtime_graph.output_node_map == {merge.node_id: "result"}
     assert router.id not in runtime_graph.nodes
     assert runtime_graph.nodes[selector.node_id].dependencies == (status.node_id,)
+    assert status.data_spec["plan"] == [
+        {"kind": "literal", "label": "source", "values": list(compiled.inputs["Rows"])}
+    ]
 
 
 def test_terminal_row_gate_marks_done_and_allows_an_empty_selected_set() -> None:
@@ -720,6 +723,211 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
     ]
     assert python_types == ["python", "python", "inference", "python"]
     assert yaml_types == python_types
+
+    yaml_status = yaml_graph.nodes[yaml_graph.dsl_to_runtime[yaml_turn_id][0]]
+    python_status = python_graph.nodes[python_graph.dsl_to_runtime[turn.id][0]]
+    # A row_status plan reads each source envelope item, so its path drops the
+    # DSL ``items.`` prefix that the router carries, and its node is the
+    # runtime node the router's source compiled to.
+    (yaml_entry,) = yaml_status.data_spec["plan"]
+    assert yaml_entry["kind"] == "stage"
+    assert yaml_entry["label"] == "source"
+    assert yaml_entry["path"] == "output"
+    assert yaml_entry["node"] in yaml_graph.nodes
+    assert python_status.data_spec["plan"] == [
+        {
+            "kind": "literal",
+            "label": "source",
+            "values": ["normal", "REQUEST TEST"],
+        }
+    ]
+
+
+def _gated_row_list_lambda_graph() -> tuple[Any, str, str, str]:
+    """Compile a gated row LLM whose merge node feeds a list-mode LambdaOp.
+
+    Returns the runtime graph and the LLM, list-lambda, and merge node ids.
+    """
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="test", match="contains", value="REQUEST TEST"),
+            RouterRule(branch="patient", match="equals", value="__never__"),
+        ],
+        default_branch="patient",
+    )
+    turn = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "test"},
+        row_gate_op=router,
+    )
+    tally = LambdaOp(
+        [turn],
+        fn=lambda items: [{"n": len(items[0])}],
+        mode="list",
+    )
+    compiled = Graph.from_ops([as_output("result", tally)]).compile(
+        Rows=["normal", "REQUEST TEST"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    return runtime_graph, turn.id, tally.id, runtime_graph.dsl_to_runtime[turn.id][-1]
+
+
+def _assert_known_runtime_refs(runtime_graph: Any) -> None:
+    """Every dependency and every plan stage node names a runtime node."""
+    for node in runtime_graph.nodes.values():
+        for dep in node.dependencies:
+            assert dep in runtime_graph.nodes
+        plan = node.data_spec.get("plan")
+        for entry in plan or []:
+            if entry.get("kind") == "stage":
+                assert entry["node"] in runtime_graph.nodes
+
+
+def test_list_lambda_over_gated_llm_binds_to_merge_node() -> None:
+    runtime_graph, _, tally_id, merge_id = _gated_row_list_lambda_graph()
+
+    assert runtime_graph.nodes[merge_id].data_spec["mode"] == "row_skip_merge"
+    (tally_node_id,) = runtime_graph.dsl_to_runtime[tally_id]
+    tally_node = runtime_graph.nodes[tally_node_id]
+    assert tally_node.data_spec["plan"] == [
+        {"kind": "stage", "node": merge_id, "path": "value.output"}
+    ]
+    assert tally_node.dependencies == (merge_id,)
+
+    _assert_known_runtime_refs(runtime_graph)
+    _assert_known_runtime_refs(runtime_graph.with_node_prefix("probe"))
+
+
+def test_list_lambda_over_gated_llm_builds_after_merge_node() -> None:
+    runtime_graph, _, tally_id, merge_id = _gated_row_list_lambda_graph()
+
+    (tally_node_id,) = runtime_graph.dsl_to_runtime[tally_id]
+    order = {node_id: index for index, node_id in enumerate(runtime_graph.node_order)}
+    assert order[merge_id] < order[tally_node_id]
+
+
+def test_list_lambda_over_plain_rowwise_llm_keeps_flatten() -> None:
+    symbol = input_placeholder("Symbol")
+    shout = LambdaOp([symbol], fn=lambda inputs: str(inputs[0]).upper())
+    reply = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Reply {r}",
+        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+    )
+    reply.inputs.append(shout)
+    tally = LambdaOp(
+        [reply],
+        fn=lambda items: [{"n": len(items[0])}],
+        mode="list",
+    )
+    compiled = Graph.from_ops([as_output("out", tally)]).compile(
+        Symbol=["NVDA", "AAPL"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    reply_node_id = runtime_graph.dsl_to_runtime[reply.id][-1]
+    (tally_node_id,) = runtime_graph.dsl_to_runtime[tally.id]
+    tally_node = runtime_graph.nodes[tally_node_id]
+    assert tally_node.data_spec["plan"] == [
+        {"kind": "stage", "node": reply_node_id, "flatten": True}
+    ]
+    assert tally_node.dependencies == (reply_node_id,)
+    _assert_known_runtime_refs(runtime_graph)
+
+
+def test_list_lambda_built_after_upstream_llm() -> None:
+    rows = input_placeholder("Rows")
+    summary = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    tally = LambdaOp(
+        [summary],
+        fn=lambda items: [{"n": len(items[0])}],
+        mode="list",
+    )
+    compiled = Graph.from_ops([as_output("out", tally)]).compile(Rows=["a", "b"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    summary_node_id = runtime_graph.dsl_to_runtime[summary.id][-1]
+    (tally_node_id,) = runtime_graph.dsl_to_runtime[tally.id]
+    tally_node = runtime_graph.nodes[tally_node_id]
+    assert tally_node.data_spec["plan"] == [{"kind": "stage", "node": summary_node_id}]
+    order = {node_id: index for index, node_id in enumerate(runtime_graph.node_order)}
+    assert order[summary_node_id] < order[tally_node_id]
+    _assert_known_runtime_refs(runtime_graph)
+
+
+def test_list_lambda_stage_without_runtime_node_raises() -> None:
+    rows = input_placeholder("Rows")
+    turn = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+    )
+    builder = RuntimeGraphBuilder()
+    plan: list[dict[str, Any]] = []
+    dependencies: list[str] = []
+
+    with pytest.raises(ValueError, match="has no runtime node"):
+        builder._append_list_lambda_stage("consumer", turn, plan, dependencies, {}, {})
+    assert plan == []
+    assert dependencies == []
+
+
+def test_list_lambda_stage_over_multi_node_input_raises() -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[RouterRule(branch="test", match="contains", value="REQUEST TEST")],
+        default_branch="test",
+    )
+    turn = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "test"},
+        row_gate_op=router,
+    )
+    gated_ids = [
+        f"{turn.id}__row_status",
+        f"{turn.id}__row_select",
+        f"{turn.id}__selected",
+        f"{turn.id}__rows",
+    ]
+    builder = RuntimeGraphBuilder()
+
+    plan: list[dict[str, Any]] = []
+    dependencies: list[str] = []
+    with pytest.raises(ValueError, match="compiled to .* runtime nodes"):
+        builder._append_list_lambda_stage(
+            "consumer", turn, plan, dependencies, {turn.id: gated_ids}, {}
+        )
+    assert plan == []
+    assert dependencies == []
+
+    gated_plan: list[dict[str, Any]] = []
+    gated_dependencies: list[str] = []
+    builder._append_list_lambda_stage(
+        "consumer",
+        turn,
+        gated_plan,
+        gated_dependencies,
+        {turn.id: gated_ids},
+        {turn.id: {"node": router.id, "branch": "test", "terminal": False}},
+    )
+    assert gated_plan == [
+        {"kind": "stage", "node": gated_ids[-1], "path": "value.output"}
+    ]
+    assert gated_dependencies == [gated_ids[-1]]
 
 
 def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
