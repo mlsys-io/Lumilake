@@ -30,6 +30,8 @@ _ALLOWED_PARAMS = frozenset(
         "_id",
         "identifier",
         "name",
+        "family",
+        "given",
         "birthdate",
         "_format",
         "_count",
@@ -90,10 +92,11 @@ def translate_search(url: str) -> SearchSql:
     if resource != "Patient" and "patient" not in params:
         raise FhirSearchRejected(f"{resource} search requires patient")
     if resource == "Patient" and not any(
-        key in params for key in ("_id", "identifier", "name", "birthdate")
+        key in params
+        for key in ("_id", "identifier", "name", "family", "given", "birthdate")
     ):
         raise FhirSearchRejected(
-            "Patient search requires _id, identifier, name or birthdate"
+            "Patient search requires _id, identifier, name, family, given or birthdate"
         )
 
     clauses: list[str] = []
@@ -113,12 +116,27 @@ def translate_search(url: str) -> SearchSql:
                 f"(name_family ILIKE {_quote('%' + params['name'] + '%')} "
                 f"OR name_given ILIKE {_quote('%' + params['name'] + '%')})"
             )
+        if "family" in params:
+            if not params["family"].strip():
+                raise FhirSearchRejected("FHIR search parameter 'family' is blank")
+            clauses.append(f"name_family ILIKE {_quote('%' + params['family'] + '%')}")
+        if "given" in params:
+            if not params["given"].strip():
+                raise FhirSearchRejected("FHIR search parameter 'given' is blank")
+            clauses.append(f"name_given ILIKE {_quote('%' + params['given'] + '%')}")
         if "birthdate" in params:
             clauses.append(f"birth_date = {_quote(params['birthdate'])}")
         if "name" in params and not any(key in params for key in ("_id", "identifier")):
             select = "id, identifier"
     else:
-        unsupported = set(params) & {"_id", "identifier", "name", "birthdate"}
+        unsupported = set(params) & {
+            "_id",
+            "identifier",
+            "name",
+            "family",
+            "given",
+            "birthdate",
+        }
         if unsupported:
             key = sorted(unsupported)[0]
             raise FhirSearchRejected(f"unsupported {resource} search parameter {key!r}")

@@ -102,6 +102,21 @@ def test_quote_escaping() -> None:
     )
 
 
+def test_patient_discrete_name_parts_translation() -> None:
+    assert translate_search("Patient?family=Smith").sql == (
+        "SELECT * FROM fhir.patient WHERE name_family ILIKE '%Smith%'"
+    )
+    assert translate_search("Patient?given=Peter").sql == (
+        "SELECT * FROM fhir.patient WHERE name_given ILIKE '%Peter%'"
+    )
+    assert translate_search(
+        "Patient?given=Kyle&family=Jia&birthdate=1969-05-15&_format=json"
+    ).sql == (
+        "SELECT * FROM fhir.patient WHERE name_family ILIKE '%Jia%' "
+        "AND name_given ILIKE '%Kyle%' AND birth_date = '1969-05-15'"
+    )
+
+
 @pytest.mark.parametrize(
     ("url", "message"),
     [
@@ -110,6 +125,9 @@ def test_quote_escaping() -> None:
         ("Observation?patient=123&foo=bar", "unsupported FHIR search parameter"),
         ("Observation?code=MG", "requires patient"),
         ("Observation?patient=123&name=Peter", "unsupported Observation"),
+        ("Observation?patient=123&family=Peter", "unsupported Observation"),
+        ("Observation?patient=123&given=Peter", "unsupported Observation"),
+        ("Patient", "Patient search requires"),
     ],
 )
 def test_rejections(url: str, message: str) -> None:
