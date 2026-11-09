@@ -482,7 +482,10 @@ def _run_row_select(
         branch=branch,
         include_done=include_done,
     )
-    exec(code, namespace)
+    exec(
+        code.replace(python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()),
+        namespace,
+    )
     return namespace["main"](inputs)
 
 
@@ -2017,3 +2020,72 @@ def test_row_status_plan_path_does_not_accept_dsl_path(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing 'items'"):
         _run_row_status(data_spec, {"src": stage})
+
+
+def test_gated_rows_read_the_selector_label_paths() -> None:
+    # A selector emits one flat ``{label: value}`` row per kept item, so a gated
+    # model reads its columns at ``value.items.<label>`` on the selector's
+    # result. FlowMesh's walker never JSON-decodes, so any other path fails.
+    graph = RuntimeGraphBuilder().build(_gated_chain_graph())
+    selectors: dict[str, Any] = {
+        node.node_id: node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_select"
+    }
+    gated = [
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("columns")
+        and any(column.get("node") in selectors for column in node.data_spec["columns"])
+    ]
+    assert len(gated) == len(selectors) == 2
+
+    for node in gated:
+        selector = selectors[node.data_spec["columns"][0]["node"]]
+        labels = selector.data_spec["labels"]
+        assert [c["label"] for c in node.data_spec["columns"]] == labels
+        assert [c["path"] for c in node.data_spec["columns"]] == [
+            f"value.items.{label}" for label in labels
+        ]
+
+        plan: python_step.ColumnPlan = [
+            {
+                "kind": "literal",
+                "values": [
+                    json.dumps({"branch": branch}) for branch in ("fail", "ok", "fail")
+                ],
+            },
+            *[
+                {"kind": "literal", "values": [f"{label}_{i}" for i in range(3)]}
+                for label in labels
+            ],
+        ]
+        payload = _run_row_select(
+            plan,
+            {},
+            labels=labels,
+            branch=selector.data_spec["branch"],
+            include_done=selector.data_spec["include_done"],
+        )
+        assert payload["items"] == [
+            {label: f"{label}_0" for label in labels},
+            {label: f"{label}_2" for label in labels},
+        ]
+
+        # ``_flowmesh_walk`` spends its first token on the node id, as the live
+        # column path does.
+        wrapped = {"value": payload}
+        for column in node.data_spec["columns"]:
+            expected = [f"{column['label']}_0", f"{column['label']}_2"]
+            assert (
+                _flowmesh_walk(wrapped, f"{selector.node_id}.{column['path']}")
+                == expected
+            )
+            bare = f"{selector.node_id}.{column['path'].removeprefix('value.')}"
+            assert _flowmesh_walk(payload, bare) == expected
+
+            with pytest.raises(KeyError, match="is not a valid key - list"):
+                _flowmesh_walk(
+                    wrapped,
+                    f"{selector.node_id}.value.items.output.{column['label']}",
+                )
