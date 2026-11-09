@@ -3096,6 +3096,16 @@ class RuntimeGraphBuilder:
                 and (upstream.rowwise_template or upstream.rowwise_messages_column)
             ):
                 entry["flatten"] = True
+            path = column.get("path")
+            if isinstance(path, str) and path:
+                if not path.startswith("items."):
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' row gate column {label!r} "
+                        f"path {path!r} must start with 'items.'"
+                    )
+                # A python-task stage path is walked from each envelope item,
+                # so the DSL form ``items.output.<field>`` loses its prefix.
+                entry["path"] = path.removeprefix("items.")
             select_plan.append(entry)
             if runtime_ids[0] not in select_dependencies:
                 select_dependencies.append(runtime_ids[0])
