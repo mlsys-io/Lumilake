@@ -36,7 +36,23 @@ outputs:
 
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+
+`LLMCompletionOp` generates from string prompts without the model chat template.
+Its `prompt` field references an input or upstream op that produces one prompt
+string per row; use it when the prompt already carries the model's chat control
+tokens.
+
+```yaml
+ops:
+  - id: Generate
+    op: LLMCompletionOp
+    inputs: [Prompt]
+    prompt: Prompt
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 3000
+```
 
 ## n8n code-node notes
 
