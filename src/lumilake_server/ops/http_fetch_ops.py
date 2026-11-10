@@ -22,19 +22,29 @@ class HttpFetchConfig:
     cache_dir: str | None = None
 
     def __post_init__(self) -> None:
-        if self.timeout_sec <= 0:
-            raise ValueError("HttpFetchOp timeout_sec must be greater than zero")
-        if self.retries < 0 or self.retries > MAX_RETRIES:
-            raise ValueError(f"HttpFetchOp retries must be between 0 and {MAX_RETRIES}")
-        if self.request_delay_sec < 0:
-            raise ValueError("HttpFetchOp request_delay_sec must be non-negative")
-        if not 1 <= self.max_concurrency <= 8:
-            raise ValueError("HttpFetchOp max_concurrency must be between 1 and 8")
-        if not all(
+        if not isinstance(self.headers, dict) or not all(
             isinstance(key, str) and isinstance(value, str)
             for key, value in self.headers.items()
         ):
             raise ValueError("HttpFetchOp headers must be a string-to-string mapping")
+        if not isinstance(self.timeout_sec, int | float) or self.timeout_sec <= 0:
+            raise ValueError("HttpFetchOp timeout_sec must be greater than zero")
+        if not isinstance(self.retries, int) or not 0 <= self.retries <= MAX_RETRIES:
+            raise ValueError(f"HttpFetchOp retries must be between 0 and {MAX_RETRIES}")
+        if (
+            not isinstance(self.request_delay_sec, int | float)
+            or self.request_delay_sec < 0
+        ):
+            raise ValueError("HttpFetchOp request_delay_sec must be non-negative")
+        if (
+            not isinstance(self.max_concurrency, int)
+            or not 1 <= self.max_concurrency <= 8
+        ):
+            raise ValueError("HttpFetchOp max_concurrency must be between 1 and 8")
+        if not isinstance(self.fail_open, bool):
+            raise ValueError("HttpFetchOp fail_open must be a boolean")
+        if self.cache_dir is not None and not isinstance(self.cache_dir, str):
+            raise ValueError("HttpFetchOp cache_dir must be a string")
         cache_dir = PurePosixPath(self.cache_dir) if self.cache_dir else None
         if cache_dir is not None and (
             cache_dir.is_absolute() or ".." in cache_dir.parts
@@ -80,21 +90,7 @@ class HttpFetchOp(FunctionalOp):
         self.params = params
         self.body = body
         self.config = config or HttpFetchConfig()
-        if not self.url:
-            raise ValueError("HttpFetchOp requires a non-empty url template")
-        if self.method not in {"GET", "POST"}:
-            raise ValueError("HttpFetchOp method must be GET or POST")
-        if not any(
-            contains_query_placeholder(value)
-            for value in (self.url, self.params, self.body)
-        ):
-            raise ValueError(
-                "HttpFetchOp url, params, or body must contain a {query} placeholder"
-            )
-        if self.method == "POST" and self.body is None:
-            raise ValueError("HttpFetchOp POST requires a body template")
-        if self.params is not None and not isinstance(self.params, dict):
-            raise ValueError("HttpFetchOp params must be a mapping")
+        validate_fetch_request(self.url, self.method, self.params, self.body)
         query_op = (
             query if isinstance(query, Op) else DataOp(data=_as_query_list(query))
         )
@@ -144,6 +140,31 @@ def _as_query_list(query: str | list[str]) -> list[str]:
     ):
         raise ValueError("HttpFetchOp query input must contain non-empty strings")
     return values
+
+
+def validate_fetch_request(
+    url: str,
+    method: str,
+    params: Any,
+    body: Any,
+    *,
+    where: str = "HttpFetchOp",
+) -> None:
+    """Check an HTTP fetch's request template, naming the op in ``where``.
+
+    The parser and the constructor both call this, so a YAML job and a
+    constructed op reject the same requests with the same message.
+    """
+    if not url:
+        raise ValueError(f"{where} requires a non-empty url template")
+    if method not in {"GET", "POST"}:
+        raise ValueError(f"{where} method must be GET or POST")
+    if params is not None and not isinstance(params, dict):
+        raise ValueError(f"{where} params must be a mapping")
+    if not any(contains_query_placeholder(value) for value in (url, params, body)):
+        raise ValueError(f"{where} requires '{{query}}' in url, params, or body")
+    if method == "POST" and body is None:
+        raise ValueError(f"{where} POST requires a body")
 
 
 def contains_query_placeholder(value: Any) -> bool:

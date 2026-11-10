@@ -15,7 +15,7 @@ class ScoreConfig:
     vllm: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.model.strip():
+        if not isinstance(self.model, str) or not self.model.strip():
             raise ValueError("ScoreOp config.model must be a non-empty string")
         if self.backend not in {"vllm", "transformers"}:
             raise ValueError("ScoreOp config.backend must be vllm or transformers")

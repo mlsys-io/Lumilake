@@ -73,6 +73,12 @@ def test_http_fetch_op_serializes_and_round_trips() -> None:
         ({"max_concurrency": 9}, "max_concurrency"),
         ({"cache_dir": "/tmp/cache"}, "cache_dir"),
         ({"cache_dir": "worker/../cache"}, "cache_dir"),
+        ({"retries": "3"}, "retries"),
+        ({"max_concurrency": "4"}, "max_concurrency"),
+        ({"timeout_sec": "30"}, "timeout_sec"),
+        ({"cache_dir": 5}, "cache_dir"),
+        ({"fail_open": "yes"}, "fail_open"),
+        ({"headers": ["a"]}, "headers"),
     ],
 )
 def test_http_fetch_op_validates_config(config_kwargs: dict, message: str) -> None:
@@ -101,6 +107,45 @@ def test_http_fetch_op_validates_request(kwargs: dict, message: str) -> None:
     }
     with pytest.raises(ValueError, match=message):
         HttpFetchOp(**fields)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"url": ""},
+        {"url": "http://fixture.test/search", "params": {"limit": 10}},
+        {"method": "PUT"},
+        {"method": "POST"},
+        {"params": ["q"]},
+    ],
+)
+def test_http_fetch_request_checks_agree_between_parser_and_constructor(
+    kwargs: dict,
+) -> None:
+    """The parser and the constructor report the same request errors."""
+    fields = {
+        "url": "http://fixture.test/search?query={query}",
+        "query": "Query",
+        "params": {"query": "{query}"},
+        **kwargs,
+    }
+    with pytest.raises(ValueError) as built:
+        HttpFetchOp(**{**fields, "query": ["first"]})
+    yaml_text = yaml.safe_dump(
+        {
+            "name": "fetch_parity",
+            "inputs": {"Query": ["first"]},
+            "ops": [
+                {"id": "Search", "op": "HttpFetchOp", "inputs": ["Query"], **fields}
+            ],
+            "outputs": [{"name": "candidates", "ref": "Search"}],
+        }
+    )
+    with pytest.raises(ValueError) as parsed:
+        parse_yaml_payload(yaml_text)
+
+    constructor_message = str(built.value).removeprefix("HttpFetchOp ")
+    assert str(parsed.value) == f"HttpFetchOp 'Search' {constructor_message}"
 
 
 def test_http_fetch_yaml_parses_and_builds_expected_op_dict() -> None:
@@ -150,7 +195,7 @@ def test_http_fetch_yaml_parses_and_builds_expected_op_dict() -> None:
             "requires '{query}' in url",
         ),
         ({"method": "PUT"}, "method must be GET or POST"),
-        ({"method": "POST"}, "POST requires body"),
+        ({"method": "POST"}, "POST requires a body"),
         ({"params": ["q"]}, "params must be a mapping"),
         ({"config": {"retries": 11}}, "retries must be between 0 and 10"),
         ({"config": {"timeout": 5}}, "config has unknown fields: ['timeout']"),

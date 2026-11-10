@@ -92,7 +92,7 @@ import yaml
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.http_fetch_ops import (
     HttpFetchConfig,
-    contains_query_placeholder,
+    validate_fetch_request,
 )
 from lumilake_server.ops.score_ops import ScoreConfig
 from lumilake_server.ops.util_ops import LambdaOp
@@ -675,7 +675,7 @@ def _emit_http_fetch_op(
     user_id_to_internal: dict[str, str],
 ) -> None:
     url = entry.fields.get("url")
-    if not isinstance(url, str) or not url.strip():
+    if not isinstance(url, str):
         raise ValueError(f"HttpFetchOp '{entry.id}' requires a non-empty 'url'")
     query_ref = entry.fields.get("query")
     if not isinstance(query_ref, str) or query_ref not in user_id_to_internal:
@@ -686,18 +686,11 @@ def _emit_http_fetch_op(
     if not isinstance(config, dict):
         raise ValueError(f"HttpFetchOp '{entry.id}' config must be a mapping")
     method = str(entry.fields.get("method", "GET")).upper()
-    if method not in {"GET", "POST"}:
-        raise ValueError(f"HttpFetchOp '{entry.id}' method must be GET or POST")
     params = entry.fields.get("params")
     body = entry.fields.get("body")
-    if params is not None and not isinstance(params, dict):
-        raise ValueError(f"HttpFetchOp '{entry.id}' params must be a mapping")
-    if not any(contains_query_placeholder(value) for value in (url, params, body)):
-        raise ValueError(
-            f"HttpFetchOp '{entry.id}' requires '{{query}}' in url, params, or body"
-        )
-    if method == "POST" and body is None:
-        raise ValueError(f"HttpFetchOp '{entry.id}' POST requires body")
+    validate_fetch_request(
+        url.strip(), method, params, body, where=f"HttpFetchOp '{entry.id}'"
+    )
     _validate_op_config(HttpFetchConfig, config, entry.id, "HttpFetchOp")
     op_dict["url"] = url
     op_dict["method"] = method
