@@ -140,16 +140,6 @@ When live sampling is enabled, preflight routes a bounded `LIMIT N` query throug
 
 When a workflow uses `type: list` data with `s3://` items (typical for VLM / image-generation paths that funnel S3 URLs through a list), Lumilake stamps a `lumid_cfg` field onto the data spec so the FlowMesh worker can retrieve the blobs through lumid-data-app. The FlowMesh worker's `data` mixin must support `lumid_cfg` for this path to function; older workers that only read `s3_cfg` will fail at retrieval. Lumilake logs a warning at stamp time naming this gap. Pair Lumilake with a FlowMesh release that supports `lumid_cfg` on `type: list` items, or restructure the workflow to use a `DataRetrievalOp` (`mode: s3`) which is always routed through the dedicated `type: lumid` connector.
 
-## Internal Python Step Modes
-
-`LambdaOp` user code supports `row`, `list`, and `aligned` modes. The runtime
-also emits internal Python steps for `flatten`, `regroup`, and `pairs`.
-`flatten` renders one prompt per image, `regroup` rebuilds one output list per
-symbol, and `pairs` combines query and candidate columns into a list of
-`{text, text_pair}` mappings for `ScoreOp`. `pairs` broadcasts a single query
-across multiple candidates and rejects unequal query/candidate column lengths
-when no broadcast applies.
-
 ## Examples
 
 Runnable examples live in `examples/templates/`. Each is shipped as a
