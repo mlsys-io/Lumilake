@@ -819,6 +819,51 @@ def test_row_gated_llm_rejects_consumers_other_than_an_output(
         RuntimeGraphBuilder().build(compiled)
 
 
+@pytest.mark.parametrize("consumer_inputs", ["[route]", "[turn]"])
+def test_row_gate_consumer_check_reads_a_yaml_column_ref(
+    consumer_inputs: str,
+) -> None:
+    """A YAML column reference to a gated op is not one of the reader's inputs."""
+    yaml_text = textwrap.dedent("""
+        name: w
+        inputs:
+          Rows: ["A1", "B2"]
+        ops:
+          - id: route
+            op: RouterOp
+            inputs: [Rows]
+            default_branch: b
+            rules:
+              - {branch: a, match: contains, value: A}
+              - {branch: b, match: equals, value: __never__}
+          - id: turn
+            op: LLMChatOp
+            inputs: [Rows, route]
+            messages: [{role: user, content: Rows}]
+            rowwise_template: "{row}"
+            rowwise_columns: [{label: row, node: Rows, path: items.output}]
+            row_gate: {node: route, branch: a}
+            config: {model: meta-llama/Llama-3.1-8B-Instruct}
+          - id: after
+            op: LLMChatOp
+            inputs: CONSUMER_INPUTS
+            messages: [{role: user, content: "y"}]
+            rowwise_template: "{prev}"
+            rowwise_columns: [{label: prev, node: turn, path: items.output}]
+            config: {model: meta-llama/Llama-3.1-8B-Instruct}
+        outputs:
+          - name: a
+            ref: turn
+          - name: b
+            ref: after
+        """).replace("CONSUMER_INPUTS", consumer_inputs)
+    spec = parse_yaml_payload(yaml_text)["w"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+
+    with pytest.raises(ValueError, match="only an OutputOp can read it"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_row_gate_stages_reference_only_existing_runtime_nodes() -> None:
     source = LambdaOp(
         [input_placeholder("Rows")],

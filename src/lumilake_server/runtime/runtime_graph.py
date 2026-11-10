@@ -2227,21 +2227,28 @@ class RuntimeGraphBuilder:
 
     @staticmethod
     def _check_row_gate_consumers(graph_dict: dict[str, Op]) -> None:
-        """Reject consumers of a row-gated LLM other than an ``OutputOp`` or a
-        render step.
+        """Reject every reader of a row-gated LLM other than an ``OutputOp`` or
+        a render step.
 
         A row gate compiles its LLM into status, selection, gated call and
         merge stages, so the op has no single runtime node a consumer could
         bind to. A fused round reads each leaf through a render step, which
-        binds the merge stage.
+        binds the merge stage. References declared on a column
+        (``rowwise_columns``, ``aggregate_table``), on a messages column or in
+        a ``condition`` read the op without listing it as an input, so they are
+        checked as well.
         """
         for op_id, op in graph_dict.items():
             if not isinstance(op, LLMChatOp) or op.row_gate is None:
                 continue
             for consumer_id, consumer in graph_dict.items():
-                if consumer_id == op_id or not any(
-                    inp is op for inp in consumer.inputs
-                ):
+                if consumer_id == op_id:
+                    continue
+                reads_op = any(inp is op for inp in consumer.inputs) or (
+                    isinstance(consumer, LLMChatOp)
+                    and op_id in RuntimeGraphBuilder._declared_node_refs(consumer)
+                )
+                if not reads_op:
                     continue
                 if isinstance(consumer, OutputOp):
                     continue
@@ -2259,6 +2266,20 @@ class RuntimeGraphBuilder:
                     " the pre-gate rows instead, or write the merged rows to an"
                     " output; a fused round reads it through its render step."
                 )
+
+    @staticmethod
+    def _declared_node_refs(op: LLMChatOp) -> set[str]:
+        """Every node id an ``LLMChatOp`` names outside its inputs."""
+        refs: set[str] = set()
+        for column in (*(op.rowwise_columns or []), *(op.aggregate_table or [])):
+            node_ref = column.get("node")
+            if isinstance(node_ref, str):
+                refs.add(node_ref)
+        if op.rowwise_messages_column is not None:
+            refs.add(op.rowwise_messages_column.node)
+        if op.condition is not None:
+            refs.add(op.condition["node"])
+        return refs
 
     def _api_prior_prompt(
         self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
