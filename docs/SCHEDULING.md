@@ -349,6 +349,13 @@ exchange for having no dependency on data that does not exist yet. Calibrating
 the coefficients against measured durations is the obvious later step, and
 requires a corpus first.
 
+### HALO model sizing
+
+HALO needs each GPU model's parameter count. It takes it from the `MODEL_SIZE`
+catalog, then the model-name suffix (`7B`, `560M`), then the model's
+safetensors headers (local Hugging Face cache, else the Hub). If none gives a
+size, planning fails with an error naming the model.
+
 ## 8. Scheduling under unknown chain length
 
 Classical size-based policies need *p*, the service requirement. SRPT and WSPT

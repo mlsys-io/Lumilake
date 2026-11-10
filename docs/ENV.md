@@ -84,7 +84,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_CAPACITY_AWARE_SELECTION` | Capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. `0` makes selection capacity-blind and drops `requires_gpu` from the partition key: CPU and GPU items in the same class share a partition, and a batch no worker can run blocks dispatch until capacity frees. |
 | `LUMILAKE_COST_DB_SEC_PER_QUERY` | Estimated seconds per data-retrieval query in the analytic cost model. Defaults to `0.05`, mirroring HALO's `_db_input_sec`. |
 | `LUMILAKE_COST_CPU_SEC_PER_NODE` | Estimated seconds per pure-CPU node in the analytic cost model. Defaults to `0.1` — a small constant for non-GPU, non-DB work whose duration is otherwise unmodeled. |
-| `LUMILAKE_COST_DEFAULT_MODEL_SIZE_B` | Fallback model size (billions of parameters) when a GPU op's model name carries no inferable size. Defaults to `20`, matching HALO's `_default_model_size_b`. |
+| `LUMILAKE_COST_DEFAULT_MODEL_SIZE_B` | Fallback model size (billions of parameters) for the analytic job-cost estimator when a GPU op's model name carries no inferable size. Defaults to `20`. HALO placement does not use it. |
 | `LUMILAKE_COST_INPUT_QUERY_COUNT` | Assumed input query count per graph for cost estimation. Defaults to `1`, matching HALO's `_input_query_count_default`. |
 
 ## Worker Groups
