@@ -3655,7 +3655,11 @@ class RuntimeGraphBuilder:
                             }
                     columns[f"{op.id}_output"] = {
                         "node": bind_id,
-                        "path": self._upstream_output_path(op),
+                        "path": (
+                            "value.items.output"
+                            if is_gated_ancestor
+                            else self._upstream_output_path(op)
+                        ),
                     }
 
                 if isinstance(op, LLMChatOp) and op.return_history:

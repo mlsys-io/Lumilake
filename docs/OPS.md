@@ -79,7 +79,8 @@ A rowwise `LLMChatOp` with `row_gate` calls the model only for rows whose
 branch matches. The stage still emits one row per input row, and skipped
 rows carry `output: null`, which is how a skipped row differs from a failed
 call. A gated op has no single runtime node, so only an `OutputOp` exposes
-its result; any other consumer is rejected at build time.
+its result, and an `LLMChatOp` may read it as a message: such a message
+receives the merged rows, one JSON row per item.
 
 `row_gate: {node: ..., branch: ..., terminal: true}` marks the rows routed
 to that branch as finished. Each routing row then carries a `done` flag,

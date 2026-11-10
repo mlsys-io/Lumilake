@@ -692,6 +692,9 @@ def test_fused_round_with_a_gated_leaf_reads_the_merge_stage() -> None:
     assert proposer.dependencies == (stages[-1],)
     (column,) = proposer.data_spec["template"]["columns"]
     assert column["node"] == stages[-1]
+    # The merge stage wraps each routed row under ``value.items``, so a reader
+    # of the gated leaf walks ``value.items.output`` inside the python result.
+    assert column["path"] == "value.items.output"
 
 
 @pytest.mark.anyio
