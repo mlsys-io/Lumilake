@@ -127,7 +127,7 @@ ops:
     query: Query
     candidates: Candidates
     config:
-      model: OpenScholar/OpenScholar_Reranker
+      model: cross-encoder/ms-marco-MiniLM-L6-v2
       backend: vllm
 
 outputs:

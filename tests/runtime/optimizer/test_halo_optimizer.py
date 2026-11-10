@@ -407,6 +407,18 @@ def test_model_size_resolution_uses_lookup(
     assert metadata_calls == []
 
 
+def test_model_size_resolution_covers_common_cross_encoders() -> None:
+    optimizer = HaloOptimizer()
+    for model, expected in (
+        ("BAAI/bge-reranker-v2-m3", 0.568),
+        ("cross-encoder/ms-marco-MiniLM-L6-v2", 0.0227),
+    ):
+        size = optimizer._model_size_b(
+            Node(id="n1", type="classification", engine="vllm", model=model, raw={})
+        )
+        assert size == pytest.approx(expected)
+
+
 def test_model_size_resolution_uses_safetensors_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
