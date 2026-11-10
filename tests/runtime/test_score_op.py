@@ -13,6 +13,7 @@ from lumilake_server.ops import (
     HttpFetchOp,
     LambdaOp,
     LLMChatOp,
+    LLMVisionOp,
     Op,
     OpMessage,
     ScoreConfig,
@@ -359,6 +360,96 @@ def test_score_op_reads_list_lambda_candidates_inside_items(tmp_path: Path) -> N
         "items": [
             {"text": "question", "text_pair": "first"},
             {"text": "question", "text_pair": "second"},
+        ]
+    }
+
+
+def test_score_op_reads_vision_llm_candidates_from_the_model_node() -> None:
+    """A vision LLM compiles to an embedding stage and the model, so the pairs
+    step must read the model's output, not the embedding's."""
+
+    stock = input_placeholder("Stock")
+    vision = LLMVisionOp(
+        [OpMessage(role="user", content="Describe the image.")],
+        image_source=stock.id,
+        image_source_op=stock,
+        config=GenerationConfig(model="org/vision-model"),
+    )
+    score = ScoreOp(
+        query="question",
+        candidates=vision,
+        config=ScoreConfig(model="org/reranker"),
+    )
+    compiled = Graph.from_ops([as_output("scores", score)]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    pairs = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == python_step.TASK_TYPE
+        and node.data_spec.get("mode") == "pairs"
+    )
+    candidate_entry = next(
+        entry for entry in pairs.data_spec["plan"] if entry["kind"] == "stage"
+    )
+
+    assert runtime_graph.dsl_to_runtime[vision.id] == [
+        f"{vision.id}_embedding",
+        vision.id,
+    ]
+    assert candidate_entry == {"kind": "stage", "node": vision.id, "path": "output"}
+
+
+def test_score_op_flattens_rowwise_llm_candidates(tmp_path: Path) -> None:
+    """A rowwise LLM groups its per-row replies into one item, so the pairs
+    step reads it flattened to one value per row."""
+
+    def label(item):
+        return str(item)
+
+    query = input_placeholder("Query")
+    rows = LambdaOp([query], label)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=query)],
+        config=GenerationConfig(model="org/model"),
+        rowwise_template="{doc}",
+        rowwise_columns=[{"label": "doc", "node": rows.id, "path": "items.output"}],
+    )
+    score = ScoreOp(
+        query=query,
+        candidates=llm,
+        config=ScoreConfig(model="org/reranker"),
+    )
+    compiled = Graph.from_ops([as_output("scores", score)]).compile(
+        Query=["first", "second"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    pairs = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == python_step.TASK_TYPE
+        and node.data_spec.get("mode") == "pairs"
+    )
+    plan = pairs.data_spec["plan"]
+    candidate_entry = next(entry for entry in plan if entry["kind"] == "stage")
+
+    assert candidate_entry == {"kind": "stage", "node": llm.id, "flatten": True}
+
+    code = python_step.pairs_source(pairs.node_id, plan)
+    namespace: dict[str, object] = {}
+    exec(code, namespace)
+    main = namespace["main"]
+    assert callable(main)
+    node_dir = tmp_path / llm.id
+    node_dir.mkdir()
+    (node_dir / "results.json").write_text(
+        json.dumps({"value": {"items": [{"output": ["first reply", "second reply"]}]}}),
+        encoding="utf-8",
+    )
+
+    assert main({llm.id: str(node_dir)}) == {
+        "items": [
+            {"text": "first", "text_pair": "first reply"},
+            {"text": "second", "text_pair": "second reply"},
         ]
     }
 

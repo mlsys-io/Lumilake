@@ -13,6 +13,7 @@ from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    DataRetrievalOp,
     HttpFetchConfig,
     HttpFetchOp,
     LambdaOp,
@@ -430,6 +431,37 @@ def test_llm_reads_fetch_response_body_column() -> None:
         column.get("node") == fetch_node.node_id and column.get("path") == "items.json"
         for column in columns
     )
+
+
+def test_http_fetch_op_reads_retrieval_query_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retrieval emits its rows under ``table`` (sql) or ``content`` (s3), so
+    a fetch querying one reads that field, not the retrieval's ``output``."""
+
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test" + "-token")
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT q FROM t WHERE symbol = :symbol",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
+        inputs=[stock],
+    )
+    fetch = HttpFetchOp(url="http://fixture.test/search?q={query}", query=retrieval)
+    compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    fetch_node = runtime_graph.nodes[fetch.id]
+
+    assert fetch_node.data_spec == {
+        "type": "list",
+        "node": retrieval.id,
+        "path": "items.table",
+    }
+    assert fetch_node.dependencies == (retrieval.id,)
 
 
 def test_http_fetch_op_feeds_lambda_with_per_row_response(tmp_path: Path) -> None:

@@ -107,6 +107,17 @@ def _sanitize_node_prefix(prefix: str) -> str:
     return safe or "graph"
 
 
+@dataclass(frozen=True, slots=True)
+class _UpstreamRead:
+    """Where a derived op reads an upstream op's values: the runtime node that
+    emits them, the result-envelope path to the item field, and whether the
+    field arrives grouped and needs flattening to one value per row."""
+
+    node: str
+    path: str
+    flatten: bool = False
+
+
 _API_ROW_PATH = "items.rows.json.choices[0].message.content"
 _API_ITEM_PATH = "items.json.choices[0].message.content"
 
@@ -521,7 +532,7 @@ class RuntimeGraphBuilder:
             if isinstance(fetch_op.query, (InputOp, DataOp)):
                 visited_node_ids.add(fetch_op.query.id)
             runtime_op = self._build_node_from_http_fetch_op(
-                fetch_op_id, fetch_op, graph_dict, inputs_dict
+                fetch_op_id, fetch_op, graph_dict, inputs_dict, dsl_to_runtime
             )
             nodes[runtime_op.node_id] = runtime_op
             node_order.append(runtime_op.node_id)
@@ -1666,6 +1677,7 @@ class RuntimeGraphBuilder:
         op: HttpFetchOp,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]],
     ) -> RuntimeOp:
         query_op = op.query
         if isinstance(query_op, InputOp):
@@ -1688,13 +1700,18 @@ class RuntimeGraphBuilder:
             data_spec = {"type": "list", "items": list(query_op.data)}
             dependencies = []
         else:
-            path = self._upstream_output_path(query_op)
+            read = self._resolve_upstream_read(
+                f"HttpFetchOp '{op_id}'", query_op, dsl_to_runtime
+            )
+            # Only a python step can expand a grouped field into one value per
+            # row, so a fetch reads a row-wise LLM through the op's row path.
+            path = self._upstream_output_path(query_op) if read.flatten else read.path
             data_spec = {
                 "type": "list",
-                "node": query_op.id,
+                "node": read.node,
                 "path": path,
             }
-            dependencies = [query_op.id]
+            dependencies = [read.node]
 
         api_spec: dict[str, Any] = {
             "method": op.method,
@@ -1741,11 +1758,8 @@ class RuntimeGraphBuilder:
     ) -> list[RuntimeOp]:
         extra_ops: list[RuntimeOp] = []
 
-        def _source(
-            op_ref: Op,
-        ) -> tuple[list[str] | None, tuple[str, str] | None]:
-            """The literal values, or the runtime node and item path an
-            upstream op produces."""
+        def _source(op_ref: Op) -> list[str] | _UpstreamRead | None:
+            """The literal values, or where the upstream op's values are read."""
             visited_node_ids.add(op_ref.id)
             if isinstance(op_ref, InputOp):
                 values = inputs_dict.get(op_ref.name)
@@ -1754,30 +1768,31 @@ class RuntimeGraphBuilder:
                         f"ScoreOp '{op_id}' {op_ref.name!r} input has no values "
                         "supplied"
                     )
-                return list(values), None
+                return list(values)
             if isinstance(op_ref, DataOp):
                 if not op_ref.data:
                     raise ValueError(f"ScoreOp '{op_id}' has empty input")
-                return list(op_ref.data), None
-            path = (
-                retrieval_items_path(op_ref.data_spec["mode"])
-                if isinstance(op_ref, DataRetrievalOp)
-                else self._upstream_output_path(op_ref)
+                return list(op_ref.data)
+            return self._resolve_upstream_read(
+                f"ScoreOp '{op_id}'", op_ref, dsl_to_runtime
             )
-            path = RuntimeGraphBuilder._item_relative_path(path)
-            path = re.sub(r"\[(\d+)\]", r".\1", path)
-            runtime_ids = dsl_to_runtime.get(op_ref.id)
-            if not runtime_ids:
-                raise ValueError(
-                    f"ScoreOp '{op_id}' input {op_ref.id!r} has no runtime node"
-                )
-            return None, (runtime_ids[0], path)
 
-        query_values, query_ref = _source(op.query)
-        candidate_values, candidate_ref = _source(op.candidates)
-        if candidate_values is not None and not candidate_values:
+        def _stage_plan(values: Any) -> dict[str, Any]:
+            if isinstance(values, _UpstreamRead):
+                entry: dict[str, Any] = {"kind": "stage", "node": values.node}
+                if values.flatten:
+                    entry["flatten"] = True
+                elif values.path:
+                    path = RuntimeGraphBuilder._item_relative_path(values.path)
+                    entry["path"] = re.sub(r"\[(\d+)\]", r".\1", path)
+                return entry
+            return {"kind": "literal", "values": values or []}
+
+        query_values = _source(op.query)
+        candidate_values = _source(op.candidates)
+        if isinstance(candidate_values, list) and not candidate_values:
             raise ValueError(f"ScoreOp '{op_id}' has empty candidate list")
-        if query_values is not None and candidate_values is not None:
+        if isinstance(query_values, list) and isinstance(candidate_values, list):
             pairs = _literal_pairs(query_values, candidate_values, op_id=op_id)
             data_spec = {
                 "type": "list",
@@ -1788,27 +1803,8 @@ class RuntimeGraphBuilder:
             dependencies: list[str] = []
         else:
             pairs_node_id = f"{op_id}__pairs"
-            query_plan: dict[str, Any]
-            candidate_plan: dict[str, Any]
-            if query_ref is not None:
-                query_plan = {
-                    "kind": "stage",
-                    "node": query_ref[0],
-                    "path": query_ref[1],
-                }
-            else:
-                query_plan = {"kind": "literal", "values": query_values or []}
-            if candidate_ref is not None:
-                candidate_plan = {
-                    "kind": "stage",
-                    "node": candidate_ref[0],
-                    "path": candidate_ref[1],
-                }
-            else:
-                candidate_plan = {
-                    "kind": "literal",
-                    "values": candidate_values or [],
-                }
+            query_plan = _stage_plan(query_values)
+            candidate_plan = _stage_plan(candidate_values)
             pairs_data_spec = {
                 "mode": "pairs",
                 "plan": [query_plan, candidate_plan],
@@ -1822,9 +1818,14 @@ class RuntimeGraphBuilder:
                 inference_spec={},
                 backend=python_step.BACKEND,
                 model="",
-                dependencies=(
-                    [ref[0] for ref in (query_ref, candidate_ref) if ref] or None
-                ),
+                dependencies=list(
+                    dict.fromkeys(
+                        read.node
+                        for read in (query_values, candidate_values)
+                        if isinstance(read, _UpstreamRead)
+                    )
+                )
+                or None,
             )
             extra_ops.append(pairs_op)
             data_spec = {
@@ -2218,6 +2219,27 @@ class RuntimeGraphBuilder:
             if path.startswith(prefix):
                 return path[len(prefix) :]
         return path
+
+    def _resolve_upstream_read(
+        self,
+        consumer: str,
+        op_ref: Op,
+        dsl_to_runtime: dict[str, list[str]],
+    ) -> _UpstreamRead:
+        """Where a fetch or score op reads one upstream op's values.
+
+        The runtime node is the upstream op's final node, which emits its
+        output; a vision LLM and an API LLM compile to several nodes each.
+        """
+        runtime_ids = dsl_to_runtime.get(op_ref.id)
+        if not runtime_ids:
+            raise ValueError(f"{consumer} input {op_ref.id!r} has no runtime node")
+        node = runtime_ids[-1]
+        if isinstance(op_ref, DataRetrievalOp):
+            return _UpstreamRead(node, retrieval_items_path(op_ref.data_spec["mode"]))
+        if isinstance(op_ref, LLMChatOp) and op_ref.rowwise_template is not None:
+            return _UpstreamRead(node, "", flatten=True)
+        return _UpstreamRead(node, self._upstream_output_path(op_ref))
 
     def _lambda_read_path(
         self,
