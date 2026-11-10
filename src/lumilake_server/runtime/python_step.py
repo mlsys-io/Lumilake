@@ -249,7 +249,7 @@ def main(inputs):
         # Match the upstream value as it stands: a whole output is the string
         # the upstream emitted, and a field read is the value the path walk
         # decoded. Re-encoding either would rewrite the text the rules test.
-        source_value = row.get("route", row.get("source", row.get("value", "")))
+        source_value = row.get("source", row.get("value", ""))
         if not isinstance(source_value, str):
             source_value = json.dumps(source_value)
         branch = {default_branch}
@@ -321,6 +321,13 @@ _ROW_SELECT_MAIN = """\
 def main(inputs):
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     statuses = columns[0]
+    n = len(statuses)
+    for entry, col in zip(_PLAN[1:], columns[1:]):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "input %r has %d rows; expected 1 or %d"
+                % (entry.get("node", "literal"), len(col), n)
+            )
     labels = _LABELS
     selected = []
     for index, value in enumerate(statuses):
@@ -331,8 +338,6 @@ def main(inputs):
                 pass
         if not isinstance(value, dict):
             raise ValueError("row status %d is not an object" % index)
-        if value.get("done") and not {include_done}:
-            continue
         if value.get("branch") != {branch}:
             continue
         row = {}
@@ -411,16 +416,11 @@ def row_select_source(
     *,
     labels: list[str],
     branch: str,
-    include_done: bool = False,
 ) -> str:
     """Generated list-mode step that keeps only one routed branch."""
     prelude = _RESHAPE_PRELUDE.format(op_id=node_id, plan=json.dumps(plan))
     prelude += f"\n_LABELS = {labels!r}\n"
-    main = (
-        _ROW_SELECT_MAIN.replace("{_LABELS}", "_LABELS")
-        .replace("{branch}", repr(branch))
-        .replace("{include_done}", repr(include_done))
-    )
+    main = _ROW_SELECT_MAIN.replace("{branch}", repr(branch))
     return prelude + main
 
 
@@ -496,7 +496,6 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
             plan,
             labels=data_spec["labels"],
             branch=data_spec["branch"],
-            include_done=data_spec.get("include_done", False),
         )
     elif mode == "row_status":
         code = row_status_source(

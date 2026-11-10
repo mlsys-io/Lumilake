@@ -2673,14 +2673,6 @@ class RuntimeGraphBuilder:
                 source_columns[0]["flatten"] = True
         else:
             source_columns[0]["path"] = read_path
-            source_columns.append(
-                {
-                    "kind": "stage",
-                    "label": "route",
-                    "node": source_runtime[0],
-                    "path": read_path,
-                }
-            )
         status_dependencies: tuple[str, ...] = (source_runtime[0],)
         if isinstance(source_op, InputOp):
             values = inputs_dict.get(source_op.name)
@@ -2736,7 +2728,6 @@ class RuntimeGraphBuilder:
         )
         labels: list[str] = []
         select_plan: python_step.ColumnPlan = [{"kind": "stage", "node": status_id}]
-        select_plan[0]["allow_empty"] = True
         select_dependencies: list[str] = [status_id]
         for index, column in enumerate(llm_op.rowwise_columns or []):
             label = column.get("label")
@@ -2782,7 +2773,6 @@ class RuntimeGraphBuilder:
                     f"{node_ref!r} must compile to one runtime node"
                 )
             entry: dict[str, Any] = {"kind": "stage", "node": runtime_ids[0]}
-            entry["allow_empty"] = True
             column_path = column.get("path")
             if column_path is None:
                 column_path = ""
@@ -2825,7 +2815,6 @@ class RuntimeGraphBuilder:
                 "plan": select_plan,
                 "labels": labels,
                 "branch": row_gate.branch,
-                "include_done": row_gate.terminal,
                 "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
                 "mode": "row_select",
             },

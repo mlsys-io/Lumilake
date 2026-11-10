@@ -372,7 +372,6 @@ def _run_row_select(
     *,
     labels: list[str],
     branch: str,
-    include_done: bool = False,
 ):
     namespace: dict[str, Any] = {}
     code = python_step.row_select_source(
@@ -380,7 +379,6 @@ def _run_row_select(
         plan,
         labels=labels,
         branch=branch,
-        include_done=include_done,
     )
     exec(code, namespace)
     return namespace["main"](inputs)
@@ -405,9 +403,7 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     }
 
 
-def test_terminal_row_status_is_excluded_from_a_nonterminal_selection(
-    tmp_path: Path,
-) -> None:
+def test_row_select_keeps_a_done_row_on_its_branch(tmp_path: Path) -> None:
     source = _stage(
         tmp_path,
         "source",
@@ -427,17 +423,47 @@ def test_terminal_row_status_is_excluded_from_a_nonterminal_selection(
     assert [row["done"] for row in status_rows] == [False, True]
 
     status_stage = _stage(tmp_path, "status", status)
-    selected = _run_row_select(
-        [
-            {"kind": "stage", "node": "status", "allow_empty": True},
-            {"kind": "stage", "node": "source", "allow_empty": True},
-        ],
-        {"status": status_stage, "source": source},
-        labels=["row"],
-        branch="finish",
-        include_done=False,
+    plan = [
+        {"kind": "stage", "node": "status"},
+        {"kind": "stage", "node": "source"},
+    ]
+    inputs = {"status": status_stage, "source": source}
+    assert _run_row_select(plan, inputs, labels=["row"], branch="finish") == {
+        "items": [{"row": "COMPLETE: done"}]
+    }
+    assert _run_row_select(plan, inputs, labels=["row"], branch="pending") == {
+        "items": [{"row": "normal"}]
+    }
+
+
+def test_row_select_rejects_a_column_that_is_neither_whole_nor_short(
+    tmp_path: Path,
+) -> None:
+    status = _stage(
+        tmp_path,
+        "status",
+        {
+            "items": [
+                {"output": json.dumps({"branch": "fix", "row": 0, "done": False})},
+                {"output": json.dumps({"branch": "fix", "row": 1, "done": False})},
+            ]
+        },
     )
-    assert selected == {"items": []}
+    source = _stage(
+        tmp_path,
+        "source",
+        {"items": [{"output": "a"}, {"output": "b"}, {"output": "c"}]},
+    )
+    with pytest.raises(ValueError, match="has 3 rows; expected 1 or 2"):
+        _run_row_select(
+            [
+                {"kind": "stage", "node": "status"},
+                {"kind": "stage", "node": "source", "path": "output"},
+            ],
+            {"status": status, "source": source},
+            labels=["row"],
+            branch="fix",
+        )
 
 
 def _run_row_merge(

@@ -610,11 +610,15 @@ def test_terminal_row_gate_marks_done_and_allows_an_empty_selected_set() -> None
         runtime_graph.nodes[node_id] for node_id in runtime_graph.dsl_to_runtime[llm.id]
     ]
     assert status.data_spec["terminal_branch"] == "finish"
-    assert selector.data_spec["include_done"] is True
     assert all(
         item.get("allow_empty")
-        for item in selector.data_spec["plan"]
-        if item.get("kind") == "stage"
+        for item in merge.data_spec["plan"]
+        if item.get("node") == selected.node_id
+    )
+    assert not any(
+        item.get("allow_empty")
+        for item in selector.data_spec["plan"] + merge.data_spec["plan"]
+        if item.get("node") != selected.node_id
     )
     assert selected.dependencies == (selector.node_id,)
     assert merge.data_spec["branch"] == "finish"
