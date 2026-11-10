@@ -37,6 +37,7 @@ class LLMChatOp(LLMOp):
     rowwise_columns: list[dict[str, Any]] | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
+    row_gate: dict[str, str] | None
 
     def __init__(
         self,
@@ -50,6 +51,8 @@ class LLMChatOp(LLMOp):
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
+        row_gate: dict[str, str] | None = None,
+        row_gate_op: Op | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
         super().__init__([messages], config, cacheable)
@@ -60,6 +63,16 @@ class LLMChatOp(LLMOp):
         self.rowwise_columns = rowwise_columns
         self.system_messages = system_messages
         self.condition = condition
+        self.row_gate = row_gate
+        if row_gate is not None and row_gate_op is not None:
+            if row_gate.get("node") != row_gate_op.id:
+                raise ValueError(
+                    "LLMChatOp row_gate node "
+                    f"{row_gate.get('node')!r} does not match row_gate_op "
+                    f"{row_gate_op.id!r}"
+                )
+        if row_gate_op is not None:
+            self.inputs.append(row_gate_op)
 
     @property
     def messages(self) -> Op:
@@ -84,6 +97,8 @@ class LLMChatOp(LLMOp):
             payload["system_messages"] = self.system_messages
         if self.condition is not None:
             payload["condition"] = self.condition
+        if self.row_gate is not None:
+            payload["row_gate"] = self.row_gate
         return payload
 
     @classmethod
@@ -100,6 +115,12 @@ class LLMChatOp(LLMOp):
         rowwise_columns = data.get("rowwise_columns")
         system_messages = data.get("system_messages")
         condition = data.get("condition")
+        row_gate = data.get("row_gate")
+        row_gate_op = (
+            other_ops.get(row_gate["node"])
+            if isinstance(row_gate, dict) and isinstance(row_gate.get("node"), str)
+            else None
+        )
         return cls(
             message,
             config,
@@ -111,6 +132,8 @@ class LLMChatOp(LLMOp):
             system_messages,
             cacheable,
             condition,
+            row_gate,
+            row_gate_op,
         )
 
 

@@ -227,6 +227,119 @@ def main(inputs):
     }}
 """
 
+_ROW_STATUS_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    n = max((len(c) for c in columns), default=0)
+    for entry, col in zip(_PLAN, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "input %r has %d rows; expected 1 or %d"
+                % (entry.get("node", "literal"), len(col), n)
+            )
+    rules = {rules}
+    statuses = []
+    for i in range(n):
+        row = {}
+        for entry, col in zip(_PLAN, columns):
+            value = col[0] if len(col) == 1 else col[i]
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    pass
+            row[entry.get("label", "value")] = value
+        source_value = row.get("source", "")
+        if isinstance(source_value, dict):
+            source_value = json.dumps(source_value)
+        if not isinstance(source_value, str):
+            source_value = json.dumps(source_value)
+        branch = {default_branch}
+        for rule in rules:
+            if rule["match"] == "equals":
+                matched = source_value == rule["value"]
+            else:
+                matched = rule["value"] in source_value
+            if matched:
+                branch = rule["branch"]
+                break
+        statuses.append(
+            {
+                "output": json.dumps(
+                    {"selected": True, "branch": branch, "row": i}
+                ),
+                "value": {"selected": True, "branch": branch, "row": i},
+            }
+        )
+    return {"items": statuses}
+"""
+
+_ROW_SKIP_MERGE_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    statuses = columns[0]
+    outputs = columns[1]
+    selected = []
+    for index, value in enumerate(statuses):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        if not isinstance(value, dict):
+            raise ValueError("row status %d is not an object" % index)
+        if value.get("branch") == {branch}:
+            selected.append(value)
+    if len(selected) != len(outputs):
+        raise ValueError(
+            "%s: merged %d outputs for %d selected rows"
+            % (_NODE, len(outputs), len(selected))
+        )
+    output_index = 0
+    merged = []
+    for status in statuses:
+        value = status
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        row = dict(value)
+        if row.get("branch") == {branch}:
+            row["output"] = outputs[output_index]
+            output_index += 1
+        else:
+            row["output"] = None
+        merged.append({"output": json.dumps(row), "value": row})
+    return {"items": merged}
+"""
+
+_ROW_SELECT_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    statuses = columns[0]
+    labels = _LABELS
+    selected = []
+    for index, value in enumerate(statuses):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        if not isinstance(value, dict):
+            raise ValueError("row status %d is not an object" % index)
+        if value.get("branch") != {branch}:
+            continue
+        row = {}
+        for label, column in zip(labels, columns[1:]):
+            row[label] = column[0] if len(column) == 1 else column[index]
+        selected.append(row)
+    return {"items": selected}
+"""
+
 _LIST_MAIN = """\
 
 def main(inputs):
@@ -276,20 +389,69 @@ def regroup_source(node_id: str, plan: ColumnPlan) -> str:
     )
 
 
+def row_skip_merge_code(
+    node_id: str,
+    plan: ColumnPlan,
+    *,
+    branch: str,
+) -> str:
+    return (
+        (_RESHAPE_PRELUDE + _ROW_SKIP_MERGE_MAIN)
+        .format(op_id=node_id, plan=json.dumps(plan))
+        .replace("{branch}", repr(branch))
+    )
+
+
+def row_select_source(
+    node_id: str,
+    plan: ColumnPlan,
+    *,
+    labels: list[str],
+    branch: str,
+) -> str:
+    """Generated list-mode step that keeps only one routed branch."""
+    return (
+        (_RESHAPE_PRELUDE + _ROW_SELECT_MAIN)
+        .format(op_id=node_id, plan=json.dumps(plan))
+        .replace("{_LABELS}", repr(labels))
+        .replace("{branch}", repr(branch))
+    )
+
+
 def wrapper_source(
     op_id: str,
     fn_name: str,
     user_code: str,
     plan: ColumnPlan,
     mode: str = "row",
+    branch: str | None = None,
+    rules: list[dict[str, str]] | None = None,
+    default_branch: str | None = None,
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode == "list":
         main = _LIST_MAIN
+    elif mode == "row_status":
+        if rules is None or default_branch is None:
+            raise ValueError("row_status mode requires rules and default_branch")
+        main = _ROW_STATUS_MAIN.replace("{rules}", json.dumps(rules)).replace(
+            "{default_branch}", repr(default_branch)
+        )
     elif mode == "aligned":
         main = _ALIGNED_MAIN
     else:
         main = _ROW_MAIN
+    if mode == "row_status":
+        return (
+            _PRELUDE.format(
+                op_id=op_id,
+                runtime=inspect.getsource(lambda_runtime),
+                code=user_code,
+                fn_name=fn_name,
+                plan=json.dumps(plan),
+            )
+            + main
+        )
     return (_PRELUDE + main).format(
         op_id=op_id,
         runtime=inspect.getsource(lambda_runtime),
@@ -307,6 +469,29 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         code = flatten_source(node_id, plan, data_spec["template"])
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
+    elif mode == "row_skip_merge":
+        code = row_skip_merge_code(
+            node_id,
+            plan,
+            branch=data_spec["branch"],
+        )
+    elif mode == "row_select":
+        code = row_select_source(
+            node_id,
+            plan,
+            labels=data_spec["labels"],
+            branch=data_spec["branch"],
+        )
+    elif mode == "row_status":
+        code = wrapper_source(
+            node_id,
+            data_spec["fn_name"],
+            data_spec["code"],
+            plan,
+            mode,
+            rules=data_spec["rules"],
+            default_branch=data_spec["default_branch"],
+        )
     else:
         code = wrapper_source(
             node_id, data_spec["fn_name"], data_spec["code"], plan, mode

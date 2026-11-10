@@ -15,6 +15,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
+| `RouterOp` | Declare a deterministic per-row branch decision from a source field. |
 
 ## YAML Use
 
@@ -47,6 +48,34 @@ outputs:
 `format_args` is the positional variant: each id resolves to a `{0}`,
 `{1}`, ... placeholder. Use `format_kwargs` for named placeholders and
 `format_args` for positional ones; the two may be combined.
+
+### RouterOp and row gates
+
+`RouterOp` assigns each row one of a fixed set of branch names by matching an upstream value, either exactly (`equals`) or as a substring (`contains`).
+
+```yaml
+ops:
+  - id: route
+    op: RouterOp
+    inputs: [classify]
+    source: classify
+    input_path: items.output
+    default_branch: pending
+    rules:
+      - {branch: finish, match: contains, value: COMPLETE}
+      - {branch: review, match: contains, value: NEEDS REVIEW}
+
+  - id: review_turn
+    op: LLMChatOp
+    inputs: [prompt, route]
+    rowwise_template: "{prompt}"
+    rowwise_columns:
+      - {label: prompt, node: prompt, path: items.output}
+    row_gate: {node: route, branch: review}
+    config: {model: model-id}
+```
+
+A rowwise `LLMChatOp` with `row_gate` calls the model only for rows whose branch matches. The stage still emits one row per input row, and skipped rows carry `output: null`, which is how a skipped row differs from a failed call.
 
 ### EmbeddingOp
 

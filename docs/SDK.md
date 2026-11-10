@@ -332,6 +332,8 @@ authoritative for its config, so the planner may only override `id` and
 `inputs`. Ops without a `ref` are emitted fully inline. The planner sees the
 library (id, op type, key config) in its system message each round.
 
+A dynamic round body may use `RouterOp` with a rowwise `LLMChatOp` `row_gate` instead of several list-mode stages. The branch decision is a declared graph element, so it is validated like any other op. The gated LLM calls the model only for matching rows and still returns one row per input row, with `output: null` for the rest.
+
 The parent job's result carries the per-round plans. Missing, malformed,
 unknown, or wrongly typed plan output fails the parent; it never becomes a
 successful termination.
