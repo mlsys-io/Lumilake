@@ -525,6 +525,31 @@ def test_row_merge_keeps_terminal_rows_with_their_outputs(tmp_path: Path) -> Non
     ]
 
 
+def test_row_status_routes_on_the_upstream_text(tmp_path: Path) -> None:
+    # A whole-output read is the string the upstream emitted, so a rule tests
+    # that text as it stands; decoding and re-encoding it would rewrite
+    # escapes and separators, and a non-string field would render its JSON form.
+    outputs = ['{"verdict":"PASS"}', '{"verdict": "PASS"}', "1.50", "通过"]
+    source = _stage(tmp_path, "source", {"items": [{"output": out} for out in outputs]})
+    status = _run_row_status(
+        [{"kind": "stage", "node": "source"}],
+        {"source": source},
+        rules=[
+            {"branch": "compact", "match": "equals", "value": '{"verdict":"PASS"}'},
+            {"branch": "spaced", "match": "equals", "value": '{"verdict": "PASS"}'},
+            {"branch": "decimal", "match": "equals", "value": "1.50"},
+            {"branch": "cjk", "match": "contains", "value": "通过"},
+        ],
+        default_branch="other",
+    )
+    assert [item["value"]["branch"] for item in status["items"]] == [
+        "compact",
+        "spaced",
+        "decimal",
+        "cjk",
+    ]
+
+
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     py_dir = _stage(tmp_path, "py", {"value": {"items": [{"output": "p"}]}})
     api_dir = _stage(tmp_path, "api", {"text": "t"})

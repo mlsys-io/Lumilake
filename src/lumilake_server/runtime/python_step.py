@@ -245,16 +245,11 @@ def main(inputs):
     for i in range(n):
         row = {}
         for entry, col in zip(_PLAN, columns):
-            value = col[0] if len(col) == 1 else col[i]
-            if isinstance(value, str):
-                try:
-                    value = json.loads(value)
-                except ValueError:
-                    pass
-            row[entry.get("label", "value")] = value
+            row[entry.get("label", "value")] = col[0] if len(col) == 1 else col[i]
+        # Match the upstream value as it stands: a whole output is the string
+        # the upstream emitted, and a field read is the value the path walk
+        # decoded. Re-encoding either would rewrite the text the rules test.
         source_value = row.get("route", row.get("source", row.get("value", "")))
-        if isinstance(source_value, dict):
-            source_value = json.dumps(source_value)
         if not isinstance(source_value, str):
             source_value = json.dumps(source_value)
         branch = {default_branch}
