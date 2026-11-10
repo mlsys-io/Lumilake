@@ -169,6 +169,7 @@ class GenerationConfig:
     logit_bias: dict[str, int] | None = None
     logprobs: int | None = None
     max_tokens: int | None = None
+    num_beams: int | None = None
     n: int | None = None
     presence_penalty: float | None = None
     seed: int | None = None
@@ -202,6 +203,7 @@ class GenerationConfig:
         "top_k",
         "min_p",
         "min_tokens",
+        "num_beams",
         "extra_sampling_params",
         "max_model_len",
         "gpu_memory_utilization",
@@ -251,6 +253,11 @@ class GenerationConfig:
                 "OutputEnforcement, got "
                 f"{type(self.output_enforcement).__name__}."
             )
+        if self.num_beams is not None:
+            if isinstance(self.num_beams, bool) or not isinstance(self.num_beams, int):
+                raise ValueError("num_beams must be an integer")
+            if self.num_beams < 1:
+                raise ValueError("num_beams must be at least 1")
         if not self.model:
             raise ValueError(
                 "GenerationConfig.model is required in both local and API mode."

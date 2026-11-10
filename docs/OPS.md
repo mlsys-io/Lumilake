@@ -135,6 +135,18 @@ inference to enforce the format in a single generation, so it needs
 `max_attempts: 1` and is not available for API ops. When every attempt fails,
 the last response is kept and marked as unvalidated.
 
+`config.num_beams` selects local beam search when it is greater than `1`. The
+highest-scoring sequence is returned, and API-backed ops reject the setting.
+The beam path applies neither `repetition_penalty` nor `min_tokens`, and
+`max_tokens` is the per-prompt ceiling.
+
+```yaml
+config:
+  model: Qwen/Qwen3-8B
+  max_tokens: 2048
+  num_beams: 3
+```
+
 `config.api.timeout_sec` sets the per-request timeout for the API call,
 in seconds. When set, it is emitted into the FlowMesh `api` task spec and
 overrides the executor's default; when unset, no timeout key is emitted and

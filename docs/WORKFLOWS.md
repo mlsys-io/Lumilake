@@ -46,6 +46,11 @@ Results report attempts and a retry summary. See
 [`docs/OPS.md`](OPS.md#llmchatop-via-external-api) for the configuration and
 backend behavior.
 
+Local `LLMChatOp` configs may set `num_beams` to use vLLM offline beam search.
+The setting is local-only and returns the best beam. See
+[`docs/OPS.md`](OPS.md#llmchatop-via-external-api) for the supported sampling
+behavior.
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its
