@@ -38,22 +38,6 @@ outputs:
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
-`LLMCompletionOp` generates from string prompts without the model chat template.
-Its `prompt` field references an input or upstream op that produces one prompt
-string per row; use it when the prompt already carries the model's chat control
-tokens.
-
-```yaml
-ops:
-  - id: Generate
-    op: LLMCompletionOp
-    inputs: [Prompt]
-    prompt: Prompt
-    config:
-      model: Qwen/Qwen3-8B
-      max_tokens: 3000
-```
-
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its

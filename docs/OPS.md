@@ -10,7 +10,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
-| `LLMCompletionOp` | Run rendered string prompts through local generation without a chat template. It rejects API mode. |
+| `LLMCompletionOp` | Run rendered string prompts through local generation without a chat template. |
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
@@ -127,12 +127,6 @@ model resolves from `config.api.model`, then the top-level `config.model`.
 Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
 the request body.
 
-`LLMCompletionOp` is the local raw-completion variant of `LLMChatOp`: `prompt`
-references an input or upstream op, and each string it produces is generated
-without the model chat template. Use it when the prompt already carries the
-model's own chat control tokens. Sampling fields are the same as `LLMChatOp`'s,
-and `config.api` is not accepted.
-
 `config.api.timeout_sec` sets the per-request timeout for the API call,
 in seconds. When set, it is emitted into the FlowMesh `api` task spec and
 overrides the executor's default; when unset, no timeout key is emitted and
@@ -208,6 +202,26 @@ A local `LLMChatOp` with a `rowwise_template` runs one generation per input
 row. When it is the workflow output, its per-row results are returned as one
 output value per input row (FlowMesh groups them back into one item per table
 internally; the runtime flattens that back to per-row values at aggregation).
+
+### LLMCompletionOp
+
+`LLMCompletionOp` generates from rendered string prompts without the model
+chat template. `prompt` references a workflow input or an upstream op that
+produces one prompt string per row. Use it when the prompt already carries the
+model's own chat control tokens. Sampling fields are the same as `LLMChatOp`'s.
+`config.api` and `config.chat_template_kwargs` are not accepted: the task never
+applies a chat template, so both would have no effect.
+
+```yaml
+ops:
+  - id: Generate
+    op: LLMCompletionOp
+    inputs: [Prompt]
+    prompt: Prompt
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 3000
+```
 
 ### LLMVisionOp
 
