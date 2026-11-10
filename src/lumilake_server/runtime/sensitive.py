@@ -56,8 +56,8 @@ def _redact_text(text: str) -> str:
 
 def redact_sensitive(value: Any) -> Any:
     """Recursively replace sensitive keys (tokens, Authorization headers)
-    with a placeholder, redact every value of a request header mapping
-    nested under an ``api`` or ``config`` key, and regex-scrub bearer tokens
+    with a placeholder, redact every value of a header mapping nested under
+    an ``api``, ``api_spec`` or ``config`` key, and regex-scrub bearer tokens
     embedded in a string value under an unrecognized key (e.g. an untrusted
     endpoint's body)."""
     return _redact(value, parent_key=None)

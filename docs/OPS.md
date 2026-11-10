@@ -155,10 +155,13 @@ retained in the runtime spec for dispatch, and the archived graph redacts
 every value of a header mapping under `config`, `api`, or `api_spec`, so a
 request credential under any header name is removed. A response body keeps
 its own `headers` object as data, scrubbed only for recognized token shapes
-(`Authorization` values and bearer tokens). Each input row produces one output row. `config.request_delay_sec`
-spaces actual request starts, including retries. `config.cache_dir`, relative
-to the worker, enables a query-keyed on-disk response cache whose key is the
-method, rendered URL, rendered params, and request body.
+(`Authorization` values and bearer tokens); a body that nests headers under
+a `config`, `api`, or `api_spec` key matches the same redaction rule, which
+keys on the parent name. Each input row produces one output row.
+`config.request_delay_sec` spaces actual request starts, including retries.
+`config.cache_dir`, relative to the worker, enables a query-keyed on-disk
+response cache whose key is the method, rendered URL, rendered params, and
+request body.
 With `config.fail_open: true`, a failed fetch yields an error row with null
 content instead of failing the task. A downstream op sees that row as an item
 whose `json` is null and whose `error` contains the failure text.

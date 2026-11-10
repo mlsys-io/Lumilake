@@ -1,6 +1,7 @@
 import json
 
 from lumilake_server.runtime.sensitive import (
+    _REQUEST_HEADER_PARENT_KEYS,
     REDACTED_TOKEN_PLACEHOLDER,
     redact_secrets_in_text,
     redact_sensitive,
@@ -159,6 +160,38 @@ def test_redact_sensitive_keeps_a_response_body_headers_object() -> None:
         "ETag": "abc",
         "Content-Type": "text/html",
     }
+
+
+def test_redact_sensitive_matches_a_response_body_header_mapping_by_parent_name() -> (
+    None
+):
+    """The request-header rule keys on the parent name alone, so a response
+    body that nests its own ``headers`` under a ``config`` key is redacted
+    too; response bodies keep headers only at another parent name."""
+    value = {
+        "response_data": {"config": {"headers": {"ETag": "abc"}}},
+        "items": {"headers": {"ETag": "abc"}},
+    }
+
+    result = redact_sensitive(value)
+
+    assert json.dumps(result) == json.dumps(
+        {
+            "response_data": {
+                "config": {"headers": {"ETag": REDACTED_TOKEN_PLACEHOLDER}}
+            },
+            "items": {"headers": {"ETag": "abc"}},
+        }
+    )
+
+
+def test_redact_sensitive_documents_every_request_parent_key() -> None:
+    """The docstring is the only place the redaction scope is written down, so
+    it must name each parent key the rule matches."""
+    documented = redact_sensitive.__doc__ or ""
+
+    for parent in _REQUEST_HEADER_PARENT_KEYS:
+        assert f"``{parent}``" in documented
 
 
 def test_redact_sensitive_leaves_empty_header_values_alone() -> None:
