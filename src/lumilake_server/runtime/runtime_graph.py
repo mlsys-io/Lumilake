@@ -530,6 +530,39 @@ class RuntimeGraphBuilder:
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
 
+        def build_fetch(fetch_op_id: str, fetch_op: HttpFetchOp) -> None:
+            if isinstance(fetch_op.query, (InputOp, DataOp)):
+                visited_node_ids.add(fetch_op.query.id)
+            runtime_op = self._build_node_from_http_fetch_op(
+                fetch_op_id, fetch_op, graph_dict, inputs_dict
+            )
+            nodes[runtime_op.node_id] = runtime_op
+            node_order.append(runtime_op.node_id)
+            dsl_to_runtime[fetch_op_id] = [runtime_op.node_id]
+            if fetch_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[fetch_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items.json"
+
+        def build_score(score_op_id: str, score_op: ScoreOp) -> None:
+            score_nodes = self._build_node_from_score_op(
+                score_op_id,
+                score_op,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime,
+            )
+            for runtime_op in score_nodes:
+                nodes[runtime_op.node_id] = runtime_op
+                node_order.append(runtime_op.node_id)
+            runtime_op = score_nodes[-1]
+            dsl_to_runtime[score_op_id] = [runtime_op.node_id]
+            if score_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[score_op_id]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items"
+
         def build_list_lambda(lambda_op_id: str, lambda_op: LambdaOp) -> None:
             for input_op in lambda_op.inputs:
                 visited_node_ids.add(input_op.id)
@@ -554,6 +587,34 @@ class RuntimeGraphBuilder:
                 ]
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.output"
+
+        def build_derived(op_ref: Op) -> None:
+            """Build a fetch, score or Lambda node after the fetch, score and
+            Lambda ops it reads, so a consumer never resolves before its
+            upstream runtime node. LLMOps and DataRetrievalOps are built by
+            their own loops."""
+            if not isinstance(op_ref, (HttpFetchOp, ScoreOp, LambdaOp)):
+                return
+            if op_ref.id in dsl_to_runtime:
+                return
+            for source in op_ref.inputs:
+                build_derived(source)
+            if isinstance(op_ref, HttpFetchOp):
+                build_fetch(op_ref.id, op_ref)
+            elif isinstance(op_ref, ScoreOp):
+                build_score(op_ref.id, op_ref)
+            elif op_ref.takes_whole_columns:
+                build_list_lambda(op_ref.id, op_ref)
+            else:
+                self._build_python_step(
+                    op_ref.id,
+                    graph_dict,
+                    inputs_dict,
+                    visited_node_ids,
+                    nodes,
+                    node_order,
+                    dsl_to_runtime,
+                )
 
         for retrieval_op_id, retrieval_op in retrieval_ops.items():
             self._mark_retrieval_upstream_nodes_visited(
@@ -599,23 +660,12 @@ class RuntimeGraphBuilder:
                 continue
             if any(inp.consumer_result_path() for inp in lambda_op.inputs):
                 continue
-            build_list_lambda(lambda_op_id, lambda_op)
+            build_derived(lambda_op)
 
-        for fetch_op_id, fetch_op in fetch_ops.items():
+        for fetch_op in fetch_ops.values():
             if task_type_override == "data_profile":
                 continue
-            if isinstance(fetch_op.query, (InputOp, DataOp)):
-                visited_node_ids.add(fetch_op.query.id)
-            runtime_op = self._build_node_from_http_fetch_op(
-                fetch_op_id, fetch_op, graph_dict, inputs_dict
-            )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[fetch_op_id] = [runtime_op.node_id]
-            if fetch_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[fetch_op_id]
-                output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items.json"
+            build_derived(fetch_op)
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -694,33 +744,17 @@ class RuntimeGraphBuilder:
                             llm_op
                         )
 
-        for score_op_id, score_op in score_ops.items():
+        for score_op in score_ops.values():
             if task_type_override == "data_profile":
                 continue
-            score_nodes = self._build_node_from_score_op(
-                score_op_id,
-                score_op,
-                graph_dict,
-                inputs_dict,
-                visited_node_ids,
-                dsl_to_runtime,
-            )
-            for runtime_op in score_nodes:
-                nodes[runtime_op.node_id] = runtime_op
-                node_order.append(runtime_op.node_id)
-            runtime_op = score_nodes[-1]
-            dsl_to_runtime[score_op_id] = [runtime_op.node_id]
-            if score_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[score_op_id]
-                output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items"
+            build_derived(score_op)
 
-        for lambda_op_id, lambda_op in list_lambda_ops.items():
+        for lambda_op in list_lambda_ops.values():
             if task_type_override == "data_profile":
                 continue
             if not any(inp.consumer_result_path() for inp in lambda_op.inputs):
                 continue
-            build_list_lambda(lambda_op_id, lambda_op)
+            build_derived(lambda_op)
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).

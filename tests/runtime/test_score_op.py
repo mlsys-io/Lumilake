@@ -9,8 +9,10 @@ from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    HttpFetchOp,
     LambdaOp,
     LLMChatOp,
+    Op,
     OpMessage,
     ScoreConfig,
     ScoreOp,
@@ -316,6 +318,66 @@ def test_score_op_reads_list_lambda_candidates_inside_items(tmp_path: Path) -> N
             {"text": "question", "text_pair": "second"},
         ]
     }
+
+
+def test_fetch_list_lambda_score_chain_builds_in_dependency_order() -> None:
+    def extract(items):
+        return [str(item) for item in items]
+
+    query = input_placeholder("Query")
+    fetch = HttpFetchOp("http://fixture.test/search?q={query}", query)
+    candidates = LambdaOp([fetch], extract, mode="list")
+    _assert_fetch_lambda_score_order(fetch, candidates, query)
+
+
+def test_fetch_row_lambda_score_chain_builds_in_dependency_order() -> None:
+    def extract(result):
+        return str(result)
+
+    query = input_placeholder("Query")
+    fetch = HttpFetchOp("http://fixture.test/search?q={query}", query)
+    candidates = LambdaOp([fetch], extract, mode="row")
+    _assert_fetch_lambda_score_order(fetch, candidates, query)
+
+
+def _assert_fetch_lambda_score_order(
+    fetch: HttpFetchOp,
+    candidates: LambdaOp,
+    query: Op,
+) -> None:
+    score = ScoreOp(
+        query,
+        candidates,
+        config=ScoreConfig(model="org/reranker", backend="vllm"),
+    )
+    compiled = Graph.from_ops([as_output("scores", score)]).compile(
+        Query=["first", "second"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    fetch_node = runtime_graph.nodes[fetch.id]
+    score_node = runtime_graph.nodes[score.id]
+    pairs_node = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == python_step.TASK_TYPE
+        and node.data_spec.get("mode") == "pairs"
+    )
+    candidate_entry = next(
+        entry for entry in pairs_node.data_spec["plan"] if entry["kind"] == "stage"
+    )
+
+    assert runtime_graph.node_order.index(fetch_node.node_id) < (
+        runtime_graph.node_order.index(pairs_node.node_id)
+    )
+    assert runtime_graph.node_order.index(pairs_node.node_id) < (
+        runtime_graph.node_order.index(score_node.node_id)
+    )
+    assert candidate_entry["node"] in runtime_graph.nodes
+    assert all(dep in runtime_graph.nodes for dep in pairs_node.dependencies)
+    assert all(
+        dep in runtime_graph.nodes
+        for dep in score_node.to_flowmesh_node().get("dependsOn", [])
+    )
 
 
 def test_pairs_step_output_shape_broadcasts_single_query() -> None:
