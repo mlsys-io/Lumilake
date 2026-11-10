@@ -2827,6 +2827,7 @@ class RuntimeGraphBuilder:
                 dependencies=row_dependencies if row_dependencies else None,
                 output_spec=output_spec,
                 condition=None,
+                skip_when_all_inputs_empty=bool(row_dependencies),
             )
 
         if isinstance(llm_op, LLMChatOp) and (
