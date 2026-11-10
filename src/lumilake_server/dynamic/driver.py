@@ -98,9 +98,6 @@ _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
     name for name in SUPPORTED_OPS if issubclass(_OP_CLASSES[name], OUTPUT_SOURCE_TYPES)
 )
 
-MAX_ROUND_OP_EXPANSION = 4
-MAX_STATIC_ROUND_NODE_BOUND = 100
-
 _TEMPLATE_ROUND = "{{round}}"
 _TEMPLATE_PREV = "{{prev}}"
 
