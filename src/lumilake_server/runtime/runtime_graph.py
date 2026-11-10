@@ -1824,8 +1824,7 @@ class RuntimeGraphBuilder:
                 if isinstance(op_ref, DataRetrievalOp)
                 else self._upstream_output_path(op_ref)
             )
-            if path.startswith("items."):
-                path = path[len("items.") :]
+            path = RuntimeGraphBuilder._item_relative_path(path)
             path = re.sub(r"\[(\d+)\]", r".\1", path)
             runtime_ids = dsl_to_runtime.get(op_ref.id)
             if not runtime_ids:
@@ -2309,6 +2308,15 @@ class RuntimeGraphBuilder:
         if not upstream.takes_whole_columns and path != "items.output":
             return "value.items.value." + path[len("items.output.") :]
         return "value." + path
+
+    @staticmethod
+    def _item_relative_path(path: str) -> str:
+        """Strip the result-envelope prefix from an upstream output path, so a
+        python step reads it inside the item list it already unwrapped."""
+        for prefix in ("value.items.", "items."):
+            if path.startswith(prefix):
+                return path[len(prefix) :]
+        return path
 
     def _lambda_read_path(
         self,
