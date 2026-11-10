@@ -99,9 +99,11 @@ consumer needing raw floats loads `embeddings.safetensors` and indexes by
 ### ScoreOp
 
 `ScoreOp` scores query/candidate pairs with a FlowMesh `classification` task
-and returns one `items[]` entry per pair, carrying `index` and `score`. The
-required `config` supplies `model` and `backend` (`vllm` or `transformers`);
-the optional `vllm` mapping is passed to the vLLM engine. A vLLM node uses
+and returns one `items[]` entry per pair, carrying `index` and `score`. It
+needs a FlowMesh release with the `classification` task type (FlowMesh #270).
+The required `config` supplies `model` and `backend` (`vllm` or
+`transformers`); the optional `vllm` mapping is passed to the vLLM engine. A
+vLLM node uses
 `model.vllm.convert: classify` and reports the head's sigmoid probability;
 setting `config.vllm.apply_sigmoid: false` reports the raw logit instead. A
 Transformers node uses its single-label sequence-classification path.
@@ -138,21 +140,22 @@ outputs:
 ### HttpFetchOp
 
 `HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
-input. The `{query}` placeholder must appear in `url`, `params`, or a POST
-`body`; the runtime converts it to FlowMesh's `{{prompt}}` placeholder. The API
-executor URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so
-query values in `params` use the same form encoding as `requests`.
+input. It needs a FlowMesh release with FlowMesh #269 (`{{prompt}}` in a URL
+or params, request pacing, response cache, fail-open). The `{query}`
+placeholder must appear in `url`, `params`, or a POST `body`; the runtime
+converts it to FlowMesh's `{{prompt}}` placeholder. The API executor
+URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so query
+values in `params` use the same form encoding as `requests`.
 `config.headers`, `config.timeout_sec`, `config.retries`, and
 `config.max_concurrency` bound the request; headers are retained in the
 runtime spec for dispatch and every header value is redacted from archived
-graphs. Each input row
-produces one output row.
-`config.request_delay_sec` spaces actual request starts, including retries.
-`config.cache_dir` enables a query-keyed on-disk response cache whose key is
-the method, rendered URL, rendered params, and request body.
-With `config.fail_open: true`, a failed fetch yields an error row with null
-content instead of failing the task. A downstream op sees that row as an item
-whose `json` is null and whose `error` contains the failure text.
+graphs. Each input row produces one output row. `config.request_delay_sec`
+spaces actual request starts, including retries. `config.cache_dir` enables a
+query-keyed on-disk response cache whose key is the method, rendered URL,
+rendered params, and request body. With `config.fail_open: true`, a failed
+fetch yields an error row with null content instead of failing the task. A
+downstream op sees that row as an item whose `json` is null and whose `error`
+contains the failure text.
 
 ### LLMChatOp via external API
 
