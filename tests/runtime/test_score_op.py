@@ -431,11 +431,13 @@ def test_pairs_step_output_shape_broadcasts_single_query() -> None:
     }
 
 
-@pytest.mark.parametrize("bad", [None, "", 3, {"json": None}])
+@pytest.mark.parametrize("bad", [None, "", "   ", 3, {"json": None}])
 def test_pairs_step_rejects_non_string_query_and_candidate(bad: object) -> None:
     """A fail-open fetch row or a JSON body reaches the pairs step unchanged,
     so the step rejects it with the node and row instead of letting FlowMesh
-    fail the whole classification task."""
+    fail the whole classification task. A blank string is rejected too:
+    ``ScorePair`` rejects it, so a whitespace-only pair must not reach the
+    classifier."""
     for column in ("query", "candidate"):
         plan: python_step.ColumnPlan = [
             {"kind": "literal", "values": ["same question"]},
@@ -449,6 +451,24 @@ def test_pairs_step_rejects_non_string_query_and_candidate(bad: object) -> None:
         assert callable(main)
         with pytest.raises(ValueError, match=rf"^pairs: row 0 {column} must be"):
             main({})
+
+
+@pytest.mark.parametrize("empty", ["query", "candidate"])
+def test_pairs_step_rejects_an_empty_column(empty: str) -> None:
+    """An upstream stage that returns no candidates would otherwise yield an
+    empty classification task; the literal path raises for the same case."""
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["same question"]},
+        {"kind": "literal", "values": ["first", "second"]},
+    ]
+    plan[0 if empty == "query" else 1]["values"] = []
+    code = python_step.pairs_source("pairs", plan)
+    namespace: dict[str, object] = {}
+    exec(code, namespace)
+    main = namespace["main"]
+    assert callable(main)
+    with pytest.raises(ValueError, match=rf"^pairs: {empty} column is empty"):
+        main({})
 
 
 def test_upstream_score_resolved_spec_is_dispatchable_shape(

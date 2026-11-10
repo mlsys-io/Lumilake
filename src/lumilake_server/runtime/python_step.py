@@ -219,6 +219,12 @@ _PAIRS_MAIN = """\
 def main(inputs):
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     queries, candidates = columns
+    for name, values in (("query", queries), ("candidate", candidates)):
+        if not values:
+            raise ValueError(
+                "%s: %s column is empty; a score op needs at least one pair"
+                % (_NODE, name)
+            )
     if len(queries) == 1:
         queries = queries * len(candidates)
     if len(queries) != len(candidates):
@@ -228,7 +234,7 @@ def main(inputs):
         )
     for row, (query, candidate) in enumerate(zip(queries, candidates)):
         for name, value in (("query", query), ("candidate", candidate)):
-            if not isinstance(value, str) or not value:
+            if not isinstance(value, str) or not value.strip():
                 shown = repr(value)[:80]
                 raise ValueError(
                     "%s: row %d %s must be a non-empty string, got %s"
