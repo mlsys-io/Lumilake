@@ -2200,11 +2200,13 @@ class RuntimeGraphBuilder:
 
     @staticmethod
     def _check_row_gate_consumers(graph_dict: dict[str, Op]) -> None:
-        """Reject consumers of a row-gated LLM other than an ``OutputOp``.
+        """Reject consumers of a row-gated LLM other than an ``OutputOp`` or a
+        render step.
 
         A row gate compiles its LLM into status, selection, gated call and
         merge stages, so the op has no single runtime node a consumer could
-        bind to.
+        bind to. A fused round reads each leaf through a render step, which
+        binds the merge stage.
         """
         for op_id, op in graph_dict.items():
             if not isinstance(op, LLMChatOp) or op.row_gate is None:
@@ -2216,13 +2218,19 @@ class RuntimeGraphBuilder:
                     continue
                 if isinstance(consumer, OutputOp):
                     continue
+                if (
+                    isinstance(consumer, FormatOp)
+                    and consumer.template == "{ref0}"
+                    and len(consumer.inputs) == 1
+                ):
+                    continue
                 raise ValueError(
                     f"Op '{consumer_id}' reads the row-gated LLMChatOp '{op_id}',"
                     " which compiles to status, selection, gated call and merge"
                     " stages; a row gate produces one row per input row but not"
                     " one item per row, so only an OutputOp can read it. Consume"
                     " the pre-gate rows instead, or write the merged rows to an"
-                    " output."
+                    " output; a fused round reads it through its render step."
                 )
 
     def _api_prior_prompt(
@@ -3512,14 +3520,32 @@ class RuntimeGraphBuilder:
                     op.id != target_llm_op.id
                 ), "Encountered starting LLMOp again unexpectedly"
                 is_api_ancestor = self._is_api_task(op)
-                if op.id not in upstream_llm_ids:
-                    upstream_llm_ids.add(op.id)
+                is_gated_ancestor = (
+                    isinstance(op, LLMChatOp) and op.row_gate is not None
+                )
+                bind_id = op.id
+                if is_gated_ancestor:
+                    gated_runtime = (dsl_to_runtime or {}).get(op.id) or []
+                    if not gated_runtime:
+                        raise ValueError(
+                            f"LLMOp '{llm_op_id}' reads the row-gated LLMChatOp"
+                            f" '{op.id}', which has no runtime stages in this"
+                            " build; a gated op is readable only through the"
+                            " rows its merge stage emits."
+                        )
+                    # A gated op has no runtime node of its own; its merged
+                    # rows are its last stage.
+                    bind_id = gated_runtime[-1]
+                if bind_id not in upstream_llm_ids:
+                    upstream_llm_ids.add(bind_id)
                     if not is_api_ancestor:
                         row_count = self._static_output_row_count(
                             op, inputs_dict, graph_dict
                         )
                         if row_count is not None and row_count > 1:
-                            if api_mode or not self._emits_one_item_per_row(op):
+                            if api_mode or not (
+                                is_gated_ancestor or self._emits_one_item_per_row(op)
+                            ):
                                 raise ValueError(
                                     f"LLMOp '{llm_op_id}' consumes '{op.id}', which"
                                     " produces multiple rows; a message column"
@@ -3528,8 +3554,15 @@ class RuntimeGraphBuilder:
                                     " this node to the single unsuffixed output"
                                     " would silently drop every row but the first."
                                 )
-                            ancestor_row_counts[op.id] = row_count
+                            ancestor_row_counts[bind_id] = row_count
                     if isinstance(op, LLMChatOp) and op.return_history:
+                        if is_gated_ancestor:
+                            raise ValueError(
+                                f"LLMOp '{llm_op_id}' consumes the row-gated"
+                                f" LLMChatOp '{op.id}', which has return_history."
+                                " A gated op keeps no prompt history: its merge"
+                                " stage emits only the routed rows."
+                            )
                         if is_api_ancestor:
                             prior = self._api_prior_prompt(op, inputs_dict)
                             if prior is None:
@@ -3551,7 +3584,7 @@ class RuntimeGraphBuilder:
                                 "path": "items.metadata.prompt",
                             }
                     columns[f"{op.id}_output"] = {
-                        "node": op.id,
+                        "node": bind_id,
                         "path": self._upstream_output_path(op),
                     }
 

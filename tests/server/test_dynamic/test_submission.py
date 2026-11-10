@@ -23,6 +23,7 @@ from lumilake_server.dynamic.driver import (
     resolve_subgraph,
 )
 from lumilake_server.dynamic.spec import DynamicSpec
+from lumilake_server.graphs import Graph
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.ops import OutputOp
 from lumilake_server.routes import jobs as job_routes_module
@@ -260,8 +261,6 @@ class _FakeRuntimeServer:
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         self.parse_query_calls.append(graph_specs)
-        from lumilake_server.graphs import Graph
-
         return {
             name: Graph.from_json(spec["graph"]).compile(**spec["inputs"])
             for name, spec in graph_specs.items()
@@ -625,7 +624,7 @@ _GATED_PLAN: dict[str, Any] = {
             "id": "turn",
             "op": "LLMChatOp",
             "inputs": ["source", "route"],
-            "messages": [{"role": "user", "content": "source"}],
+            "messages": [{"role": "user", "content": "Review the row."}],
             "config": {"model": "Qwen/Qwen3-8B"},
             "rowwise_template": "{row}",
             "rowwise_columns": [
@@ -635,6 +634,64 @@ _GATED_PLAN: dict[str, Any] = {
         },
     ],
 }
+
+
+def _build_plan(
+    plan: dict[str, Any], symbols: list[str], *, include_proposer: bool = True
+) -> Any:
+    ops = resolve_subgraph(copy.deepcopy(plan["ops"]), None)
+    registry = {op["id"]: op for op in ops}
+    build = build_round(
+        ops,
+        node_registry=registry,
+        round_index=1,
+        goal="analyze market data",
+        observations=[],
+        topology=[op["id"] for op in ops],
+        preview_width=900,
+        model="Qwen/Qwen3-8B",
+        max_tokens=10,
+        temperature=0.1,
+        results={},
+        rows=len(symbols),
+        include_proposer=include_proposer,
+    )
+    inputs = dict(build.forwarded_inputs)
+    inputs.setdefault("Symbols", symbols)
+    return build, Graph.from_json(build.graph).compile(**inputs)
+
+
+def test_gated_round_builds_with_and_without_the_in_graph_proposer() -> None:
+    # The default planner mode reads every leaf through a render step, and a
+    # row-gated leaf has no runtime node of its own: the round has to build in
+    # both modes.
+    build, compiled = _build_plan(_GATED_PLAN, ["done", "pending"])
+    assert "proposer" in build.graph
+    assert len(RuntimeGraphBuilder().build(compiled).nodes) == 6
+    api_build, api_compiled = _build_plan(
+        _GATED_PLAN, ["done", "pending"], include_proposer=False
+    )
+    assert "proposer" not in api_build.graph
+    assert len(RuntimeGraphBuilder().build(api_compiled).nodes) == 5
+
+
+def test_fused_round_with_a_gated_leaf_reads_the_merge_stage() -> None:
+    # A gated leaf compiles to status, selection, gated call and merge stages;
+    # its reader binds the merge stage, which emits the routed rows.
+    build, compiled = _build_plan(_GATED_PLAN, ["done", "pending"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    (gated_id,) = build.gated_leaf_ids
+    stages = runtime_graph.dsl_to_runtime[gated_id]
+    assert [runtime_graph.nodes[node_id].task_type for node_id in stages] == [
+        "python",
+        "python",
+        "inference",
+        "python",
+    ]
+    proposer = runtime_graph.nodes["proposer"]
+    assert proposer.dependencies == (stages[-1],)
+    (column,) = proposer.data_spec["template"]["columns"]
+    assert column["node"] == stages[-1]
 
 
 @pytest.mark.anyio
