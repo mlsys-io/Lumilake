@@ -1,4 +1,3 @@
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -43,24 +42,6 @@ class ScorePair:
             raise ValueError("ScoreOp query must be a non-empty string")
         if not self.candidate.strip():
             raise ValueError("ScoreOp candidate must be a non-empty string")
-
-
-@dataclass(frozen=True)
-class ScoreItem:
-    """One FlowMesh classification result item."""
-
-    index: int
-    score: float
-
-
-@dataclass(frozen=True)
-class ScoreResult:
-    """Scores returned in their input pair order."""
-
-    model: str | None
-    items: tuple[ScoreItem, ...]
-    usage: dict[str, Any]
-    artifacts: dict[str, Any]
 
 
 def _as_values(value: str | list[str], name: str) -> list[str]:
@@ -139,53 +120,6 @@ class ScoreOp(Op):
             query=other_ops[data["query"]],
             candidates=other_ops[data["candidates"]],
             config=ScoreConfig(**data["config"]),
-        )
-
-    @staticmethod
-    def parse_response(result: dict[str, Any]) -> ScoreResult:
-        """Parse FlowMesh classification items in contiguous index order."""
-        if not isinstance(result, dict):
-            raise ValueError(
-                f"ScoreOp response must be a mapping (got {type(result).__name__})"
-            )
-        if result.get("ok") is False or result.get("error"):
-            raise ValueError(f"ScoreOp response reports failure: {result.get('error')}")
-        raw_items = result.get("items")
-        if not isinstance(raw_items, list):
-            raise ValueError("ScoreOp response is missing the 'items' list")
-        usage = result.get("usage")
-        if not isinstance(usage, dict):
-            raise ValueError("ScoreOp response is missing the 'usage' block")
-
-        items: list[ScoreItem] = []
-        for raw in raw_items:
-            if not isinstance(raw, dict):
-                raise ValueError("ScoreOp response item must be a mapping")
-            index = raw.get("index")
-            score = raw.get("score")
-            if isinstance(index, bool) or not isinstance(index, int):
-                raise ValueError("ScoreOp response item index must be an integer")
-            if isinstance(score, bool) or not isinstance(score, (int, float)):
-                raise ValueError("ScoreOp response item score must be numeric")
-            numeric_score = float(score)
-            if not math.isfinite(numeric_score):
-                raise ValueError("ScoreOp response item score must be finite")
-            items.append(ScoreItem(index=index, score=numeric_score))
-
-        items.sort(key=lambda item: item.index)
-        expected_indices = list(range(len(items)))
-        if [item.index for item in items] != expected_indices:
-            raise ValueError(
-                "ScoreOp response item indices must be contiguous from zero"
-            )
-
-        artifacts = result.get("_artifacts")
-        model = result.get("model")
-        return ScoreResult(
-            model=str(model) if model is not None else None,
-            items=tuple(items),
-            usage=usage,
-            artifacts=artifacts if isinstance(artifacts, dict) else {},
         )
 
 

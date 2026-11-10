@@ -90,7 +90,6 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
-from lumilake_server.ops.http_fetch_ops import contains_query_placeholder
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -681,27 +680,14 @@ def _emit_http_fetch_op(
     config = entry.fields.get("config") or {}
     if not isinstance(config, dict):
         raise ValueError(f"HttpFetchOp '{entry.id}' config must be a mapping")
-    method = str(entry.fields.get("method", "GET")).upper()
-    if method not in {"GET", "POST"}:
-        raise ValueError(f"HttpFetchOp '{entry.id}' method must be GET or POST")
-    params = entry.fields.get("params")
-    body = entry.fields.get("body")
-    if params is not None and not isinstance(params, dict):
-        raise ValueError(f"HttpFetchOp '{entry.id}' params must be a mapping")
-    if not any(contains_query_placeholder(value) for value in (url, params, body)):
-        raise ValueError(
-            f"HttpFetchOp '{entry.id}' requires '{{query}}' in url, params, or body"
-        )
-    if method == "POST" and body is None:
-        raise ValueError(f"HttpFetchOp '{entry.id}' POST requires body")
     op_dict["url"] = url
-    op_dict["method"] = method
+    op_dict["method"] = str(entry.fields.get("method", "GET")).upper()
     op_dict["query"] = user_id_to_internal[query_ref]
     op_dict["config"] = config
-    if params is not None:
-        op_dict["params"] = params
-    if body is not None:
-        op_dict["body"] = body
+    if entry.fields.get("params") is not None:
+        op_dict["params"] = entry.fields["params"]
+    if entry.fields.get("body") is not None:
+        op_dict["body"] = entry.fields["body"]
     op_dict["_inputs"] = [user_id_to_internal[query_ref]]
 
 

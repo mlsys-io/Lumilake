@@ -39,7 +39,7 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
-from lumilake_server.ops.score_ops import ScoreOp, ScorePair
+from lumilake_server.ops.score_ops import ScoreOp, _literal_pairs
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -1764,7 +1764,11 @@ class RuntimeGraphBuilder:
     ) -> list[RuntimeOp]:
         extra_ops: list[RuntimeOp] = []
 
-        def _source(op_ref: Op) -> tuple[list[str] | None, str | None, str | None]:
+        def _source(
+            op_ref: Op,
+        ) -> tuple[list[str] | None, tuple[str, str] | None]:
+            """The literal values, or the runtime node and item path an
+            upstream op produces."""
             visited_node_ids.add(op_ref.id)
             if isinstance(op_ref, InputOp):
                 values = inputs_dict.get(op_ref.name)
@@ -1773,11 +1777,11 @@ class RuntimeGraphBuilder:
                         f"ScoreOp '{op_id}' {op_ref.name!r} input has no values "
                         "supplied"
                     )
-                return list(values), None, None
+                return list(values), None
             if isinstance(op_ref, DataOp):
                 if not op_ref.data:
                     raise ValueError(f"ScoreOp '{op_id}' has empty input")
-                return list(op_ref.data), None, None
+                return list(op_ref.data), None
             path = (
                 retrieval_items_path(op_ref.data_spec["mode"])
                 if isinstance(op_ref, DataRetrievalOp)
@@ -1790,49 +1794,38 @@ class RuntimeGraphBuilder:
                 raise ValueError(
                     f"ScoreOp '{op_id}' input {op_ref.id!r} has no runtime node"
                 )
-            runtime_id = runtime_ids[0]
-            return None, f"{runtime_id}|{path}", runtime_id
+            return None, (runtime_ids[0], path)
 
-        query_values, query_ref, query_dep = _source(op.query)
-        candidate_values, candidate_ref, candidate_dep = _source(op.candidates)
+        query_values, query_ref = _source(op.query)
+        candidate_values, candidate_ref = _source(op.candidates)
         if candidate_values is not None and not candidate_values:
             raise ValueError(f"ScoreOp '{op_id}' has empty candidate list")
         if query_values is not None and candidate_values is not None:
-            if len(query_values) != len(candidate_values) and len(query_values) != 1:
-                raise ValueError(
-                    f"ScoreOp '{op_id}' query and candidates must have equal lengths"
-                )
-            queries = (
-                query_values * len(candidate_values)
-                if len(query_values) == 1
-                else query_values
-            )
-            items = [
-                ScorePair(query=query, candidate=candidate)
-                for query, candidate in zip(queries, candidate_values)
-            ]
+            pairs = _literal_pairs(query_values, candidate_values, op_id=op_id)
             data_spec = {
                 "type": "list",
                 "items": [
-                    {"text": pair.query, "text_pair": pair.candidate} for pair in items
+                    {"text": pair.query, "text_pair": pair.candidate} for pair in pairs
                 ],
             }
-            dependencies = [dep for dep in (query_dep, candidate_dep) if dep]
+            dependencies: list[str] = []
         else:
             pairs_node_id = f"{op_id}__pairs"
             query_plan: dict[str, Any]
             candidate_plan: dict[str, Any]
             if query_ref is not None:
-                query_node, query_path = query_ref.split("|", 1)
-                query_plan = {"kind": "stage", "node": query_node, "path": query_path}
+                query_plan = {
+                    "kind": "stage",
+                    "node": query_ref[0],
+                    "path": query_ref[1],
+                }
             else:
                 query_plan = {"kind": "literal", "values": query_values or []}
             if candidate_ref is not None:
-                candidate_node, candidate_path = candidate_ref.split("|", 1)
                 candidate_plan = {
                     "kind": "stage",
-                    "node": candidate_node,
-                    "path": candidate_path,
+                    "node": candidate_ref[0],
+                    "path": candidate_ref[1],
                 }
             else:
                 candidate_plan = {
@@ -1852,7 +1845,9 @@ class RuntimeGraphBuilder:
                 inference_spec={},
                 backend=python_step.BACKEND,
                 model="",
-                dependencies=[dep for dep in (query_dep, candidate_dep) if dep] or None,
+                dependencies=(
+                    [ref[0] for ref in (query_ref, candidate_ref) if ref] or None
+                ),
             )
             extra_ops.append(pairs_op)
             data_spec = {
