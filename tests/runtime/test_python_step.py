@@ -1483,14 +1483,13 @@ def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
 
 def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None:
     graph = RuntimeGraphBuilder().build(_gated_chain())
-    by_mode: dict[str, Any] = {}
-    for node in graph.nodes.values():
-        mode = node.data_spec.get("mode")
-        if mode in ("row_status", "row_select", "row_skip_merge"):
-            by_mode.setdefault(mode, node)
-    status = by_mode["row_status"]
-    selector = by_mode["row_select"]
-    merge = by_mode["row_skip_merge"]
+    # Every id is content-addressed, so pick the ``fail`` gate by its declared
+    # output name rather than by build order.
+    merge_id = next(
+        node_id for node_id, name in graph.output_node_map.items() if name == "repair"
+    )
+    (fail_ids,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
+    status, selector, _selected, merge = [graph.nodes[i] for i in fail_ids]
 
     staged = [
         {"output": {"code": "fn_0", "status": "ok"}},
@@ -1526,7 +1525,7 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
     assert [row["output"] for row in rows] == [None, "fixed", None]
 
 
-def test_gated_rows_read_the_selector_label_paths() -> None:
+def test_gated_rows_read_the_selector_label_paths(tmp_path: Path) -> None:
     # The selector emits one flat ``{label: value}`` row per kept item, so a
     # gated model reads its columns at ``value.items.<label>`` on the selector's
     # result. FlowMesh's graph-template walker rejects any other path.
@@ -1548,7 +1547,17 @@ def test_gated_rows_read_the_selector_label_paths() -> None:
     ]
     assert len(gated) == len(selectors)
 
-    branches = ("fail", "ok", "fail")
+    staged = [
+        {"output": {"code": "fn_0", "status": "ok"}},
+        {"output": {"code": "fn_1", "status": "fail"}},
+        {"output": {"code": "fn_2", "status": "ok"}},
+    ]
+    upstream = _stage(tmp_path, "classify", {"items": staged})
+    statuses = {
+        node.node_id: node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_status"
+    }
     for node in gated:
         selector = selectors[node.data_spec["columns"][0]["node"]]
         labels = selector.data_spec["labels"]
@@ -1557,25 +1566,26 @@ def test_gated_rows_read_the_selector_label_paths() -> None:
             f"value.items.{label}" for label in labels
         ]
 
-        payload = _run_row_select(
-            [
-                {
-                    "kind": "literal",
-                    "values": [json.dumps({"branch": b}) for b in branches],
-                },
-                *[
-                    {"kind": "literal", "values": [f"{label}_{i}" for i in range(3)]}
-                    for label in labels
-                ],
-            ],
-            {},
-            labels=labels,
-            branch=selector.data_spec["branch"],
-            include_done=selector.data_spec["include_done"],
+        status = statuses[selector.dependencies[0]]
+        source_node = status.data_spec["plan"][0]["node"]
+        status_payload = _run_stage_plan(status, {source_node: upstream})
+        status_stage = _stage(tmp_path, f"status_{status.node_id}", status_payload)
+        payload = _run_stage_plan(
+            selector,
+            {
+                entry["node"]: (
+                    status_stage if entry["node"] == status.node_id else upstream
+                )
+                for entry in selector.data_spec["plan"]
+            },
         )
-        kept = [i for i, b in enumerate(branches) if b == selector.data_spec["branch"]]
+        kept = [
+            i
+            for i, row in enumerate(staged)
+            if row["output"]["status"] == selector.data_spec["branch"]
+        ]
         assert payload["items"] == [
-            {label: f"{label}_{i}" for label in labels} for i in kept
+            {label: staged[i]["output"][label] for label in labels} for i in kept
         ]
 
         # The column path hangs off the selector's node id, as FlowMesh's
@@ -1584,7 +1594,7 @@ def test_gated_rows_read_the_selector_label_paths() -> None:
         result = {"value": payload}
         for column in node.data_spec["columns"]:
             expr = f"{selector.node_id}.{column['path']}"
-            expected = [f"{column['label']}_{i}" for i in kept]
+            expected = [staged[i]["output"][column["label"]] for i in kept]
             assert _flowmesh_walk(result, expr) == expected
             with pytest.raises(KeyError, match="output"):
                 _flowmesh_walk(

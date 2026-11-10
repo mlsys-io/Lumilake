@@ -1970,6 +1970,33 @@ class RuntimeGraphBuilder:
             return "value.items.value." + path[len("items.output.") :]
         return "value." + path
 
+    def _row_gate_item_path(
+        self,
+        *,
+        llm_op_id: str,
+        label: str,
+        path: str,
+        upstream: Op | None,
+    ) -> str:
+        """Map a gated column's declared read to the python step's item path.
+
+        The selector reads the upstream's item list first, so a declared
+        ``items.output.<field>`` read walks ``output.<field>`` inside each
+        item. A row-mode Lambda emits its raw value under ``value`` and a
+        JSON-textified copy under ``output``, so its field read walks
+        ``value.<field>`` and skips the round trip through text.
+        """
+        if not path.startswith("items.output."):
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' row gate column {label!r} reads"
+                f" {path!r}; only 'items.output' (the whole output) or a"
+                " field under it is supported."
+            )
+        field_path = path[len("items.") :]
+        if isinstance(upstream, LambdaOp) and not upstream.takes_whole_columns:
+            return "value." + path[len("items.output.") :]
+        return field_path
+
     def _node_ref_column(
         self,
         *,
@@ -2727,12 +2754,34 @@ class RuntimeGraphBuilder:
                 )
             entry: dict[str, Any] = {"kind": "stage", "node": runtime_ids[0]}
             entry["allow_empty"] = True
-            if (
+            column_path = column.get("path")
+            if column_path is None:
+                column_path = ""
+            if not isinstance(column_path, str):
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' row gate column {label!r} path "
+                    "must be a string"
+                )
+            rowwise_upstream = (
                 isinstance(upstream, LLMChatOp)
                 and not isinstance(upstream, LLMVisionOp)
-                and (upstream.rowwise_template or upstream.rowwise_messages_column)
-            ):
+                and bool(upstream.rowwise_template or upstream.rowwise_messages_column)
+            )
+            if rowwise_upstream:
+                if column_path not in ("", "items.output"):
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' row gate column {label!r} reads"
+                        f" {column_path!r} from rowwise LLM '{node_ref}'; only"
+                        " 'items.output' (the whole output) is supported."
+                    )
                 entry["flatten"] = True
+            elif column_path not in ("", "items.output"):
+                entry["path"] = self._row_gate_item_path(
+                    llm_op_id=llm_op_id,
+                    label=label,
+                    path=column_path,
+                    upstream=upstream,
+                )
             select_plan.append(entry)
             if runtime_ids[0] not in select_dependencies:
                 select_dependencies.append(runtime_ids[0])
