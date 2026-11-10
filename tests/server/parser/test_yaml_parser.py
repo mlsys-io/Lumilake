@@ -383,6 +383,35 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
 
 
+def test_llm_config_accepts_output_enforcement() -> None:
+    yaml_text = textwrap.dedent("""
+        name: output_enforcement
+        ops:
+          - id: ask
+            op: LLMChatOp
+            messages:
+              - role: user
+                content: "hello"
+            config:
+              model: dummy-model
+              output_enforcement:
+                mode: retry
+                max_attempts: 3
+                text_regex: "^ok$"
+        outputs:
+          - name: out
+            ref: ask
+        """)
+    specs = parse_yaml_payload(yaml_text)
+    graph_dict = specs["output_enforcement"]["graph"]
+    llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
+    assert llm_op["config"]["output_enforcement"] == {
+        "mode": "retry",
+        "max_attempts": 3,
+        "text_regex": "^ok$",
+    }
+
+
 def test_llm_config_accepts_api_block() -> None:
     """An ``api`` block on the config is accepted and persisted on the op."""
     yaml_text = textwrap.dedent("""

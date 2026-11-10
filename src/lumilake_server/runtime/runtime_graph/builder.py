@@ -1,5 +1,5 @@
 from lumilake_server.graphs import CompiledGraph
-from lumilake_server.ops import Op, OutputOp
+from lumilake_server.ops import LLMChatOp, LLMOp, LLMVisionOp, Op, OutputOp
 from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
@@ -30,6 +30,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
         self._flattened_vlm_ids = self._flattened_vision_ids(graph_dict)
 
         visited: set[str] = set()
+        self._reject_unsupported_output_enforcement(graph_dict)
         output_source_to_outputop = self._collect_outputs(graph_dict, visited)
         if not any(has_lowering(op) for op in graph_dict.values()):
             raise ValueError(
@@ -76,6 +77,21 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 make_node_prefix(node_prefix)
             )
         return runtime_graph
+
+    @staticmethod
+    def _reject_unsupported_output_enforcement(graph_dict: dict[str, Op]) -> None:
+        """Only a text ``LLMChatOp`` validates its output; every other op drops
+        the field, so reject it rather than silently ignoring it."""
+        for op_id, op in graph_dict.items():
+            if (
+                isinstance(op, LLMOp)
+                and (not isinstance(op, LLMChatOp) or isinstance(op, LLMVisionOp))
+                and op.config.output_enforcement is not None
+            ):
+                raise ValueError(
+                    f"{type(op).__name__} '{op_id}' does not support "
+                    "config.output_enforcement; use it only on LLMChatOp."
+                )
 
     def _collect_outputs(
         self,

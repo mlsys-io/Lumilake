@@ -1,6 +1,9 @@
 import json
+import re
 from dataclasses import asdict, dataclass, fields
 from typing import Any, ClassVar, TypedDict
+
+from jsonschema import Draft202012Validator
 
 RETRIEVAL_MODES = ("sql", "s3", "agent")
 
@@ -117,12 +120,51 @@ class ApiConfig:
 
 
 @dataclass
+class OutputEnforcement:
+    """Retry or constrain generated output, then validate the final text."""
+
+    mode: str = "retry"
+    max_attempts: int = 1
+    json_schema: dict[str, Any] | None = None
+    text_regex: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"retry", "constrained"}:
+            raise ValueError("output_enforcement.mode must be retry or constrained")
+        if isinstance(self.max_attempts, bool) or not isinstance(
+            self.max_attempts, int
+        ):
+            raise ValueError("output_enforcement.max_attempts must be an integer")
+        if not 1 <= self.max_attempts <= 10:
+            raise ValueError("output_enforcement.max_attempts must be in [1, 10]")
+        if (self.json_schema is None) == (self.text_regex is None):
+            raise ValueError(
+                "output_enforcement requires exactly one of json_schema or text_regex"
+            )
+        if self.json_schema is not None:
+            try:
+                Draft202012Validator.check_schema(self.json_schema)
+            except Exception as exc:
+                raise ValueError(
+                    f"output_enforcement.json_schema is invalid: {exc}"
+                ) from exc
+        if self.text_regex is not None:
+            try:
+                re.compile(self.text_regex)
+            except re.error as exc:
+                raise ValueError(
+                    f"output_enforcement.text_regex is invalid: {exc}"
+                ) from exc
+
+
+@dataclass
 class GenerationConfig:
     """LLM generation parameters; ``model`` is required in both local and API
     mode, so ``config.api`` routes the op externally without relaxing it."""
 
     model: str = ""
     api: ApiConfig | None = None
+    output_enforcement: OutputEnforcement | None = None
     frequency_penalty: float | None = None
     logit_bias: dict[str, int] | None = None
     logprobs: int | None = None
@@ -153,6 +195,7 @@ class GenerationConfig:
     # Stripped by openai_kwargs() — OpenAI Chat API rejects these.
     _NON_OPENAI_FIELDS: ClassVar[tuple[str, ...]] = (
         "api",
+        "output_enforcement",
         "ignore_eos",
         "chat_template_kwargs",
         "repetition_penalty",
@@ -171,6 +214,7 @@ class GenerationConfig:
         {
             "model",
             "api",
+            "output_enforcement",
             "stream",
             "stream_options",
             "extra_sampling_params",
@@ -197,9 +241,28 @@ class GenerationConfig:
                 "GenerationConfig.api must be a mapping or ApiConfig, got "
                 f"{type(self.api).__name__}."
             )
+        if isinstance(self.output_enforcement, dict):
+            self.output_enforcement = OutputEnforcement(**self.output_enforcement)
+        elif self.output_enforcement is not None and not isinstance(
+            self.output_enforcement, OutputEnforcement
+        ):
+            raise ValueError(
+                "GenerationConfig.output_enforcement must be a mapping or "
+                "OutputEnforcement, got "
+                f"{type(self.output_enforcement).__name__}."
+            )
         if not self.model:
             raise ValueError(
                 "GenerationConfig.model is required in both local and API mode."
+            )
+        if (
+            self.api is not None
+            and self.output_enforcement is not None
+            and self.output_enforcement.mode == "constrained"
+        ):
+            raise ValueError(
+                "constrained output_enforcement is available only for local vLLM "
+                "inference, not API ops."
             )
 
     def resolved_model(self) -> str:
