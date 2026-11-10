@@ -464,26 +464,17 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str] = set()
         llm_ops: dict[str, LLMOp] = {}
         retrieval_ops: dict[str, DataRetrievalOp] = {}
-        fetch_ops: dict[str, HttpFetchOp] = {}
-        score_ops: dict[str, ScoreOp] = {}
-        list_lambda_ops: dict[str, LambdaOp] = {}
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
-            if isinstance(op, LLMOp):
-                llm_ops[op_id] = op
+            if isinstance(
+                op,
+                (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp),
+            ) or (isinstance(op, LambdaOp) and op.takes_whole_columns):
                 visited_node_ids.add(op_id)
-            elif isinstance(op, DataRetrievalOp):
-                retrieval_ops[op_id] = op
-                visited_node_ids.add(op_id)
-            elif isinstance(op, HttpFetchOp):
-                fetch_ops[op_id] = op
-                visited_node_ids.add(op_id)
-            elif isinstance(op, ScoreOp):
-                score_ops[op_id] = op
-                visited_node_ids.add(op_id)
-            elif isinstance(op, LambdaOp) and op.takes_whole_columns:
-                list_lambda_ops[op_id] = op
-                visited_node_ids.add(op_id)
+                if isinstance(op, LLMOp):
+                    llm_ops[op_id] = op
+                elif isinstance(op, DataRetrievalOp):
+                    retrieval_ops[op_id] = op
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
@@ -511,13 +502,9 @@ class RuntimeGraphBuilder:
                     "intermediate LambdaOp instead."
                 )
 
-        has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
-        if (
-            not llm_ops
-            and not retrieval_ops
-            and not fetch_ops
-            and not score_ops
-            and not has_lambda
+        if not any(
+            isinstance(op, (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp, LambdaOp))
+            for op in graph_dict.values()
         ):
             raise ValueError(
                 "Graph must contain at least one LLMOp, DataRetrievalOp, "
@@ -588,18 +575,6 @@ class RuntimeGraphBuilder:
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.output"
 
-        def reads_llm(op_ref: Op, seen: set[str] | None = None) -> bool:
-            """Whether an op reads an LLMOp transitively, so its node can only
-            be built once the LLM pass has run."""
-            seen = set() if seen is None else seen
-            if op_ref.id in seen:
-                return False
-            seen.add(op_ref.id)
-            return any(
-                isinstance(source, LLMOp) or reads_llm(source, seen)
-                for source in op_ref.inputs
-            )
-
         def build_derived(op_ref: Op) -> None:
             """Build a fetch, score or Lambda node after the fetch, score and
             Lambda ops it reads, so a consumer never resolves before its
@@ -666,20 +641,6 @@ class RuntimeGraphBuilder:
                 # shape; agent replays a SQL plan so it emits ``table`` too.
                 default_path = retrieval_items_path(mode)
                 output_paths[runtime_op.node_id] = path_override or default_path
-
-        for lambda_op_id, lambda_op in list_lambda_ops.items():
-            if task_type_override == "data_profile":
-                continue
-            if any(inp.consumer_result_path() for inp in lambda_op.inputs):
-                continue
-            build_derived(lambda_op)
-
-        for fetch_op in fetch_ops.values():
-            if task_type_override == "data_profile":
-                continue
-            if reads_llm(fetch_op):
-                continue
-            build_derived(fetch_op)
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -758,22 +719,19 @@ class RuntimeGraphBuilder:
                             llm_op
                         )
 
-        for fetch_op in fetch_ops.values():
-            if task_type_override == "data_profile":
-                continue
-            build_derived(fetch_op)
-
-        for score_op in score_ops.values():
-            if task_type_override == "data_profile":
-                continue
-            build_derived(score_op)
-
-        for lambda_op in list_lambda_ops.values():
-            if task_type_override == "data_profile":
-                continue
-            if not any(inp.consumer_result_path() for inp in lambda_op.inputs):
-                continue
-            build_derived(lambda_op)
+        if task_type_override != "data_profile":
+            # Every fetch, score and list Lambda node builds here, after the LLM
+            # pass: their references resolve through ``dsl_to_runtime``, and the
+            # LLM builders name their derived inputs by DSL op id, so nothing
+            # reads these nodes earlier. ``build_derived`` walks each chain's
+            # inputs first, which orders a chain of derived ops however its
+            # members are reached. A row-mode Lambda stays in the standalone
+            # pass below, which decides whether an LLM inlined it.
+            for op in graph_dict.values():
+                if isinstance(op, (HttpFetchOp, ScoreOp)) or (
+                    isinstance(op, LambdaOp) and op.takes_whole_columns
+                ):
+                    build_derived(op)
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).

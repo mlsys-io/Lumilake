@@ -1626,8 +1626,11 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    (row_id,) = runtime_graph.dsl_to_runtime[list(runtime_graph.dsl_to_runtime)[-1]]
-    node = runtime_graph.nodes[row_id]
+    llm = next(
+        op for op in compiled.graph.as_dict().values() if isinstance(op, LLMChatOp)
+    )
+    (llm_id,) = runtime_graph.dsl_to_runtime[llm.id]
+    node = runtime_graph.nodes[llm_id]
     template = node.data_spec["template"]
     columns = template["columns"]
     df_col = next(col for col in columns if col.get("label") == "df")
