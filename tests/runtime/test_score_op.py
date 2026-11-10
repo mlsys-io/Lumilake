@@ -398,6 +398,26 @@ def test_pairs_step_output_shape_broadcasts_single_query() -> None:
     }
 
 
+@pytest.mark.parametrize("bad", [None, "", 3, {"json": None}])
+def test_pairs_step_rejects_non_string_query_and_candidate(bad: object) -> None:
+    """A fail-open fetch row or a JSON body reaches the pairs step unchanged,
+    so the step rejects it with the node and row instead of letting FlowMesh
+    fail the whole classification task."""
+    for column in ("query", "candidate"):
+        plan: python_step.ColumnPlan = [
+            {"kind": "literal", "values": ["same question"]},
+            {"kind": "literal", "values": ["first", "second"]},
+        ]
+        plan[0 if column == "query" else 1]["values"] = [bad]
+        code = python_step.pairs_source("pairs", plan)
+        namespace: dict[str, object] = {}
+        exec(code, namespace)
+        main = namespace["main"]
+        assert callable(main)
+        with pytest.raises(ValueError, match=rf"^pairs: row 0 {column} must be"):
+            main({})
+
+
 def test_upstream_score_resolved_spec_is_dispatchable_shape(
     tmp_path: Path,
 ) -> None:

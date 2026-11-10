@@ -226,6 +226,14 @@ def main(inputs):
             "%s: query column has %d values but candidate column has %d"
             % (_NODE, len(queries), len(candidates))
         )
+    for row, (query, candidate) in enumerate(zip(queries, candidates)):
+        for name, value in (("query", query), ("candidate", candidate)):
+            if not isinstance(value, str) or not value:
+                shown = repr(value)[:80]
+                raise ValueError(
+                    "%s: row %d %s must be a non-empty string, got %s"
+                    % (_NODE, row, name, shown)
+                )
     return {{"items": [
         {{"text": query, "text_pair": candidate}}
         for query, candidate in zip(queries, candidates)
