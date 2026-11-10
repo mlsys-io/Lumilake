@@ -79,6 +79,21 @@ def test_score_runtime_node_emits_flowmesh_model_block() -> None:
     )
 
 
+def test_score_transformers_node_uses_the_worker_gpu() -> None:
+    """The Transformers backend is scheduled on a GPU worker, so its device map
+    must let the executor pick CUDA rather than pinning the load to the CPU."""
+    op = ScoreOp(
+        query="question",
+        candidates=["first", "second"],
+        config=ScoreConfig(model="org/reranker", backend="transformers"),
+    )
+    compiled = Graph.from_ops([as_output("scores", op)]).compile()
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    flowmesh_spec = runtime_graph.nodes[op.id].to_flowmesh_node()["spec"]
+
+    assert flowmesh_spec["model"]["transformers"]["device_map"] == "auto"
+
+
 def test_score_op_yaml_lowers_to_classification_task() -> None:
     payload = """
     name: score_pairs

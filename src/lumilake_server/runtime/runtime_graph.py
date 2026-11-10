@@ -1864,7 +1864,7 @@ class RuntimeGraphBuilder:
         backend_config = (
             {"convert": "classify", **op.config.vllm}
             if backend == "vllm"
-            else {"device_map": "cpu"}
+            else {"device_map": "auto"}
         )
         model_config = GenerationConfig(
             model=op.config.model,
