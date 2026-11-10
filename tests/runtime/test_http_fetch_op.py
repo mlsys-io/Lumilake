@@ -142,14 +142,14 @@ def test_http_fetch_params_encode_like_requests() -> None:
     params = {
         "query": query,
         "limit": 10,
-        "minCitationCount": 10,
-        "sort": "citationCount:desc",
-        "fields": "title,year,abstract,authors.name,citationCount,year,url,externalIds",
+        "pageSize": 10,
+        "sort": "relevance",
+        "fields": "title,year,summary",
     }
     expected = (
         requests.Request(
             "GET",
-            "https://api.semanticscholar.org/graph/v1/paper/search",
+            "https://search.example/records",
             params=params,
         )
         .prepare()
@@ -164,14 +164,13 @@ def test_http_fetch_params_encode_like_requests() -> None:
                 op: HttpFetchOp
                 inputs: [Query]
                 query: Query
-                url: "https://api.semanticscholar.org/graph/v1/paper/search"
+                url: "https://search.example/records"
                 params:
                   query: "{query}"
                   limit: 10
-                  minCitationCount: 10
-                  sort: "citationCount:desc"
-                  fields: >-
-                    title,year,abstract,authors.name,citationCount,year,url,externalIds
+                  pageSize: 10
+                  sort: "relevance"
+                  fields: "title,year,summary"
             outputs:
               - name: candidates
                 ref: Search
@@ -286,20 +285,20 @@ def test_http_fetch_headers_are_redacted_from_archived_graph() -> None:
     assert "s2-secret-123" not in json.dumps(runtime_graph.serialize())
 
 
-def test_semantic_scholar_stage_sets_pacing_and_query_cache(
+def test_query_stage_sets_pacing_and_query_cache(
     tmp_path: Path,
 ) -> None:
-    cache_dir = tmp_path / "semantic-scholar-cache"
+    cache_dir = tmp_path / "query-cache"
     yaml_text = textwrap.dedent(f"""
-        name: semantic_scholar_stage
+        name: query_stage
         inputs:
           Query: ["graph retrieval", "scientific models"]
         ops:
-          - id: SSSearch
+          - id: Search
             op: HttpFetchOp
             inputs: [Query]
             query: Query
-            url: "https://api.semanticscholar.org/graph/v1/paper/search?query={{query}}"
+            url: "https://search.example/records?query={{query}}"
             config:
               timeout_sec: 30
               retries: 2
@@ -309,9 +308,9 @@ def test_semantic_scholar_stage_sets_pacing_and_query_cache(
               fail_open: true
         outputs:
           - name: candidates
-            ref: SSSearch
+            ref: Search
         """)
-    spec = parse_yaml_payload(yaml_text)["semantic_scholar_stage"]
+    spec = parse_yaml_payload(yaml_text)["query_stage"]
     runtime_graph = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
