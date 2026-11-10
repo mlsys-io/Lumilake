@@ -14,6 +14,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
+| `ScoreOp` | Score query/candidate pairs with a FlowMesh cross-encoder and return one score per pair. |
 | `HttpFetchOp` | Fetch JSON over HTTP once per query row, with bounded timeout, retries, concurrency, and headers. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
@@ -94,6 +95,45 @@ is the embedding of input text `i`. A downstream op therefore receives
 `slice_length` per-row vector inputs (one embedding per input doc), and a
 consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `row`.
+
+### ScoreOp
+
+`ScoreOp` scores query/candidate pairs with a FlowMesh `classification` task
+and returns one `items[]` entry per pair, carrying `index` and `score`. The
+required `config` supplies `model` and `backend` (`vllm` or `transformers`);
+the optional `vllm` mapping is passed to the vLLM engine. A vLLM node uses
+`model.vllm.convert: classify` and reports the head's sigmoid probability;
+setting `config.vllm.apply_sigmoid: false` reports the raw logit instead. A
+Transformers node uses its single-label sequence-classification path.
+
+Literal queries and candidates lower to a non-empty `data.items` list of
+`{text, text_pair}` mappings, the query as `text`. A single literal query
+broadcasts across the candidates; otherwise the two lists must have equal
+lengths. When either side comes from an upstream op, Lumilake first runs the
+internal `pairs` Python step, which broadcasts a single query or rejects
+unequal lengths, then passes its `value.items` list to the classification
+task. Empty query or candidate inputs, empty candidate lists, and mismatched
+literal pair counts raise with the ScoreOp id in the message.
+
+```yaml
+inputs:
+  Query: ["How does retrieval augmentation work?"]
+  Candidates: ["retrieval helps ground answers", "unrelated passage"]
+
+ops:
+  - id: "Rerank"
+    op: ScoreOp
+    inputs: [Query, Candidates]
+    query: Query
+    candidates: Candidates
+    config:
+      model: OpenScholar/OpenScholar_Reranker
+      backend: vllm
+
+outputs:
+  - name: scores
+    ref: "Rerank"
+```
 
 ### HttpFetchOp
 
