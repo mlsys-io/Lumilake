@@ -35,7 +35,7 @@ def test_observation_code_and_ge_date_translation() -> None:
     assert translated.table == "fhir.observation"
     assert translated.sql == (
         "SELECT * FROM fhir.observation WHERE patient_id = '123' "
-        "AND code = 'MG' AND effective_date_time >= '2023-11-13' "
+        "AND code = 'MG' AND effective_date_time >= '2023-11-13T00:00:00+00:00' "
         "ORDER BY effective_date_time DESC"
     )
 
@@ -59,7 +59,7 @@ def test_medication_request_translation() -> None:
         "MedicationRequest?patient=123&category=Community&date=ge2023-11-13"
     ).sql == (
         "SELECT * FROM fhir.medication_request WHERE patient_id = '123' "
-        "AND category = 'Community' AND authored_on >= '2023-11-13'"
+        "AND category = 'Community' AND authored_on >= '2023-11-13T00:00:00+00:00'"
     )
 
 
@@ -68,7 +68,7 @@ def test_procedure_translation() -> None:
         "Procedure?patient=123&date=ge2023-11-13&code=12345"
     ).sql == (
         "SELECT * FROM fhir.procedure WHERE patient_id = '123' "
-        "AND code = '12345' AND performed_date_time >= '2023-11-13' "
+        "AND code = '12345' AND performed_date_time >= '2023-11-13T00:00:00+00:00' "
         "ORDER BY performed_date_time DESC"
     )
 
@@ -94,6 +94,70 @@ def test_last_updated_sort_translation() -> None:
         "SELECT * FROM fhir.condition WHERE patient_id = '123' "
         "ORDER BY recorded_date ASC"
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "clause"),
+    [
+        (
+            "2023-11-12T10:15:00+00:00",
+            "effective_date_time = '2023-11-12T10:15:00+00:00'",
+        ),
+        (
+            "2023-11-12T10%3A15%3A00%2B00%3A00",
+            "effective_date_time = '2023-11-12T10:15:00+00:00'",
+        ),
+        ("2023-10-10T20:54:00Z", "effective_date_time = '2023-10-10T20:54:00+00:00'"),
+        (
+            "ge2023-11-12T10:15:00+00:00",
+            "effective_date_time >= '2023-11-12T10:15:00+00:00'",
+        ),
+        (
+            "gt2023-11-12T10:15:00+00:00",
+            "effective_date_time > '2023-11-12T10:15:00+00:00'",
+        ),
+        (
+            "le2023-11-12T10:15:00+00:00",
+            "effective_date_time <= '2023-11-12T10:15:00+00:00'",
+        ),
+        (
+            "lt2023-11-12T10:15:00+00:00",
+            "effective_date_time < '2023-11-12T10:15:00+00:00'",
+        ),
+        (
+            "2023-07-06",
+            "effective_date_time >= '2023-07-06T00:00:00+00:00' "
+            "AND effective_date_time < '2023-07-07T00:00:00+00:00'",
+        ),
+        (
+            "2023-07",
+            "effective_date_time >= '2023-07-01T00:00:00+00:00' "
+            "AND effective_date_time < '2023-08-01T00:00:00+00:00'",
+        ),
+        (
+            "2023-12",
+            "effective_date_time >= '2023-12-01T00:00:00+00:00' "
+            "AND effective_date_time < '2024-01-01T00:00:00+00:00'",
+        ),
+        (
+            "2023",
+            "effective_date_time >= '2023-01-01T00:00:00+00:00' "
+            "AND effective_date_time < '2024-01-01T00:00:00+00:00'",
+        ),
+        ("ge2023-07", "effective_date_time >= '2023-07-31T00:00:00+00:00'"),
+        ("gt2023-07", "effective_date_time >= '2023-08-01T00:00:00+00:00'"),
+        ("le2023-07", "effective_date_time < '2023-07-02T00:00:00+00:00'"),
+        ("lt2023-07", "effective_date_time < '2023-07-01T00:00:00+00:00'"),
+        ("ge2023", "effective_date_time >= '2023-12-31T00:00:00+00:00'"),
+        ("le2023", "effective_date_time < '2023-01-02T00:00:00+00:00'"),
+        ("lt2023", "effective_date_time < '2023-01-01T00:00:00+00:00'"),
+        ("ge2023-12", "effective_date_time >= '2023-12-31T00:00:00+00:00'"),
+        ("gt2023-12", "effective_date_time >= '2024-01-01T00:00:00+00:00'"),
+    ],
+)
+def test_date_parameter_translation(value: str, clause: str) -> None:
+    sql = translate_search(f"Observation?patient=123&date={value}").sql
+    assert clause in sql
 
 
 def test_quote_escaping() -> None:

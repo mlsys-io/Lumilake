@@ -1,5 +1,6 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
@@ -61,11 +62,55 @@ def _patient_id(value: str) -> str:
     return value[len(prefix) :] if value.startswith(prefix) else value
 
 
+def _date_period(body: str) -> tuple[date, date]:
+    parts = body.split("-")
+    if len(parts) == 1:
+        return date(int(parts[0]), 1, 1), date(int(parts[0]) + 1, 1, 1)
+    if len(parts) == 2:
+        start = date(int(parts[0]), int(parts[1]), 1)
+    else:
+        start = date.fromisoformat(body)
+    if len(parts) == 3:
+        return start, start + timedelta(days=1)
+    if start.month == 12:
+        return start, date(start.year + 1, 1, 1)
+    return start, date(start.year, start.month + 1, 1)
+
+
+def _stamp(day: date) -> str:
+    return _quote(day.isoformat() + "T00:00:00+00:00")
+
+
+def _instant(body: str) -> str:
+    text = body.replace(" ", "+")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    return datetime.fromisoformat(text).isoformat()
+
+
 def _date_clause(value: str, column: str) -> str:
-    for prefix, operator in (("ge", ">="), ("gt", ">"), ("le", "<="), ("lt", "<")):
-        if value.startswith(prefix) and len(value) > len(prefix):
-            return f"{column} {operator} {_quote(value[len(prefix):])}"
-    return f"{column} >= {_quote(value)}"
+    prefix = next(
+        (
+            p
+            for p in ("ge", "gt", "le", "lt")
+            if value.startswith(p) and len(value) > len(p)
+        ),
+        "",
+    )
+    body = value[len(prefix) :] if prefix else value
+    if "T" in body:
+        operator = {"": "=", "ge": ">=", "gt": ">", "le": "<=", "lt": "<"}[prefix]
+        return f"{column} {operator} {_quote(_instant(body))}"
+    start, end = _date_period(body)
+    if not prefix:
+        return f"{column} >= {_stamp(start)} AND {column} < {_stamp(end)}"
+    if prefix == "ge":
+        return f"{column} >= {_stamp(end - timedelta(days=1))}"
+    if prefix == "gt":
+        return f"{column} >= {_stamp(end)}"
+    if prefix == "le":
+        return f"{column} < {_stamp(start + timedelta(days=1))}"
+    return f"{column} < {_stamp(start)}"
 
 
 def translate_search(url: str) -> SearchSql:
