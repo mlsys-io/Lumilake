@@ -23,6 +23,7 @@ from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
     FormatOp,
+    HttpFetchOp,
     InputOp,
     LambdaOp,
     LLMOp,
@@ -80,6 +81,17 @@ class Roles(Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+
+
+def _replace_query_placeholder(value: Any) -> Any:
+    """Adapt the typed op's ``{query}`` template to FlowMesh's prompt slot."""
+    if isinstance(value, str):
+        return value.replace("{query}", "{{prompt}}")
+    if isinstance(value, dict):
+        return {key: _replace_query_placeholder(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_query_placeholder(item) for item in value]
+    return value
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -450,6 +462,7 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str] = set()
         llm_ops: dict[str, LLMOp] = {}
         retrieval_ops: dict[str, DataRetrievalOp] = {}
+        fetch_ops: dict[str, HttpFetchOp] = {}
         list_lambda_ops: dict[str, LambdaOp] = {}
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
@@ -459,16 +472,23 @@ class RuntimeGraphBuilder:
             elif isinstance(op, DataRetrievalOp):
                 retrieval_ops[op_id] = op
                 visited_node_ids.add(op_id)
+            elif isinstance(op, HttpFetchOp):
+                fetch_ops[op_id] = op
+                visited_node_ids.add(op_id)
             elif isinstance(op, LambdaOp) and op.takes_whole_columns:
                 list_lambda_ops[op_id] = op
                 visited_node_ids.add(op_id)
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
-                if not isinstance(source, (LLMOp, DataRetrievalOp, LambdaOp)):
+                if not isinstance(
+                    source,
+                    (LLMOp, DataRetrievalOp, HttpFetchOp, LambdaOp),
+                ):
                     raise ValueError(
                         f"OutputOp '{op.name}' input must be an LLMOp, "
-                        f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
+                        "DataRetrievalOp, HttpFetchOp or LambdaOp "
+                        f"(got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
                 output_source_to_outputop.setdefault(source.id, []).append(
@@ -486,9 +506,10 @@ class RuntimeGraphBuilder:
                 )
 
         has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
-        if not llm_ops and not retrieval_ops and not has_lambda:
+        if not llm_ops and not retrieval_ops and not fetch_ops and not has_lambda:
             raise ValueError(
-                "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
+                "Graph must contain at least one LLMOp, DataRetrievalOp, "
+                "HttpFetchOp or LambdaOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
@@ -496,6 +517,31 @@ class RuntimeGraphBuilder:
         output_node_map: dict[str, str] = {}
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
+
+        def build_list_lambda(lambda_op_id: str, lambda_op: LambdaOp) -> None:
+            for input_op in lambda_op.inputs:
+                visited_node_ids.add(input_op.id)
+                if isinstance(input_op, HttpFetchOp) and isinstance(
+                    input_op.query, InputOp
+                ):
+                    visited_node_ids.add(input_op.query.id)
+            runtime_op = self._build_node_from_list_lambda_op(
+                lambda_op_id,
+                lambda_op,
+                graph_dict,
+                inputs_dict,
+                dsl_to_runtime,
+            )
+            nodes[runtime_op.node_id] = runtime_op
+            node_order.append(runtime_op.node_id)
+            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
+
+            if lambda_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[
+                    lambda_op_id
+                ]
+                output_node_map[runtime_op.node_id] = output_name
+                output_paths[runtime_op.node_id] = path_override or "items.output"
 
         for retrieval_op_id, retrieval_op in retrieval_ops.items():
             self._mark_retrieval_upstream_nodes_visited(
@@ -539,24 +585,25 @@ class RuntimeGraphBuilder:
         for lambda_op_id, lambda_op in list_lambda_ops.items():
             if task_type_override == "data_profile":
                 continue
-            for input_op in lambda_op.inputs:
-                visited_node_ids.add(input_op.id)
-            runtime_op = self._build_node_from_list_lambda_op(
-                lambda_op_id,
-                lambda_op,
-                graph_dict,
-                inputs_dict,
+            if any(inp.consumer_result_path() for inp in lambda_op.inputs):
+                continue
+            build_list_lambda(lambda_op_id, lambda_op)
+
+        for fetch_op_id, fetch_op in fetch_ops.items():
+            if task_type_override == "data_profile":
+                continue
+            if isinstance(fetch_op.query, (InputOp, DataOp)):
+                visited_node_ids.add(fetch_op.query.id)
+            runtime_op = self._build_node_from_http_fetch_op(
+                fetch_op_id, fetch_op, graph_dict, inputs_dict
             )
             nodes[runtime_op.node_id] = runtime_op
             node_order.append(runtime_op.node_id)
-            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
-
-            if lambda_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[
-                    lambda_op_id
-                ]
+            dsl_to_runtime[fetch_op_id] = [runtime_op.node_id]
+            if fetch_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[fetch_op_id]
                 output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items.output"
+                output_paths[runtime_op.node_id] = path_override or "items.json"
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -634,6 +681,13 @@ class RuntimeGraphBuilder:
                         output_paths[output_node_id] = self._upstream_output_path(
                             llm_op
                         )
+
+        for lambda_op_id, lambda_op in list_lambda_ops.items():
+            if task_type_override == "data_profile":
+                continue
+            if not any(inp.consumer_result_path() for inp in lambda_op.inputs):
+                continue
+            build_list_lambda(lambda_op_id, lambda_op)
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
@@ -730,7 +784,9 @@ class RuntimeGraphBuilder:
                     node_order,
                     dsl_to_runtime,
                 )
-            elif isinstance(inp, (LLMOp, DataRetrievalOp)):
+            elif (
+                isinstance(inp, (LLMOp, DataRetrievalOp)) or inp.consumer_result_path()
+            ):
                 runtime_ids = dsl_to_runtime.get(inp.id, [])
                 if len(runtime_ids) != 1:
                     raise ValueError(
@@ -752,7 +808,8 @@ class RuntimeGraphBuilder:
             else:
                 raise ValueError(
                     f"LambdaOp '{op_id}' reads a {type(inp).__name__}; a standalone"
-                    " Python step reads LLM, data-retrieval, Lambda, input or data"
+                    " Python step reads an op that exposes a result path, Lambda,"
+                    " input or data"
                     " ops"
                 )
             row_counts.append(
@@ -1559,12 +1616,83 @@ class RuntimeGraphBuilder:
             dependencies=dependencies if dependencies else None,
         )
 
+    def _build_node_from_http_fetch_op(
+        self,
+        op_id: str,
+        op: HttpFetchOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+    ) -> RuntimeOp:
+        query_op = op.query
+        if isinstance(query_op, InputOp):
+            query_values = inputs_dict.get(query_op.name)
+            if query_values is None:
+                raise ValueError(
+                    f"HttpFetchOp '{op_id}' query references InputOp "
+                    f"{query_op.name!r} with no values supplied."
+                )
+            if not query_values:
+                raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
+            data_spec: dict[str, Any] = {
+                "type": "list",
+                "items": list(query_values),
+            }
+            dependencies: list[str] = []
+        elif isinstance(query_op, DataOp):
+            if not query_op.data:
+                raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
+            data_spec = {"type": "list", "items": list(query_op.data)}
+            dependencies = []
+        else:
+            path = self._upstream_output_path(query_op)
+            data_spec = {
+                "type": "list",
+                "node": query_op.id,
+                "path": path,
+            }
+            dependencies = [query_op.id]
+
+        api_spec: dict[str, Any] = {
+            "method": op.method,
+            "url": op.url.replace("{query}", "{{prompt}}"),
+            "headers": dict(op.config.headers),
+            "timeout_sec": op.config.timeout_sec,
+            "retries": op.config.retries,
+            "concurrency": op.config.max_concurrency,
+            "request_delay_sec": op.config.request_delay_sec,
+            "response": {
+                "parse_json": True,
+                "return_body": True,
+                "raise_for_status": True,
+                "fail_open": op.config.fail_open,
+            },
+        }
+        if op.params is not None:
+            api_spec["params"] = _replace_query_placeholder(op.params)
+        if op.config.cache_dir is not None:
+            api_spec["cache_dir"] = op.config.cache_dir
+        if op.body is not None:
+            api_spec["json"] = _replace_query_placeholder(op.body)
+
+        return self._create_runtime_op(
+            name=op_id,
+            task_type="api",
+            data_spec=data_spec,
+            model_spec={},
+            inference_spec={},
+            api_spec=api_spec,
+            backend="api",
+            model="http-fetch",
+            dependencies=dependencies if dependencies else None,
+        )
+
     def _build_node_from_list_lambda_op(
         self,
         op_id: str,
         op: LambdaOp,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]],
     ) -> RuntimeOp:
         """Compile a list-mode LambdaOp to one FlowMesh ``python`` task."""
         plan: python_step.ColumnPlan = []
@@ -1588,9 +1716,20 @@ class RuntimeGraphBuilder:
                     entry["flatten"] = True
                 plan.append(entry)
                 dependencies.append(inp.id)
-            elif isinstance(inp, DataRetrievalOp):
-                plan.append({"kind": "stage", "node": inp.id})
-                dependencies.append(inp.id)
+            elif (
+                isinstance(inp, DataRetrievalOp)
+                or inp.consumer_result_path() is not None
+            ):
+                runtime_ids = dsl_to_runtime.get(inp.id, [])
+                if len(runtime_ids) != 1:
+                    raise ValueError(
+                        f"LambdaOp '{op_id}' reads '{inp.id}', which compiled to"
+                        f" {len(runtime_ids)} runtime nodes; a list-mode Python"
+                        " step can read one upstream node per input"
+                    )
+                dep = runtime_ids[0]
+                plan.append({"kind": "stage", "node": dep})
+                dependencies.append(dep)
             elif isinstance(inp, InputOp):
                 values = inputs_dict.get(inp.name)
                 if values is None:
@@ -1604,8 +1743,8 @@ class RuntimeGraphBuilder:
                 row_counts.append((inp.id, len(inp.data)))
             else:
                 raise ValueError(
-                    f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
-                    f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
+                    f"LambdaOp '{op_id}' list-mode input must expose a result path "
+                    f"or be a list-mode LambdaOp, InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
             if not isinstance(inp, (InputOp, DataOp)):
@@ -1882,6 +2021,8 @@ class RuntimeGraphBuilder:
 
     def _upstream_output_path(self, op: Op) -> str:
         """Result path for an upstream op's text output."""
+        if declared := op.consumer_result_path():
+            return declared
         if op.id in self._flattened_vlm_ids:
             return "value.items.output"
         if RuntimeGraphBuilder._is_api_task(op):
@@ -3041,8 +3182,14 @@ class RuntimeGraphBuilder:
                 self._static_output_row_count(inp, inputs_dict, graph_dict)
                 for inp in op.inputs
             ]
-            known = [c for c in lambda_counts if c is not None]
-            return max(known) if known else None
+            return op.consumer_row_count(lambda_counts)
+        declared = op.consumer_result_path()
+        if declared is not None:
+            input_counts = [
+                self._static_output_row_count(inp, inputs_dict, graph_dict)
+                for inp in op.inputs
+            ]
+            return op.consumer_row_count(input_counts)
         return None
 
     def _infer_structural_messages(
@@ -3149,6 +3296,14 @@ class RuntimeGraphBuilder:
                 if op.id not in columns:
                     path = retrieval_items_path(op.data_spec["mode"])
                     columns[op.id] = {"node": op.id, "path": path}
+                ancestor_buffer[op.id] = [(Roles.USER, op.id)]
+
+            elif op.consumer_result_path() is not None:
+                if op.id not in columns:
+                    columns[op.id] = {
+                        "node": op.id,
+                        "path": self._upstream_output_path(op),
+                    }
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, MessageOp):
