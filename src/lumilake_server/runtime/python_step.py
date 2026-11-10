@@ -291,12 +291,8 @@ _ROW_SKIP_MERGE_MAIN = """\
 
 def main(inputs):
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
-    statuses = columns[0]
-    outputs = columns[1]
-    if not outputs:
-        return {{"items": []}}
-    selected = []
-    for index, value in enumerate(statuses):
+    statuses = []
+    for index, value in enumerate(columns[0]):
         if isinstance(value, str):
             try:
                 value = json.loads(value)
@@ -304,30 +300,23 @@ def main(inputs):
                 pass
         if not isinstance(value, dict):
             raise ValueError("row status %d is not an object" % index)
-        if value.get("branch") == {branch}:
-            selected.append(value)
-    if len(selected) != len(outputs):
+        statuses.append(value)
+    outputs = columns[1]
+    routed = [
+        index
+        for index, status in enumerate(statuses)
+        if status.get("branch") == {branch}
+    ]
+    if len(routed) != len(outputs):
         raise ValueError(
-            "%s: merged %d outputs for %d selected rows"
-            % (_NODE, len(outputs), len(selected))
+            "%s: merged %d outputs for %d routed rows"
+            % (_NODE, len(outputs), len(routed))
         )
-    output_index = 0
+    served = dict(zip(routed, outputs))
     merged = []
-    for status in statuses:
-        value = status
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except ValueError:
-                pass
-        row = dict(value)
-        if row.get("done"):
-            continue
-        if row.get("branch") == {branch}:
-            row["output"] = outputs[output_index]
-            output_index += 1
-        else:
-            row["output"] = None
+    for index, status in enumerate(statuses):
+        row = dict(status)
+        row["output"] = served.get(index)
         merged.append({{"output": json.dumps(row), "value": row}})
     return {{"items": merged}}
 """

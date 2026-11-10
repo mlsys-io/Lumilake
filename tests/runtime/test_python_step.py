@@ -437,6 +437,91 @@ def test_terminal_row_status_is_excluded_from_a_nonterminal_selection(
     assert selected == {"items": []}
 
 
+def _run_row_merge(
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    *,
+    branch: str,
+):
+    """Run a generated merge step, which pairs routed rows with model outputs."""
+    namespace: dict[str, Any] = {}
+    code = python_step.row_skip_merge_code("merge", plan, branch=branch)
+    exec(code, namespace)
+    return namespace["main"](inputs)
+
+
+def _merge_plan(status_node: str, selected_node: str) -> python_step.ColumnPlan:
+    return [
+        {"kind": "stage", "node": status_node},
+        {"kind": "stage", "node": selected_node, "flatten": True, "allow_empty": True},
+    ]
+
+
+def test_row_merge_keeps_unrouted_rows_when_the_branch_served_none(
+    tmp_path: Path,
+) -> None:
+    source = _stage(
+        tmp_path,
+        "source",
+        {"items": [{"output": "normal"}, {"output": "normal"}]},
+    )
+    status = _run_row_status(
+        [{"kind": "stage", "node": "source"}],
+        {"source": source},
+        rules=[{"branch": "review", "match": "contains", "value": "NEEDS REVIEW"}],
+        default_branch="pending",
+    )
+    status_stage = _stage(tmp_path, "status", status)
+    selected_stage = _stage(tmp_path, "selected", {"items": []})
+    merged = _run_row_merge(
+        _merge_plan("status", "selected"),
+        {"status": status_stage, "selected": selected_stage},
+        branch="review",
+    )
+    rows = [json.loads(item["output"]) for item in merged["items"]]
+    assert [row["branch"] for row in rows] == ["pending", "pending"]
+    assert [row["output"] for row in rows] == [None, None]
+
+
+def test_row_merge_keeps_terminal_rows_with_their_outputs(tmp_path: Path) -> None:
+    source = _stage(
+        tmp_path,
+        "source",
+        {"items": [{"output": "normal"}, {"output": "COMPLETE: done"}]},
+    )
+    status = _run_row_status(
+        [{"kind": "stage", "node": "source"}],
+        {"source": source},
+        rules=[{"branch": "finish", "match": "contains", "value": "COMPLETE"}],
+        default_branch="pending",
+        terminal_branch="finish",
+    )
+    status_stage = _stage(tmp_path, "status", status)
+    selected_stage = _stage(tmp_path, "selected", {"items": [{"output": "final"}]})
+    merged = _run_row_merge(
+        _merge_plan("status", "selected"),
+        {"status": status_stage, "selected": selected_stage},
+        branch="finish",
+    )
+    rows = [json.loads(item["output"]) for item in merged["items"]]
+    assert rows == [
+        {
+            "selected": True,
+            "done": False,
+            "branch": "pending",
+            "row": 0,
+            "output": None,
+        },
+        {
+            "selected": True,
+            "done": True,
+            "branch": "finish",
+            "row": 1,
+            "output": "final",
+        },
+    ]
+
+
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     py_dir = _stage(tmp_path, "py", {"value": {"items": [{"output": "p"}]}})
     api_dir = _stage(tmp_path, "api", {"text": "t"})

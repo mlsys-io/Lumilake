@@ -2767,6 +2767,7 @@ class RuntimeGraphBuilder:
                         "kind": "stage",
                         "node": selected_id,
                         "flatten": True,
+                        "allow_empty": True,
                     },
                 ],
                 "branch": row_gate["branch"],
