@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from flowmesh.exceptions import APIError
 from flowmesh.models.tasks import TaskStatusView
@@ -81,12 +81,15 @@ def _resolve_gpu_count(hardware: HardwareRequirements | None) -> int:
     return envs.HARDWARE_GPU_REQUIREMENT
 
 
-def _dump_yaml_artifact(data: dict[str, Any] | str) -> str:
-    if isinstance(data, str):
-        return data
-    return cast(
-        str,
-        dump_yaml(data, default_flow_style=False, sort_keys=False),
+def _dump_task_spec_yaml(task_spec: dict[str, Any]) -> tuple[str, str]:
+    """The submit YAML and its redacted archive copy, dumped for one task."""
+    return (
+        dump_yaml(task_spec, default_flow_style=False, sort_keys=False),
+        dump_yaml(
+            redact_sensitive(task_spec),
+            default_flow_style=False,
+            sort_keys=False,
+        ),
     )
 
 
@@ -382,7 +385,11 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         filename: str,
         data: dict[str, Any] | str,
     ) -> str:
-        yaml_data = await asyncio.to_thread(_dump_yaml_artifact, data)
+        yaml_data = (
+            data
+            if isinstance(data, str)
+            else dump_yaml(data, default_flow_style=False, sort_keys=False)
+        )
         return await self.save_runtime_artifact_async(
             request_info,
             filename,
@@ -1327,11 +1334,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         }
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
-        task_yaml = dump_yaml(task_spec, default_flow_style=False, sort_keys=False)
-        archive_task_yaml = dump_yaml(
-            redact_sensitive(task_spec),
-            default_flow_style=False,
-            sort_keys=False,
+        task_yaml, archive_task_yaml = await asyncio.to_thread(
+            _dump_task_spec_yaml, task_spec
         )
         graph_uri = await self._save_yaml_artifact(
             request_info,

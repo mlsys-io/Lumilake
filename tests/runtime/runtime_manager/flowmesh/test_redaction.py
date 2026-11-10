@@ -28,6 +28,7 @@ from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placehold
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_manager import flowmesh as flowmesh_module
 from lumilake_server.runtime.runtime_manager.flowmesh import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
@@ -595,6 +596,19 @@ async def test_string_yaml_archive_skips_yaml_dump(
         "data": payload.encode("utf-8"),
         "content_type": "application/x-yaml",
     }
+
+
+def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
+    """The submit YAML keeps the credential FlowMesh needs; the archived copy
+    replaces it."""
+    task_spec = {
+        "spec": {"blobs": [{"headers": {"Authorization": "Bearer sk-live-secret"}}]}
+    }
+
+    submit_yaml, archive_yaml = flowmesh_module._dump_task_spec_yaml(task_spec)
+
+    assert "sk-live-secret" in submit_yaml
+    assert "sk-live-secret" not in archive_yaml
 
 
 def test_yaml_dump_equivalent_to_safe_dump_and_uses_libyaml() -> None:
