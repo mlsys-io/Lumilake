@@ -624,6 +624,44 @@ def test_terminal_row_gate_marks_done_and_allows_an_empty_selected_set() -> None
     assert merge.data_spec["branch"] == "finish"
 
 
+def test_row_gated_llm_renders_every_node_for_submission() -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
+            RouterRule(branch="pending", match="equals", value="__never__"),
+        ],
+        default_branch="pending",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "review"},
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(
+        Rows=["normal", "NEEDS REVIEW", "normal"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    ids = runtime_graph.dsl_to_runtime[llm.id]
+    for node_id in runtime_graph.node_order:
+        node = runtime_graph.nodes[node_id]
+        rendered = node.to_flowmesh_node()
+        if node.task_type == "python":
+            compile(rendered["spec"]["code"], node_id, "exec")
+    status_spec = runtime_graph.nodes[ids[0]].to_flowmesh_node()["spec"]
+    merge_spec = runtime_graph.nodes[ids[3]].to_flowmesh_node()["spec"]
+    assert "inputs" not in status_spec
+    assert merge_spec["inputs"] == [
+        {"stage": ids[0]},
+        {"stage": ids[2]},
+    ]
+
+
 def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
     yaml_text = textwrap.dedent("""
         name: routed

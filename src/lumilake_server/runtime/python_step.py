@@ -294,7 +294,7 @@ def main(inputs):
     statuses = columns[0]
     outputs = columns[1]
     if not outputs:
-        return {"items": []}
+        return {{"items": []}}
     selected = []
     for index, value in enumerate(statuses):
         if isinstance(value, str):
@@ -328,8 +328,8 @@ def main(inputs):
             output_index += 1
         else:
             row["output"] = None
-        merged.append({"output": json.dumps(row), "value": row})
-    return {"items": merged}
+        merged.append({{"output": json.dumps(row), "value": row}})
+    return {{"items": merged}}
 """
 
 _ROW_SELECT_MAIN = """\
@@ -413,10 +413,11 @@ def row_skip_merge_code(
     *,
     branch: str,
 ) -> str:
-    return (
-        (_RESHAPE_PRELUDE + _ROW_SKIP_MERGE_MAIN)
-        .format(op_id=node_id, plan=json.dumps(plan))
-        .replace("{branch}", repr(branch))
+    """Generated merge step: one row per input row, with its gate outcome."""
+    return (_RESHAPE_PRELUDE + _ROW_SKIP_MERGE_MAIN).format(
+        op_id=node_id,
+        plan=json.dumps(plan),
+        branch=repr(branch),
     )
 
 

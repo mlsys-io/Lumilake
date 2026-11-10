@@ -2556,6 +2556,7 @@ class RuntimeGraphBuilder:
         route_path = input_path.removeprefix("items.output.")
         source_columns: list[dict[str, Any]] = [
             {
+                "kind": "stage",
                 "label": "source",
                 "node": router.source_node,
                 "path": input_path,
@@ -2564,6 +2565,7 @@ class RuntimeGraphBuilder:
         if route_path and route_path != input_path:
             source_columns.append(
                 {
+                    "kind": "stage",
                     "label": "route",
                     "node": router.source_node,
                     "path": f"items.output.{route_path}",
@@ -2579,7 +2581,11 @@ class RuntimeGraphBuilder:
                     "has no values supplied"
                 )
             source_columns = [
-                {"label": "source", "data": {"type": "list", "items": list(values)}}
+                {
+                    "kind": "literal",
+                    "label": "source",
+                    "values": list(values),
+                }
             ]
             status_dependencies = ()
         status = RuntimeOp(
