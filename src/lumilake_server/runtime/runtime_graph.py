@@ -672,8 +672,6 @@ class RuntimeGraphBuilder:
                 continue
             if any(inp.consumer_result_path() for inp in lambda_op.inputs):
                 continue
-            if reads_llm(lambda_op):
-                continue
             build_derived(lambda_op)
 
         for fetch_op in fetch_ops.values():
