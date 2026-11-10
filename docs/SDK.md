@@ -311,7 +311,12 @@ driver:
     stop_when_empty: "Advance_r{{prev}}"
 ```
 
-`first` runs as round 1 and `next` as every later round, with `{{round}}` and `{{prev}}` rendered into ids, inputs and exports. `stop_when_empty` names the previous round's export, and the server stops before a round whose predecessor exported no rows. Template mode calls no planner and is mutually exclusive with `api`; every rendered body passes the same checks as a planner plan, and each stored plan records `source: "template"`.
+`first` runs as round 1 and `next` as every later round, with `{{round}}`
+and `{{prev}}` rendered into ids, inputs and exports. `stop_when_empty` names
+the previous round's export, and the server stops before a round whose
+predecessor exported no rows. Template mode calls no planner and is mutually
+exclusive with `api`; every rendered body passes the same checks as a planner
+plan, and each stored plan records `source: "template"`.
 
 The `driver:` YAML settings the server accepts are:
 
@@ -356,9 +361,13 @@ templates the planner can emit by id. Each entry is a full op config (e.g. a
 authoritative for its config, so the planner may only override `id` and
 `inputs`. A template may declare `data_spec.param_bindings` for a retrieval op, or `column_bindings` for a rowwise `LLMChatOp`, each a list of `{"label": <template label>, "input": <inputs index>}` mappings that point the template's placeholder at the node passed at that position. One library entry can therefore be instantiated repeatedly under distinct node ids. Every input slot must be bound and every rowwise column covered. Ops without a `ref` are emitted fully inline. The planner sees the library (id, op type, key config) in its system message each round.
 
-A dynamic round body may use `RouterOp` with a rowwise `LLMChatOp` `row_gate` instead of several list-mode stages. The branch decision is a declared graph element, so it is validated like any other op. The gated LLM calls the model only for matching rows and still returns one row per input row, with `output: null` for the rest. A gated op compiles to status, selection, gated call and merge stages, so only an `OutputOp` can read its result; any other consumer is rejected at build time.
-
-Rows that carry their own growing conversation use `rowwise_messages_column`: the named column holds one serialized message array per row, so the complete role/content sequence survives a round boundary.
+A dynamic round body may route rows with `RouterOp` and a rowwise
+`LLMChatOp` `row_gate` instead of several list-mode stages. The branch
+decision is a declared graph element, so it is validated like any other op,
+and a gated op keeps one row per input row. Both are described in
+[`docs/OPS.md`](OPS.md#routerop-and-row-gates). Rows that carry their own
+growing conversation use `rowwise_messages_column`, so the complete
+role/content sequence survives a round boundary.
 
 The parent job's result carries the per-round plans. Missing, malformed,
 unknown, or wrongly typed plan output fails the parent; it never becomes a
