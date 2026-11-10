@@ -520,7 +520,7 @@ def test_api_concurrency_yaml_round_trip(monkeypatch: pytest.MonkeyPatch) -> Non
               api:
                 url: https://api.example.com/v1/chat/completions
                 authorization: Bearer caller-key
-                concurrency: 16
+                concurrency: 8
         outputs:
           - name: answer
             ref: Ask
@@ -529,11 +529,11 @@ def test_api_concurrency_yaml_round_trip(monkeypatch: pytest.MonkeyPatch) -> Non
     graph = Graph.from_json(spec["graph"])
     (llm,) = list(graph.iter_ops(LLMChatOp))
     assert llm.config.api is not None
-    assert llm.config.api.concurrency == 16
+    assert llm.config.api.concurrency == 8
     compiled = graph.compile(**spec["inputs"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     node = runtime_graph.nodes[llm.id]
-    assert node.to_flowmesh_node()["spec"]["api"]["concurrency"] == 16
+    assert node.to_flowmesh_node()["spec"]["api"]["concurrency"] == 8
 
 
 @pytest.mark.parametrize("concurrency", [0, -1, "16", 1.5, True])
