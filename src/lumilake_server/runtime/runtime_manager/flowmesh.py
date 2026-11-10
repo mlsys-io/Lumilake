@@ -204,7 +204,7 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
     body = redact_secrets_in_text(e.body if e.body is not None else str(e))
     if len(body) > 2000:
         body = body[:2000] + "...[truncated]"
-    message = redact_secrets_in_text(str(e))
+    message = redact_secrets_in_text(e.args[0])
     return type(e)(
         message,
         status_code=e.status_code,
@@ -234,7 +234,7 @@ def _name_python_blobs_requirement(e: APIError) -> APIError:
     only the unexpected field; the operator needs the requirement.
     """
     return type(e)(
-        f"{e} ({PYTHON_BLOBS_REQUIREMENT})",
+        f"{e.args[0]}; {PYTHON_BLOBS_REQUIREMENT}",
         status_code=e.status_code,
         method=e.method,
         url=e.url,
