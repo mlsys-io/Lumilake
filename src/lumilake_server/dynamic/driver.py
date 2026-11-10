@@ -93,6 +93,9 @@ _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
     name for name in SUPPORTED_OPS if issubclass(_OP_CLASSES[name], OUTPUT_SOURCE_TYPES)
 )
 
+MAX_ROUND_OP_EXPANSION = 4
+MAX_STATIC_ROUND_NODE_BOUND = 100
+
 
 class DriverProtocolError(Exception):
     """Raised when a job result or driver configuration violates the contract.
@@ -100,6 +103,29 @@ class DriverProtocolError(Exception):
     Distinct from :class:`RuntimeError` so callers can distinguish a malformed
     plan/config from a job that legitimately failed.
     """
+
+
+def _template_round_expansion(template: dict[str, Any]) -> int:
+    """Upper-bound runtime nodes one declared template can expand into."""
+    return MAX_ROUND_OP_EXPANSION if template.get("row_gate") is not None else 1
+
+
+def static_round_node_upper_bound(
+    library: dict[str, dict[str, Any]] | None,
+    *,
+    include_proposer: bool,
+) -> int:
+    """Conservative ceiling for the declared portion of one round.
+
+    The declared round body expands each library template at its maximum
+    runtime-node factor. The in-graph observation/proposer pair contributes two
+    fixed nodes. Admission independently enforces the planner-emitted cap.
+    """
+    declared_body = sum(
+        _template_round_expansion(template) for template in (library or {}).values()
+    )
+    fixed_nodes = 2 if include_proposer else 0
+    return declared_body + fixed_nodes
 
 
 class StopPlan(BaseModel):
