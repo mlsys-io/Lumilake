@@ -105,9 +105,11 @@ class ApiConfig:
     def __post_init__(self) -> None:
         if self.concurrency is None:
             return
-        if isinstance(self.concurrency, bool) or not isinstance(self.concurrency, int):
-            raise ValueError("ApiConfig.concurrency must be a positive integer")
-        if self.concurrency < 1:
+        if (
+            isinstance(self.concurrency, bool)
+            or not isinstance(self.concurrency, int)
+            or self.concurrency < 1
+        ):
             raise ValueError("ApiConfig.concurrency must be a positive integer")
 
 
