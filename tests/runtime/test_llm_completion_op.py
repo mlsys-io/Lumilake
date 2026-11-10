@@ -15,7 +15,7 @@ def test_completion_op_compiles_to_string_prompt_list_without_chat_template() ->
     op = LLMCompletionOp(
         prompt=["first raw prompt", "second raw prompt"],
         config=GenerationConfig(
-            model="OpenSciLM/Llama-3.1_OpenScholar-8B",
+            model="Qwen/Qwen3-8B",
             temperature=0.7,
             max_tokens=3000,
             extra_sampling_params={"stop_token_ids": [128009]},
@@ -46,7 +46,7 @@ def test_completion_yaml_uses_string_prompt_and_no_chat_template() -> None:
             inputs: [Prompt]
             prompt: Prompt
             config:
-              model: OpenSciLM/Llama-3.1_OpenScholar-8B
+              model: Qwen/Qwen3-8B
               temperature: 0.7
               max_tokens: 3000
               extra_sampling_params:
@@ -75,7 +75,7 @@ def test_completion_prompt_from_upstream_lambda_binds_exact_runtime_path() -> No
     render = LambdaOp([prompt], fn=lambda inputs: str(inputs[0]).upper())
     completion = LLMCompletionOp(
         prompt=render,
-        config=GenerationConfig(model="OpenSciLM/Llama-3.1_OpenScholar-8B"),
+        config=GenerationConfig(model="Qwen/Qwen3-8B"),
     )
     compiled = Graph.from_ops([as_output("answer", completion)]).compile(
         Prompt=["first", "second"]
@@ -101,7 +101,7 @@ def test_completion_prompt_from_list_mode_lambda_skips_message_inference() -> No
     )
     completion = LLMCompletionOp(
         prompt=render,
-        config=GenerationConfig(model="OpenSciLM/Llama-3.1_OpenScholar-8B"),
+        config=GenerationConfig(model="Qwen/Qwen3-8B"),
     )
     compiled = Graph.from_ops([as_output("answer", completion)]).compile(
         Prompt=["first", "second"]
