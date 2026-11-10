@@ -15,9 +15,12 @@ from lumilake_server.ops import (
     LambdaOp,
     LLMChatOp,
     OpMessage,
+    RouterOp,
+    RowGate,
     as_output,
     input_placeholder,
 )
+from lumilake_server.ops.router_ops import RouterRule
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
@@ -1433,3 +1436,105 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
+
+
+def _gated_chain() -> Any:
+    """Two models that each read the rows one router marked with their branch."""
+    rows = input_placeholder("Rows")
+    classify = LambdaOp(
+        [rows],
+        fn=lambda items: [
+            {"code": f"fn_{index}", "status": "fail" if index == 1 else "ok"}
+            for index in range(len(items[0]))
+        ],
+        mode="list",
+    )
+    compiled: list[Any] = []
+    for name, branch in (("repair", "fail"), ("audit", "ok")):
+        router = RouterOp(
+            classify,
+            rules=[
+                RouterRule(branch="fail", match="equals", value="fail"),
+                RouterRule(branch="ok", match="equals", value="ok"),
+            ],
+            default_branch="ok",
+            input_path="items.output.status",
+        )
+        llm = LLMChatOp(
+            [OpMessage(role="user", content=name)],
+            config=GenerationConfig(model=_MODEL),
+            rowwise_template=name + " {code}",
+            rowwise_columns=[
+                {"label": "code", "node": classify.id, "path": "items.output.code"}
+            ],
+            row_gate=RowGate(node=router.id, branch=branch),
+            row_gate_op=router,
+        )
+        compiled.append(as_output(name, llm))
+    return Graph.from_ops(compiled).compile(Rows=["a", "b", "c"])
+
+
+def test_gated_rows_read_the_selector_label_paths() -> None:
+    # The selector emits one flat ``{label: value}`` row per kept item, so a
+    # gated model reads its columns at ``value.items.<label>`` on the selector's
+    # result. FlowMesh's graph-template walker rejects any other path.
+    graph = RuntimeGraphBuilder().build(_gated_chain())
+    selectors = {
+        node.node_id: node
+        for node in graph.nodes.values()
+        if node.data_spec.get("mode") == "row_select"
+    }
+    assert len(selectors) == 2
+
+    gated = [
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("type") == "dataframe"
+        and any(
+            column["node"] in selectors for column in node.data_spec.get("columns", [])
+        )
+    ]
+    assert len(gated) == len(selectors)
+
+    branches = ("fail", "ok", "fail")
+    for node in gated:
+        selector = selectors[node.data_spec["columns"][0]["node"]]
+        labels = selector.data_spec["labels"]
+        assert [c["label"] for c in node.data_spec["columns"]] == labels
+        assert [c["path"] for c in node.data_spec["columns"]] == [
+            f"value.items.{label}" for label in labels
+        ]
+
+        payload = _run_row_select(
+            [
+                {
+                    "kind": "literal",
+                    "values": [json.dumps({"branch": b}) for b in branches],
+                },
+                *[
+                    {"kind": "literal", "values": [f"{label}_{i}" for i in range(3)]}
+                    for label in labels
+                ],
+            ],
+            {},
+            labels=labels,
+            branch=selector.data_spec["branch"],
+            include_done=selector.data_spec["include_done"],
+        )
+        kept = [i for i, b in enumerate(branches) if b == selector.data_spec["branch"]]
+        assert payload["items"] == [
+            {label: f"{label}_{i}" for label in labels} for i in kept
+        ]
+
+        # The column path hangs off the selector's node id, as FlowMesh's
+        # graph-template walker sees it, and the python task's result is the
+        # ``value`` wrapper.
+        result = {"value": payload}
+        for column in node.data_spec["columns"]:
+            expr = f"{selector.node_id}.{column['path']}"
+            expected = [f"{column['label']}_{i}" for i in kept]
+            assert _flowmesh_walk(result, expr) == expected
+            with pytest.raises(KeyError, match="output"):
+                _flowmesh_walk(
+                    result, f"{selector.node_id}.value.items.output.{column['label']}"
+                )

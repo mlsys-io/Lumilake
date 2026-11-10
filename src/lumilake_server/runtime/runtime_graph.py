@@ -2732,13 +2732,15 @@ class RuntimeGraphBuilder:
             inference_spec={},
             dependencies=tuple(select_dependencies),
         )
+        # The selector emits one flat ``{label: value}`` row per kept row, so
+        # a gated column reads its label straight off each selected item.
         base_data_spec: dict[str, Any] = {
             "type": "dataframe",
             "columns": [
                 {
                     "label": label,
                     "node": select_id,
-                    "path": f"value.items.output.{label}",
+                    "path": f"value.items.{label}",
                 }
                 for label in labels
             ],
