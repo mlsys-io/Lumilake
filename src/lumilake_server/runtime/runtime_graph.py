@@ -2661,6 +2661,31 @@ class RuntimeGraphBuilder:
             and not isinstance(source_op, LLMVisionOp)
             and bool(source_op.rowwise_template or source_op.rowwise_messages_column)
         )
+        if rowwise_source and read_path != "output":
+            raise ValueError(
+                f"RouterOp '{router_id}' reads {input_path!r} from rowwise LLM"
+                f" '{router.source.id}'; only 'items.output' (the whole output)"
+                " is supported."
+            )
+        if (
+            source_op is not None
+            and self._is_api_task(source_op)
+            and not rowwise_source
+        ):
+            raise ValueError(
+                f"RouterOp '{router_id}' reads API upstream"
+                f" '{router.source.id}'; an API item carries its text under"
+                " 'json.choices[0].message.content', so only a local op can"
+                " source a router."
+            )
+        if isinstance(source_op, InputOp) and read_path != "output":
+            raise ValueError(
+                f"RouterOp '{router_id}' reads {input_path!r} from InputOp"
+                f" '{source_op.name}'; InputOp-derived columns cannot be"
+                " drilled — wrap record-shaped inputs in an upstream op that"
+                " exposes the target field, or drop the 'input_path' for scalar"
+                " inputs."
+            )
         source_columns: list[dict[str, Any]] = [
             {
                 "kind": "stage",
@@ -2767,6 +2792,22 @@ class RuntimeGraphBuilder:
                 select_plan.append({"kind": "literal", "values": list(values)})
                 continue
             runtime_ids = dsl_to_runtime.get(node_ref, [])
+            rowwise_upstream = (
+                isinstance(upstream, LLMChatOp)
+                and not isinstance(upstream, LLMVisionOp)
+                and bool(upstream.rowwise_template or upstream.rowwise_messages_column)
+            )
+            if (
+                upstream is not None
+                and self._is_api_task(upstream)
+                and not rowwise_upstream
+            ):
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' row gate column {label!r} reads API"
+                    f" upstream '{node_ref}'; an API item carries its text under"
+                    " 'json.choices[0].message.content', so only a local op can"
+                    " fill a gated column."
+                )
             if len(runtime_ids) != 1:
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' row gate column {label!r} node "
@@ -2781,11 +2822,6 @@ class RuntimeGraphBuilder:
                     f"LLMChatOp '{llm_op_id}' row gate column {label!r} path "
                     "must be a string"
                 )
-            rowwise_upstream = (
-                isinstance(upstream, LLMChatOp)
-                and not isinstance(upstream, LLMVisionOp)
-                and bool(upstream.rowwise_template or upstream.rowwise_messages_column)
-            )
             if rowwise_upstream:
                 if column_path not in ("", "items.output"):
                     raise ValueError(

@@ -988,6 +988,127 @@ def test_row_gate_rejects_a_condition() -> None:
         RuntimeGraphBuilder().build(compiled)
 
 
+def _row_gate_over(rows: Any, router: RouterOp) -> LLMChatOp:
+    return LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate=RowGate(node=router.id, branch="fail"),
+        row_gate_op=router,
+    )
+
+
+def test_row_gate_rejects_a_field_path_on_a_rowwise_llm_router_source() -> None:
+    """The status step reads a rowwise LLM's whole output, so a field path on
+    that source would walk a field the grouped item does not have."""
+    rows = input_placeholder("Rows")
+    judge = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="judge {row}",
+        rowwise_columns=[{"label": "row", "node": rows.id}],
+    )
+    router = RouterOp(
+        judge,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="FAIL"),
+            RouterRule(branch="ok", match="equals", value="PASS"),
+        ],
+        default_branch="ok",
+        input_path="items.output.verdict",
+    )
+    compiled = Graph.from_ops(
+        [as_output("result", _row_gate_over(rows, router))]
+    ).compile(Rows=["a", "b"])
+
+    with pytest.raises(ValueError, match="from rowwise LLM"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_gate_rejects_an_api_llm_router_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An API item carries its text under ``json.choices``, which the status
+    step's item walk does not reach."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+    rows = input_placeholder("Rows")
+    judge = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
+    )
+    router = RouterOp(
+        judge,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="FAIL"),
+            RouterRule(branch="ok", match="equals", value="PASS"),
+        ],
+        default_branch="ok",
+    )
+    compiled = Graph.from_ops(
+        [as_output("result", _row_gate_over(rows, router))]
+    ).compile(Rows=["a", "b"])
+
+    with pytest.raises(ValueError, match="reads API upstream"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_gate_rejects_a_field_path_on_an_inputop_router_source() -> None:
+    """An InputOp router source binds its values as literals, so a field path
+    would be dropped and every row would match the raw value."""
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    compiled = Graph.from_ops(
+        [as_output("result", _row_gate_over(rows, router))]
+    ).compile(Rows=['{"status": "ok"}', '{"status": "fail"}'])
+
+    with pytest.raises(ValueError, match="InputOp-derived columns cannot be drilled"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_gate_rejects_a_gated_column_from_an_api_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gated column reads its label off the selector's flat row, so an API
+    upstream would contribute the whole response instead of its text."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+    rows = input_placeholder("Rows")
+    judge = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
+    )
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+    )
+    gated = LLMChatOp(
+        judge,
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="fix {verdict}",
+        rowwise_columns=[
+            {"label": "verdict", "node": judge.id, "path": "items.output"}
+        ],
+        row_gate=RowGate(node=router.id, branch="fail"),
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["a", "b"])
+
+    with pytest.raises(ValueError, match="only a local op can fill a gated column"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
     """A rowwise LLMChatOp column with no path on an InputOp ref binds as a literal."""
     stock = input_placeholder("Stock")
