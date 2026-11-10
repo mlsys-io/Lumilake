@@ -12,9 +12,11 @@ from lumilake_server.dynamic.driver import (
     build_round,
     compute_observation,
     forward_refs,
+    resolve_subgraph,
     validate_emitted_subgraph,
     walk_archived_items,
 )
+from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import _op_id_prefix, parse_yaml_payload
 from lumilake_server.routes.jobs import _admit_subgraph
@@ -284,6 +286,149 @@ def test_validate_accepts_export_in_subgraph():
         }
     ]
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
+
+
+def _llm_column_library() -> dict[str, dict[str, Any]]:
+    return {
+        "ReviewTurn": {
+            "op": "LLMChatOp",
+            "inputs": ["ReviewPrompt"],
+            "messages": [{"role": "user", "content": "review"}],
+            "rowwise_template": "{prompt}",
+            "rowwise_columns": [
+                {
+                    "label": "prompt",
+                    "node": "ReviewPrompt",
+                    "path": "items.output.prompt",
+                },
+                {
+                    "label": "review_system",
+                    "node": "ReviewPrompt",
+                    "path": "items.output.review_system",
+                },
+            ],
+            "column_bindings": [
+                {"label": "prompt", "input": 0},
+                {"label": "review_system", "input": 0},
+            ],
+            "config": {
+                "model": "Qwen/Qwen3.8-27B-FP8",
+                "temperature": 0.05,
+                "max_tokens": 200,
+            },
+        }
+    }
+
+
+def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"{prefix}_prompt_1",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "review_prompt",
+            "code": "def review_prompt(items):\n    return [{'prompt': 'x'}]\n",
+        },
+        {
+            "ref": "ReviewTurn",
+            "id": f"{prefix}_turn_1",
+            "inputs": [f"{prefix}_prompt_1"],
+        },
+    ]
+
+
+def test_column_bindings_remap_independent_library_instances() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("first") + _llm_column_subgraph("second")
+
+    resolved = resolve_subgraph(subgraph, library)
+    validate_emitted_subgraph(subgraph, {}, max_nodes=4, library=library)
+
+    turns = [op for op in resolved if op["op"] == "LLMChatOp"]
+    assert [
+        {column["node"] for column in turn["rowwise_columns"]} for turn in turns
+    ] == [
+        {"first_prompt_1"},
+        {"second_prompt_1"},
+    ]
+    assert [turn["rowwise_columns"][0]["node"] for turn in turns] == [
+        "first_prompt_1",
+        "second_prompt_1",
+    ]
+    assert {column["node"] for column in library["ReviewTurn"]["rowwise_columns"]} == {
+        "ReviewPrompt"
+    }
+
+
+def test_column_bindings_move_each_bound_column_to_slot_zero() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("review")
+
+    resolved = resolve_subgraph(subgraph, library)
+
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert {column["node"] for column in turn["rowwise_columns"]} == {"review_prompt_1"}
+    assert "column_bindings" not in turn
+
+
+def test_column_bindings_reject_unused_input() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("review")
+    subgraph[1]["inputs"].append("unused_prompt")
+
+    with pytest.raises(DriverProtocolError, match="unused"):
+        resolve_subgraph(subgraph, library)
+
+
+def test_bound_library_llm_parses_through_native_graph_path() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("review")
+    resolved = resolve_subgraph(subgraph, library)
+    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
+    assert "column_bindings" not in turn
+
+    workflow = {
+        "name": "depcheck",
+        "inputs": {"Symbols": ["a"]},
+        "ops": resolved,
+        "outputs": [{"name": "o", "ref": "review_turn_1"}],
+    }
+    spec = next(iter(parse_yaml_payload(workflow).values()))
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    prompt_node = next(
+        node.node_id for node in graph.nodes.values() if node.task_type == "python"
+    )
+    llm = next(node for node in graph.nodes.values() if node.task_type == "inference")
+    assert llm.dependencies == (prompt_node,)
+    assert {column["node"] for column in llm.data_spec["columns"]} == {prompt_node}
+
+
+def test_column_bindings_reject_unbound_column() -> None:
+    library = _llm_column_library()
+    library["ReviewTurn"]["column_bindings"] = [{"label": "prompt", "input": 0}]
+    subgraph = _llm_column_subgraph("review")
+
+    with pytest.raises(DriverProtocolError, match="review_system"):
+        resolve_subgraph(subgraph, library)
+
+
+def test_column_bindings_reject_unknown_label() -> None:
+    library = _llm_column_library()
+    library["ReviewTurn"]["column_bindings"] = [{"label": "missing", "input": 0}]
+
+    with pytest.raises(DriverProtocolError, match="unknown label 'missing'"):
+        resolve_subgraph(_llm_column_subgraph("review"), library)
+
+
+def test_column_bindings_reject_bad_slot() -> None:
+    library = _llm_column_library()
+    library["ReviewTurn"]["column_bindings"] = [{"label": "prompt", "input": -1}]
+
+    with pytest.raises(DriverProtocolError, match="invalid input slot -1"):
+        resolve_subgraph(_llm_column_subgraph("review"), library)
 
 
 def test_admit_subgraph_forwards_export_to_validation():
@@ -770,7 +915,6 @@ def test_forward_aligned_materializers_are_row_cardinality():
     # multi-row group: the materializer runtime nodes are aligned (not list),
     # so neither they nor News Report are whole-list-per-run, and News Report's
     # columns still read the materializers at value.items.output.
-    from lumilake_server.graphs import Graph
     from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
     sql_id = "s1"
