@@ -587,6 +587,43 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     assert runtime_graph.nodes[selector.node_id].dependencies == (status.node_id,)
 
 
+def test_terminal_row_gate_marks_done_and_allows_an_empty_selected_set() -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="finish", match="contains", value="COMPLETE"),
+            RouterRule(branch="pending", match="equals", value="__never__"),
+        ],
+        default_branch="pending",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "finish", "terminal": True},
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(
+        Rows=["normal", "normal"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    status, selector, selected, merge = [
+        runtime_graph.nodes[node_id] for node_id in runtime_graph.dsl_to_runtime[llm.id]
+    ]
+    assert status.data_spec["terminal_branch"] == "finish"
+    assert selector.data_spec["include_done"] is True
+    assert all(
+        item.get("allow_empty")
+        for item in selector.data_spec["plan"]
+        if item.get("kind") == "stage"
+    )
+    assert selected.dependencies == (selector.node_id,)
+    assert merge.data_spec["branch"] == "finish"
+
+
 def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
     yaml_text = textwrap.dedent("""
         name: routed

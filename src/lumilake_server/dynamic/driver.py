@@ -83,6 +83,9 @@ FIXED_ROUND_NODE_IDS: frozenset[str] = frozenset(
     }
 )
 
+MAX_ROUND_OP_EXPANSION = 4
+MAX_STATIC_ROUND_NODE_BOUND = 100
+
 _OP_CLASSES: dict[str, type] = {
     name: obj for name, obj in vars(ops_pkg).items() if isinstance(obj, type)
 }
@@ -614,6 +617,28 @@ def walk_archived_items(
                 ) from exc
         walked[node_id] = _forward_values(items, parts, node_id)
     return walked
+
+
+def has_live_rows(archived: dict[str, list[str]]) -> bool:
+    """Whether archived routing rows contain at least one non-terminal row.
+
+    Rows emitted by row routing carry a ``done`` flag. A round containing only
+    terminal rows has no work left, so the driver converts it to ``STOP``
+    rather than forwarding an empty row set into the next round.
+    """
+    if not archived:
+        return True
+    for values in archived.values():
+        for value in values:
+            try:
+                item = json.loads(value)
+            except (TypeError, ValueError):
+                return True
+            if not isinstance(item, dict) or "done" not in item:
+                return True
+            if not item["done"]:
+                return True
+    return False
 
 
 def forward_refs(

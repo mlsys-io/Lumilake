@@ -65,6 +65,7 @@ from lumilake_server.dynamic.driver import (
     archived_export_has_rows,
     build_round,
     compute_observation,
+    has_live_rows,
     plan_to_dict,
     planner_messages,
     resolve_subgraph,
@@ -2334,6 +2335,11 @@ async def _run_dynamic_job(
                 observation = compute_observation(
                     walked_leaves, spec.driver.preview_width
                 )
+                if template is None and not has_live_rows(leaf_outputs):
+                    plans.append({"next": STOP, "source": "observation"})
+                    observations.append(observation)
+                    stopped_by = STOP
+                    break
                 next_plan: StopPlan | SubgraphPlan | None
                 if template is not None:
                     next_plan = None

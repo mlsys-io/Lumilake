@@ -2168,9 +2168,9 @@ class RuntimeGraphBuilder:
         self,
         *,
         consumer: str,
-        row_gate: dict[str, str] | None,
+        row_gate: dict[str, Any] | None,
         graph_dict: dict[str, Op],
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         """Validate and normalize a per-row branch gate declaration."""
         if row_gate is None:
             return None
@@ -2190,7 +2190,10 @@ class RuntimeGraphBuilder:
                 f"LLMChatOp '{consumer}' row_gate branch {branch!r} is not declared "
                 f"by RouterOp '{node}'"
             )
-        return {"node": node, "branch": branch}
+        terminal = row_gate.get("terminal", False)
+        if not isinstance(terminal, bool):
+            raise ValueError(f"LLMChatOp '{consumer}' row_gate terminal must be a bool")
+        return {"node": node, "branch": branch, "terminal": terminal}
 
     def _api_prior_prompt(
         self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
@@ -2504,7 +2507,7 @@ class RuntimeGraphBuilder:
         *,
         llm_op_id: str,
         llm_op: LLMChatOp,
-        row_gate: dict[str, str],
+        row_gate: dict[str, Any],
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         task_type_override: str | None,
@@ -2549,13 +2552,23 @@ class RuntimeGraphBuilder:
         select_id = f"{llm_op_id}__row_select"
         selected_id = f"{llm_op_id}__selected"
         merge_id = f"{llm_op_id}__rows"
+        input_path = router.input_path
+        route_path = input_path.removeprefix("items.output.")
         source_columns: list[dict[str, Any]] = [
             {
                 "label": "source",
                 "node": router.source_node,
-                "path": router.input_path,
+                "path": input_path,
             },
         ]
+        if route_path and route_path != input_path:
+            source_columns.append(
+                {
+                    "label": "route",
+                    "node": router.source_node,
+                    "path": f"items.output.{route_path}",
+                }
+            )
         status_dependencies: tuple[str, ...] = (source_runtime[0],)
         source_op = graph_dict.get(router.source_node)
         if isinstance(source_op, InputOp):
@@ -2589,6 +2602,7 @@ class RuntimeGraphBuilder:
                     for rule in router.rules
                 ],
                 "default_branch": router.default_branch,
+                "terminal_branch": row_gate["branch"] if row_gate["terminal"] else None,
             },
             model_spec={},
             inference_spec={},
@@ -2607,6 +2621,7 @@ class RuntimeGraphBuilder:
         )
         labels: list[str] = []
         select_plan: python_step.ColumnPlan = [{"kind": "stage", "node": status_id}]
+        select_plan[0]["allow_empty"] = True
         select_dependencies: list[str] = [status_id]
         for index, column in enumerate(llm_op.rowwise_columns or []):
             label = column.get("label")
@@ -2652,6 +2667,7 @@ class RuntimeGraphBuilder:
                     f"{node_ref!r} must compile to one runtime node"
                 )
             entry: dict[str, Any] = {"kind": "stage", "node": runtime_ids[0]}
+            entry["allow_empty"] = True
             if (
                 isinstance(upstream, LLMChatOp)
                 and not isinstance(upstream, LLMVisionOp)
@@ -2672,6 +2688,7 @@ class RuntimeGraphBuilder:
                 "plan": select_plan,
                 "labels": labels,
                 "branch": row_gate["branch"],
+                "include_done": bool(row_gate["terminal"]),
                 "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
                 "mode": "row_select",
             },
