@@ -1,6 +1,6 @@
 import pytest
 
-from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig, OutputEnforcement
 
 
 def test_generation_config_requires_model_without_api() -> None:
@@ -43,3 +43,51 @@ def test_generation_config_rejects_non_dict_api() -> None:
     non-``ApiConfig``, non-``None`` value for ``api``."""
     with pytest.raises(ValueError, match="api must be a mapping or ApiConfig"):
         GenerationConfig(model="local-model", api="x")  # type: ignore[arg-type]
+
+
+def test_generation_config_coerces_output_enforcement_mapping() -> None:
+    cfg = GenerationConfig(
+        model="local-model",
+        output_enforcement={  # type: ignore[arg-type]
+            "mode": "retry",
+            "max_attempts": 3,
+            "text_regex": "^ok$",
+        },
+    )
+    assert cfg.output_enforcement == OutputEnforcement(
+        mode="retry", max_attempts=3, text_regex="^ok$"
+    )
+    assert "output_enforcement" not in cfg.inference_spec()
+    assert "output_enforcement" not in cfg.openai_kwargs()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_attempts": 0, "text_regex": "ok"},
+        {"max_attempts": 11, "text_regex": "ok"},
+        {"text_regex": "ok", "json_schema": {"type": "object"}},
+        {},
+        {"text_regex": "("},
+        {"json_schema": {"type": "not-a-type"}},
+    ],
+)
+def test_output_enforcement_rejects_invalid_configuration(
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="output_enforcement"):
+        OutputEnforcement(**kwargs)  # type: ignore[arg-type]
+
+
+def test_output_enforcement_rejects_invalid_mode() -> None:
+    with pytest.raises(ValueError, match="output_enforcement.mode"):
+        OutputEnforcement(mode="other", text_regex="ok")
+
+
+def test_api_output_enforcement_rejects_constrained_mode() -> None:
+    with pytest.raises(ValueError, match="only for local vLLM inference"):
+        GenerationConfig(
+            model="api-model",
+            api=ApiConfig(),
+            output_enforcement=OutputEnforcement(mode="constrained", text_regex="ok"),
+        )

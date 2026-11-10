@@ -6,7 +6,12 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.common import ApiConfig, GenerationConfig, Message
+from lumilake_server.common import (
+    ApiConfig,
+    GenerationConfig,
+    Message,
+    OutputEnforcement,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -140,6 +145,56 @@ def test_api_samplers_flow_into_body() -> None:
     body = node.api_spec["json"]
     assert body["max_tokens"] == 64
     assert body["temperature"] == 0.5
+
+
+def test_api_output_enforcement_stays_out_of_request_body() -> None:
+    runtime_graph, llm_id = _build_api_graph(
+        output_enforcement=OutputEnforcement(max_attempts=3, text_regex="^ok$")
+    )
+    node = runtime_graph.nodes[llm_id]
+    assert node.api_spec["output_enforcement"] == {
+        "mode": "retry",
+        "max_attempts": 3,
+        "json_schema": None,
+        "text_regex": "^ok$",
+    }
+    assert "output_enforcement" not in node.api_spec["json"]
+
+
+def test_local_output_enforcement_reaches_inference_spec() -> None:
+    stock = input_placeholder("Stock")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            output_enforcement=OutputEnforcement(max_attempts=4, text_regex="yes"),
+        ),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    node = RuntimeGraphBuilder().build(compiled).nodes[llm.id]
+    assert node.inference_spec["output_enforcement"] == {
+        "mode": "retry",
+        "max_attempts": 4,
+        "json_schema": None,
+        "text_regex": "yes",
+    }
+    assert "output_enforcement" not in node.model_spec
+
+
+def test_non_chat_llm_op_rejects_output_enforcement() -> None:
+    image = ImageGenerationOp(
+        "draw a lake",
+        config=GenerationConfig(
+            model="image-model",
+            output_enforcement=OutputEnforcement(text_regex="ok"),
+        ),
+    )
+    compiled = Graph.from_ops([as_output("image", image)]).compile()
+    with pytest.raises(
+        ValueError,
+        match=r"ImageGenerationOp .* does not support config.output_enforcement",
+    ):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_api_key_redacted_on_serialization() -> None:

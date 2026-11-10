@@ -127,6 +127,14 @@ model resolves from `config.api.model`, then the top-level `config.model`.
 Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
 the request body.
 
+`config.output_enforcement` validates generated text for both API-backed and
+local `LLMChatOp` runs. Set exactly one of `json_schema` or `text_regex` and
+`max_attempts` (default `1`, maximum `10`). Retry mode leaves decoding untouched
+and re-asks only the rows that failed. Constrained mode asks local vLLM
+inference to enforce the format in a single generation, so it needs
+`max_attempts: 1` and is not available for API ops. When every attempt fails,
+the last response is kept and marked as unvalidated.
+
 `config.api.timeout_sec` sets the per-request timeout for the API call,
 in seconds. When set, it is emitted into the FlowMesh `api` task spec and
 overrides the executor's default; when unset, no timeout key is emitted and
