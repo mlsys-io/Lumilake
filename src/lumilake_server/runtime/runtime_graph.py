@@ -588,6 +588,18 @@ class RuntimeGraphBuilder:
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.output"
 
+        def reads_llm(op_ref: Op, seen: set[str] | None = None) -> bool:
+            """Whether an op reads an LLMOp transitively, so its node can only
+            be built once the LLM pass has run."""
+            seen = set() if seen is None else seen
+            if op_ref.id in seen:
+                return False
+            seen.add(op_ref.id)
+            return any(
+                isinstance(source, LLMOp) or reads_llm(source, seen)
+                for source in op_ref.inputs
+            )
+
         def build_derived(op_ref: Op) -> None:
             """Build a fetch, score or Lambda node after the fetch, score and
             Lambda ops it reads, so a consumer never resolves before its
@@ -660,10 +672,14 @@ class RuntimeGraphBuilder:
                 continue
             if any(inp.consumer_result_path() for inp in lambda_op.inputs):
                 continue
+            if reads_llm(lambda_op):
+                continue
             build_derived(lambda_op)
 
         for fetch_op in fetch_ops.values():
             if task_type_override == "data_profile":
+                continue
+            if reads_llm(fetch_op):
                 continue
             build_derived(fetch_op)
 
@@ -743,6 +759,11 @@ class RuntimeGraphBuilder:
                         output_paths[output_node_id] = self._upstream_output_path(
                             llm_op
                         )
+
+        for fetch_op in fetch_ops.values():
+            if task_type_override == "data_profile":
+                continue
+            build_derived(fetch_op)
 
         for score_op in score_ops.values():
             if task_type_override == "data_profile":

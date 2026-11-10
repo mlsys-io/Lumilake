@@ -358,6 +358,28 @@ def test_fetch_row_lambda_score_chain_builds_in_dependency_order() -> None:
     _assert_fetch_lambda_score_order(fetch, candidates, query)
 
 
+def test_llm_score_fetch_chain_builds_in_dependency_order() -> None:
+    query = input_placeholder("Query")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=query)],
+        config=GenerationConfig(model="org/model"),
+    )
+    score = ScoreOp(query, llm, config=ScoreConfig(model="org/reranker"))
+    fetch = HttpFetchOp("http://fixture.test/search?q={query}", score)
+    compiled = Graph.from_ops([as_output("results", fetch)]).compile(
+        Query=["first", "second"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    llm_node = runtime_graph.nodes[llm.id]
+    score_node = runtime_graph.nodes[score.id]
+    fetch_node = runtime_graph.nodes[fetch.id]
+
+    order = runtime_graph.node_order
+    assert order.index(llm_node.node_id) < order.index(score_node.node_id)
+    assert order.index(score_node.node_id) < order.index(fetch_node.node_id)
+    assert fetch_node.dependencies == (score_node.node_id,)
+
+
 def _assert_fetch_lambda_score_order(
     fetch: HttpFetchOp,
     candidates: LambdaOp,

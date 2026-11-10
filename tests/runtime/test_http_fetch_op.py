@@ -18,6 +18,7 @@ from lumilake_server.ops import (
     Op,
     OpMessage,
     as_output,
+    input_placeholder,
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
@@ -434,3 +435,29 @@ def test_http_fetch_op_feeds_lambda_with_per_row_response(tmp_path: Path) -> Non
         {"output": {"row_0": {"json": {"title": "first"}, "error": None}}},
         {"output": {"row_1": {"json": None, "error": "503 Service Unavailable"}}},
     ]
+
+
+def test_llm_row_lambda_fetch_chain_builds_in_dependency_order() -> None:
+    def extract(result):
+        return str(result)
+
+    query = input_placeholder("Query")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=query)],
+        config=GenerationConfig(model="org/model"),
+    )
+    lambda_op = LambdaOp([llm], extract)
+    fetch = HttpFetchOp("http://fixture.test/search?q={query}", lambda_op)
+    compiled = Graph.from_ops([as_output("results", fetch)]).compile(
+        Query=["first", "second"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    llm_node = runtime_graph.nodes[llm.id]
+    lambda_node = runtime_graph.nodes[lambda_op.id]
+    fetch_node = runtime_graph.nodes[fetch.id]
+
+    order = runtime_graph.node_order
+    assert order.index(llm_node.node_id) < order.index(lambda_node.node_id)
+    assert order.index(lambda_node.node_id) < order.index(fetch_node.node_id)
+    assert lambda_node.dependencies == (llm_node.node_id,)
+    assert fetch_node.dependencies == (lambda_node.node_id,)
