@@ -144,6 +144,48 @@ def test_router_op_rejects_unknown_default_branch() -> None:
         parse_yaml_payload(yaml_text)
 
 
+def test_yaml_rowwise_messages_column_is_parsed() -> None:
+    yaml_text = textwrap.dedent("""
+        name: messages
+        inputs:
+          Rows: ["[]"]
+        ops:
+          - id: source
+            op: LambdaOp
+            inputs: [Rows]
+            fn_name: echo
+            code: |
+              def echo(inputs):
+                  return inputs[0]
+          - id: turn
+            op: LLMChatOp
+            inputs: [source]
+            messages:
+              - role: user
+                content: source
+            config:
+              model: dummy-model
+            rowwise_columns:
+              - label: message_count
+                data:
+                  type: list
+                  items: [1]
+            rowwise_messages_column:
+              label: messages_json
+              node: source
+              path: items.output
+        outputs:
+          - name: result
+            ref: turn
+        """)
+    spec = parse_yaml_payload(yaml_text)["messages"]
+    graph = Graph.from_json(spec["graph"])
+    turn = next(iter(graph.iter_ops(LLMChatOp)))
+    assert turn.rowwise_template is None
+    assert turn.rowwise_messages_column is not None
+    assert turn.rowwise_messages_column["label"] == "messages_json"
+
+
 def test_multi_op_topology_inputs() -> None:
     yaml_text = textwrap.dedent("""
         name: multi

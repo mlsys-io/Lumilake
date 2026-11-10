@@ -77,6 +77,8 @@ ops:
 
 A rowwise `LLMChatOp` with `row_gate` calls the model only for rows whose branch matches. The stage still emits one row per input row, and skipped rows carry `output: null`, which is how a skipped row differs from a failed call.
 
+A rowwise `LLMChatOp` may instead declare `rowwise_messages_column`. That column holds one serialized message array per row, sent as the whole chat history in role order, for conversations whose history grows between rounds.
+
 ### EmbeddingOp
 
 `EmbeddingOp` embeds text with a FlowMesh-served embedding model and

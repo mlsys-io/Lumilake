@@ -764,6 +764,30 @@ def _emit_llm_like_op(
         op_dict["rowwise_template"] = entry.fields["rowwise_template"]
     if resolved_rowwise is not None:
         op_dict["rowwise_columns"] = resolved_rowwise
+    rowwise_messages_column = entry.fields.get("rowwise_messages_column")
+    if rowwise_messages_column is not None:
+        if not isinstance(rowwise_messages_column, dict):
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column must be a mapping"
+            )
+        column = dict(rowwise_messages_column)
+        label = column.get("label")
+        node = column.get("node")
+        path = column.get("path")
+        if not isinstance(label, str) or not label:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column requires a label"
+            )
+        if not isinstance(node, str) or node not in user_id_to_internal:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column requires a known node"
+            )
+        if not isinstance(path, str) or not path:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column requires a path"
+            )
+        column["node"] = user_id_to_internal[node]
+        op_dict["rowwise_messages_column"] = column
     row_gate = entry.fields.get("row_gate")
     if row_gate is not None:
         if not isinstance(row_gate, dict):

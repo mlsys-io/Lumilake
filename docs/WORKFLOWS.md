@@ -40,6 +40,8 @@ Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp
 
 `RouterOp` declares deterministic per-row branch selection. A rowwise `LLMChatOp` names a router and branch in `row_gate`, and only matching rows reach the model. Non-matching rows keep `output: null`, so the result still holds one row per input row.
 
+A rowwise `LLMChatOp` may use `rowwise_messages_column` instead of `rowwise_template`. That column holds one serialized list of role/content messages per row, sent as the whole conversation in order.
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its
