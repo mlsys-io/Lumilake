@@ -363,6 +363,7 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
               presence_penalty: 1.5
               repetition_penalty: 1.0
               min_tokens: 4
+              num_beams: 3
               chat_template_kwargs:
                 enable_thinking: false
               extra_sampling_params:
@@ -379,6 +380,7 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     assert cfg["min_p"] == 0.0
     assert cfg["repetition_penalty"] == 1.0
     assert cfg["min_tokens"] == 4
+    assert cfg["num_beams"] == 3
     assert cfg["chat_template_kwargs"] == {"enable_thinking": False}
     assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
 

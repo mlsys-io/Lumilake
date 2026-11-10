@@ -197,6 +197,28 @@ def test_non_chat_llm_op_rejects_output_enforcement() -> None:
         RuntimeGraphBuilder().build(compiled)
 
 
+def test_api_mode_rejects_num_beams() -> None:
+    with pytest.raises(ValueError, match="num_beams.*local vLLM"):
+        _build_api_graph(num_beams=3)
+
+
+def test_local_num_beams_reaches_inference_spec() -> None:
+    runtime_graph, llm_id = _build_local_graph(num_beams=3)
+    node = runtime_graph.nodes[llm_id]
+    assert node.inference_spec["num_beams"] == 3
+
+
+def _build_local_graph(**config_kwargs: Any) -> tuple[RuntimeGraph, str]:
+    stock = input_placeholder("Stock")
+    cfg = GenerationConfig(
+        model=config_kwargs.pop("model", "meta-llama/Llama-3.1-8B-Instruct"),
+        **config_kwargs,
+    )
+    llm = LLMChatOp([OpMessage(role="user", content=stock)], config=cfg)
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
+    return RuntimeGraphBuilder().build(compiled), llm.id
+
+
 def test_api_key_redacted_on_serialization() -> None:
     """The Authorization header carries only the constant placeholder in the
     graph; the real credential never appears in the serialized spec."""
