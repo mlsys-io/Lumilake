@@ -15,6 +15,7 @@ from lumilake_server.ops import (
     ScoreConfig,
     ScoreOp,
     as_output,
+    input_placeholder,
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
@@ -265,6 +266,56 @@ def test_score_op_feeds_llm_chat_op() -> None:
         for column in columns
     )
     assert score_node.node_id in llm_node.dependencies
+
+
+def test_score_op_reads_list_lambda_candidates_inside_items(tmp_path: Path) -> None:
+    """A whole-column Lambda emits its values as python-result items, so the
+    pairs step reads them at the item-relative ``output`` path."""
+
+    def prepare(items):
+        return [str(item) for item in items]
+
+    stock = input_placeholder("Texts")
+    prepare_op = LambdaOp([stock], prepare, mode="list")
+    score = ScoreOp(
+        query="question",
+        candidates=prepare_op,
+        config=ScoreConfig(model="org/reranker", backend="vllm"),
+    )
+    compiled = Graph.from_ops([as_output("scores", score)]).compile(
+        Texts=["first", "second"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    pairs = next(
+        node
+        for node in runtime_graph.nodes.values()
+        if node.task_type == python_step.TASK_TYPE
+        and node.data_spec.get("mode") == "pairs"
+    )
+    plan = pairs.data_spec["plan"]
+    candidate_entry = next(entry for entry in plan if entry["kind"] == "stage")
+
+    assert candidate_entry["path"] == "output"
+
+    code = python_step.pairs_source(pairs.node_id, plan)
+    namespace: dict[str, object] = {}
+    exec(code, namespace)
+    main = namespace["main"]
+    assert callable(main)
+    node_id = candidate_entry["node"]
+    node_dir = tmp_path / node_id
+    node_dir.mkdir()
+    (node_dir / "results.json").write_text(
+        json.dumps({"value": {"items": [{"output": "first"}, {"output": "second"}]}}),
+        encoding="utf-8",
+    )
+
+    assert main({node_id: str(node_dir)}) == {
+        "items": [
+            {"text": "question", "text_pair": "first"},
+            {"text": "question", "text_pair": "second"},
+        ]
+    }
 
 
 def test_pairs_step_output_shape_broadcasts_single_query() -> None:
