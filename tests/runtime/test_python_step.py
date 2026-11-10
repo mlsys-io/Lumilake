@@ -1474,6 +1474,58 @@ def _gated_chain() -> Any:
     return Graph.from_ops(compiled).compile(Rows=["a", "b", "c"])
 
 
+def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
+    """Run the code a built python step emits, over staged upstream results."""
+    namespace: dict[str, Any] = {}
+    exec(node.to_flowmesh_node()["spec"]["code"], namespace)
+    return namespace["main"](inputs)
+
+
+def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None:
+    graph = RuntimeGraphBuilder().build(_gated_chain())
+    by_mode: dict[str, Any] = {}
+    for node in graph.nodes.values():
+        mode = node.data_spec.get("mode")
+        if mode in ("row_status", "row_select", "row_skip_merge"):
+            by_mode.setdefault(mode, node)
+    status = by_mode["row_status"]
+    selector = by_mode["row_select"]
+    merge = by_mode["row_skip_merge"]
+
+    staged = [
+        {"output": {"code": "fn_0", "status": "ok"}},
+        {"output": {"code": "fn_1", "status": "fail"}},
+        {"output": {"code": "fn_2", "status": "ok"}},
+    ]
+    upstream = _stage(tmp_path, "classify", {"items": staged})
+    source_node = status.data_spec["plan"][0]["node"]
+    status_payload = _run_stage_plan(status, {source_node: upstream})
+    assert [item["value"]["branch"] for item in status_payload["items"]] == [
+        "ok",
+        "fail",
+        "ok",
+    ]
+
+    status_stage = _stage(tmp_path, "status", status_payload)
+    stage_inputs = {
+        entry["node"]: (status_stage if entry["node"] == status.node_id else upstream)
+        for entry in selector.data_spec["plan"]
+    }
+    selected = _run_stage_plan(selector, stage_inputs)
+    kept = [i for i, row in enumerate(staged) if row["output"]["status"] == "fail"]
+    assert len(selected["items"]) == len(kept)
+
+    selected_node = merge.data_spec["plan"][1]["node"]
+    served_stage = _stage(tmp_path, "served", {"items": [{"output": ["fixed"]}]})
+    merged = _run_stage_plan(
+        merge, {status.node_id: status_stage, selected_node: served_stage}
+    )
+    rows = [item["value"] for item in merged["items"]]
+    assert [row["branch"] for row in rows] == ["ok", "fail", "ok"]
+    assert [row["done"] for row in rows] == [False, False, False]
+    assert [row["output"] for row in rows] == [None, "fixed", None]
+
+
 def test_gated_rows_read_the_selector_label_paths() -> None:
     # The selector emits one flat ``{label: value}`` row per kept item, so a
     # gated model reads its columns at ``value.items.<label>`` on the selector's

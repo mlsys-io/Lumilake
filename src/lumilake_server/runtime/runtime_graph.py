@@ -2583,26 +2583,41 @@ class RuntimeGraphBuilder:
         selected_id = f"{llm_op_id}__selected"
         merge_id = f"{llm_op_id}__rows"
         input_path = router.input_path
-        route_path = input_path.removeprefix("items.output.")
+        read_path = input_path.removeprefix("items.")
+        if read_path == input_path or not read_path:
+            raise ValueError(
+                f"RouterOp '{router_id}' input_path {input_path!r} must name a "
+                "field under 'items.'"
+            )
+        # The python step reads the upstream's item list first, so the plan
+        # path is relative to each item.
+        source_op = graph_dict.get(router.source.id)
+        rowwise_source = (
+            isinstance(source_op, LLMChatOp)
+            and not isinstance(source_op, LLMVisionOp)
+            and bool(source_op.rowwise_template or source_op.rowwise_messages_column)
+        )
         source_columns: list[dict[str, Any]] = [
             {
                 "kind": "stage",
                 "label": "source",
                 "node": source_runtime[0],
-                "path": input_path,
             },
         ]
-        if route_path and route_path != input_path:
+        if read_path == "output":
+            if rowwise_source:
+                source_columns[0]["flatten"] = True
+        else:
+            source_columns[0]["path"] = read_path
             source_columns.append(
                 {
                     "kind": "stage",
                     "label": "route",
                     "node": source_runtime[0],
-                    "path": f"items.output.{route_path}",
+                    "path": read_path,
                 }
             )
         status_dependencies: tuple[str, ...] = (source_runtime[0],)
-        source_op = graph_dict.get(router.source.id)
         if isinstance(source_op, InputOp):
             values = inputs_dict.get(source_op.name)
             if values is None:
