@@ -95,22 +95,23 @@ def test_sanitize_flowmesh_api_error_truncates_long_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_task_status_sanitizes_api_error_before_reraising(
+async def test_fetch_workflow_task_statuses_sanitizes_api_error_before_reraising(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A FlowMesh rejection on status retrieval can echo back the submitted
-    task spec, Authorization header included. fetch_task_status must re-raise
-    a sanitized APIError so the credential never reaches the caller, the
-    log, or the persisted job error record."""
+    """A FlowMesh rejection on a workflow status listing can echo back the
+    submitted task spec, Authorization header included.
+    fetch_workflow_task_statuses must re-raise a sanitized APIError so the
+    credential never reaches the caller, the log, or the persisted job error
+    record."""
 
     class _FakeTasks:
-        async def status(self, task_id: str) -> Any:
+        async def list_statuses(self, workflow_id: str) -> Any:
             raise APIError(
                 "task spec invalid",
                 status_code=422,
                 method="GET",
-                url="https://flowmesh.internal/tasks/t1",
+                url="https://flowmesh.internal/tasks",
                 body={"spec": {"Authorization": "Bearer sk-live-secret"}},
             )
 
@@ -121,7 +122,7 @@ async def test_fetch_task_status_sanitizes_api_error_before_reraising(
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
     with pytest.raises(APIError) as excinfo:
-        await flowmesh_manager.fetch_task_status("t1")
+        await flowmesh_manager.fetch_workflow_task_statuses("wf-1")
 
     assert "sk-live-secret" not in str(excinfo.value)
     assert "sk-live-secret" not in str(excinfo.value.body)
@@ -286,34 +287,28 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: fake_fm))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return TaskStatusView(
-            task_id=task_id,
-            workflow_id="wf-1",
-            status="DONE",
-            submitted_at="2026-01-01T00:00:00Z",
-            submitted_ts=0.0,
-            attempts=1,
-            max_attempts=1,
-            completed=True,
-            failed=False,
-            graph_node_name=row_id,
-        )
+    async def _fetch_workflow_task_statuses(
+        _self: FlowmeshRuntimeManager, workflow_id: str
+    ) -> list[TaskStatusView]:
+        return [
+            TaskStatusView(
+                task_id="task-row0",
+                workflow_id=workflow_id,
+                status="DONE",
+                submitted_at="2026-01-01T00:00:00Z",
+                submitted_ts=0.0,
+                attempts=1,
+                max_attempts=1,
+                completed=True,
+                failed=False,
+                graph_node_name=row_id,
+            )
+        ]
 
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": row_id}
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
     monkeypatch.setattr(
         manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
+        "fetch_workflow_task_statuses",
+        types.MethodType(_fetch_workflow_task_statuses, manager),
     )
 
     with pytest.raises(APIError) as excinfo:
