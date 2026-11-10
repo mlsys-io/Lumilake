@@ -614,7 +614,6 @@ _GATED_PLAN: dict[str, Any] = {
             "id": "route",
             "op": "RouterOp",
             "inputs": ["source"],
-            "source": "source",
             "input_path": "items.output",
             "rules": [
                 {"branch": "finish", "match": "contains", "value": "DONE"},

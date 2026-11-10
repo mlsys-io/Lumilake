@@ -84,7 +84,6 @@ def test_router_op_and_row_gate_are_declarative() -> None:
           - id: route
             op: RouterOp
             inputs: [source]
-            source: source
             input_path: items.output
             rules:
               - branch: review
@@ -124,6 +123,39 @@ def test_router_op_and_row_gate_are_declarative() -> None:
     assert turn.row_gate["branch"] == "review"
 
 
+def test_router_op_rejects_more_than_one_input() -> None:
+    yaml_text = textwrap.dedent("""
+        name: routed
+        inputs:
+          rows: ["normal"]
+        ops:
+          - id: one
+            op: LambdaOp
+            inputs: [rows]
+            fn_name: echo
+            code: |
+              def echo(inputs):
+                  return inputs[0]
+          - id: two
+            op: LambdaOp
+            inputs: [rows]
+            fn_name: echo
+            code: |
+              def echo(inputs):
+                  return inputs[0]
+          - id: route
+            op: RouterOp
+            inputs: [one, two]
+            rules:
+              - branch: review
+                match: contains
+                value: NEEDS REVIEW
+            default_branch: review
+        """)
+    with pytest.raises(ValueError, match="exactly one input"):
+        parse_yaml_payload(yaml_text)
+
+
 def test_router_op_rejects_unknown_default_branch() -> None:
     yaml_text = textwrap.dedent("""
         name: routed
@@ -133,7 +165,6 @@ def test_router_op_rejects_unknown_default_branch() -> None:
           - id: route
             op: RouterOp
             inputs: [rows]
-            source: rows
             rules:
               - branch: review
                 match: contains
@@ -160,7 +191,6 @@ def test_yaml_rejects_row_gate_with_a_rowwise_messages_column() -> None:
           - id: route
             op: RouterOp
             inputs: [source]
-            source: source
             input_path: items.output
             rules:
               - branch: review

@@ -2557,9 +2557,9 @@ class RuntimeGraphBuilder:
         router = graph_dict.get(router_id)
         if not isinstance(router, RouterOp):
             raise ValueError(f"row gate node '{router_id}' is not a RouterOp")
-        source_runtime = dsl_to_runtime.get(router.source_node, [])
+        source_runtime = dsl_to_runtime.get(router.source.id, [])
         if not source_runtime:
-            source_op = graph_dict.get(router.source_node)
+            source_op = graph_dict.get(router.source.id)
             if isinstance(source_op, InputOp):
                 values = inputs_dict.get(source_op.name)
                 if values is None:
@@ -2571,7 +2571,7 @@ class RuntimeGraphBuilder:
             if isinstance(source_op, LambdaOp) and not source_op.takes_whole_columns:
                 source_runtime = [
                     self._build_python_step(
-                        router.source_node,
+                        router.source.id,
                         graph_dict,
                         inputs_dict,
                         visited_node_ids,
@@ -2582,7 +2582,7 @@ class RuntimeGraphBuilder:
                 ]
         if len(source_runtime) != 1:
             raise ValueError(
-                f"RouterOp '{router_id}' source '{router.source_node}' must compile "
+                f"RouterOp '{router_id}' source '{router.source.id}' must compile "
                 "to one runtime node"
             )
         status_id = f"{llm_op_id}__row_status"
@@ -2609,7 +2609,7 @@ class RuntimeGraphBuilder:
                 }
             )
         status_dependencies: tuple[str, ...] = (source_runtime[0],)
-        source_op = graph_dict.get(router.source_node)
+        source_op = graph_dict.get(router.source.id)
         if isinstance(source_op, InputOp):
             values = inputs_dict.get(source_op.name)
             if values is None:

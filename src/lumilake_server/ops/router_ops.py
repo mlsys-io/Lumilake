@@ -23,8 +23,6 @@ class RouterOp(FunctionalOp):
 
     rules: list[RouterRule]
     default_branch: str
-    source_node: str
-    source_path: str
     input_path: str
 
     def __init__(
@@ -33,7 +31,6 @@ class RouterOp(FunctionalOp):
         *,
         rules: list[RouterRule],
         default_branch: str,
-        source_path: str = "items.output",
         input_path: str = "items.output",
     ) -> None:
         if not rules:
@@ -50,15 +47,11 @@ class RouterOp(FunctionalOp):
                 )
         if default_branch not in branches:
             raise ValueError("RouterOp default_branch must be one of rule branches")
-        if not source_path:
-            raise ValueError("RouterOp source_path must be a non-empty string")
         if not input_path:
             raise ValueError("RouterOp input_path must be a non-empty string")
         super().__init__([source])
         self.rules = list(rules)
         self.default_branch = default_branch
-        self.source_node = source.id
-        self.source_path = source_path
         self.input_path = input_path
 
     @property
@@ -76,8 +69,6 @@ class RouterOp(FunctionalOp):
                 for rule in self.rules
             ],
             "default_branch": self.default_branch,
-            "source_node": self.source_node,
-            "source_path": self.source_path,
             "input_path": self.input_path,
         }
 
@@ -90,6 +81,5 @@ class RouterOp(FunctionalOp):
             other_ops[source_ids[0]],
             rules=[RouterRule(**rule) for rule in data["rules"]],
             default_branch=data["default_branch"],
-            source_path=data["source_path"],
             input_path=data["input_path"],
         )

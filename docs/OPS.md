@@ -58,7 +58,6 @@ ops:
   - id: route
     op: RouterOp
     inputs: [classify]
-    source: classify
     input_path: items.output
     default_branch: pending
     rules:

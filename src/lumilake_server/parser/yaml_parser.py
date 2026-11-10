@@ -406,7 +406,7 @@ def _build_op_dict(
     elif entry.op == "LambdaOp":
         _emit_lambda_op(op_dict, entry)
     elif entry.op == "RouterOp":
-        _emit_router_op(op_dict, entry, user_id_to_internal)
+        _emit_router_op(op_dict, entry)
     else:  # pragma: no cover - guarded upstream
         raise ValueError(f"unsupported op type '{entry.op}'")
 
@@ -1109,11 +1109,7 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         op_dict["cache"] = cache
 
 
-def _emit_router_op(
-    op_dict: dict[str, Any],
-    entry: _OpEntry,
-    user_id_to_internal: dict[str, str],
-) -> None:
+def _emit_router_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
     rules = entry.fields.get("rules")
     if not isinstance(rules, list) or not rules:
         raise ValueError(f"RouterOp '{entry.id}' requires non-empty rules")
@@ -1144,25 +1140,16 @@ def _emit_router_op(
         raise ValueError(
             f"RouterOp '{entry.id}' default_branch must name one of branches"
         )
-    source = entry.fields.get("source")
-    if not isinstance(source, str) or source not in user_id_to_internal:
-        raise ValueError(f"RouterOp '{entry.id}' requires a known source node")
-    source_path = entry.fields.get("source_path", "items.output")
-    if not isinstance(source_path, str) or not source_path:
+    if len(op_dict["_inputs"]) != 1:
         raise ValueError(
-            f"RouterOp '{entry.id}' source_path must be a non-empty string"
+            f"RouterOp '{entry.id}' requires exactly one input, the source node"
         )
     input_path = entry.fields.get("input_path", "items.output")
     if not isinstance(input_path, str) or not input_path:
         raise ValueError(f"RouterOp '{entry.id}' input_path must be a non-empty string")
-    source_id = user_id_to_internal[source]
-    if source_id not in op_dict["_inputs"]:
-        op_dict["_inputs"].append(source_id)
     op_dict.update(
         rules=parsed_rules,
         default_branch=default_branch,
-        source_node=source_id,
-        source_path=source_path,
         input_path=input_path,
     )
 
