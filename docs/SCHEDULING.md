@@ -351,18 +351,10 @@ requires a corpus first.
 
 ### HALO model sizing
 
-HALO resolves a GPU model's parameter count before estimating GPU cost. It
-tries, in order: the `MODEL_SIZE` catalog, the model-name suffix (`7B`, `1.5B`,
-`560M`), and the model's exact safetensors tensor-shape metadata. Metadata is
-read from the local Hugging Face cache when present and otherwise obtained with
-`huggingface_hub.get_safetensors_metadata`, summing parameter counts across
-dtypes and shards. A resolved size is cached for the optimizer process, which
-runs one schedule, so a model that is neither catalogued nor cached locally
-asks the Hub again on the next batch. File byte size is not a sizing source
-because dtype width makes it inaccurate. If all three sources fail, HALO
-raises a model-size validation error naming the model and the sources tried; it
-does not substitute a fallback size. A cache miss and an unreachable Hub fold
-into that error rather than surfacing as a transport failure.
+HALO needs each GPU model's parameter count. It takes it from the `MODEL_SIZE`
+catalog, then the model-name suffix (`7B`, `560M`), then the model's
+safetensors headers (local Hugging Face cache, else the Hub). If none gives a
+size, planning fails with an error naming the model.
 
 ## 8. Scheduling under unknown chain length
 
