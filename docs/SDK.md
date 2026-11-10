@@ -290,6 +290,29 @@ describe the planner request. The engine-sizing fields (`max_model_len`,
 in-graph proposer and have no effect when `api` is set. Without `api`,
 behavior is unchanged.
 
+#### Fixed round templates (`driver.template`)
+
+A workload whose round body is fixed can supply `driver.template` and skip the planner:
+
+```yaml
+driver:
+  model: Qwen/Qwen3.8-27B-FP8
+  max_rounds: 20
+  template:
+    first:
+      ops:
+        - {ref: Load, id: Load_r{{round}}, inputs: []}
+        - {ref: Advance, id: Advance_r{{round}}, inputs: ["Load_r{{round}}", "Symbols"]}
+      export: ["Advance_r{{round}}"]
+    next:
+      ops:
+        - {ref: Advance, id: Advance_r{{round}}, inputs: ["Advance_r{{prev}}", "Symbols"]}
+      export: ["Advance_r{{round}}"]
+    stop_when_empty: "Advance_r{{prev}}"
+```
+
+`first` runs as round 1 and `next` as every later round, with `{{round}}` and `{{prev}}` rendered into ids, inputs and exports. `stop_when_empty` names the previous round's export, and the server stops before a round whose predecessor exported no rows. Template mode calls no planner and is mutually exclusive with `api`; every rendered body passes the same checks as a planner plan, and each stored plan records `source: "template"`.
+
 The `driver:` YAML settings the server accepts are:
 
 - `model` — proposer model, required.
