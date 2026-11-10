@@ -40,7 +40,7 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
 
-def _rejection() -> ValidationError:
+def _blobs_rejection() -> ValidationError:
     return ValidationError(
         "Invalid task payload for node 'out': 1 validation error for PythonSpecStrict"
         "\nspec.blobs\n  Extra inputs are not permitted",
@@ -52,7 +52,7 @@ def _rejection() -> ValidationError:
 
 
 def _request(
-    monkeypatch: pytest.MonkeyPatch, output: OutputOp
+    monkeypatch: pytest.MonkeyPatch, output: OutputOp, rejection: ValidationError
 ) -> tuple[RequestInfo, list[str]]:
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
@@ -74,7 +74,7 @@ def _request(
 
     class _FakeWorkflows:
         async def submit(self, task_yaml: str) -> Any:
-            raise _rejection()
+            raise rejection
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -89,7 +89,7 @@ async def test_submit_error_names_the_python_blobs_requirement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = as_output("out", LambdaOp([input_placeholder("Stock")], _shout))
-    request_info, node_ids = _request(monkeypatch, output)
+    request_info, node_ids = _request(monkeypatch, output, _blobs_rejection())
 
     with pytest.raises(ValidationError) as excinfo:
         await FlowmeshRuntimeManager().process_request(
@@ -102,6 +102,7 @@ async def test_submit_error_names_the_python_blobs_requirement(
     assert "spec.blobs" in message
     assert "FlowMesh #259" in message
     assert "v0.1.13" in message
+    assert message.count("returned 400") == 1
 
 
 @pytest.mark.asyncio
@@ -115,7 +116,32 @@ async def test_submit_error_without_python_steps_keeps_the_server_message(
             config=GenerationConfig(model=_MODEL),
         ),
     )
-    request_info, node_ids = _request(monkeypatch, output)
+    request_info, node_ids = _request(monkeypatch, output, _blobs_rejection())
+
+    with pytest.raises(ValidationError) as excinfo:
+        await FlowmeshRuntimeManager().process_request(
+            request_info,
+            Schedule(worker_assignment={"worker-1": node_ids}),
+            worker_ids=["worker-1"],
+        )
+
+    assert "FlowMesh #259" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_submit_error_on_another_field_keeps_the_server_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = as_output("out", LambdaOp([input_placeholder("Stock")], _shout))
+    rejection = ValidationError(
+        "Invalid task payload for node 'out': 1 validation error for PythonSpecStrict"
+        "\nspec.name\n  Field required",
+        status_code=422,
+        method="POST",
+        url="https://flowmesh.internal/api/v1/workflows",
+        body={"detail": "spec.name: Field required"},
+    )
+    request_info, node_ids = _request(monkeypatch, output, rejection)
 
     with pytest.raises(ValidationError) as excinfo:
         await FlowmeshRuntimeManager().process_request(

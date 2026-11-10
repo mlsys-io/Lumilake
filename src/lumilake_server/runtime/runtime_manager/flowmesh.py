@@ -1371,7 +1371,11 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             workflow_id, task_ids = await self._submit_workflow(task_yaml, submit_id)
         except APIError as e:
             sanitized = _sanitize_flowmesh_api_error(e)
-            if e.status_code in (400, 422) and _task_spec_carries_blobs(task_spec):
+            if (
+                e.status_code in (400, 422)
+                and _task_spec_carries_blobs(task_spec)
+                and "blobs" in sanitized.body
+            ):
                 sanitized = _name_python_blobs_requirement(sanitized)
             self.logger.error(
                 "Flowmesh request failed: %s. Body: %s",
