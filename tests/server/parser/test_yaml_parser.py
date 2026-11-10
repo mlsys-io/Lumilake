@@ -144,6 +144,52 @@ def test_router_op_rejects_unknown_default_branch() -> None:
         parse_yaml_payload(yaml_text)
 
 
+def test_yaml_rejects_row_gate_with_a_rowwise_messages_column() -> None:
+    yaml_text = textwrap.dedent("""
+        name: messages
+        inputs:
+          Rows: ["[]"]
+        ops:
+          - id: source
+            op: LambdaOp
+            inputs: [Rows]
+            fn_name: echo
+            code: |
+              def echo(inputs):
+                  return inputs[0]
+          - id: route
+            op: RouterOp
+            inputs: [source]
+            source: source
+            input_path: items.output
+            rules:
+              - branch: review
+                match: contains
+                value: NEEDS
+              - branch: pending
+                match: equals
+                value: __never__
+            default_branch: pending
+          - id: turn
+            op: LLMChatOp
+            inputs: [source, route]
+            messages:
+              - role: user
+                content: source
+            config:
+              model: dummy-model
+            rowwise_messages_column:
+              label: messages_json
+              node: source
+              path: items.output
+            row_gate:
+              node: route
+              branch: review
+        """)
+    with pytest.raises(ValueError, match="combines row_gate with"):
+        parse_yaml_payload(yaml_text)
+
+
 def test_yaml_rowwise_messages_column_is_parsed() -> None:
     yaml_text = textwrap.dedent("""
         name: messages

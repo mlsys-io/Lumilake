@@ -859,6 +859,30 @@ def test_row_gate_stages_reference_only_existing_runtime_nodes() -> None:
             assert dep in runtime_graph.nodes
 
 
+def test_row_gate_rejects_a_rowwise_messages_column() -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
+            RouterRule(branch="pending", match="equals", value="__never__"),
+        ],
+        default_branch="pending",
+    )
+    gated = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_messages_column={"label": "msgs", "node": rows.id, "path": "items"},
+        row_gate={"node": router.id, "branch": "review"},
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(
+        Rows=["normal", "NEEDS REVIEW"]
+    )
+    with pytest.raises(ValueError, match="combines row_gate with"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
     """A rowwise LLMChatOp column with no path on an InputOp ref binds as a literal."""
     stock = input_placeholder("Stock")

@@ -567,6 +567,14 @@ class RuntimeGraphBuilder:
                     raise ValueError(
                         f"LLMChatOp '{llm_op_id}' row_gate requires rowwise_template"
                     )
+                if llm_op.rowwise_messages_column is not None:
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' combines row_gate with"
+                        " rowwise_messages_column; the gated path builds its"
+                        " prompts from rowwise_template, so a messages column"
+                        " would be ignored. Use rowwise_template, or drop the"
+                        " row gate."
+                    )
                 gated_runtime_ops = self._build_row_gated_llm_ops(
                     llm_op_id=llm_op_id,
                     llm_op=llm_op,

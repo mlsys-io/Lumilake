@@ -806,6 +806,13 @@ def _emit_llm_like_op(
         if not isinstance(terminal, bool):
             raise ValueError(f"{op_kind} '{entry.id}' row_gate terminal must be a bool")
         gate["terminal"] = terminal
+        if "rowwise_messages_column" in op_dict:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' combines row_gate with"
+                " rowwise_messages_column; the gated path builds its prompts"
+                " from rowwise_template, so a messages column would be ignored."
+                " Use rowwise_template, or drop the row gate."
+            )
         op_dict["row_gate"] = gate
         if gate["node"] not in op_dict["_inputs"]:
             op_dict["_inputs"].append(gate["node"])
