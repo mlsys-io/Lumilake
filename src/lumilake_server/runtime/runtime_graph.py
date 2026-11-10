@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Self, cast
+from typing import Any, Self, TypeGuard, cast
 
 import sqlparse
 from pydantic import BaseModel, ConfigDict, Field
@@ -430,8 +430,8 @@ class RuntimeGraphBuilder:
             op_id
             for op_id, op in graph_dict.items()
             if isinstance(op, LLMVisionOp)
-            and (op.rowwise_template or op.rowwise_messages_column)
             and isinstance(graph_dict.get(op.image_source), DataRetrievalOp)
+            and self._is_rowwise_llm(op)
         }
 
         visited_node_ids: set[str] = set()
@@ -562,9 +562,7 @@ class RuntimeGraphBuilder:
                 else None
             )
             if row_gate is not None:
-                if not isinstance(llm_op, LLMChatOp) or not (
-                    llm_op.rowwise_template or llm_op.rowwise_messages_column
-                ):
+                if not self._is_rowwise_llm(llm_op):
                     raise ValueError(
                         f"LLMChatOp '{llm_op_id}' row_gate requires rowwise_template"
                     )
@@ -819,11 +817,7 @@ class RuntimeGraphBuilder:
                 (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
             )
             entry: dict[str, Any] = {"kind": "stage", "node": dep}
-            if (
-                isinstance(inp, LLMChatOp)
-                and not isinstance(inp, LLMVisionOp)
-                and (inp.rowwise_template or inp.rowwise_messages_column)
-            ):
+            if not isinstance(inp, LLMVisionOp) and self._is_rowwise_llm(inp):
                 # A rowwise LLM groups its per-row outputs back into one item;
                 # flatten it to one value per row for the python step. A VLM's
                 # regroup step already emits one list per symbol, so it is
@@ -1635,11 +1629,7 @@ class RuntimeGraphBuilder:
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
                 entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
-                if (
-                    isinstance(inp, LLMChatOp)
-                    and not isinstance(inp, LLMVisionOp)
-                    and (inp.rowwise_template or inp.rowwise_messages_column)
-                ):
+                if not isinstance(inp, LLMVisionOp) and self._is_rowwise_llm(inp):
                     # A rowwise LLM groups its per-row outputs back into one
                     # item; the python step must flatten it to one value per
                     # row before the list-mode Lambda sees it. A VLM's regroup
@@ -1909,14 +1899,20 @@ class RuntimeGraphBuilder:
             )
 
     @staticmethod
+    def _is_rowwise_llm(op: Op | None) -> TypeGuard[LLMChatOp]:
+        """Whether a chat op builds one prompt per row."""
+        return isinstance(op, LLMChatOp) and bool(
+            op.rowwise_template or op.rowwise_messages_column
+        )
+
+    @staticmethod
     def _emits_one_item_per_row(op: Op) -> bool:
         """Whether a multi-row op's result holds one scalar-per-row item per
         input row, so a ``node``/``path`` reference resolves to one value per
         row."""
         return (
             isinstance(op, LLMChatOp)
-            and op.rowwise_template is None
-            and op.rowwise_messages_column is None
+            and not RuntimeGraphBuilder._is_rowwise_llm(op)
             and not RuntimeGraphBuilder._is_api_task(op)
         )
 
@@ -1932,14 +1928,9 @@ class RuntimeGraphBuilder:
     @staticmethod
     def _is_rowwise_api_task(op: Op) -> bool:
         """Whether an API task is row-wise (dataframe)."""
-        return (
-            RuntimeGraphBuilder._is_api_task(op)
-            and isinstance(op, LLMChatOp)
-            and (
-                op.rowwise_template is not None
-                or op.rowwise_messages_column is not None
-            )
-        )
+        return RuntimeGraphBuilder._is_api_task(
+            op
+        ) and RuntimeGraphBuilder._is_rowwise_llm(op)
 
     def _upstream_output_path(self, op: Op) -> str:
         """Result path for an upstream op's text output."""
@@ -2502,9 +2493,7 @@ class RuntimeGraphBuilder:
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
 
-        if isinstance(llm_op, LLMChatOp) and (
-            llm_op.rowwise_template or llm_op.rowwise_messages_column
-        ):
+        if self._is_rowwise_llm(llm_op):
             data_spec, row_dependencies = self._rowwise_data_spec(
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
@@ -2656,11 +2645,9 @@ class RuntimeGraphBuilder:
         # The python step reads the upstream's item list first, so the plan
         # path is relative to each item.
         source_op = graph_dict.get(router.source.id)
-        rowwise_source = (
-            isinstance(source_op, LLMChatOp)
-            and not isinstance(source_op, LLMVisionOp)
-            and bool(source_op.rowwise_template or source_op.rowwise_messages_column)
-        )
+        rowwise_source = not isinstance(
+            source_op, LLMVisionOp
+        ) and self._is_rowwise_llm(source_op)
         if rowwise_source and read_path != "output":
             raise ValueError(
                 f"RouterOp '{router_id}' reads {input_path!r} from rowwise LLM"
@@ -2792,11 +2779,9 @@ class RuntimeGraphBuilder:
                 select_plan.append({"kind": "literal", "values": list(values)})
                 continue
             runtime_ids = dsl_to_runtime.get(node_ref, [])
-            rowwise_upstream = (
-                isinstance(upstream, LLMChatOp)
-                and not isinstance(upstream, LLMVisionOp)
-                and bool(upstream.rowwise_template or upstream.rowwise_messages_column)
-            )
+            rowwise_upstream = not isinstance(
+                upstream, LLMVisionOp
+            ) and self._is_rowwise_llm(upstream)
             if (
                 upstream is not None
                 and self._is_api_task(upstream)
@@ -2979,9 +2964,7 @@ class RuntimeGraphBuilder:
         dsl_to_runtime: dict[str, list[str]] | None = None,
     ) -> list[RuntimeOp]:
         """Dispatch an API LLM op to its row-wise, aggregate or plain builder."""
-        if isinstance(llm_op, LLMChatOp) and (
-            llm_op.rowwise_template or llm_op.rowwise_messages_column
-        ):
+        if self._is_rowwise_llm(llm_op):
             return self._build_api_rowwise_op(
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
@@ -3115,7 +3098,7 @@ class RuntimeGraphBuilder:
     ) -> tuple[dict[str, Any], list[str]]:
         """Build the dataframe data_spec for a rowwise LLMChatOp, shared by the
         local and API paths."""
-        if llm_op.rowwise_template is None and llm_op.rowwise_messages_column is None:
+        if not self._is_rowwise_llm(llm_op):
             raise ValueError(
                 f"LLMChatOp {llm_op_id} has no rowwise_template or "
                 "rowwise_messages_column"

@@ -576,6 +576,27 @@ def test_row_status_routes_on_the_upstream_text(tmp_path: Path) -> None:
     ]
 
 
+def test_row_status_routes_on_its_only_column(tmp_path: Path) -> None:
+    # The plan holds exactly one column, so the step tests that column's value
+    # whichever label it carries; a label lookup would fall back to "" and
+    # match every "contains" rule.
+    source = _stage(
+        tmp_path,
+        "source",
+        {"items": [{"output": "COMPLETE: done"}, {"output": "pending"}]},
+    )
+    status = _run_row_status(
+        [{"kind": "stage", "label": "rows", "node": "source"}],
+        {"source": source},
+        rules=[{"branch": "finish", "match": "contains", "value": "COMPLETE"}],
+        default_branch="pending",
+    )
+    assert [item["value"]["branch"] for item in status["items"]] == [
+        "finish",
+        "pending",
+    ]
+
+
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     py_dir = _stage(tmp_path, "py", {"value": {"items": [{"output": "p"}]}})
     api_dir = _stage(tmp_path, "api", {"text": "t"})
