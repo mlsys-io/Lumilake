@@ -760,6 +760,105 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
     assert yaml_types == python_types
 
 
+@pytest.mark.parametrize(
+    "consumer_kind", ["row_lambda", "list_lambda", "llm", "router"]
+)
+def test_row_gated_llm_rejects_consumers_other_than_an_output(
+    consumer_kind: str,
+) -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
+            RouterRule(branch="pending", match="equals", value="__never__"),
+        ],
+        default_branch="pending",
+    )
+    gated = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "review"},
+        row_gate_op=router,
+    )
+    if consumer_kind == "row_lambda":
+        tail: Any = LambdaOp([gated], lambda row: str(row).upper())
+    elif consumer_kind == "list_lambda":
+        tail = LambdaOp([gated], lambda rows: list(rows), mode="list")
+    elif consumer_kind == "llm":
+        tail = LLMChatOp(
+            [OpMessage(role="user", content=gated)],
+            config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+            rowwise_template="{prev}",
+            rowwise_columns=[
+                {"label": "prev", "node": gated.id, "path": "items.output"}
+            ],
+        )
+    else:
+        router_tail = RouterOp(
+            gated,
+            rules=[
+                RouterRule(branch="x", match="contains", value="X"),
+                RouterRule(branch="y", match="equals", value="__never__"),
+            ],
+            default_branch="y",
+        )
+        tail = LLMChatOp(
+            [OpMessage(role="user", content=gated)],
+            config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+            rowwise_template="{prev}",
+            rowwise_columns=[
+                {"label": "prev", "node": gated.id, "path": "items.output"}
+            ],
+            row_gate={"node": router_tail.id, "branch": "x"},
+            row_gate_op=router_tail,
+        )
+    compiled = Graph.from_ops([as_output("result", tail)]).compile(
+        Rows=["normal", "NEEDS REVIEW"]
+    )
+
+    with pytest.raises(ValueError, match="only an OutputOp can read it"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_gate_stages_reference_only_existing_runtime_nodes() -> None:
+    source = LambdaOp(
+        [input_placeholder("Rows")],
+        lambda rows: [str(row) for row in rows],
+        mode="list",
+    )
+    router = RouterOp(
+        source,
+        rules=[
+            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
+            RouterRule(branch="pending", match="equals", value="__never__"),
+        ],
+        default_branch="pending",
+    )
+    gated = LLMChatOp(
+        [OpMessage(role="user", content="review the row")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": source.id, "path": "items.output"}],
+        row_gate={"node": router.id, "branch": "review"},
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(
+        Rows=["normal", "NEEDS REVIEW"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    for node_id in runtime_graph.dsl_to_runtime[gated.id]:
+        node = runtime_graph.nodes[node_id]
+        for entry in node.data_spec.get("plan") or []:
+            if entry["kind"] == "stage":
+                assert entry["node"] in runtime_graph.nodes
+        for dep in node.dependencies or ():
+            assert dep in runtime_graph.nodes
+
+
 def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
     """A rowwise LLMChatOp column with no path on an InputOp ref binds as a literal."""
     stock = input_placeholder("Stock")

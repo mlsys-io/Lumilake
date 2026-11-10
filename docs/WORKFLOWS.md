@@ -38,7 +38,7 @@ outputs:
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, `LambdaOp`, and `RouterOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
-`RouterOp` declares deterministic per-row branch selection. A rowwise `LLMChatOp` names a router and branch in `row_gate`, and only matching rows reach the model. Non-matching rows keep `output: null`, so the result still holds one row per input row.
+`RouterOp` declares deterministic per-row branch selection. A rowwise `LLMChatOp` names a router and branch in `row_gate`, and only matching rows reach the model. Non-matching rows keep `output: null`, so the result still holds one row per input row. A gated op has no single runtime node, so only an `OutputOp` exposes its result; any other consumer is rejected at build time.
 
 A rowwise `LLMChatOp` may use `rowwise_messages_column` instead of `rowwise_template`. That column holds one serialized list of role/content messages per row, sent as the whole conversation in order.
 

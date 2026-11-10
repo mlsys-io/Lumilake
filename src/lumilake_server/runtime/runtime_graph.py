@@ -473,6 +473,8 @@ class RuntimeGraphBuilder:
                     "intermediate LambdaOp instead."
                 )
 
+        self._check_row_gate_consumers(graph_dict)
+
         has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
         if not llm_ops and not retrieval_ops and not has_lambda:
             raise ValueError(
@@ -2195,6 +2197,33 @@ class RuntimeGraphBuilder:
             raise ValueError(f"LLMChatOp '{consumer}' row_gate terminal must be a bool")
         return {"node": node, "branch": branch, "terminal": terminal}
 
+    @staticmethod
+    def _check_row_gate_consumers(graph_dict: dict[str, Op]) -> None:
+        """Reject consumers of a row-gated LLM other than an ``OutputOp``.
+
+        A row gate compiles its LLM into status, selection, gated call and
+        merge stages, so the op has no single runtime node a consumer could
+        bind to.
+        """
+        for op_id, op in graph_dict.items():
+            if not isinstance(op, LLMChatOp) or op.row_gate is None:
+                continue
+            for consumer_id, consumer in graph_dict.items():
+                if consumer_id == op_id or not any(
+                    inp is op for inp in consumer.inputs
+                ):
+                    continue
+                if isinstance(consumer, OutputOp):
+                    continue
+                raise ValueError(
+                    f"Op '{consumer_id}' reads the row-gated LLMChatOp '{op_id}',"
+                    " which compiles to status, selection, gated call and merge"
+                    " stages; a row gate produces one row per input row but not"
+                    " one item per row, so only an OutputOp can read it. Consume"
+                    " the pre-gate rows instead, or write the merged rows to an"
+                    " output."
+                )
+
     def _api_prior_prompt(
         self, op: LLMChatOp, inputs_dict: dict[str, list[str]]
     ) -> list[str] | None:
@@ -2558,7 +2587,7 @@ class RuntimeGraphBuilder:
             {
                 "kind": "stage",
                 "label": "source",
-                "node": router.source_node,
+                "node": source_runtime[0],
                 "path": input_path,
             },
         ]
@@ -2567,7 +2596,7 @@ class RuntimeGraphBuilder:
                 {
                     "kind": "stage",
                     "label": "route",
-                    "node": router.source_node,
+                    "node": source_runtime[0],
                     "path": f"items.output.{route_path}",
                 }
             )
