@@ -1209,7 +1209,8 @@ def test_runtime_blob_uses_canonical_runtime_and_is_cached() -> None:
 
     assert first is second
     assert b"def validate_source(" in first.body
-    assert b"def _column(entry, inputs, text):" in first.body
+    assert b"def _column(" in first.body
+    assert b"text: Callable[[Any], str]" in first.body
     assert b"class _validate_source" not in first.body
 
 

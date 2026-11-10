@@ -2,13 +2,15 @@
 
 import json
 import os
+from collections.abc import Callable
+from typing import Any
 
 
-def _text(value):
+def _text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
-def _walk_path(value, parts, where):
+def _walk_path(value: Any, parts: list[str], where: str) -> Any:
     for idx, part in enumerate(parts):
         if isinstance(value, str):
             try:
@@ -41,14 +43,16 @@ def _walk_path(value, parts, where):
     return value
 
 
-def _row_content(row):
+def _row_content(row: Any) -> Any:
     try:
         return row["json"]["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return row.get("text", row)
 
 
-def _column(entry, inputs, text):
+def _column(
+    entry: dict[str, Any], inputs: dict[str, str], text: Callable[[Any], str]
+) -> list[str]:
     if entry["kind"] == "literal":
         if "file" in entry:
             with open(entry["file"], encoding="utf-8") as fh:
