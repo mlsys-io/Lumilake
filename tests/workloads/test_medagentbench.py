@@ -36,21 +36,21 @@ def test_observation_code_and_ge_date_translation() -> None:
     assert translated.sql == (
         "SELECT * FROM fhir.observation WHERE patient_id = '123' "
         "AND code = 'MG' AND effective_date_time >= '2023-11-13T00:00:00+00:00' "
-        "ORDER BY effective_date_time DESC"
+        "ORDER BY id::bigint ASC"
     )
 
 
 def test_observation_category_translation() -> None:
     assert translate_search("Observation?patient=123&category=vital-signs").sql == (
         "SELECT * FROM fhir.observation WHERE patient_id = '123' "
-        "AND category = 'vital-signs' ORDER BY effective_date_time DESC"
+        "AND category = 'vital-signs' ORDER BY id::bigint ASC"
     )
 
 
 def test_condition_category_translation() -> None:
     assert translate_search("Condition?patient=123&category=problem-list-item").sql == (
         "SELECT * FROM fhir.condition WHERE patient_id = '123' "
-        "AND category = 'problem-list-item'"
+        "AND category = 'problem-list-item' ORDER BY id::bigint ASC"
     )
 
 
@@ -59,7 +59,8 @@ def test_medication_request_translation() -> None:
         "MedicationRequest?patient=123&category=Community&date=ge2023-11-13"
     ).sql == (
         "SELECT * FROM fhir.medication_request WHERE patient_id = '123' "
-        "AND category = 'Community' AND authored_on >= '2023-11-13T00:00:00+00:00'"
+        "AND category = 'Community' AND authored_on >= '2023-11-13T00:00:00+00:00' "
+        "ORDER BY id::bigint ASC"
     )
 
 
@@ -69,14 +70,14 @@ def test_procedure_translation() -> None:
     ).sql == (
         "SELECT * FROM fhir.procedure WHERE patient_id = '123' "
         "AND code = '12345' AND performed_date_time >= '2023-11-13T00:00:00+00:00' "
-        "ORDER BY performed_date_time DESC"
+        "ORDER BY id::bigint ASC"
     )
 
 
 def test_service_request_search_is_accepted() -> None:
     assert translate_search("ServiceRequest?patient=123&code=93000").sql == (
         "SELECT * FROM fhir.service_request WHERE patient_id = '123' "
-        "AND code = '93000'"
+        "AND code = '93000' ORDER BY id::bigint ASC"
     )
 
 
@@ -93,6 +94,37 @@ def test_last_updated_sort_translation() -> None:
     assert translate_search("Condition?patient=123&_sort=_lastUpdated").sql == (
         "SELECT * FROM fhir.condition WHERE patient_id = '123' "
         "ORDER BY recorded_date ASC"
+    )
+
+
+def test_default_order_is_ascending_numeric_id() -> None:
+    assert translate_search("Observation?patient=123&code=MG").sql == (
+        "SELECT * FROM fhir.observation WHERE patient_id = '123' AND code = 'MG' "
+        "ORDER BY id::bigint ASC"
+    )
+    assert translate_search("Condition?patient=123").sql == (
+        "SELECT * FROM fhir.condition WHERE patient_id = '123' ORDER BY id::bigint ASC"
+    )
+    assert translate_search("MedicationRequest?patient=123").sql == (
+        "SELECT * FROM fhir.medication_request WHERE patient_id = '123' "
+        "ORDER BY id::bigint ASC"
+    )
+    assert translate_search("Procedure?patient=123").sql == (
+        "SELECT * FROM fhir.procedure WHERE patient_id = '123' ORDER BY id::bigint ASC"
+    )
+
+
+def test_sort_by_id_keeps_the_numeric_order() -> None:
+    assert translate_search("Observation?patient=123&_sort=_id").sql == (
+        "SELECT * FROM fhir.observation WHERE patient_id = '123' "
+        "ORDER BY id::bigint ASC"
+    )
+    assert translate_search("Observation?patient=123&_sort=-_id").sql == (
+        "SELECT * FROM fhir.observation WHERE patient_id = '123' "
+        "ORDER BY id::bigint DESC"
+    )
+    assert translate_search("Patient?_id=Patient%2Fp1&_sort=_id").sql == (
+        "SELECT * FROM fhir.patient WHERE id = 'p1' ORDER BY id ASC"
     )
 
 

@@ -208,17 +208,19 @@ def translate_search(url: str) -> SearchSql:
         clauses.append(_date_clause(params["date"], _DATE_COLUMNS[resource]))
 
     order_by: str | None = None
+    if resource != "Patient":
+        order_by = "ORDER BY id::bigint ASC"
     if "_sort" in params:
         raw_sort = params["_sort"]
         descending = raw_sort.startswith("-")
         sort_key = raw_sort[1:] if descending else raw_sort
-        if sort_key not in {"date", "_lastUpdated"}:
+        if sort_key not in {"date", "_lastUpdated", "_id"}:
             raise FhirSearchRejected(f"unsupported FHIR sort key {sort_key!r}")
-        order_by = (
-            f"ORDER BY {_DATE_COLUMNS[resource]} " f"{'DESC' if descending else 'ASC'}"
-        )
-    elif resource in {"Observation", "Procedure"}:
-        order_by = f"ORDER BY {_DATE_COLUMNS[resource]} DESC"
+        if sort_key == "_id":
+            column = "id" if resource == "Patient" else "id::bigint"
+        else:
+            column = _DATE_COLUMNS[resource]
+        order_by = f"ORDER BY {column} {'DESC' if descending else 'ASC'}"
 
     limit: str | None = None
     if "_count" in params:
