@@ -31,7 +31,12 @@ from lumilake_server.ops import (
     OutputOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
-from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
+from lumilake_server.ops.llm_ops import (
+    ImageGenerationOp,
+    LLMChatOp,
+    LLMCompletionOp,
+    LLMVisionOp,
+)
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -1843,6 +1848,8 @@ class RuntimeGraphBuilder:
         """Whether a multi-row op's result holds one scalar-per-row item per
         input row, so a ``node``/``path`` reference resolves to one value per
         row."""
+        if isinstance(op, LLMCompletionOp):
+            return True
         return (
             isinstance(op, LLMChatOp)
             and op.rowwise_template is None
@@ -2300,14 +2307,20 @@ class RuntimeGraphBuilder:
                 ),
             )
 
-        upstream_llm_ids, template_spec = self._infer_structural_messages(
-            llm_op_id,
-            graph_dict,
-            inputs_dict,
-            visited_node_ids,
-            dsl_to_runtime=dsl_to_runtime,
-            runtime_nodes=runtime_nodes,
-        )
+        if isinstance(llm_op, LLMCompletionOp):
+            # Raw completions read their prompt directly and never build a
+            # chat-message graph, including when the prompt is a list-mode op.
+            upstream_llm_ids: list[str] = []
+            template_spec: dict[str, Any] = {}
+        else:
+            upstream_llm_ids, template_spec = self._infer_structural_messages(
+                llm_op_id,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime=dsl_to_runtime,
+                runtime_nodes=runtime_nodes,
+            )
 
         if task_type_override == "data_profile":
             task_type = "data_profiling"
@@ -2321,6 +2334,41 @@ class RuntimeGraphBuilder:
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
+
+        if isinstance(llm_op, LLMCompletionOp):
+            prompt_op = llm_op.prompt
+            visited_node_ids.add(prompt_op.id)
+            if isinstance(prompt_op, InputOp):
+                prompt_values = inputs_dict.get(prompt_op.name)
+                if prompt_values is None:
+                    raise ValueError(
+                        f"LLMCompletionOp '{llm_op_id}' prompt input "
+                        f"{prompt_op.name!r} has no values supplied"
+                    )
+                data_spec = {"type": "list", "items": list(prompt_values)}
+                row_dependencies: list[str] = []
+            elif isinstance(prompt_op, DataOp):
+                data_spec = {"type": "list", "items": list(prompt_op.data)}
+                row_dependencies = []
+            else:
+                data_spec = {
+                    "type": "list",
+                    "node": prompt_op.id,
+                    "path": self._upstream_output_path(prompt_op),
+                }
+                row_dependencies = [prompt_op.id]
+            return self._create_runtime_op(
+                name=llm_op_id,
+                task_type=task_type,
+                data_spec=data_spec,
+                model_spec=self._build_model_spec(llm_op.config, backend),
+                inference_spec={**inference_spec, "apply_chat_template": False},
+                backend=backend,
+                model=llm_op.config.model,
+                dependencies=row_dependencies if row_dependencies else None,
+                output_spec=output_spec,
+                condition=None,
+            )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             data_spec, row_dependencies = self._rowwise_data_spec(
@@ -2923,6 +2971,8 @@ class RuntimeGraphBuilder:
             return len(values) if values is not None else None
         if isinstance(op, DataOp):
             return len(op.data)
+        if isinstance(op, LLMCompletionOp):
+            return self._static_output_row_count(op.prompt, inputs_dict, graph_dict)
         if isinstance(op, LLMChatOp):
             if op.rowwise_columns:
                 counts: list[int] = []
