@@ -4,7 +4,7 @@ import textwrap
 
 import pytest
 
-from lumilake_server.common import GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, LLMCompletionOp, as_output, input_placeholder
 from lumilake_server.parser import parse_yaml_payload
@@ -121,5 +121,8 @@ def test_completion_op_rejects_api_mode() -> None:
     with pytest.raises(ValueError, match="API mode"):
         LLMCompletionOp(
             prompt=["raw"],
-            config=GenerationConfig(model="org/model", api={}),  # type: ignore[arg-type]
+            config=GenerationConfig(
+                model="org/model",
+                api=ApiConfig(url="https://example.invalid/v1"),
+            ),
         )
