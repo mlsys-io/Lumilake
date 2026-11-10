@@ -82,6 +82,17 @@ def test_has_live_rows_ignores_completely_terminal_sets() -> None:
     assert has_live_rows({}) is True
 
 
+def test_has_live_rows_reads_the_archived_merge_item() -> None:
+    # A dynamic leaf archives the whole item its producer emitted, and the
+    # row-gate merge step wraps each row as {"output": <row json>, "value": <row>}.
+    def merged(done: bool) -> str:
+        row = {"selected": True, "done": done, "branch": "finish", "row": 0}
+        return json.dumps({"output": json.dumps(row), "value": row})
+
+    assert has_live_rows({"leaf": [merged(True)]}) is False
+    assert has_live_rows({"leaf": [merged(True), merged(False)]}) is True
+
+
 def test_forward_explicit_sql_column_reference_binds_and_rewrites():
     # A round-1 SQL op archived its whole item; round 2 references a column
     # through ``data_spec.params`` with an explicit path. The reference is

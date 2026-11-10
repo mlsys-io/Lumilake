@@ -710,14 +710,19 @@ async def test_dynamic_gated_round_with_terminal_rows_stops_before_planner(
     assert resp.status_code == 200, resp.text
     job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
-    fake_server.leaf_item = lambda row: {
-        "selected": True,
-        "done": True,
-        "branch": "finish",
-        "row": row,
-        "table": {"market_cap": row},
-        "output": None,
-    }
+
+    def terminal_row(row: int) -> dict[str, Any]:
+        # The row-gate merge stage emits ``{"output": <row json>, "value": <row>}``
+        # and the leaf archives that item whole.
+        routing = {
+            "selected": True,
+            "done": True,
+            "branch": "finish",
+            "row": row,
+        }
+        return {"output": json.dumps(routing), "value": routing}
+
+    fake_server.leaf_item = terminal_row
     fake_server.plans = [_GATED_PLAN, _SUBGRAPH_PLAN]
     await _run_background(app)
     record = job_routes.jobs[job_id]

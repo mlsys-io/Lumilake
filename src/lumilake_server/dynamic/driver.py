@@ -617,6 +617,22 @@ def walk_archived_items(
     return walked
 
 
+def _routing_row(item: Any) -> dict[str, Any] | None:
+    """The routing row an archived leaf value carries, if it carries one.
+
+    A dynamic leaf archives the whole item its producer emitted. The row-gate
+    merge stage emits ``{"output": <row json>, "value": <row>}``, so the
+    routing flags sit under ``value``; a routing row stored on its own carries
+    them at the top level.
+    """
+    if not isinstance(item, dict):
+        return None
+    value = item.get("value")
+    if isinstance(value, dict):
+        return value if "done" in value else None
+    return item if "done" in item else None
+
+
 def has_live_rows(archived: dict[str, list[str]]) -> bool:
     """Whether archived row-routing output contains a non-terminal row.
 
@@ -633,9 +649,10 @@ def has_live_rows(archived: dict[str, list[str]]) -> bool:
                 item = json.loads(value)
             except (TypeError, ValueError):
                 return True
-            if not isinstance(item, dict) or "done" not in item:
+            row = _routing_row(item)
+            if row is None:
                 return True
-            if not item["done"]:
+            if not row["done"]:
                 return True
     return False
 
