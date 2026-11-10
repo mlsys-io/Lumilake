@@ -261,7 +261,11 @@ Where the function runs depends on what reads it:
   literal payloads above 1 KiB once per digest as mounted JSON. Smaller
   literals stay inline. The generated stub holds only the op id, user code,
   function name, and plan; the worker fetches blobs through
-  `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`). The code may `import` any module the task
+  `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`). Mounting these
+  blobs needs a FlowMesh server that supports python-task `blobs` (FlowMesh
+  #259, released after FlowMesh `v0.1.13`); against an older server every task
+  spec carrying a `python` step is rejected, and the submit error names this
+  requirement. The code may `import` any module the task
   image provides (the default image carries the standard library, numpy and
   pandas), at module level or in the function body; only relative imports are
   rejected at submit. A `LambdaOp` with an `image` always runs as its own
