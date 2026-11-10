@@ -61,11 +61,7 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 5. The runtime manager dispatches the plan to FlowMesh.
 6. Progress, results, traces, and artifacts are stored through the archive layer.
 
-Standalone `python` tasks receive their shared Lambda runtime through a
-content-addressed FlowMesh blob instead of embedding it in every task's source.
-Large literal plan entries are also uploaded once by digest and mounted as JSON
-files; literals at or below 1 KiB stay inline. FlowMesh verifies each blob by
-SHA-256 and caches the verified bytes per worker.
+Standalone `python` tasks receive their shared Lambda runtime through a content-addressed FlowMesh blob instead of embedding it in every task's source. Large literal plan entries are also uploaded once by digest and mounted as JSON files; literals at or below 1 KiB stay inline. FlowMesh verifies each blob by SHA-256 and caches the verified bytes per worker.
 
 ## Storage Model
 
