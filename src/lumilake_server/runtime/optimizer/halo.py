@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from httpx2 import TransportError
 from huggingface_hub import get_safetensors_metadata, try_to_load_from_cache
 from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import NotASafetensorsRepoError, SafetensorsParsingError
@@ -1231,6 +1232,7 @@ class HaloOptimizer(BaseOptimizer):
                 HfHubHTTPError,
                 NotASafetensorsRepoError,
                 SafetensorsParsingError,
+                TransportError,
                 OSError,
                 ValueError,
             ) as exc:
