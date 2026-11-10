@@ -51,7 +51,8 @@ outputs:
 
 ### RouterOp and row gates
 
-`RouterOp` assigns each row one of a fixed set of branch names by matching an upstream value, either exactly (`equals`) or as a substring (`contains`).
+`RouterOp` assigns each row one of a fixed set of branch names by matching
+an upstream value, either exactly (`equals`) or as a substring (`contains`).
 
 ```yaml
 ops:
@@ -74,11 +75,25 @@ ops:
     config: {model: model-id}
 ```
 
-A rowwise `LLMChatOp` with `row_gate` calls the model only for rows whose branch matches. The stage still emits one row per input row, and skipped rows carry `output: null`, which is how a skipped row differs from a failed call. A gated op has no single runtime node, so only an `OutputOp` exposes its result; any other consumer is rejected at build time.
+A rowwise `LLMChatOp` with `row_gate` calls the model only for rows whose
+branch matches. The stage still emits one row per input row, and skipped
+rows carry `output: null`, which is how a skipped row differs from a failed
+call. A gated op has no single runtime node, so only an `OutputOp` exposes
+its result; any other consumer is rejected at build time.
 
-`row_gate: {node: ..., branch: ..., terminal: true}` marks the rows routed to that branch as finished. Each routing row then carries a `done` flag, true exactly for rows on the terminal branch, and a round whose survivor rows are all done has no work left, so a dynamic run stops instead of opening another round. `done` describes the round that computed it: the status step derives it from that round's router alone, so a row marked done is still routed and served by a later round unless that round's plan drops it.
+`row_gate: {node: ..., branch: ..., terminal: true}` marks the rows routed
+to that branch as finished. Each routing row then carries a `done` flag,
+true exactly for rows on the terminal branch, and a round whose survivor
+rows are all done has no work left, so a dynamic run stops instead of
+opening another round. `done` describes the round that computed it: the
+status step derives it from that round's router alone, so a row marked done
+is still routed and served by a later round unless that round's plan drops
+it.
 
-A rowwise `LLMChatOp` may instead declare `rowwise_messages_column`. That column holds one serialized message array per row, sent as the whole chat history in role order, for conversations whose history grows between rounds.
+A rowwise `LLMChatOp` may instead declare `rowwise_messages_column`. That
+column holds one serialized message array per row, sent as the whole chat
+history in role order, for conversations whose history grows between
+rounds.
 
 Row gates need a FlowMesh release that accepts an inference prepared with
 no prompts, because a branch can receive no rows in a round: every row may
