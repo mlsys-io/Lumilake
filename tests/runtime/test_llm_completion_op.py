@@ -4,9 +4,16 @@ import textwrap
 
 import pytest
 
+from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LambdaOp, LLMCompletionOp, as_output, input_placeholder
+from lumilake_server.ops import (
+    DataRetrievalOp,
+    LambdaOp,
+    LLMCompletionOp,
+    as_output,
+    input_placeholder,
+)
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
@@ -18,7 +25,7 @@ def test_completion_op_compiles_to_string_prompt_list_without_chat_template() ->
             model="Qwen/Qwen3-8B",
             temperature=0.7,
             max_tokens=3000,
-            extra_sampling_params={"stop_token_ids": [128009]},
+            extra_sampling_params={"stop_token_ids": [151645]},
         ),
     )
     compiled = Graph.from_ops([as_output("answer", op)]).compile()
@@ -32,7 +39,7 @@ def test_completion_op_compiles_to_string_prompt_list_without_chat_template() ->
     assert node.inference_spec["apply_chat_template"] is False
     assert node.inference_spec["temperature"] == 0.7
     assert node.inference_spec["max_tokens"] == 3000
-    assert node.inference_spec["stop_token_ids"] == [128009]
+    assert node.inference_spec["stop_token_ids"] == [151645]
 
 
 def test_completion_yaml_uses_string_prompt_and_no_chat_template() -> None:
@@ -50,7 +57,7 @@ def test_completion_yaml_uses_string_prompt_and_no_chat_template() -> None:
               temperature: 0.7
               max_tokens: 3000
               extra_sampling_params:
-                stop_token_ids: [128009]
+                stop_token_ids: [151645]
         outputs:
           - name: answer
             ref: Generate
@@ -67,7 +74,7 @@ def test_completion_yaml_uses_string_prompt_and_no_chat_template() -> None:
         "items": ["first raw prompt", "second raw prompt"],
     }
     assert node.inference_spec["apply_chat_template"] is False
-    assert node.inference_spec["stop_token_ids"] == [128009]
+    assert node.inference_spec["stop_token_ids"] == [151645]
 
 
 def test_completion_prompt_from_upstream_lambda_binds_exact_runtime_path() -> None:
@@ -115,6 +122,31 @@ def test_completion_prompt_from_list_mode_lambda_skips_message_inference() -> No
         "path": "value.items.output",
     }
     assert node.inference_spec["apply_chat_template"] is False
+
+
+def test_completion_prompt_from_data_retrieval_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE symbol = :symbol",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
+        inputs=[stock],
+    )
+    completion = LLMCompletionOp(
+        prompt=retrieval,
+        config=GenerationConfig(model="Qwen/Qwen3-8B"),
+    )
+    compiled = Graph.from_ops([as_output("answer", completion)]).compile(Stock=["NVDA"])
+
+    with pytest.raises(ValueError, match="one prompt string per row"):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_completion_op_rejects_api_mode() -> None:

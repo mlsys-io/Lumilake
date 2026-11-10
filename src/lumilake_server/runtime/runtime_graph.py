@@ -2343,6 +2343,15 @@ class RuntimeGraphBuilder:
                 data_spec = {"type": "list", "items": list(prompt_op.data)}
                 row_dependencies = []
             else:
+                if not (
+                    isinstance(prompt_op, LambdaOp)
+                    or self._emits_one_item_per_row(prompt_op)
+                ):
+                    raise ValueError(
+                        f"LLMCompletionOp '{llm_op_id}' prompt upstream"
+                        f" '{prompt_op.id}' ({type(prompt_op).__name__}) does"
+                        " not produce one prompt string per row"
+                    )
                 if isinstance(prompt_op, LambdaOp):
                     prompt_path = self._lambda_read_path(
                         f"LLMCompletionOp '{llm_op_id}'",
