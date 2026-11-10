@@ -120,7 +120,7 @@ def test_router_op_and_row_gate_are_declarative() -> None:
     assert router.default_branch == "pending"
     assert router.branches == ["review", "pending"]
     assert turn.row_gate is not None
-    assert turn.row_gate["branch"] == "review"
+    assert turn.row_gate.branch == "review"
 
 
 def test_router_op_rejects_more_than_one_input() -> None:
@@ -220,6 +220,39 @@ def test_yaml_rejects_row_gate_with_a_rowwise_messages_column() -> None:
         parse_yaml_payload(yaml_text)
 
 
+def test_yaml_rejects_a_row_gate_without_a_branch() -> None:
+    yaml_text = textwrap.dedent("""
+        name: routed
+        inputs:
+          rows: ["normal"]
+        ops:
+          - id: source
+            op: DataOp
+            data: ["normal"]
+          - id: route
+            op: RouterOp
+            inputs: [source]
+            rules:
+              - branch: review
+                match: contains
+                value: NEEDS
+            default_branch: review
+          - id: turn
+            op: LLMChatOp
+            inputs: [route]
+            messages:
+              - role: user
+                content: source
+            config:
+              model: dummy-model
+            rowwise_template: "{row}"
+            row_gate:
+              node: route
+        """)
+    with pytest.raises(ValueError, match="row_gate: requires the 'branch' field"):
+        parse_yaml_payload(yaml_text)
+
+
 def test_yaml_rowwise_messages_column_is_parsed() -> None:
     yaml_text = textwrap.dedent("""
         name: messages
@@ -259,7 +292,7 @@ def test_yaml_rowwise_messages_column_is_parsed() -> None:
     turn = next(iter(graph.iter_ops(LLMChatOp)))
     assert turn.rowwise_template is None
     assert turn.rowwise_messages_column is not None
-    assert turn.rowwise_messages_column["label"] == "messages_json"
+    assert turn.rowwise_messages_column.label == "messages_json"
 
 
 def test_multi_op_topology_inputs() -> None:

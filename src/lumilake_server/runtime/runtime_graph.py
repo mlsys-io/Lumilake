@@ -33,6 +33,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
+from lumilake_server.ops.router_ops import RowGate
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -2178,32 +2179,24 @@ class RuntimeGraphBuilder:
         self,
         *,
         consumer: str,
-        row_gate: dict[str, Any] | None,
+        row_gate: RowGate | None,
         graph_dict: dict[str, Op],
-    ) -> dict[str, Any] | None:
-        """Validate and normalize a per-row branch gate declaration."""
+    ) -> RowGate | None:
+        """Validate a per-row branch gate against the router it names."""
         if row_gate is None:
             return None
-        node = row_gate.get("node")
-        branch = row_gate.get("branch")
-        if not isinstance(node, str) or not node:
-            raise ValueError(f"LLMChatOp '{consumer}' row_gate requires a node")
-        if not isinstance(branch, str) or not branch:
-            raise ValueError(f"LLMChatOp '{consumer}' row_gate requires a branch")
-        router = graph_dict.get(node)
+        router = graph_dict.get(row_gate.node)
         if not isinstance(router, RouterOp):
             raise ValueError(
-                f"LLMChatOp '{consumer}' row_gate node '{node}' must be a RouterOp"
+                f"LLMChatOp '{consumer}' row_gate node '{row_gate.node}' must be a"
+                " RouterOp"
             )
-        if branch not in router.branches:
+        if row_gate.branch not in router.branches:
             raise ValueError(
-                f"LLMChatOp '{consumer}' row_gate branch {branch!r} is not declared "
-                f"by RouterOp '{node}'"
+                f"LLMChatOp '{consumer}' row_gate branch {row_gate.branch!r} is not"
+                f" declared by RouterOp '{row_gate.node}'"
             )
-        terminal = row_gate.get("terminal", False)
-        if not isinstance(terminal, bool):
-            raise ValueError(f"LLMChatOp '{consumer}' row_gate terminal must be a bool")
-        return {"node": node, "branch": branch, "terminal": terminal}
+        return row_gate
 
     @staticmethod
     def _check_row_gate_consumers(graph_dict: dict[str, Op]) -> None:
@@ -2544,7 +2537,7 @@ class RuntimeGraphBuilder:
         *,
         llm_op_id: str,
         llm_op: LLMChatOp,
-        row_gate: dict[str, Any],
+        row_gate: RowGate,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         task_type_override: str | None,
@@ -2553,7 +2546,7 @@ class RuntimeGraphBuilder:
         nodes: dict[str, RuntimeOp],
     ) -> list[RuntimeOp]:
         """Build status, selection, gated LLM, and merge stages for a row gate."""
-        router_id = row_gate["node"]
+        router_id = row_gate.node
         router = graph_dict.get(router_id)
         if not isinstance(router, RouterOp):
             raise ValueError(f"row gate node '{router_id}' is not a RouterOp")
@@ -2645,7 +2638,7 @@ class RuntimeGraphBuilder:
                     for rule in router.rules
                 ],
                 "default_branch": router.default_branch,
-                "terminal_branch": row_gate["branch"] if row_gate["terminal"] else None,
+                "terminal_branch": row_gate.branch if row_gate.terminal else None,
             },
             model_spec={},
             inference_spec={},
@@ -2730,8 +2723,8 @@ class RuntimeGraphBuilder:
                 "fn_name": "row_select",
                 "plan": select_plan,
                 "labels": labels,
-                "branch": row_gate["branch"],
-                "include_done": bool(row_gate["terminal"]),
+                "branch": row_gate.branch,
+                "include_done": row_gate.terminal,
                 "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
                 "mode": "row_select",
             },
@@ -2807,7 +2800,7 @@ class RuntimeGraphBuilder:
                         "allow_empty": True,
                     },
                 ],
-                "branch": row_gate["branch"],
+                "branch": row_gate.branch,
                 "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
                 "mode": "row_skip_merge",
             },
@@ -3079,13 +3072,8 @@ class RuntimeGraphBuilder:
         column = llm_op.rowwise_messages_column
         if column is None:
             raise ValueError(f"LLMChatOp '{llm_op_id}' has no message column")
-        node_ref = column.get("node")
-        path = column.get("path")
-        if not isinstance(node_ref, str) or not isinstance(path, str):
-            raise ValueError(
-                f"LLMChatOp '{llm_op_id}' rowwise_messages_column requires "
-                "node and path"
-            )
+        node_ref = column.node
+        path = column.path
         upstream = graph_dict.get(node_ref)
         if isinstance(upstream, InputOp):
             visited_node_ids.add(node_ref)

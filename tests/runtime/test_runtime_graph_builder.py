@@ -19,7 +19,7 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
-from lumilake_server.ops.router_ops import RouterRule
+from lumilake_server.ops.router_ops import MessagesColumn, RouterRule, RowGate
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -504,11 +504,9 @@ def test_local_rowwise_messages_column_emits_list_message_array_spec() -> None:
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
-        rowwise_messages_column={
-            "label": "messages_json",
-            "node": rows.id,
-            "path": "",
-        },
+        rowwise_messages_column=MessagesColumn(
+            node=rows.id, path="items", label="messages_json"
+        ),
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(
         Rows=['[{"role":"user","content":"hello"}]']
@@ -532,11 +530,9 @@ def test_api_rowwise_messages_column_emits_list_message_array_spec(
             api=ApiConfig(),
         ),
         rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
-        rowwise_messages_column={
-            "label": "messages_json",
-            "node": rows.id,
-            "path": "",
-        },
+        rowwise_messages_column=MessagesColumn(
+            node=rows.id, path="items", label="messages_json"
+        ),
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(
         Rows=['[{"role":"user","content":"hello"}]']
@@ -563,7 +559,7 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate={"node": router.id, "branch": "review"},
+        row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
     )
     output = as_output("result", llm)
@@ -602,7 +598,7 @@ def test_terminal_row_gate_marks_done_and_allows_an_empty_selected_set() -> None
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate={"node": router.id, "branch": "finish", "terminal": True},
+        row_gate=RowGate(node=router.id, branch="finish", terminal=True),
         row_gate_op=router,
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(
@@ -639,7 +635,7 @@ def test_row_gated_llm_renders_every_node_for_submission() -> None:
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate={"node": router.id, "branch": "review"},
+        row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(
@@ -732,7 +728,7 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate={"node": router.id, "branch": "review"},
+        row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
     )
     python_graph = RuntimeGraphBuilder().build(
@@ -780,7 +776,7 @@ def test_row_gated_llm_rejects_consumers_other_than_an_output(
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate={"node": router.id, "branch": "review"},
+        row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
     )
     if consumer_kind == "row_lambda":
@@ -812,7 +808,7 @@ def test_row_gated_llm_rejects_consumers_other_than_an_output(
             rowwise_columns=[
                 {"label": "prev", "node": gated.id, "path": "items.output"}
             ],
-            row_gate={"node": router_tail.id, "branch": "x"},
+            row_gate=RowGate(node=router_tail.id, branch="x"),
             row_gate_op=router_tail,
         )
     compiled = Graph.from_ops([as_output("result", tail)]).compile(
@@ -842,7 +838,7 @@ def test_row_gate_stages_reference_only_existing_runtime_nodes() -> None:
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": source.id, "path": "items.output"}],
-        row_gate={"node": router.id, "branch": "review"},
+        row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
     )
     compiled = Graph.from_ops([as_output("result", gated)]).compile(
@@ -872,8 +868,10 @@ def test_row_gate_rejects_a_rowwise_messages_column() -> None:
     gated = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_messages_column={"label": "msgs", "node": rows.id, "path": "items"},
-        row_gate={"node": router.id, "branch": "review"},
+        rowwise_messages_column=MessagesColumn(
+            node=rows.id, path="items", label="msgs"
+        ),
+        row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
     )
     compiled = Graph.from_ops([as_output("result", gated)]).compile(
