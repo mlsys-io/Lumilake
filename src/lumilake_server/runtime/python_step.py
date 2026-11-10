@@ -12,11 +12,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
-from urllib.parse import quote
 
 from lumilake import envs
 from lumilake_server.runtime import lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
+from lumilake_server.utils.lumid_data_client import encode_blob_key
 
 TASK_RUNTIME_MOUNT = "/mnt/blobs/lumilake-runtime.py"
 TASK_RUNTIME_MODULE = "lumilake_runtime"
@@ -283,7 +283,7 @@ def blob_url(object_name: str) -> str:
     base = envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL
     if not base:
         raise RuntimeError("LUMID_DATA_URL is required for LambdaOp task blobs")
-    return f"{base.rstrip('/')}/blobs/{quote(object_name.lstrip('/'), safe='/')}"
+    return f"{base.rstrip('/')}/blobs/{encode_blob_key(object_name)}"
 
 
 def resolve_plan(
