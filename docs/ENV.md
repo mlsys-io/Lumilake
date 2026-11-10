@@ -33,7 +33,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 
 | Key | Purpose |
 |-----|---------|
-| `LUMID_DATA_URL` | Base URL for the lumid-data-app instance. Required for all `DataRetrievalOp` modes and for data profiling. |
+| `LUMID_DATA_URL` | Base URL for the lumid-data-app instance. Required for all `DataRetrievalOp` modes, for data profiling, and for standalone `LambdaOp` and reshape `python` tasks. |
 | `LUMID_DATA_WORKER_URL` | Optional worker-facing base URL for lumid-data-app blobs. Falls back to `LUMID_DATA_URL`; set it when workers reach lumid-data-app at a different address from the server. |
 | `LUMID_DATA_TOKEN` | Bearer token sent to lumid-data-app. Optional — falls back to `LUMILAKE_RUNTIME_TOKEN` when unset; the effective bearer (this key OR the fallback) is required for all `DataRetrievalOp` modes and for data profiling. |
 | `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid-data-app calls. Defaults to `30`. |
