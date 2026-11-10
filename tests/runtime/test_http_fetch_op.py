@@ -64,8 +64,11 @@ def test_http_fetch_op_serializes_and_round_trips() -> None:
     [
         ({"timeout_sec": 0}, "timeout_sec"),
         ({"retries": -1}, "retries"),
+        ({"retries": 11}, "retries"),
         ({"max_concurrency": 0}, "max_concurrency"),
         ({"max_concurrency": 9}, "max_concurrency"),
+        ({"cache_dir": "/tmp/cache"}, "cache_dir"),
+        ({"cache_dir": "worker/../cache"}, "cache_dir"),
     ],
 )
 def test_http_fetch_op_validates_config(config_kwargs: dict, message: str) -> None:
@@ -285,11 +288,8 @@ def test_http_fetch_headers_are_redacted_from_archived_graph() -> None:
     assert "s2-secret-123" not in json.dumps(runtime_graph.serialize())
 
 
-def test_query_stage_sets_pacing_and_query_cache(
-    tmp_path: Path,
-) -> None:
-    cache_dir = tmp_path / "query-cache"
-    yaml_text = textwrap.dedent(f"""
+def test_query_stage_sets_pacing_and_query_cache() -> None:
+    yaml_text = textwrap.dedent("""
         name: query_stage
         inputs:
           Query: ["graph retrieval", "scientific models"]
@@ -304,7 +304,7 @@ def test_query_stage_sets_pacing_and_query_cache(
               retries: 2
               max_concurrency: 1
               request_delay_sec: 0.5
-              cache_dir: "{cache_dir}"
+              cache_dir: "query-cache"
               fail_open: true
         outputs:
           - name: candidates
@@ -317,7 +317,7 @@ def test_query_stage_sets_pacing_and_query_cache(
     [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
 
     assert node.api_spec["request_delay_sec"] == 0.5
-    assert node.api_spec["cache_dir"] == str(cache_dir)
+    assert node.api_spec["cache_dir"] == "query-cache"
     assert node.api_spec["concurrency"] == 1
     assert node.api_spec["response"]["fail_open"] is True
 

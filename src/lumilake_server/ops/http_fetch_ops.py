@@ -1,9 +1,12 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op
+
+MAX_RETRIES = 10
 
 
 @dataclass
@@ -21,8 +24,8 @@ class HttpFetchConfig:
     def __post_init__(self) -> None:
         if self.timeout_sec <= 0:
             raise ValueError("HttpFetchOp timeout_sec must be greater than zero")
-        if self.retries < 0:
-            raise ValueError("HttpFetchOp retries must be non-negative")
+        if self.retries < 0 or self.retries > MAX_RETRIES:
+            raise ValueError(f"HttpFetchOp retries must be between 0 and {MAX_RETRIES}")
         if self.request_delay_sec < 0:
             raise ValueError("HttpFetchOp request_delay_sec must be non-negative")
         if not 1 <= self.max_concurrency <= 8:
@@ -32,6 +35,14 @@ class HttpFetchConfig:
             for key, value in self.headers.items()
         ):
             raise ValueError("HttpFetchOp headers must be a string-to-string mapping")
+        cache_dir = PurePosixPath(self.cache_dir) if self.cache_dir else None
+        if cache_dir is not None and (
+            cache_dir.is_absolute() or ".." in cache_dir.parts
+        ):
+            raise ValueError(
+                "HttpFetchOp cache_dir must be relative to the worker and must "
+                f"not contain '..' (got {self.cache_dir})"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
