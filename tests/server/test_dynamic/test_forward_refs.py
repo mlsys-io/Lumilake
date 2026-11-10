@@ -80,6 +80,7 @@ def test_has_live_rows_ignores_completely_terminal_sets() -> None:
     assert has_live_rows({"state": [terminal, live]}) is True
     assert has_live_rows({"state": ["ordinary-output"]}) is True
     assert has_live_rows({}) is True
+    assert has_live_rows({"state": []}) is True
 
 
 def test_has_live_rows_reads_the_archived_merge_item() -> None:

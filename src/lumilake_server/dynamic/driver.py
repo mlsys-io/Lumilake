@@ -639,11 +639,14 @@ def has_live_rows(archived: dict[str, list[str]]) -> bool:
     Rows emitted by a row gate carry a ``done`` flag. A gated leaf whose rows
     are all terminal leaves no work for the next round, so the driver stops
     instead of forwarding an empty row set. Values that are not routing rows,
-    and an empty mapping, count as live.
+    an empty mapping, and a leaf that archived no rows count as live, because
+    none of them carries routing evidence.
     """
     if not archived:
         return True
     for values in archived.values():
+        if not values:
+            return True
         for value in values:
             try:
                 item = json.loads(value)
