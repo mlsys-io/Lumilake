@@ -79,6 +79,12 @@ A rowwise `LLMChatOp` with `row_gate` calls the model only for rows whose branch
 
 A rowwise `LLMChatOp` may instead declare `rowwise_messages_column`. That column holds one serialized message array per row, sent as the whole chat history in role order, for conversations whose history grows between rounds.
 
+Row gates need a FlowMesh release that accepts an inference prepared with
+no prompts, because a branch can receive no rows in a round: every row may
+route elsewhere, which is ordinary for a non-terminal branch. FlowMesh #256
+adds the empty-result path; earlier releases fail the task with
+`No prompts prepared`.
+
 ### EmbeddingOp
 
 `EmbeddingOp` embeds text with a FlowMesh-served embedding model and
