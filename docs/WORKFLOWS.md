@@ -106,8 +106,9 @@ continues traversal — so `items.table.symbol` projects the `symbol` column.
 
 The path `items` (exactly, with no field) selects the whole result item rather
 than one field of it. Dynamic workflows use it to archive each leaf and each
-`export`ed op so later rounds can read any field of the stored item; see
-[`docs/SDK.md`](SDK.md#dynamic-workflows).
+`export`ed op so later rounds can read any field of the stored item. Only LLM
+ops, `DataRetrievalOp` and `LambdaOp` can feed an `OutputOp`, so a dynamic leaf
+must be one of them; see [`docs/SDK.md`](SDK.md#dynamic-workflows).
 
 > **n8n note.** n8n-imported workflows do **not** support the `path:`
 > selector — n8n's UI has no equivalent annotation. They fall back to the
