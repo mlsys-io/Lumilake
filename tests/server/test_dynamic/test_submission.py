@@ -1007,6 +1007,7 @@ async def test_dynamic_submit_rejects_static_round_bound_above_ceiling(
         )
     assert resp.status_code == 422
     assert "hard ceiling" in resp.text
+    assert "reduce the declared library" in resp.text
 
 
 _STATIC_YAML = """

@@ -360,8 +360,8 @@ def _render_dynamic_round0(
             raise DriverProtocolError(
                 "declared round topology has a conservative node upper bound of "
                 f"{static_bound}, exceeding the hard ceiling "
-                f"{MAX_STATIC_ROUND_NODE_BOUND}; lower max_nodes_per_round or "
-                "reduce the declared library"
+                f"{MAX_STATIC_ROUND_NODE_BOUND}; reduce the declared library"
+                " (the bound follows the library, not max_nodes_per_round)"
             )
         if spec.driver.api is not None or spec.driver.template is not None:
             return None, declared_output_location
