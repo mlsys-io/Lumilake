@@ -576,6 +576,14 @@ class RuntimeGraphBuilder:
                         " would be ignored. Use rowwise_template, or drop the"
                         " row gate."
                     )
+                if llm_op.condition is not None:
+                    raise ValueError(
+                        f"LLMChatOp '{llm_op_id}' combines row_gate with"
+                        " condition; the gated call runs on the rows the"
+                        " selector kept, so a condition would be ignored."
+                        " Route on the condition's field instead, or drop the"
+                        " row gate."
+                    )
                 gated_runtime_ops = self._build_row_gated_llm_ops(
                     llm_op_id=llm_op_id,
                     llm_op=llm_op,
@@ -2867,6 +2875,9 @@ class RuntimeGraphBuilder:
                 dsl_to_runtime=dsl_to_runtime,
             )[0]
         else:
+            inference_spec = llm_op.config.inference_spec()
+            if llm_op.structural_outputs:
+                inference_spec["templates"] = llm_op.structural_outputs
             selected = RuntimeOp(
                 node_id=selected_id,
                 task_type=task_type,
@@ -2874,7 +2885,7 @@ class RuntimeGraphBuilder:
                 model=llm_op.config.model,
                 data_spec=base_data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
-                inference_spec=llm_op.config.inference_spec(),
+                inference_spec=inference_spec,
                 dependencies=(select_id,),
                 condition=None,
             )

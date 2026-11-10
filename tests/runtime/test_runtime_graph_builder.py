@@ -926,6 +926,64 @@ def test_row_gate_rejects_a_rowwise_messages_column() -> None:
         RuntimeGraphBuilder().build(compiled)
 
 
+def test_row_gate_selected_call_carries_structural_outputs() -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
+            RouterRule(branch="pending", match="equals", value="__never__"),
+        ],
+        default_branch="pending",
+    )
+    templates = [{"name": "verdict", "type": "string"}]
+    gated = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        structural_outputs=templates,
+        row_gate=RowGate(node=router.id, branch="review"),
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(
+        Rows=["normal", "NEEDS REVIEW"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    _status, _selector, selected, _merge = [
+        runtime_graph.nodes[node_id]
+        for node_id in runtime_graph.dsl_to_runtime[gated.id]
+    ]
+    assert selected.inference_spec["templates"] == templates
+
+
+def test_row_gate_rejects_a_condition() -> None:
+    rows = input_placeholder("Rows")
+    router = RouterOp(
+        rows,
+        rules=[
+            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
+            RouterRule(branch="pending", match="equals", value="__never__"),
+        ],
+        default_branch="pending",
+    )
+    gated = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        condition={"node": router.id, "expr": "x == 'on'"},
+        row_gate=RowGate(node=router.id, branch="review"),
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(
+        Rows=["normal", "NEEDS REVIEW"]
+    )
+    with pytest.raises(ValueError, match="combines row_gate with condition"):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
     """A rowwise LLMChatOp column with no path on an InputOp ref binds as a literal."""
     stock = input_placeholder("Stock")
