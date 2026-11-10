@@ -90,6 +90,11 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.ops.http_fetch_ops import (
+    HttpFetchConfig,
+    contains_query_placeholder,
+)
+from lumilake_server.ops.score_ops import ScoreConfig
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -680,14 +685,28 @@ def _emit_http_fetch_op(
     config = entry.fields.get("config") or {}
     if not isinstance(config, dict):
         raise ValueError(f"HttpFetchOp '{entry.id}' config must be a mapping")
+    method = str(entry.fields.get("method", "GET")).upper()
+    if method not in {"GET", "POST"}:
+        raise ValueError(f"HttpFetchOp '{entry.id}' method must be GET or POST")
+    params = entry.fields.get("params")
+    body = entry.fields.get("body")
+    if params is not None and not isinstance(params, dict):
+        raise ValueError(f"HttpFetchOp '{entry.id}' params must be a mapping")
+    if not any(contains_query_placeholder(value) for value in (url, params, body)):
+        raise ValueError(
+            f"HttpFetchOp '{entry.id}' requires '{{query}}' in url, params, or body"
+        )
+    if method == "POST" and body is None:
+        raise ValueError(f"HttpFetchOp '{entry.id}' POST requires body")
+    _validate_op_config(HttpFetchConfig, config, entry.id, "HttpFetchOp")
     op_dict["url"] = url
-    op_dict["method"] = str(entry.fields.get("method", "GET")).upper()
+    op_dict["method"] = method
     op_dict["query"] = user_id_to_internal[query_ref]
     op_dict["config"] = config
-    if entry.fields.get("params") is not None:
-        op_dict["params"] = entry.fields["params"]
-    if entry.fields.get("body") is not None:
-        op_dict["body"] = entry.fields["body"]
+    if params is not None:
+        op_dict["params"] = params
+    if body is not None:
+        op_dict["body"] = body
     op_dict["_inputs"] = [user_id_to_internal[query_ref]]
 
 
@@ -705,11 +724,29 @@ def _emit_score_op(
         raise ValueError(f"ScoreOp '{entry.id}' requires a 'query' reference")
     if not isinstance(candidates_ref, str) or candidates_ref not in user_id_to_internal:
         raise ValueError(f"ScoreOp '{entry.id}' requires a 'candidates' reference")
+    _validate_op_config(ScoreConfig, config, entry.id, "ScoreOp")
 
     op_dict["query"] = user_id_to_internal[query_ref]
     op_dict["candidates"] = user_id_to_internal[candidates_ref]
     op_dict["config"] = dict(config)
     op_dict["_inputs"] = [op_dict["query"], op_dict["candidates"]]
+
+
+def _validate_op_config(
+    config_cls: type[Any], config: dict[str, Any], entry_id: str, op_kind: str
+) -> None:
+    """Run the op's own config validation here, where the user-facing op id is
+    known: the op constructor raises the same errors without an id."""
+    unknown = set(config) - {f.name for f in fields(config_cls)}
+    if unknown:
+        raise ValueError(
+            f"{op_kind} '{entry_id}' config has unknown fields: {sorted(unknown)}"
+        )
+    try:
+        config_cls(**config)
+    except ValueError as exc:
+        detail = str(exc).removeprefix(f"{op_kind} ")
+        raise ValueError(f"{op_kind} '{entry_id}' {detail}") from exc
 
 
 def _emit_llm_like_op(

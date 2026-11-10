@@ -1,11 +1,13 @@
 """Focused tests for the typed HttpFetchOp and its YAML form."""
 
 import json
+import re
 import textwrap
 from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
@@ -137,6 +139,45 @@ def test_http_fetch_yaml_parses_and_builds_expected_op_dict() -> None:
     }
     assert fetch["query"] == by_op["InputOp"]["_id"]
     assert fetch["_inputs"] == [by_op["InputOp"]["_id"]]
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        (
+            {"url": "http://fixture.test/search", "params": None},
+            "requires '{query}' in url",
+        ),
+        ({"method": "PUT"}, "method must be GET or POST"),
+        ({"method": "POST"}, "POST requires body"),
+        ({"params": ["q"]}, "params must be a mapping"),
+        ({"config": {"retries": 11}}, "retries must be between 0 and 10"),
+        ({"config": {"timeout": 5}}, "config has unknown fields: ['timeout']"),
+    ],
+)
+def test_http_fetch_yaml_errors_name_the_op(fields: dict, message: str) -> None:
+    entry = {
+        "id": "Search",
+        "op": "HttpFetchOp",
+        "inputs": ["Query"],
+        "query": "Query",
+        "url": "http://fixture.test/search?query={query}",
+        "params": {"query": "{query}"},
+        **fields,
+    }
+    yaml_text = yaml.safe_dump(
+        {
+            "name": "fetch_errors",
+            "inputs": {"Query": ["first"]},
+            "ops": [entry],
+            "outputs": [{"name": "candidates", "ref": "Search"}],
+        }
+    )
+
+    with pytest.raises(
+        ValueError, match=f"HttpFetchOp 'Search' .*{re.escape(message)}"
+    ):
+        parse_yaml_payload(yaml_text)
 
 
 def test_http_fetch_params_encode_like_requests() -> None:

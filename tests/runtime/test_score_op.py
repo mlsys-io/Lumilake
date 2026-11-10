@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
@@ -140,6 +141,37 @@ def test_score_op_empty_candidates_name_op() -> None:
             candidates=[],
             config=ScoreConfig(model="org/reranker"),
         )
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({"model": "org/reranker", "backend": "tfjs"}, "backend must be vllm"),
+        ({"model": "org/reranker", "vllm": "auto"}, "vllm must be a mapping"),
+        ({"model": "org/reranker", "device": "cpu"}, "unknown fields: \\['device'\\]"),
+    ],
+)
+def test_score_yaml_errors_name_the_op(config: dict, message: str) -> None:
+    yaml_text = yaml.safe_dump(
+        {
+            "name": "score_errors",
+            "inputs": {"Query": ["first"], "Candidates": ["first candidate"]},
+            "ops": [
+                {
+                    "id": "Rank",
+                    "op": "ScoreOp",
+                    "inputs": ["Query", "Candidates"],
+                    "query": "Query",
+                    "candidates": "Candidates",
+                    "config": config,
+                }
+            ],
+            "outputs": [{"name": "scores", "ref": "Rank"}],
+        }
+    )
+
+    with pytest.raises(ValueError, match=f"ScoreOp 'Rank' .*{message}"):
+        parse_yaml_payload(yaml_text)
 
 
 def test_upstream_score_uses_pairs_node_placeholder() -> None:
