@@ -28,6 +28,21 @@ def _is_sensitive_key(key: Any) -> bool:
     }
 
 
+def _redact_header_mapping(value: Mapping) -> dict:
+    """Replace every non-empty string header value with the placeholder: a
+    request header mapping routinely carries the credential itself
+    (``x-api-key``, ``Ocp-Apim-Subscription-Key``), under a name no key list
+    can enumerate."""
+    return {
+        key: (
+            REDACTED_TOKEN_PLACEHOLDER
+            if isinstance(sub, str) and sub
+            else redact_sensitive(sub)
+        )
+        for key, sub in value.items()
+    }
+
+
 def _redact_text(text: str) -> str:
     """Regex-scrub a string that may embed a credential (a non-JSON error
     body or already-serialized text)."""
@@ -39,17 +54,19 @@ def _redact_text(text: str) -> str:
 
 def redact_sensitive(value: Any) -> Any:
     """Recursively replace sensitive keys (tokens, Authorization headers)
-    with a placeholder, and regex-scrub bearer tokens embedded in a string
-    value under an unrecognized key (e.g. an untrusted endpoint's body)."""
+    with a placeholder, redact every value of a request header mapping, and
+    regex-scrub bearer tokens embedded in a string value under an
+    unrecognized key (e.g. an untrusted endpoint's body)."""
     if isinstance(value, Mapping):
-        return {
-            key: (
-                REDACTED_TOKEN_PLACEHOLDER
-                if _is_sensitive_key(key) and isinstance(sub, str) and sub
-                else redact_sensitive(sub)
-            )
-            for key, sub in value.items()
-        }
+        redacted: dict[Any, Any] = {}
+        for key, sub in value.items():
+            if isinstance(sub, str) and sub and _is_sensitive_key(key):
+                redacted[key] = REDACTED_TOKEN_PLACEHOLDER
+            elif key == "headers" and isinstance(sub, Mapping):
+                redacted[key] = _redact_header_mapping(sub)
+            else:
+                redacted[key] = redact_sensitive(sub)
+        return redacted
     if isinstance(value, list):
         return [redact_sensitive(item) for item in value]
     if isinstance(value, str):

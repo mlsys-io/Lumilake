@@ -272,6 +272,20 @@ def test_http_fetch_fail_open_reaches_api_spec() -> None:
     assert node.api_spec["response"]["fail_open"] is True
 
 
+def test_http_fetch_headers_are_redacted_from_archived_graph() -> None:
+    fetch = HttpFetchOp(
+        url="http://fixture.test/search?q={query}",
+        query=["graph retrieval"],
+        config=HttpFetchConfig(headers={"x-api-key": "s2-secret-123"}),
+    )
+    compiled = Graph.from_ops([as_output("candidates", fetch)]).compile()
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    fetch_node = runtime_graph.nodes[fetch.id]
+
+    assert fetch_node.api_spec["headers"] == {"x-api-key": "s2-secret-123"}
+    assert "s2-secret-123" not in json.dumps(runtime_graph.serialize())
+
+
 def test_semantic_scholar_stage_sets_pacing_and_query_cache(
     tmp_path: Path,
 ) -> None:

@@ -102,6 +102,37 @@ def test_redact_sensitive_scrubs_bearer_token_under_unrecognized_key() -> None:
     assert REDACTED_TOKEN_PLACEHOLDER in json.dumps(result)
 
 
+def test_redact_sensitive_redacts_every_request_header_value() -> None:
+    """A request header mapping carries the credential itself under names no
+    key list can enumerate, so every non-empty header value is replaced."""
+    value = {
+        "api": {
+            "headers": {
+                "x-api-key": "s2-secret-123",
+                "Ocp-Apim-Subscription-Key": "k1",
+                "Authorization": "Bearer z",
+                "Accept": "application/json",
+            },
+            "params": {"api_key": "p1"},
+        }
+    }
+
+    result = redact_sensitive(value)
+
+    headers = result["api"]["headers"]
+    assert headers == {
+        name: REDACTED_TOKEN_PLACEHOLDER for name in value["api"]["headers"]
+    }
+    assert "s2-secret-123" not in json.dumps(result)
+    assert result["api"]["params"] == {"api_key": "p1"}
+
+
+def test_redact_sensitive_leaves_empty_header_values_alone() -> None:
+    assert redact_sensitive({"headers": {"X-Trace": ""}}) == {
+        "headers": {"X-Trace": ""}
+    }
+
+
 def test_redact_sensitive_matches_authorization_key_case_insensitively() -> None:
     """Header names are case-insensitive, so a lower- or mixed-case
     ``authorization`` key must be redacted exactly like ``Authorization``."""

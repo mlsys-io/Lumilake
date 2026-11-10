@@ -144,7 +144,8 @@ executor URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so
 query values in `params` use the same form encoding as `requests`.
 `config.headers`, `config.timeout_sec`, `config.retries`, and
 `config.max_concurrency` bound the request; headers are retained in the
-runtime spec for dispatch and redacted from archived graphs. Each input row
+runtime spec for dispatch and every header value is redacted from archived
+graphs. Each input row
 produces one output row.
 `config.request_delay_sec` spaces actual request starts, including retries.
 `config.cache_dir` enables a query-keyed on-disk response cache whose key is
