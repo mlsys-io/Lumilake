@@ -126,3 +126,14 @@ def test_completion_op_rejects_api_mode() -> None:
                 api=ApiConfig(url="https://example.invalid/v1"),
             ),
         )
+
+
+def test_completion_op_rejects_chat_template_kwargs() -> None:
+    with pytest.raises(ValueError, match="chat_template_kwargs"):
+        LLMCompletionOp(
+            prompt=["raw"],
+            config=GenerationConfig(
+                model="Qwen/Qwen3-8B",
+                chat_template_kwargs={"enable_thinking": False},
+            ),
+        )

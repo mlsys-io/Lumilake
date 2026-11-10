@@ -144,6 +144,11 @@ class LLMCompletionOp(LLMOp):
         super().__init__([prompt_op], config, cacheable)
         if self.config.api is not None:
             raise ValueError("LLMCompletionOp does not support API mode")
+        if self.config.chat_template_kwargs is not None:
+            raise ValueError(
+                "LLMCompletionOp does not apply the chat template, so it"
+                " does not support chat_template_kwargs"
+            )
 
     @property
     def prompt(self) -> Op:
