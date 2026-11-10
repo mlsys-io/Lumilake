@@ -13,7 +13,7 @@ click==8.5.0
 colorama==0.4.6 ; sys_platform == 'win32'
 dill==0.4.1
 fastapi==0.142.2
-filelock==4.0.8
+filelock==4.2.10
 flowmesh-sdk==0.1.13
 frozenlist==1.8.0
 fsspec==2026.9.0
