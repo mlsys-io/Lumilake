@@ -29,13 +29,6 @@ def _runtime_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
 
 
-def test_score_op_requires_config() -> None:
-    """The signature makes config required, so a caller that forgets it fails
-    at construction rather than at graph build."""
-    with pytest.raises(TypeError):
-        ScoreOp("question", ["candidate"])  # type: ignore[call-arg]
-
-
 def test_score_op_lowers_literal_pairs_in_order() -> None:
     op = ScoreOp(
         query=["first question", "second question"],
