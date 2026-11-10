@@ -238,6 +238,7 @@ class RoundBuild(BaseModel):
     graph: dict[str, Any]
     leaf_output_names: list[str]
     leaf_user_ids: list[str]
+    gated_leaf_ids: list[str] = []
     export_output_names: list[str] = []
     export_user_ids: list[str] = []
     forwarded_inputs: dict[str, list[str]] = {}
@@ -620,11 +621,12 @@ def walk_archived_items(
 
 
 def has_live_rows(archived: dict[str, list[str]]) -> bool:
-    """Whether archived routing rows contain at least one non-terminal row.
+    """Whether archived row-routing output contains a non-terminal row.
 
-    Rows emitted by row routing carry a ``done`` flag. A round containing only
-    terminal rows has no work left, so the driver converts it to ``STOP``
-    rather than forwarding an empty row set into the next round.
+    Rows emitted by a row gate carry a ``done`` flag. A gated leaf whose rows
+    are all terminal leaves no work for the next round, so the driver stops
+    instead of forwarding an empty row set. Values that are not routing rows,
+    and an empty mapping, count as live.
     """
     if not archived:
         return True
@@ -1357,6 +1359,12 @@ def build_round(
     )
     leaf_ids = [internal for internal, _ in leaf_pairs]
     leaf_user_ids = [user for _, user in leaf_pairs]
+    ops_by_id = {op["id"]: op for op in subgraph}
+    gated_leaf_ids = [
+        internal
+        for internal, user in leaf_pairs
+        if ops_by_id[user].get("row_gate") is not None
+    ]
     export_pairs = sorted(
         (_internal_id(graph_name, op["op"], op["id"]), op["id"])
         for op in subgraph
@@ -1393,6 +1401,7 @@ def build_round(
         graph=graph,
         leaf_output_names=[f"leaf_{leaf_id}" for leaf_id in leaf_ids],
         leaf_user_ids=leaf_user_ids,
+        gated_leaf_ids=gated_leaf_ids,
         export_output_names=[f"export_{export_id}" for export_id in export_ids],
         export_user_ids=export_user_ids,
         forwarded_inputs=inputs,

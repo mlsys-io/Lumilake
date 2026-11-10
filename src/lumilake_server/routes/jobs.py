@@ -2335,7 +2335,12 @@ async def _run_dynamic_job(
                 observation = compute_observation(
                     walked_leaves, spec.driver.preview_width
                 )
-                if template is None and not has_live_rows(leaf_outputs):
+                gated_outputs = {
+                    name: values
+                    for name, values in leaf_outputs.items()
+                    if name in round_build.gated_leaf_ids
+                }
+                if template is None and not has_live_rows(gated_outputs):
                     plans.append({"next": STOP, "source": "observation"})
                     observations.append(observation)
                     stopped_by = STOP

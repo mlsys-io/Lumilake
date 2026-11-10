@@ -569,6 +569,113 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
 
 
 @pytest.mark.anyio
+async def test_dynamic_planner_round_with_done_fields_still_plans(
+    app: FastAPI, job_routes: Any
+) -> None:
+    # Only a row-gated leaf carries routing rows, so a leaf value that happens
+    # to hold ``done`` says nothing about the round's survivor set. The planner
+    # is still asked after such a round.
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    fake_server.leaf_item = lambda row: {
+        "done": True,
+        "table": {"market_cap": 10 + row},
+        "output": {"market_cap": 10 + row},
+    }
+    second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
+    second_plan["ops"][0]["id"] = "q2"
+    fake_server.plans = [_SUBGRAPH_PLAN, second_plan, {"next": "STOP"}]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed"
+    assert len(record.child_job_ids) == 3
+
+
+_GATED_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "source",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "states",
+            "code": "def states(items):\n    return items[0]\n",
+        },
+        {
+            "id": "route",
+            "op": "RouterOp",
+            "inputs": ["source"],
+            "source": "source",
+            "input_path": "items.output",
+            "rules": [
+                {"branch": "finish", "match": "contains", "value": "DONE"},
+                {"branch": "pending", "match": "equals", "value": "__never__"},
+            ],
+            "default_branch": "pending",
+        },
+        {
+            "id": "turn",
+            "op": "LLMChatOp",
+            "inputs": ["source", "route"],
+            "messages": [{"role": "user", "content": "source"}],
+            "config": {"model": "Qwen/Qwen3-8B"},
+            "rowwise_template": "{row}",
+            "rowwise_columns": [
+                {"label": "row", "node": "source", "path": "items.output"}
+            ],
+            "row_gate": {"node": "route", "branch": "finish", "terminal": True},
+        },
+    ],
+}
+
+
+@pytest.mark.anyio
+async def test_dynamic_gated_round_with_terminal_rows_stops_before_planner(
+    app: FastAPI, job_routes: Any
+) -> None:
+    # Every row of the gated leaf is done, so the round has no survivor to
+    # forward and the loop stops without asking the planner for another round.
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    fake_server.leaf_item = lambda row: {
+        "selected": True,
+        "done": True,
+        "branch": "finish",
+        "row": row,
+        "table": {"market_cap": row},
+        "output": None,
+    }
+    fake_server.plans = [_GATED_PLAN, _SUBGRAPH_PLAN]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed", record.error
+    # The second plan would have run a third round; the stop rule ends the loop
+    # instead, and the plan list records the observation as the stop source.
+    assert len(record.child_job_ids) == 2
+    assert record.result is not None
+    plans = record.result.outputs["round"]["plan"]
+    assert plans[-1]["next"] == "STOP"
+    assert plans[-1]["source"] == "observation"
+
+
+@pytest.mark.anyio
 async def test_dynamic_child_carries_chain_lineage(
     app: FastAPI, job_routes: Any
 ) -> None:
