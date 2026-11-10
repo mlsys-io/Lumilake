@@ -21,6 +21,8 @@ _AUTH_HEADER_RE = re.compile(
 )
 _AUTH_HEADER_JSON_RE = re.compile(r'("Authorization"\s*:\s*)"[^"]*"', re.IGNORECASE)
 
+_REQUEST_HEADER_PARENT_KEYS: frozenset[str] = frozenset({"api", "api_spec", "config"})
+
 
 def _is_sensitive_key(key: Any) -> bool:
     return isinstance(key, str) and key.lower() in {
@@ -54,21 +56,30 @@ def _redact_text(text: str) -> str:
 
 def redact_sensitive(value: Any) -> Any:
     """Recursively replace sensitive keys (tokens, Authorization headers)
-    with a placeholder, redact every value of a request header mapping, and
-    regex-scrub bearer tokens embedded in a string value under an
-    unrecognized key (e.g. an untrusted endpoint's body)."""
+    with a placeholder, redact every value of a request header mapping
+    nested under an ``api`` or ``config`` key, and regex-scrub bearer tokens
+    embedded in a string value under an unrecognized key (e.g. an untrusted
+    endpoint's body)."""
+    return _redact(value, parent_key=None)
+
+
+def _redact(value: Any, *, parent_key: Any) -> Any:
     if isinstance(value, Mapping):
         redacted: dict[Any, Any] = {}
         for key, sub in value.items():
             if isinstance(sub, str) and sub and _is_sensitive_key(key):
                 redacted[key] = REDACTED_TOKEN_PLACEHOLDER
-            elif key == "headers" and isinstance(sub, Mapping):
+            elif (
+                key == "headers"
+                and isinstance(sub, Mapping)
+                and parent_key in _REQUEST_HEADER_PARENT_KEYS
+            ):
                 redacted[key] = _redact_header_mapping(sub)
             else:
-                redacted[key] = redact_sensitive(sub)
+                redacted[key] = _redact(sub, parent_key=key)
         return redacted
     if isinstance(value, list):
-        return [redact_sensitive(item) for item in value]
+        return [_redact(item, parent_key=parent_key) for item in value]
     if isinstance(value, str):
         return _redact_text(value)
     return value

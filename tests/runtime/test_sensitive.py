@@ -127,9 +127,43 @@ def test_redact_sensitive_redacts_every_request_header_value() -> None:
     assert result["api"]["params"] == {"api_key": "p1"}
 
 
+def test_redact_sensitive_redacts_header_mappings_under_each_request_parent() -> None:
+    """Request header mappings appear under ``api`` in FlowMesh task specs,
+    under ``api_spec`` in archived runtime nodes, and under ``config`` in op
+    config; all three hold credentials."""
+    value = {
+        "api": {"headers": {"x-api-key": "k-api"}},
+        "api_spec": {"headers": {"x-api-key": "k-api-spec"}},
+        "config": {"headers": {"x-api-key": "k-config"}},
+    }
+
+    result = redact_sensitive(value)
+
+    assert json.dumps(result) == json.dumps(
+        {
+            "api": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
+            "api_spec": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
+            "config": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
+        }
+    )
+
+
+def test_redact_sensitive_keeps_a_response_body_headers_object() -> None:
+    """A fetched response body may legitimately carry its own ``headers``
+    object; it is data, not the request's header mapping, so its values stay."""
+    value = {"response_data": {"headers": {"ETag": "abc", "Content-Type": "text/html"}}}
+
+    result = redact_sensitive(value)
+
+    assert result["response_data"]["headers"] == {
+        "ETag": "abc",
+        "Content-Type": "text/html",
+    }
+
+
 def test_redact_sensitive_leaves_empty_header_values_alone() -> None:
-    assert redact_sensitive({"headers": {"X-Trace": ""}}) == {
-        "headers": {"X-Trace": ""}
+    assert redact_sensitive({"api": {"headers": {"X-Trace": ""}}}) == {
+        "api": {"headers": {"X-Trace": ""}}
     }
 
 
