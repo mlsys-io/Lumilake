@@ -101,12 +101,12 @@ consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `ScoreOp` scores query/candidate pairs with a FlowMesh `classification` task
 and returns one `items[]` entry per pair, carrying `index` and `score`. It
 needs a FlowMesh release with the `classification` task type (FlowMesh #270).
-The required `config` supplies `model` and `backend` (`vllm` or
+`config` is required and supplies `model` and `backend` (`vllm` or
 `transformers`); the optional `vllm` mapping is passed to the vLLM engine. A
-vLLM node uses
-`model.vllm.convert: classify` and reports the head's sigmoid probability;
-setting `config.vllm.apply_sigmoid: false` reports the raw logit instead. A
-Transformers node uses its single-label sequence-classification path.
+vLLM node uses `model.vllm.convert: classify` and reports the head's sigmoid
+probability; setting `config.vllm.apply_sigmoid: false` reports the raw logit
+instead. A Transformers node uses its single-label sequence-classification
+path.
 
 Literal queries and candidates lower to a non-empty `data.items` list of
 `{text, text_pair}` mappings, the query as `text`. A single literal query
@@ -115,7 +115,8 @@ lengths. When either side comes from an upstream op, Lumilake first runs the
 internal `pairs` Python step, which broadcasts a single query or rejects
 unequal lengths, then passes its `value.items` list to the classification
 task. Empty query or candidate inputs, empty candidate lists, and mismatched
-literal pair counts raise with the ScoreOp id in the message.
+literal pair counts of a graph built from YAML raise with the ScoreOp id in
+the message; the Python constructor raises before an id exists.
 
 ```yaml
 inputs:

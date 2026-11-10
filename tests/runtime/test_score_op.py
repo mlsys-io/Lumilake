@@ -29,9 +29,11 @@ def _runtime_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
 
 
-def test_score_op_requires_config_with_named_error() -> None:
-    with pytest.raises(ValueError, match="ScoreOp requires config"):
-        ScoreOp("question", ["candidate"])
+def test_score_op_requires_config() -> None:
+    """The signature makes config required, so a caller that forgets it fails
+    at construction rather than at graph build."""
+    with pytest.raises(TypeError):
+        ScoreOp("question", ["candidate"])  # type: ignore[call-arg]
 
 
 def test_score_op_lowers_literal_pairs_in_order() -> None:
@@ -129,7 +131,8 @@ def test_score_op_yaml_lowers_to_classification_task() -> None:
 
 
 def test_score_op_literal_length_mismatch_names_op() -> None:
-    with pytest.raises(ValueError, match="equal lengths"):
+    """The op has no id at construction, so the message names the op type."""
+    with pytest.raises(ValueError, match=r"^ScoreOp query and candidates must"):
         ScoreOp(
             query=["q1", "q2"],
             candidates=["c1"],

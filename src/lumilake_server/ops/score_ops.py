@@ -52,16 +52,17 @@ def _as_values(value: str | list[str], name: str) -> list[str]:
 
 
 def _literal_pairs(
-    query: list[str], candidates: list[str], *, op_id: str = "ScoreOp"
+    query: list[str], candidates: list[str], *, op_id: str | None = None
 ) -> list[ScorePair]:
+    """Validate and broadcast literal query and candidate lists. ``op_id``
+    names the op in the error once it has one; construction has no id yet."""
     if len(query) == 1:
         queries = query * len(candidates)
     elif len(query) == len(candidates):
         queries = query
     else:
-        raise ValueError(
-            f"ScoreOp '{op_id}' query and candidates must have equal lengths"
-        )
+        where = "ScoreOp" if op_id is None else f"ScoreOp '{op_id}'"
+        raise ValueError(f"{where} query and candidates must have equal lengths")
     return [
         ScorePair(query=query_value, candidate=candidate)
         for query_value, candidate in zip(queries, candidates)
@@ -76,10 +77,8 @@ class ScoreOp(Op):
         self,
         query: str | list[str] | Op,
         candidates: str | list[str] | Op,
-        config: ScoreConfig | None = None,
+        config: ScoreConfig,
     ) -> None:
-        if config is None:
-            raise ValueError("ScoreOp requires config with a non-empty model")
         self.config = config
         query_op = (
             query if isinstance(query, Op) else DataOp(data=_as_values(query, "query"))
@@ -126,6 +125,6 @@ class ScoreOp(Op):
 def score(
     query: str | list[str] | Op,
     candidates: str | list[str] | Op,
-    config: ScoreConfig | None = None,
+    config: ScoreConfig,
 ) -> ScoreOp:
     return ScoreOp(query, candidates, config)
