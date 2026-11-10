@@ -1151,6 +1151,58 @@ def test_flowmesh_spec_generates_from_final_sliced_plan() -> None:
     assert plan == [{"kind": "literal", "values": ["sliced"]}]
 
 
+def test_flowmesh_spec_mounts_one_blob_for_repeated_literal() -> None:
+    values = [f"row-{index}" for index in range(400)]
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": values},
+        {"kind": "literal", "values": list(values)},
+    ]
+    data_spec = {
+        "code": "def f(inputs):\n    return str(inputs[0])\n",
+        "fn_name": "f",
+        "plan": plan,
+        "mode": "row",
+        "timeout_s": 10,
+    }
+    published = {
+        blob.key: blob
+        for blob in [
+            python_step.runtime_blob(),
+            *python_step.literal_blobs(plan).values(),
+        ]
+    }
+
+    spec = python_step.flowmesh_spec("task", data_spec, published)
+
+    mount_paths = [blob["mountPath"] for blob in spec["blobs"]]
+    assert len(mount_paths) == len(set(mount_paths))
+    assert len(mount_paths) == 2
+
+
+def test_flowmesh_spec_rejects_more_blobs_than_flowmesh_accepts() -> None:
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": [f"literal-{index}"] * 200}
+        for index in range(python_step.MAX_BLOBS_PER_TASK)
+    ]
+    data_spec = {
+        "code": "def f(inputs):\n    return str(inputs[0])\n",
+        "fn_name": "f",
+        "plan": plan,
+        "mode": "row",
+        "timeout_s": 10,
+    }
+    published = {
+        blob.key: blob
+        for blob in [
+            python_step.runtime_blob(),
+            *python_step.literal_blobs(plan).values(),
+        ]
+    }
+
+    with pytest.raises(ValueError, match="limit of 16 per task"):
+        python_step.flowmesh_spec("task", data_spec, published)
+
+
 def test_runtime_blob_uses_canonical_runtime_and_is_cached() -> None:
     first = python_step.runtime_blob()
     second = python_step.runtime_blob()

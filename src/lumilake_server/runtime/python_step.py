@@ -26,6 +26,7 @@ LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 TASK_TYPE = "python"
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
+MAX_BLOBS_PER_TASK = 16
 
 # Column plan entries: {"kind": "stage", "node": <upstream node id>} or
 # {"kind": "literal", "values": [...]}.
@@ -289,9 +290,13 @@ def resolve_plan(
     plan: ColumnPlan,
     published: Mapping[str, PublishedBlob],
 ) -> tuple[ColumnPlan, list[PublishedBlob]]:
-    """Return a final plan with large literals mounted, plus its blobs."""
+    """Return a final plan with large literals mounted, plus its blobs.
+
+    Every entry that resolves to the same digest points at one shared mount,
+    because FlowMesh rejects a task spec that mounts a path twice.
+    """
     task_plan = copy.deepcopy(plan)
-    mounts: list[PublishedBlob] = []
+    mounts: dict[str, PublishedBlob] = {}
     for entry in task_plan:
         if entry["kind"] != "literal":
             continue
@@ -301,8 +306,14 @@ def resolve_plan(
         blob = published[blob.key]
         del entry["values"]
         entry["file"] = blob.mount_path
-        mounts.append(blob)
-    return task_plan, mounts
+        mounts[blob.key] = blob
+    task_blobs = list(mounts.values())
+    if len(task_blobs) + 1 > MAX_BLOBS_PER_TASK:
+        raise ValueError(
+            f"python step mounts {len(task_blobs) + 1} blobs, above the FlowMesh"
+            f" limit of {MAX_BLOBS_PER_TASK} per task"
+        )
+    return task_plan, task_blobs
 
 
 def _blob_entry(blob: PublishedBlob) -> dict[str, Any]:
