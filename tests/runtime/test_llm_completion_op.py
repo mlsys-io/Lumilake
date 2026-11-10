@@ -112,7 +112,7 @@ def test_completion_prompt_from_list_mode_lambda_skips_message_inference() -> No
     assert node.data_spec == {
         "type": "list",
         "node": render.id,
-        "path": "items.output",
+        "path": "value.items.output",
     }
     assert node.inference_spec["apply_chat_template"] is False
 

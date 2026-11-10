@@ -2343,10 +2343,19 @@ class RuntimeGraphBuilder:
                 data_spec = {"type": "list", "items": list(prompt_op.data)}
                 row_dependencies = []
             else:
+                if isinstance(prompt_op, LambdaOp):
+                    prompt_path = self._lambda_read_path(
+                        f"LLMCompletionOp '{llm_op_id}'",
+                        prompt_op.id,
+                        "items.output",
+                        prompt_op,
+                    )
+                else:
+                    prompt_path = self._upstream_output_path(prompt_op)
                 data_spec = {
                     "type": "list",
                     "node": prompt_op.id,
-                    "path": self._upstream_output_path(prompt_op),
+                    "path": prompt_path,
                 }
                 row_dependencies = [prompt_op.id]
             return self._create_runtime_op(
