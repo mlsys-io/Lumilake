@@ -337,10 +337,10 @@ FLOWMESH_OUTPUT_DESTINATION: str = os.environ.get(
 
 LUMILAKE_REGISTRY: str = os.environ.get("LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
 LUMILAKE_IMAGE_TAG: str = os.environ.get("LUMILAKE_IMAGE_TAG", "")
-# Suffix appended to every container and volume name the deploy stack
-# creates, so multiple Lumilake stacks can coexist on one host. Empty by
-# default, giving the bare names (``lumilake-server``, ...).
-LUMILAKE_DEPLOY_SUFFIX: str = os.environ.get("LUMILAKE_DEPLOY_SUFFIX", "")
+# Name of the deploy stack, which becomes the Compose project name and the
+# name carried in every container, volume and worker name the stack creates.
+# Empty by default, giving the bare names (``lumilake-server``, ...).
+LUMILAKE_STACK_NAME: str = os.environ.get("LUMILAKE_STACK_NAME", "")
 
 REDIS_TLS_DIR: str = os.environ.get("REDIS_TLS_DIR", "")
 SERVER_TLS_DIR: str = os.environ.get("SERVER_TLS_DIR", "")
@@ -403,6 +403,35 @@ HARDWARE_GPU_MEMORY_REQUIREMENT: str = os.environ.get(
 def _absolute_http_url(value: str) -> bool:
     parts = urlsplit(value)
     return parts.scheme.lower() in {"http", "https"} and bool(parts.hostname)
+
+
+_STACK_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,46}[a-z0-9])?")
+
+# FlowMesh names an unnamed bundled deployment's stack ``lumilake``.
+RESERVED_STACK_NAMES: frozenset[str] = frozenset({"lumilake"})
+
+
+def valid_stack_name(name: str) -> bool:
+    """Return True when ``name`` names this deployment's own stack.
+
+    FlowMesh strips leading and trailing ``-``, ``_`` and ``.`` from its
+    suffix and truncates it to 48 characters, so the pattern ends in a letter
+    or digit and allows 48 characters at most; a longer or trailing-punctuation
+    name would share its FlowMesh stack with another deployment.
+    """
+    return (
+        bool(_STACK_NAME_PATTERN.fullmatch(name)) and name not in RESERVED_STACK_NAMES
+    )
+
+
+def stack_name_requirement(name: str) -> str:
+    """Return the rule a stack name must meet, naming ``name``."""
+    return (
+        f"LUMILAKE_STACK_NAME={name!r} must be lowercase letters, digits, "
+        "hyphens and underscores, starting and ending with a letter or digit, "
+        "at most 48 characters, and not `lumilake`, which unnamed bundled "
+        "deployments use"
+    )
 
 
 def validate() -> None:
@@ -478,12 +507,5 @@ def validate() -> None:
             "Set LUMID_DATA_TOKEN explicitly when FlowMesh and lumid-data-app "
             "live at different trust boundaries."
         )
-    if LUMILAKE_DEPLOY_SUFFIX:
-        # Validate the concatenation, not the fragment in isolation: a
-        # leading ``-`` is fine when appended to an existing name.
-        candidate = f"lumilake{LUMILAKE_DEPLOY_SUFFIX}"
-        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", candidate):
-            raise ValueError(
-                "LUMILAKE_DEPLOY_SUFFIX must form a valid Docker object name "
-                "when appended to a container/volume name"
-            )
+    if LUMILAKE_STACK_NAME and not valid_stack_name(LUMILAKE_STACK_NAME):
+        raise ValueError(stack_name_requirement(LUMILAKE_STACK_NAME))

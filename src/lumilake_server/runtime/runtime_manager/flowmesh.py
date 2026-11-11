@@ -2707,8 +2707,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     @staticmethod
     def _build_index_partitions(total: int, shard_count: int) -> list[tuple[int, int]]:
-        safe_total = max(1, int(total))
-        safe_count = max(1, int(shard_count))
+        safe_total = max(1, total)
+        safe_count = max(1, shard_count)
         base = safe_total // safe_count
         remainder = safe_total % safe_count
         partitions: list[tuple[int, int]] = []

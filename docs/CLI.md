@@ -22,7 +22,7 @@ back at `lumilake[cli]` or `lumilake-cli[deploy]`.
 The CLI resolves the target server URL in this order:
 
 1. `LUMILAKE_BASE_URL` environment variable.
-2. `~/.lumilake/config.toml` (written by `lumilake deploy up`).
+2. `~/.lumilake/config.toml` (written by `lumilake init`).
 3. `http://127.0.0.1:9000` (the local deploy default).
 
 | Command | Purpose |
@@ -31,7 +31,7 @@ The CLI resolves the target server URL in this order:
 | `lumilake info` | Query server health metadata. |
 | `lumilake health` | Query server health. |
 
-`lumilake deploy up` writes the resolved local server URL to `~/.lumilake/config.toml` after the stack is healthy (preserving any saved `api_key`), so subsequent CLI and SDK calls find it automatically. Remote / hosted users should set `LUMILAKE_BASE_URL` instead.
+Once the stack is healthy, `lumilake deploy up` prints the `lumilake init --deploy-dir <deploy-dir>` command and the server URL to export as `LUMILAKE_BASE_URL`. `lumilake init --deploy-dir <dir>` reads the server port from that deployment's `.env` and keeps an already saved `api_key` unless `--api-key` is given.
 
 ### Authentication
 
@@ -40,6 +40,7 @@ When the server runs an `IdentityProvider` plugin (e.g. `lumid_lumilake_plugin`)
 | Command | Purpose |
 |---------|---------|
 | `lumilake init <url> --api-key <key> [--config <path>] [--force]` | Save `base_url` + `api_key` to `~/.lumilake/config.toml`. Confirms overwrite unless `--force`. |
+| `lumilake init --deploy-dir <dir> [--api-key <key>] [--config <path>] [--force]` | Save the server URL of a local deployment, read from its `.env`. Keeps a saved `api_key` unless `--api-key` is given. |
 | `lumilake deinit [--config <path>]` | Delete the config file. |
 | `lumilake config [--source auto\|file\|env] [--show-api-key]` | Show the resolved config. `api_key` is redacted (first 4 + last 4) unless `--show-api-key`. |
 
@@ -60,6 +61,8 @@ LUMILAKE_DEPLOY_DIR=~/lumilake-deploy lumilake deploy init
 
 The compose file and image are resolved from the installed `lumilake-deploy` package and GHCR; the deployment directory only needs to hold your `.env` files (and any local state docker compose creates).
 
+Set `LUMILAKE_STACK_NAME` in `.env` to run several deployments side by side on one host: it names the Compose project and is carried in every container, volume and FlowMesh worker name of that deployment, so `deploy up` and `deploy down` of one leave the others alone. Each deployment still needs its own ports; leave the key empty to keep the bare names.
+
 If another FlowMesh stack is already running on the host, resolve port
 collisions before `deploy up`. Common co-tenant defaults are FlowMesh
 HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
@@ -72,7 +75,7 @@ HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
 | `lumilake deploy doctor [--flowmesh]` | Validate deployment env files. |
 | `lumilake deploy build` | Build the Lumilake server Docker image from source. |
 | `lumilake deploy pull` | Pull the published server image from the registry (`$LUMILAKE_REGISTRY`). |
-| `lumilake deploy up` | Start the local stack and persist `base_url` to `~/.lumilake/config.toml` (image must already be present — run `pull` or `build` first). |
+| `lumilake deploy up` | Start the local stack (image must already be present). |
 | `lumilake deploy down [--wipe-archive]` | Stop the stack but keep data volumes. Non-destructive. |
 | `lumilake deploy clean` | Stop the stack and delete volumes. Destructive. |
 | `lumilake deploy purge <image_tag> [--dry-run] [--force]` | Remove one local Lumilake server image tag for the configured registry. |

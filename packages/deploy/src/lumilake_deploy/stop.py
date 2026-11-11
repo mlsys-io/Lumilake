@@ -2,12 +2,16 @@
 
 from pathlib import Path
 
-from lumilake import envs
-
 from . import docker_client
 from . import flowmesh as fm_impl
 from .assets import compose_path
-from .containers import flowmesh_state_volumes
+from .containers import (
+    compose_project_args,
+    flowmesh_state_volumes,
+    read_stack_name,
+    server_container,
+    server_data_volume,
+)
 from .env import FLOWMESH_ENV_FILE_NAME
 from .errors import DeployError
 from .setup import load_project_env
@@ -20,17 +24,13 @@ COMPOSE_PROFILES = (
 )
 
 
-def _server_container() -> str:
-    return f"lumilake-server{envs.LUMILAKE_DEPLOY_SUFFIX}"
-
-
 def _state_volumes(project_root: Path) -> tuple[str, ...]:
     """Volumes that ``--wipe-archive`` removes — local compute postgres
-    plus the FlowMesh runtime state derived from the operator's
-    ``.env.flowmesh`` slug. Touches no corpus / research-records data
-    (those live under ``lumilake-minio-data``)."""
+    plus the FlowMesh runtime state derived from the stack name. Touches no
+    corpus / research-records data (those live under
+    ``lumilake-minio-data``)."""
     return (
-        f"lumilake-postgres-data{envs.LUMILAKE_DEPLOY_SUFFIX}",
+        server_data_volume(read_stack_name(project_root)),
         *flowmesh_state_volumes(project_root),
     )
 
@@ -78,13 +78,13 @@ def run_stop(
     state / runtime state that accumulates across deploy cycles.
     """
     load_project_env(project_root)
-    server_container = _server_container()
+    server = server_container(read_stack_name(project_root))
     engine_up = docker_client.engine_is_up()
 
     if engine_up:
         try:
-            if docker_client.container_stop(server_container):
-                info(f"Stopped {server_container}")
+            if docker_client.container_stop(server):
+                info(f"Stopped {server}")
         except DeployError as exc:
             info(f"WARNING: {exc}")
     else:
@@ -99,6 +99,7 @@ def run_stop(
         str(compose_path()),
         "--project-directory",
         str(project_root),
+        *compose_project_args(project_root),
     ]
     for prof in COMPOSE_PROFILES:
         cmd.extend(["--profile", prof])

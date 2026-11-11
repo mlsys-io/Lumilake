@@ -2419,7 +2419,7 @@ class LumilakeServer:
                     batch_id=batch_id,
                     execution_request_id=execution_request_id,
                     batch_workflow_ids=batch_workflow_ids,
-                    workers=list(workers),
+                    workers=workers,
                 )
             )
 
