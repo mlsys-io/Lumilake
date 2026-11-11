@@ -477,62 +477,15 @@ def test_cli_init_existing_file_shows_diff(
     assert any("Diff vs existing" in line for line in captured)
 
 
-def test_cli_up_writes_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    setup_calls: list[Path] = []
-
-    def _run_setup(
-        root: Path,
-        *,
-        background: bool = True,
-        reset: bool = False,
-        no_server: bool = False,
-    ) -> None:
-        setup_calls.append(root)
-
-    monkeypatch.setattr(deploy_cmd, "_run_setup", _run_setup)
-    monkeypatch.setattr(deploy_cmd.setup_mod, "load_project_env", lambda _r: None)
-    monkeypatch.setattr(deploy_cmd.envs, "LUMILAKE_SERVER_PORT", 12345)
-
-    config_path = tmp_path / "config.toml"
-    monkeypatch.setattr(deploy_cmd, "DEFAULT_CONFIG_PATH", config_path)
-
-    deploy_cmd.up(_fake_ctx(tmp_path))
-
-    assert setup_calls == [tmp_path]
-    assert config_path.is_file()
-    assert 'base_url = "http://127.0.0.1:12345"' in config_path.read_text()
-
-
-def test_cli_up_warns_on_config_change(
+def test_cli_up_leaves_the_cli_config_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """``deploy up`` reports how to point the CLI here; it never writes it."""
     monkeypatch.setattr(deploy_cmd, "_run_setup", lambda *a, **kw: None)
-    monkeypatch.setattr(deploy_cmd.setup_mod, "load_project_env", lambda _r: None)
-    monkeypatch.setattr(deploy_cmd.envs, "LUMILAKE_SERVER_PORT", 9001)
-
+    (tmp_path / ".env").write_text('LUMILAKE_SERVER_PORT="9100"\n')
     config_path = tmp_path / "config.toml"
-    config_path.write_text('base_url = "http://127.0.0.1:9000"\n')
-    monkeypatch.setattr(deploy_cmd, "DEFAULT_CONFIG_PATH", config_path)
-
-    messages: list[str] = []
-    monkeypatch.setattr(deploy_cmd.logging, "info", lambda m: messages.append(m))
-
-    deploy_cmd.up(_fake_ctx(tmp_path))
-
-    assert any("http://127.0.0.1:9000 -> http://127.0.0.1:9001" in m for m in messages)
-
-
-def test_cli_up_leaves_matching_config_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(deploy_cmd, "_run_setup", lambda *a, **kw: None)
-    monkeypatch.setattr(deploy_cmd.setup_mod, "load_project_env", lambda _r: None)
-    monkeypatch.setattr(deploy_cmd.envs, "LUMILAKE_SERVER_PORT", 9000)
-
-    config_path = tmp_path / "config.toml"
-    original = 'base_url = "http://127.0.0.1:9000"\n'
+    original = 'base_url = "http://elsewhere:9000"\n'
     config_path.write_text(original)
-    monkeypatch.setattr(deploy_cmd, "DEFAULT_CONFIG_PATH", config_path)
 
     messages: list[str] = []
     monkeypatch.setattr(deploy_cmd.logging, "info", lambda m: messages.append(m))
@@ -540,7 +493,8 @@ def test_cli_up_leaves_matching_config_unchanged(
     deploy_cmd.up(_fake_ctx(tmp_path))
 
     assert config_path.read_text() == original
-    assert messages == ["CLI config already points at http://127.0.0.1:9000."]
+    assert any("--deploy-dir" in m for m in messages)
+    assert any("http://127.0.0.1:9100" in m for m in messages)
 
 
 def test_cli_init_honors_project_dir_argument(tmp_path: Path) -> None:

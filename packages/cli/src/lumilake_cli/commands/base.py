@@ -8,7 +8,7 @@ from lumilake.config import LumilakeConfig
 from lumilake.errors import ConfigInvalidError, ConfigNotFoundError
 
 from ..core import logging
-from ..core.config import DEFAULT_CONFIG_PATH
+from ..core.config import DEFAULT_CONFIG_PATH, deployment_url
 from ..core.http import HttpError, client_from_config
 from ..core.typer import get_typer
 
@@ -44,6 +44,14 @@ def init(
     api_key: str | None = typer.Option(
         None, "--api-key", help="Bearer presented as Authorization: Bearer …"
     ),
+    deploy_dir: Path = typer.Option(
+        None,
+        "--deploy-dir",
+        help=(
+            "Local deployment directory. Takes the server URL from its .env "
+            "instead of the URL argument."
+        ),
+    ),
     config_path: Path = typer.Option(
         DEFAULT_CONFIG_PATH, "--config", help="Path to save configuration file."
     ),
@@ -55,13 +63,26 @@ def init(
         show_default=False,
     ),
 ) -> None:
-    """Initialize configuration for the Lumilake CLI."""
+    """Initialize configuration for the Lumilake CLI.
+
+    With ``--deploy-dir`` the server URL comes from that deployment's
+    ``.env``, and a saved ``api_key`` is kept unless ``--api-key`` is given.
+    """
+    saved_api_key: str | None = None
+    if deploy_dir is not None:
+        url = deployment_url(deploy_dir)
+        try:
+            saved_api_key = LumilakeConfig.from_file(config_path).api_key
+        except (ConfigNotFoundError, ConfigInvalidError):
+            saved_api_key = None
     if config_path.exists():
         if force:
             logging.warning(f"Overwriting existing config at {config_path}")
         elif not typer.confirm(f"Config file {config_path} already exists. Overwrite?"):
             raise typer.Exit()
-    LumilakeConfig(base_url=url, api_key=api_key).save(config_path)
+    LumilakeConfig(
+        base_url=url, api_key=api_key if api_key is not None else saved_api_key
+    ).save(config_path)
     logging.success(f"Config saved to {config_path}")
 
 

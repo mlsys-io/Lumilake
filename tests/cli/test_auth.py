@@ -127,6 +127,70 @@ def test_init_aborts_without_force_on_existing(
     assert loaded.api_key == "old-key"
 
 
+def test_init_deploy_dir_takes_the_url_from_the_deployment_env(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    (deploy_dir / ".env").write_text('LUMILAKE_SERVER_PORT="9100"\n')
+    config_path = tmp_path / "config.toml"
+
+    result = runner.invoke(
+        app, ["init", "--deploy-dir", str(deploy_dir), "--config", str(config_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert LumilakeConfig.from_file(config_path).base_url == "http://127.0.0.1:9100"
+
+
+def test_init_deploy_dir_keeps_a_saved_api_key(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    (deploy_dir / ".env").write_text('LUMILAKE_SERVER_PORT="9100"\n')
+    config_path = tmp_path / "config.toml"
+    LumilakeConfig(base_url="http://old", api_key="saved-key").save(config_path)
+
+    result = runner.invoke(
+        app,
+        ["init", "--deploy-dir", str(deploy_dir), "--config", str(config_path)],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    loaded = LumilakeConfig.from_file(config_path)
+    assert loaded.base_url == "http://127.0.0.1:9100"
+    assert loaded.api_key == "saved-key"
+
+
+def test_init_deploy_dir_honors_an_explicit_api_key(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    (deploy_dir / ".env").write_text('LUMILAKE_SERVER_PORT="9100"\n')
+    config_path = tmp_path / "config.toml"
+    LumilakeConfig(base_url="http://old", api_key="saved-key").save(config_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--deploy-dir",
+            str(deploy_dir),
+            "--api-key",
+            "new-key",
+            "--config",
+            str(config_path),
+            "--force",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert LumilakeConfig.from_file(config_path).api_key == "new-key"
+
+
 def test_deinit_deletes_config_file(runner: CliRunner, tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     LumilakeConfig(base_url="http://x", api_key="y").save(config_path)
