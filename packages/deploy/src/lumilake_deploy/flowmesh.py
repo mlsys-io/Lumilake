@@ -42,6 +42,10 @@ def _error(msg: str) -> None:
     logger.error(msg)
 
 
+def _warn(msg: str) -> None:
+    logger.warning(msg)
+
+
 # ---------------------------------------------------------------------------
 # Port collision check
 # ---------------------------------------------------------------------------
@@ -65,53 +69,59 @@ def check_ports(ports: dict[str, int]) -> list[str]:
 # Stack management via SDK
 # ---------------------------------------------------------------------------
 
-_WORKDIR = Path(".flowmesh")
+WORKDIR_NAME = ".flowmesh"
 
 
-def _make_workdir() -> Path:
+def _workdir_for(env_file: str | Path) -> Path:
+    """Return the FlowMesh working directory of the deployment owning ``env_file``."""
+    return Path(env_file).resolve().parent / WORKDIR_NAME
+
+
+def _make_workdir(workdir: Path) -> Path:
     """Create a working directory for FlowMesh compose mounts."""
-    _WORKDIR.mkdir(exist_ok=True)
-    (_WORKDIR / "secrets" / "tls" / "redis").mkdir(parents=True, exist_ok=True)
-    (_WORKDIR / "secrets" / "tls" / "server").mkdir(parents=True, exist_ok=True)
-    wc = _WORKDIR / "configs" / "worker_config.yaml"
+    workdir.mkdir(parents=True, exist_ok=True)
+    (workdir / "secrets" / "tls" / "redis").mkdir(parents=True, exist_ok=True)
+    (workdir / "secrets" / "tls" / "server").mkdir(parents=True, exist_ok=True)
+    wc = workdir / "configs" / "worker_config.yaml"
     wc.parent.mkdir(parents=True, exist_ok=True)
     if not wc.exists():
         wc.write_text("default_worker_config:\n  hb_interval: 30\n\nworkers: []\n")
-    return _WORKDIR
+    return workdir
 
 
-def _ensure_deploy_paths_in_workdir(_base_dir: Path) -> None:
-    """ensure_deploy_paths pinned to _WORKDIR (ignores the cwd-based base_dir)."""
-    base = _WORKDIR.resolve()
+def _ensure_deploy_paths_in_workdir(workdir: Path) -> None:
+    """Prepare the stack's TLS and worker-config paths under ``workdir``."""
     ensure_dir(
-        resolve_path(envs.REDIS_TLS_DIR, default="./secrets/tls/redis", base_dir=base)
+        resolve_path(
+            envs.REDIS_TLS_DIR, default="./secrets/tls/redis", base_dir=workdir
+        )
     )
     ensure_dir(
         resolve_path(
             envs.SERVER_TLS_DIR,
             default="./secrets/tls/server",
-            base_dir=base,
+            base_dir=workdir,
         )
     )
     ensure_file(
         resolve_path(
             envs.SERVER_WORKER_CONFIG,
             default="./configs/worker_config.yaml",
-            base_dir=base,
+            base_dir=workdir,
         )
     )
 
 
 def _load_env(ef: Path) -> None:
+    """Load the stack env file, resolving its relative path keys under the workdir."""
     ensure_env_file(ef, stack_env_example())
-    load_env(ef, base_dir=_WORKDIR.resolve(), path_keys=STACK_PATH_KEYS)
+    load_env(ef, base_dir=_workdir_for(ef), path_keys=STACK_PATH_KEYS)
 
 
 _stack = DockerComposeStack(
     compose_file=stack_compose_file(),
     env_file_var="STACK_ENV_FILE",
     load_env=_load_env,
-    ensure_deploy_paths=_ensure_deploy_paths_in_workdir,
 )
 
 
@@ -171,8 +181,8 @@ def stack_slug(env_file: Path, *, stack_name: str | None = None) -> str:
 
 def stack_pull(env_file: str | Path) -> None:
     """Pull FlowMesh Docker images (skipped if already present locally)."""
-    _make_workdir()
     env_path = Path(env_file).resolve()
+    _make_workdir(_workdir_for(env_path))
     if _server_image_exists(env_file):
         _info("FlowMesh images already present locally, skipping pull.")
         return
@@ -182,8 +192,10 @@ def stack_pull(env_file: str | Path) -> None:
 
 def stack_up(env_file: str | Path) -> None:
     """Start the FlowMesh Docker Compose stack."""
-    _make_workdir()
     env_path = Path(env_file).resolve()
+    workdir = _make_workdir(_workdir_for(env_path))
+    _load_env(env_path)
+    _ensure_deploy_paths_in_workdir(workdir)
 
     errors = check_ports(env_ports(env_file))
     if errors:
@@ -197,9 +209,7 @@ def stack_up(env_file: str | Path) -> None:
     args = ["--profile", "root", "up", "-d", "--wait"]
 
     _info("Starting FlowMesh stack...")
-    result = _stack.run(
-        args, env_file=env_path, env=_slug_env(env_path), to_deploy=True
-    )
+    result = _stack.run(args, env_file=env_path, env=_slug_env(env_path))
     if result.returncode != 0:
         raise RuntimeError("Failed to start FlowMesh stack.")
     _info("FlowMesh stack is up.")
@@ -217,11 +227,23 @@ def destroy_all_workers(env_file: str | Path) -> None:
         client.destroy_all_workers(ignore_unreachable=True)
 
 
+def _nothing_to_stop(env_path: Path) -> bool:
+    """Report a deployment with no FlowMesh working directory, and skip it."""
+    workdir = _workdir_for(env_path)
+    if workdir.exists():
+        return False
+    _warn(
+        f"No FlowMesh working directory at {workdir}; nothing to stop. "
+        "A stack started from a different directory would keep running."
+    )
+    return True
+
+
 def stack_down(env_file: str | Path) -> None:
     """Stop the FlowMesh stack."""
-    if not _WORKDIR.exists():
-        return
     env_path = Path(env_file).resolve()
+    if _nothing_to_stop(env_path):
+        return
     destroy_all_workers(env_path)
     _info("Stopping FlowMesh stack...")
     # ``--profile root`` so compose sees redis_control + redis_telemetry
@@ -233,9 +255,9 @@ def stack_down(env_file: str | Path) -> None:
 
 def stack_clean(env_file: str | Path) -> None:
     """Stop the FlowMesh stack and remove volumes."""
-    if not _WORKDIR.exists():
-        return
     env_path = Path(env_file).resolve()
+    if _nothing_to_stop(env_path):
+        return
     _info("Cleaning FlowMesh stack (removing volumes)...")
     _stack.run(
         ["--profile", "root", "down", "-v"],
