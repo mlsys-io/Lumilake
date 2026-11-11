@@ -32,7 +32,12 @@ from lumilake_server.ops import (
     RouterOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
-from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMChatOp, LLMVisionOp
+from lumilake_server.ops.llm_ops import (
+    ImageGenerationOp,
+    LLMChatOp,
+    LLMCompletionOp,
+    LLMVisionOp,
+)
 from lumilake_server.ops.router_ops import RowGate
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
@@ -1534,9 +1539,10 @@ class RuntimeGraphBuilder:
                                 f"DataRetrievalOp '{op_id}' template param "
                                 f"{param.get('label')!r} references '{node}', which"
                                 " produces multiple rows but not one output item"
-                                " per row; only a plain local LLMChatOp binds"
-                                " row-wise to a retrieval param, so this would"
-                                " silently drop every row but the first."
+                                " per row; only a plain local LLMChatOp or an"
+                                " LLMCompletionOp binds row-wise to a retrieval"
+                                " param, so this would silently drop every row"
+                                " but the first."
                             )
                         param_row_counts[str(param.get("label"))] = row_count
                 if isinstance(upstream, LambdaOp):
@@ -1910,6 +1916,8 @@ class RuntimeGraphBuilder:
         """Whether a multi-row op's result holds one scalar-per-row item per
         input row, so a ``node``/``path`` reference resolves to one value per
         row."""
+        if isinstance(op, LLMCompletionOp):
+            return True
         return (
             isinstance(op, LLMChatOp)
             and not RuntimeGraphBuilder._is_rowwise_llm(op)
@@ -2471,14 +2479,20 @@ class RuntimeGraphBuilder:
                 ),
             )
 
-        upstream_llm_ids, template_spec = self._infer_structural_messages(
-            llm_op_id,
-            graph_dict,
-            inputs_dict,
-            visited_node_ids,
-            dsl_to_runtime=dsl_to_runtime,
-            runtime_nodes=runtime_nodes,
-        )
+        if isinstance(llm_op, LLMCompletionOp):
+            # Raw completions read their prompt directly and never build a
+            # chat-message graph, including when the prompt is a list-mode op.
+            upstream_llm_ids: list[str] = []
+            template_spec: dict[str, Any] = {}
+        else:
+            upstream_llm_ids, template_spec = self._infer_structural_messages(
+                llm_op_id,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime=dsl_to_runtime,
+                runtime_nodes=runtime_nodes,
+            )
 
         if task_type_override == "data_profile":
             task_type = "data_profiling"
@@ -2519,6 +2533,59 @@ class RuntimeGraphBuilder:
                     inputs_dict,
                     dsl_to_runtime,
                 ),
+            )
+
+        if isinstance(llm_op, LLMCompletionOp):
+            prompt_op = llm_op.prompt
+            visited_node_ids.add(prompt_op.id)
+            if isinstance(prompt_op, InputOp):
+                prompt_values = inputs_dict.get(prompt_op.name)
+                if prompt_values is None:
+                    raise ValueError(
+                        f"LLMCompletionOp '{llm_op_id}' prompt input "
+                        f"{prompt_op.name!r} has no values supplied"
+                    )
+                data_spec = {"type": "list", "items": list(prompt_values)}
+                row_dependencies = []
+            elif isinstance(prompt_op, DataOp):
+                data_spec = {"type": "list", "items": list(prompt_op.data)}
+                row_dependencies = []
+            else:
+                if not (
+                    isinstance(prompt_op, LambdaOp)
+                    or self._emits_one_item_per_row(prompt_op)
+                ):
+                    raise ValueError(
+                        f"LLMCompletionOp '{llm_op_id}' prompt upstream"
+                        f" '{prompt_op.id}' ({type(prompt_op).__name__}) does"
+                        " not produce one prompt string per row"
+                    )
+                if isinstance(prompt_op, LambdaOp):
+                    prompt_path = self._lambda_read_path(
+                        f"LLMCompletionOp '{llm_op_id}'",
+                        prompt_op.id,
+                        "items.output",
+                        prompt_op,
+                    )
+                else:
+                    prompt_path = self._upstream_output_path(prompt_op)
+                data_spec = {
+                    "type": "list",
+                    "node": prompt_op.id,
+                    "path": prompt_path,
+                }
+                row_dependencies = [prompt_op.id]
+            return self._create_runtime_op(
+                name=llm_op_id,
+                task_type=task_type,
+                data_spec=data_spec,
+                model_spec=self._build_model_spec(llm_op.config, backend),
+                inference_spec={**inference_spec, "apply_chat_template": False},
+                backend=backend,
+                model=llm_op.config.model,
+                dependencies=row_dependencies if row_dependencies else None,
+                output_spec=output_spec,
+                condition=None,
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
@@ -3064,6 +3131,8 @@ class RuntimeGraphBuilder:
             api_spec["timeout_sec"] = api_config.timeout_sec
         if api_config.retries is not None:
             api_spec["retries"] = api_config.retries
+        if api_config.concurrency is not None:
+            api_spec["concurrency"] = api_config.concurrency
         return [
             self._create_runtime_op(
                 name=llm_op_id,
@@ -3522,6 +3591,8 @@ class RuntimeGraphBuilder:
             return len(values) if values is not None else None
         if isinstance(op, DataOp):
             return len(op.data)
+        if isinstance(op, LLMCompletionOp):
+            return self._static_output_row_count(op.prompt, inputs_dict, graph_dict)
         if isinstance(op, LLMChatOp):
             if op.rowwise_columns:
                 counts: list[int] = []
@@ -4208,7 +4279,7 @@ class RuntimeGraphBuilder:
         if upstream_mode == "sql":
             return self._apply_limit_to_sample_sql(
                 queries[0],
-                max(1, int(envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES)),
+                max(1, envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES),
             )
         return queries[0]
 
@@ -4285,7 +4356,7 @@ class RuntimeGraphBuilder:
                 "live sample query."
             )
         inner = query.rstrip().rstrip(";")
-        return f"SELECT * FROM ({inner}) AS _lumilake_sample LIMIT {int(n)}"
+        return f"SELECT * FROM ({inner}) AS _lumilake_sample LIMIT {n}"
 
     def _fetch_sql_sample_value(
         self,

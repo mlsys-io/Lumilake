@@ -18,10 +18,12 @@ from lumilake_server.ops.embedding_ops import (
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
+    LLMCompletionOp,
     LLMOp,
     LLMVisionOp,
     image_generation,
     llm_chat,
+    llm_completion,
     llm_vision,
 )
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
@@ -43,6 +45,7 @@ __all__ = [
     "ImageGenerationOp",
     "InputOp",
     "LLMChatOp",
+    "LLMCompletionOp",
     "LLMOp",
     "LLMVisionOp",
     "LambdaOp",
@@ -62,6 +65,7 @@ __all__ = [
     "input_placeholder",
     "lambda_op",
     "llm_chat",
+    "llm_completion",
     "llm_vision",
     "message_data",
 ]

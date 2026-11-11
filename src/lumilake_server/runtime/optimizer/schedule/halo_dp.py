@@ -112,10 +112,10 @@ class DPSolver:
 
         if cpu_load_cost_weight is None:
             cpu_load_cost_weight = 1.0
-        self.cpu_load_cost_weight = max(0.0, float(cpu_load_cost_weight))
+        self.cpu_load_cost_weight = max(0.0, cpu_load_cost_weight)
         if cpu_load_early_weight is None:
             cpu_load_early_weight = 2.0
-        self.cpu_load_early_weight = max(0.0, float(cpu_load_early_weight))
+        self.cpu_load_early_weight = max(0.0, cpu_load_early_weight)
         self.disable_epoch_batch_cost = bool(disable_epoch_batch_cost)
         self.disable_cpu_load_cost = bool(disable_cpu_load_cost)
         self.cpu_cost_mode = self._resolve_cpu_cost_mode(cpu_cost_mode)
@@ -139,17 +139,17 @@ class DPSolver:
         self.gpu_cost_sum_weight = max(0.0, float(sum_weight))
         if switch_penalty_weight is None:
             switch_penalty_weight = 0.1
-        self.switch_penalty_weight = max(0.0, float(switch_penalty_weight))
+        self.switch_penalty_weight = max(0.0, switch_penalty_weight)
         self.enable_batch_shape_pruning = enable_batch_shape_pruning
         self.gpu_batch_slack = max(0, gpu_batch_slack)
         self.enable_lower_bound_pruning = enable_lower_bound_pruning
         self.enable_worker_symmetry = enable_worker_symmetry
-        self.lower_bound_cost_factor = max(0.0, float(lower_bound_cost_factor))
-        self.debug_log = bool(debug_log)
-        self.debug_every = max(1, int(debug_every))
+        self.lower_bound_cost_factor = max(0.0, lower_bound_cost_factor)
+        self.debug_log = debug_log
+        self.debug_every = max(1, debug_every)
         self._progress_logger = progress_logger
-        self._progress_enabled = bool(progress_enabled)
-        progress_interval = float(progress_interval_s)
+        self._progress_enabled = progress_enabled
+        progress_interval = progress_interval_s
         if not math.isfinite(progress_interval) or progress_interval <= 0:
             progress_interval = 5.0
         self._progress_interval_s = progress_interval
@@ -197,7 +197,7 @@ class DPSolver:
         self.node_index = {node_id: idx for idx, node_id in enumerate(self.node_ids)}
         self.all_mask = (1 << len(self.node_ids)) - 1
         self.worker_index = {wid: idx for idx, wid in enumerate(worker_ids)}
-        self._worker_id_by_idx = tuple(worker_ids)
+        self._worker_id_by_idx = worker_ids
 
         # Fallback plan: used when a query has no plan_choices.
         self._fallback_choice = QueryPlanChoice(

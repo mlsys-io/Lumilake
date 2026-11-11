@@ -3,14 +3,13 @@
 import datetime as dt
 import difflib
 import re
+import shlex
 import sys
 from pathlib import Path
 
 import typer
 from flowmesh_cli_stack.stack import stack_env_example
 
-from lumilake import envs
-from lumilake.errors import ConfigInvalidError, ConfigNotFoundError
 from lumilake_deploy import docker_client
 from lumilake_deploy import purge as purge_mod
 from lumilake_deploy import setup as setup_mod
@@ -32,7 +31,7 @@ from lumilake_deploy.setup import (
 )
 
 from ..core import logging
-from ..core.config import DEFAULT_CONFIG_PATH, LumilakeConfig
+from ..core.config import deployment_url
 from ..core.typer import get_typer
 
 app = get_typer(
@@ -283,32 +282,13 @@ def pull(ctx: typer.Context) -> None:
         raise typer.Exit(code=1) from exc
 
 
-def _write_cli_config(root: Path, config_path: Path | None = None) -> None:
-    """Persist the local server URL so subsequent CLI / SDK calls find it.
-
-    Preserves any existing ``api_key`` (written by ``lumilake init``).
-    """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-    setup_mod.load_project_env(root)
-    port = envs.LUMILAKE_SERVER_PORT or 9000
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        existing = LumilakeConfig.from_file(config_path)
-    except (ConfigNotFoundError, ConfigInvalidError):
-        existing = None
-    if existing is not None and existing.base_url == base_url:
-        logging.info(f"CLI config already points at {base_url}.")
-        return
-    if existing is not None and existing.base_url != base_url:
-        logging.info(f"Updating {config_path}: {existing.base_url} -> {base_url}")
-    api_key = existing.api_key if existing is not None else None
-    try:
-        LumilakeConfig(base_url=base_url, api_key=api_key).save(config_path)
-    except OSError as exc:
-        logging.warning(f"Could not save CLI config to {config_path}: {exc}")
-        return
-    logging.info(f"Saved CLI config to {config_path} (base_url={base_url}).")
+def _point_cli_at_deployment(root: Path) -> None:
+    """Log how to make CLI and SDK calls use this deployment."""
+    logging.info(
+        "To point the CLI at this deployment, run "
+        f"`lumilake init --deploy-dir {shlex.quote(root.as_posix())}`; or for "
+        f"one shell, `export LUMILAKE_BASE_URL={deployment_url(root)}`."
+    )
 
 
 @app.command()
@@ -320,7 +300,7 @@ def up(ctx: typer.Context) -> None:
     """
     root = _project_dir(ctx)
     _run_setup(root, background=True)
-    _write_cli_config(root)
+    _point_cli_at_deployment(root)
 
 
 @app.command()

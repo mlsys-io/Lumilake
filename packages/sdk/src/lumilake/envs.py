@@ -125,6 +125,13 @@ LUMILAKE_CPU_WORKER_GROUP_SIZE: int = int(
 LUMILAKE_GPU_WORKER_GROUP_SIZE: int = int(
     os.environ.get("LUMILAKE_GPU_WORKER_GROUP_SIZE") or "0"
 )
+# In-flight batches a worker may carry before the scheduler stops offering it.
+# ``1`` admits a worker again only once the batch it was claimed for finishes;
+# higher values queue the next batch on the worker, so its CPU work overlaps the
+# current batch's GPU work.
+LUMILAKE_DISPATCH_QUEUE_DEPTH: int = int(
+    os.environ.get("LUMILAKE_DISPATCH_QUEUE_DEPTH") or "1"
+)
 # Whether dispatch filters selection by free capacity. Default on: an unrunnable
 # batch is skipped in favour of runnable work. With ``0`` selection is
 # capacity-blind, so a batch that no worker can run stalls dispatch
@@ -330,10 +337,10 @@ FLOWMESH_OUTPUT_DESTINATION: str = os.environ.get(
 
 LUMILAKE_REGISTRY: str = os.environ.get("LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
 LUMILAKE_IMAGE_TAG: str = os.environ.get("LUMILAKE_IMAGE_TAG", "")
-# Suffix appended to every container and volume name the deploy stack
-# creates, so multiple Lumilake stacks can coexist on one host. Empty by
-# default, giving the bare names (``lumilake-server``, ...).
-LUMILAKE_DEPLOY_SUFFIX: str = os.environ.get("LUMILAKE_DEPLOY_SUFFIX", "")
+# Name of the deploy stack, which becomes the Compose project name and the
+# name carried in every container, volume and worker name the stack creates.
+# Empty by default, giving the bare names (``lumilake-server``, ...).
+LUMILAKE_STACK_NAME: str = os.environ.get("LUMILAKE_STACK_NAME", "")
 
 REDIS_TLS_DIR: str = os.environ.get("REDIS_TLS_DIR", "")
 SERVER_TLS_DIR: str = os.environ.get("SERVER_TLS_DIR", "")
@@ -398,6 +405,35 @@ def _absolute_http_url(value: str) -> bool:
     return parts.scheme.lower() in {"http", "https"} and bool(parts.hostname)
 
 
+_STACK_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,46}[a-z0-9])?")
+
+# FlowMesh names an unnamed bundled deployment's stack ``lumilake``.
+RESERVED_STACK_NAMES: frozenset[str] = frozenset({"lumilake"})
+
+
+def valid_stack_name(name: str) -> bool:
+    """Return True when ``name`` names this deployment's own stack.
+
+    FlowMesh strips leading and trailing ``-``, ``_`` and ``.`` from its
+    suffix and truncates it to 48 characters, so the pattern ends in a letter
+    or digit and allows 48 characters at most; a longer or trailing-punctuation
+    name would share its FlowMesh stack with another deployment.
+    """
+    return (
+        bool(_STACK_NAME_PATTERN.fullmatch(name)) and name not in RESERVED_STACK_NAMES
+    )
+
+
+def stack_name_requirement(name: str) -> str:
+    """Return the rule a stack name must meet, naming ``name``."""
+    return (
+        f"LUMILAKE_STACK_NAME={name!r} must be lowercase letters, digits, "
+        "hyphens and underscores, starting and ending with a letter or digit, "
+        "at most 48 characters, and not `lumilake`, which unnamed bundled "
+        "deployments use"
+    )
+
+
 def validate() -> None:
     """Enforce required env vars and valid value ranges.
 
@@ -452,6 +488,8 @@ def validate() -> None:
         raise ValueError("LUMILAKE_CPU_WORKER_GROUP_SIZE must be >= 0")
     if LUMILAKE_GPU_WORKER_GROUP_SIZE < 0:
         raise ValueError("LUMILAKE_GPU_WORKER_GROUP_SIZE must be >= 0")
+    if LUMILAKE_DISPATCH_QUEUE_DEPTH < 1:
+        raise ValueError("LUMILAKE_DISPATCH_QUEUE_DEPTH must be >= 1")
     if LUMILAKE_CPU_WORKER_GROUP_SIZE == 0 and LUMILAKE_GPU_WORKER_GROUP_SIZE == 0:
         raise ValueError(
             "At least one of LUMILAKE_CPU_WORKER_GROUP_SIZE or "
@@ -469,12 +507,5 @@ def validate() -> None:
             "Set LUMID_DATA_TOKEN explicitly when FlowMesh and lumid-data-app "
             "live at different trust boundaries."
         )
-    if LUMILAKE_DEPLOY_SUFFIX:
-        # Validate the concatenation, not the fragment in isolation: a
-        # leading ``-`` is fine when appended to an existing name.
-        candidate = f"lumilake{LUMILAKE_DEPLOY_SUFFIX}"
-        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", candidate):
-            raise ValueError(
-                "LUMILAKE_DEPLOY_SUFFIX must form a valid Docker object name "
-                "when appended to a container/volume name"
-            )
+    if LUMILAKE_STACK_NAME and not valid_stack_name(LUMILAKE_STACK_NAME):
+        raise ValueError(stack_name_requirement(LUMILAKE_STACK_NAME))
