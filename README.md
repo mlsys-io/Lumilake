@@ -105,8 +105,7 @@ lumilake job watch <job_id>
 
 Run `lumilake init --deploy-dir ~/lumilake-deploy` once to point the CLI
 at the local server: it reads the port from that deployment's `.env`.
-`deploy up` never writes the config. For remote / hosted servers, set
-`LUMILAKE_BASE_URL` instead.
+For remote / hosted servers, set `LUMILAKE_BASE_URL` instead.
 
 See `docs/E2E_DEMO.md` for a full reproduction using the bundled demo
 workflows and dataset.

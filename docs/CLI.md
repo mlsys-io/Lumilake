@@ -31,7 +31,7 @@ The CLI resolves the target server URL in this order:
 | `lumilake info` | Query server health metadata. |
 | `lumilake health` | Query server health. |
 
-`lumilake deploy up` never writes `~/.lumilake/config.toml`. Once the stack is healthy it prints the `lumilake init --deploy-dir <deploy-dir>` command and the server URL to export as `LUMILAKE_BASE_URL`, so pointing the CLI at a deployment is always an explicit step. `lumilake init --deploy-dir <dir>` reads the server port from that deployment's `.env` and keeps an already saved `api_key` unless `--api-key` is given.
+Once the stack is healthy, `lumilake deploy up` prints the `lumilake init --deploy-dir <deploy-dir>` command and the server URL to export as `LUMILAKE_BASE_URL`. `lumilake init --deploy-dir <dir>` reads the server port from that deployment's `.env` and keeps an already saved `api_key` unless `--api-key` is given.
 
 ### Authentication
 
