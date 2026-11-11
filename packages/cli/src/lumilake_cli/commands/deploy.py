@@ -3,6 +3,7 @@
 import datetime as dt
 import difflib
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -285,8 +286,8 @@ def _point_cli_at_deployment(root: Path) -> None:
     """Log how to make CLI and SDK calls use this deployment."""
     logging.info(
         "To point the CLI at this deployment, run "
-        f"`lumilake init --deploy-dir {root.as_posix()}`; or for one shell, "
-        f"`export LUMILAKE_BASE_URL={deployment_url(root)}`."
+        f"`lumilake init --deploy-dir {shlex.quote(root.as_posix())}`; or for "
+        f"one shell, `export LUMILAKE_BASE_URL={deployment_url(root)}`."
     )
 
 

@@ -55,7 +55,6 @@ Constructing either client without `.from_config()` resolves the server URL in t
 | Surface | Sync | Async |
 |---|---|---|
 | `lumilake init --deploy-dir <dir>` (writes `~/.lumilake/config.toml`) | CLI only | CLI only |
-| `lumilake deploy up` | `client.deploy.up()` | same, await |
 | `lumilake info` / `health` | `client.health()` | same, await |
 | `lumilake deploy {init,up,down,clean,restart,reset,logs,update-flowmesh}` | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
 | `lumilake deploy {doctor,build,status}` | CLI only | CLI only |
