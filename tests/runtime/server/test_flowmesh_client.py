@@ -3,6 +3,7 @@ import asyncio
 import httpx
 import pytest
 
+from lumilake import envs
 from lumilake_server.runtime import flowmesh_client
 
 
@@ -84,3 +85,17 @@ async def test_inject_auth_header_concurrent_task_isolation() -> None:
     )
 
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_shared_client_bounds_the_connect_timeout() -> None:
+    """A dropped SYN then fails as ``ConnectTimeout`` within seconds instead of
+    waiting for the OS to give up, which is what the read retry repeats."""
+    client = flowmesh_client._shared_http_client()
+
+    assert client.timeout.connect == flowmesh_client._CONNECT_TIMEOUT_SECONDS
+    assert client.timeout.connect < envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+    assert client.timeout.read == envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+    assert client.timeout.pool == envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+
+    await flowmesh_client.close_current_loop_http_client()

@@ -19,6 +19,7 @@ _TRANSPORT_ERRORS: list[Callable[[], Exception]] = [
     lambda: httpx.ReadError("connection dropped"),
     lambda: httpx.RemoteProtocolError("server disconnected"),
     lambda: httpx.ConnectError("refused"),
+    lambda: httpx.ConnectTimeout("connect timed out"),
     lambda: httpx.WriteError("broken pipe"),
     lambda: httpx.CloseError("close failed"),
     lambda: FlowMeshConnectionError("Failed to connect to http://flowmesh"),
@@ -27,7 +28,6 @@ _TRANSPORT_ERRORS: list[Callable[[], Exception]] = [
 _NOT_RETRIED_ERRORS: list[Callable[[], Exception]] = [
     lambda: httpx.ReadTimeout("timed out"),
     lambda: httpx.WriteTimeout("timed out"),
-    lambda: httpx.ConnectTimeout("connect timed out"),
     lambda: httpx.PoolTimeout("no free connection"),
     lambda: httpx.UnsupportedProtocol("no scheme"),
     lambda: httpx.ProxyError("bad proxy"),
@@ -93,9 +93,8 @@ async def test_a_read_gives_up_after_the_same_attempts_as_a_gateway_error(
 async def test_a_read_does_not_retry_a_timeout_or_a_configuration_error(
     make_error: Callable[[], Exception], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every timeout would wait out the full HTTP timeout again on each attempt,
-    since the shared client gives connect and pool the same value as a read, and
-    a configuration error never clears."""
+    """A read, write or pool timeout would wait out the full HTTP timeout again on
+    each attempt, and a configuration error never clears."""
     delays = _record_sleep(monkeypatch)
     error = make_error()
     call = _FlakyCall([error])
