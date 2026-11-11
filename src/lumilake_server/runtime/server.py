@@ -939,19 +939,22 @@ class LumilakeServer:
                 await asyncio.sleep(self.config.poll_interval_seconds)
 
     async def _snapshot_free_capacity(self) -> FreeCapacity:
-        """Snapshot workers with dispatch depth left, split by GPU class."""
+        """Snapshot workers with dispatch depth left, split by GPU class.
+
+        Workers carrying no batch come before workers that already carry one,
+        so a batch lands on a free worker whenever one is eligible.
+        """
         idle_workers = await self.runtime_manager.get_workers()
         limit = self.config.dispatch_queue_depth
         async with self._worker_lock:
+            reserved = dict(self._worker_reservations)
             available = [
-                worker
-                for worker in idle_workers
-                if self._worker_reservations.get(worker, 0) < limit
+                worker for worker in idle_workers if reserved.get(worker, 0) < limit
             ]
             committed = [
                 worker
-                for worker, reserved in self._worker_reservations.items()
-                if 0 < reserved < limit and worker not in available
+                for worker, count in reserved.items()
+                if 0 < count < limit and worker not in available
             ]
         if committed:
             # A worker committed to an in-flight batch stays offerable while it
@@ -960,6 +963,7 @@ class LumilakeServer:
             # whole batch to drain.
             registered = set(await self.runtime_manager.get_all_workers())
             available.extend(worker for worker in committed if worker in registered)
+        available.sort(key=lambda worker: reserved.get(worker, 0))
         cpu_worker_ids: list[str] = []
         gpu_worker_ids: list[str] = []
         profiles: dict[str, dict[str, Any]] = {}

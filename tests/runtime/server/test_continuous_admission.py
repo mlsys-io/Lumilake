@@ -89,6 +89,15 @@ def _job_units(request_id: str, count: int) -> list[Any]:
     ]
 
 
+def _cpu_batch() -> Any:
+    return SimpleNamespace(
+        config=SimpleNamespace(hardware_requirements=None),
+        workflows=[SimpleNamespace(request_id="req", id="wf")],
+        runtime_graphs={},
+        clustering_seconds=0.0,
+    )
+
+
 class _BlockingBatches:
     """Records admitted batches and blocks each until the test releases it."""
 
@@ -190,12 +199,7 @@ async def test_capacity_limits_still_hold(server_factory) -> None:
     profiles = {"cpu-0": _CPU_PROFILE}
     runtime_manager = _PoolRuntimeManager(["cpu-0"], profiles)
     server.runtime_manager = cast(Any, runtime_manager)
-    batch = SimpleNamespace(
-        config=SimpleNamespace(hardware_requirements=None),
-        workflows=[SimpleNamespace(request_id="req", id="wf")],
-        runtime_graphs={},
-        clustering_seconds=0.0,
-    )
+    batch = _cpu_batch()
 
     server.config.dispatch_queue_depth = 2
     runtime_manager.idle = []
@@ -218,6 +222,27 @@ async def test_capacity_limits_still_hold(server_factory) -> None:
     server._worker_reservations.clear()
     runtime_manager.idle = ["cpu-0"]
     assert (await server._snapshot_free_capacity()).cpu_worker_ids == ("cpu-0",)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_lands_on_the_free_worker_not_the_committed_one(
+    server_factory,
+) -> None:
+    """A worker already carrying a batch is offered behind a free worker, so a
+    new batch goes to the free one however FlowMesh orders its listing."""
+    server = server_factory()
+    server.config.cpu_worker_group_size = 1
+    server.config.gpu_worker_group_size = 0
+    server.config.dispatch_queue_depth = 2
+    profiles = {"w1": _CPU_PROFILE, "w2": _CPU_PROFILE}
+    runtime_manager = _PoolRuntimeManager(["w1", "w2"], profiles)
+    server.runtime_manager = cast(Any, runtime_manager)
+    server._worker_reservations["w1"] = 1
+
+    free = await server._snapshot_free_capacity()
+    assert free.cpu_worker_ids == ("w2", "w1")
+    assert await server._try_claim_workers(_cpu_batch(), free) == ["w2"]
+    assert server._worker_reservations == {"w1": 1, "w2": 1}
 
 
 @pytest.mark.asyncio
