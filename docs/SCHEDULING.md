@@ -116,6 +116,16 @@ it returns instantly and spins. Worker release is centralised in
 **Claiming is a single non-blocking attempt.** `_try_claim_workers` takes the
 capacity snapshot and either claims a group or returns nothing. It never polls.
 
+**A claimed worker stays offerable while it has dispatch depth left.** The
+snapshot counts a worker as free while its in-flight batch count is below
+`LUMILAKE_DISPATCH_QUEUE_DEPTH` (default `1`), so with a higher value the next
+batch is planned onto the worker while the current one runs. FlowMesh runs the
+queued task after the running one, and the CPU work of the next batch overlaps
+the GPU work of the current batch instead of waiting for the whole batch to
+drain. A worker held by another batch keeps being offered even while FlowMesh
+reports it busy, as long as FlowMesh still registers it; work planned onto it
+queues rather than failing.
+
 **Capacity denial is not policy denial.** `abort_reservation` takes an
 `AbortReason`. Only a *policy* denial advances an item's miss counter. If
 capacity pressure inflated that counter, sustained pressure would trip starvation
@@ -186,6 +196,7 @@ have served. Idle time with only GPU work queued and no GPU free is not a bubble
 | Miss-count inflation under capacity pressure | addressed (§3) |
 | One GPU item suppressing CPU siblings | addressed (§4) |
 | Accumulation window delaying dispatch while workers idle | addressed — skipped when free capacity already exceeds the queue |
+| Workers re-offered only after their whole batch drains | addressed — a worker stays offerable while under `LUMILAKE_DISPATCH_QUEUE_DEPTH` (§3) |
 | **Whole-worker exclusivity** | **open** |
 | **Static worker-group sizes** | **open** |
 
