@@ -94,7 +94,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 |-----|---------|
 | `LUMILAKE_CPU_WORKER_GROUP_SIZE` | Number of CPU workers FlowMesh provisions. |
 | `LUMILAKE_GPU_WORKER_GROUP_SIZE` | Number of GPU workers FlowMesh provisions. At least one of CPU / GPU size must be `> 0`. |
-| `LUMILAKE_GPU_DEVICES` | GPU device ids Lumilake assigns to FlowMesh workers (one per device). Specific index (`0`), comma-separated subset (`0,2`), or `all` to cover every `nvidia-smi` device. Leave blank to skip GPU worker creation. |
+| `LUMILAKE_GPU_DEVICES` | GPU device ids Lumilake assigns to FlowMesh workers (one per device). Specific index (`0`), comma-separated subset (`0,2`), or `all` to cover every `nvidia-smi` device. Blank or unset (the default) creates no GPU workers. |
 
 ## Plugins
 

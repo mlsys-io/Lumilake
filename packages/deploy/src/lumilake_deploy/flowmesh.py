@@ -34,6 +34,10 @@ def _info(msg: str) -> None:
     logger.info(msg)
 
 
+def _warn(msg: str) -> None:
+    logger.warning(msg)
+
+
 def _error(msg: str) -> None:
     logger.error(msg)
 
@@ -329,13 +333,9 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
             for label, resp in created:
                 _info(f"Created {label}: {resp['alias']}")
 
-        device_ids = _resolve_gpu_device_ids(gpu_devices)
+        device_ids, skip_message = _resolve_gpu_device_ids(gpu_devices)
         if not device_ids:
-            _info(
-                "No GPUs detected; skipping GPU worker creation. "
-                "Set LUMILAKE_GPU_DEVICES to a comma-separated list "
-                "of indices to force-create."
-            )
+            _warn(skip_message)
         else:
             _pull_worker_image(env_file, "gpu")
             targets = ",".join(device_ids)
@@ -351,11 +351,28 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
                 _info(f"Created {label}: {resp['alias']}")
 
 
-def _resolve_gpu_device_ids(gpu_devices: str) -> list[str]:
-    """Resolve a LUMILAKE_GPU_DEVICES-style string into explicit device ids."""
+def _resolve_gpu_device_ids(gpu_devices: str) -> tuple[list[str], str]:
+    """Resolve a LUMILAKE_GPU_DEVICES-style string into explicit device ids.
+
+    A blank value selects no device, a list selects exactly those indices, and
+    ``all`` selects every GPU ``nvidia-smi`` reports. The second item explains an
+    empty selection for the deploy log and is blank when devices were selected.
+    """
     normalized = gpu_devices.strip()
-    if normalized and normalized.lower() != "all":
-        return [tok.strip() for tok in normalized.split(",") if tok.strip()]
+    if not normalized:
+        return [], (
+            "LUMILAKE_GPU_DEVICES is blank; creating no GPU workers. "
+            "Set it to a comma-separated list of indices, or to `all`, "
+            "to create GPU workers."
+        )
+    if normalized.lower() != "all":
+        selected = [tok.strip() for tok in normalized.split(",") if tok.strip()]
+        if not selected:
+            return [], (
+                f"LUMILAKE_GPU_DEVICES={normalized} names no device; "
+                "creating no GPU workers."
+            )
+        return selected, ""
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
@@ -364,7 +381,23 @@ def _resolve_gpu_device_ids(gpu_devices: str) -> list[str]:
             text=True,
         )
     except FileNotFoundError:
-        return []
+        return [], (
+            "LUMILAKE_GPU_DEVICES=all but nvidia-smi was not found; "
+            "creating no GPU workers."
+        )
     if result.returncode != 0:
-        return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        stderr = result.stderr.strip()
+        detail = f"nvidia-smi exited with status {result.returncode}"
+        if stderr:
+            detail = f"{detail}: {stderr}"
+        return [], (
+            f"LUMILAKE_GPU_DEVICES=all but the GPU probe failed ({detail}); "
+            "creating no GPU workers."
+        )
+    detected = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not detected:
+        return [], (
+            "LUMILAKE_GPU_DEVICES=all but nvidia-smi reported no GPU; "
+            "creating no GPU workers."
+        )
+    return detected, ""
