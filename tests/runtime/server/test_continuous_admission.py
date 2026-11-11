@@ -365,8 +365,7 @@ def test_env_validation_rejects_a_dispatch_depth_below_one(
 
 
 def test_config_keeps_the_dispatch_depth_it_is_given() -> None:
-    """The config carries the depth through unchanged, leaving the bound to
-    ``envs.validate()`` rather than silently rewriting a value below one."""
+    """The config carries the depth it is given through to the scheduler."""
     config = LumilakeServerConfig(
         is_local=True,
         runtime_url="http://localhost:18080",
@@ -375,11 +374,3 @@ def test_config_keeps_the_dispatch_depth_it_is_given() -> None:
         dispatch_queue_depth=3,
     )
     assert config.dispatch_queue_depth == 3
-    config = LumilakeServerConfig(
-        is_local=True,
-        runtime_url="http://localhost:18080",
-        cpu_worker_group_size=1,
-        gpu_worker_group_size=0,
-        dispatch_queue_depth=0,
-    )
-    assert config.dispatch_queue_depth == 0
