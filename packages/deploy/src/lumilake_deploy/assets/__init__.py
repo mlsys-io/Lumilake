@@ -20,7 +20,7 @@ def asset_path(*parts: str) -> Path:
         resource /= part
     try:
         with resources.as_file(resource) as path:
-            return Path(path)
+            return path
     except FileNotFoundError as exc:
         raise AssetNotFoundError(str(resource)) from exc
 

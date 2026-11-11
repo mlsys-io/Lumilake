@@ -148,7 +148,7 @@ def _slug_env(env_file: Path) -> dict[str, str]:
 
 def stack_name_for(env_file: Path) -> str:
     """Read ``LUMILAKE_STACK_NAME`` from the ``.env`` beside ``env_file``."""
-    return read_env_value(Path(env_file).parent / ENV_FILE_NAME, "LUMILAKE_STACK_NAME")
+    return read_env_value(env_file.parent / ENV_FILE_NAME, "LUMILAKE_STACK_NAME")
 
 
 def stack_slug(env_file: Path, *, stack_name: str | None = None) -> str:
