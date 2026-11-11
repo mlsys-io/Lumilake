@@ -1,6 +1,7 @@
 """CLI init / deinit / config + HttpClient auth header."""
 
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,19 @@ from typer.testing import CliRunner
 from lumilake.config import LumilakeConfig
 from lumilake_cli.commands.base import _redact_api_key, app
 from lumilake_cli.core import http
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+BOX_RE = re.compile(r"[│─╭╮╰╯]")
+
+
+def _plain_output(output: str) -> str:
+    """Rich's colour codes and error box split an option name when it renders.
+
+    The bad parameter is reported inside a width-wrapped panel, so strip the
+    colour codes, the box drawing and all whitespace before asserting on it.
+    """
+    plain = BOX_RE.sub("", ANSI_RE.sub("", output))
+    return "".join(plain.split())
 
 
 @pytest.fixture(autouse=True)
@@ -251,7 +265,7 @@ def test_init_deploy_dir_requires_an_env_file(
     )
 
     assert result.exit_code == 2, result.output
-    assert "--deploy-dir" in result.output
+    assert "--deploy-dir" in _plain_output(result.output)
     assert not config_path.exists()
 
 
@@ -276,6 +290,10 @@ def test_init_rejects_a_url_with_deploy_dir(runner: CliRunner, tmp_path: Path) -
     )
 
     assert result.exit_code == 2, result.output
+    plain = _plain_output(result.output)
+    assert "--deploy-dir" in plain
+    assert "Passeither" in plain
+    assert "notboth." in plain
     assert not config_path.exists()
 
 
