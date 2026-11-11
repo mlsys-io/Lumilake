@@ -1,11 +1,14 @@
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from lumilake_server.common import ApiConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import InputOp, LambdaOp, LLMChatOp, MessageOp, OutputOp
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
 def _ensure_envs() -> None:
@@ -495,6 +498,49 @@ def test_api_chat_api_template_names_a_model_on_every_llm_op() -> None:
         api = op.config.api
         assert api is not None
         assert api.timeout_sec == 300.0
+
+
+def test_api_concurrency_yaml_round_trip() -> None:
+    yaml_text = textwrap.dedent("""
+        name: api_concurrency
+        inputs:
+          Query: ["hello"]
+        ops:
+          - id: Ask
+            op: LLMChatOp
+            inputs: [Query]
+            messages:
+              - role: user
+                content: Query
+            config:
+              model: org/model
+              api:
+                url: https://api.example.com/v1/chat/completions
+                authorization: Bearer caller-key
+                concurrency: 8
+        outputs:
+          - name: answer
+            ref: Ask
+        """)
+    spec = parse_yaml_payload(yaml_text)["api_concurrency"]
+    graph = Graph.from_json(spec["graph"])
+    (llm,) = list(graph.iter_ops(LLMChatOp))
+    assert llm.config.api is not None
+    assert llm.config.api.concurrency == 8
+    compiled = graph.compile(**spec["inputs"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[llm.id]
+    assert node.to_flowmesh_node()["spec"]["api"]["concurrency"] == 8
+
+
+@pytest.mark.parametrize("concurrency", [0, -1, 9, "16", 1.5])
+def test_api_concurrency_rejects_invalid_values(concurrency: Any) -> None:
+    with pytest.raises(ValueError):
+        ApiConfig(concurrency=concurrency)
+
+
+def test_api_concurrency_accepts_the_cap() -> None:
+    assert ApiConfig(concurrency=8).concurrency == 8
 
 
 def test_lambda_op_mode_round_trip() -> None:
