@@ -125,6 +125,13 @@ LUMILAKE_CPU_WORKER_GROUP_SIZE: int = int(
 LUMILAKE_GPU_WORKER_GROUP_SIZE: int = int(
     os.environ.get("LUMILAKE_GPU_WORKER_GROUP_SIZE") or "0"
 )
+# In-flight batches a worker may carry before the scheduler stops offering it.
+# ``1`` admits a worker again only once the batch it was claimed for finishes;
+# higher values queue the next batch on the worker, so its CPU work overlaps the
+# current batch's GPU work.
+LUMILAKE_DISPATCH_QUEUE_DEPTH: int = int(
+    os.environ.get("LUMILAKE_DISPATCH_QUEUE_DEPTH") or "1"
+)
 # Whether dispatch filters selection by free capacity. Default on: an unrunnable
 # batch is skipped in favour of runnable work. With ``0`` selection is
 # capacity-blind, so a batch that no worker can run stalls dispatch
@@ -452,6 +459,8 @@ def validate() -> None:
         raise ValueError("LUMILAKE_CPU_WORKER_GROUP_SIZE must be >= 0")
     if LUMILAKE_GPU_WORKER_GROUP_SIZE < 0:
         raise ValueError("LUMILAKE_GPU_WORKER_GROUP_SIZE must be >= 0")
+    if LUMILAKE_DISPATCH_QUEUE_DEPTH < 1:
+        raise ValueError("LUMILAKE_DISPATCH_QUEUE_DEPTH must be >= 1")
     if LUMILAKE_CPU_WORKER_GROUP_SIZE == 0 and LUMILAKE_GPU_WORKER_GROUP_SIZE == 0:
         raise ValueError(
             "At least one of LUMILAKE_CPU_WORKER_GROUP_SIZE or "

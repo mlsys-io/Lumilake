@@ -96,7 +96,7 @@ async def list_workers(
         ) from exc
     if readable_worker_ids is not None:
         workers = [worker for worker in workers if worker.id in readable_worker_ids]
-    busy_workers = LumilakeServer.get_instance()._busy_workers
+    busy_workers = LumilakeServer.get_instance().busy_workers
     return [WorkerStatus(**w.model_dump(), busy=w.id in busy_workers) for w in workers]
 
 
@@ -129,5 +129,5 @@ async def get_worker(
         raise HTTPException(
             status_code=502, detail="upstream worker retrieve failed"
         ) from exc
-    busy_workers = LumilakeServer.get_instance()._busy_workers
+    busy_workers = LumilakeServer.get_instance().busy_workers
     return WorkerStatus(**worker.model_dump(), busy=worker.id in busy_workers)

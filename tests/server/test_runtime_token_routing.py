@@ -127,7 +127,7 @@ def _make_worker(worker_id: str) -> WorkerInfo:
 def busy_server(monkeypatch: pytest.MonkeyPatch) -> set[str]:
     """Patch LumilakeServer.get_instance to a stub tracking busy workers."""
     busy: set[str] = set()
-    stub = SimpleNamespace(_busy_workers=busy)
+    stub = SimpleNamespace(busy_workers=busy)
     monkeypatch.setattr(LumilakeServer, "get_instance", lambda: stub)
     return busy
 

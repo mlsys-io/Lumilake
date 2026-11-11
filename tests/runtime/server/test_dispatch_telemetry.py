@@ -17,10 +17,11 @@ from lumilake_server.runtime.server import LumilakeServer
 
 def _patch_capacity(server: Any, cpu_ids: list[str], gpu_ids: list[str]) -> None:
     async def _snapshot() -> FreeCapacity:
-        busy = server._busy_workers
+        reservations = server._worker_reservations
+        limit = server.config.dispatch_queue_depth
         return FreeCapacity(
-            cpu_worker_ids=tuple(w for w in cpu_ids if w not in busy),
-            gpu_worker_ids=tuple(w for w in gpu_ids if w not in busy),
+            cpu_worker_ids=tuple(w for w in cpu_ids if reservations.get(w, 0) < limit),
+            gpu_worker_ids=tuple(w for w in gpu_ids if reservations.get(w, 0) < limit),
         )
 
     async def _total_snapshot() -> FreeCapacity:
