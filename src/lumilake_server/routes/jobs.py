@@ -3643,37 +3643,39 @@ async def get_job_progress(
         record.status not in TERMINAL_JOB_STATUSES
         or not record.terminal_usage_finalized
     ):
-        fm = flowmesh_for(request)
         # ``trace_ids`` and ``job_task_ids`` are persisted only once the job
-        # finishes.
+        # finishes, so a job failed by startup recovery has none to read.
         task_ids_by_workflow = record.job_task_ids or server.task_ids_for_request(
             job_id
         )
+        workflow_ids = list(
+            dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])
+        )
         terminal = record.status in TERMINAL_JOB_STATUSES
-        try:
-            computed = await _compute_job_usage(
-                fm,
-                list(
-                    dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])
-                ),
-                hook_logger,
-                task_ids_by_workflow=task_ids_by_workflow or None,
-            )
-        except HTTPException as exc:
-            if not terminal or exc.status_code != status.HTTP_502_BAD_GATEWAY:
-                raise
-            hook_logger.warning(
-                "Failed to read usage of a finished job; serving the stored usage",
-                exc_info=True,
-            )
-            computed = None
-            finalize = False
-        else:
-            finalize = terminal
+        recompute = bool(workflow_ids) or not terminal
+        finalize = terminal and recompute
+        if recompute:
+            fm = flowmesh_for(request)
+            try:
+                computed = await _compute_job_usage(
+                    fm,
+                    workflow_ids,
+                    hook_logger,
+                    task_ids_by_workflow=task_ids_by_workflow or None,
+                )
+            except HTTPException as exc:
+                if not terminal or exc.status_code != status.HTTP_502_BAD_GATEWAY:
+                    raise
+                hook_logger.warning(
+                    "Failed to read usage of a finished job; serving the stored usage",
+                    exc_info=True,
+                )
+                computed = None
+                finalize = False
         needs_save = False
         async with jobs_lock:
             if not record.terminal_usage_finalized:
-                if not terminal or finalize:
+                if recompute and (not terminal or finalize):
                     if record.progress.usage != computed:
                         record.progress.usage = computed
                         needs_save = True

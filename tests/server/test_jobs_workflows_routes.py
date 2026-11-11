@@ -1461,6 +1461,7 @@ async def test_persist_terminal_usage_null_on_fetch_error(
         record, fake_fm, logging.getLogger("test")
     )
     assert record.progress.usage is None
+    assert record.terminal_usage_finalized is True
 
 
 @pytest.mark.anyio
@@ -2474,12 +2475,12 @@ def _final_usage_payload() -> dict[str, Any]:
 
 
 @pytest.mark.anyio
-async def test_progress_read_after_status_change_does_not_finalize_usage(
+async def test_progress_read_after_status_change_computes_usage(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``_run_job`` marks a job terminal before it computes usage, so a progress
-    read in that window must report the computed usage without marking it
-    final: the terminal finalizer that runs afterwards still owns the value."""
+    read in that window must report the usage it computed rather than the sum
+    stored while the job was running."""
     record = JobRecord(
         job_id="j-gap",
         status="running",
@@ -2571,11 +2572,12 @@ async def test_progress_read_after_status_change_does_not_finalize_usage(
 
 
 @pytest.mark.anyio
-async def test_progress_of_a_recovered_job_computes_and_finalizes_usage(
+async def test_progress_of_a_recovered_job_keeps_stored_usage(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Startup recovery never computes usage, so the record it writes stays
-    unfinalized and the first progress read afterwards computes it once."""
+    """A job failed by startup recovery has no workflow ids to read, so every
+    progress read serves the usage its running-time polls stored, without a
+    FlowMesh call and without trusting that value as final."""
     record = JobRecord(
         job_id="j-recovered",
         status="running",
@@ -2586,7 +2588,15 @@ async def test_progress_of_a_recovered_job_computes_and_finalizes_usage(
         org_id="demo",
         user_id="alice@example.com",
     )
-    record.trace_ids = ["wf-1"]
+    record.progress.usage = job_routes_module.WorkflowUsage(
+        prompt_tokens=70,
+        completion_tokens=30,
+        reasoning_tokens=0,
+        calls=2,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=1.5,
+    )
     job_routes._job_storage.save(record)
 
     recovered = await job_routes.recover_in_flight_jobs(reason="restart")
@@ -2595,22 +2605,13 @@ async def test_progress_of_a_recovered_job_computes_and_finalizes_usage(
     assert stored is not None
     assert stored["status"] == "failed"
     assert stored["terminal_usage_finalized"] is False
+    assert stored["progress"]["usage"]["prompt_tokens"] == 70
     job_routes.jobs.clear()
 
-    fake_workflows = _FakeWorkflows(
-        workflows={"wf-1": _FakeWorkflow("wf-1", "COMPLETED", ["tsk-00000001"])},
-        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
-    )
-    fake_fm = _FakeFlowMesh(
-        fake_workflows,
-        task_results={
-            "tsk-00000001": _api_result(
-                "tsk-00000001",
-                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
-            ),
-        },
-    )
-    monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
+    def _no_fm(_request: Any) -> Any:
+        raise AssertionError("flowmesh_for must not be called without workflow ids")
+
+    monkeypatch.setattr(job_routes_module, "flowmesh_for", _no_fm)
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
@@ -2623,18 +2624,31 @@ async def test_progress_of_a_recovered_job_computes_and_finalizes_usage(
             "/jobs/j-recovered/progress", headers={"Authorization": "Bearer token"}
         )
         assert resp.status_code == 200
-        assert resp.json()["data"]["progress"]["usage"] == _final_usage_payload()
+        assert resp.json()["data"]["progress"]["usage"] == {
+            "prompt_tokens": 70,
+            "completion_tokens": 30,
+            "reasoning_tokens": 0,
+            "calls": 2,
+            "retries": 0,
+            "truncated_calls": 0,
+            "wall_sec": 1.5,
+        }
         await client.get(
             "/jobs/j-recovered/progress", headers={"Authorization": "Bearer token"}
         )
 
-    assert fake_workflows.retrieve_calls == [
-        "wf-1"
-    ], "a finalized recovered job must not be re-read on every progress poll"
     stored = job_routes._job_storage.load("j-recovered")
     assert stored is not None
-    assert stored["terminal_usage_finalized"] is True
-    assert stored["progress"]["usage"] == _final_usage_payload()
+    assert stored["terminal_usage_finalized"] is False
+    assert stored["progress"]["usage"] == {
+        "prompt_tokens": 70,
+        "completion_tokens": 30,
+        "reasoning_tokens": 0,
+        "calls": 2,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.5,
+    }
 
 
 @pytest.fixture
