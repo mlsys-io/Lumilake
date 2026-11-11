@@ -320,7 +320,7 @@ class LumilakeServerConfig:
         """Bounded wait for capacity release / error-retry backoff."""
         self.capacity_aware_selection = capacity_aware_selection
         """Whether selection filters by free capacity."""
-        self.dispatch_queue_depth = max(1, dispatch_queue_depth)
+        self.dispatch_queue_depth = dispatch_queue_depth
         """In-flight batches a worker may carry before it stops being offered."""
 
         if is_local:
