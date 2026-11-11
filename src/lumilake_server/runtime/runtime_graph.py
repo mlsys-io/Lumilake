@@ -1469,8 +1469,8 @@ class RuntimeGraphBuilder:
                                 " produces multiple rows but not one output item"
                                 " per row; only a plain local LLMChatOp or an"
                                 " LLMCompletionOp binds row-wise to a retrieval"
-                                " param, so this would"
-                                " silently drop every row but the first."
+                                " param, so this would silently drop every row"
+                                " but the first."
                             )
                         param_row_counts[str(param.get("label"))] = row_count
                 if isinstance(upstream, LambdaOp):
