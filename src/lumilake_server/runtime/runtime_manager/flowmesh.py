@@ -209,8 +209,6 @@ _FLOWMESH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 _DROPPED_CONNECTION_ERRORS = (
     httpx.NetworkError,
     httpx.RemoteProtocolError,
-    httpx.ConnectTimeout,
-    httpx.PoolTimeout,
     FlowMeshConnectionError,
 )
 _SUBMIT_LOOKUP_SKEW = timedelta(minutes=2)
@@ -223,8 +221,9 @@ async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) 
 
     Only idempotent reads go through here: after a dropped connection the request
     may or may not have reached FlowMesh, which is safe to repeat for a read and
-    not for a submit. A read or write timeout is not retried, since each attempt
-    would wait out the full HTTP timeout again.
+    not for a submit. A timeout is not retried. The shared client gives connect
+    and pool the same timeout as a read, so retrying any of them would wait out
+    the full timeout again on every attempt.
     """
     for delay in _FLOWMESH_RETRY_DELAYS_S:
         try:

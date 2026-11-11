@@ -21,14 +21,14 @@ _TRANSPORT_ERRORS: list[Callable[[], Exception]] = [
     lambda: httpx.ConnectError("refused"),
     lambda: httpx.WriteError("broken pipe"),
     lambda: httpx.CloseError("close failed"),
-    lambda: httpx.ConnectTimeout("connect timed out"),
-    lambda: httpx.PoolTimeout("no free connection"),
     lambda: FlowMeshConnectionError("Failed to connect to http://flowmesh"),
 ]
 
 _NOT_RETRIED_ERRORS: list[Callable[[], Exception]] = [
     lambda: httpx.ReadTimeout("timed out"),
     lambda: httpx.WriteTimeout("timed out"),
+    lambda: httpx.ConnectTimeout("connect timed out"),
+    lambda: httpx.PoolTimeout("no free connection"),
     lambda: httpx.UnsupportedProtocol("no scheme"),
     lambda: httpx.ProxyError("bad proxy"),
 ]
@@ -93,8 +93,9 @@ async def test_a_read_gives_up_after_the_same_attempts_as_a_gateway_error(
 async def test_a_read_does_not_retry_a_timeout_or_a_configuration_error(
     make_error: Callable[[], Exception], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A read timeout would wait out the full HTTP timeout again on every attempt,
-    and a configuration error never clears."""
+    """Every timeout would wait out the full HTTP timeout again on each attempt,
+    since the shared client gives connect and pool the same value as a read, and
+    a configuration error never clears."""
     delays = _record_sleep(monkeypatch)
     error = make_error()
     call = _FlakyCall([error])
@@ -124,8 +125,8 @@ async def test_a_read_does_not_retry_an_unrelated_error(
 async def test_a_result_fetch_survives_a_dropped_connection(
     flowmesh_manager: FlowmeshRuntimeManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The archive fetch of a task's response: a ReadError on the first try no
-    longer fails the batch."""
+    """The archive fetch of a task's response: a ReadError on the first try is
+    retried and the batch carries on."""
     delays = _record_sleep(monkeypatch)
     retrieve_call = _FlakyCall([httpx.ReadError("dropped")], value={"items": []})
 
