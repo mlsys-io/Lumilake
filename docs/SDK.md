@@ -58,7 +58,8 @@ api_key  = "lm_pat_..."  # optional; falls back to LUMILAKE_API_KEY env or empty
 ### What writes it
 
 `lumilake init --deploy-dir <dir>` writes the file with the local stack
-URL read from that deployment's `.env`.
+URL read from that deployment's `.env`. Remote / hosted users should pass
+`base_url=` explicitly or set `LUMILAKE_BASE_URL`.
 
 ### How clients resolve
 
