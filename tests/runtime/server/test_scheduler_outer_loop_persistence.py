@@ -17,10 +17,11 @@ def _patch_capacity(server: Any, cpu_ids: list[str], gpu_ids: list[str]) -> None
     """
 
     async def _snapshot() -> FreeCapacity:
-        busy = server._busy_workers
+        reservations = server._worker_reservations
+        limit = server.config.dispatch_queue_depth
         return FreeCapacity(
-            cpu_worker_ids=tuple(w for w in cpu_ids if w not in busy),
-            gpu_worker_ids=tuple(w for w in gpu_ids if w not in busy),
+            cpu_worker_ids=tuple(w for w in cpu_ids if reservations.get(w, 0) < limit),
+            gpu_worker_ids=tuple(w for w in gpu_ids if reservations.get(w, 0) < limit),
         )
 
     async def _total_snapshot() -> FreeCapacity:
@@ -407,7 +408,7 @@ async def test_scheduler_aborts_reservation_when_workers_unavailable(
     async def _total_snapshot() -> FreeCapacity:
         return FreeCapacity(cpu_worker_ids=("cpu-0",), gpu_worker_ids=())
 
-    server._busy_workers.add("cpu-0")
+    server._worker_reservations["cpu-0"] = 1
     server._snapshot_free_capacity = _stale_snapshot  # type: ignore[method-assign]
     server._snapshot_total_capacity = _total_snapshot  # type: ignore[method-assign]
     server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
@@ -1017,7 +1018,7 @@ async def test_capacity_aware_selection_flag_controls_capacity_passed(
 
     # The noop run never releases the claimed worker; reset busy state so the
     # second loop sees idle capacity again.
-    server._busy_workers.clear()
+    server._worker_reservations.clear()
 
     off_manager = _CapacityRecordingJobManager()
     server.config.capacity_aware_selection = False
@@ -1030,12 +1031,12 @@ async def test_capacity_aware_selection_flag_controls_capacity_passed(
 async def test_release_workers_wakes_capacity_waiter(server_factory) -> None:
     """The production release path frees workers and wakes a capacity waiter."""
     server = server_factory()
-    server._busy_workers.add("cpu-0")
+    server._worker_reservations["cpu-0"] = 1
 
     waiter = asyncio.create_task(server._capacity_changed.wait())
     await server._release_workers(["cpu-0"])
 
-    assert "cpu-0" not in server._busy_workers
+    assert server.busy_workers == set()
     await asyncio.wait_for(waiter, timeout=5.0)
 
 
@@ -1064,7 +1065,7 @@ async def test_try_claim_workers_rejects_undersized_worker(server_factory) -> No
     )
     # 4 cores < required 8, so the claim must fail.
     assert await server._try_claim_workers(batch, free) is None
-    assert server._busy_workers == set()
+    assert server.busy_workers == set()
 
 
 def _python_batch() -> Any:
@@ -1105,7 +1106,7 @@ async def test_try_claim_workers_waits_for_a_busy_python_worker(
     )
 
     assert await server._try_claim_workers(_python_batch(), free) is None
-    assert server._busy_workers == set()
+    assert server.busy_workers == set()
 
 
 @pytest.mark.asyncio
@@ -1201,5 +1202,5 @@ async def test_scheduler_releases_workers_when_commit_raises(server_factory) -> 
 
     # The commit raised, so the batch was never dispatched; the claimed worker
     # must have been released and the reservation aborted.
-    assert server._busy_workers == set()
+    assert server.busy_workers == set()
     assert job_manager.aborted_count == 1
