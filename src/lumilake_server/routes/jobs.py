@@ -1213,7 +1213,7 @@ async def recover_in_flight_jobs(
         if loaded is None:
             continue
         try:
-            record = JobRecord(**loaded)
+            record = _record_from_payload(loaded)
         except (ValueError, TypeError):
             logger.exception(
                 "Failed to reconstruct job %s during startup recovery",
@@ -1300,6 +1300,16 @@ async def recover_in_flight_jobs_until_done(
     return False
 
 
+def _record_from_payload(loaded: dict[str, Any]) -> JobRecord:
+    """Rebuild a record from storage, treating a record already terminal as
+    usage-finalized since its stored usage is the whole story."""
+    payload = dict(loaded)
+    payload.setdefault(
+        "terminal_usage_finalized", payload["status"] in TERMINAL_JOB_STATUSES
+    )
+    return JobRecord(**payload)
+
+
 async def _load_job_record(job_id: str) -> JobRecord | None:
     record: JobRecord | None
     async with jobs_lock:
@@ -1311,7 +1321,7 @@ async def _load_job_record(job_id: str) -> JobRecord | None:
             loaded = None
         if loaded:
             try:
-                record = JobRecord(**loaded)
+                record = _record_from_payload(loaded)
             except ValueError:
                 record = None
             async with jobs_lock:
@@ -3639,17 +3649,37 @@ async def get_job_progress(
         task_ids_by_workflow = record.job_task_ids or server.task_ids_for_request(
             job_id
         )
-        computed = await _compute_job_usage(
-            fm,
-            list(dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])),
-            hook_logger,
-            task_ids_by_workflow=task_ids_by_workflow or None,
-        )
+        terminal = record.status in TERMINAL_JOB_STATUSES
+        try:
+            computed = await _compute_job_usage(
+                fm,
+                list(
+                    dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])
+                ),
+                hook_logger,
+                task_ids_by_workflow=task_ids_by_workflow or None,
+            )
+        except HTTPException as exc:
+            if not terminal or exc.status_code != status.HTTP_502_BAD_GATEWAY:
+                raise
+            hook_logger.warning(
+                "Failed to read usage of a finished job; serving the stored usage",
+                exc_info=True,
+            )
+            computed = None
+            finalize = False
+        else:
+            finalize = terminal
         needs_save = False
         async with jobs_lock:
-            if record.progress.usage != computed:
-                record.progress.usage = computed
-                needs_save = True
+            if not record.terminal_usage_finalized:
+                if not terminal or finalize:
+                    if record.progress.usage != computed:
+                        record.progress.usage = computed
+                        needs_save = True
+                if finalize:
+                    record.terminal_usage_finalized = True
+                    needs_save = True
         if needs_save:
             await asyncio.to_thread(_job_storage.save, record)
 
