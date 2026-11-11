@@ -12,7 +12,12 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
-from flowmesh.exceptions import APIError, FlowMeshConnectionError, NotFoundError
+from flowmesh.exceptions import (
+    APIError,
+    AuthenticationError,
+    FlowMeshConnectionError,
+    NotFoundError,
+)
 from flowmesh.models.result import ResultEnvelope
 from lumid_hooks import PrincipalContext, ResourceRef
 
@@ -138,17 +143,21 @@ class _FakeWorkflows:
         logs_result: _FakeLogQueryResponse,
         stream_entries: list[_FakeLogEntry] | None = None,
         stream_error: Exception | None = None,
+        retrieve_errors: dict[str, Exception] | None = None,
     ) -> None:
         self._workflows = workflows
         self._logs_result = logs_result
         self._stream_entries = stream_entries or []
         self._stream_error = stream_error
+        self._retrieve_errors = retrieve_errors or {}
         self.retrieve_calls: list[str] = []
         self.log_calls: list[tuple[str, int, str | None, str | None]] = []
         self.stream_calls: list[tuple[str, str | None]] = []
 
     async def retrieve(self, workflow_id: str) -> _FakeWorkflow:
         self.retrieve_calls.append(workflow_id)
+        if workflow_id in self._retrieve_errors:
+            raise self._retrieve_errors[workflow_id]
         if workflow_id in self._workflows:
             return self._workflows[workflow_id]
         raise NotFoundError(
@@ -1494,6 +1503,38 @@ async def test_persist_terminal_usage_null_on_not_found(
 
 
 @pytest.mark.anyio
+async def test_persist_terminal_usage_keeps_a_finalized_value_on_fetch_error(
+    job_routes: Any,
+) -> None:
+    """A progress read may have finalized real usage before the finalizer's own
+    read fails; the finalizer then keeps it rather than storing null."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    record.status = "completed"
+    record.terminal_usage_finalized = True
+    record.progress.usage = job_routes_module.WorkflowUsage(
+        prompt_tokens=70,
+        completion_tokens=30,
+        reasoning_tokens=0,
+        calls=2,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=1.5,
+    )
+    fake_workflows = _FakeWorkflows(
+        workflows={},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+        retrieve_errors={"wf-1": FlowMeshConnectionError("down")},
+    )
+    await job_routes_module._persist_terminal_usage(
+        record, _FakeFlowMesh(fake_workflows), logging.getLogger("test")
+    )
+    assert record.progress.usage is not None
+    assert record.progress.usage.prompt_tokens == 70
+    assert record.terminal_usage_finalized is True
+
+
+@pytest.mark.anyio
 async def test_progress_live_null_when_task_result_vanished(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2649,6 +2690,168 @@ async def test_progress_of_a_recovered_job_keeps_stored_usage(
         "truncated_calls": 0,
         "wall_sec": 1.5,
     }
+
+
+@pytest.mark.anyio
+async def test_progress_terminal_not_found_stores_null_and_finalizes(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal job whose workflow is gone finalizes with null usage."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    record.status = "completed"
+    record.terminal_usage_finalized = False
+    fake_workflows = _FakeWorkflows(
+        workflows={},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: _FakeFlowMesh(fake_workflows),
+    )
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(lambda cls: _FakeProgressServer({"error": "Request ID not found"})),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/progress", headers={"Authorization": "Bearer token"}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["progress"]["usage"] is None
+    assert record.terminal_usage_finalized is True
+    stored = job_routes._job_storage.load("j-1")
+    assert stored is not None
+    assert stored["terminal_usage_finalized"] is True
+    assert stored["progress"]["usage"] is None
+
+
+@pytest.mark.anyio
+async def test_progress_terminal_auth_failure_stays_401(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upstream authentication failure on a terminal job is not served from
+    the stored usage."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    record.status = "completed"
+    record.terminal_usage_finalized = False
+    record.progress.usage = job_routes_module.WorkflowUsage(
+        prompt_tokens=70,
+        completion_tokens=30,
+        reasoning_tokens=0,
+        calls=2,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=1.5,
+    )
+    fake_workflows = _FakeWorkflows(
+        workflows={},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+        retrieve_errors={
+            "wf-1": AuthenticationError(
+                "bad token", status_code=401, method="GET", url="/workflows/wf-1"
+            )
+        },
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: _FakeFlowMesh(fake_workflows),
+    )
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(lambda cls: _FakeProgressServer({"error": "Request ID not found"})),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/progress", headers={"Authorization": "Bearer token"}
+        )
+
+    assert resp.status_code == 401
+    assert record.terminal_usage_finalized is False
+    assert record.progress.usage is not None
+    assert record.progress.usage.prompt_tokens == 70
+
+
+@pytest.mark.anyio
+async def test_progress_read_skips_a_record_the_finalizer_already_finalized(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read whose usage computation outlasts the terminal finalizer keeps the
+    finalizer's value instead of storing its own."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    record.status = "completed"
+    record.terminal_usage_finalized = False
+
+    async def _finalizer_wins() -> None:
+        async with job_routes_module.jobs_lock:
+            record.progress.usage = job_routes_module.WorkflowUsage(
+                prompt_tokens=70,
+                completion_tokens=30,
+                reasoning_tokens=0,
+                calls=2,
+                retries=0,
+                truncated_calls=0,
+                wall_sec=1.5,
+            )
+            record.terminal_usage_finalized = True
+        job_routes._job_storage.save(record)
+
+    hooks_seen: list[str] = []
+
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": _FakeWorkflow("wf-1", "COMPLETED", ["tsk-00000001"])},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    fake_fm = _FakeFlowMesh(
+        fake_workflows,
+        task_results={
+            "tsk-00000001": _api_result(
+                "tsk-00000001",
+                _api_usage(100, 50, reasoning=10, calls=4, retries=2, wall=3.5),
+            ),
+        },
+    )
+    monkeypatch.setattr(job_routes_module, "flowmesh_for", lambda _request: fake_fm)
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(lambda cls: _FakeProgressServer({"error": "Request ID not found"})),
+    )
+    real_compute = job_routes_module._compute_job_usage
+
+    async def _compute_after_finalizer(*args: Any, **kwargs: Any) -> Any:
+        if not hooks_seen:
+            hooks_seen.append("landed")
+            await _finalizer_wins()
+        return await real_compute(*args, **kwargs)
+
+    monkeypatch.setattr(
+        job_routes_module, "_compute_job_usage", _compute_after_finalizer
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/progress", headers={"Authorization": "Bearer token"}
+        )
+
+    assert resp.status_code == 200
+    assert record.progress.usage is not None
+    assert record.progress.usage.prompt_tokens == 70
+    stored = job_routes._job_storage.load("j-1")
+    assert stored is not None
+    assert stored["progress"]["usage"]["prompt_tokens"] == 70
 
 
 @pytest.fixture

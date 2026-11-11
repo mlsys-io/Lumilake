@@ -4146,7 +4146,8 @@ async def _persist_terminal_usage(
     record: JobRecord, fm: AsyncFlowMesh, logger: Logger
 ) -> None:
     """Persist the summed usage onto a terminal job's progress; ``None`` when
-    it cannot be read, never a partial sum."""
+    it cannot be read, never a partial sum. A record a progress read already
+    finalized keeps that usage if this read fails."""
     try:
         computed = await _compute_job_usage(
             fm,
@@ -4160,6 +4161,12 @@ async def _persist_terminal_usage(
         )
         computed = None
     async with jobs_lock:
+        if (
+            computed is None
+            and record.terminal_usage_finalized
+            and record.progress.usage is not None
+        ):
+            return
         record.progress.usage = computed
         record.terminal_usage_finalized = True
 
