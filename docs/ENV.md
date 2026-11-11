@@ -52,7 +52,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_RECOVER_IN_FLIGHT_JOBS` | Whether server startup marks pending/running jobs as failed. Default `1` (recommended for single-instance deploys). Set to `0` in HA / multi-instance deploys so a starting standby doesn't clobber jobs the active instance is still running. A job whose own record is already terminal is left as it is (its index entry is rewritten); jobs submitted after startup are untouched; and if storage is unreachable at startup the pass retries in the background. |
 | `LUMILAKE_RUNTIME_MANAGER_TYPE` | Runtime dispatch backend. `default` or `flowmesh`. |
 | `LUMILAKE_JOB_MANAGER_TYPE` | Job manager implementation. Currently only `priority`. |
-| `LUMILAKE_HTTP_TIMEOUT_SECONDS` | Outbound HTTP timeout for server-side calls. Defaults to `300`. |
+| `LUMILAKE_HTTP_TIMEOUT_SECONDS` | Outbound HTTP timeout for server-side calls. FlowMesh calls give up connecting after 10 seconds, or the HTTP timeout when that is shorter. Defaults to `300`. |
 | `LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB` | Memory threshold (MiB) for the log-download spool. The tar is built in a `SpooledTemporaryFile`; if the archive exceeds this size the spool spills to disk before the response body is read. Defaults to `16`. |
 
 ## Scheduler and Runtime Tuning

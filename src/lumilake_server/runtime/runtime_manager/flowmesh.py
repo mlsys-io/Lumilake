@@ -223,7 +223,7 @@ async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) 
     Only idempotent reads go through here: after a dropped connection the request
     may or may not have reached FlowMesh, which is safe to repeat for a read and
     not for a submit. A connect timeout is retried, because the request never
-    left and the shared client bounds the wait at a few seconds. No other timeout
+    left and the shared client bounds the wait at ten seconds. No other timeout
     is: read, write and pool keep the full HTTP timeout, so retrying them would
     wait it out again on every attempt.
     """

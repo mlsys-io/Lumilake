@@ -47,7 +47,9 @@ def _shared_http_client() -> httpx.AsyncClient:
             client = httpx.AsyncClient(
                 timeout=httpx.Timeout(
                     envs.LUMILAKE_HTTP_TIMEOUT_SECONDS,
-                    connect=_CONNECT_TIMEOUT_SECONDS,
+                    connect=min(
+                        _CONNECT_TIMEOUT_SECONDS, envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+                    ),
                 ),
                 limits=httpx.Limits(keepalive_expiry=0.0),
                 event_hooks={"request": [_inject_auth_header]},

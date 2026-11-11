@@ -93,9 +93,26 @@ async def test_shared_client_bounds_the_connect_timeout() -> None:
     waiting for the OS to give up, which is what the read retry repeats."""
     client = flowmesh_client._shared_http_client()
 
-    assert client.timeout.connect == flowmesh_client._CONNECT_TIMEOUT_SECONDS
-    assert client.timeout.connect < envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+    assert client.timeout.connect == min(
+        flowmesh_client._CONNECT_TIMEOUT_SECONDS,
+        envs.LUMILAKE_HTTP_TIMEOUT_SECONDS,
+    )
     assert client.timeout.read == envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
     assert client.timeout.pool == envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+
+    await flowmesh_client.close_current_loop_http_client()
+
+
+@pytest.mark.asyncio
+async def test_shared_client_never_lengthens_a_short_http_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured HTTP timeout shorter than the connect bound stays the bound."""
+    monkeypatch.setattr(envs, "LUMILAKE_HTTP_TIMEOUT_SECONDS", 3.0)
+
+    client = flowmesh_client._shared_http_client()
+
+    assert client.timeout.connect == 3.0
+    assert client.timeout.read == 3.0
 
     await flowmesh_client.close_current_loop_http_client()
