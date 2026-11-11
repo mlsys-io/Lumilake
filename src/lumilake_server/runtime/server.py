@@ -9,6 +9,7 @@ import multiprocessing as mp
 import queue
 import time
 import traceback
+from collections import defaultdict
 from collections.abc import Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
@@ -400,7 +401,7 @@ class LumilakeServer:
         self._scheduler_task: asyncio.Task[Any] | None = None
         self._inflight_tasks: set[asyncio.Task[Any]] = set()
         self._worker_lock = asyncio.Lock()
-        self._worker_reservations: dict[str, int] = {}
+        self._worker_reservations: defaultdict[str, int] = defaultdict(int)
         self._capacity_changed = asyncio.Event()
         self._optimizer_lock = asyncio.Lock()
 
@@ -947,25 +948,20 @@ class LumilakeServer:
         idle_workers = await self.runtime_manager.get_workers()
         limit = self.config.dispatch_queue_depth
         async with self._worker_lock:
-            reserved = dict(self._worker_reservations)
-            available = [
-                worker for worker in idle_workers if reserved.get(worker, 0) < limit
-            ]
+            reservations = self._worker_reservations
+            available = [w for w in idle_workers if reservations.get(w, 0) < limit]
             committed = [
                 worker
-                for worker, count in reserved.items()
+                for worker, count in reservations.items()
                 if 0 < count < limit and worker not in available
             ]
+            # Read the sort keys under the lock so releases cannot reorder it.
+            depth = {w: reservations.get(w, 0) for w in available + committed}
         if committed:
-            # A worker committed to an in-flight batch stays offerable while it
-            # has depth left, even while FlowMesh has it running a task: work
-            # planned onto it queues behind that task instead of waiting for the
-            # whole batch to drain. Only a worker that can take a queued task is
-            # re-offered, so a stopping, unavailable or cordoned worker is left
-            # out rather than given work it may not run.
+            # Offer a committed worker only where FlowMesh can take queued work.
             dispatchable = set(await self.runtime_manager.get_dispatchable_workers())
-            available.extend(worker for worker in committed if worker in dispatchable)
-        available.sort(key=lambda worker: reserved.get(worker, 0))
+            available.extend(w for w in committed if w in dispatchable)
+        available.sort(key=depth.__getitem__)
         cpu_worker_ids: list[str] = []
         gpu_worker_ids: list[str] = []
         profiles: dict[str, dict[str, Any]] = {}
@@ -1107,6 +1103,7 @@ class LumilakeServer:
         if not selected_workers:
             return None
         async with self._worker_lock:
+            # A read that must not insert a zero-count key, hence .get.
             if any(
                 self._worker_reservations.get(worker, 0)
                 >= self.config.dispatch_queue_depth
@@ -1114,20 +1111,18 @@ class LumilakeServer:
             ):
                 return None
             for worker in selected_workers:
-                self._worker_reservations[worker] = (
-                    self._worker_reservations.get(worker, 0) + 1
-                )
+                self._worker_reservations[worker] += 1
         return selected_workers
 
     async def _release_workers(self, workers: list[str]) -> None:
         """Release one in-flight batch per claimed worker and wake capacity waiters."""
         async with self._worker_lock:
             for worker in workers:
-                depth = self._worker_reservations.get(worker, 0) - 1
+                depth = self._worker_reservations[worker] - 1
                 if depth > 0:
                     self._worker_reservations[worker] = depth
                 else:
-                    self._worker_reservations.pop(worker, None)
+                    del self._worker_reservations[worker]
         self._capacity_changed.set()
 
     async def _wait_capacity(self) -> None:
