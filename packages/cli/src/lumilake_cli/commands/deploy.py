@@ -283,13 +283,10 @@ def pull(ctx: typer.Context) -> None:
 
 def _point_cli_at_deployment(root: Path) -> None:
     """Log how to make CLI and SDK calls use this deployment."""
-    logging.info("")
     logging.info(
-        f"To point the CLI at this deployment, run `lumilake init --deploy-dir {root}`."
-    )
-    logging.info(
-        "Or set LUMILAKE_BASE_URL for one shell: "
-        f"export LUMILAKE_BASE_URL={deployment_url(root)}"
+        "To point the CLI at this deployment, run "
+        f"`lumilake init --deploy-dir {root.as_posix()}`; or for one shell, "
+        f"`export LUMILAKE_BASE_URL={deployment_url(root)}`."
     )
 
 

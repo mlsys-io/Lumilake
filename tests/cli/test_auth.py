@@ -136,7 +136,14 @@ def test_init_deploy_dir_takes_the_url_from_the_deployment_env(
     config_path = tmp_path / "config.toml"
 
     result = runner.invoke(
-        app, ["init", "--deploy-dir", str(deploy_dir), "--config", str(config_path)]
+        app,
+        [
+            "init",
+            "--deploy-dir",
+            deploy_dir.as_posix(),
+            "--config",
+            config_path.as_posix(),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -155,7 +162,14 @@ def test_init_deploy_dir_ignores_an_inline_comment(
     config_path = tmp_path / "config.toml"
 
     result = runner.invoke(
-        app, ["init", "--deploy-dir", str(deploy_dir), "--config", str(config_path)]
+        app,
+        [
+            "init",
+            "--deploy-dir",
+            deploy_dir.as_posix(),
+            "--config",
+            config_path.as_posix(),
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -173,7 +187,13 @@ def test_init_deploy_dir_keeps_a_saved_api_key(
 
     result = runner.invoke(
         app,
-        ["init", "--deploy-dir", str(deploy_dir), "--config", str(config_path)],
+        [
+            "init",
+            "--deploy-dir",
+            deploy_dir.as_posix(),
+            "--config",
+            config_path.as_posix(),
+        ],
         input="y\n",
     )
 
@@ -197,11 +217,11 @@ def test_init_deploy_dir_honors_an_explicit_api_key(
         [
             "init",
             "--deploy-dir",
-            str(deploy_dir),
+            deploy_dir.as_posix(),
             "--api-key",
             "new-key",
             "--config",
-            str(config_path),
+            config_path.as_posix(),
             "--force",
         ],
     )

@@ -135,11 +135,6 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
 )
 
 
-def _parse_env_file(path: Path) -> dict[str, str]:
-    """Parse a ``.env`` file the way docker compose reads it."""
-    return read_env_file(path)
-
-
 def _check_required(values: dict[str, str], report: DoctorReport) -> None:
     for key in _ALWAYS_REQUIRED:
         if not values.get(key):
@@ -186,9 +181,9 @@ def _check_stack_name(values: dict[str, str], report: DoctorReport) -> None:
     name = values.get("LUMILAKE_STACK_NAME", "")
     if name and not valid_stack_name(name):
         report.error(
-            f"LUMILAKE_STACK_NAME={name!r} is not a valid Compose project name "
-            "(fix: use lowercase letters, digits, hyphens and underscores, "
-            "starting with a letter or digit)"
+            f"LUMILAKE_STACK_NAME={name!r} is not a valid Compose project name; "
+            "use lowercase letters, digits, hyphens and underscores, "
+            "starting with a letter or digit"
         )
 
 
@@ -205,7 +200,7 @@ def run_env_checks(
             "``.env.example``)"
         )
         return report
-    values = _parse_env_file(env_path)
+    values = read_env_file(env_path)
     _check_required(values, report)
     _check_stack_name(values, report)
     _check_data_plane(values, report)

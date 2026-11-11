@@ -91,9 +91,9 @@ def _compose_prefix(project_root: Path) -> list[str]:
         "docker",
         "compose",
         "-f",
-        str(compose_path()),
+        compose_path().as_posix(),
         "--project-directory",
-        str(project_root),
+        project_root.as_posix(),
         *compose_project_args(project_root),
     ]
 
