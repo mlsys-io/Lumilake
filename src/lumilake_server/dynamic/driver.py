@@ -117,6 +117,44 @@ def _render_template_string(value: str, round_number: int) -> str:
     )
 
 
+def _render_ref(value: Any, round_number: int) -> Any:
+    return (
+        _render_template_string(value, round_number)
+        if isinstance(value, str)
+        else value
+    )
+
+
+def _render_node_refs(op: dict[str, Any], round_number: int) -> None:
+    """Render the template placeholders in an op's node references.
+
+    The caller renders ``id`` and ``inputs``; these are the other fields that
+    name a node, so a body can gate a row on, or read a column from, a node
+    whose id carries the round suffix.
+    """
+    prompt = op.get("prompt")
+    if isinstance(prompt, str):
+        op["prompt"] = _render_ref(prompt, round_number)
+    image_source = op.get("image_source")
+    if isinstance(image_source, str):
+        op["image_source"] = _render_ref(image_source, round_number)
+    for key in ("aggregate_table", "rowwise_columns"):
+        table = op.get(key)
+        if not isinstance(table, list):
+            continue
+        for item in table:
+            if isinstance(item, dict) and isinstance(item.get("node"), str):
+                item["node"] = _render_ref(item["node"], round_number)
+    row_gate = op.get("row_gate")
+    if isinstance(row_gate, dict) and isinstance(row_gate.get("node"), str):
+        row_gate["node"] = _render_ref(row_gate["node"], round_number)
+    messages_column = op.get("rowwise_messages_column")
+    if isinstance(messages_column, dict) and isinstance(
+        messages_column.get("node"), str
+    ):
+        messages_column["node"] = _render_ref(messages_column["node"], round_number)
+
+
 def _template_round_expansion(template: dict[str, Any]) -> int:
     """Upper-bound runtime nodes one declared template can expand into."""
     return MAX_ROUND_OP_EXPANSION if template.get("row_gate") is not None else 1
@@ -160,7 +198,9 @@ def render_template_body(body: DriverRoundBody, round_number: int) -> SubgraphPl
 
     ``{{round}}`` is the zero-based suffix of this round and ``{{prev}}`` is
     that suffix minus one. Double braces avoid collisions with JSON or Python
-    braces in library templates.
+    braces in library templates. The placeholders render in every field that
+    names a node: each op's ``id`` and ``inputs``, an op's gate, message and
+    column references, and the export list.
     """
     if round_number < 1:
         raise DriverProtocolError("template rounds start at 1")
@@ -172,14 +212,8 @@ def render_template_body(body: DriverRoundBody, round_number: int) -> SubgraphPl
             op["id"] = _render_template_string(op_id, suffix)
         inputs = op.get("inputs")
         if isinstance(inputs, list):
-            op["inputs"] = [
-                (
-                    _render_template_string(value, suffix)
-                    if isinstance(value, str)
-                    else value
-                )
-                for value in inputs
-            ]
+            op["inputs"] = [_render_ref(value, suffix) for value in inputs]
+        _render_node_refs(op, suffix)
     export = [_render_template_string(value, suffix) for value in body.export]
     if not ops:
         raise DriverProtocolError(f"template round {round_number} has no ops")

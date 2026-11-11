@@ -14,7 +14,7 @@ from lumilake_server.dynamic.driver import (
     template_stop_export,
     validate_template_spec,
 )
-from lumilake_server.dynamic.spec import DriverSettings, DynamicSpec
+from lumilake_server.dynamic.spec import DriverSettings, DriverTemplate, DynamicSpec
 from lumilake_server.routes.jobs import _decode_archived_items, _extract_leaf_outputs
 
 
@@ -339,3 +339,79 @@ def test_template_validator_forwards_a_prior_round_leaf() -> None:
     )
     assert template.driver.template is not None
     validate_template_spec(template.driver.template, template.library)
+
+
+def _gated_body() -> dict:
+    return {
+        "ops": [
+            {
+                "id": "Source_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Symbols"],
+                "mode": "list",
+                "fn_name": "states",
+                "code": "def states(columns):\n    return columns[0]\n",
+            },
+            {
+                "id": "Route_r{{round}}",
+                "op": "RouterOp",
+                "inputs": ["Source_r{{round}}"],
+                "input_path": "items.output",
+                "rules": [
+                    {"branch": "finish", "match": "contains", "value": "DONE"},
+                    {"branch": "pending", "match": "equals", "value": "__never__"},
+                ],
+                "default_branch": "pending",
+            },
+            {
+                "id": "Turn_r{{round}}",
+                "op": "LLMChatOp",
+                "inputs": ["Source_r{{round}}", "Route_r{{round}}"],
+                "messages": [{"role": "user", "content": "Advance {row}"}],
+                "config": {"model": "Qwen/Qwen3-8B"},
+                "rowwise_template": "{row}",
+                "rowwise_columns": [
+                    {
+                        "label": "row",
+                        "node": "Source_r{{round}}",
+                        "path": "items.output",
+                    }
+                ],
+                "row_gate": {
+                    "node": "Route_r{{round}}",
+                    "branch": "finish",
+                    "terminal": True,
+                },
+            },
+            {
+                "id": "Live_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Source_r{{round}}"],
+                "mode": "list",
+                "fn_name": "live",
+                "code": (
+                    "def live(columns):\n"
+                    '    return [[s for s in columns[0] if "DONE" not in s]]\n'
+                ),
+            },
+        ],
+        "export": ["Live_r{{round}}"],
+    }
+
+
+def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
+    # A gated body names the router it gates on and the node it takes a column
+    # from by their templated ids, so those references render with the round
+    # suffix and the rendered round validates.
+    template = DriverTemplate.model_validate(
+        {
+            "first": _gated_body(),
+            "next": _gated_body(),
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    validate_template_spec(template)
+    plan = template_plan_for_round(template, 2)
+    turn = next(op for op in plan.ops if op["id"] == "Turn_r1")
+    assert turn["row_gate"]["node"] == "Route_r1"
+    assert [column["node"] for column in turn["rowwise_columns"]] == ["Source_r1"]
