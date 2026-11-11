@@ -11,6 +11,7 @@ from lumilake import envs
 
 from . import flowmesh as fm_mod
 from .assets import compose_path
+from .containers import compose_project_args, read_stack_name, server_container
 from .docker_client import image_exists, image_pull
 from .env import ENV_FILE_NAME, FLOWMESH_ENV_FILE_NAME
 from .errors import DeployError
@@ -55,7 +56,7 @@ def load_project_env(project_root: Path) -> None:
 def _check_port_collisions(project_root: Path, layout: "_InfraLayout") -> None:
     """Pre-flight: surface any host-port conflicts before docker compose starts."""
     ports: dict[str, int] = {
-        f"lumilake-server{envs.LUMILAKE_DEPLOY_SUFFIX}": int(
+        server_container(read_stack_name(project_root)): int(
             envs.LUMILAKE_SERVER_PORT or 9000
         ),
     }
@@ -78,6 +79,19 @@ def _resolve_infra_layout(project_root: Path) -> _InfraLayout:
     return _InfraLayout(deploy_fm=(project_root / FLOWMESH_ENV_FILE_NAME).is_file())
 
 
+def _compose_prefix(project_root: Path) -> list[str]:
+    """``docker compose`` arguments naming the stack's project and directory."""
+    return [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_path()),
+        "--project-directory",
+        str(project_root),
+        *compose_project_args(project_root),
+    ]
+
+
 def _reset_stack(project_root: Path) -> None:
     """Wipe Docker-managed server and FlowMesh state."""
     env_fm = project_root / FLOWMESH_ENV_FILE_NAME
@@ -90,18 +104,7 @@ def _reset_stack(project_root: Path) -> None:
 
     info("Resetting: stopping the lumilake server container...")
     run(
-        [
-            "docker",
-            "compose",
-            "-f",
-            str(compose_path()),
-            "--project-directory",
-            str(project_root),
-            "--profile",
-            "server",
-            "down",
-            "-v",
-        ],
+        [*_compose_prefix(project_root), "--profile", "server", "down", "-v"],
         cwd=project_root,
         check=False,
     )
@@ -166,12 +169,7 @@ def _start_server(
         )
     run(
         [
-            "docker",
-            "compose",
-            "-f",
-            str(compose_path()),
-            "--project-directory",
-            str(project_root),
+            *_compose_prefix(project_root),
             "--profile",
             "server",
             "up",
@@ -181,7 +179,7 @@ def _start_server(
         ],
         cwd=project_root,
     )
-    wait_healthy(f"lumilake-server{envs.LUMILAKE_DEPLOY_SUFFIX}")
+    wait_healthy(server_container(read_stack_name(project_root)))
 
 
 def _print_ready_summary() -> None:

@@ -10,6 +10,8 @@ from flowmesh import FlowMesh
 from flowmesh.exceptions import FlowMeshConnectionError
 from flowmesh_cli_stack.utils import (
     STACK_PATH_KEYS,
+    STACK_SLUG_ENV,
+    STACK_SUFFIX_ENV,
     stack_compose_file,
     stack_env_example,
     stack_resource_env_overrides,
@@ -22,6 +24,8 @@ from flowmesh_stack.workers import create_workers as sdk_create_workers
 
 from lumilake import envs
 from lumilake.log import init_child_logger
+
+from .env import ENV_FILE_NAME, read_env_value
 
 logger = init_child_logger("deploy.flowmesh")
 
@@ -142,10 +146,23 @@ def _slug_env(env_file: Path) -> dict[str, str]:
     }
 
 
-def stack_slug(env_file: Path) -> str:
-    """Return the FlowMesh stack slug derived from ``env_file``."""
-    env = parse_env_file(env_file)
-    return stack_resource_env_overrides(env)["FLOWMESH_STACK_SLUG"]
+def stack_name_for(env_file: Path) -> str:
+    """Read ``LUMILAKE_STACK_NAME`` from the ``.env`` beside ``env_file``."""
+    return read_env_value(Path(env_file).parent / ENV_FILE_NAME, "LUMILAKE_STACK_NAME")
+
+
+def stack_slug(env_file: Path, *, stack_name: str | None = None) -> str:
+    """Return the FlowMesh stack slug for ``env_file``.
+
+    A non-empty ``stack_name`` (the deployment's ``LUMILAKE_STACK_NAME``)
+    names the bundled stack; without one the suffix comes from
+    ``.env.flowmesh``.
+    """
+    env = dict(parse_env_file(env_file))
+    name = stack_name_for(env_file) if stack_name is None else stack_name
+    if name:
+        env[STACK_SUFFIX_ENV] = name
+    return stack_resource_env_overrides(env)[STACK_SLUG_ENV]
 
 
 def stack_pull(env_file: str | Path) -> None:
@@ -292,16 +309,23 @@ def _pull_worker_image(env_file: str | Path, kind: str) -> None:
 
 
 def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> None:
-    """Create FlowMesh workers via SDK."""
+    """Create FlowMesh workers via SDK.
+
+    Worker names carry the stack name as an alias prefix when the
+    deployment sets one, so two stacks on one host don't collide.
+    """
     env = parse_env_file(Path(env_file))
     base_url = f"http://localhost:{env['SERVER_HTTP_PORT']}"
     token = env.get("SERVER_TOKEN", "")
+    slug = stack_name_for(Path(env_file))
 
     with NodeClient(base_url=base_url, token=token) as client:
         if cpu_count > 0:
             _pull_worker_image(env_file, "cpu")
             _info(f"Creating {cpu_count} CPU worker(s)...")
-            created = sdk_create_workers(client, kind="cpu", count=cpu_count)
+            created = sdk_create_workers(
+                client, kind="cpu", count=cpu_count, slug=slug or None
+            )
             for label, resp in created:
                 _info(f"Created {label}: {resp['name']}")
 
@@ -321,6 +345,7 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
                 kind="gpu",
                 count=len(device_ids),
                 targets=targets,
+                slug=slug or None,
             )
             for label, resp in created:
                 _info(f"Created {label}: {resp['name']}")

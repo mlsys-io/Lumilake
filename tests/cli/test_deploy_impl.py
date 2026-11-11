@@ -641,48 +641,43 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
     assert compose_calls == [["--profile", "root", "down"]]
 
 
-def test_server_container_defaults_to_bare_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Unset/empty suffix yields the bare server container name."""
-    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "")
-    assert stop_mod._server_container() == "lumilake-server"
+def test_server_container_defaults_to_bare_name(tmp_path: Path) -> None:
+    """No stack name yields the bare server container name."""
+    (tmp_path / ".env").write_text("")
+    assert containers_mod.server_container(
+        containers_mod.read_stack_name(tmp_path)
+    ) == ("lumilake-server")
 
 
-def test_server_container_appends_suffix(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "-dyn")
-    assert stop_mod._server_container() == "lumilake-server-dyn"
+def test_server_container_carries_stack_name(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+    name = containers_mod.read_stack_name(tmp_path)
+    assert containers_mod.server_container(name) == "lumilake-server-demo"
 
 
-def test_state_volumes_default_to_bare_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Empty suffix keeps the historical postgres volume name."""
-    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "")
+def test_state_volumes_default_to_bare_names(tmp_path: Path) -> None:
+    """An empty stack name keeps the historical postgres volume name."""
+    (tmp_path / ".env").write_text("")
     volumes = stop_mod._state_volumes(tmp_path)
     assert volumes[0] == "lumilake-postgres-data"
 
 
-def test_state_volumes_append_suffix(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "-dyn")
+def test_state_volumes_carry_stack_name(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
     volumes = stop_mod._state_volumes(tmp_path)
-    assert volumes[0] == "lumilake-postgres-data-dyn"
+    assert volumes[0] == "lumilake-postgres-data-demo"
 
 
-def test_remove_state_volumes_targets_suffixed_volumes(
+def test_remove_state_volumes_targets_the_stack_volume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``--wipe-archive`` removes the suffixed postgres volume, not the bare one."""
-    monkeypatch.setattr(envs, "LUMILAKE_DEPLOY_SUFFIX", "-dyn")
+    """``--wipe-archive`` removes the named stack's volume, not another's."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
     removed: list[str] = []
     monkeypatch.setattr(
         stop_mod.docker_client,
         "volume_exists",
-        lambda name: name == "lumilake-postgres-data-dyn",
+        lambda name: name == "lumilake-postgres-data-demo",
     )
 
     def _remove(name: str) -> bool:
@@ -692,19 +687,74 @@ def test_remove_state_volumes_targets_suffixed_volumes(
     monkeypatch.setattr(stop_mod.docker_client, "volume_remove", _remove)
     stop_mod._remove_state_volumes(tmp_path)
 
-    assert "lumilake-postgres-data-dyn" in removed
+    assert "lumilake-postgres-data-demo" in removed
     assert "lumilake-postgres-data" not in removed
 
 
-def test_container_names_server_appends_suffix(tmp_path: Path) -> None:
-    """The server container name carries the suffix from ``.env``."""
-    (tmp_path / ".env").write_text('LUMILAKE_DEPLOY_SUFFIX="-dyn"\n')
+def test_container_names_server_carries_stack_name(tmp_path: Path) -> None:
+    """The server container name carries the name from ``.env``."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
     names = containers_mod.container_names(tmp_path)
-    assert names["server"] == "lumilake-server-dyn"
+    assert names["server"] == "lumilake-server-demo"
 
 
 def test_container_names_server_defaults_to_bare(tmp_path: Path) -> None:
-    """No suffix in ``.env`` keeps the bare server container name."""
+    """No stack name in ``.env`` keeps the bare server container name."""
     (tmp_path / ".env").write_text("")
     names = containers_mod.container_names(tmp_path)
     assert names["server"] == "lumilake-server"
+
+
+def test_compose_project_args_name_the_stack(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+    assert containers_mod.compose_project_args(tmp_path) == ["-p", "demo"]
+
+
+def test_compose_project_args_are_empty_without_a_stack_name(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("")
+    assert containers_mod.compose_project_args(tmp_path) == []
+
+
+def test_flowmesh_slug_is_derived_from_the_stack_name(tmp_path: Path) -> None:
+    """One setting names the bundled FlowMesh stack as well."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+    (tmp_path / ".env.flowmesh").write_text("FLOWMESH_STACK_SUFFIX=other\n")
+    names = containers_mod.container_names(tmp_path)
+    assert names["flowmesh"] == "flowmesh_node_demo_server"
+    assert containers_mod.flowmesh_state_volumes(tmp_path)[0] == (
+        "flowmesh_node_demo_postgres_data"
+    )
+
+
+def test_flowmesh_slug_keeps_env_flowmesh_suffix_without_a_stack_name(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env").write_text("")
+    (tmp_path / ".env.flowmesh").write_text("FLOWMESH_STACK_SUFFIX=other\n")
+    assert containers_mod.container_names(tmp_path)["flowmesh"] == (
+        "flowmesh_node_other_server"
+    )
+
+
+def test_load_project_env_reads_the_stack_name(tmp_path: Path) -> None:
+    keys = ("LUMILAKE_STACK_NAME",)
+    old_values = {key: os.environ.get(key) for key in keys}
+    try:
+        (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+
+        setup_mod.load_project_env(tmp_path)
+
+        assert envs.LUMILAKE_STACK_NAME == "demo"
+    finally:
+        for key, value in old_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        importlib.reload(envs)
+
+
+def test_stack_name_accepts_only_compose_project_names() -> None:
+    assert envs.valid_stack_name("stack-1_a")
+    assert not envs.valid_stack_name("Bad Name")
+    assert not envs.valid_stack_name("-leading")
