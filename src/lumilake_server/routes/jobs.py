@@ -4054,6 +4054,17 @@ class _UnknownUsage:
 
 _UNKNOWN_USAGE = _UnknownUsage()
 
+_CLASSIFICATION_TASK_TYPE = "classification"
+
+
+class _PoolingUsage(BaseModel):
+    """Token and latency accounting a batched pooling pass reports."""
+
+    prompt_tokens: int
+    total_tokens: int
+    num_requests: int
+    latency_sec: float
+
 
 def _task_usage_from_result(
     result: AnyExecutorResult,
@@ -4075,11 +4086,45 @@ def _task_usage_from_result(
         if not isinstance(result.usage, GenerationUsage):
             return _UNKNOWN_USAGE
         return _inference_usage(result)
+    if _is_classification_result(result):
+        return _classification_usage(result)
     if isinstance(result, _NO_USAGE_RESULT_TYPES):
         return None
     if _is_skipped_task(result):
         return None
     return _UNKNOWN_USAGE
+
+
+def _is_classification_result(result: AnyExecutorResult) -> bool:
+    """Whether a result is a batched pooling classification pass.
+
+    The SDK the server pins has no classification result type, so the payload
+    arrives as a bare executor result carrying the classification fields in
+    its extra mapping."""
+    return (result.__pydantic_extra__ or {}).get(
+        "task_type"
+    ) == _CLASSIFICATION_TASK_TYPE
+
+
+def _classification_usage(result: AnyExecutorResult) -> WorkflowUsage | _UnknownUsage:
+    """Map a classification result's pooling usage; the pass generates no
+    completion tokens."""
+    raw_usage = (result.__pydantic_extra__ or {}).get("usage")
+    if not isinstance(raw_usage, dict):
+        return _UNKNOWN_USAGE
+    try:
+        usage = _PoolingUsage.model_validate(raw_usage)
+    except ValidationError:
+        return _UNKNOWN_USAGE
+    return WorkflowUsage(
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=0,
+        reasoning_tokens=0,
+        calls=usage.num_requests,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=usage.latency_sec,
+    )
 
 
 def _is_skipped_task(result: AnyExecutorResult) -> bool:

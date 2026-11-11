@@ -293,6 +293,19 @@ def _echo_result(task_id: str) -> dict[str, Any]:
     return {"task_type": "echo"}
 
 
+def _classification_result(
+    task_id: str,
+    usage: dict[str, Any] | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "task_type": "classification",
+        "items": [{"index": 0, "score": 0.9}],
+    }
+    if usage is not None:
+        payload["usage"] = usage
+    return payload
+
+
 def _skip_result(task_id: str) -> dict[str, Any]:
     return {}
 
@@ -331,6 +344,19 @@ def _gen_usage(
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": prompt + completion,
+        "num_requests": num_requests,
+        "latency_sec": latency,
+    }
+
+
+def _pooling_usage(
+    prompt: int,
+    num_requests: int,
+    latency: float,
+) -> dict[str, Any]:
+    return {
+        "prompt_tokens": prompt,
+        "total_tokens": prompt,
         "num_requests": num_requests,
         "latency_sec": latency,
     }
@@ -588,6 +614,84 @@ async def test_list_workflows_passes_usage_through(
         "wall_sec": 3.5,
     }
     assert workflows["wf-2"]["usage"] is None
+
+
+@pytest.mark.anyio
+async def test_list_workflows_counts_a_classification_pass_usage(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batched classification pass reports token and latency usage."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    wf1 = _FakeWorkflow(
+        "wf-1", "COMPLETED", completed_tasks=["tsk-00000001", "tsk-00000002"]
+    )
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": wf1},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    fake_fm = _FakeFlowMesh(
+        fake_workflows,
+        task_results={
+            "tsk-00000001": _classification_result(
+                "tsk-00000001", _pooling_usage(20, num_requests=2, latency=0.5)
+            ),
+            "tsk-00000002": _classification_result(
+                "tsk-00000002", _pooling_usage(30, num_requests=3, latency=1.25)
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: fake_fm,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    workflows = {w["workflow_id"]: w for w in resp.json()["data"]["workflows"]}
+    assert workflows["wf-1"]["usage"] == {
+        "prompt_tokens": 50,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "calls": 5,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.75,
+    }
+
+
+@pytest.mark.anyio
+async def test_list_workflows_null_usage_for_classification_pass_without_usage(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A classification result with no usage block leaves the usage unknown."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    wf1 = _FakeWorkflow("wf-1", "COMPLETED", completed_tasks=["tsk-00000001"])
+    fake_workflows = _FakeWorkflows(
+        workflows={"wf-1": wf1},
+        logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+    )
+    fake_fm = _FakeFlowMesh(
+        fake_workflows,
+        task_results={"tsk-00000001": _classification_result("tsk-00000001", None)},
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _request: fake_fm,
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/workflows", headers={"Authorization": "Bearer token"}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["workflows"][0]["usage"] is None
 
 
 @pytest.mark.anyio
