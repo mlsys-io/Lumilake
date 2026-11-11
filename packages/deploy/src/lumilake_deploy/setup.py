@@ -219,6 +219,14 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
             "(optionally with ``--flowmesh``) first."
         )
     load_project_env(project_root)
+    stack_name = read_stack_name(project_root)
+    if stack_name and not envs.valid_stack_name(stack_name):
+        raise DeployError(
+            f"LUMILAKE_STACK_NAME={stack_name!r} is not valid; use lowercase "
+            "letters, digits, hyphens and underscores, starting and ending with "
+            "a letter or digit, at most 48 characters, and not `lumilake`, "
+            "which unnamed bundled deployments use"
+        )
 
     info(f"Using env file: {env_file}")
     image_tag = resolve_image_tag()

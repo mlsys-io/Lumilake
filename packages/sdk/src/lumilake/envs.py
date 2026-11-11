@@ -405,9 +405,23 @@ def _absolute_http_url(value: str) -> bool:
     return parts.scheme.lower() in {"http", "https"} and bool(parts.hostname)
 
 
+_STACK_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,46}[a-z0-9])?")
+
+# FlowMesh names an unnamed bundled deployment's stack ``lumilake``.
+RESERVED_STACK_NAMES: frozenset[str] = frozenset({"lumilake"})
+
+
 def valid_stack_name(name: str) -> bool:
-    """Return True when ``name`` is a valid Compose project name."""
-    return bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name))
+    """Return True when ``name`` names this deployment's own stack.
+
+    FlowMesh strips leading and trailing ``-``, ``_`` and ``.`` from its
+    suffix and truncates it to 48 characters, so the pattern ends in a letter
+    or digit and allows 48 characters at most; a longer or trailing-punctuation
+    name would share its FlowMesh stack with another deployment.
+    """
+    return (
+        bool(_STACK_NAME_PATTERN.fullmatch(name)) and name not in RESERVED_STACK_NAMES
+    )
 
 
 def validate() -> None:
@@ -485,7 +499,8 @@ def validate() -> None:
         )
     if LUMILAKE_STACK_NAME and not valid_stack_name(LUMILAKE_STACK_NAME):
         raise ValueError(
-            "LUMILAKE_STACK_NAME must be a valid Compose project name "
-            "(lowercase letters, digits, hyphens and underscores, "
-            "starting with a letter or digit)"
+            "LUMILAKE_STACK_NAME must be lowercase letters, digits, hyphens "
+            "and underscores, starting and ending with a letter or digit, at "
+            "most 48 characters, and not `lumilake`, which unnamed bundled "
+            "deployments use"
         )

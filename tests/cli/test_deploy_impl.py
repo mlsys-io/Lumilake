@@ -286,6 +286,18 @@ def test_doctor_rejects_a_stack_name_that_is_not_a_compose_project(
     assert any("LUMILAKE_STACK_NAME" in msg for msg in report.errors)
 
 
+def test_doctor_rejects_the_reserved_stack_name(tmp_path: Path) -> None:
+    """``lumilake`` is the FlowMesh name an unnamed bundled deployment uses."""
+    env_file = tmp_path / ".env"
+    env_file.write_text('LUMILAKE_STACK_NAME="lumilake"\n')
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    matched = [msg for msg in report.errors if "LUMILAKE_STACK_NAME" in msg]
+    assert matched
+    assert "unnamed bundled deployments use" in matched[0]
+
+
 def test_doctor_accepts_a_valid_stack_name(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text('LUMILAKE_STACK_NAME="demo-1"\n')
@@ -300,6 +312,7 @@ def test_load_project_env_drops_an_inherited_stack_name(
 ) -> None:
     """A deployment with no name never keeps the caller's stack name."""
     monkeypatch.setitem(os.environ, "LUMILAKE_STACK_NAME", "inherited")
+    monkeypatch.delenv("LUMILAKE_IMAGE_TAG", raising=False)
     (tmp_path / ".env").write_text('LUMILAKE_IMAGE_TAG="dev"\n')
     try:
         setup_mod.load_project_env(tmp_path)
@@ -517,6 +530,22 @@ def test_cli_up_never_writes_the_cli_config(
     assert not config_path.exists()
     assert any("--deploy-dir" in m for m in messages)
     assert any("http://127.0.0.1:9100" in m for m in messages)
+
+
+def test_point_cli_at_deployment_quotes_a_path_with_a_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The logged command stays pasteable when the directory has a space."""
+    root = tmp_path / "with space"
+    root.mkdir()
+    (root / ".env").write_text('LUMILAKE_SERVER_PORT="9100"\n')
+
+    messages: list[str] = []
+    monkeypatch.setattr(deploy_cmd.logging, "info", lambda m: messages.append(m))
+
+    deploy_cmd._point_cli_at_deployment(root)
+
+    assert "'" + root.as_posix() + "'" in messages[0]
 
 
 def test_cli_init_honors_project_dir_argument(tmp_path: Path) -> None:
@@ -837,6 +866,16 @@ def test_stack_name_accepts_only_compose_project_names() -> None:
     assert not envs.valid_stack_name("-leading")
 
 
+def test_stack_name_matches_the_flowmesh_suffix_the_name_produces() -> None:
+    """A name FlowMesh would rewrite would share another stack's FlowMesh."""
+    assert envs.valid_stack_name("x-9")
+    assert not envs.valid_stack_name("x-")
+    assert not envs.valid_stack_name("x_")
+    assert not envs.valid_stack_name("x" * 49)
+    assert envs.valid_stack_name("x" * 48)
+    assert not envs.valid_stack_name("lumilake")
+
+
 def _patch_valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give ``envs.validate()`` a valid environment apart from the stack name."""
     values: dict[str, object] = {
@@ -867,7 +906,7 @@ def _patch_valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_validate_rejects_an_invalid_stack_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A name Compose would refuse fails before any container is created."""
+    """The server refuses to start on a name Compose would refuse."""
     _patch_valid_env(monkeypatch)
     monkeypatch.setattr(envs, "LUMILAKE_STACK_NAME", "Demo")
     with pytest.raises(ValueError, match="LUMILAKE_STACK_NAME"):
@@ -875,3 +914,27 @@ def test_validate_rejects_an_invalid_stack_name(
 
     monkeypatch.setattr(envs, "LUMILAKE_STACK_NAME", "demo-1")
     envs.validate()
+
+
+def test_run_setup_rejects_an_invalid_stack_name_before_flowmesh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``up`` fails before it starts FlowMesh, so no stack is left half-built."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="_x"\n')
+    (tmp_path / ".env.flowmesh").write_text("FLOWMESH_STACK_SUFFIX=lumilake\n")
+
+    def _unused(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("FlowMesh must not start for an invalid name")
+
+    monkeypatch.setattr(setup_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(setup_mod, "require_commands", lambda _cmds: None)
+    monkeypatch.setattr(setup_mod.fm_mod, "stack_pull", _unused)
+    monkeypatch.setattr(setup_mod.fm_mod, "stack_up", _unused)
+    monkeypatch.setattr(setup_mod.fm_mod, "create_workers", _unused)
+
+    try:
+        with pytest.raises(DeployError, match="LUMILAKE_STACK_NAME"):
+            setup_mod.run_setup(tmp_path, setup_mod.SetupOptions())
+    finally:
+        os.environ.pop("LUMILAKE_STACK_NAME", None)
+        importlib.reload(envs)

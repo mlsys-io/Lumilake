@@ -177,13 +177,14 @@ def _check_positive_floats(values: dict[str, str], report: DoctorReport) -> None
 
 
 def _check_stack_name(values: dict[str, str], report: DoctorReport) -> None:
-    """A set ``LUMILAKE_STACK_NAME`` must name a valid Compose project."""
+    """A set ``LUMILAKE_STACK_NAME`` must name this deployment's own stack."""
     name = values.get("LUMILAKE_STACK_NAME", "")
     if name and not valid_stack_name(name):
         report.error(
-            f"LUMILAKE_STACK_NAME={name!r} is not a valid Compose project name; "
-            "use lowercase letters, digits, hyphens and underscores, "
-            "starting with a letter or digit"
+            f"LUMILAKE_STACK_NAME={name!r} is not valid; use lowercase letters, "
+            "digits, hyphens and underscores, starting and ending with a letter "
+            "or digit, at most 48 characters, and not `lumilake`, which unnamed "
+            "bundled deployments use"
         )
 
 
