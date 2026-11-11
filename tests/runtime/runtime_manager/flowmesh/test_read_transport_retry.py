@@ -1,6 +1,6 @@
 """FlowMesh reads retry a dropped connection; a submit never does."""
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -9,6 +9,7 @@ from flowmesh.exceptions import APIError, FlowMeshConnectionError
 from flowmesh.models.workers import WorkerInfo
 
 import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
+from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_manager.flowmesh import (
     _FLOWMESH_RETRY_DELAYS_S,
     FlowmeshRuntimeManager,
@@ -18,8 +19,18 @@ _TRANSPORT_ERRORS: list[Callable[[], Exception]] = [
     lambda: httpx.ReadError("connection dropped"),
     lambda: httpx.RemoteProtocolError("server disconnected"),
     lambda: httpx.ConnectError("refused"),
-    lambda: httpx.ReadTimeout("timed out"),
+    lambda: httpx.WriteError("broken pipe"),
+    lambda: httpx.CloseError("close failed"),
+    lambda: httpx.ConnectTimeout("connect timed out"),
+    lambda: httpx.PoolTimeout("no free connection"),
     lambda: FlowMeshConnectionError("Failed to connect to http://flowmesh"),
+]
+
+_NOT_RETRIED_ERRORS: list[Callable[[], Exception]] = [
+    lambda: httpx.ReadTimeout("timed out"),
+    lambda: httpx.WriteTimeout("timed out"),
+    lambda: httpx.UnsupportedProtocol("no scheme"),
+    lambda: httpx.ProxyError("bad proxy"),
 ]
 
 
@@ -78,6 +89,24 @@ async def test_a_read_gives_up_after_the_same_attempts_as_a_gateway_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("make_error", _NOT_RETRIED_ERRORS)
+async def test_a_read_does_not_retry_a_timeout_or_a_configuration_error(
+    make_error: Callable[[], Exception], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read timeout would wait out the full HTTP timeout again on every attempt,
+    and a configuration error never clears."""
+    delays = _record_sleep(monkeypatch)
+    error = make_error()
+    call = _FlakyCall([error])
+
+    with pytest.raises(type(error)):
+        await fm_mod._retry_transient_read(lambda: call(), "task t-1")
+
+    assert call.calls == 1
+    assert delays == []
+
+
+@pytest.mark.asyncio
 async def test_a_read_does_not_retry_an_unrelated_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -115,7 +144,9 @@ async def test_a_result_fetch_survives_a_dropped_connection(
     )
 
     uri = await flowmesh_manager._archive_task_response(
-        request_info=type("RI", (), {"request_id": "req-1"})(),  # type: ignore[arg-type]
+        request_info=RequestInfo(
+            request_id="req-1", runtime_graphs={}, data_profile_graphs={}
+        ),
         tid="t-1",
         node_id="n-1",
     )
@@ -220,26 +251,43 @@ def _worker(worker_id: str) -> WorkerInfo:
     )
 
 
+class _FakeWorkers:
+    def __init__(self, list_call: _FlakyCall, retrieve_call: _FlakyCall) -> None:
+        self.list = list_call
+        self.retrieve = retrieve_call
+
+
+class _FakeWorkersFm:
+    def __init__(self, workers: _FakeWorkers) -> None:
+        self.workers = workers
+
+
 def _install_workers(
-    monkeypatch: pytest.MonkeyPatch, call: _FlakyCall, name: str
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    list_call: _FlakyCall | None = None,
+    retrieve_call: _FlakyCall | None = None,
 ) -> None:
-    class _FakeWorkers:
-        pass
-
-    setattr(_FakeWorkers, name, staticmethod(call))
-
-    class _FakeFm:
-        workers = _FakeWorkers()
-
-    monkeypatch.setattr(fm_mod, "flowmesh_for_server", lambda: _FakeFm())
+    fake = _FakeWorkersFm(
+        _FakeWorkers(
+            list_call or _FlakyCall([], value=[]),
+            retrieve_call or _FlakyCall([], value=None),
+        )
+    )
+    monkeypatch.setattr(fm_mod, "flowmesh_for_server", lambda: fake)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "method", ["get_workers", "get_all_workers", "get_dispatchable_workers"]
+    "read",
+    [
+        FlowmeshRuntimeManager.get_workers,
+        FlowmeshRuntimeManager.get_all_workers,
+        FlowmeshRuntimeManager.get_dispatchable_workers,
+    ],
 )
 async def test_a_worker_listing_survives_a_dropped_connection(
-    method: str,
+    read: Callable[[FlowmeshRuntimeManager], Awaitable[list[str]]],
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -247,9 +295,9 @@ async def test_a_worker_listing_survives_a_dropped_connection(
     connection must not fail a dispatch."""
     delays = _record_sleep(monkeypatch)
     listing = _FlakyCall([httpx.ReadError("dropped")], value=[_worker("wkr-1")])
-    _install_workers(monkeypatch, listing, "list")
+    _install_workers(monkeypatch, list_call=listing)
 
-    assert await getattr(flowmesh_manager, method)() == ["wkr-1"]
+    assert await read(flowmesh_manager) == ["wkr-1"]
 
     assert listing.calls == 2
     assert delays == [_FLOWMESH_RETRY_DELAYS_S[0]]
@@ -261,7 +309,7 @@ async def test_a_worker_profile_read_survives_a_dropped_connection(
 ) -> None:
     _record_sleep(monkeypatch)
     retrieve = _FlakyCall([httpx.ReadError("dropped")], value=_worker("wkr-1"))
-    _install_workers(monkeypatch, retrieve, "retrieve")
+    _install_workers(monkeypatch, retrieve_call=retrieve)
 
     profile = await flowmesh_manager.get_worker_profile("wkr-1")
 

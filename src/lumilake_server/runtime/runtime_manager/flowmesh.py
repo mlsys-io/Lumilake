@@ -206,6 +206,13 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
 
 _TRANSIENT_FLOWMESH_STATUS = frozenset({502, 503, 504})
 _FLOWMESH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+_DROPPED_CONNECTION_ERRORS = (
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    FlowMeshConnectionError,
+)
 _SUBMIT_LOOKUP_SKEW = timedelta(minutes=2)
 _read_logger = init_child_logger("FlowmeshReadRetry")
 
@@ -214,9 +221,10 @@ async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) 
     """Run a read-only FlowMesh call, retrying gateway 502/503/504 responses and
     dropped connections.
 
-    Only idempotent reads go through here: after a transport error the request
+    Only idempotent reads go through here: after a dropped connection the request
     may or may not have reached FlowMesh, which is safe to repeat for a read and
-    not for a submit.
+    not for a submit. A read or write timeout is not retried, since each attempt
+    would wait out the full HTTP timeout again.
     """
     for delay in _FLOWMESH_RETRY_DELAYS_S:
         try:
@@ -225,7 +233,7 @@ async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) 
             if e.status_code not in _TRANSIENT_FLOWMESH_STATUS:
                 raise
             failure = f"returned {e.status_code}: {_sanitize_flowmesh_api_error(e)}"
-        except (httpx.TransportError, FlowMeshConnectionError) as e:
+        except _DROPPED_CONNECTION_ERRORS as e:
             failure = (
                 f"failed with {type(e).__name__}: {redact_secrets_in_text(str(e))}"
             )
