@@ -960,9 +960,11 @@ class LumilakeServer:
             # A worker committed to an in-flight batch stays offerable while it
             # has depth left, even while FlowMesh has it running a task: work
             # planned onto it queues behind that task instead of waiting for the
-            # whole batch to drain.
-            registered = set(await self.runtime_manager.get_all_workers())
-            available.extend(worker for worker in committed if worker in registered)
+            # whole batch to drain. Only a worker that can take a queued task is
+            # re-offered, so a stopping, unavailable or cordoned worker is left
+            # out rather than given work it may not run.
+            dispatchable = set(await self.runtime_manager.get_dispatchable_workers())
+            available.extend(worker for worker in committed if worker in dispatchable)
         available.sort(key=lambda worker: reserved.get(worker, 0))
         cpu_worker_ids: list[str] = []
         gpu_worker_ids: list[str] = []
