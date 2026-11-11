@@ -263,6 +263,43 @@ def test_doctor_missing_env_file_message_is_actionable(tmp_path: Path) -> None:
     assert any("lumilake deploy init" in msg for msg in report.errors)
 
 
+def test_doctor_rejects_a_stack_name_that_is_not_a_compose_project(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text('LUMILAKE_STACK_NAME="Bad Name"\n')
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    assert any("LUMILAKE_STACK_NAME" in msg for msg in report.errors)
+
+
+def test_doctor_accepts_a_valid_stack_name(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text('LUMILAKE_STACK_NAME="demo-1"\n')
+
+    report = doctor_mod.run_env_checks(env_file)
+
+    assert not any("LUMILAKE_STACK_NAME" in msg for msg in report.errors)
+
+
+def test_load_project_env_drops_an_inherited_stack_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployment with no name never keeps the caller's stack name."""
+    monkeypatch.setitem(os.environ, "LUMILAKE_STACK_NAME", "inherited")
+    (tmp_path / ".env").write_text('LUMILAKE_IMAGE_TAG="dev"\n')
+    try:
+        setup_mod.load_project_env(tmp_path)
+
+        assert "LUMILAKE_STACK_NAME" not in os.environ
+        assert envs.LUMILAKE_STACK_NAME == ""
+        assert containers_mod.read_stack_name(tmp_path) == ""
+    finally:
+        os.environ.pop("LUMILAKE_STACK_NAME", None)
+        importlib.reload(envs)
+
+
 def test_doctor_requires_lumid_data_url_for_retrieval(tmp_path: Path) -> None:
     """doctor requires LUMID_DATA_URL — all DataRetrievalOp modes need it."""
     env_file = tmp_path / ".env"

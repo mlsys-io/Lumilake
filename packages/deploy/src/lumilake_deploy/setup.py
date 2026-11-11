@@ -46,7 +46,13 @@ class _InfraLayout:
 
 
 def load_project_env(project_root: Path) -> None:
-    """Refresh :mod:`lumilake.envs` from this deploy root's ``.env``."""
+    """Refresh :mod:`lumilake.envs` from this deploy root's ``.env``.
+
+    A stack name inherited from the caller's environment is dropped first,
+    so a process that drives two deployments never applies the first
+    deployment's name to the second.
+    """
+    os.environ.pop("LUMILAKE_STACK_NAME", None)
     env_file = project_root / ENV_FILE_NAME
     if env_file.is_file():
         load_dotenv(env_file, override=True)

@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from lumilake.envs import valid_stack_name
+
 type FindingLevel = Literal["note", "warning", "error"]
 
 
@@ -188,6 +190,17 @@ def _check_positive_floats(values: dict[str, str], report: DoctorReport) -> None
             )
 
 
+def _check_stack_name(values: dict[str, str], report: DoctorReport) -> None:
+    """A set ``LUMILAKE_STACK_NAME`` must name a valid Compose project."""
+    name = values.get("LUMILAKE_STACK_NAME", "")
+    if name and not valid_stack_name(name):
+        report.error(
+            f"LUMILAKE_STACK_NAME={name!r} is not a valid Compose project name "
+            "(fix: use lowercase letters, digits, hyphens and underscores, "
+            "starting with a letter or digit)"
+        )
+
+
 def run_env_checks(
     env_path: Path,
     callback: Callable[[DoctorFinding], Any] | None = None,
@@ -203,6 +216,7 @@ def run_env_checks(
         return report
     values = _parse_env_file(env_path)
     _check_required(values, report)
+    _check_stack_name(values, report)
     _check_data_plane(values, report)
     _check_positive_floats(values, report)
     if not report.errors:
