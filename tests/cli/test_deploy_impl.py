@@ -665,7 +665,7 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
     """``stack_down`` uses ``destroy_all_workers(ignore_unreachable=True)``
     so a failed bring-up can still tear down containers that did start.
     """
-    monkeypatch.setattr(fm, "_WORKDIR", tmp_path)
+    (tmp_path / fm.WORKDIR_NAME).mkdir()
 
     destroy_kwargs: dict[str, object] = {}
 
@@ -706,6 +706,79 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
 
     assert destroy_kwargs == {"ignore_unreachable": True}
     assert compose_calls == [["--profile", "root", "down"]]
+
+
+def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stack paths follow the deployment directory, whatever the process cwd."""
+    deploy_dir = tmp_path / "deployment"
+    deploy_dir.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    env_file = deploy_dir / ".env.flowmesh"
+    env_file.write_text(
+        "SERVER_HTTP_PORT=18000\nSERVER_GRPC_PORT=18001\n"
+        "REDIS_CONTROL_PORT=18002\nREDIS_TELEMETRY_PORT=18003\n"
+    )
+
+    compose_calls: list[list[str]] = []
+
+    class _StubStack:
+        def run(
+            self,
+            args: list[str],
+            *,
+            env_file: Path,
+            env: dict[str, str] | None = None,
+        ) -> object:
+            compose_calls.append(args)
+            return type("_Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(fm, "_stack", _StubStack())
+    monkeypatch.setattr(fm, "check_ports", lambda _ports: [])
+    monkeypatch.setattr(envs, "REDIS_TLS_DIR", "")
+    monkeypatch.setattr(envs, "SERVER_TLS_DIR", "")
+    monkeypatch.setattr(envs, "SERVER_WORKER_CONFIG", "")
+    monkeypatch.chdir(elsewhere)
+
+    fm.stack_up(env_file)
+
+    workdir = deploy_dir / fm.WORKDIR_NAME
+    assert (workdir / "secrets" / "tls" / "redis").is_dir()
+    assert (workdir / "secrets" / "tls" / "server").is_dir()
+    assert (workdir / "configs" / "worker_config.yaml").is_file()
+    assert not (elsewhere / fm.WORKDIR_NAME).exists()
+    assert compose_calls == [["--profile", "root", "up", "-d", "--wait"]]
+
+
+def test_stack_down_skips_when_deploy_dir_has_no_workdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown looks for the workdir beside the env file, not under cwd."""
+    deploy_dir = tmp_path / "deployment"
+    deploy_dir.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / fm.WORKDIR_NAME).mkdir(parents=True)
+
+    env_file = deploy_dir / ".env.flowmesh"
+    env_file.write_text("SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n")
+
+    def _unexpected(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("no stack left to tear down")
+
+    warnings: list[str] = []
+    monkeypatch.setattr(fm, "_warn", warnings.append)
+    monkeypatch.setattr(fm, "NodeClient", _unexpected)
+    monkeypatch.setattr(fm, "_stack", _unexpected)
+    monkeypatch.chdir(elsewhere)
+
+    fm.stack_down(env_file)
+    fm.stack_clean(env_file)
+
+    assert len(warnings) == 2
+    assert all(str(deploy_dir / fm.WORKDIR_NAME) in line for line in warnings)
 
 
 def test_flowmesh_workers_carry_the_stack_name_slug(
