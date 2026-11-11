@@ -442,7 +442,7 @@ def _build_sample_data_profile_queries(
 
     rng = random.Random(0)
     queries: list[str] = []
-    sample_count = max(1, int(num_samples))
+    sample_count = max(1, num_samples)
     for _ in range(sample_count):
         row = dict(fixed_row)
         for label in sorted(variable_candidates):

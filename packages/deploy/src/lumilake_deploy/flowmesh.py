@@ -158,7 +158,7 @@ def stack_slug(env_file: Path, *, stack_name: str | None = None) -> str:
     names the bundled stack; without one the suffix comes from
     ``.env.flowmesh``.
     """
-    env = dict(parse_env_file(env_file))
+    env = parse_env_file(env_file)
     name = stack_name_for(env_file) if stack_name is None else stack_name
     if name:
         env[STACK_SUFFIX_ENV] = name

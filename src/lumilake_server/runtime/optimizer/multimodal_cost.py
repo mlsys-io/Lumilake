@@ -56,8 +56,8 @@ def compute_gpu_exec_cost(
     coeffs: MultimodalCostCoefficients,
 ) -> float:
     node_type = classify_multimodal_node(node)
-    query_count = max(1, int(input_query_count))
-    model_size = max(0.0, float(model_size_b))
+    query_count = max(1, input_query_count)
+    model_size = max(0.0, model_size_b)
     if node_type == NodeCostType.TEXT_INFERENCE:
         return coeffs.alpha_text * model_size + coeffs.beta_text * query_count
     if node_type == NodeCostType.VISION_EMBEDDING:

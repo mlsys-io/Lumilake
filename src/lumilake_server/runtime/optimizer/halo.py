@@ -957,7 +957,7 @@ class HaloOptimizer(BaseOptimizer):
 
     @staticmethod
     def _is_gpu_backend(backend: str) -> bool:
-        return str(backend).strip().lower() in {
+        return backend.strip().lower() in {
             "vllm",
             "transformers",
             "diffusers",
@@ -998,8 +998,8 @@ class HaloOptimizer(BaseOptimizer):
             )
 
     def _map_engine(self, backend: str, task_type: str) -> str:
-        normalized_backend = str(backend).strip().lower()
-        normalized_task_type = str(task_type).strip().lower()
+        normalized_backend = backend.strip().lower()
+        normalized_task_type = task_type.strip().lower()
         if self._is_gpu_backend(normalized_backend):
             return "vllm"
         if normalized_backend == "http":

@@ -3716,7 +3716,7 @@ class RuntimeGraphBuilder:
                 "live sample query."
             )
         inner = query.rstrip().rstrip(";")
-        return f"SELECT * FROM ({inner}) AS _lumilake_sample LIMIT {int(n)}"
+        return f"SELECT * FROM ({inner}) AS _lumilake_sample LIMIT {n}"
 
     def _fetch_sql_sample_value(
         self,
