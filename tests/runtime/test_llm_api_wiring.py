@@ -122,10 +122,10 @@ def test_api_config_unset_timeout_emits_no_key() -> None:
 
 
 def test_api_config_concurrency_reaches_emitted_spec() -> None:
-    runtime_graph, llm_id = _build_api_graph(api=ApiConfig(concurrency=16))
+    runtime_graph, llm_id = _build_api_graph(api=ApiConfig(concurrency=4))
     node = runtime_graph.nodes[llm_id]
-    assert node.api_spec["concurrency"] == 16
-    assert node.to_flowmesh_node()["spec"]["api"]["concurrency"] == 16
+    assert node.api_spec["concurrency"] == 4
+    assert node.to_flowmesh_node()["spec"]["api"]["concurrency"] == 4
 
 
 def test_api_config_unset_concurrency_emits_no_key() -> None:
@@ -2458,7 +2458,7 @@ def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=16),
+            api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=4),
         ),
         rowwise_template="Summarize {S}.",
         rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a"]}}],
@@ -2467,7 +2467,7 @@ def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=16),
+            api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=4),
         ),
         aggregate_table=[
             {"label": "summary", "node": upstream.id, "path": "items.output"}
@@ -2485,4 +2485,4 @@ def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
         node = runtime_graph.nodes[row]
         assert node.api_spec["retries"] == 3
         assert node.api_spec["timeout_sec"] == 120.0
-        assert node.api_spec["concurrency"] == 16
+        assert node.api_spec["concurrency"] == 4

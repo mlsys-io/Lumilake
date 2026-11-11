@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 
-from lumilake import envs
 from lumilake_server.common import ApiConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import InputOp, LambdaOp, LLMChatOp, MessageOp, OutputOp
@@ -501,9 +500,7 @@ def test_api_chat_api_template_names_a_model_on_every_llm_op() -> None:
         assert api.timeout_sec == 300.0
 
 
-def test_api_concurrency_yaml_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LUMILAKE_RUNTIME_TOKEN", "test-token")
-    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+def test_api_concurrency_yaml_round_trip() -> None:
     yaml_text = textwrap.dedent("""
         name: api_concurrency
         inputs:
