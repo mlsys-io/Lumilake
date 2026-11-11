@@ -1457,6 +1457,43 @@ async def test_dynamic_template_stops_before_an_empty_followup_round(
 
 
 @pytest.mark.anyio
+async def test_dynamic_template_round_with_list_lambda_runs_as_one_slice(
+    app: FastAPI, job_routes: Any
+) -> None:
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    fake_server.export_rows = [[]]
+    body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
+    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    await _run_background(app)
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+
+    assert record.status == "completed", record.error
+    # A template round's list-mode Lambda emits one whole-list result per run,
+    # which cannot be partitioned per row, so the round runs as a single
+    # slice over the whole input set. The empty stop export then ends the run.
+    assert len(fake_server.executed_graphs) == 1
+    (graphs,) = fake_server.executed_graphs
+    (slices,) = fake_server.workflow_slices_calls
+    assert len(graphs) == 1
+    (meta,) = slices.values()
+    assert meta.slice_index == 0
+    assert meta.slice_start == 0
+    assert meta.slice_length == 3
+    assert meta.total_length == 3
+    (graph,) = graphs.values()
+    assert graph.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
+
+
+@pytest.mark.anyio
 async def test_dynamic_api_planner_immediate_stop_runs_no_round(
     app: FastAPI, job_routes: Any, fake_planner: Any
 ) -> None:

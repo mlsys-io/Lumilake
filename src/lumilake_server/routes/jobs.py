@@ -1168,6 +1168,36 @@ def _validate_list_lambda_slice_span(
             )
 
 
+def _outputs_a_list_lambda(
+    graph: dict[str, Any], inputs: dict[str, list[str]], graph_name: str
+) -> bool:
+    """True when an output of ``graph`` comes from a list-mode Lambda.
+
+    Compiles the round once with the whole input set and applies the same rule
+    as ``_validate_list_lambda_slice_span``. A graph that does not compile, or
+    that has no list-mode Lambda, returns False so the normal dispatch path
+    reports any compile error on the child job.
+    """
+    graph_payload = graph["graph"] if "graph" in graph else graph
+    if not any(
+        op.get("_op") == "LambdaOp" and op.get("mode") == "list"
+        for op in graph_payload.values()
+    ):
+        return False
+    server = LumilakeServer.get_started_instance()
+    try:
+        compiled = server.parse_query(
+            {graph_name: {"graph": graph_payload, "inputs": inputs}}
+        )[graph_name]
+        runtime_graph = server._runtime_builder.build(compiled, node_prefix=graph_name)
+    except (ValueError, KeyError, AssertionError):
+        return False
+    return bool(
+        runtime_graph.list_lambda_cardinality_nodes()
+        & set(runtime_graph.output_node_map)
+    )
+
+
 _GPU_ZERO_CONFLICT = (
     "hardware.gpu=0 conflicts with workflow: this graph contains "
     "ops that require a GPU worker (vLLM / transformers / "
@@ -1800,11 +1830,17 @@ async def _submit_dynamic_child(
     graph_name = f"round_{round_index}"
     inputs = {INPUT_NODE_ID: list(symbols)}
     inputs.update(forwarded_inputs)
+    total_length, varying_input_keys = _input_shape(inputs)
     # Slice the round exactly as a static submission with ``input_batch_size:
     # 1`` does: one graph per row, merged back into one batch by the job
-    # manager.
-    total_length, varying_input_keys = _input_shape(inputs)
-    input_batches = _chunk_inputs(inputs, 1)
+    # manager. A round whose output comes from a list-mode Lambda runs as a
+    # single slice instead, because that whole-list result cannot be
+    # partitioned per row.
+    input_batches = (
+        [inputs]
+        if _outputs_a_list_lambda(graph, inputs, graph_name)
+        else _chunk_inputs(inputs, 1)
+    )
     template_hash = _workflow_template_hash(graph, "native")
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
