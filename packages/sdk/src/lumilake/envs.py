@@ -425,7 +425,7 @@ def valid_stack_name(name: str) -> bool:
 
 
 def stack_name_requirement(name: str) -> str:
-    """Return the message stating why ``name`` fails :func:`valid_stack_name`."""
+    """Return the rule a stack name must meet, naming ``name``."""
     return (
         f"LUMILAKE_STACK_NAME={name!r} must be lowercase letters, digits, "
         "hyphens and underscores, starting and ending with a letter or digit, "
