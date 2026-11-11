@@ -61,7 +61,7 @@ LUMILAKE_DEPLOY_DIR=~/lumilake-deploy lumilake deploy init
 
 The compose file and image are resolved from the installed `lumilake-deploy` package and GHCR; the deployment directory only needs to hold your `.env` files (and any local state docker compose creates).
 
-Set `LUMILAKE_STACK_NAME` in `.env` to run several deployments side by side on one host: it names the Compose project and prefixes every container, volume and FlowMesh worker of that deployment, so `deploy up` and `deploy down` of one leave the others alone. Each deployment still needs its own ports; leave the key empty to keep the bare names.
+Set `LUMILAKE_STACK_NAME` in `.env` to run several deployments side by side on one host: it names the Compose project and is carried in every container, volume and FlowMesh worker name of that deployment, so `deploy up` and `deploy down` of one leave the others alone. Each deployment still needs its own ports; leave the key empty to keep the bare names.
 
 If another FlowMesh stack is already running on the host, resolve port
 collisions before `deploy up`. Common co-tenant defaults are FlowMesh

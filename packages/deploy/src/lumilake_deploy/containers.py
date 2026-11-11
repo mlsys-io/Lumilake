@@ -1,10 +1,10 @@
 """Service-to-container mapping for the Lumilake stack.
 
 ``LUMILAKE_STACK_NAME`` in ``deploy_dir/.env`` names the Compose project
-and prefixes the server container and postgres volume. The FlowMesh side
-derives its ``FLOWMESH_STACK_SLUG`` from the same setting, so the SDK looks
-the names up from the deployment directory instead of hardcoding
-``flowmesh_node_*``.
+and is carried in the server container and postgres volume names. The
+FlowMesh side derives its ``FLOWMESH_STACK_SLUG`` from the same setting, so
+the SDK looks the names up from the deployment directory instead of
+hardcoding ``flowmesh_node_*``.
 """
 
 from pathlib import Path

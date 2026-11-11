@@ -338,7 +338,7 @@ FLOWMESH_OUTPUT_DESTINATION: str = os.environ.get(
 LUMILAKE_REGISTRY: str = os.environ.get("LUMILAKE_REGISTRY", "ghcr.io/mlsys-io")
 LUMILAKE_IMAGE_TAG: str = os.environ.get("LUMILAKE_IMAGE_TAG", "")
 # Name of the deploy stack, which becomes the Compose project name and the
-# prefix of every container, volume and worker name the stack creates.
+# name carried in every container, volume and worker name the stack creates.
 # Empty by default, giving the bare names (``lumilake-server``, ...).
 LUMILAKE_STACK_NAME: str = os.environ.get("LUMILAKE_STACK_NAME", "")
 
