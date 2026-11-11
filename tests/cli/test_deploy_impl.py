@@ -7,6 +7,7 @@ pure-Python bits: ``.env`` helpers, setup layout, and FlowMesh teardown.
 
 import importlib
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -781,24 +782,35 @@ def test_stack_down_skips_when_deploy_dir_has_no_workdir(
     assert all(str(deploy_dir / fm.WORKDIR_NAME) in line for line in warnings)
 
 
-def test_flowmesh_workers_carry_the_stack_name_slug(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Both worker calls name the stack, so two stacks on a host don't collide,
-    and each created worker is logged by its alias."""
-    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+class _WorkerCreation:
+    """Records every worker-creation call."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self, _client: object, **kwargs: object
+    ) -> list[tuple[str, dict[str, str]]]:
+        self.calls.append(kwargs)
+        kind = kwargs["kind"]
+        return [(f"{kind}-0", {"id": "wkr-1", "alias": f"demo_worker_{kind}_0"})]
+
+
+@pytest.fixture
+def flowmesh_env(tmp_path: Path) -> Path:
+    """An env file complete enough for ``create_workers`` to read."""
     env_file = tmp_path / ".env.flowmesh"
     env_file.write_text(
         "SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n"
         "FLOWMESH_REGISTRY=ghcr.io/mlsys-io\nFLOWMESH_VERSION=v1\n"
     )
+    return env_file
 
-    created_calls: list[dict[str, object]] = []
 
-    def _create(_client: object, **kwargs: object) -> list[tuple[str, dict[str, str]]]:
-        created_calls.append(kwargs)
-        kind = kwargs["kind"]
-        return [(f"{kind}-0", {"id": "wkr-1", "alias": f"demo_worker_{kind}_0"})]
+@pytest.fixture
+def worker_creation(monkeypatch: pytest.MonkeyPatch) -> _WorkerCreation:
+    """Stubs the FlowMesh client and the image pull that ``create_workers`` uses."""
+    creation = _WorkerCreation()
 
     class _StubContext:
         def __enter__(self) -> "_StubContext":
@@ -807,20 +819,32 @@ def test_flowmesh_workers_carry_the_stack_name_slug(
         def __exit__(self, *_args: object) -> None:
             return None
 
-    monkeypatch.setattr(fm, "sdk_create_workers", _create)
+    monkeypatch.setattr(fm, "sdk_create_workers", creation)
     monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
     monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
-    monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: ["0", "1"])
+    return creation
+
+
+def test_flowmesh_workers_carry_the_stack_name_slug(
+    tmp_path: Path,
+    flowmesh_env: Path,
+    worker_creation: _WorkerCreation,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both worker calls name the stack, so two stacks on a host don't collide,
+    and each created worker is logged by its alias."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+    monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: (["0", "1"], ""))
     logged: list[str] = []
     monkeypatch.setattr(fm, "_info", logged.append)
 
-    fm.create_workers(env_file, cpu_count=2, gpu_devices="all")
+    fm.create_workers(flowmesh_env, cpu_count=2, gpu_devices="all")
 
-    assert [call["kind"] for call in created_calls] == ["cpu", "gpu"]
-    assert all(call["slug"] == "demo" for call in created_calls)
-    assert created_calls[0]["count"] == 2
-    assert created_calls[1]["count"] == 2
-    assert created_calls[1]["targets"] == "0,1"
+    assert [call["kind"] for call in worker_creation.calls] == ["cpu", "gpu"]
+    assert all(call["slug"] == "demo" for call in worker_creation.calls)
+    assert worker_creation.calls[0]["count"] == 2
+    assert worker_creation.calls[1]["count"] == 2
+    assert worker_creation.calls[1]["targets"] == "0,1"
     assert "Created cpu-0: demo_worker_cpu_0" in logged
     assert "Created gpu-0: demo_worker_gpu_0" in logged
 
@@ -1017,3 +1041,136 @@ def test_run_setup_rejects_an_invalid_stack_name_before_flowmesh(
     finally:
         os.environ.pop("LUMILAKE_STACK_NAME", None)
         importlib.reload(envs)
+
+
+class _NvidiaSmi:
+    """Stands in for ``subprocess.run`` and reports the GPUs it is given,
+    counting calls."""
+
+    def __init__(self, gpus: str = "0\n1\n", returncode: int = 0) -> None:
+        self.calls = 0
+        self.gpus = gpus
+        self.returncode = returncode
+
+    def __call__(
+        self, args: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls += 1
+        return subprocess.CompletedProcess(
+            args, self.returncode, stdout=self.gpus, stderr=""
+        )
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_gpu_devices_select_no_gpu(
+    blank: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank value is the documented default: no GPU workers, and the host's
+    GPUs are not even probed. Its message tells the user how to opt in."""
+    smi = _NvidiaSmi()
+    monkeypatch.setattr(fm.subprocess, "run", smi)
+
+    device_ids, message = fm._resolve_gpu_device_ids(blank)
+
+    assert device_ids == []
+    assert smi.calls == 0
+    assert "LUMILAKE_GPU_DEVICES is blank" in message
+
+
+@pytest.mark.parametrize("value", ["all", " ALL "])
+def test_all_selects_every_detected_gpu(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smi = _NvidiaSmi()
+    monkeypatch.setattr(fm.subprocess, "run", smi)
+
+    assert fm._resolve_gpu_device_ids(value) == (["0", "1"], "")
+    assert smi.calls == 1
+
+
+def test_a_list_selects_exactly_those_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    smi = _NvidiaSmi()
+    monkeypatch.setattr(fm.subprocess, "run", smi)
+
+    assert fm._resolve_gpu_device_ids("0, 2,") == (["0", "2"], "")
+    assert smi.calls == 0
+
+
+@pytest.mark.parametrize("value", [",", " , "])
+def test_a_list_naming_no_device_selects_none(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smi = _NvidiaSmi()
+    monkeypatch.setattr(fm.subprocess, "run", smi)
+
+    device_ids, message = fm._resolve_gpu_device_ids(value)
+
+    assert device_ids == []
+    assert smi.calls == 0
+    assert "names no device" in message
+
+
+def test_all_without_nvidia_smi_reports_the_missing_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit ``all`` whose probe cannot run says so instead of quietly
+    creating no GPU worker."""
+
+    def _missing(
+        _args: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(fm.subprocess, "run", _missing)
+
+    device_ids, message = fm._resolve_gpu_device_ids("all")
+
+    assert device_ids == []
+    assert "nvidia-smi was not found" in message
+
+
+def test_all_with_a_failed_probe_reports_the_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that exits non-zero reports its status and stderr."""
+    smi = _NvidiaSmi(gpus="", returncode=9)
+    monkeypatch.setattr(fm.subprocess, "run", smi)
+
+    device_ids, message = fm._resolve_gpu_device_ids("all")
+
+    assert device_ids == []
+    assert "status 9" in message
+
+
+def test_all_with_no_reported_gpu_does_not_tell_the_user_to_set_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``all`` already names every GPU, so its message reports the empty host."""
+    smi = _NvidiaSmi(gpus="")
+    monkeypatch.setattr(fm.subprocess, "run", smi)
+
+    device_ids, message = fm._resolve_gpu_device_ids("all")
+
+    assert device_ids == []
+    assert "reported no GPU" in message
+    assert "to `all`" not in message
+
+
+def test_blank_gpu_devices_create_no_gpu_worker(
+    flowmesh_env: Path,
+    worker_creation: _WorkerCreation,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``LUMILAKE_GPU_DEVICES`` blank, a host that has GPUs still gets only
+    the CPU workers."""
+    smi = _NvidiaSmi()
+    warnings: list[str] = []
+    monkeypatch.setattr(fm.subprocess, "run", smi)
+    monkeypatch.setattr(fm, "_warn", warnings.append)
+
+    fm.create_workers(flowmesh_env, cpu_count=1, gpu_devices="")
+
+    assert [call["kind"] for call in worker_creation.calls] == ["cpu"]
+    assert smi.calls == 0
+    assert len(warnings) == 1
+    assert "LUMILAKE_GPU_DEVICES is blank" in warnings[0]
