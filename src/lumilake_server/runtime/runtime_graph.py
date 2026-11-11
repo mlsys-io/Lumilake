@@ -3639,7 +3639,7 @@ class RuntimeGraphBuilder:
         if upstream_mode == "sql":
             return self._apply_limit_to_sample_sql(
                 queries[0],
-                max(1, int(envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES)),
+                max(1, envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES),
             )
         return queries[0]
 

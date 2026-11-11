@@ -112,10 +112,10 @@ class DPSolver:
 
         if cpu_load_cost_weight is None:
             cpu_load_cost_weight = 1.0
-        self.cpu_load_cost_weight = max(0.0, float(cpu_load_cost_weight))
+        self.cpu_load_cost_weight = max(0.0, cpu_load_cost_weight)
         if cpu_load_early_weight is None:
             cpu_load_early_weight = 2.0
-        self.cpu_load_early_weight = max(0.0, float(cpu_load_early_weight))
+        self.cpu_load_early_weight = max(0.0, cpu_load_early_weight)
         self.disable_epoch_batch_cost = bool(disable_epoch_batch_cost)
         self.disable_cpu_load_cost = bool(disable_cpu_load_cost)
         self.cpu_cost_mode = self._resolve_cpu_cost_mode(cpu_cost_mode)
@@ -139,7 +139,7 @@ class DPSolver:
         self.gpu_cost_sum_weight = max(0.0, float(sum_weight))
         if switch_penalty_weight is None:
             switch_penalty_weight = 0.1
-        self.switch_penalty_weight = max(0.0, float(switch_penalty_weight))
+        self.switch_penalty_weight = max(0.0, switch_penalty_weight)
         self.enable_batch_shape_pruning = enable_batch_shape_pruning
         self.gpu_batch_slack = max(0, gpu_batch_slack)
         self.enable_lower_bound_pruning = enable_lower_bound_pruning

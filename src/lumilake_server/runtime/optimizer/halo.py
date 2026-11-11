@@ -1251,7 +1251,7 @@ class HaloOptimizer(BaseOptimizer):
                 "Halo model size resolution requires a non-empty model name. "
                 f"node_id={node.id!r}"
             )
-        normalized = str(model_name).strip()
+        normalized = model_name.strip()
         if not normalized:
             raise ValueError(
                 "Halo model size resolution requires a non-empty model name. "
