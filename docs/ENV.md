@@ -62,6 +62,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_DEFAULT_OPTIMIZER` | Optimizer used when a job omits its own `optimizer` field (`POST /api/v1/jobs`, `POST /api/v1/jobs/preview`, CLI `--optimizer`). Must resolve to a `BaseOptimizer` registered in `OPTIMIZER_TYPES` — the built-ins `halo` and `topological-sort`, plus any types a plugin adds to `OPTIMIZER_TYPES` at install time. Types advertised only via an `OptimizerProvider` (e.g. `lumilake_hook.RemoteOptimizer`) are not eligible at boot and must be selected per job. Defaults to `halo`. |
 | `LUMILAKE_OPTIMIZER_BATCH_SIZE` | Maximum batch size used by the optimizer loop. |
 | `LUMILAKE_BATCH_ACCUMULATION_SECONDS` | Wait window before forming the first optimization batch. |
+| `LUMILAKE_DISPATCH_QUEUE_DEPTH` | In-flight batches a worker may carry before the scheduler stops offering it. Defaults to `1`, which admits a worker again only once the batch it was claimed for finishes. A higher value offers the worker while an earlier batch is still queued or running on it, so the next batch's CPU work overlaps the current batch's GPU work; extra work queues behind the running task instead of waiting for the whole batch to drain. |
 | `LUMILAKE_STARVATION_LIMIT` | Starvation threshold; `0` means immediate override. |
 | `LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS` | Timeout for optimizer subprocess execution. |
 | `LUMILAKE_QUEUE_QUANTUM_HIGH` | High-priority queue quantum. Defaults to `20`. |
