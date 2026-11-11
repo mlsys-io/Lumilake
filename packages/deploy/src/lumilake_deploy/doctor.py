@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from lumilake.envs import valid_stack_name
 
+from .env import read_env_file
+
 type FindingLevel = Literal["note", "warning", "error"]
 
 
@@ -134,19 +136,8 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
-    """Tolerant ``.env`` parser — accepts ``KEY=value`` or ``KEY="value"``."""
-    values: dict[str, str] = {}
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if value.startswith('"') and value.endswith('"'):
-            value = value[1:-1]
-        values[key] = value
-    return values
+    """Parse a ``.env`` file the way docker compose reads it."""
+    return read_env_file(path)
 
 
 def _check_required(values: dict[str, str], report: DoctorReport) -> None:

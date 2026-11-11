@@ -143,6 +143,25 @@ def test_init_deploy_dir_takes_the_url_from_the_deployment_env(
     assert LumilakeConfig.from_file(config_path).base_url == "http://127.0.0.1:9100"
 
 
+def test_init_deploy_dir_ignores_an_inline_comment(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """``deploy init`` writes the port with a trailing explanation."""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    (deploy_dir / ".env").write_text(
+        'LUMILAKE_SERVER_PORT="9100"          # Bind port for the server\n'
+    )
+    config_path = tmp_path / "config.toml"
+
+    result = runner.invoke(
+        app, ["init", "--deploy-dir", str(deploy_dir), "--config", str(config_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert LumilakeConfig.from_file(config_path).base_url == "http://127.0.0.1:9100"
+
+
 def test_init_deploy_dir_keeps_a_saved_api_key(
     runner: CliRunner, tmp_path: Path
 ) -> None:

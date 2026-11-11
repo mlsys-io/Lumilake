@@ -32,6 +32,15 @@ def test_read_env_value_handles_quoted_and_unquoted(tmp_path: Path) -> None:
     assert read_env_value(path, "MISSING") == ""
 
 
+def test_read_env_value_drops_an_inline_comment(tmp_path: Path) -> None:
+    """The packaged template annotates values on the same line."""
+    path = tmp_path / "env_fixture"
+    path.write_text('LUMILAKE_STACK_NAME=""     # Name of this deploy stack\n')
+    assert read_env_value(path, "LUMILAKE_STACK_NAME") == ""
+    path.write_text('LUMILAKE_STACK_NAME="demo"   # Name of this deploy stack\n')
+    assert read_env_value(path, "LUMILAKE_STACK_NAME") == "demo"
+
+
 def test_load_project_env_refreshes_env_registry(tmp_path: Path) -> None:
     keys = ("LUMILAKE_IMAGE_TAG",)
     old_values = {key: os.environ.get(key) for key in keys}
