@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from flowmesh.exceptions import APIError
+from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
@@ -871,6 +872,23 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         """
         workers = await flowmesh_for_server().workers.list()
         return [w.id for w in workers if not w.stale]
+
+    async def get_dispatchable_workers(self) -> list[str]:
+        """Return registered workers in a state that can take a queued task.
+
+        A worker qualifies while FlowMesh lists it idle or busy and its cordon
+        is off: a task pinned to such a worker waits for it. On a stopping,
+        unavailable or cordoned worker the pin can be lifted and the task run
+        on another worker, so the scheduler does not plan work onto it.
+        """
+        workers = await flowmesh_for_server().workers.list()
+        return [
+            w.id
+            for w in workers
+            if not w.stale
+            and not w.cordoned
+            and w.status in (WorkerStatus.IDLE, WorkerStatus.BUSY)
+        ]
 
     def count_runtime_nodes(self, graphs: dict[str, RuntimeGraph]) -> int:
         return sum(graph.node_count for graph in graphs.values())

@@ -61,6 +61,16 @@ class BaseRuntimeManager(ABC):
         """
         return await self.get_workers()
 
+    async def get_dispatchable_workers(self) -> list[str]:
+        """Return every registered worker that can take a queued task.
+
+        Defaults to ``get_all_workers``; backends that track worker status
+        override this to leave out workers that cannot run queued work, such as
+        those stopping, unavailable or cordoned, so the scheduler does not plan
+        new batches onto them.
+        """
+        return await self.get_all_workers()
+
     @abstractmethod
     async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
         """Return hardware profile for a worker."""

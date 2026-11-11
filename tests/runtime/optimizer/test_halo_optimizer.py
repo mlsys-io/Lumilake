@@ -3,6 +3,7 @@ import json
 import struct
 from pathlib import Path
 
+import httpx2
 import pytest
 from huggingface_hub.utils import NotASafetensorsRepoError
 
@@ -659,6 +660,30 @@ def test_safetensors_resolution_reports_both_failed_sources(
     assert "org/missing-model" in message
     assert "local HF cache" in message
     assert "Hugging Face safetensors metadata" in message
+
+
+def test_safetensors_resolution_translates_hub_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host with neither a cache nor network reaches the Hub and gets a
+    transport error, which is not an ``OSError``; it must still fold into the
+    model-size error that names every failed source instead of escaping."""
+    optimizer = HaloOptimizer()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.try_to_load_from_cache",
+        lambda model, filename: None,
+    )
+    monkeypatch.setattr(
+        "lumilake_server.runtime.optimizer.halo.get_safetensors_metadata",
+        lambda model: (_ for _ in ()).throw(httpx2.ConnectError("connection refused")),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        optimizer._safetensors_parameter_count_for_model("org/unreachable-model")
+    message = str(exc_info.value)
+    assert "org/unreachable-model" in message
+    assert "local HF cache" in message
+    assert "Hugging Face safetensors metadata: connection refused" in message
 
 
 def test_model_size_resolution_rejects_unknown_model(

@@ -117,6 +117,7 @@ server-runtime = [
     "flowmesh-sdk==0.1.13",
     "jsonschema==4.25.1",
     "huggingface-hub==2.3.0",
+    "httpx2==2.16.0",
     # Security floors for transitive dependencies.
     "anyio==4.15.1",
     "certifi==2026.10.23",
