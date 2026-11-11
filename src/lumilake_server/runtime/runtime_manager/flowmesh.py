@@ -21,8 +21,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
-from flowmesh.exceptions import APIError
+from flowmesh.exceptions import APIError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
@@ -210,20 +211,27 @@ _read_logger = init_child_logger("FlowmeshReadRetry")
 
 
 async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) -> T:
-    """Run a read-only FlowMesh call, retrying gateway 502/503/504 responses."""
+    """Run a read-only FlowMesh call, retrying gateway 502/503/504 responses and
+    dropped connections.
+
+    Only idempotent reads go through here: after a transport error the request
+    may or may not have reached FlowMesh, which is safe to repeat for a read and
+    not for a submit.
+    """
     for delay in _FLOWMESH_RETRY_DELAYS_S:
         try:
             return await call()
         except APIError as e:
             if e.status_code not in _TRANSIENT_FLOWMESH_STATUS:
                 raise
-            _read_logger.warning(
-                "FlowMesh read %s returned %s; retrying in %.1fs: %s",
-                what,
-                e.status_code,
-                delay,
-                _sanitize_flowmesh_api_error(e),
+            failure = f"returned {e.status_code}: {_sanitize_flowmesh_api_error(e)}"
+        except (httpx.TransportError, FlowMeshConnectionError) as e:
+            failure = (
+                f"failed with {type(e).__name__}: {redact_secrets_in_text(str(e))}"
             )
+        _read_logger.warning(
+            "FlowMesh read %s %s; retrying in %.1fs", what, failure, delay
+        )
         await asyncio.sleep(delay)
     return await call()
 
