@@ -574,6 +574,7 @@ class JobRecord:
     clustering_seconds: float | None = None
     error: str | None = None
     progress: JobProgress = field(default_factory=JobProgress)
+    terminal_usage_finalized: bool = False
     result: LumilakeResponse | None = None
     folder_inputs: dict[str, str] = field(default_factory=dict)
     trace_ids: list[str] = field(default_factory=list)
@@ -3628,7 +3629,10 @@ async def get_job_progress(
         if needs_save:
             await asyncio.to_thread(_job_storage.save, record)
 
-    if record.status not in TERMINAL_JOB_STATUSES:
+    if (
+        record.status not in TERMINAL_JOB_STATUSES
+        or not record.terminal_usage_finalized
+    ):
         fm = flowmesh_for(request)
         # ``trace_ids`` and ``job_task_ids`` are persisted only once the job
         # finishes.
@@ -4125,6 +4129,7 @@ async def _persist_terminal_usage(
         computed = None
     async with jobs_lock:
         record.progress.usage = computed
+        record.terminal_usage_finalized = True
 
 
 @router.get(
