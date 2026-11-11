@@ -20,7 +20,8 @@ class _PoolRuntimeManager(RecordingRuntimeManager):
 
     FlowMesh lists only IDLE workers through ``get_workers`` and marks a worker
     BUSY while it runs a task, so the test models that by editing ``idle``
-    around a running batch.
+    around a running batch. ``dispatchable`` is the set FlowMesh would let take
+    queued work; it follows the pool unless the test narrows it.
     """
 
     def __init__(self, workers: list[str], profiles: dict[str, dict[str, Any]]) -> None:
@@ -28,12 +29,16 @@ class _PoolRuntimeManager(RecordingRuntimeManager):
         self.workers = workers
         self.profiles = profiles
         self.idle = list(workers)
+        self.dispatchable = list(workers)
 
     async def get_workers(self) -> list[str]:
         return list(self.idle)
 
     async def get_all_workers(self) -> list[str]:
         return list(self.workers)
+
+    async def get_dispatchable_workers(self) -> list[str]:
+        return list(self.dispatchable)
 
     async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
         return self.profiles[worker_id]
@@ -243,6 +248,43 @@ async def test_a_batch_lands_on_the_free_worker_not_the_committed_one(
     assert free.cpu_worker_ids == ("w2", "w1")
     assert await server._try_claim_workers(_cpu_batch(), free) == ["w2"]
     assert server._worker_reservations == {"w1": 1, "w2": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_committed_worker_flowmesh_no_longer_lists_is_not_offered(
+    server_factory,
+) -> None:
+    """A worker that reserved capacity but left the cluster is dropped instead of
+    given queued work it cannot run."""
+    server = server_factory()
+    server.config.cpu_worker_group_size = 1
+    server.config.gpu_worker_group_size = 0
+    server.config.dispatch_queue_depth = 2
+    runtime_manager = _PoolRuntimeManager(["w1"], {"w1": _CPU_PROFILE})
+    server.runtime_manager = cast(Any, runtime_manager)
+    server._worker_reservations["w1"] = 1
+    runtime_manager.idle = []
+    runtime_manager.workers = []
+    runtime_manager.dispatchable = []
+
+    assert (await server._snapshot_free_capacity()).is_empty()
+
+
+@pytest.mark.asyncio
+async def test_a_cordoned_committed_worker_is_not_offered(server_factory) -> None:
+    """A worker still registered but unable to take queued work, such as a
+    cordoned one, is not re-offered while it carries a batch."""
+    server = server_factory()
+    server.config.cpu_worker_group_size = 1
+    server.config.gpu_worker_group_size = 0
+    server.config.dispatch_queue_depth = 2
+    runtime_manager = _PoolRuntimeManager(["w1"], {"w1": _CPU_PROFILE})
+    server.runtime_manager = cast(Any, runtime_manager)
+    server._worker_reservations["w1"] = 1
+    runtime_manager.idle = []
+    runtime_manager.dispatchable = []
+
+    assert (await server._snapshot_free_capacity()).is_empty()
 
 
 @pytest.mark.asyncio
