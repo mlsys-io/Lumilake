@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from lumilake.envs import valid_stack_name
+from lumilake.envs import stack_name_requirement, valid_stack_name
 
 from .env import read_env_file
 
@@ -180,12 +180,7 @@ def _check_stack_name(values: dict[str, str], report: DoctorReport) -> None:
     """A set ``LUMILAKE_STACK_NAME`` must name this deployment's own stack."""
     name = values.get("LUMILAKE_STACK_NAME", "")
     if name and not valid_stack_name(name):
-        report.error(
-            f"LUMILAKE_STACK_NAME={name!r} is not valid; use lowercase letters, "
-            "digits, hyphens and underscores, starting and ending with a letter "
-            "or digit, at most 48 characters, and not `lumilake`, which unnamed "
-            "bundled deployments use"
-        )
+        report.error(stack_name_requirement(name))
 
 
 def run_env_checks(

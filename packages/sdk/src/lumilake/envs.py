@@ -424,6 +424,16 @@ def valid_stack_name(name: str) -> bool:
     )
 
 
+def stack_name_requirement(name: str) -> str:
+    """Return the message stating why ``name`` fails :func:`valid_stack_name`."""
+    return (
+        f"LUMILAKE_STACK_NAME={name!r} must be lowercase letters, digits, "
+        "hyphens and underscores, starting and ending with a letter or digit, "
+        "at most 48 characters, and not `lumilake`, which unnamed bundled "
+        "deployments use"
+    )
+
+
 def validate() -> None:
     """Enforce required env vars and valid value ranges.
 
@@ -498,9 +508,4 @@ def validate() -> None:
             "live at different trust boundaries."
         )
     if LUMILAKE_STACK_NAME and not valid_stack_name(LUMILAKE_STACK_NAME):
-        raise ValueError(
-            "LUMILAKE_STACK_NAME must be lowercase letters, digits, hyphens "
-            "and underscores, starting and ending with a letter or digit, at "
-            "most 48 characters, and not `lumilake`, which unnamed bundled "
-            "deployments use"
-        )
+        raise ValueError(stack_name_requirement(LUMILAKE_STACK_NAME))
