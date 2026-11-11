@@ -12,8 +12,11 @@ from typing import Any
 
 import pytest
 
+from lumilake import config as sdk_config_mod
 from lumilake import envs
+from lumilake.config import LumilakeConfig
 from lumilake_cli.commands import deploy as deploy_cmd
+from lumilake_cli.core import config as cli_config_mod
 from lumilake_deploy import containers as containers_mod
 from lumilake_deploy import doctor as doctor_mod
 from lumilake_deploy import flowmesh as fm
@@ -486,22 +489,32 @@ def test_cli_init_existing_file_shows_diff(
     assert any("Diff vs existing" in line for line in captured)
 
 
-def test_cli_up_leaves_the_cli_config_alone(
+def test_cli_up_never_writes_the_cli_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``deploy up`` reports how to point the CLI here; it never writes it."""
     monkeypatch.setattr(deploy_cmd, "_run_setup", lambda *a, **kw: None)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", home.as_posix())
+    config_path = home / ".lumilake" / "config.toml"
+    monkeypatch.setattr(sdk_config_mod, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(cli_config_mod, "DEFAULT_CONFIG_PATH", config_path)
+    saved: list[Path | None] = []
+
+    def _save(_self: LumilakeConfig, path: Path | None = None) -> None:
+        saved.append(path)
+
+    monkeypatch.setattr(LumilakeConfig, "save", _save)
     (tmp_path / ".env").write_text('LUMILAKE_SERVER_PORT="9100"\n')
-    config_path = tmp_path / "config.toml"
-    original = 'base_url = "http://elsewhere:9000"\n'
-    config_path.write_text(original)
 
     messages: list[str] = []
     monkeypatch.setattr(deploy_cmd.logging, "info", lambda m: messages.append(m))
 
     deploy_cmd.up(_fake_ctx(tmp_path))
 
-    assert config_path.read_text() == original
+    assert saved == []
+    assert not config_path.exists()
     assert any("--deploy-dir" in m for m in messages)
     assert any("http://127.0.0.1:9100" in m for m in messages)
 
@@ -512,9 +525,33 @@ def test_cli_init_honors_project_dir_argument(tmp_path: Path) -> None:
     assert (tmp_path / ".env").is_file()
 
 
+def test_run_stop_names_the_stack_in_the_compose_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``down`` tears down this deployment's Compose project only."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+    run_calls: list[list[str]] = []
+
+    def _run(cmd: list[str], **_kwargs: object) -> None:
+        run_calls.append(cmd)
+
+    monkeypatch.setattr(stop_mod, "load_project_env", lambda _root: None)
+    monkeypatch.setattr(stop_mod.docker_client, "engine_is_up", lambda: False)
+    monkeypatch.setattr(stop_mod, "run", _run)
+
+    stop_mod.run_stop(tmp_path)
+
+    assert len(run_calls) == 1
+    cmd = run_calls[0]
+    assert cmd[:2] == ["docker", "compose"]
+    assert "-p" in cmd and cmd[cmd.index("-p") + 1] == "demo"
+    assert cmd[-1] == "down"
+
+
 def test_reset_preserves_flowmesh_env_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
     env_file = tmp_path / ".env.flowmesh"
     env_file.write_text("SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n")
 
@@ -538,6 +575,7 @@ def test_reset_preserves_flowmesh_env_file(
     cmd = run_calls[0]
     assert cmd[:2] == ["docker", "compose"]
     assert cmd[-4:] == ["--profile", "server", "down", "-v"]
+    assert "-p" in cmd and cmd[cmd.index("-p") + 1] == "demo"
     assert "-f" in cmd and "--project-directory" in cmd
 
 
@@ -639,6 +677,44 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
 
     assert destroy_kwargs == {"ignore_unreachable": True}
     assert compose_calls == [["--profile", "root", "down"]]
+
+
+def test_flowmesh_workers_carry_the_stack_name_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both worker calls name the stack, so two stacks on a host don't collide."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
+    env_file = tmp_path / ".env.flowmesh"
+    env_file.write_text(
+        "SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n"
+        "FLOWMESH_REGISTRY=ghcr.io/mlsys-io\nFLOWMESH_VERSION=v1\n"
+    )
+
+    created_calls: list[dict[str, object]] = []
+
+    def _create(_client: object, **kwargs: object) -> list[tuple[str, dict[str, str]]]:
+        created_calls.append(kwargs)
+        return []
+
+    class _StubContext:
+        def __enter__(self) -> "_StubContext":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(fm, "sdk_create_workers", _create)
+    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
+    monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
+    monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: ["0", "1"])
+
+    fm.create_workers(env_file, cpu_count=2, gpu_devices="all")
+
+    assert [call["kind"] for call in created_calls] == ["cpu", "gpu"]
+    assert all(call["slug"] == "demo" for call in created_calls)
+    assert created_calls[0]["count"] == 2
+    assert created_calls[1]["count"] == 2
+    assert created_calls[1]["targets"] == "0,1"
 
 
 def test_server_container_defaults_to_bare_name(tmp_path: Path) -> None:
@@ -756,5 +832,46 @@ def test_load_project_env_reads_the_stack_name(tmp_path: Path) -> None:
 
 def test_stack_name_accepts_only_compose_project_names() -> None:
     assert envs.valid_stack_name("stack-1_a")
+    assert not envs.valid_stack_name("Demo")
     assert not envs.valid_stack_name("Bad Name")
     assert not envs.valid_stack_name("-leading")
+
+
+def _patch_valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give ``envs.validate()`` a valid environment apart from the stack name."""
+    values: dict[str, object] = {
+        "LUMILAKE_SERVER_HOST": "0.0.0.0",
+        "RUNTIME_ORCHESTRATOR_URL": "http://127.0.0.1:18000",
+        "LUMILAKE_REQUIRE_IDENTITY_PROVIDER": False,
+        "LUMILAKE_SERVER_PORT": 9000,
+        "LUMILAKE_API_DEFAULT_URL": "https://lum.id/llm/v1/chat/completions",
+        "LUMILAKE_JOB_MANAGER_TYPE": "priority",
+        "LUMILAKE_COST_DB_SEC_PER_QUERY": 0.05,
+        "LUMILAKE_COST_CPU_SEC_PER_NODE": 0.1,
+        "LUMILAKE_COST_DEFAULT_MODEL_SIZE_B": 20.0,
+        "LUMILAKE_COST_INPUT_QUERY_COUNT": 1,
+        "LUMILAKE_SCHEDULER_CUSTOM_ARGS": "{}",
+        "LUMILAKE_RUNTIME_MANAGER_TYPE": "default",
+        "LUMILAKE_STARVATION_LIMIT": 3,
+        "LUMILAKE_BATCH_ACCUMULATION_SECONDS": 0.0,
+        "LUMILAKE_CPU_WORKER_GROUP_SIZE": 1,
+        "LUMILAKE_GPU_WORKER_GROUP_SIZE": 0,
+        "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS": 60.0,
+        "LUMID_DATA_TIMEOUT_SECONDS": 30.0,
+        "LUMILAKE_HTTP_TIMEOUT_SECONDS": 60.0,
+    }
+    for name, value in values.items():
+        monkeypatch.setattr(envs, name, value)
+
+
+def test_validate_rejects_an_invalid_stack_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name Compose would refuse fails before any container is created."""
+    _patch_valid_env(monkeypatch)
+    monkeypatch.setattr(envs, "LUMILAKE_STACK_NAME", "Demo")
+    with pytest.raises(ValueError, match="LUMILAKE_STACK_NAME"):
+        envs.validate()
+
+    monkeypatch.setattr(envs, "LUMILAKE_STACK_NAME", "demo-1")
+    envs.validate()
