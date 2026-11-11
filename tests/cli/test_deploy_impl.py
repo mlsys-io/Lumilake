@@ -711,7 +711,8 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
 def test_flowmesh_workers_carry_the_stack_name_slug(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both worker calls name the stack, so two stacks on a host don't collide."""
+    """Both worker calls name the stack, so two stacks on a host don't collide,
+    and each created worker is logged by its alias."""
     (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
     env_file = tmp_path / ".env.flowmesh"
     env_file.write_text(
@@ -723,7 +724,8 @@ def test_flowmesh_workers_carry_the_stack_name_slug(
 
     def _create(_client: object, **kwargs: object) -> list[tuple[str, dict[str, str]]]:
         created_calls.append(kwargs)
-        return []
+        kind = kwargs["kind"]
+        return [(f"{kind}-0", {"id": "wkr-1", "alias": f"demo_worker_{kind}_0"})]
 
     class _StubContext:
         def __enter__(self) -> "_StubContext":
@@ -736,6 +738,8 @@ def test_flowmesh_workers_carry_the_stack_name_slug(
     monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
     monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
     monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: ["0", "1"])
+    logged: list[str] = []
+    monkeypatch.setattr(fm, "_info", logged.append)
 
     fm.create_workers(env_file, cpu_count=2, gpu_devices="all")
 
@@ -744,6 +748,8 @@ def test_flowmesh_workers_carry_the_stack_name_slug(
     assert created_calls[0]["count"] == 2
     assert created_calls[1]["count"] == 2
     assert created_calls[1]["targets"] == "0,1"
+    assert "Created cpu-0: demo_worker_cpu_0" in logged
+    assert "Created gpu-0: demo_worker_gpu_0" in logged
 
 
 def test_server_container_defaults_to_bare_name(tmp_path: Path) -> None:

@@ -327,7 +327,7 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
                 client, kind="cpu", count=cpu_count, slug=slug or None
             )
             for label, resp in created:
-                _info(f"Created {label}: {resp['name']}")
+                _info(f"Created {label}: {resp['alias']}")
 
         device_ids = _resolve_gpu_device_ids(gpu_devices)
         if not device_ids:
@@ -348,7 +348,7 @@ def create_workers(env_file: str | Path, cpu_count: int, gpu_devices: str) -> No
                 slug=slug or None,
             )
             for label, resp in created:
-                _info(f"Created {label}: {resp['name']}")
+                _info(f"Created {label}: {resp['alias']}")
 
 
 def _resolve_gpu_device_ids(gpu_devices: str) -> list[str]:
