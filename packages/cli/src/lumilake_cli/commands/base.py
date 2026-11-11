@@ -37,14 +37,14 @@ def _redact_api_key(
 
 @app.command()
 def init(
-    url: str = typer.Argument(
-        "http://127.0.0.1:9000",
+    url: str | None = typer.Argument(
+        None,
         help="Lumilake server URL (e.g. http://127.0.0.1:9000).",
     ),
     api_key: str | None = typer.Option(
         None, "--api-key", help="Bearer presented as Authorization: Bearer …"
     ),
-    deploy_dir: Path = typer.Option(
+    deploy_dir: Path | None = typer.Option(
         None,
         "--deploy-dir",
         help=(
@@ -66,15 +66,29 @@ def init(
     """Initialize configuration for the Lumilake CLI.
 
     With ``--deploy-dir`` the server URL comes from that deployment's
-    ``.env``, and a saved ``api_key`` is kept unless ``--api-key`` is given.
+    ``.env``, which must exist, and a saved ``api_key`` is kept unless
+    ``--api-key`` is given. Without it the URL argument defaults to the local
+    server.
     """
     saved_api_key: str | None = None
     if deploy_dir is not None:
+        if url is not None:
+            raise typer.BadParameter(
+                "Pass either a URL argument or --deploy-dir, not both.",
+                param_hint="--deploy-dir",
+            )
+        if not (deploy_dir / ".env").is_file():
+            raise typer.BadParameter(
+                f"{deploy_dir} is not a Lumilake deployment (no .env there).",
+                param_hint="--deploy-dir",
+            )
         url = deployment_url(deploy_dir)
         try:
             saved_api_key = LumilakeConfig.from_file(config_path).api_key
         except (ConfigNotFoundError, ConfigInvalidError):
             saved_api_key = None
+    elif url is None:
+        url = "http://127.0.0.1:9000"
     if config_path.exists():
         if force:
             logging.warning(f"Overwriting existing config at {config_path}")

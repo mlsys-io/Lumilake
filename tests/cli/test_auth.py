@@ -230,6 +230,64 @@ def test_init_deploy_dir_honors_an_explicit_api_key(
     assert LumilakeConfig.from_file(config_path).api_key == "new-key"
 
 
+def test_init_deploy_dir_requires_an_env_file(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """A directory that is not a deployment is rejected instead of silently
+    saving the default port."""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    config_path = tmp_path / "config.toml"
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "--deploy-dir",
+            deploy_dir.as_posix(),
+            "--config",
+            config_path.as_posix(),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "--deploy-dir" in result.output
+    assert not config_path.exists()
+
+
+def test_init_rejects_a_url_with_deploy_dir(runner: CliRunner, tmp_path: Path) -> None:
+    """The URL argument and --deploy-dir name the same thing, so passing both is
+    a usage error rather than a silently ignored argument."""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    (deploy_dir / ".env").write_text('LUMILAKE_SERVER_PORT="9100"\n')
+    config_path = tmp_path / "config.toml"
+
+    result = runner.invoke(
+        app,
+        [
+            "init",
+            "http://elsewhere:9000",
+            "--deploy-dir",
+            deploy_dir.as_posix(),
+            "--config",
+            config_path.as_posix(),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert not config_path.exists()
+
+
+def test_init_without_a_url_saves_the_local_default(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.toml"
+    result = runner.invoke(app, ["init", "--config", config_path.as_posix()])
+    assert result.exit_code == 0, result.output
+    assert LumilakeConfig.from_file(config_path).base_url == "http://127.0.0.1:9000"
+
+
 def test_deinit_deletes_config_file(runner: CliRunner, tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     LumilakeConfig(base_url="http://x", api_key="y").save(config_path)
