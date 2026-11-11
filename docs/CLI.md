@@ -75,7 +75,7 @@ HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
 | `lumilake deploy doctor [--flowmesh]` | Validate deployment env files. |
 | `lumilake deploy build` | Build the Lumilake server Docker image from source. |
 | `lumilake deploy pull` | Pull the published server image from the registry (`$LUMILAKE_REGISTRY`). |
-| `lumilake deploy up` | Start the local stack and print how to point the CLI at it (image must already be present — run `pull` or `build` first). |
+| `lumilake deploy up` | Start the local stack (image must already be present). |
 | `lumilake deploy down [--wipe-archive]` | Stop the stack but keep data volumes. Non-destructive. |
 | `lumilake deploy clean` | Stop the stack and delete volumes. Destructive. |
 | `lumilake deploy purge <image_tag> [--dry-run] [--force]` | Remove one local Lumilake server image tag for the configured registry. |
