@@ -1467,8 +1467,9 @@ class RuntimeGraphBuilder:
                                 f"DataRetrievalOp '{op_id}' template param "
                                 f"{param.get('label')!r} references '{node}', which"
                                 " produces multiple rows but not one output item"
-                                " per row; only a plain local LLMChatOp binds"
-                                " row-wise to a retrieval param, so this would"
+                                " per row; only a plain local LLMChatOp or an"
+                                " LLMCompletionOp binds row-wise to a retrieval"
+                                " param, so this would"
                                 " silently drop every row but the first."
                             )
                         param_row_counts[str(param.get("label"))] = row_count

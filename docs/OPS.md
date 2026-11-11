@@ -206,9 +206,10 @@ internally; the runtime flattens that back to per-row values at aggregation).
 ### LLMCompletionOp
 
 `LLMCompletionOp` generates from rendered string prompts without the model
-chat template. `prompt` references a workflow input or an upstream op that
-produces one prompt string per row. Use it when the prompt already carries the
-model's own chat control tokens. Sampling fields are the same as `LLMChatOp`'s.
+chat template. `prompt` references a workflow input, a `LambdaOp`, or a local
+LLM op that produces one prompt string per row; render a templated prompt with
+a `LambdaOp`. Use it when the prompt already carries the model's own chat
+control tokens. Sampling fields are the same as `LLMChatOp`'s.
 `config.api` and `config.chat_template_kwargs` are not accepted: the task never
 applies a chat template, so both would have no effect.
 
