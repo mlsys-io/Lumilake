@@ -123,11 +123,13 @@ batch is planned onto the worker while the current one runs. FlowMesh runs the
 queued task after the running one, and the CPU work of the next batch overlaps
 the GPU work of the current batch instead of waiting for the whole batch to
 drain. A worker held by another batch keeps being offered even while FlowMesh
-reports it busy, as long as FlowMesh lists it idle or busy and its cordon is
-off. A worker that is stopping, unavailable or cordoned is dropped instead,
-because its task pin can be lifted and the task run on another worker. A
-worker carrying no batch is offered ahead of one that already carries a batch,
-so the work goes to free capacity whenever there is any.
+reports it busy: the committed workers the snapshot adds back are kept only
+while FlowMesh lists them idle or busy and their cordon is off, because on a
+committed worker that is stopping, unavailable or cordoned the task pin can be
+lifted and the task run on another worker. A worker idle at that moment comes
+from FlowMesh's idle list, which does not filter on the cordon. A worker
+carrying no batch is offered ahead of one that already carries a batch, so the
+work goes to free capacity whenever there is any.
 
 **Depth buys overlap with queueing latency.** The job manager still selects one
 batch per pass, so the depth does not change which job's batch is picked. It
