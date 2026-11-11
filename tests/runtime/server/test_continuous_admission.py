@@ -9,10 +9,11 @@ from support.runtime_server import (
     make_workflow,
 )
 
+from lumilake import envs
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.server import LumilakeServer
+from lumilake_server.runtime.server import LumilakeServer, LumilakeServerConfig
 
 
 class _PoolRuntimeManager(RecordingRuntimeManager):
@@ -288,12 +289,12 @@ async def test_a_cordoned_committed_worker_is_not_offered(server_factory) -> Non
 
 
 @pytest.mark.asyncio
-async def test_second_job_is_not_starved(
+async def test_job_arriving_after_the_depth_fills_waits_for_a_release(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A one-unit job queued behind a longer job is admitted while the longer
-    job still has work queued and its batch still runs."""
+    """A job that arrives once a worker is at its queue depth is admitted at the
+    next release, never ahead of the batches already queued on the worker."""
     server = server_factory()
     server.config.batch_size = 1
     server.config.cpu_worker_group_size = 1
@@ -302,18 +303,32 @@ async def test_second_job_is_not_starved(
     runtime_manager = _PoolRuntimeManager(["cpu-0"], {"cpu-0": _CPU_PROFILE})
     server.runtime_manager = cast(Any, runtime_manager)
 
-    long_job = _job_units("req-long", 4)
-    short_job = _job_units("req-short", 1)
-    attach_request_states(server, long_job + short_job)
-    for workflow in long_job + short_job:
+    long_job = _job_units("req-long", 2)
+    attach_request_states(server, long_job)
+    for workflow in long_job:
         await _enqueue_job(server, workflow)
 
-    batches = _BlockingBatches(runtime_manager, count=2)
+    batches = _BlockingBatches(runtime_manager, count=3)
     monkeypatch.setattr(server, "_process_batch", batches.process_batch)
 
     scheduler_task = asyncio.create_task(server._scheduler_loop())
     try:
+        # The long job fills the worker's depth.
         await _wait_until(lambda: len(batches.calls) == 2)
+
+        short_job = _job_units("req-short", 1)
+        attach_request_states(server, short_job)
+        for workflow in short_job:
+            await _enqueue_job(server, workflow)
+
+        # At the depth the arriving job is not admitted ahead of the batches
+        # already queued on the worker.
+        await asyncio.sleep(0.1)
+        assert len(batches.calls) == 2
+
+        # The first release admits it, one batch behind the one still running.
+        batches.finish[0].set()
+        await _wait_until(lambda: len(batches.calls) == 3)
     finally:
         batches.release_all()
         scheduler_task.cancel()
@@ -323,5 +338,48 @@ async def test_second_job_is_not_starved(
             pass
         await asyncio.sleep(0.05)
 
-    admitted_requests = [call[2][0].request_id for call in batches.calls[:2]]
-    assert admitted_requests == ["req-long", "req-short"]
+    admitted_requests = [call[2][0].request_id for call in batches.calls]
+    assert admitted_requests == ["req-long", "req-long", "req-short"]
+
+
+@pytest.mark.parametrize("depth", [0, -1])
+def test_env_validation_rejects_a_dispatch_depth_below_one(
+    monkeypatch: pytest.MonkeyPatch, depth: int
+) -> None:
+    """A dispatch depth below one would stop every worker from being offered,
+    so the env layer refuses it instead of quietly raising it to one."""
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "0.0.0.0")
+    monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
+    monkeypatch.setattr(envs, "LUMILAKE_JOB_MANAGER_TYPE", "priority")
+    monkeypatch.setattr(envs, "LUMILAKE_RUNTIME_MANAGER_TYPE", "default")
+    monkeypatch.setattr(envs, "LUMILAKE_STARVATION_LIMIT", 3)
+    monkeypatch.setattr(envs, "LUMILAKE_BATCH_ACCUMULATION_SECONDS", 0.0)
+    monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
+    monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
+    monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 60.0)
+    monkeypatch.setattr(envs, "LUMILAKE_DISPATCH_QUEUE_DEPTH", depth)
+
+    with pytest.raises(ValueError, match="LUMILAKE_DISPATCH_QUEUE_DEPTH must be >= 1"):
+        envs.validate()
+
+
+def test_config_keeps_the_dispatch_depth_it_is_given() -> None:
+    """The config carries the depth through unchanged, leaving the bound to
+    ``envs.validate()`` rather than silently rewriting a value below one."""
+    config = LumilakeServerConfig(
+        is_local=True,
+        runtime_url="http://localhost:18080",
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=0,
+        dispatch_queue_depth=3,
+    )
+    assert config.dispatch_queue_depth == 3
+    config = LumilakeServerConfig(
+        is_local=True,
+        runtime_url="http://localhost:18080",
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=0,
+        dispatch_queue_depth=0,
+    )
+    assert config.dispatch_queue_depth == 0
