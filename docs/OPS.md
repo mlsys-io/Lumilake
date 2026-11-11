@@ -142,7 +142,7 @@ outputs:
 
 `HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
 input. It needs a FlowMesh release with FlowMesh #269 (`{{prompt}}` in a URL
-or params, request pacing, response cache, fail-open). The `{query}`
+or params, request pacing, fail-open). The `{query}`
 placeholder must appear in `url`, `params`, or a POST `body`; the runtime
 converts it to FlowMesh's `{{prompt}}` placeholder. The API executor
 URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so query
@@ -159,9 +159,6 @@ its own `headers` object as data, scrubbed only for recognized token shapes
 a `config`, `api`, or `api_spec` key matches the same redaction rule, which
 keys on the parent name. Each input row produces one output row.
 `config.request_delay_sec` spaces actual request starts, including retries.
-`config.cache_dir`, relative to the worker, enables a query-keyed on-disk
-response cache whose key is the method, rendered URL, rendered params, and
-request body.
 With `config.fail_open: true`, a failed fetch yields an error row with null
 content instead of failing the task. A downstream op sees that row as an item
 whose `json` is null and whose `error` contains the failure text.

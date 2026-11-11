@@ -71,12 +71,9 @@ def test_http_fetch_op_serializes_and_round_trips() -> None:
         ({"retries": 11}, "retries"),
         ({"max_concurrency": 0}, "max_concurrency"),
         ({"max_concurrency": 9}, "max_concurrency"),
-        ({"cache_dir": "/tmp/cache"}, "cache_dir"),
-        ({"cache_dir": "worker/../cache"}, "cache_dir"),
         ({"retries": "3"}, "retries"),
         ({"max_concurrency": "4"}, "max_concurrency"),
         ({"timeout_sec": "30"}, "timeout_sec"),
-        ({"cache_dir": 5}, "cache_dir"),
         ({"fail_open": "yes"}, "fail_open"),
         ({"headers": ["a"]}, "headers"),
     ],
@@ -376,7 +373,7 @@ def test_http_fetch_headers_are_redacted_from_archived_graph() -> None:
     assert "s2-secret-123" not in json.dumps(runtime_graph.serialize())
 
 
-def test_query_stage_sets_pacing_and_query_cache() -> None:
+def test_query_stage_sets_pacing() -> None:
     yaml_text = textwrap.dedent("""
         name: query_stage
         inputs:
@@ -392,7 +389,6 @@ def test_query_stage_sets_pacing_and_query_cache() -> None:
               retries: 2
               max_concurrency: 1
               request_delay_sec: 0.5
-              cache_dir: "query-cache"
               fail_open: true
         outputs:
           - name: candidates
@@ -405,7 +401,6 @@ def test_query_stage_sets_pacing_and_query_cache() -> None:
     [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
 
     assert node.api_spec["request_delay_sec"] == 0.5
-    assert node.api_spec["cache_dir"] == "query-cache"
     assert node.api_spec["concurrency"] == 1
     assert node.api_spec["response"]["fail_open"] is True
 

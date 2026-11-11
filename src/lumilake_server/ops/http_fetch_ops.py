@@ -1,6 +1,5 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 from typing import Any
 
 from lumilake_server.ops.data_ops import DataOp
@@ -19,7 +18,6 @@ class HttpFetchConfig:
     max_concurrency: int = 8
     fail_open: bool = False
     request_delay_sec: float = 0.0
-    cache_dir: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.headers, dict) or not all(
@@ -43,16 +41,6 @@ class HttpFetchConfig:
             raise ValueError("HttpFetchOp max_concurrency must be between 1 and 8")
         if not isinstance(self.fail_open, bool):
             raise ValueError("HttpFetchOp fail_open must be a boolean")
-        if self.cache_dir is not None and not isinstance(self.cache_dir, str):
-            raise ValueError("HttpFetchOp cache_dir must be a string")
-        cache_dir = PurePosixPath(self.cache_dir) if self.cache_dir else None
-        if cache_dir is not None and (
-            cache_dir.is_absolute() or ".." in cache_dir.parts
-        ):
-            raise ValueError(
-                "HttpFetchOp cache_dir must be relative to the worker and must "
-                f"not contain '..' (got {self.cache_dir})"
-            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,7 +50,6 @@ class HttpFetchConfig:
             "max_concurrency": self.max_concurrency,
             "fail_open": self.fail_open,
             "request_delay_sec": self.request_delay_sec,
-            "cache_dir": self.cache_dir,
         }
 
 

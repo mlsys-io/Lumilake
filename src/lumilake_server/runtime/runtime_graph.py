@@ -1730,8 +1730,6 @@ class RuntimeGraphBuilder:
         }
         if op.params is not None:
             api_spec["params"] = _replace_query_placeholder(op.params)
-        if op.config.cache_dir is not None:
-            api_spec["cache_dir"] = op.config.cache_dir
         if op.body is not None:
             api_spec["json"] = _replace_query_placeholder(op.body)
 
