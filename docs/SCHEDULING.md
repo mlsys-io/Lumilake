@@ -105,7 +105,7 @@ if the claim lost a race:   abort as a capacity denial, retry
 commit the reservation, dispatch on a task, continue
 ```
 
-Three details matter.
+Five details matter.
 
 **Waiting is edge-triggered on capacity.** `_wait_capacity` waits on a capacity
 release signal with a bounded fallback, never on "the queue is non-empty". The
@@ -116,15 +116,25 @@ it returns instantly and spins. Worker release is centralised in
 **Claiming is a single non-blocking attempt.** `_try_claim_workers` takes the
 capacity snapshot and either claims a group or returns nothing. It never polls.
 
-**A claimed worker stays offerable while it has dispatch depth left.** The
-snapshot counts a worker as free while its in-flight batch count is below
+**Offering is continuous up to the dispatch depth.** The snapshot counts a
+worker as free while its in-flight batch count is below
 `LUMILAKE_DISPATCH_QUEUE_DEPTH` (default `1`), so with a higher value the next
 batch is planned onto the worker while the current one runs. FlowMesh runs the
 queued task after the running one, and the CPU work of the next batch overlaps
 the GPU work of the current batch instead of waiting for the whole batch to
 drain. A worker held by another batch keeps being offered even while FlowMesh
-reports it busy, as long as FlowMesh still registers it; work planned onto it
-queues rather than failing.
+reports it busy, as long as FlowMesh lists it idle or busy and its cordon is
+off. A worker that is stopping, unavailable or cordoned is dropped instead,
+because its task pin can be lifted and the task run on another worker. A
+worker carrying no batch is offered ahead of one that already carries a batch,
+so the work goes to free capacity whenever there is any.
+
+**Depth buys overlap with queueing latency.** The job manager still selects one
+batch per pass, so the depth does not change which job's batch is picked. It
+changes where an admitted batch waits: FlowMesh runs the tasks pinned to a
+worker in queue order, so a job that arrives after a long job has filled the
+depth is admitted at the next release, as before, and then runs behind up to
+depth − 1 of the long job's batches. The same holds for a higher-priority job.
 
 **Capacity denial is not policy denial.** `abort_reservation` takes an
 `AbortReason`. Only a *policy* denial advances an item's miss counter. If
@@ -196,12 +206,12 @@ have served. Idle time with only GPU work queued and no GPU free is not a bubble
 | Miss-count inflation under capacity pressure | addressed (§3) |
 | One GPU item suppressing CPU siblings | addressed (§4) |
 | Accumulation window delaying dispatch while workers idle | addressed — skipped when free capacity already exceeds the queue |
-| Workers re-offered only after their whole batch drains | addressed — a worker stays offerable while under `LUMILAKE_DISPATCH_QUEUE_DEPTH` (§3) |
+| Workers re-offered only after their whole batch drains | addressed when `LUMILAKE_DISPATCH_QUEUE_DEPTH` > 1 — a worker stays offerable while under the depth (§3) |
 | **Whole-worker exclusivity** | **open** |
 | **Static worker-group sizes** | **open** |
 
-The two open ones share a root. A worker is wholly busy or wholly free, and
-groups are fixed size, while `HardwareRequirements` is a four-dimensional vector.
+The two open ones share a root. A worker is claimed as a whole and its group is
+a fixed size, while `HardwareRequirements` is a four-dimensional vector.
 A job needing two of a worker's eight GPUs still claims the whole worker, and a
 group of four cannot be assembled from three free workers whose combined capacity
 would suffice. Vector capacity and demand-sized groups would recover that, at the
