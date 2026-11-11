@@ -415,3 +415,34 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
     turn = next(op for op in plan.ops if op["id"] == "Turn_r1")
     assert turn["row_gate"]["node"] == "Route_r1"
     assert [column["node"] for column in turn["rowwise_columns"]] == ["Source_r1"]
+
+
+def _gated_reader_body() -> dict:
+    body = _gated_body()
+    body["ops"].append(
+        {
+            "id": "Review_r{{round}}",
+            "op": "LLMChatOp",
+            "inputs": ["Turn_r{{round}}"],
+            "messages": [{"role": "user", "content": "Turn_r{{round}}"}],
+            "config": {"model": "Qwen/Qwen3-8B"},
+        }
+    )
+    return body
+
+
+def test_template_body_renders_message_content_node_refs() -> None:
+    # A user message whose content is an op id reads that op's output, so the
+    # content has to render with the round suffix before the body is parsed;
+    # unrendered, the reader's declared input names no node its config uses.
+    template = DriverTemplate.model_validate(
+        {
+            "first": _gated_reader_body(),
+            "next": _gated_reader_body(),
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    validate_template_spec(template)
+    plan = template_plan_for_round(template, 2)
+    review = next(op for op in plan.ops if op["id"] == "Review_r1")
+    assert [message["content"] for message in review["messages"]] == ["Turn_r1"]

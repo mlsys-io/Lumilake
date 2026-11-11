@@ -153,6 +153,14 @@ def _render_node_refs(op: dict[str, Any], round_number: int) -> None:
         messages_column.get("node"), str
     ):
         messages_column["node"] = _render_ref(messages_column["node"], round_number)
+    messages = op.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                message["content"] = _render_ref(message["content"], round_number)
+    messages_ref = op.get("messages_ref")
+    if isinstance(messages_ref, str):
+        op["messages_ref"] = _render_ref(messages_ref, round_number)
 
 
 def _template_round_expansion(template: dict[str, Any]) -> int:
