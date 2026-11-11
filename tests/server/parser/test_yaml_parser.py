@@ -533,10 +533,14 @@ def test_api_concurrency_yaml_round_trip() -> None:
     assert node.to_flowmesh_node()["spec"]["api"]["concurrency"] == 8
 
 
-@pytest.mark.parametrize("concurrency", [0, -1, "16", 1.5, True])
+@pytest.mark.parametrize("concurrency", [0, -1, 9, "16", 1.5])
 def test_api_concurrency_rejects_invalid_values(concurrency: Any) -> None:
     with pytest.raises(ValueError):
         ApiConfig(concurrency=concurrency)
+
+
+def test_api_concurrency_accepts_the_cap() -> None:
+    assert ApiConfig(concurrency=8).concurrency == 8
 
 
 def test_lambda_op_mode_round_trip() -> None:

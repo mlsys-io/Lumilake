@@ -4,6 +4,9 @@ from typing import Any, ClassVar, TypedDict
 
 RETRIEVAL_MODES = ("sql", "s3", "agent")
 
+# FlowMesh's cap on in-flight API requests; the SDK does not export it.
+_CONCURRENCY_LIMIT = 8
+
 
 class InputRef(TypedDict):
     """The input key and ref path a rowwise column was projected from."""
@@ -103,14 +106,14 @@ class ApiConfig:
     concurrency: int | None = None
 
     def __post_init__(self) -> None:
-        if self.concurrency is None:
-            return
-        if (
-            isinstance(self.concurrency, bool)
-            or not isinstance(self.concurrency, int)
-            or self.concurrency < 1
+        if self.concurrency is not None and not (
+            isinstance(self.concurrency, int)
+            and 1 <= self.concurrency <= _CONCURRENCY_LIMIT
         ):
-            raise ValueError("ApiConfig.concurrency must be a positive integer")
+            raise ValueError(
+                "ApiConfig.concurrency must be an integer from 1 to "
+                f"{_CONCURRENCY_LIMIT}"
+            )
 
 
 @dataclass
