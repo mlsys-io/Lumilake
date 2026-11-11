@@ -789,7 +789,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         list[str]
             List of worker IDs
         """
-        workers = await flowmesh_for_server().workers.list(status="IDLE")
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(status="IDLE"),
+            "idle worker list",
+        )
         return [w.id for w in workers if not w.stale]
 
     async def get_all_workers(self) -> list[str]:
@@ -799,7 +802,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         pool so the scheduler can tell a busy-but-existing worker from one
         that does not exist at all.
         """
-        workers = await flowmesh_for_server().workers.list()
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(), "worker list"
+        )
         return [w.id for w in workers if not w.stale]
 
     async def get_dispatchable_workers(self) -> list[str]:
@@ -810,7 +815,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         unavailable or cordoned worker the pin can be lifted and the task run
         on another worker, so the scheduler does not plan work onto it.
         """
-        workers = await flowmesh_for_server().workers.list()
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(), "worker list"
+        )
         return [
             w.id
             for w in workers
@@ -837,7 +844,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             The worker's hardware sections plus ``supported_task_types``, the
             sorted task types its executors advertise.
         """
-        worker = await flowmesh_for_server().workers.retrieve(worker_id)
+        worker = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.retrieve(worker_id),
+            f"worker {worker_id}",
+        )
         assert worker.id == worker_id
         profile = worker.hardware.model_dump() if worker.hardware else {}
         profile["supported_task_types"] = sorted(

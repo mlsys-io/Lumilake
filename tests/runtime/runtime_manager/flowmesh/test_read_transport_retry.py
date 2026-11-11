@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 import pytest
 from flowmesh.exceptions import APIError, FlowMeshConnectionError
+from flowmesh.models.workers import WorkerInfo
 
 import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
 from lumilake_server.runtime.runtime_manager.flowmesh import (
@@ -40,7 +41,7 @@ class _FlakyCall:
         self._value = value
         self.calls = 0
 
-    async def __call__(self, *_: Any) -> Any:
+    async def __call__(self, *_: Any, **__: Any) -> Any:
         self.calls += 1
         if self._errors:
             raise self._errors.pop(0)
@@ -204,3 +205,65 @@ async def test_a_submit_still_retries_a_gateway_error(
     )
     assert submit_call.calls == 2
     assert delays == [_FLOWMESH_RETRY_DELAYS_S[0]]
+
+
+def _worker(worker_id: str) -> WorkerInfo:
+    return WorkerInfo(
+        id=worker_id,
+        namespace="ns",
+        cluster="cluster-0",
+        node_id="node-0",
+        node_alias="node-0",
+        status="IDLE",
+        stale=False,
+        cordoned=False,
+    )
+
+
+def _install_workers(
+    monkeypatch: pytest.MonkeyPatch, call: _FlakyCall, name: str
+) -> None:
+    class _FakeWorkers:
+        pass
+
+    setattr(_FakeWorkers, name, staticmethod(call))
+
+    class _FakeFm:
+        workers = _FakeWorkers()
+
+    monkeypatch.setattr(fm_mod, "flowmesh_for_server", lambda: _FakeFm())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method", ["get_workers", "get_all_workers", "get_dispatchable_workers"]
+)
+async def test_a_worker_listing_survives_a_dropped_connection(
+    method: str,
+    flowmesh_manager: FlowmeshRuntimeManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduler's worker reads sit on the dispatch path, so one dropped
+    connection must not fail a dispatch."""
+    delays = _record_sleep(monkeypatch)
+    listing = _FlakyCall([httpx.ReadError("dropped")], value=[_worker("wkr-1")])
+    _install_workers(monkeypatch, listing, "list")
+
+    assert await getattr(flowmesh_manager, method)() == ["wkr-1"]
+
+    assert listing.calls == 2
+    assert delays == [_FLOWMESH_RETRY_DELAYS_S[0]]
+
+
+@pytest.mark.asyncio
+async def test_a_worker_profile_read_survives_a_dropped_connection(
+    flowmesh_manager: FlowmeshRuntimeManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record_sleep(monkeypatch)
+    retrieve = _FlakyCall([httpx.ReadError("dropped")], value=_worker("wkr-1"))
+    _install_workers(monkeypatch, retrieve, "retrieve")
+
+    profile = await flowmesh_manager.get_worker_profile("wkr-1")
+
+    assert "supported_task_types" in profile
+    assert retrieve.calls == 2
