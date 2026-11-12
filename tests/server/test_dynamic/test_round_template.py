@@ -461,3 +461,154 @@ def test_template_body_renders_message_content_node_refs() -> None:
     plan = template_plan_for_round(template, 2)
     review = next(op for op in plan.ops if op["id"] == "Review_r1")
     assert [message["content"] for message in review["messages"]] == ["Turn_r1"]
+
+
+def _list_source_op() -> dict:
+    return {
+        "id": "Src_r{{round}}",
+        "op": "LambdaOp",
+        "inputs": ["Symbols"],
+        "mode": "list",
+        "fn_name": "states",
+        "code": "def states(columns):\n    return columns[0]\n",
+    }
+
+
+def _sink_op(source: str) -> dict:
+    return {
+        "id": "Sink_r{{round}}",
+        "op": "LambdaOp",
+        "inputs": [source],
+        "mode": "row",
+        "fn_name": "sink",
+        "code": "def sink(columns):\n    return columns[0]\n",
+    }
+
+
+def _render_round_two(*extra_ops: dict) -> list[dict]:
+    body = {"ops": [_list_source_op(), *extra_ops], "export": ["Src_r{{round}}"]}
+    template = DriverTemplate.model_validate(
+        {"first": body, "next": body, "stop_when_empty": "Src_r{{prev}}"}
+    )
+    validate_template_spec(template)
+    return template_plan_for_round(template, 2).ops
+
+
+def _op_named(ops: list[dict], op_id: str) -> dict:
+    return next(op for op in ops if op["id"] == op_id)
+
+
+def test_template_body_renders_format_op_kwarg_node_refs() -> None:
+    # A FormatOp's named arguments are node references the parser resolves, so
+    # the round suffix has to render into them before the body is parsed.
+    ops = _render_round_two(
+        {
+            "id": "Fmt_r{{round}}",
+            "op": "FormatOp",
+            "inputs": ["Src_r{{round}}"],
+            "template": "{doc}",
+            "format_kwargs": {"doc": "Src_r{{round}}"},
+        },
+        _sink_op("Fmt_r{{round}}"),
+    )
+    assert _op_named(ops, "Fmt_r1")["format_kwargs"] == {"doc": "Src_r1"}
+
+
+def test_template_body_renders_format_op_arg_node_refs() -> None:
+    ops = _render_round_two(
+        {
+            "id": "Fmt_r{{round}}",
+            "op": "FormatOp",
+            "inputs": ["Src_r{{round}}"],
+            "template": "{}",
+            "format_args": ["Src_r{{round}}"],
+        },
+        _sink_op("Fmt_r{{round}}"),
+    )
+    assert _op_named(ops, "Fmt_r1")["format_args"] == ["Src_r1"]
+
+
+def test_template_body_renders_dict_prompt_kwarg_node_refs() -> None:
+    # A dict prompt names its arguments by node id; unrendered, the body is
+    # rejected with "references unknown id" instead of running.
+    ops = _render_round_two(
+        {
+            "id": "Ask_r{{round}}",
+            "op": "LLMChatOp",
+            "inputs": ["Src_r{{round}}"],
+            "prompt": {"template": "{row}", "format_kwargs": {"row": "Src_r{{round}}"}},
+            "messages": [{"role": "user", "content": "advance"}],
+            "config": {"model": "Qwen/Qwen3-8B"},
+        }
+    )
+    ask = _op_named(ops, "Ask_r1")
+    assert ask["prompt"]["format_kwargs"] == {"row": "Src_r1"}
+
+
+def test_template_body_renders_retrieval_param_node_refs() -> None:
+    ops = _render_round_two(
+        {
+            "id": "Lookup_r{{round}}",
+            "op": "DataRetrievalOp",
+            "inputs": ["Src_r{{round}}"],
+            "data_spec": {
+                "type": "s3",
+                "connection_string": "s3://bucket",
+                "template": "docs/{name}.json",
+                "params": [
+                    {
+                        "label": "name",
+                        "node": "Src_r{{round}}",
+                        "path": "items.output",
+                    }
+                ],
+            },
+        }
+    )
+    lookup = _op_named(ops, "Lookup_r1")
+    params = lookup["data_spec"]["params"]
+    assert [param["node"] for param in params] == ["Src_r1"]
+
+
+def test_template_body_renders_messages_ref_node_refs() -> None:
+    ops = _render_round_two(
+        {
+            "id": "Msg_r{{round}}",
+            "op": "MessageOp",
+            "inputs": [],
+            "messages": [{"role": "user", "content": "advance"}],
+        },
+        {
+            "id": "Ask_r{{round}}",
+            "op": "LLMChatOp",
+            "inputs": ["Msg_r{{round}}"],
+            "messages_ref": "Msg_r{{round}}",
+            "config": {"model": "Qwen/Qwen3-8B"},
+        },
+    )
+    assert _op_named(ops, "Ask_r1")["messages_ref"] == "Msg_r1"
+
+
+def test_template_body_leaves_a_lambda_code_untouched() -> None:
+    # A Lambda's code is Python source, not a node reference, so a placeholder
+    # inside it stays literal even while the op's id renders.
+    body = {
+        "ops": [
+            {
+                "id": "Echo_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Symbols"],
+                "mode": "list",
+                "fn_name": "echo",
+                "code": "# {{round}}\ndef echo(columns):\n    return columns[0]\n",
+            }
+        ],
+        "export": ["Echo_r{{round}}"],
+    }
+    template = DriverTemplate.model_validate(
+        {"first": body, "next": body, "stop_when_empty": "Echo_r{{prev}}"}
+    )
+    validate_template_spec(template)
+    ops = template_plan_for_round(template, 2).ops
+    echo = _op_named(ops, "Echo_r1")
+    assert "# {{round}}" in echo["code"]
