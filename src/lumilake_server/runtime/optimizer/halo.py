@@ -1,3 +1,4 @@
+import copy
 import json
 import math
 import re
@@ -29,6 +30,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
+    gpu_memory_share,
     required_task_types,
 )
 
@@ -51,6 +53,53 @@ def _retrieval_is_data_profile_eligible(data_spec: Mapping[str, Any]) -> bool:
     if spec_type == "lumid":
         return data_spec.get("mode") in {"sql", "s3"}
     return False
+
+
+def _node_gpu_memory_utilization(node: Node) -> float | None:
+    """The fraction of a card's memory a node asked its engine to reserve.
+
+    The op's model spec reaches the node under ``_model_spec``; a node that
+    names no utilization returns ``None`` and can run on any GPU worker.
+    """
+    raw = node.raw if isinstance(node.raw, dict) else {}
+    model_spec = raw.get("_model_spec")
+    if not isinstance(model_spec, Mapping):
+        return None
+    vllm = model_spec.get("vllm")
+    if not isinstance(vllm, Mapping):
+        return None
+    utilization = vllm.get("gpu_memory_utilization")
+    if isinstance(utilization, bool) or not isinstance(utilization, int | float):
+        return None
+    if not math.isfinite(float(utilization)):
+        return None
+    return float(utilization)
+
+
+def _gpu_worker_holds_utilization(worker: Worker, utilization: float) -> bool:
+    """True when ``worker`` can give ``utilization`` of a card to an engine.
+
+    A CPU worker never runs an engine, and a GPU worker holding a whole device
+    takes any utilization; a shared worker takes one no larger than its share.
+    """
+    if worker.kind != "gpu":
+        return True
+    share = worker.gpu_memory_share
+    return share is None or utilization <= share
+
+
+def _describe_gpu_shares(workers: Mapping[str, Worker]) -> str:
+    """The GPU workers and the share of a card each one owns, for a message."""
+    listed = ", ".join(
+        (
+            f"{worker.id}={worker.gpu_memory_share:g}"
+            if worker.gpu_memory_share is not None
+            else f"{worker.id}=whole device"
+        )
+        for worker in workers.values()
+        if worker.kind == "gpu"
+    )
+    return f"GPU worker shares: {listed}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,7 +435,7 @@ class HaloOptimizer(BaseOptimizer):
         )
 
         workers: dict[str, Worker] = {}
-        for worker_name in worker_names:
+        for worker_name in sorted(worker_names):
             worker_profile = worker_profiles.get(worker_name, {})
             has_gpu = bool(worker_profile.get("has_gpu"))
             worker_kind = "gpu" if has_gpu else "cpu"
@@ -396,6 +445,7 @@ class HaloOptimizer(BaseOptimizer):
                 device="cuda:0" if worker_kind == "gpu" else "cpu",
                 capacity=1.0,
                 task_types=advertised_task_types(worker_profile),
+                gpu_memory_share=gpu_memory_share(worker_profile),
             )
 
         if requires_gpu and not any(w.kind == "gpu" for w in workers.values()):
@@ -441,8 +491,25 @@ class HaloOptimizer(BaseOptimizer):
                     tuple(w for w in tier if node.type in workers[w].task_types)
                     for tier in tiers
                 )
+            utilization = _node_gpu_memory_utilization(node)
+            if utilization is not None:
+                tiers = tuple(
+                    tuple(
+                        w
+                        for w in tier
+                        if _gpu_worker_holds_utilization(workers[w], utilization)
+                    )
+                    for tier in tiers
+                )
             eligible = next((tier for tier in tiers if tier), ())
             if not eligible:
+                if utilization is not None:
+                    raise ValueError(
+                        f"No GPU worker has the memory share for node '{node_id}',"
+                        f" which requests gpu_memory_utilization={utilization:g}"
+                        f" (engine={node.engine}, type={node.type})."
+                        f" {_describe_gpu_shares(workers)}"
+                    )
                 raise ValueError(
                     f"No compatible workers for node '{node_id}' (engine={node.engine},"
                     f" type={node.type})"
@@ -598,6 +665,8 @@ class HaloOptimizer(BaseOptimizer):
         raw = dict(op.data_spec) if isinstance(op.data_spec, dict) else {}
         if isinstance(op.inference_spec, dict) and op.inference_spec:
             raw["_inference_spec"] = dict(op.inference_spec)
+        if isinstance(op.model_spec, dict) and op.model_spec:
+            raw["_model_spec"] = copy.deepcopy(op.model_spec)
         if deps and "parent" not in raw:
             raw["parent"] = deps[0]
         return raw

@@ -80,6 +80,7 @@ from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
+    gpu_memory_share,
     required_task_types,
     requires_cpu_worker,
 )
@@ -1395,6 +1396,7 @@ class LumilakeServer:
             "supported_task_types": list(
                 worker_profile.get("supported_task_types", ())
             ),
+            "gpu_memory_share": gpu_memory_share(worker_profile),
         }
 
     @staticmethod

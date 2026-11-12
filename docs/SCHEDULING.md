@@ -379,6 +379,14 @@ catalog, then the model-name suffix (`7B`, `560M`), then the model's
 safetensors headers (local Hugging Face cache, else the Hub). If none gives a
 size, planning fails with an error naming the model.
 
+### HALO GPU memory shares
+
+A GPU worker's profile carries `gpu_memory_share`: the fraction of a card's memory the worker owns, and `None` when it owns a whole device. Two FlowMesh workers on one card each hold a share, so the same card appears twice in HALO's worker pool and the workers are not interchangeable.
+
+A node whose engine reserves `gpu_memory_utilization` of a card is offered only to GPU workers whose share is at least that, so a vLLM op runs on a shared card only when its utilization fits the share it lands on — the default `0.9` does not fit a worker holding `0.1`. A node naming no utilization is offered every GPU worker.
+
+When no GPU worker's share fits, planning fails with an error naming the node's requested utilization and each GPU worker's share. Workers are held in name order, so two workers with the same share are interchangeable and the tie between them falls the same way on every run.
+
 ## 8. Scheduling under unknown chain length
 
 Classical size-based policies need *p*, the service requirement. SRPT and WSPT

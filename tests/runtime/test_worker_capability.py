@@ -5,6 +5,7 @@ from typing import Any
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
+    gpu_memory_share,
     required_task_types,
     requires_cpu_worker,
 )
@@ -29,6 +30,23 @@ def test_advertised_task_types_reads_the_profile() -> None:
         "python",
     }
     assert advertised_task_types({}) == frozenset()
+
+
+def test_gpu_memory_share_reads_a_normalized_profile() -> None:
+    assert gpu_memory_share({"has_gpu": True, "gpu_memory_share": 0.1}) == 0.1
+    assert gpu_memory_share({"has_gpu": True, "gpu_memory_share": None}) is None
+
+
+def test_gpu_memory_share_reads_a_raw_device_list() -> None:
+    profile = {"gpu": {"devices": [{"memory_share": 0.3}, {"memory_share": 0.7}]}}
+    assert gpu_memory_share(profile) == 0.7
+
+
+def test_a_whole_device_reads_as_no_share() -> None:
+    assert gpu_memory_share({"gpu": {"devices": [{"memory_share": None}]}}) is None
+    assert gpu_memory_share({"gpu": {"devices": [{"index": 0}]}}) is None
+    assert gpu_memory_share({"has_gpu": False}) is None
+    assert gpu_memory_share({}) is None
 
 
 def _free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:

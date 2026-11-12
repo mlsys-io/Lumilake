@@ -24,6 +24,36 @@ def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
     )
 
 
+def gpu_memory_share(profile: Mapping[str, Any]) -> float | None:
+    """The fraction of its card's memory a GPU worker owns, or ``None``.
+
+    A normalized profile records the fraction under ``gpu_memory_share`` and a
+    raw FlowMesh profile under ``gpu.devices[]``; both are read here.
+    ``None`` means the worker holds a whole device, so a model of any size
+    fits. Among shared devices the largest share counts, because a model that
+    fits that share fits the card it runs on.
+    """
+    if "gpu_memory_share" in profile:
+        recorded = profile["gpu_memory_share"]
+        if isinstance(recorded, int | float) and not isinstance(recorded, bool):
+            return float(recorded)
+        return None
+    gpu_section = profile.get("gpu")
+    devices = gpu_section.get("devices") if isinstance(gpu_section, Mapping) else None
+    if not isinstance(devices, list):
+        return None
+    shares: list[float] = []
+    for device in devices:
+        if not isinstance(device, Mapping):
+            continue
+        share = device.get("memory_share")
+        if share is None:
+            return None
+        if isinstance(share, int | float) and not isinstance(share, bool):
+            shares.append(float(share))
+    return max(shares) if shares else None
+
+
 def required_task_types(task_types: Iterable[str]) -> frozenset[str]:
     """The gated task types among ``task_types``."""
     return CAPABILITY_GATED_TASK_TYPES.intersection(task_types)
