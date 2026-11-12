@@ -1214,7 +1214,7 @@ async def recover_in_flight_jobs(
             continue
         try:
             record = _record_from_payload(loaded)
-        except (ValueError, TypeError):
+        except (KeyError, ValueError, TypeError):
             logger.exception(
                 "Failed to reconstruct job %s during startup recovery",
                 summary.job_id,
