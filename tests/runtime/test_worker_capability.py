@@ -167,10 +167,7 @@ def test_gpu_claim_waits_when_the_free_shares_are_too_small() -> None:
 def test_gpu_claim_holds_every_utilization_the_group_covers() -> None:
     """One node at 0.8 and one at 0.1 need a group whose largest share is 0.8."""
     free = _gpu_free({"gpu-small": _SMALL, "gpu-big": _BIG})
-    assert _claim_gpu(free, frozenset({0.1, 0.8}), group_size=2) == [
-        "gpu-small",
-        "gpu-big",
-    ]
+    assert _claim_gpu(free, frozenset({0.1, 0.8})) == ["gpu-big"]
 
 
 def test_gpu_claim_with_no_gpu_group_is_not_gated_on_shares() -> None:
