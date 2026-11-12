@@ -192,6 +192,65 @@ def test_stop_check_rejects_unexpected_value() -> None:
         )
 
 
+@pytest.mark.parametrize("mode", ["row", "aligned"])
+def test_template_validator_rejects_a_stop_export_that_cannot_read_empty(
+    mode: str,
+) -> None:
+    # The stop check counts one row per archived item, so only a list-mode
+    # export can read as empty. A row- or aligned-mode export archives one item
+    # per input row, which would keep the loop running to ``max_rounds``
+    # instead of stopping, so the spec is refused at submission.
+    body = {
+        "ops": [
+            {
+                "id": "Live_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Symbols"],
+                "mode": mode,
+                "fn_name": "live",
+                "code": "def live(columns):\n    return columns[0]\n",
+            }
+        ],
+        "export": ["Live_r{{round}}"],
+    }
+    template = DriverTemplate.model_validate(
+        {
+            "first": body,
+            "next": body,
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    with pytest.raises(DriverProtocolError, match="must be a list-mode LambdaOp"):
+        validate_template_spec(template)
+
+
+def test_template_validator_rejects_a_non_lambda_stop_export() -> None:
+    body = {
+        "ops": [
+            {
+                "id": "Live_r{{round}}",
+                "op": "DataRetrievalOp",
+                "inputs": ["Symbols"],
+                "data_spec": {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT 1",
+                },
+            }
+        ],
+        "export": ["Live_r{{round}}"],
+    }
+    template = DriverTemplate.model_validate(
+        {
+            "first": body,
+            "next": body,
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    with pytest.raises(DriverProtocolError, match="must be a LambdaOp"):
+        validate_template_spec(template)
+
+
 def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
     collected = _collected_export([_LIVE_CASE])
     ops, inputs = forward_refs(
@@ -406,7 +465,7 @@ def _gated_body() -> dict:
                 "fn_name": "live",
                 "code": (
                     "def live(columns):\n"
-                    '    return [[s for s in columns[0] if "DONE" not in s]]\n'
+                    '    return [s for s in columns[0] if "DONE" not in s]\n'
                 ),
             },
         ],

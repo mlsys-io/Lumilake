@@ -312,11 +312,17 @@ driver:
 ```
 
 `first` runs as round 1 and `next` as every later round, with `{{round}}`
-and `{{prev}}` rendered into ids, inputs and exports. `stop_when_empty` names
-the previous round's export, and the server stops before a round whose
-predecessor exported no rows. Template mode calls no planner and is mutually
-exclusive with `api`; every rendered body passes the same checks as a planner
-plan, and each stored plan records `source: "template"`.
+and `{{prev}}` rendered into every string the body carries: each op's id, its
+node references and its arguments, and the export list. A LambdaOp's `code`
+is left alone, because it is Python source rather than a node reference.
+`stop_when_empty` names the previous round's export, which must be a
+list-mode LambdaOp: each element it returns is one row, and the server stops
+before a round whose predecessor exported none. A round that declares a
+list-mode Lambda runs as a single slice over the whole input set, because its
+whole-list result cannot be partitioned per row, and a later round that reads
+its export runs as one slice too. Template mode calls no planner and is
+mutually exclusive with `api`; every rendered body passes the same checks as
+a planner plan, and each stored plan records `source: "template"`.
 
 The `driver:` YAML settings the server accepts are:
 

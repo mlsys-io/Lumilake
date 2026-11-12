@@ -1153,6 +1153,30 @@ def validate_template_spec(
         registry.update({op["id"]: op for op in resolved})
         for op_id in [*_current_leaves(plan.ops), *plan.export]:
             available_results.setdefault(op_id, [])
+    _validate_stop_export_is_list_lambda(registry[previous_export], previous_export)
+
+
+def _validate_stop_export_is_list_lambda(op: dict[str, Any], export_id: str) -> None:
+    """Require the stop export to count one archived item per Lambda element.
+
+    ``archived_export_has_rows`` counts one row per archived item, which is
+    what a list-mode Lambda produces: its python step emits one item per
+    element of the list it returns. A row- or aligned-mode export archives one
+    item per input row instead, so it reads as non-empty whatever its rows
+    hold, and the job would silently spend every remaining round. Refusing it
+    at submission turns that into a spec error.
+    """
+    op_type = op.get("op", "")
+    if op_type != "LambdaOp":
+        raise DriverProtocolError(
+            f"stop_when_empty {export_id!r} must be a LambdaOp, got {op_type!r}"
+        )
+    if op.get("mode") != "list":
+        raise DriverProtocolError(
+            f"stop_when_empty {export_id!r} must be a list-mode LambdaOp, got "
+            f"mode {op.get('mode')!r}: each element it returns is one row, so "
+            "only a list-mode export can read as empty"
+        )
 
 
 def _strip_plan_wrappers(value: str) -> str:
