@@ -3652,7 +3652,10 @@ async def get_job_progress(
             dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])
         )
         terminal = record.status in TERMINAL_JOB_STATUSES
-        recompute = bool(workflow_ids) or not terminal
+        # A finished job is read only for its own tasks: without task
+        # attribution a workflow can hold other jobs' tasks, and a sum over
+        # them would be finalized as this job's usage.
+        recompute = not terminal or (bool(workflow_ids) and bool(task_ids_by_workflow))
         finalize = terminal and recompute
         if recompute:
             fm = flowmesh_for(request)

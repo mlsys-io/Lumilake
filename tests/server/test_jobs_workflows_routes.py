@@ -1245,7 +1245,10 @@ async def test_progress_computes_usage_before_terminal_finalizer(
         job_routes_module.LumilakeServer,
         "get_started_instance",
         classmethod(
-            lambda cls: _FakeProgressServer({"execution": {"completed": True}})
+            lambda cls: _FakeProgressServer(
+                {"execution": {"completed": True}},
+                {"j-1": {"wf-1": ["tsk-00000001"]}},
+            )
         ),
     )
 
@@ -1395,7 +1398,12 @@ async def test_progress_terminal_usage_falls_back_when_flowmesh_down(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer({"error": "Request ID not found"})),
+        classmethod(
+            lambda cls: _FakeProgressServer(
+                {"error": "Request ID not found"},
+                {"j-1": {"wf-1": ["tsk-00000001"]}},
+            )
+        ),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -2485,7 +2493,7 @@ class _RunJobServer:
         return ["wf-1"]
 
     def task_ids_for_request(self, *_a: Any) -> dict[str, list[str]]:
-        return {}
+        return {"wf-1": ["tsk-00000001"]}
 
     def workflow_dispatches_for_request(self, *_a: Any) -> list[Any]:
         return []
@@ -2693,6 +2701,62 @@ async def test_progress_of_a_recovered_job_keeps_stored_usage(
 
 
 @pytest.mark.anyio
+async def test_progress_terminal_record_without_task_ids_keeps_stored_usage(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal record whose job did not record its own tasks is served the
+    usage it stored, without finalizing a sum over the workflow's other jobs."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    record.status = "completed"
+    record.terminal_usage_finalized = False
+    record.progress.usage = job_routes_module.WorkflowUsage(
+        prompt_tokens=70,
+        completion_tokens=30,
+        reasoning_tokens=0,
+        calls=2,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=1.5,
+    )
+    job_routes._job_storage.save(record)
+
+    def _no_fm(_request: Any) -> Any:
+        raise AssertionError("flowmesh_for must not be called without task ids")
+
+    monkeypatch.setattr(job_routes_module, "flowmesh_for", _no_fm)
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(
+            lambda cls: _FakeProgressServer({"execution": {"completed": True}})
+        ),
+    )
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/j-1/progress", headers={"Authorization": "Bearer token"}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["progress"]["usage"] == {
+        "prompt_tokens": 70,
+        "completion_tokens": 30,
+        "reasoning_tokens": 0,
+        "calls": 2,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.5,
+    }
+    assert record.terminal_usage_finalized is False
+    stored = job_routes._job_storage.load("j-1")
+    assert stored is not None
+    assert stored["terminal_usage_finalized"] is False
+    assert stored["progress"]["usage"]["prompt_tokens"] == 70
+
+
+@pytest.mark.anyio
 async def test_progress_terminal_not_found_stores_null_and_finalizes(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2713,7 +2777,12 @@ async def test_progress_terminal_not_found_stores_null_and_finalizes(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer({"error": "Request ID not found"})),
+        classmethod(
+            lambda cls: _FakeProgressServer(
+                {"error": "Request ID not found"},
+                {"j-1": {"wf-1": ["tsk-00000001"]}},
+            )
+        ),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -2767,7 +2836,12 @@ async def test_progress_terminal_auth_failure_stays_401(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer({"error": "Request ID not found"})),
+        classmethod(
+            lambda cls: _FakeProgressServer(
+                {"error": "Request ID not found"},
+                {"j-1": {"wf-1": ["tsk-00000001"]}},
+            )
+        ),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -2826,7 +2900,12 @@ async def test_progress_read_skips_a_record_the_finalizer_already_finalized(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer({"error": "Request ID not found"})),
+        classmethod(
+            lambda cls: _FakeProgressServer(
+                {"error": "Request ID not found"},
+                {"j-1": {"wf-1": ["tsk-00000001"]}},
+            )
+        ),
     )
     real_compute = job_routes_module._compute_job_usage
 
