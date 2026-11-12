@@ -12,6 +12,7 @@ from flowmesh_cli_stack.utils import (
     STACK_PATH_KEYS,
     STACK_SLUG_ENV,
     STACK_SUFFIX_ENV,
+    ensure_deploy_paths,
     stack_compose_file,
     stack_env_example,
     stack_resource_env_overrides,
@@ -19,10 +20,8 @@ from flowmesh_cli_stack.utils import (
 from flowmesh_stack.docker import DockerComposeStack
 from flowmesh_stack.env import ensure_env_file, load_env, parse_env_file
 from flowmesh_stack.node_client import NodeClient
-from flowmesh_stack.paths import ensure_dir, ensure_file, resolve_path
 from flowmesh_stack.workers import create_workers as sdk_create_workers
 
-from lumilake import envs
 from lumilake.log import init_child_logger
 
 from .env import ENV_FILE_NAME, read_env_value
@@ -74,38 +73,13 @@ def _workdir_for(env_file: str | Path) -> Path:
 
 
 def _make_workdir(workdir: Path) -> Path:
-    """Create a working directory for FlowMesh compose mounts."""
+    """Create the deployment's FlowMesh working directory and default worker config."""
     workdir.mkdir(parents=True, exist_ok=True)
-    (workdir / "secrets" / "tls" / "redis").mkdir(parents=True, exist_ok=True)
-    (workdir / "secrets" / "tls" / "server").mkdir(parents=True, exist_ok=True)
     wc = workdir / "configs" / "worker_config.yaml"
     wc.parent.mkdir(parents=True, exist_ok=True)
     if not wc.exists():
         wc.write_text("default_worker_config:\n  hb_interval: 30\n\nworkers: []\n")
     return workdir
-
-
-def _ensure_deploy_paths_in_workdir(workdir: Path) -> None:
-    """Prepare the stack's TLS and worker-config paths under ``workdir``."""
-    ensure_dir(
-        resolve_path(
-            envs.REDIS_TLS_DIR, default="./secrets/tls/redis", base_dir=workdir
-        )
-    )
-    ensure_dir(
-        resolve_path(
-            envs.SERVER_TLS_DIR,
-            default="./secrets/tls/server",
-            base_dir=workdir,
-        )
-    )
-    ensure_file(
-        resolve_path(
-            envs.SERVER_WORKER_CONFIG,
-            default="./configs/worker_config.yaml",
-            base_dir=workdir,
-        )
-    )
 
 
 def _load_env(ef: Path) -> None:
@@ -191,7 +165,7 @@ def stack_up(env_file: str | Path) -> None:
     env_path = Path(env_file).resolve()
     workdir = _make_workdir(_workdir_for(env_path))
     _load_env(env_path)
-    _ensure_deploy_paths_in_workdir(workdir)
+    ensure_deploy_paths(workdir)
 
     errors = check_ports(env_ports(env_file))
     if errors:

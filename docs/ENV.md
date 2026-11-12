@@ -169,6 +169,10 @@ Picked up by the bundled FlowMesh deploy helpers.
 | `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs. Empty disables TLS. |
 | `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override. |
 
+A relative path in `REDIS_TLS_DIR`, `SERVER_TLS_DIR`, `SERVER_WORKER_CONFIG`
+or `FLOWMESH_PLUGIN_DIR` resolves under the deployment's `.flowmesh`
+directory, beside its `.env.flowmesh`.
+
 `lumilake deploy init --flowmesh` writes `.env.flowmesh`. On hosts that
 also run another FlowMesh stack, check the common defaults before
 `deploy up`: HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis

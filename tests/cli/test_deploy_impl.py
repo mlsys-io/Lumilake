@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from flowmesh_cli_stack.utils import STACK_PATH_KEYS
+from flowmesh_stack.env import load_env
 
 from lumilake import config as sdk_config_mod
 from lumilake import envs
@@ -779,7 +781,7 @@ def test_flowmesh_workers_carry_the_stack_name_slug(
 def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Stack paths follow the deployment directory, whatever the process cwd."""
+    """The workdir, its mounts and the resolved path keys follow the deployment."""
     deploy_dir = tmp_path / "deployment"
     deploy_dir.mkdir()
     elsewhere = tmp_path / "elsewhere"
@@ -789,7 +791,13 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
     env_file.write_text(
         "SERVER_HTTP_PORT=18000\nSERVER_GRPC_PORT=18001\n"
         "REDIS_CONTROL_PORT=18002\nREDIS_TELEMETRY_PORT=18003\n"
+        "REDIS_TLS_DIR=./secrets/tls/redis\n"
+        "SERVER_TLS_DIR=./secrets/tls/server\n"
+        "SERVER_WORKER_CONFIG=./configs/worker_config.yaml\n"
     )
+    for key in STACK_PATH_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(load_env, "_loaded", None, raising=False)
 
     compose_calls: list[list[str]] = []
 
@@ -806,9 +814,6 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
 
     monkeypatch.setattr(fm, "_stack", _StubStack())
     monkeypatch.setattr(fm, "check_ports", lambda _ports: [])
-    monkeypatch.setattr(envs, "REDIS_TLS_DIR", "")
-    monkeypatch.setattr(envs, "SERVER_TLS_DIR", "")
-    monkeypatch.setattr(envs, "SERVER_WORKER_CONFIG", "")
     monkeypatch.chdir(elsewhere)
 
     fm.stack_up(env_file)
@@ -818,7 +823,43 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
     assert (workdir / "secrets" / "tls" / "server").is_dir()
     assert (workdir / "configs" / "worker_config.yaml").is_file()
     assert not (elsewhere / fm.WORKDIR_NAME).exists()
+    for key in ("REDIS_TLS_DIR", "SERVER_TLS_DIR", "SERVER_WORKER_CONFIG"):
+        assert Path(os.environ[key]).is_relative_to(workdir)
     assert compose_calls == [["--profile", "root", "up", "-d", "--wait"]]
+
+
+def test_stack_up_creates_the_env_files_worker_config_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker config composes mounts is the one the env file names."""
+    deploy_dir = tmp_path / "deployment"
+    deploy_dir.mkdir()
+    env_file = deploy_dir / ".env.flowmesh"
+    env_file.write_text(
+        "SERVER_HTTP_PORT=18000\nSERVER_GRPC_PORT=18001\n"
+        "REDIS_CONTROL_PORT=18002\nREDIS_TELEMETRY_PORT=18003\n"
+        "SERVER_WORKER_CONFIG=./configs/custom.yaml\n"
+    )
+    for key in STACK_PATH_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(load_env, "_loaded", None, raising=False)
+
+    class _StubStack:
+        def run(
+            self,
+            args: list[str],
+            *,
+            env_file: Path,
+            env: dict[str, str] | None = None,
+        ) -> object:
+            return type("_Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(fm, "_stack", _StubStack())
+    monkeypatch.setattr(fm, "check_ports", lambda _ports: [])
+
+    fm.stack_up(env_file)
+
+    assert (deploy_dir / fm.WORKDIR_NAME / "configs" / "custom.yaml").is_file()
 
 
 def test_stack_down_runs_without_a_workdir(
