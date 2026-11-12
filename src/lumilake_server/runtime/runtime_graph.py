@@ -1901,10 +1901,13 @@ class RuntimeGraphBuilder:
         """Map a declared ``items.output[...]`` read of a LambdaOp's result to
         the matching path inside the python step's result envelope.
 
-        A list-mode Lambda emits its values as items, so a field read
-        (``items.output.<f>``) maps to ``value.items.output.<f>``; a row-mode
-        Lambda emits each row's value under ``value.items.value``, so a field
-        read maps to ``value.items.value.<f>``.
+        A list-mode or aligned-mode Lambda emits its values as items, so a
+        whole-column read of ``items.output`` maps to ``value.items.output``
+        and a field read (``items.output.<f>``) maps to
+        ``value.items.output.<f>``. A row-mode Lambda emits each row's value
+        under ``value.items.value``, so a field read maps to
+        ``value.items.value.<f>`` while its whole-column read stays
+        ``value.items.output``.
         """
         if not upstream.takes_whole_columns and path != "items.output":
             return "value.items.value." + path[len("items.output.") :]

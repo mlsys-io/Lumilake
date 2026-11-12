@@ -1532,11 +1532,15 @@ def test_embedding_op_consuming_list_lambda_uses_value_items_output(
     assert _walk(result, node.data_spec["path"].split(".")) == ["NVDA", "AAPL"]
 
 
-def test_image_gen_op_consuming_list_lambda_uses_value_items_output() -> None:
+@pytest.mark.parametrize("mode", ["list", "aligned"])
+def test_image_gen_op_consuming_list_lambda_uses_value_items_output(
+    mode: Literal["list", "aligned"],
+) -> None:
     """An ImageGenerationOp whose content is a list-mode LambdaOp binds
-    ``value.items.output``."""
+    ``value.items.output``, the field of the python step's result that holds
+    the emitted column. Aligned mode reads the same column shape."""
     stock = input_placeholder("Stock")
-    explode = LambdaOp([stock], _explode_fn, mode="list")
+    explode = LambdaOp([stock], _emit_column, mode=mode)
     img = ImageGenerationOp(
         content=explode, config=GenerationConfig(model="stabilityai/sdxl")
     )
@@ -1548,6 +1552,8 @@ def test_image_gen_op_consuming_list_lambda_uses_value_items_output() -> None:
     node = runtime_graph.nodes[img.id]
     assert node.data_spec["node"] == explode.id
     assert node.data_spec["path"] == "value.items.output"
+    result = {"value": {"items": [{"output": "NVDA"}, {"output": "AAPL"}]}}
+    assert _walk(result, node.data_spec["path"].split(".")) == ["NVDA", "AAPL"]
 
 
 def test_agent_retrieval_as_final_output_uses_table_path() -> None:
