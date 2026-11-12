@@ -224,6 +224,86 @@ def test_template_validator_rejects_a_stop_export_that_cannot_read_empty(
         validate_template_spec(template)
 
 
+@pytest.mark.parametrize("mode", ["row", "aligned"])
+def test_template_validator_rejects_a_row_mode_next_stop_export(mode: str) -> None:
+    # ``next`` runs every round from round 2 on, so its export decides every
+    # stop from round 3 on. Round 1's export is a list-mode Lambda, so only the
+    # later check can refuse the row-mode export.
+    first = {
+        "ops": [
+            {
+                "id": "Live_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Symbols"],
+                "mode": "list",
+                "fn_name": "live",
+                "code": "def live(columns):\n    return columns[0]\n",
+            }
+        ],
+        "export": ["Live_r{{round}}"],
+    }
+    next_body = {
+        "ops": [
+            {
+                "id": "Live_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Live_r{{prev}}"],
+                "mode": mode,
+                "fn_name": "live",
+                "code": "def live(columns):\n    return columns[0]\n",
+            }
+        ],
+        "export": ["Live_r{{round}}"],
+    }
+    template = DriverTemplate.model_validate(
+        {
+            "first": first,
+            "next": next_body,
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    with pytest.raises(DriverProtocolError, match="must be a list-mode LambdaOp"):
+        validate_template_spec(template)
+
+
+def test_template_validator_requires_next_to_export_the_stop_export() -> None:
+    body = {
+        "ops": [
+            {
+                "id": "Live_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Symbols"],
+                "mode": "list",
+                "fn_name": "live",
+                "code": "def live(columns):\n    return columns[0]\n",
+            }
+        ],
+        "export": ["Live_r{{round}}"],
+    }
+    next_body = {
+        "ops": [
+            {
+                "id": "Step_r{{round}}",
+                "op": "LambdaOp",
+                "inputs": ["Live_r{{prev}}"],
+                "mode": "list",
+                "fn_name": "step",
+                "code": "def step(columns):\n    return columns[0]\n",
+            }
+        ],
+        "export": ["Step_r{{round}}"],
+    }
+    template = DriverTemplate.model_validate(
+        {
+            "first": body,
+            "next": next_body,
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    with pytest.raises(DriverProtocolError, match="must be exported by round 2"):
+        validate_template_spec(template)
+
+
 def test_template_validator_rejects_a_non_lambda_stop_export() -> None:
     body = {
         "ops": [
@@ -393,7 +473,7 @@ def test_template_validator_forwards_a_prior_round_leaf() -> None:
                                 "inputs": ["State_r{{round}}"],
                             },
                         ],
-                        "export": ["State_r{{round}}"],
+                        "export": ["State_r{{round}}", "Tally_r{{round}}"],
                     },
                     "next": {
                         "ops": [
@@ -405,7 +485,7 @@ def test_template_validator_forwards_a_prior_round_leaf() -> None:
                         ],
                         "export": ["Tally_r{{round}}"],
                     },
-                    "stop_when_empty": "State_r{{prev}}",
+                    "stop_when_empty": "Tally_r{{prev}}",
                 },
             },
             "library": library,

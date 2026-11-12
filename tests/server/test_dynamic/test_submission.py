@@ -227,6 +227,7 @@ driver:
           code: |
             def state(columns):
                 return columns[0]
+      export: ["State_r{{round}}"]
     stop_when_empty: "State_r{{prev}}"
 """
 

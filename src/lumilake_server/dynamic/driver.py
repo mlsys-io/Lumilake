@@ -1222,6 +1222,15 @@ def validate_template_spec(
         for op_id in [*_current_leaves(plan.ops), *plan.export]:
             available_results.setdefault(op_id, [])
     _validate_stop_export_is_list_lambda(registry[previous_export], previous_export)
+    # ``next`` runs every round from round 2 on, so its export decides every
+    # stop from round 3 on. Round 3 is the first of those rounds: it stops on
+    # round 2's export, which ``next`` produces.
+    later_export = template_stop_export(template, 3)
+    if later_export not in plans[2].export:
+        raise DriverProtocolError(
+            f"stop_when_empty {later_export!r} must be exported by round 2"
+        )
+    _validate_stop_export_is_list_lambda(registry[later_export], later_export)
 
 
 def _validate_stop_export_is_list_lambda(op: dict[str, Any], export_id: str) -> None:
