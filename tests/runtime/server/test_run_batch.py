@@ -2064,7 +2064,7 @@ async def test_whole_set_round_accepts_its_own_row_count_when_node_matches_slice
             nodes={node_id: op}, node_order=[node_id], output_node_map=output_node_map
         )
 
-    server._runtime_builder.build = _fake_build  # type: ignore[method-assign]
+    monkeypatch.setattr(server._runtime_builder, "build", _fake_build)
 
     async def _fake_schedule(
         *,
@@ -2082,7 +2082,7 @@ async def test_whole_set_round_accepts_its_own_row_count_when_node_matches_slice
             worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
         )
 
-    server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
+    monkeypatch.setattr(server, "_generate_schedule_in_subprocess", _fake_schedule)
     monkeypatch.setattr(
         server,
         "_merge_group_compiled_graph",
