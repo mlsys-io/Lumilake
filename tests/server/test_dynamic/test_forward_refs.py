@@ -1448,25 +1448,26 @@ def test_forward_whole_explicit_column_reference_unwraps_a_one_element_list():
 
 
 def test_forward_whole_list_lambda_export_keeps_one_value_per_item():
-    # A list-mode Lambda archives one whole item holding its list, which cannot
-    # be partitioned per row: the whole binding keeps it as one value, so the
-    # consuming round runs as one slice over the whole list.
+    # A Lambda archives one item per element it returns, a list-valued element
+    # included. The whole binding keeps one value per item, so the consuming
+    # round runs as one slice over those values rather than over each element
+    # a stored list happens to hold.
     llm_id = "s0"
     configs = {llm_id: {"id": llm_id, "op": "LambdaOp", "mode": "list", "inputs": []}}
-    results = {llm_id: [{"output": ["a", "b", "c"]}]}
+    results = {llm_id: [{"output": "a"}, {"output": "b"}, {"output": ["c", "d"]}]}
     _, inputs = forward_refs(
         _three_row_subgraph(llm_id), results, configs, rows=3, whole_refs={llm_id}
     )
-    assert inputs == {llm_id: [json.dumps(["a", "b", "c"])]}
+    assert inputs == {llm_id: ["a", "b", json.dumps(["c", "d"])]}
 
 
 def test_forward_whole_list_lambda_export_explicit_reference_agrees():
     # The explicit ``(node, path)`` form binds a whole list-Lambda export
     # through the same whole binding as the implicit form: one value per
-    # item, not one per element of the list the export holds.
+    # archived item, and a list-valued element stays one JSON value.
     llm_id = "s0"
     configs = {llm_id: {"id": llm_id, "op": "LambdaOp", "mode": "list", "inputs": []}}
-    results = {llm_id: [{"output": ["a", "b", "c"]}]}
+    results = {llm_id: [{"output": "a"}, {"output": "b"}, {"output": ["c", "d"]}]}
     subgraph = [
         {
             "id": "q4",
@@ -1480,7 +1481,7 @@ def test_forward_whole_list_lambda_export_explicit_reference_agrees():
     assert len(ops) == 1
     assert ops[0]["aggregate_table"][0]["node"] == f"{llm_id} | items.output"
     assert ops[0]["aggregate_table"][0]["path"] == ""
-    assert inputs == {f"{llm_id} | items.output": [json.dumps(["a", "b", "c"])]}
+    assert inputs == {f"{llm_id} | items.output": ["a", "b", json.dumps(["c", "d"])]}
 
 
 def test_forward_whole_gated_leaf_keeps_one_value_per_item():
