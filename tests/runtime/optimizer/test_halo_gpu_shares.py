@@ -19,7 +19,12 @@ _GPU_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 
-def _inference_op(node_id: str, model: str, utilization: float) -> RuntimeOp:
+def _inference_op(
+    node_id: str,
+    model: str,
+    utilization: float,
+    dependencies: tuple[str, ...] = (),
+) -> RuntimeOp:
     return RuntimeOp(
         node_id=node_id,
         task_type="inference",
@@ -28,6 +33,7 @@ def _inference_op(node_id: str, model: str, utilization: float) -> RuntimeOp:
         data_spec={},
         model_spec={"vllm": {"gpu_memory_utilization": utilization}},
         inference_spec={},
+        dependencies=dependencies,
     )
 
 
@@ -196,3 +202,38 @@ def test_a_whole_device_worker_holds_any_utilization() -> None:
 
     assert _placed_on(schedule, "generator") == "gpu-exclusive"
     assert _placed_on(schedule, "scorer") == "gpu-exclusive"
+
+
+def _parallel_then_heavy_graph() -> RuntimeGraph:
+    """Two nodes in parallel, then a heavy one that reuses the first node's model."""
+    nodes = {
+        "big-a": _inference_op("big-a", "Qwen/Qwen3-8B", utilization=0.3),
+        "small": _inference_op("small", "Qwen/Qwen3-0.6B", utilization=0.3),
+        "big-b": _inference_op(
+            "big-b", "Qwen/Qwen3-8B", utilization=0.9, dependencies=("big-a",)
+        ),
+    }
+    return RuntimeGraph(
+        nodes=nodes,
+        node_order=["big-a", "small", "big-b"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+
+def test_dedup_keeps_workers_whose_shares_differ_apart() -> None:
+    """The half-card worker and the whole-device one are not interchangeable:
+    only the whole device holds the 0.9 node, so the 8B jobs belong together
+    there and the small node takes the half card."""
+    schedule = HaloOptimizer().generate_schedule(
+        graph=_parallel_then_heavy_graph(),
+        worker_names=["gpu-half", "gpu-whole"],
+        worker_profiles={
+            "gpu-half": {"has_gpu": True, "gpu_memory_share": 0.5},
+            "gpu-whole": {"has_gpu": True},
+        },
+    )
+
+    assert _placed_on(schedule, "small") == "gpu-half"
+    assert _placed_on(schedule, "big-a") == "gpu-whole"
+    assert _placed_on(schedule, "big-b") == "gpu-whole"

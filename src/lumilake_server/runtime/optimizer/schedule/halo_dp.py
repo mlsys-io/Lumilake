@@ -1153,6 +1153,9 @@ class DPSolver:
             float(worker.capacity),
             state.last_model_id,
             state.last_node_id,
+            # A whole device sorts above any shared card, and the share decides
+            # which workers a node may use.
+            -1.0 if worker.gpu_memory_share is None else worker.gpu_memory_share,
         )
 
     def _dedup_worker_assignments(
