@@ -8,8 +8,11 @@ from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
+    EmbeddingOp,
+    ImageGenerationOp,
     LambdaOp,
     LLMChatOp,
+    LLMCompletionOp,
     LLMVisionOp,
     OpMessage,
     as_output,
@@ -40,6 +43,10 @@ def _build(yaml_text: str) -> RuntimeGraph:
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
     return [{"value": v} for v in items[0]]
+
+
+def _row_fn(items: tuple[Any, ...]) -> str:
+    return str(items[0])
 
 
 def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
@@ -507,3 +514,126 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
         "node": explode_node.node_id,
         "path": "value.items.output.value",
     }
+
+
+def _runtime_node(graph: RuntimeGraph, op_id: str) -> str:
+    (node_id,) = graph.dsl_to_runtime[op_id][-1:]
+    return node_id
+
+
+def test_list_lambda_direct_read_nodes_classify_by_binding() -> None:
+    """A node whose ``list`` column binds a list-mode Lambda one hop away runs
+    once per element, so its output folds: a completion prompt, an embedding
+    content and an image content. A node that reads the same Lambda through a
+    template, a row-wise column or a retrieval parameter binds it elsewhere and
+    keeps its own cardinality."""
+    config = GenerationConfig(model="Qwen/Qwen3-8B")
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    completion = LLMCompletionOp(prompt=explode, config=config)
+    embedding = EmbeddingOp(
+        content=explode, config=GenerationConfig(model="BAAI/bge-small-en-v1.5")
+    )
+    image = ImageGenerationOp(
+        content=explode, config=GenerationConfig(model="Tongyi-MAI/Z-Image-Turbo")
+    )
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops(
+            [
+                as_output("answer", completion),
+                as_output("vectors", embedding),
+                as_output("image", image),
+            ]
+        ).compile(Stock=["NVDA", "AAPL"])
+    )
+    direct = graph.list_lambda_direct_read_nodes()
+    for op in (completion, embedding, image):
+        spec = graph.nodes[_runtime_node(graph, op.id)].data_spec
+        assert spec["type"] == "list"
+        assert spec["node"] == _runtime_node(graph, explode.id)
+        assert _runtime_node(graph, op.id) in direct
+    assert _runtime_node(graph, explode.id) not in direct
+
+
+def test_list_lambda_direct_read_skips_two_hops() -> None:
+    """A completion prompted by another completion reads that completion, not
+    the Lambda, so its list column does not bind a list-mode Lambda and it is
+    not folded."""
+    config = GenerationConfig(model="Qwen/Qwen3-8B")
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    first = LLMCompletionOp(prompt=explode, config=config)
+    second = LLMCompletionOp(prompt=first, config=config)
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("second", second)]).compile(Stock=["NVDA", "AAPL"])
+    )
+    direct = graph.list_lambda_direct_read_nodes()
+    assert _runtime_node(graph, first.id) in direct
+    assert _runtime_node(graph, second.id) not in direct
+
+
+def test_list_lambda_direct_read_skips_row_mode_lambda() -> None:
+    """A completion whose prompt binds a row-mode Lambda's column keeps one
+    value per row: only a list-mode Lambda emits one item per element behind
+    that column."""
+    stock = input_placeholder("Stock")
+    rows = LambdaOp([stock], _row_fn)
+    completion = LLMCompletionOp(
+        prompt=rows, config=GenerationConfig(model="Qwen/Qwen3-8B")
+    )
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("answer", completion)]).compile(
+            Stock=["NVDA", "AAPL", "MSFT"]
+        )
+    )
+    direct = graph.list_lambda_direct_read_nodes()
+    assert _runtime_node(graph, completion.id) not in direct
+
+
+def test_list_lambda_direct_read_skips_other_read_shapes() -> None:
+    """An aggregate chat, a row-wise chat and a retrieval parameter read the
+    Lambda through their own columns, so none of them folds by the list
+    column rule."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    summary = LLMChatOp(
+        [OpMessage(role="user", content="Summarize {df}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[
+            {"label": "value", "node": explode.id, "path": "items.output"}
+        ],
+    )
+    summary.inputs.append(explode)
+    rowwise = LLMChatOp(
+        [OpMessage(role="user", content="Say {v}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Say {v}",
+        rowwise_columns=[
+            {"label": "v", "node": explode.id, "path": "items.output.value"}
+        ],
+    )
+    rowwise.inputs.append(explode)
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "s3",
+            "template": "docs/{k}.txt",
+            "params": [{"name": "k", "node": explode.id, "path": "items.output.value"}],
+        },
+        inputs=[explode],
+    )
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops(
+            [
+                as_output("summary", summary),
+                as_output("said", rowwise),
+                as_output("docs", retrieval),
+            ]
+        ).compile(Stock=["A", "B", "C"])
+    )
+    direct = graph.list_lambda_direct_read_nodes()
+    for op, spec_type in ((summary, "graph_template"), (rowwise, "dataframe")):
+        node_id = _runtime_node(graph, op.id)
+        assert graph.nodes[node_id].data_spec["type"] == spec_type
+        assert node_id not in direct
+    assert _runtime_node(graph, retrieval.id) not in direct

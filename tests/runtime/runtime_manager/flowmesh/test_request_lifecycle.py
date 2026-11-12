@@ -19,6 +19,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     LambdaOp,
     LLMChatOp,
+    LLMCompletionOp,
     OpMessage,
     as_output,
     input_placeholder,
@@ -603,6 +604,222 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
         {"fid": "f2", "statement": "s2", "quote": "q2"},
         {"fid": "f3", "statement": "s3", "quote": "q3"},
     ]
+
+
+def _build_aggregate_chat_over_list_lambda_request() -> tuple[RequestInfo, str, str]:
+    """List-mode LambdaOp -> aggregate LLMChatOp -> output.
+
+    The aggregate chat sends one prompt for the whole table, so its task runs
+    once per run. Returns ``(request_info, lambda_row_id, llm_row_id)``.
+    """
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    summary = LLMChatOp(
+        [OpMessage(role="user", content="Summarize {df}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        aggregate_table=[
+            {"label": "value", "node": explode.id, "path": "items.output"}
+        ],
+    )
+    summary.inputs.append(explode)
+    output = as_output("summary", summary)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL", "MSFT"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    (llm_row_id,) = runtime_graph.dsl_to_runtime[summary.id]
+    (explode_row_id,) = runtime_graph.dsl_to_runtime[explode.id]
+
+    request_info = RequestInfo(
+        request_id="req-aggregate-chat",
+        runtime_graphs={"g": runtime_graph},
+        data_profile_graphs={},
+    )
+    request_info.batch_id = "batch-1"
+    request_info.runtime_graph = runtime_graph
+    request_info.data_profile_graph = RuntimeGraph(
+        nodes={}, node_order=[], output_node_map={}
+    )
+    return request_info, explode_row_id, llm_row_id
+
+
+@pytest.mark.asyncio
+async def test_aggregate_chat_over_list_lambda_returns_bare_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An aggregate chat over a list-mode Lambda already answers once per run,
+    so its one item is the output value as it is; the history's assistant turn
+    is the reply, not a JSON-encoded list of the reply."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
+    manager = FlowmeshRuntimeManager()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        lambda: InMemoryJobStorage(),
+    )
+
+    request_info, explode_row_id, llm_row_id = (
+        _build_aggregate_chat_over_list_lambda_request()
+    )
+    prompt = [{"role": "user", "content": "Summarize the rows."}]
+
+    class _FakeWorkflows:
+        async def submit(self, task_yaml: str) -> Any:
+            return SimpleNamespace(
+                tasks=[
+                    SimpleNamespace(task_id="task-lambda"),
+                    SimpleNamespace(task_id="task-llm"),
+                ],
+                workflow_id="wf-1",
+            )
+
+    class _FakeResults:
+        async def retrieve(self, task_id: str) -> dict[str, Any]:
+            if task_id == "task-lambda":
+                return {"value": {"items": ["nvda", "aapl", "msft"]}}
+            return {
+                "items": [{"output": "one summary", "metadata": {"prompt": prompt}}]
+            }
+
+    class _FakeFm:
+        def __init__(self) -> None:
+            self.workflows = _FakeWorkflows()
+            self.results = _FakeResults()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+
+    node_by_task = {"task-lambda": explode_row_id, "task-llm": llm_row_id}
+
+    async def _fetch_task_status(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> TaskStatusView:
+        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
+
+    async def _fetch_task_description(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> dict[str, Any]:
+        return {"graph_node_name": node_by_task[task_id]}
+
+    monkeypatch.setattr(
+        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+    )
+    monkeypatch.setattr(
+        manager,
+        "fetch_task_description",
+        types.MethodType(_fetch_task_description, manager),
+    )
+
+    result_ = await manager.process_request(
+        request_info,
+        Schedule(worker_assignment={"worker-1": [explode_row_id, llm_row_id]}),
+        worker_ids=["worker-1"],
+    )
+    assert result_["flat_outputs"][llm_row_id] == ["one summary"]
+    [history] = result_["chat_histories"][llm_row_id]
+    assert history[-1] == {"role": "assistant", "content": "one summary"}
+
+
+def _build_completion_over_list_lambda_request() -> tuple[RequestInfo, str, str]:
+    """List-mode LambdaOp -> ``LLMCompletionOp`` prompt -> output.
+
+    The completion's prompt binds the Lambda's list column, so its task runs
+    once per element. Returns ``(request_info, lambda_row_id, llm_row_id)``.
+    """
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    completion = LLMCompletionOp(
+        prompt=explode, config=GenerationConfig(model="Qwen/Qwen3-8B")
+    )
+    output = as_output("answer", completion)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL", "MSFT"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    (llm_row_id,) = runtime_graph.dsl_to_runtime[completion.id]
+    (explode_row_id,) = runtime_graph.dsl_to_runtime[explode.id]
+
+    request_info = RequestInfo(
+        request_id="req-completion-over-list-lambda",
+        runtime_graphs={"g": runtime_graph},
+        data_profile_graphs={},
+    )
+    request_info.batch_id = "batch-1"
+    request_info.runtime_graph = runtime_graph
+    request_info.data_profile_graph = RuntimeGraph(
+        nodes={}, node_order=[], output_node_map={}
+    )
+    return request_info, explode_row_id, llm_row_id
+
+
+@pytest.mark.asyncio
+async def test_completion_over_list_lambda_folds_to_one_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completion whose prompt binds a list-mode Lambda's column runs once per
+    element, so its several answers collapse into ONE output value holding the
+    whole list, in order."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
+    manager = FlowmeshRuntimeManager()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        lambda: InMemoryJobStorage(),
+    )
+
+    request_info, explode_row_id, llm_row_id = (
+        _build_completion_over_list_lambda_request()
+    )
+
+    class _FakeWorkflows:
+        async def submit(self, task_yaml: str) -> Any:
+            return SimpleNamespace(
+                tasks=[
+                    SimpleNamespace(task_id="task-lambda"),
+                    SimpleNamespace(task_id="task-llm"),
+                ],
+                workflow_id="wf-1",
+            )
+
+    class _FakeResults:
+        async def retrieve(self, task_id: str) -> dict[str, Any]:
+            if task_id == "task-lambda":
+                return {"value": {"items": ["nvda", "aapl", "msft"]}}
+            return {
+                "items": [
+                    {"output": "a"},
+                    {"output": "b"},
+                    {"output": "c"},
+                ]
+            }
+
+    class _FakeFm:
+        def __init__(self) -> None:
+            self.workflows = _FakeWorkflows()
+            self.results = _FakeResults()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+
+    node_by_task = {"task-lambda": explode_row_id, "task-llm": llm_row_id}
+
+    async def _fetch_task_status(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> TaskStatusView:
+        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
+
+    async def _fetch_task_description(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> dict[str, Any]:
+        return {"graph_node_name": node_by_task[task_id]}
+
+    monkeypatch.setattr(
+        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+    )
+    monkeypatch.setattr(
+        manager,
+        "fetch_task_description",
+        types.MethodType(_fetch_task_description, manager),
+    )
+
+    result_ = await manager.process_request(
+        request_info,
+        Schedule(worker_assignment={"worker-1": [explode_row_id, llm_row_id]}),
+        worker_ids=["worker-1"],
+    )
+    assert result_["flat_outputs"][llm_row_id] == [json.dumps(["a", "b", "c"])]
 
 
 @pytest.mark.asyncio

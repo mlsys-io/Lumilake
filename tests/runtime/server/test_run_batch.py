@@ -864,6 +864,7 @@ class _EmbeddingRuntimeManager(RecordingRuntimeManager):
                 expected_row_count=self._row_count,
                 list_lambda=False,
                 list_lambda_cardinality=False,
+                list_lambda_direct_read=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1072,6 +1073,7 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
                 output_path="items.output",
                 list_lambda=True,
                 list_lambda_cardinality=False,
+                list_lambda_direct_read=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1102,6 +1104,7 @@ class _RowwiseApiRuntimeManager(RecordingRuntimeManager):
                 output_path="items.rows.json.choices[0].message.content",
                 list_lambda=False,
                 list_lambda_cardinality=False,
+                list_lambda_direct_read=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1135,6 +1138,8 @@ class _RowwiseApiListLambdaRuntimeManager(RecordingRuntimeManager):
                 list_lambda=False,
                 list_lambda_cardinality=node_id
                 in request_info.runtime_graph.list_lambda_cardinality_nodes(),
+                list_lambda_direct_read=node_id
+                in request_info.runtime_graph.list_lambda_direct_read_nodes(),
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1168,6 +1173,8 @@ class _RowwisePythonDownstreamListLambdaRuntimeManager(RecordingRuntimeManager):
                 list_lambda=False,
                 list_lambda_cardinality=node_id
                 in request_info.runtime_graph.list_lambda_cardinality_nodes(),
+                list_lambda_direct_read=node_id
+                in request_info.runtime_graph.list_lambda_direct_read_nodes(),
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1624,6 +1631,7 @@ class _AlignedRuntimeManager(RecordingRuntimeManager):
                 output_path="items.output",
                 list_lambda=False,
                 list_lambda_cardinality=False,
+                list_lambda_direct_read=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 

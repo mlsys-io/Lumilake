@@ -18,6 +18,7 @@ async def _aggregate(output_path: str | None) -> list[str]:
         output_path=output_path,
         list_lambda=False,
         list_lambda_cardinality=False,
+        list_lambda_direct_read=False,
     )
 
 
@@ -62,6 +63,7 @@ async def test_aggregate_valid_indexed_path_resolves() -> None:
         output_path="items.rows.json.choices[0].message.content",
         list_lambda=False,
         list_lambda_cardinality=False,
+        list_lambda_direct_read=False,
     )
     assert values == ["ok"]
 
@@ -77,6 +79,7 @@ async def test_aggregate_valid_bracket_index_resolves() -> None:
         output_path="items.rows[0].output",
         list_lambda=False,
         list_lambda_cardinality=False,
+        list_lambda_direct_read=False,
     )
     assert values == ["ok"]
 
@@ -93,6 +96,7 @@ async def _aggregate_list_lambda(output_path: str | None) -> list[str]:
         output_path=output_path,
         list_lambda=True,
         list_lambda_cardinality=False,
+        list_lambda_direct_read=False,
     )
 
 

@@ -1110,6 +1110,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         expected_row_count: int | None = None,
         list_lambda: bool,
         list_lambda_cardinality: bool,
+        list_lambda_direct_read: bool,
         rowwise_llm: bool = False,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
@@ -1189,12 +1190,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             if list_lambda_cardinality:
                 return [_coerce_output_value(flattened)]
             return flattened
-        return [
-            _coerce_output_value(
-                _walk_output_path(item, output_field_parts, output_op_id)
-            )
-            for item in items
+        values: list[Any] = [
+            _walk_output_path(item, output_field_parts, output_op_id) for item in items
         ]
+        if list_lambda_direct_read:
+            return [_coerce_output_value(values)]
+        return [_coerce_output_value(value) for value in values]
 
     async def _archive_task_response(
         self,
@@ -1534,6 +1535,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         list_lambda_cardinality_nodes = (
             request_info.runtime_graph.list_lambda_cardinality_nodes()
         )
+        list_lambda_direct_read_nodes = (
+            request_info.runtime_graph.list_lambda_direct_read_nodes()
+        )
 
         for _, output_op_id in output_node_indices:
             output_task_id = node_task_map.get(output_op_id)
@@ -1579,6 +1583,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 and output_node.task_type == python_step.TASK_TYPE
                 and output_node.data_spec.get("mode") == "list",
                 list_lambda_cardinality=output_op_id in list_lambda_cardinality_nodes,
+                list_lambda_direct_read=output_op_id in list_lambda_direct_read_nodes,
                 rowwise_llm=output_node is not None
                 and output_node.data_spec.get("type") == "dataframe",
             )
