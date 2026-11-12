@@ -279,7 +279,7 @@ class _GpuBatchJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
+            gpu_node = _op("inference", "vllm")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-gpu", id="wf-gpu")],
@@ -545,7 +545,7 @@ class _GpuThenCpuJobManager:
         self._select_calls += 1
         # While the GPU batch is still queued, it keeps re-selecting.
         if not self._gpu_removed:
-            gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
+            gpu_node = _op("inference", "vllm")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[
@@ -661,7 +661,7 @@ class _TransientGpuJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            gpu_node = SimpleNamespace(backend="vllm", task_type="inference")
+            gpu_node = _op("inference", "vllm")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[
@@ -805,7 +805,7 @@ class _InferenceWithoutBackendBatchJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            mystery_op = SimpleNamespace(backend="", task_type="inference")
+            mystery_op = _op("inference", "")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-mystery", id="wf-mystery")],
@@ -1141,6 +1141,95 @@ async def test_try_claim_workers_lets_the_optimizer_fail_when_no_worker_can_run_
     )
 
     assert await server._try_claim_workers(_python_batch(), free) == ["cpu-plain"]
+
+
+_SMALL_GPU = {"has_gpu": True, "gpu_memory_share": 0.1}
+_BIG_GPU = {"has_gpu": True, "gpu_memory_share": 0.8}
+
+
+def _op(task_type: str, backend: str, model_spec: dict[str, Any] | None = None) -> Any:
+    """A graph node whose model spec names no utilization unless one is passed."""
+    return SimpleNamespace(task_type=task_type, backend=backend, model_spec=model_spec)
+
+
+def _generation_batch(utilization: float) -> Any:
+    op = _op("inference", "vllm", {"vllm": {"gpu_memory_utilization": utilization}})
+    return SimpleNamespace(
+        config=SimpleNamespace(hardware_requirements=None),
+        workflows=[SimpleNamespace(request_id="req", id="wf")],
+        runtime_graphs={"g": SimpleNamespace(nodes={"n": op})},
+        clustering_seconds=0.0,
+    )
+
+
+def _gpu_cluster(server: Any, profiles: dict[str, dict[str, Any]]) -> None:
+    async def total() -> FreeCapacity:
+        return FreeCapacity(
+            cpu_worker_ids=(), gpu_worker_ids=tuple(profiles), profiles=profiles
+        )
+
+    server._snapshot_total_capacity = total
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_takes_the_gpu_worker_whose_share_fits(
+    server_factory,
+) -> None:
+    """Two idle GPU workers, the smaller share listed first, and a GPU group of
+    one: the claim must take the worker whose share holds the node's
+    utilization, not the first idle one the optimizer would reject."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 0
+    profiles = {"gpu-small": _SMALL_GPU, "gpu-big": _BIG_GPU}
+    _gpu_cluster(server, profiles)
+    free = FreeCapacity(
+        cpu_worker_ids=(), gpu_worker_ids=("gpu-small", "gpu-big"), profiles=profiles
+    )
+
+    assert await server._try_claim_workers(_generation_batch(0.8), free) == ["gpu-big"]
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_waits_while_the_fitting_gpu_worker_is_busy(
+    server_factory,
+) -> None:
+    """The worker that fits is busy and only a smaller share is idle: the claim
+    returns None so the scheduler waits rather than claiming a worker the
+    optimizer would reject."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 0
+    _gpu_cluster(server, {"gpu-small": _SMALL_GPU, "gpu-big": _BIG_GPU})
+    free = FreeCapacity(
+        cpu_worker_ids=(),
+        gpu_worker_ids=("gpu-small",),
+        profiles={"gpu-small": _SMALL_GPU},
+    )
+
+    assert await server._try_claim_workers(_generation_batch(0.8), free) is None
+    assert server.busy_workers == set()
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_lets_the_optimizer_fail_when_no_share_fits(
+    server_factory,
+) -> None:
+    """No GPU worker in the cluster holds the utilization: waiting would never
+    end, so the claim proceeds and the optimizer fails the batch with the shares."""
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 0
+    _gpu_cluster(server, {"gpu-small": _SMALL_GPU})
+    free = FreeCapacity(
+        cpu_worker_ids=(),
+        gpu_worker_ids=("gpu-small",),
+        profiles={"gpu-small": _SMALL_GPU},
+    )
+
+    assert await server._try_claim_workers(_generation_batch(0.8), free) == [
+        "gpu-small"
+    ]
 
 
 class _CommitRaisesJobManager:

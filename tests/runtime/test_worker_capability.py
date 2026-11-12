@@ -128,3 +128,66 @@ def test_cpu_worker_advertising_ignores_gpu_workers() -> None:
     )
     assert not free.has_cpu_worker_advertising(frozenset({"python"}))
     assert free.has_cpu_worker_advertising(frozenset({"echo"}))
+
+
+def _gpu_free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
+    return FreeCapacity(
+        cpu_worker_ids=(), gpu_worker_ids=tuple(profiles), profiles=profiles
+    )
+
+
+def _claim_gpu(
+    free: FreeCapacity, utilizations: frozenset[float], group_size: int = 1
+) -> list[str] | None:
+    selected = free.eligible_workers(
+        cpu_group_size=0,
+        gpu_group_size=group_size,
+        worker_meets_hardware=_meets_everything,
+        hardware=None,
+        required_gpu_utilizations=utilizations,
+    )
+    return None if selected is None else selected[1]
+
+
+_SMALL = {"has_gpu": True, "gpu_memory_share": 0.1}
+_BIG = {"has_gpu": True, "gpu_memory_share": 0.8}
+
+
+def test_gpu_claim_takes_a_worker_whose_share_holds_the_utilization() -> None:
+    """The idle small worker comes first; the claim still takes the one that fits."""
+    free = _gpu_free({"gpu-small": _SMALL, "gpu-big": _BIG})
+    assert _claim_gpu(free, frozenset({0.8})) == ["gpu-big"]
+
+
+def test_gpu_claim_waits_when_the_free_shares_are_too_small() -> None:
+    free = _gpu_free({"gpu-small": _SMALL})
+    assert _claim_gpu(free, frozenset({0.8})) is None
+
+
+def test_gpu_claim_holds_every_utilization_the_group_covers() -> None:
+    """One node at 0.8 and one at 0.1 need a group whose largest share is 0.8."""
+    free = _gpu_free({"gpu-small": _SMALL, "gpu-big": _BIG})
+    assert _claim_gpu(free, frozenset({0.1, 0.8}), group_size=2) == [
+        "gpu-small",
+        "gpu-big",
+    ]
+
+
+def test_gpu_claim_without_a_utilization_keeps_the_original_order() -> None:
+    free = _gpu_free({"gpu-small": _SMALL, "gpu-big": _BIG})
+    assert _claim_gpu(free, frozenset()) == ["gpu-small"]
+
+
+def test_gpu_claim_takes_a_whole_device_for_any_utilization() -> None:
+    free = _gpu_free({"gpu-whole": {"has_gpu": True, "gpu_memory_share": None}})
+    assert _claim_gpu(free, frozenset({0.9})) == ["gpu-whole"]
+
+
+def test_gpu_worker_holding_ignores_cpu_workers() -> None:
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-0",),
+        gpu_worker_ids=("gpu-small",),
+        profiles={"cpu-0": {}, "gpu-small": _SMALL},
+    )
+    assert not free.has_gpu_worker_holding(frozenset({0.8}))
+    assert free.has_gpu_worker_holding(frozenset({0.1}))

@@ -6,6 +6,7 @@ a CPU worker that advertises it; every other node is placed by engine alone.
 python runs only on Docker-backed workers, so it is the one gated type.
 """
 
+import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -57,6 +58,49 @@ def gpu_memory_share(profile: Mapping[str, Any]) -> float | None:
 def required_task_types(task_types: Iterable[str]) -> frozenset[str]:
     """The gated task types among ``task_types``."""
     return CAPABILITY_GATED_TASK_TYPES.intersection(task_types)
+
+
+def model_spec_gpu_memory_utilization(model_spec: Any) -> float | None:
+    """The fraction of a card's memory a model spec reserves for its vLLM engine.
+
+    The value sits under ``vllm``; a spec that names none returns ``None``, and
+    a node carrying such a spec can run on any GPU worker.
+    """
+    if not isinstance(model_spec, Mapping):
+        return None
+    vllm = model_spec.get("vllm")
+    if not isinstance(vllm, Mapping):
+        return None
+    utilization = vllm.get("gpu_memory_utilization")
+    if isinstance(utilization, bool) or not isinstance(utilization, int | float):
+        return None
+    value = float(utilization)
+    if not math.isfinite(value):
+        return None
+    return value
+
+
+def share_holds_utilization(share: float | None, utilization: float) -> bool:
+    """True when a worker owning ``share`` of a card can reserve ``utilization``.
+
+    ``None`` is a whole device, which takes any utilization; a shared worker
+    takes one no larger than its share.
+    """
+    return share is None or utilization <= share
+
+
+def holds_gpu_utilizations(
+    profile: Mapping[str, Any], utilizations: Iterable[float]
+) -> bool:
+    """True when a worker profile can host an engine reserving each utilization.
+
+    A profile that records no share owns a whole device and holds every
+    utilization, as does a request naming none.
+    """
+    share = gpu_memory_share(profile)
+    return all(
+        share_holds_utilization(share, utilization) for utilization in utilizations
+    )
 
 
 def requires_cpu_worker(task_types: Iterable[str]) -> bool:

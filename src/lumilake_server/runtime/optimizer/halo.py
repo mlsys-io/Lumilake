@@ -31,7 +31,9 @@ from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
     gpu_memory_share,
+    model_spec_gpu_memory_utilization,
     required_task_types,
+    share_holds_utilization,
 )
 
 from .multimodal_cost import MultimodalCostCoefficients, compute_gpu_exec_cost
@@ -62,18 +64,7 @@ def _node_gpu_memory_utilization(node: Node) -> float | None:
     names no utilization returns ``None`` and can run on any GPU worker.
     """
     raw = node.raw if isinstance(node.raw, dict) else {}
-    model_spec = raw.get("_model_spec")
-    if not isinstance(model_spec, Mapping):
-        return None
-    vllm = model_spec.get("vllm")
-    if not isinstance(vllm, Mapping):
-        return None
-    utilization = vllm.get("gpu_memory_utilization")
-    if isinstance(utilization, bool) or not isinstance(utilization, int | float):
-        return None
-    if not math.isfinite(float(utilization)):
-        return None
-    return float(utilization)
+    return model_spec_gpu_memory_utilization(raw.get("_model_spec"))
 
 
 def _gpu_worker_holds_utilization(worker: Worker, utilization: float) -> bool:
@@ -84,8 +75,7 @@ def _gpu_worker_holds_utilization(worker: Worker, utilization: float) -> bool:
     """
     if worker.kind != "gpu":
         return True
-    share = worker.gpu_memory_share
-    return share is None or utilization <= share
+    return share_holds_utilization(worker.gpu_memory_share, utilization)
 
 
 def _describe_gpu_shares(workers: Mapping[str, Worker]) -> str:
