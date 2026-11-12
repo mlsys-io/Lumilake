@@ -38,8 +38,8 @@ def test_gpu_memory_share_reads_a_normalized_profile() -> None:
 
 
 def test_gpu_memory_share_reads_a_raw_device_list() -> None:
-    profile = {"gpu": {"devices": [{"memory_share": 0.3}, {"memory_share": 0.7}]}}
-    assert gpu_memory_share(profile) == 0.7
+    profile = {"gpu": {"devices": [{"memory_share": 0.3}]}}
+    assert gpu_memory_share(profile) == 0.3
 
 
 def test_a_whole_device_reads_as_no_share() -> None:

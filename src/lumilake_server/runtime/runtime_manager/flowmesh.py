@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 import yaml
 from flowmesh.exceptions import APIError, FlowMeshConnectionError
-from flowmesh.models import WorkerStatus
+from flowmesh.models import WorkerInfo, WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
@@ -924,13 +924,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             The worker's hardware sections plus ``supported_task_types``, the
             sorted task types its executors advertise. Each GPU device also
             carries ``memory_share``, the fraction of the card's memory the
-            worker owns, read from the raw response and ``None`` for a whole
+            worker owns, read from the same response and ``None`` for a whole
             device, because the SDK model does not keep it.
         """
-        worker = await _retry_transient_read(
-            lambda: flowmesh_for_server().workers.retrieve(worker_id),
+        raw_worker = await _retry_transient_read(
+            lambda: flowmesh_get_for_server(f"/workers/{worker_id}"),
             f"worker {worker_id}",
         )
+        worker = WorkerInfo.model_validate(raw_worker)
         assert worker.id == worker_id
         profile = worker.hardware.model_dump() if worker.hardware else {}
         profile["supported_task_types"] = sorted(
@@ -938,7 +939,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         )
         gpu = profile.get("gpu")
         if isinstance(gpu, dict) and isinstance(gpu.get("devices"), list):
-            raw_worker = await flowmesh_get_for_server(f"/workers/{worker_id}")
             raw_shares = _raw_gpu_memory_shares(raw_worker)
             for device in gpu["devices"]:
                 if isinstance(device, dict):

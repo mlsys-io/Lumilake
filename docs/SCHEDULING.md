@@ -383,9 +383,9 @@ size, planning fails with an error naming the model.
 
 A GPU worker's profile carries `gpu_memory_share`: the fraction of a card's memory the worker owns, and `None` when it owns a whole device. Two FlowMesh workers on one card each hold a share, so the same card appears twice in HALO's worker pool and the workers are not interchangeable.
 
-A node whose engine reserves `gpu_memory_utilization` of a card is offered only to GPU workers whose share is at least that, so a vLLM op runs on a shared card only when its utilization fits the share it lands on — the default `0.9` does not fit a worker holding `0.1`. A node naming no utilization is offered every GPU worker.
+A node whose engine reserves `gpu_memory_utilization` of a card is offered only to GPU workers whose share is at least that, so a vLLM op runs on a shared card only when its utilization fits the share it lands on — the default `0.9` does not fit a worker holding `0.1`. On a cluster without shared workers nothing changes, because every worker holds a whole device. A node built without its own backend config names no utilization and is offered every GPU worker; the default backend config gives every vLLM op the `LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION` value, so a graph that never sets the field still names `0.9`.
 
-When no GPU worker's share fits, planning fails with an error naming the node's requested utilization and each GPU worker's share. Workers are held in name order, so two workers with the same share are interchangeable and the tie between them falls the same way on every run.
+The scheduler claims and previews workers by the same rule, so the batch is handed a group that holds the largest utilization its GPU nodes name; while no free worker does, the batch waits for one, and it is sent to the optimizer only when no GPU worker in the cluster holds that utilization, where planning fails with an error naming the node's requested utilization and each GPU worker's share. Workers are held in name order, so two workers with the same share are interchangeable and the tie between them falls the same way on every run.
 
 ## 8. Scheduling under unknown chain length
 
