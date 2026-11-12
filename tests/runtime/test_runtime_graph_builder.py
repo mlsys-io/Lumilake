@@ -1,5 +1,5 @@
 import textwrap
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -1504,6 +1504,50 @@ def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
     node = runtime_graph.nodes[img.id]
     assert node.data_spec["node"] == retrieval.id
     assert node.data_spec["path"] == "items.table"
+
+
+def _emit_column(items: tuple[list[Any], ...]) -> list[str]:
+    return [str(value) for value in items[0]]
+
+
+@pytest.mark.parametrize("mode", ["list", "aligned"])
+def test_embedding_op_consuming_list_lambda_uses_value_items_output(
+    mode: Literal["list", "aligned"],
+) -> None:
+    """An EmbeddingOp whose content is a list-mode LambdaOp binds
+    ``value.items.output``, the field of the python step's result that holds
+    the emitted column. Aligned mode reads the same column shape."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _emit_column, mode=mode)
+    emb = EmbeddingOp(content=explode, config=GenerationConfig(model="bge-small"))
+    output = as_output("vectors", emb)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    node = runtime_graph.nodes[emb.id]
+    assert node.data_spec["node"] == explode.id
+    assert node.data_spec["path"] == "value.items.output"
+    result = {"value": {"items": [{"output": "NVDA"}, {"output": "AAPL"}]}}
+    assert _walk(result, node.data_spec["path"].split(".")) == ["NVDA", "AAPL"]
+
+
+def test_image_gen_op_consuming_list_lambda_uses_value_items_output() -> None:
+    """An ImageGenerationOp whose content is a list-mode LambdaOp binds
+    ``value.items.output``."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    img = ImageGenerationOp(
+        content=explode, config=GenerationConfig(model="stabilityai/sdxl")
+    )
+    output = as_output("result", img)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    node = runtime_graph.nodes[img.id]
+    assert node.data_spec["node"] == explode.id
+    assert node.data_spec["path"] == "value.items.output"
 
 
 def test_agent_retrieval_as_final_output_uses_table_path() -> None:
