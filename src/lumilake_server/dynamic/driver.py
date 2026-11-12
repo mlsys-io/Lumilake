@@ -484,6 +484,38 @@ def resolve_subgraph(
     return resolved
 
 
+def _is_api_leaf(op_type: str, op: dict[str, Any]) -> bool:
+    """Whether the runtime archives an API response record for this op.
+
+    Mirrors the runtime's own predicate: any non-vision ``LLMOp`` whose
+    ``config.api`` is set dispatches as an API task, whatever its concrete
+    type.
+    """
+    op_class = _OP_CLASSES.get(op_type)
+    if not isinstance(op_class, type):
+        return False
+    if not issubclass(op_class, ops_pkg.LLMOp):
+        return False
+    if issubclass(op_class, ops_pkg.LLMVisionOp):
+        return False
+    config = op.get("config")
+    return isinstance(config, dict) and config.get("api") is not None
+
+
+def _is_rowwise_api_leaf(op_type: str, op: dict[str, Any]) -> bool:
+    """Whether an API leaf groups one response per input row under ``rows``.
+
+    Mirrors the runtime's own predicate: only a chat op builds one prompt per
+    row.
+    """
+    op_class = _OP_CLASSES.get(op_type)
+    if not isinstance(op_class, type):
+        return False
+    if not issubclass(op_class, ops_pkg.LLMChatOp):
+        return False
+    return bool(op.get("rowwise_template") or op.get("rowwise_messages_column"))
+
+
 def _default_forward_path(op_type: str, op: dict[str, Any]) -> str:
     """The result path the runtime reads for an implicit reference to an op."""
     if op_type == "DataRetrievalOp":
@@ -493,17 +525,14 @@ def _default_forward_path(op_type: str, op: dict[str, Any]) -> str:
             else None
         )
         return retrieval_items_path(mode) if isinstance(mode, str) else "items.output"
-    if op_type == "LLMChatOp" and op.get("row_gate") is None:
-        config = op.get("config")
-        if isinstance(config, dict) and config.get("api") is not None:
-            # An API chat op archives the raw API response record, whose
-            # assistant text sits under ``json.choices[0].message.content``; a
-            # row-wise task groups one response per input row under ``rows``. A
-            # gated op instead archives the merge record, which keeps its row
-            # under ``output``.
-            if op.get("rowwise_template") or op.get("rowwise_messages_column"):
-                return _API_ROW_PATH
-            return _API_ITEM_PATH
+    if _is_api_leaf(op_type, op) and op.get("row_gate") is None:
+        # An API task archives the raw API response record, whose assistant
+        # text sits under ``json.choices[0].message.content``; a row-wise task
+        # groups one response per input row under ``rows``. A gated op instead
+        # archives the merge record, which keeps its row under ``output``.
+        if _is_rowwise_api_leaf(op_type, op):
+            return _API_ROW_PATH
+        return _API_ITEM_PATH
     return "items.output"
 
 

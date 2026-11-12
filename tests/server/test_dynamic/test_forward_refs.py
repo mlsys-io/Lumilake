@@ -9,6 +9,7 @@ import pytest
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
+    _default_forward_path,
     build_round,
     compute_observation,
     forward_refs,
@@ -731,6 +732,60 @@ def test_walk_archived_items_reads_api_item_content():
     obs = compute_observation(walked, preview_width=100)
     assert "rows=2" in obs
     assert "first" in obs
+
+
+def test_walk_archived_items_reads_non_chat_api_leaf_content():
+    # The runtime dispatches any non-vision LLMOp with ``config.api`` as an API
+    # task, not only a chat op, so an image-generation leaf archives the raw
+    # response record and its walk must reach the record's content rather than
+    # ``items.output``.
+    op_id = "s0"
+    config = {
+        "id": op_id,
+        "op": "ImageGenerationOp",
+        "inputs": [],
+        "config": {"model": "qwen3.8-27b", "api": {"url": "https://example.com/v1"}},
+    }
+    archived = {op_id: [json.dumps(_api_record("a picture"))]}
+    walked = walk_archived_items(archived, {op_id: config})
+    assert walked == {op_id: ["a picture"]}
+
+
+def test_default_forward_path_matches_the_runtime_api_leaf_path():
+    # The driver reads a leaf with the same path the runtime archives it under.
+    # Keeping that agreement through a built runtime graph, rather than through
+    # a chat-only example, covers every op type the runtime treats as an API
+    # task.
+    op_id = "s0"
+    workflow = {
+        "name": "round_1",
+        "inputs": {"i0": ["a"]},
+        "ops": [
+            {
+                "id": op_id,
+                "op": "ImageGenerationOp",
+                "inputs": ["i0"],
+                "content": "i0",
+                "config": {
+                    "model": "qwen3.8-27b",
+                    "api": {
+                        "url": "https://example.com/v1",
+                        "authorization": "Bearer token",
+                    },
+                },
+            }
+        ],
+        "outputs": [{"name": "out", "ref": op_id}],
+    }
+    parsed = parse_yaml_payload(workflow)
+    graph = parsed["round_1"]["graph"]
+    compiled = Graph.from_json(graph).compile(**parsed["round_1"]["inputs"])
+    built = RuntimeGraphBuilder().build(compiled, node_prefix="round_1")
+    (runtime_path,) = built.output_paths.values()
+    producer = next(
+        node for node in graph.values() if node["_op"] == "ImageGenerationOp"
+    )
+    assert _default_forward_path("ImageGenerationOp", producer) == runtime_path
 
 
 def test_walk_archived_items_reads_rowwise_api_rows():
