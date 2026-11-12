@@ -1987,6 +1987,38 @@ _LLM_PLAN: dict[str, Any] = {
 }
 
 
+_ROUND_ONE_LIST_LAMBDA_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "source",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "states",
+            "code": "def states(items):\n    return items[0]\n",
+        }
+    ],
+}
+
+_ROUND_TWO_WHOLE_READER_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "score",
+            "op": "LambdaOp",
+            "inputs": ["source", "Symbols"],
+            "mode": "row",
+            "fn_name": "score",
+            "code": (
+                "def score(columns):\n"
+                '    return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]\n'
+            ),
+        }
+    ],
+}
+
+
 async def _submit_multi_symbol(app: FastAPI, job_routes: Any) -> Any:
     body = _submit_body(_VALID_DYNAMIC_YAML)
     body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
@@ -2066,6 +2098,43 @@ async def test_dynamic_multi_symbol_rounds_slice_per_row_and_forward_row_aligned
         {"market_cap": 11},
         {"market_cap": 12},
     ]
+
+
+@pytest.mark.anyio
+async def test_dynamic_round_that_only_reads_a_whole_result_runs_as_one_slice(
+    app: FastAPI, job_routes: Any
+) -> None:
+    # Round 1 declares a list Lambda, so it runs as one slice and its leaf is
+    # one whole result per surviving row: two items for three symbols. Round 2
+    # declares no list Lambda of its own and only reads that result alongside
+    # the symbols. Its two inputs cannot agree in length, so the round has to
+    # run as one slice as well; sliced per symbol it would be refused.
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [
+        _ROUND_ONE_LIST_LAMBDA_PLAN,
+        _ROUND_TWO_WHOLE_READER_PLAN,
+        {"next": "STOP"},
+    ]
+    fake_server.leaf_items[
+        f"leaf_{make_id('round_1', _op_id_prefix('LambdaOp'), 'source')}"
+    ] = [{"output": "A"}, {"output": "B"}]
+    job_id = await _submit_multi_symbol(app, job_routes)
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+
+    assert record.status == "completed", record.error
+    # Round 0 dispatches the empty opening subgraph, one slice per symbol;
+    # rounds 1 and 2 each run as one slice.
+    assert len(fake_server.executed_graphs) == 3
+    for slices in fake_server.workflow_slices_calls[1:]:
+        (meta,) = slices.values()
+        assert meta.slice_length == 3
+        assert meta.total_length == 3
+        assert meta.varying_input_keys == ()
+        assert meta.whole_set is True
+    (round_two,) = fake_server.executed_graphs[2].values()
+    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
+    assert round_two.inputs["source"] == ["A", "B"]
 
 
 @pytest.mark.anyio

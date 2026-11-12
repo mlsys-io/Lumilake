@@ -1375,6 +1375,29 @@ def test_forward_whole_list_lambda_export_keeps_one_value_per_item():
     assert inputs == {llm_id: [json.dumps(["a", "b", "c"])]}
 
 
+def test_forward_whole_list_lambda_export_explicit_reference_agrees():
+    # The explicit ``(node, path)`` form binds a whole list-Lambda export
+    # through the same whole binding as the implicit form: one value per
+    # item, not one per element of the list the export holds.
+    llm_id = "s0"
+    configs = {llm_id: {"id": llm_id, "op": "LambdaOp", "mode": "list", "inputs": []}}
+    results = {llm_id: [{"output": ["a", "b", "c"]}]}
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [{"label": "v", "node": llm_id, "path": "items.output"}],
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=3, whole_refs={llm_id})
+    assert len(ops) == 1
+    assert ops[0]["aggregate_table"][0]["node"] == f"{llm_id} | items.output"
+    assert ops[0]["aggregate_table"][0]["path"] == ""
+    assert inputs == {f"{llm_id} | items.output": [json.dumps(["a", "b", "c"])]}
+
+
 def test_forward_whole_gated_leaf_keeps_one_value_per_item():
     # A row-gated op archives one merge record per row, so its whole result is
     # already one value per row and is bound without flattening.
