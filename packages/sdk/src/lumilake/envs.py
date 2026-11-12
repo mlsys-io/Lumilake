@@ -342,10 +342,6 @@ LUMILAKE_IMAGE_TAG: str = os.environ.get("LUMILAKE_IMAGE_TAG", "")
 # Empty by default, giving the bare names (``lumilake-server``, ...).
 LUMILAKE_STACK_NAME: str = os.environ.get("LUMILAKE_STACK_NAME", "")
 
-REDIS_TLS_DIR: str = os.environ.get("REDIS_TLS_DIR", "")
-SERVER_TLS_DIR: str = os.environ.get("SERVER_TLS_DIR", "")
-SERVER_WORKER_CONFIG: str = os.environ.get("SERVER_WORKER_CONFIG", "")
-
 
 @overload
 def get_lumilake_timeout(

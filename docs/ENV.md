@@ -165,9 +165,9 @@ Picked up by the bundled FlowMesh deploy helpers.
 | `REDIS_CONTROL_PORT` | FlowMesh control Redis port in `.env.flowmesh`. Change it when another stack already owns `6379`. |
 | `REDIS_TELEMETRY_PORT` | FlowMesh telemetry Redis port in `.env.flowmesh`. Change it when another stack already owns `6380`. |
 | `FLOWMESH_BASE_URL` | FlowMesh HTTP base URL consumed by FlowMesh workers; should point at `SERVER_HTTP_PORT`. |
-| `REDIS_TLS_DIR` | Directory holding Redis TLS certs. Empty disables TLS bind-mounts. |
-| `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs. Empty disables TLS. |
-| `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override. |
+| `REDIS_TLS_DIR` | Directory holding Redis TLS certs, in `.env.flowmesh`. Empty disables TLS bind-mounts. |
+| `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs, in `.env.flowmesh`. Empty disables TLS. |
+| `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override, in `.env.flowmesh`. |
 
 A relative path in `REDIS_TLS_DIR`, `SERVER_TLS_DIR`, `SERVER_WORKER_CONFIG`
 or `FLOWMESH_PLUGIN_DIR` resolves under the deployment's `.flowmesh`
