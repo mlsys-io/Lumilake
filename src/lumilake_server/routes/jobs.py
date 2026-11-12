@@ -1850,8 +1850,9 @@ async def _submit_dynamic_child(
     # 1`` does: one graph per row, merged back into one batch by the job
     # manager. A round that declares a list-mode Lambda runs as a single slice
     # instead, because that whole-list result cannot be partitioned per slice,
-    # and the forwarded values of such a round are whole results the consumer
-    # may only be able to align with the symbols when both run in one slice.
+    # and so does one that reads a whole result an earlier such round produced:
+    # the forwarded values of such a round are whole results the consumer may
+    # only be able to align with the symbols when both run in one slice.
     if one_slice:
         total_length = _whole_input_length(inputs)
         varying_input_keys: tuple[str, ...] = ()

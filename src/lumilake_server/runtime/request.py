@@ -21,10 +21,12 @@ class WorkflowSliceMeta:
     template_hash: str
     varying_input_keys: tuple[str, ...] = ()
     whole_set: bool = False
-    """True when this slice is the whole input set of a round whose row count
-    is set by its own list-mode Lambda rather than by any single input's
-    length. Such a slice's inputs and outputs may differ in length from each
-    other, so each output is accepted whole instead of per-row."""
+    """True when this slice runs as the whole input set of a round whose row
+    count is its own answer rather than any single input's length: a round
+    that declares a list-mode Lambda, or one that reads a whole result an
+    earlier such round produced. Such a slice's inputs and outputs may differ
+    in length from each other, so each output is accepted whole instead of
+    per-row."""
 
 
 @dataclass(slots=True)

@@ -320,9 +320,10 @@ list-mode LambdaOp: each element it returns is one row, and the server stops
 before a round whose predecessor exported none. A round that declares a
 list-mode Lambda runs as a single slice over the whole input set, because its
 whole-list result cannot be partitioned per row, and a later round that reads
-its export runs as one slice too. Template mode calls no planner and is
-mutually exclusive with `api`; every rendered body passes the same checks as
-a planner plan, and each stored plan records `source: "template"`.
+any of its results runs as one slice too. The rule holds for every dynamic
+round, in template mode and in planner mode. Template mode calls no planner
+and is mutually exclusive with `api`; every rendered body passes the same
+checks as a planner plan, and each stored plan records `source: "template"`.
 
 The `driver:` YAML settings the server accepts are:
 

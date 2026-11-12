@@ -2565,9 +2565,9 @@ class LumilakeServer:
             for output_name, values in payload.items():
                 if workflow.whole_set:
                     # This slice holds the whole input set of a round whose row
-                    # count is set by its own list-mode Lambda, so its result's
-                    # length is the round's own answer and is taken whole
-                    # rather than checked against the input accounting length.
+                    # count is its own answer rather than the input accounting
+                    # length, so its result is taken whole rather than checked
+                    # against that length.
                     buffers[output_name] = list(values)
                     continue
                 if output_name in list_lambda_names:
@@ -3236,8 +3236,8 @@ class LumilakeServer:
             """Give a whole-set group's result to its single slice verbatim.
 
             The group holds the whole input set of a round whose row count is
-            set by its own list-mode Lambda, so the result's length is the
-            round's own answer rather than a sum of input slice lengths.
+            its own answer rather than the input accounting length, so the
+            result is taken verbatim instead of split across slices.
             """
             if len(workflows) != 1:
                 raise ValueError(
