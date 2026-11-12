@@ -821,32 +821,56 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
     assert compose_calls == [["--profile", "root", "up", "-d", "--wait"]]
 
 
-def test_stack_down_skips_when_deploy_dir_has_no_workdir(
+def test_stack_down_runs_without_a_workdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Teardown looks for the workdir beside the env file, not under cwd."""
+    """A stack started before the upgrade is still torn down from its deployment."""
     deploy_dir = tmp_path / "deployment"
     deploy_dir.mkdir()
     elsewhere = tmp_path / "elsewhere"
     (elsewhere / fm.WORKDIR_NAME).mkdir(parents=True)
 
     env_file = deploy_dir / ".env.flowmesh"
-    env_file.write_text("SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n")
+    env_file.write_text(
+        "SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\nFLOWMESH_VERSION=v1\n"
+        "FLOWMESH_REGISTRY=ghcr.io/mlsys-io\n"
+    )
 
-    def _unexpected(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("no stack left to tear down")
+    class _StubContext:
+        def __enter__(self) -> "_StubContext":
+            return self
 
-    warnings: list[str] = []
-    monkeypatch.setattr(fm, "_warn", warnings.append)
-    monkeypatch.setattr(fm, "NodeClient", _unexpected)
-    monkeypatch.setattr(fm, "_stack", _unexpected)
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def destroy_all_workers(self, *, ignore_unreachable: bool = False) -> bool:
+            return False
+
+    compose_calls: list[list[str]] = []
+
+    class _StubStack:
+        def run(
+            self,
+            args: list[str],
+            *,
+            env_file: Path,
+            env: dict[str, str] | None = None,
+        ) -> object:
+            compose_calls.append(args)
+            return type("_Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
+    monkeypatch.setattr(fm, "_stack", _StubStack())
     monkeypatch.chdir(elsewhere)
 
     fm.stack_down(env_file)
     fm.stack_clean(env_file)
 
-    assert len(warnings) == 2
-    assert all(str(deploy_dir / fm.WORKDIR_NAME) in line for line in warnings)
+    assert compose_calls == [
+        ["--profile", "root", "down"],
+        ["--profile", "root", "down", "-v"],
+    ]
+    assert not (deploy_dir / fm.WORKDIR_NAME).exists()
 
 
 def test_server_container_defaults_to_bare_name(tmp_path: Path) -> None:

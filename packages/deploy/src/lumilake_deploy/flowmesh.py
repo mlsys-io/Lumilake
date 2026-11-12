@@ -42,10 +42,6 @@ def _error(msg: str) -> None:
     logger.error(msg)
 
 
-def _warn(msg: str) -> None:
-    logger.warning(msg)
-
-
 # ---------------------------------------------------------------------------
 # Port collision check
 # ---------------------------------------------------------------------------
@@ -227,23 +223,9 @@ def destroy_all_workers(env_file: str | Path) -> None:
         client.destroy_all_workers(ignore_unreachable=True)
 
 
-def _nothing_to_stop(env_path: Path) -> bool:
-    """Report a deployment with no FlowMesh working directory, and skip it."""
-    workdir = _workdir_for(env_path)
-    if workdir.exists():
-        return False
-    _warn(
-        f"No FlowMesh working directory at {workdir}; nothing to stop. "
-        "A stack started from a different directory would keep running."
-    )
-    return True
-
-
 def stack_down(env_file: str | Path) -> None:
     """Stop the FlowMesh stack."""
     env_path = Path(env_file).resolve()
-    if _nothing_to_stop(env_path):
-        return
     destroy_all_workers(env_path)
     _info("Stopping FlowMesh stack...")
     # ``--profile root`` so compose sees redis_control + redis_telemetry
@@ -256,8 +238,6 @@ def stack_down(env_file: str | Path) -> None:
 def stack_clean(env_file: str | Path) -> None:
     """Stop the FlowMesh stack and remove volumes."""
     env_path = Path(env_file).resolve()
-    if _nothing_to_stop(env_path):
-        return
     _info("Cleaning FlowMesh stack (removing volumes)...")
     _stack.run(
         ["--profile", "root", "down", "-v"],
