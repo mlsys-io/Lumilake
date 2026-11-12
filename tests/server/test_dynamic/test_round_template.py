@@ -134,7 +134,9 @@ def test_template_render_rounds_one_two_and_twenty() -> None:
 def _collected_export(rows: list[dict]) -> list[Any]:
     outputs = {
         "round_1": {
-            "leaf_lambda_round_1_LiveState_r0_7634": [json.dumps({"output": rows})]
+            "leaf_lambda_round_1_LiveState_r0_7634": [
+                json.dumps({"output": row}) for row in rows
+            ]
         }
     }
     names = ["leaf_lambda_round_1_LiveState_r0_7634"]
@@ -159,12 +161,25 @@ def test_stop_check_uses_collected_all_results_shape(
     rows: list[dict], expected: bool
 ) -> None:
     archived = _collected_export(rows)
-    assert archived == [{"output": rows}]
+    assert archived == [{"output": row} for row in rows]
     assert (
         archived_export_has_rows(
             archived, export_id="LiveState_r0", op={"op": "LambdaOp"}
         )
         is expected
+    )
+
+
+def test_stop_check_counts_each_archived_item_as_one_row() -> None:
+    assert archived_export_has_rows(
+        [{"output": []}, {"output": ["kept"]}],
+        export_id="LiveState_r0",
+        op={"op": "LambdaOp"},
+    )
+    assert archived_export_has_rows(
+        [{"output": []}],
+        export_id="LiveState_r0",
+        op={"op": "LambdaOp"},
     )
 
 
@@ -185,7 +200,7 @@ def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
         {"LiveState_r0": {"op": "LambdaOp"}},
     )
     assert ops[0]["inputs"] == ["LiveState_r0"]
-    assert inputs == {"LiveState_r0": [json.dumps([_LIVE_CASE])]}
+    assert inputs == {"LiveState_r0": [json.dumps(_LIVE_CASE)]}
 
 
 def test_template_validates_ref_only_bodies_with_overridden_inputs() -> None:

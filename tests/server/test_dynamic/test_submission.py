@@ -325,7 +325,8 @@ class _FakeRuntimeServer:
             export_rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
             for name in [n for n in outputs["round"] if n.startswith("leaf_")]:
                 outputs["round"][name] = [
-                    json.dumps({"output": export_rows, "value": {"items": export_rows}})
+                    json.dumps({"output": row, "value": {"items": row}})
+                    for row in export_rows
                 ]
         return LumilakeResponse(outputs=outputs)
 

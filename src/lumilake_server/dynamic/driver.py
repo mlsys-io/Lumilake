@@ -535,19 +535,17 @@ def archived_export_has_rows(
 ) -> bool:
     """Whether a previous round's exported Lambda output holds any rows.
 
-    ``all_results`` stores decoded whole result items. A completed list Lambda
-    contributes one mapping ``{"output": [row, ...]}`` (or
-    ``{"output": []}``). Unexpected or undecodable values are errors, never
-    evidence that the loop should stop.
+    ``all_results`` stores one decoded whole result item per row, each
+    ``{"output": <row value>}``; a Lambda that produced no rows archived no
+    items. A row value may itself be a list or an empty value, so the item
+    count is the row count. Unexpected values are errors, never evidence that
+    the loop should stop.
     """
     op_type = op.get("op", "")
     if op_type != "LambdaOp":
         raise DriverProtocolError(
             f"stop_when_empty export {export_id!r} must be a LambdaOp, got {op_type!r}"
         )
-    if not archived:
-        return False
-    rows: list[Any] = []
     for index, item in enumerate(archived):
         if not isinstance(item, dict) or "output" not in item:
             raise DriverProtocolError(
@@ -555,14 +553,7 @@ def archived_export_has_rows(
                 "result item with 'output': "
                 f"{item!r}"
             )
-        output = item["output"]
-        if not isinstance(output, list):
-            raise DriverProtocolError(
-                f"archived export {export_id!r} item {index} output is not a "
-                f"list: {output!r}"
-            )
-        rows.extend(output)
-    return bool(rows)
+    return bool(archived)
 
 
 def _forward_values(
