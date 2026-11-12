@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
@@ -1263,6 +1264,7 @@ def test_forward_aligned_materializers_are_row_cardinality():
 def _rowwise_llm_config(op_id: str, **overrides: Any) -> dict:
     config = _llm_config(op_id)
     config["rowwise_template"] = "{row}"
+    config["rowwise_columns"] = [{"label": "row", "node": INPUT_NODE_ID}]
     config.update(overrides)
     return config
 
@@ -1297,7 +1299,13 @@ def test_forward_whole_rowwise_api_leaf_binds_one_value_per_row():
     # shape binds instead of one JSON blob of every row.
     llm_id = "s0"
     symbols = ["A", "B", "C"]
-    configs = {llm_id: _api_llm_config(llm_id, rowwise_template="{row}")}
+    configs = {
+        llm_id: _api_llm_config(
+            llm_id,
+            rowwise_template="{row}",
+            rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
+        )
+    }
 
     per_symbol = {
         llm_id: [{"index": 0, "rows": [_api_record(symbol)]} for symbol in symbols]
@@ -1360,6 +1368,83 @@ def test_forward_whole_rowwise_leaf_unwraps_a_one_row_item():
         whole_refs={llm_id},
     )
     assert inputs == {llm_id: ["only"]}
+
+
+def test_forward_whole_rowwise_leaf_over_an_inner_table_keeps_one_value_per_item():
+    # A row-wise leaf whose rows come from another op's table judges that
+    # table's rows one by one, and FlowMesh groups each table's answers into
+    # one item. Each item is one table's values, so a whole binding keeps one
+    # JSON list per item, matching what a per-symbol round binds.
+    llm_id = "s0"
+    table = ["r1", "r2", "r3", "r4", "r5"]
+    configs = {
+        "t1": _sql_config("t1"),
+        llm_id: _rowwise_llm_config(
+            llm_id,
+            rowwise_columns=[{"label": "row", "node": "t1", "path": "items.output"}],
+        ),
+    }
+
+    per_symbol = {llm_id: [{"output": list(table)} for _ in range(3)]}
+    ops, per_symbol_inputs = forward_refs(
+        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
+    )
+    assert ops[0]["inputs"] == [f"{llm_id} | items.output | rows"]
+    assert per_symbol_inputs == {f"{llm_id} | items.output": [json.dumps(table)] * 3}
+
+    one_slice = {llm_id: [{"output": list(table)} for _ in range(3)]}
+    ops, whole_inputs = forward_refs(
+        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
+    )
+    assert whole_inputs == {llm_id: [json.dumps(table)] * 3}
+
+    single = {llm_id: [{"output": list(table)}]}
+    _, single_inputs = forward_refs(
+        _three_row_subgraph(llm_id), single, configs, rows=1
+    )
+    assert single_inputs == {llm_id: [json.dumps(table)]}
+
+
+def test_forward_whole_explicit_column_reference_unwraps_a_one_element_list():
+    # A retrieval that returned one row per query archives a one-element table
+    # at ``items.table``, so a column walk yields a one-element list. The whole
+    # binding unwraps it to the scalar, as the per-row path does, instead of
+    # handing the consumer a JSON list to compare a column against.
+    ret_id = "s1"
+    configs = {ret_id: _sql_config(ret_id)}
+    subgraph = [
+        {
+            "id": "q2",
+            "op": "DataRetrievalOp",
+            "inputs": [],
+            "data_spec": {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE s = {p}",
+                "params": [{"label": "p", "node": ret_id, "path": "items.table.s"}],
+            },
+        }
+    ]
+    input_id = f"{ret_id} | items.table.s"
+
+    one_row = {ret_id: [{"table": [{"s": "AAPL"}]}]}
+    ops, inputs = forward_refs(subgraph, one_row, configs, rows=1)
+    assert ops[0]["data_spec"]["params"][0]["node"] == input_id
+    assert inputs == {input_id: ["AAPL"]}
+
+    per_symbol = {
+        ret_id: [{"table": [{"s": symbol}]} for symbol in ["AAPL", "MSFT", "NVDA"]]
+    }
+    _, per_symbol_inputs = forward_refs(subgraph, per_symbol, configs, rows=3)
+    assert per_symbol_inputs == {input_id: ["AAPL", "MSFT", "NVDA"]}
+
+    whole = {
+        ret_id: [{"table": [{"s": symbol}]} for symbol in ["AAPL", "MSFT", "NVDA"]]
+    }
+    _, whole_inputs = forward_refs(
+        subgraph, whole, configs, rows=3, whole_refs={ret_id}
+    )
+    assert whole_inputs == {input_id: ["AAPL", "MSFT", "NVDA"]}
 
 
 def test_forward_whole_list_lambda_export_keeps_one_value_per_item():

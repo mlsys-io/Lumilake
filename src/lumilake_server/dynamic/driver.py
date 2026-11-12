@@ -566,23 +566,9 @@ def _forward_values(
     items: list[dict[str, Any]],
     parts: tuple[str, ...],
     ref: str,
-    *,
-    flatten: bool = False,
 ) -> list[str]:
-    """Walk each stored whole item with the runtime walker and coerce to strings.
-
-    With ``flatten`` a walked list expands to one value per element, the shape
-    the runtime archives for an op that groups its per-row values into one item
-    per input table.
-    """
-    values: list[str] = []
-    for item in items:
-        walked = _walk_output_path(item, parts, ref)
-        if flatten and isinstance(walked, list):
-            values.extend(_coerce_output_value(v) for v in walked)
-        else:
-            values.append(_coerce_output_value(walked))
-    return values
+    """Walk each stored whole item with the runtime walker and coerce to strings."""
+    return [_coerce_output_value(_walk_output_path(item, parts, ref)) for item in items]
 
 
 def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
@@ -605,22 +591,37 @@ def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
     return bool(config.get("rowwise_template") or config.get("rowwise_messages_column"))
 
 
-def _archive_groups_rows(op_type: str, config: dict[str, Any]) -> bool:
-    """Whether the runtime archives this op one item per input table, each
-    holding a list of that table's row values.
+def _is_round_rowwise_leaf(
+    op_type: str, config: dict[str, Any], configs: dict[str, dict[str, Any]]
+) -> bool:
+    """Whether this op's grouped item holds the round's own rows.
 
-    Mirrors the runtime's archive branches: an API rowwise task keeps one
-    response per row under ``rows``, and a local rowwise chat op has FlowMesh
-    group its per-row answers back into one item per table. A list-mode
-    Lambda archives one whole item holding its list, and a per-row VLM emits
-    one item per group with a per-group list, so both keep one value per
-    item.
+    A row-wise chat leaf takes its rows from its ``rowwise_columns`` (or its
+    messages column). Rows read from the run's input node or from a Lambda
+    are the round's own row set, so a one-slice round's single grouped item
+    covers every row of the round. Rows read from any other op are that op's
+    own table, which the leaf judges per inner row; each such item is one
+    table's values and binds whole.
     """
-    if _is_api_leaf(op_type, config):
-        return _default_forward_path(op_type, config) == _API_ROW_PATH
-    if op_type == "LambdaOp" and config.get("mode") == "list":
+    if not _is_rowwise_leaf(op_type, config):
         return False
-    return _is_rowwise_leaf(op_type, config)
+    messages_column = config.get("rowwise_messages_column")
+    if isinstance(messages_column, dict):
+        sources = [messages_column.get("node")]
+    else:
+        columns = config.get("rowwise_columns")
+        sources = (
+            [column.get("node") for column in columns if isinstance(column, dict)]
+            if isinstance(columns, list)
+            else []
+        )
+    nodes = [source for source in sources if isinstance(source, str)]
+    if not nodes:
+        return False
+    return all(
+        node == INPUT_NODE_ID or configs.get(node, {}).get("op") == "LambdaOp"
+        for node in nodes
+    )
 
 
 def _bind_whole_values(
@@ -628,17 +629,26 @@ def _bind_whole_values(
     parts: tuple[str, ...],
     ref: str,
     *,
-    groups_rows: bool,
+    expands: bool,
 ) -> list[str]:
-    """Bind a whole result the way the per-row path binds a per-row result,
-    without its row-count check.
+    """Bind a whole result each item at a time, as the per-row path does.
 
-    Each stored item binds one value, except an op that archives one grouped
-    item per input table: its item's list expands to one value per row, which
-    also unwraps a one-element list to its scalar as the per-row path does.
-    Both reference forms bind a whole ref through here, so they agree.
+    A one-element list unwraps to its scalar and a longer list stays one
+    value per item. A row-wise chat leaf over the round's own rows instead
+    holds every row's value in its one grouped item, so the item's list
+    expands to one value per row. Both reference forms bind a whole ref
+    through here, so they agree.
     """
-    return _forward_values(items, parts, ref, flatten=groups_rows)
+    walked: list[Any] = []
+    for item in items:
+        value = _walk_output_path(item, parts, ref)
+        if expands and isinstance(value, list):
+            walked.extend(value)
+        elif isinstance(value, list) and len(value) == 1:
+            walked.append(value[0])
+        else:
+            walked.append(value)
+    return [_coerce_output_value(value) for value in walked]
 
 
 def _forward_values_per_row(
@@ -848,7 +858,7 @@ def forward_refs(
                 results[ref],
                 parts,
                 ref,
-                groups_rows=_archive_groups_rows(op_type, configs[ref]),
+                expands=_is_round_rowwise_leaf(op_type, configs[ref], configs),
             )
         return None
 
@@ -880,7 +890,7 @@ def forward_refs(
                     results[ref],
                     parts,
                     ref,
-                    groups_rows=_archive_groups_rows(op_type, configs[ref]),
+                    expands=_is_round_rowwise_leaf(op_type, configs[ref], configs),
                 )
         return input_id, ""
 
