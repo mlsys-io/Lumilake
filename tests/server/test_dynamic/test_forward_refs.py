@@ -1258,3 +1258,146 @@ def test_forward_aligned_materializers_are_row_cardinality():
     assert [c["label"] for c in df_columns] == ["title", "summary"]
     for column in df_columns:
         assert column["path"] == "value.items.output"
+
+
+def _rowwise_llm_config(op_id: str, **overrides: Any) -> dict:
+    config = _llm_config(op_id)
+    config["rowwise_template"] = "{row}"
+    config.update(overrides)
+    return config
+
+
+def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
+    # A row-wise LLM leaf archives one grouped item per input table, holding
+    # every row's value. In a one-slice round that is one item for the whole
+    # round, so a later round reading it whole must still get one value per
+    # row: the same values a per-symbol round binds, so a consumer reading it
+    # alongside ``Symbols`` lines up with its own rows.
+    llm_id = "s0"
+    symbols = ["A", "B", "C"]
+    configs = {llm_id: _rowwise_llm_config(llm_id)}
+
+    per_symbol = {llm_id: [{"output": [symbol]} for symbol in symbols]}
+    _, per_symbol_inputs = forward_refs(
+        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
+    )
+    assert per_symbol_inputs == {llm_id: ["A", "B", "C"]}
+
+    one_slice = {llm_id: [{"output": list(symbols)}]}
+    ops, whole_inputs = forward_refs(
+        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
+    )
+    assert ops[0]["inputs"] == [llm_id]
+    assert whole_inputs == per_symbol_inputs
+
+
+def test_forward_whole_rowwise_api_leaf_binds_one_value_per_row():
+    # The API rowwise path groups one response per row under ``rows``, so a
+    # one-slice round's leaf reaches the same per-row contents the per-symbol
+    # shape binds instead of one JSON blob of every row.
+    llm_id = "s0"
+    symbols = ["A", "B", "C"]
+    configs = {llm_id: _api_llm_config(llm_id, rowwise_template="{row}")}
+
+    per_symbol = {
+        llm_id: [{"index": 0, "rows": [_api_record(symbol)]} for symbol in symbols]
+    }
+    _, per_symbol_inputs = forward_refs(
+        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
+    )
+    assert per_symbol_inputs == {llm_id: ["A", "B", "C"]}
+
+    one_slice = {
+        llm_id: [
+            {
+                "index": 0,
+                "rows": [
+                    _api_record(symbol, index=index)
+                    for index, symbol in enumerate(symbols)
+                ],
+            }
+        ]
+    }
+    _, whole_inputs = forward_refs(
+        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
+    )
+    assert whole_inputs == per_symbol_inputs
+
+
+def test_forward_whole_rowwise_leaf_explicit_reference_agrees():
+    # The explicit ``(node, path)`` form binds a whole result through the same
+    # normalisation as the implicit form, so both reference forms agree.
+    llm_id = "s1"
+    configs = {llm_id: _rowwise_llm_config(llm_id)}
+    results = {llm_id: [{"output": ["a", "b", "c"]}]}
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [{"label": "v", "node": llm_id, "path": "items.output"}],
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=3, whole_refs={llm_id})
+    # No materializer: the whole result already holds one value per row.
+    assert len(ops) == 1
+    assert ops[0]["aggregate_table"][0]["node"] == f"{llm_id} | items.output"
+    assert ops[0]["aggregate_table"][0]["path"] == ""
+    assert inputs == {f"{llm_id} | items.output": ["a", "b", "c"]}
+
+
+def test_forward_whole_rowwise_leaf_unwraps_a_one_row_item():
+    # A one-slice round of a single row archives a one-element list, which the
+    # per-row path unwraps to its scalar; the whole binding matches.
+    llm_id = "s0"
+    configs = {llm_id: _rowwise_llm_config(llm_id)}
+    _, inputs = forward_refs(
+        _three_row_subgraph(llm_id),
+        {llm_id: [{"output": ["only"]}]},
+        configs,
+        rows=1,
+        whole_refs={llm_id},
+    )
+    assert inputs == {llm_id: ["only"]}
+
+
+def test_forward_whole_list_lambda_export_keeps_one_value_per_item():
+    # A list-mode Lambda archives one whole item holding its list, which cannot
+    # be partitioned per row: the whole binding keeps it as one value, so the
+    # consuming round runs as one slice over the whole list.
+    llm_id = "s0"
+    configs = {llm_id: {"id": llm_id, "op": "LambdaOp", "mode": "list", "inputs": []}}
+    results = {llm_id: [{"output": ["a", "b", "c"]}]}
+    _, inputs = forward_refs(
+        _three_row_subgraph(llm_id), results, configs, rows=3, whole_refs={llm_id}
+    )
+    assert inputs == {llm_id: [json.dumps(["a", "b", "c"])]}
+
+
+def test_forward_whole_gated_leaf_keeps_one_value_per_item():
+    # A row-gated op archives one merge record per row, so its whole result is
+    # already one value per row and is bound without flattening.
+    llm_id = "s0"
+    rows = [
+        {"selected": True, "done": False, "branch": "pending", "row": index}
+        for index in range(3)
+    ]
+    results = {
+        llm_id: [
+            {"output": json.dumps({**row, "output": f"text-{index}"}), "value": row}
+            for index, row in enumerate(rows)
+        ]
+    }
+    configs = {
+        llm_id: _rowwise_llm_config(llm_id, row_gate={"node": "r0", "branch": "finish"})
+    }
+    _, inputs = forward_refs(
+        _three_row_subgraph(llm_id), results, configs, rows=3, whole_refs={llm_id}
+    )
+    assert inputs == {
+        llm_id: [
+            json.dumps({**row, "output": f"text-{index}"})
+            for index, row in enumerate(rows)
+        ]
+    }

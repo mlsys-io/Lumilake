@@ -26,6 +26,8 @@ from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.graphs import Graph
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.ops import OutputOp
+from lumilake_server.parser.common import make_id
+from lumilake_server.parser.yaml_parser import _op_id_prefix
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -151,7 +153,80 @@ driver:
           code: |
             def label(columns):
                 return [str(value) for value in columns[0]]
-      export: []
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
+      export: ["State_r{{round}}"]
+    stop_when_empty: "State_r{{prev}}"
+"""
+
+_ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML = """
+name: dynamic-template-rowwise-leaf
+type: dynamic
+goal: score the rows a one-slice round produced
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 2
+  max_nodes_per_round: 4
+  output_location:
+    type: s3
+    prefix: dynamic/template/
+  template:
+    first:
+      ops:
+        - id: Source_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: source
+          code: |
+            def source(columns):
+                return columns[0]
+        - id: Ask_r{{round}}
+          op: LLMChatOp
+          inputs: ["Source_r{{round}}"]
+          messages:
+            - role: user
+              content: "Score this row."
+          config:
+            model: Qwen/Qwen3-8B
+          rowwise_template: "{row}"
+          rowwise_columns:
+            - label: row
+              node: Source_r{{round}}
+              path: items.output
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
+      export: ["State_r{{round}}"]
+    next:
+      ops:
+        - id: Score_r{{round}}
+          op: LambdaOp
+          inputs: ["Ask_r{{prev}}", "Symbols"]
+          mode: row
+          fn_name: score
+          code: |
+            def score(columns):
+                return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
     stop_when_empty: "State_r{{prev}}"
 """
 
@@ -298,6 +373,7 @@ class _FakeRuntimeServer:
             "table": {"market_cap": 10 + row},
             "output": {"market_cap": 10 + row},
         }
+        self.leaf_items: dict[str, list[dict[str, Any]]] = {}
         self.workflow_slices_calls: list[dict[str, Any]] = []
         self.hanging_requests: set[str] = set()
         self._traces: dict[str, list[str]] = {}
@@ -363,9 +439,10 @@ class _FakeRuntimeServer:
                 # Leaves archive the whole result item (path: items); shape it
                 # so the producer's default path (items.table for SQL,
                 # items.output for LLM) walks back to the same value.
-                outputs["round"][name] = [
-                    json.dumps(self.leaf_item(row)) for row in range(max(rows, 1))
-                ]
+                items = self.leaf_items.get(name)
+                if items is None:
+                    items = [self.leaf_item(row) for row in range(max(rows, 1))]
+                outputs["round"][name] = [json.dumps(item) for item in items]
         if self.export_rows is not None:
             export_rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
             for name in [n for n in outputs["round"] if n.startswith("leaf_")]:
@@ -1619,6 +1696,47 @@ async def test_dynamic_template_list_lambda_behind_a_row_step_runs_as_one_slice(
     (meta,) = slices.values()
     assert meta.slice_length == 3
     assert meta.total_length == 3
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_next_round_reads_a_one_slice_rowwise_leaf(
+    app: FastAPI, job_routes: Any
+) -> None:
+    # Round 1 declares a list Lambda (so it runs as one slice over every
+    # symbol) and a non-gated row-wise LLM leaf beside it. The row-wise leaf
+    # archives one grouped item holding every row's answer, so the group is
+    # the round's whole result. Round 2 reads that leaf together with
+    # ``Symbols``: the leaf has to bind one value per symbol, or the row step
+    # sees a single JSON blob and every row receives the answers of all rows.
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    answers = ["answer-nvda", "answer-msft", "answer-aapl"]
+    # The row-wise leaf archives one item holding every row's value, so the
+    # archive shape is one item with a three-value list at ``items.output``.
+    fake_server.leaf_items[
+        f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}"
+    ] = [{"output": answers}]
+    body = _submit_body(_ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML)
+    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    await _run_background(app)
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+
+    assert record.status == "completed", record.error
+    (round_two,) = fake_server.executed_graphs[1].values()
+    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
+    assert round_two.inputs["Ask_r0"] == answers
+    slices = fake_server.workflow_slices_calls[1]
+    (meta,) = slices.values()
+    assert meta.slice_length == 3
+    assert meta.whole_set is True
 
 
 @pytest.mark.anyio

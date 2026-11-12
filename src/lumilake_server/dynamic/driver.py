@@ -563,25 +563,82 @@ def archived_export_has_rows(
 
 
 def _forward_values(
-    items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
+    items: list[dict[str, Any]],
+    parts: tuple[str, ...],
+    ref: str,
+    *,
+    flatten: bool = False,
 ) -> list[str]:
-    """Walk each stored whole item with the runtime walker and coerce to strings."""
-    return [_coerce_output_value(_walk_output_path(item, parts, ref)) for item in items]
+    """Walk each stored whole item with the runtime walker and coerce to strings.
 
-
-def _forward_values_flattened(
-    items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
-) -> list[str]:
-    """Walk each stored whole item and flatten the result to one string per
-    element (strings as-is, ``json.dumps`` otherwise)."""
+    With ``flatten`` a walked list expands to one value per element, the shape
+    the runtime archives for an op that groups its per-row values into one item
+    per input table.
+    """
     values: list[str] = []
     for item in items:
         walked = _walk_output_path(item, parts, ref)
-        if isinstance(walked, list):
+        if flatten and isinstance(walked, list):
             values.extend(_coerce_output_value(v) for v in walked)
         else:
             values.append(_coerce_output_value(walked))
     return values
+
+
+def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
+    """Whether an op archives one grouped item per input table.
+
+    Mirrors the runtime's row-wise predicate: a chat op that builds one prompt
+    per row has its per-row answers grouped back into one item, so the leaf
+    holds every row's value inside one item while a consumer reads one value
+    per row. A row-gated op archives one item per row instead, holding its
+    merge record, and a per-row VLM's regroup step already emits one item per
+    group.
+    """
+    op_class = _OP_CLASSES.get(op_type)
+    if not isinstance(op_class, type) or issubclass(op_class, ops_pkg.LLMVisionOp):
+        return False
+    if not issubclass(op_class, ops_pkg.LLMChatOp):
+        return False
+    if config.get("row_gate") is not None:
+        return False
+    return bool(config.get("rowwise_template") or config.get("rowwise_messages_column"))
+
+
+def _archive_groups_rows(op_type: str, config: dict[str, Any]) -> bool:
+    """Whether the runtime archives this op one item per input table, each
+    holding a list of that table's row values.
+
+    Mirrors the runtime's archive branches: an API rowwise task keeps one
+    response per row under ``rows``, and a local rowwise chat op has FlowMesh
+    group its per-row answers back into one item per table. A list-mode
+    Lambda archives one whole item holding its list, and a per-row VLM emits
+    one item per group with a per-group list, so both keep one value per
+    item.
+    """
+    if _is_api_leaf(op_type, config):
+        return _default_forward_path(op_type, config) == _API_ROW_PATH
+    if op_type == "LambdaOp" and config.get("mode") == "list":
+        return False
+    return _is_rowwise_leaf(op_type, config)
+
+
+def _bind_whole_values(
+    items: list[dict[str, Any]],
+    parts: tuple[str, ...],
+    ref: str,
+    *,
+    groups_rows: bool,
+) -> list[str]:
+    """Bind a whole result the way the per-row path binds a per-row result,
+    without its row-count check.
+
+    Each stored item binds one value, except an op that archives one grouped
+    item per input table: its item's list expands to one value per row, which
+    also unwraps a one-element list to its scalar as the per-row path does.
+    Both reference forms bind a whole ref through here, so they agree.
+    """
+    return _forward_values(items, parts, ref, flatten=groups_rows)
 
 
 def _forward_values_per_row(
@@ -787,7 +844,12 @@ def forward_refs(
                 return add_materializer(ref, default_path, walked)
             inputs[ref] = [_coerce_output_value(v) for v in walked]
         else:
-            inputs[ref] = _forward_values(results[ref], parts, ref)
+            inputs[ref] = _bind_whole_values(
+                results[ref],
+                parts,
+                ref,
+                groups_rows=_archive_groups_rows(op_type, configs[ref]),
+            )
         return None
 
     def bind_explicit(ref: str, path: str, consumer: str) -> tuple[str, str]:
@@ -813,7 +875,13 @@ def forward_refs(
                     return add_materializer(ref, path, walked), "items.output"
                 inputs[input_id] = [_coerce_output_value(v) for v in walked]
             else:
-                inputs[input_id] = _forward_values_flattened(results[ref], parts, ref)
+                op_type = configs[ref].get("op", "")
+                inputs[input_id] = _bind_whole_values(
+                    results[ref],
+                    parts,
+                    ref,
+                    groups_rows=_archive_groups_rows(op_type, configs[ref]),
+                )
         return input_id, ""
 
     for op in subgraph:
