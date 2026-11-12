@@ -1405,6 +1405,123 @@ def test_forward_whole_rowwise_leaf_over_an_inner_table_keeps_one_value_per_item
     assert single_inputs == {llm_id: [json.dumps(table)]}
 
 
+def test_forward_whole_rowwise_leaf_over_a_per_row_chat_binds_one_value_per_row():
+    # A per-row chat archives one scalar per row, so FlowMesh builds one table
+    # of the round's rows for a leaf whose column reads it, and the leaf
+    # archives one item holding every answer. The whole binding expands that
+    # item, whether the leaf's column names the run's input or another op.
+    llm_id = "s0"
+    answers = ["a0", "a1", "a2"]
+    configs = {
+        "c0": _llm_config("c0"),
+        llm_id: _rowwise_llm_config(
+            llm_id,
+            rowwise_columns=[{"label": "row", "node": "c0", "path": "items.output"}],
+        ),
+    }
+
+    per_symbol = {llm_id: [{"output": answer} for answer in answers]}
+    _, per_symbol_inputs = forward_refs(
+        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
+    )
+    assert per_symbol_inputs == {llm_id: answers}
+
+    one_slice = {llm_id: [{"output": list(answers)}]}
+    _, whole_inputs = forward_refs(
+        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
+    )
+    assert whole_inputs == per_symbol_inputs
+
+
+def test_forward_whole_rowwise_leaf_over_a_list_row_lambda_keeps_one_value_per_item():
+    # A row Lambda that returns a list per row gives FlowMesh one table per
+    # row, so the leaf archives one item per table holding that table's
+    # answers. The whole binding keeps one JSON list per item, matching the
+    # materializer the per-symbol round binds.
+    llm_id = "s0"
+    table = ["r1", "r2", "r3", "r4", "r5"]
+    configs = {
+        "L": {"id": "L", "op": "LambdaOp", "mode": "row", "inputs": []},
+        llm_id: _rowwise_llm_config(
+            llm_id,
+            rowwise_columns=[{"label": "row", "node": "L", "path": "items.output"}],
+        ),
+    }
+
+    per_symbol = {llm_id: [{"output": list(table)} for _ in range(3)]}
+    _, per_symbol_inputs = forward_refs(
+        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
+    )
+    assert per_symbol_inputs == {f"{llm_id} | items.output": [json.dumps(table)] * 3}
+
+    one_slice = {llm_id: [{"output": list(table)} for _ in range(3)]}
+    _, whole_inputs = forward_refs(
+        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
+    )
+    assert whole_inputs == {llm_id: [json.dumps(table)] * 3}
+
+
+def test_forward_whole_rowwise_leaf_reading_an_earlier_rounds_leaf_binds_values():
+    # A round-2 leaf whose column reads round 1's leaf receives that leaf's
+    # values as one literal list, so FlowMesh builds one table of the round's
+    # rows and round 2's leaf archives one item holding every value. Round 3
+    # reading that item whole expands it, as it does for any row-wise leaf
+    # over the round's rows.
+    prior = "C1"
+    leaf = "C2"
+    values = ["v0", "v1", "v2"]
+    configs = {
+        prior: _rowwise_llm_config(prior),
+        leaf: _rowwise_llm_config(
+            leaf,
+            rowwise_columns=[{"label": "row", "node": prior, "path": "items.output"}],
+        ),
+    }
+
+    ops, round_two_inputs = forward_refs(
+        [dict(configs[leaf])],
+        {prior: [{"output": list(values)}]},
+        configs,
+        rows=3,
+        whole_refs={prior},
+    )
+    assert ops[0]["rowwise_columns"] == [
+        {"label": "row", "node": f"{prior} | items.output", "path": ""}
+    ]
+    assert round_two_inputs == {f"{prior} | items.output": values}
+
+    _, inputs = forward_refs(
+        _three_row_subgraph(leaf),
+        {leaf: [{"output": list(values)}]},
+        configs,
+        rows=3,
+        whole_refs={leaf},
+    )
+    assert inputs == {leaf: values}
+
+
+def test_forward_whole_keeps_each_item_whole_when_only_some_hold_one_value():
+    # A whole result whose items are tables of 1, 2 and 1 rows keeps every
+    # table whole. Unwrapping one-element lists item by item would hand the
+    # consumer a record for some items and a table for others, the mixed shape
+    # the per-row path refuses.
+    ret_id = "s1"
+    configs = {ret_id: _sql_config(ret_id)}
+    items = [
+        {"table": [{"s": "A"}]},
+        {"table": [{"s": "B"}, {"s": "C"}]},
+        {"table": [{"s": "D"}]},
+    ]
+    _, inputs = forward_refs(
+        _three_row_subgraph(ret_id),
+        {ret_id: items},
+        configs,
+        rows=3,
+        whole_refs={ret_id},
+    )
+    assert inputs == {ret_id: [json.dumps(item["table"]) for item in items]}
+
+
 def test_forward_whole_explicit_column_reference_unwraps_a_one_element_list():
     # A retrieval that returned one row per query archives a one-element table
     # at ``items.table``, so a column walk yields a one-element list. The whole

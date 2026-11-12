@@ -591,64 +591,38 @@ def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
     return bool(config.get("rowwise_template") or config.get("rowwise_messages_column"))
 
 
-def _is_round_rowwise_leaf(
-    op_type: str, config: dict[str, Any], configs: dict[str, dict[str, Any]]
-) -> bool:
-    """Whether this op's grouped item holds the round's own rows.
+def _walk_each_item(
+    items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
+) -> list[Any]:
+    """Walk each stored whole item to its raw value, uncoerced."""
+    return [_walk_output_path(item, parts, ref) for item in items]
 
-    A row-wise chat leaf takes its rows from its ``rowwise_columns`` (or its
-    messages column). Rows read from the run's input node or from a Lambda
-    are the round's own row set, so a one-slice round's single grouped item
-    covers every row of the round. Rows read from any other op are that op's
-    own table, which the leaf judges per inner row; each such item is one
-    table's values and binds whole.
+
+def _bind_whole(walked: list[Any], *, rows: int, grouped: bool) -> list[Any]:
+    """Bind a whole result one value per archived item, as the per-row path
+    does, expanding a row-wise leaf that archived the round's rows as one
+    table.
+
+    ``grouped`` marks a row-wise leaf, whose archive is one grouped item per
+    table. FlowMesh groups its rows only when the row source holds a list per
+    item, so a leaf over scalar rows emits one item holding every row while a
+    leaf over list rows emits one item per table. A row-wise leaf's single
+    item over more than one row is therefore that one table, and its list
+    expands to one value per row; several items are one table each and bind
+    one value per item. Every other ref keeps one value per item, unwrapping
+    a one-element list only when every item holds one element.
     """
-    if not _is_rowwise_leaf(op_type, config):
-        return False
-    messages_column = config.get("rowwise_messages_column")
-    if isinstance(messages_column, dict):
-        sources = [messages_column.get("node")]
-    else:
-        columns = config.get("rowwise_columns")
-        sources = (
-            [column.get("node") for column in columns if isinstance(column, dict)]
-            if isinstance(columns, list)
-            else []
-        )
-    nodes = [source for source in sources if isinstance(source, str)]
-    if not nodes:
-        return False
-    return all(
-        node == INPUT_NODE_ID or configs.get(node, {}).get("op") == "LambdaOp"
-        for node in nodes
+    if grouped and rows > 1 and len(walked) == 1 and isinstance(walked[0], list):
+        return list(walked[0])
+    one_element = bool(walked) and all(
+        isinstance(value, list) and len(value) == 1 for value in walked
     )
+    return [value[0] if one_element else value for value in walked]
 
 
-def _bind_whole_values(
-    items: list[dict[str, Any]],
-    parts: tuple[str, ...],
-    ref: str,
-    *,
-    expands: bool,
-) -> list[str]:
-    """Bind a whole result each item at a time, as the per-row path does.
-
-    A one-element list unwraps to its scalar and a longer list stays one
-    value per item. A row-wise chat leaf over the round's own rows instead
-    holds every row's value in its one grouped item, so the item's list
-    expands to one value per row. Both reference forms bind a whole ref
-    through here, so they agree.
-    """
-    walked: list[Any] = []
-    for item in items:
-        value = _walk_output_path(item, parts, ref)
-        if expands and isinstance(value, list):
-            walked.extend(value)
-        elif isinstance(value, list) and len(value) == 1:
-            walked.append(value[0])
-        else:
-            walked.append(value)
-    return [_coerce_output_value(value) for value in walked]
+def _coerce_values(values: list[Any]) -> list[str]:
+    """Coerce bound values to the strings a forwarded input carries."""
+    return [_coerce_output_value(value) for value in values]
 
 
 def _forward_values_per_row(
@@ -827,11 +801,19 @@ def forward_refs(
         return f"{input_id} | rows"
 
     def bind_implicit(
-        ref: str, consumer: str, *, image_source: bool = False
+        ref: str,
+        consumer: str,
+        *,
+        image_source: bool = False,
     ) -> str | None:
         """Bind an implicit reference; returns the rewritten ref (a materializer
         id) when the per-row value is a grouped list, else None to leave it
-        unchanged."""
+        unchanged.
+
+        A whole ref binds the values its producer archived, whichever op wrote
+        them; the archive shape says whether a row-wise leaf grouped the round's
+        rows into one item.
+        """
         if ref not in results:
             return None
         op_type = configs[ref].get("op", "")
@@ -854,11 +836,13 @@ def forward_refs(
                 return add_materializer(ref, default_path, walked)
             inputs[ref] = [_coerce_output_value(v) for v in walked]
         else:
-            inputs[ref] = _bind_whole_values(
-                results[ref],
-                parts,
-                ref,
-                expands=_is_round_rowwise_leaf(op_type, configs[ref], configs),
+            walked = _walk_each_item(results[ref], parts, ref)
+            inputs[ref] = _coerce_values(
+                _bind_whole(
+                    walked,
+                    rows=rows,
+                    grouped=_is_rowwise_leaf(op_type, configs[ref]),
+                )
             )
         return None
 
@@ -885,12 +869,15 @@ def forward_refs(
                     return add_materializer(ref, path, walked), "items.output"
                 inputs[input_id] = [_coerce_output_value(v) for v in walked]
             else:
-                op_type = configs[ref].get("op", "")
-                inputs[input_id] = _bind_whole_values(
-                    results[ref],
-                    parts,
-                    ref,
-                    expands=_is_round_rowwise_leaf(op_type, configs[ref], configs),
+                walked = _walk_each_item(results[ref], parts, ref)
+                inputs[input_id] = _coerce_values(
+                    _bind_whole(
+                        walked,
+                        rows=rows,
+                        grouped=_is_rowwise_leaf(
+                            configs[ref].get("op", ""), configs[ref]
+                        ),
+                    )
                 )
         return input_id, ""
 
