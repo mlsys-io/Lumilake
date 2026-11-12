@@ -165,13 +165,16 @@ class FreeCapacity:
         nodes reserve. A worker's share holds every fraction at or below it, so
         the selected GPU group must contain a worker holding the largest one;
         the helper returns ``None`` when no free eligible GPU worker does, so the
-        caller waits instead of claiming a group the optimizer would reject.
+        caller waits instead of claiming a group the optimizer would reject. A
+        batch that claims no GPU worker is not gated on their shares: it reaches
+        the optimizer, which reports the missing worker.
         """
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
             return None
-        if required_gpu_utilizations and (gpu_group_size < 1 or not self.profiles):
+        share_gate = required_gpu_utilizations if gpu_group_size > 0 else frozenset()
+        if share_gate and not self.profiles:
             return None
         if not self.profiles:
             return (
@@ -199,10 +202,10 @@ class FreeCapacity:
             if not any(w in capable for w in selected_cpu):
                 selected_cpu[-1] = capable[0]
         selected_gpu = eligible_gpu[:gpu_group_size]
-        if required_gpu_utilizations:
+        if share_gate:
             # A worker's share holds every utilization at or below it, so a
             # group covering the largest one covers them all.
-            largest = max(required_gpu_utilizations)
+            largest = max(share_gate)
             capable = [
                 w
                 for w in eligible_gpu

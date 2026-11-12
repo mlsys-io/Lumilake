@@ -173,6 +173,13 @@ def test_gpu_claim_holds_every_utilization_the_group_covers() -> None:
     ]
 
 
+def test_gpu_claim_with_no_gpu_group_is_not_gated_on_shares() -> None:
+    """A deployment that claims no GPU worker still dispatches the batch, so the
+    optimizer reports the missing GPU worker rather than the queue waiting."""
+    free = _gpu_free({"gpu-small": _SMALL})
+    assert _claim_gpu(free, frozenset({0.8}), group_size=0) == []
+
+
 def test_gpu_claim_without_a_utilization_keeps_the_original_order() -> None:
     free = _gpu_free({"gpu-small": _SMALL, "gpu-big": _BIG})
     assert _claim_gpu(free, frozenset()) == ["gpu-small"]
