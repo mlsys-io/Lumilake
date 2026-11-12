@@ -1575,6 +1575,10 @@ async def test_dynamic_template_next_round_reads_shrunk_one_slice_export(
         (meta,) = slices.values()
         assert meta.slice_length == 3
         assert meta.total_length == 3
+        # A one-slice round's results come back at the round's own row count,
+        # so no input is declared varying and the round is marked whole-set.
+        assert meta.varying_input_keys == ()
+        assert meta.whole_set is True
     (round_two,) = fake_server.executed_graphs[1].values()
     assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
     assert "State_r0" in round_two.inputs

@@ -176,6 +176,7 @@ def make_workflow(
     template_hash: str | None = None,
     dsl_inputs: dict[str, list[str]] | None = None,
     varying_input_keys: tuple[str, ...] = (),
+    whole_set: bool = False,
     slice_index: int = 0,
     slice_start: int = 0,
     slice_length: int = 1,
@@ -200,6 +201,7 @@ def make_workflow(
             f"template-{graph_name}" if template_hash is None else template_hash
         ),
         varying_input_keys=varying_input_keys,
+        whole_set=whole_set,
         runtime_graph=runtime_graph,
         data_profile_graph=runtime_graph,
         dsl_graph=cast(Any, compiled_graph),

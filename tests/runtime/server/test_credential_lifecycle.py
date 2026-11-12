@@ -189,6 +189,7 @@ def _workflow(workflow_id: str, request_id: str, graph_name: str) -> WorkflowIte
         total_length=1,
         template_hash=f"template-{graph_name}",
         varying_input_keys=(),
+        whole_set=False,
         runtime_graph=runtime_graph,
         data_profile_graph=runtime_graph,
         dsl_graph=compiled,

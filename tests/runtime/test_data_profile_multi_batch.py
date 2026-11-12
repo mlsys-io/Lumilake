@@ -134,6 +134,7 @@ def test_later_batch_projects_the_submit_time_profile() -> None:
                 total_length=4,
                 workflow_id=name,
                 varying_input_keys=("Stock",),
+                whole_set=False,
                 dsl_graph=graphs[name],
             )
             for name in batch_2

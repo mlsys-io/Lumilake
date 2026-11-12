@@ -1182,18 +1182,17 @@ def _has_list_lambda(graph: dict[str, Any]) -> bool:
     )
 
 
-def _whole_input_shape(inputs: dict[str, list[str]]) -> tuple[int, tuple[str, ...]]:
-    """Length and varying keys of a single-slice input set.
+def _whole_input_length(inputs: dict[str, list[str]]) -> int:
+    """Length a single-slice input set is accounted at: its longest input.
 
     A one-slice round carries the whole input set in one slice, so its keys may
     disagree in length (a round that reads a shorter previous export alongside
-    the symbols). The runtime sizes such a slice from the longest input, as it
-    does for a static submission with one slice.
+    the symbols). No input is split per slice, so none of them is a varying
+    input; the number of rows the round produces is set by its own list-mode
+    Lambda and accepted whole when its outputs come back.
     """
     lengths = [len(v) for v in inputs.values()]
-    max_len = max(lengths) if lengths else 0
-    varying = tuple(sorted(key for key, vals in inputs.items() if len(vals) > 1))
-    return max_len, varying
+    return max(lengths) if lengths else 0
 
 
 def _rounds_as_one_slice(
@@ -1854,7 +1853,8 @@ async def _submit_dynamic_child(
     # and the forwarded values of such a round are whole results the consumer
     # may only be able to align with the symbols when both run in one slice.
     if one_slice:
-        total_length, varying_input_keys = _whole_input_shape(inputs)
+        total_length = _whole_input_length(inputs)
+        varying_input_keys: tuple[str, ...] = ()
         input_batches = [inputs]
     else:
         total_length, varying_input_keys = _input_shape(inputs)
@@ -1878,6 +1878,7 @@ async def _submit_dynamic_child(
             total_length=total_length,
             template_hash=template_hash,
             varying_input_keys=varying_input_keys,
+            whole_set=one_slice,
         )
         _dispatch_workflow_to_graph_specs(
             workflow_format="native",

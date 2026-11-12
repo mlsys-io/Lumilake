@@ -2563,6 +2563,13 @@ class LumilakeServer:
             ).setdefault(public_name, {})
             merged_without_errors = True
             for output_name, values in payload.items():
+                if workflow.whole_set:
+                    # This slice holds the whole input set of a round whose row
+                    # count is set by its own list-mode Lambda, so its result's
+                    # length is the round's own answer and is taken whole
+                    # rather than checked against the input accounting length.
+                    buffers[output_name] = list(values)
+                    continue
                 if output_name in list_lambda_names:
                     if len(values) != 1:
                         append_error(
@@ -3217,6 +3224,35 @@ class LumilakeServer:
                     return workflow
             return None
 
+        def assign_whole_set_values(
+            target: dict[str, dict[str, Any]],
+            workflows: list[Any],
+            output_name: str,
+            values: list[Any],
+            group_key: str,
+            *,
+            label: str,
+        ) -> None:
+            """Give a whole-set group's result to its single slice verbatim.
+
+            The group holds the whole input set of a round whose row count is
+            set by its own list-mode Lambda, so the result's length is the
+            round's own answer rather than a sum of input slice lengths.
+            """
+            if len(workflows) != 1:
+                raise ValueError(
+                    "A whole-set round must run as exactly one slice, but "
+                    f"group {group_key} holds {len(workflows)}"
+                )
+            (workflow,) = workflows
+            workflow_values = target.setdefault(workflow.workflow_id, {})
+            if output_name in workflow_values:
+                raise ValueError(
+                    f"Duplicate {label} assignment for workflow "
+                    f"{workflow.workflow_id}:{output_name}"
+                )
+            workflow_values[output_name] = list(values)
+
         runtime_graph = batch_request_info.runtime_graph
         list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()
         list_lambda_outputs = {
@@ -3262,7 +3298,9 @@ class LumilakeServer:
                 ] = outputs
                 continue
             if matched_workflow is not None:
-                if len(outputs) != matched_workflow.slice_length:
+                if not matched_workflow.whole_set and (
+                    len(outputs) != matched_workflow.slice_length
+                ):
                     raise ValueError(
                         "Output length mismatch for workflow slice "
                         f"{matched_workflow.workflow_id}:{output_name}. "
@@ -3287,7 +3325,9 @@ class LumilakeServer:
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
             if matched_workflow is not None:
-                if len(history) != matched_workflow.slice_length:
+                if not matched_workflow.whole_set and (
+                    len(history) != matched_workflow.slice_length
+                ):
                     raise ValueError(
                         "History length mismatch for workflow slice "
                         f"{matched_workflow.workflow_id}:{output_name}. "
@@ -3311,9 +3351,20 @@ class LumilakeServer:
         }
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(workflows, key=lambda item: item.slice_index)
+            whole_set_group = any(item.whole_set for item in ordered)
             total_slice_len = sum(item.slice_length for item in ordered)
             group_outputs = grouped_outputs.get(group_key, {})
             for output_name, values in group_outputs.items():
+                if whole_set_group:
+                    assign_whole_set_values(
+                        remapped_outputs,
+                        ordered,
+                        output_name,
+                        values,
+                        group_key,
+                        label="output",
+                    )
+                    continue
                 if len(values) != total_slice_len:
                     raise ValueError(
                         "Output length mismatch for merged workflow"
@@ -3335,6 +3386,16 @@ class LumilakeServer:
                     offset = next_offset
             group_histories = grouped_histories.get(group_key, {})
             for output_name, values in group_histories.items():
+                if whole_set_group:
+                    assign_whole_set_values(
+                        remapped_histories,
+                        ordered,
+                        output_name,
+                        values,
+                        group_key,
+                        label="history",
+                    )
+                    continue
                 if len(values) != total_slice_len:
                     raise ValueError(
                         "History length mismatch for merged workflow"

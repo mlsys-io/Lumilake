@@ -39,6 +39,7 @@ class _MergeGroupWorkflow:
     total_length: int
     workflow_id: str
     varying_input_keys: tuple[str, ...]
+    whole_set: bool
     dsl_graph: CompiledGraph
 
 
@@ -131,6 +132,7 @@ def build_request_data_profile_tasks(
                 total_length=meta.total_length,
                 workflow_id=graph_name,
                 varying_input_keys=meta.varying_input_keys,
+                whole_set=meta.whole_set,
                 dsl_graph=compiled,
             )
             for graph_name, meta, compiled in ordered

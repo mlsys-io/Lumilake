@@ -113,6 +113,7 @@ def _item(
         total_length=1,
         template_hash="-".join(kinds),
         varying_input_keys=(),
+        whole_set=False,
         runtime_graph=graph,
         data_profile_graph=graph,
         dsl_graph=cast(Any, object()),
