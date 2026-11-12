@@ -695,6 +695,89 @@ def _three_row_subgraph(ref: str) -> list[dict]:
     ]
 
 
+def _api_llm_config(op_id: str, **overrides: Any) -> dict:
+    config = _llm_config(op_id)
+    config["config"] = {
+        "model": "qwen3.8-27b",
+        "api": {"url": "https://lum.id/llm/v1", "timeout_sec": 300},
+    }
+    config.update(overrides)
+    return config
+
+
+def _api_record(content: str, *, index: int = 0) -> dict:
+    return {
+        "index": index,
+        "url": "https://lum.id/llm/v1/chat/completions",
+        "status_code": 200,
+        "truncated": False,
+        "json": {"choices": [{"message": {"content": content}}]},
+        "usage": {"total_tokens": 3},
+        "text": content,
+        "prompt": "[]",
+    }
+
+
+def test_walk_archived_items_reads_api_item_content():
+    # An API chat op archives the raw response record, so its text is read at
+    # ``json.choices[0].message.content`` rather than ``output``.
+    llm_id = "s0"
+    configs = {llm_id: _api_llm_config(llm_id)}
+    archived = {
+        llm_id: [json.dumps(_api_record("first")), json.dumps(_api_record("second"))]
+    }
+    walked = walk_archived_items(archived, configs)
+    assert walked == {llm_id: ["first", "second"]}
+    obs = compute_observation(walked, preview_width=100)
+    assert "rows=2" in obs
+    assert "first" in obs
+
+
+def test_walk_archived_items_reads_rowwise_api_rows():
+    # A row-wise API task groups one response per input row under ``rows``, so
+    # the walk reaches each row's content; the item itself stays whole, as for
+    # a local row-wise leaf.
+    llm_id = "s0"
+    configs = {llm_id: _api_llm_config(llm_id, rowwise_template="{row}")}
+    grouped = {
+        "index": 0,
+        "rows": [_api_record("a", index=0), _api_record("b", index=1)],
+    }
+    archived = {llm_id: [json.dumps(grouped)]}
+    walked = walk_archived_items(archived, configs)
+    assert [json.loads(value) for value in walked[llm_id]] == [["a", "b"]]
+
+
+def test_forward_implicit_api_reference_binds_content():
+    # A later round that names an earlier API chat op reads the record's
+    # assistant content, the same value a local op exposes as ``output``.
+    llm_id = "s0"
+    results = {llm_id: [_api_record("hello")]}
+    configs = {llm_id: _api_llm_config(llm_id)}
+    ops, inputs = forward_refs(_three_row_subgraph(llm_id), results, configs)
+    assert ops[0]["inputs"] == [llm_id]
+    assert inputs == {llm_id: ["hello"]}
+
+
+def test_forward_implicit_gated_api_reference_binds_output():
+    # A gated chat op archives the row-gate merge record, whose per-row value
+    # stays under ``output`` even when the gated call itself runs through the
+    # API executor.
+    llm_id = "s0"
+    row = {"selected": True, "done": True, "branch": "finish", "row": 0}
+    item = {"output": json.dumps({**row, "output": "done text"}), "value": row}
+    results = {llm_id: [item]}
+    configs = {
+        llm_id: _api_llm_config(
+            llm_id,
+            rowwise_template="{row}",
+            row_gate={"node": "r0", "branch": "finish"},
+        )
+    }
+    ops, inputs = forward_refs(_three_row_subgraph(llm_id), results, configs)
+    assert inputs == {llm_id: [json.dumps({**row, "output": "done text"})]}
+
+
 def test_forward_per_row_implicit_reference_aligns_items_to_rows():
     llm_id = "s0"
     results = {llm_id: [{"output": "a"}, {"output": "b"}, {"output": "c"}]}

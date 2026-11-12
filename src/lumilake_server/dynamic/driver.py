@@ -31,7 +31,11 @@ from lumilake_server.parser.yaml_parser import (
     _op_id_prefix,
     parse_yaml_payload,
 )
-from lumilake_server.runtime.runtime_graph import OUTPUT_SOURCE_TYPES
+from lumilake_server.runtime.runtime_graph import (
+    _API_ITEM_PATH,
+    _API_ROW_PATH,
+    OUTPUT_SOURCE_TYPES,
+)
 from lumilake_server.runtime.runtime_manager.flowmesh import (
     _coerce_output_value,
     _walk_output_path,
@@ -512,6 +516,17 @@ def _default_forward_path(op_type: str, op: dict[str, Any]) -> str:
             else None
         )
         return retrieval_items_path(mode) if isinstance(mode, str) else "items.output"
+    if op_type == "LLMChatOp" and op.get("row_gate") is None:
+        config = op.get("config")
+        if isinstance(config, dict) and config.get("api") is not None:
+            # An API chat op archives the raw API response record, whose
+            # assistant text sits under ``json.choices[0].message.content``; a
+            # row-wise task groups one response per input row under ``rows``. A
+            # gated op instead archives the merge record, which keeps its row
+            # under ``output``.
+            if op.get("rowwise_template") or op.get("rowwise_messages_column"):
+                return _API_ROW_PATH
+            return _API_ITEM_PATH
     return "items.output"
 
 
