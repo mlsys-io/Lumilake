@@ -110,6 +110,51 @@ driver:
     stop_when_empty: "State_r{{prev}}"
 """
 
+_LIST_LAMBDA_BEHIND_ROW_STEP_YAML = """
+name: dynamic-template-hidden-list-lambda
+type: dynamic
+goal: run a list-mode Lambda behind a row step
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 2
+  max_nodes_per_round: 4
+  output_location:
+    type: s3
+    prefix: dynamic/template/
+  template:
+    first:
+      ops:
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
+      export: ["State_r{{round}}"]
+    next:
+      ops:
+        - id: Mean_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: mean
+          code: |
+            def mean(columns):
+                return [[value] for value in columns[0]]
+        - id: Label_r{{round}}
+          op: LambdaOp
+          inputs: ["Mean_r{{round}}"]
+          mode: row
+          fn_name: label
+          code: |
+            def label(columns):
+                return [str(value) for value in columns[0]]
+      export: []
+    stop_when_empty: "State_r{{prev}}"
+"""
+
 _LIBRARY_TEMPLATE_DYNAMIC_YAML = """
 name: dynamic-library-template
 type: dynamic
@@ -1492,6 +1537,84 @@ async def test_dynamic_template_round_with_list_lambda_runs_as_one_slice(
     assert meta.total_length == 3
     (graph,) = graphs.values()
     assert graph.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_next_round_reads_shrunk_one_slice_export(
+    app: FastAPI, job_routes: Any
+) -> None:
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    # Round 1's list-mode export holds one item per survivor. Two of the three
+    # symbols survive, so the next round reads a shorter list than the symbols
+    # and still has to run.
+    fake_server.export_rows = [
+        [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
+        [],
+    ]
+    body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
+    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    await _run_background(app)
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+
+    assert record.status == "completed", record.error
+    assert len(record.child_job_ids) == 2
+    # Both rounds run as one slice: the round that produces the list-mode
+    # export because that result cannot be partitioned, and the round that
+    # reads it because its two inputs no longer agree in length.
+    assert len(fake_server.workflow_slices_calls) == 2
+    for slices in fake_server.workflow_slices_calls:
+        (meta,) = slices.values()
+        assert meta.slice_length == 3
+        assert meta.total_length == 3
+    (round_two,) = fake_server.executed_graphs[1].values()
+    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
+    assert "State_r0" in round_two.inputs
+    assert len(round_two.inputs["State_r0"]) == 2
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_list_lambda_behind_a_row_step_runs_as_one_slice(
+    app: FastAPI, job_routes: Any
+) -> None:
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    fake_server.export_rows = [
+        [{"case_id": "0", "turn": 0}],
+        [],
+    ]
+    body = _submit_body(_LIST_LAMBDA_BEHIND_ROW_STEP_YAML)
+    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    await _run_background(app)
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+
+    assert record.status == "completed", record.error
+    # Round 2's list-mode Lambda feeds a row-mode Lambda leaf, so no archived
+    # output descends from it unchanged. The whole-list result still cannot be
+    # partitioned, so the round runs as one slice over every symbol rather
+    # than one slice per symbol.
+    (round_two,) = fake_server.executed_graphs[1].values()
+    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
+    slices = fake_server.workflow_slices_calls[1]
+    (meta,) = slices.values()
+    assert meta.slice_length == 3
+    assert meta.total_length == 3
 
 
 @pytest.mark.anyio

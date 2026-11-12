@@ -713,11 +713,19 @@ def forward_refs(
     results: dict[str, list[dict[str, Any]]],
     configs: dict[str, dict[str, Any]],
     rows: int = 1,
+    whole_refs: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     """Rewrite a round's subgraph so references to earlier-round ops bind as
     workflow inputs carrying exactly the value the in-graph reference would
     have read. With ``rows > 1`` every bound input holds exactly one value per row.
+
+    ``whole_refs`` names results produced by a round that ran as one slice.
+    Their items are that round's whole results, not one per row, so every
+    stored item binds as ``rows == 1`` does, whatever ``rows`` says; the
+    consumer then carries a different item count from the symbols and runs as
+    one slice itself.
     """
+    whole = whole_refs or set()
     inputs: dict[str, list[str]] = {}
     ops: list[dict[str, Any]] = []
     materializers: list[dict[str, Any]] = []
@@ -756,7 +764,7 @@ def forward_refs(
         op_type = configs[ref].get("op", "")
         default_path = _default_forward_path(op_type, configs[ref])
         parts = tuple(default_path[len("items.") :].split("."))
-        if rows > 1:
+        if rows > 1 and ref not in whole:
             walked = _walk_values_per_row(results[ref], parts, ref, consumer, rows)
             if any(isinstance(v, list) for v in walked):
                 if not all(isinstance(v, list) for v in walked):
@@ -787,7 +795,7 @@ def forward_refs(
             return f"{input_id} | rows", "items.output"
         if input_id not in inputs:
             parts = tuple(path[len("items.") :].split("."))
-            if rows > 1:
+            if rows > 1 and ref not in whole:
                 walked = _walk_values_per_row(results[ref], parts, ref, consumer, rows)
                 if any(isinstance(v, list) for v in walked):
                     if not all(isinstance(v, list) for v in walked):
@@ -1395,15 +1403,21 @@ def build_round(
     extra_engine_kwargs: dict[str, Any] | None = None,
     include_proposer: bool = True,
     rows: int = 1,
+    whole_refs: set[str] | None = None,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
+    ``whole_refs`` names earlier results that a one-slice round produced.
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
-        subgraph, results if results is not None else {}, node_registry, rows
+        subgraph,
+        results if results is not None else {},
+        node_registry,
+        rows,
+        whole_refs=whole_refs,
     )
     workflow_inputs: dict[str, list[str]] = {INPUT_NODE_ID: []}
     workflow_inputs.update(inputs)
