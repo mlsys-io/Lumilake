@@ -668,8 +668,6 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
     """``stack_down`` uses ``destroy_all_workers(ignore_unreachable=True)``
     so a failed bring-up can still tear down containers that did start.
     """
-    (tmp_path / fm.WORKDIR_NAME).mkdir()
-
     destroy_kwargs: dict[str, object] = {}
 
     class _StubClient:
@@ -799,9 +797,8 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
     }
     env_file = deploy_dir / ".env.flowmesh"
     env_file.write_text("".join(f"{k}={v}\n" for k, v in env_keys.items()))
-    for key in STACK_PATH_KEYS:
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.delenv("FLOWMESH_PLUGIN_DATA_DIR", raising=False)
+    for key in (*env_keys, *STACK_PATH_KEYS):
+        monkeypatch.setenv(key, "")
     monkeypatch.setattr(load_env, "_loaded", None, raising=False)
 
     compose_calls: list[list[str]] = []
@@ -845,14 +842,17 @@ def test_stack_up_creates_the_env_files_worker_config_path(
     """The worker config composes mounts is the one the env file names."""
     deploy_dir = tmp_path / "deployment"
     deploy_dir.mkdir()
+    env_keys = {
+        "SERVER_HTTP_PORT": "18000",
+        "SERVER_GRPC_PORT": "18001",
+        "REDIS_CONTROL_PORT": "18002",
+        "REDIS_TELEMETRY_PORT": "18003",
+        "SERVER_WORKER_CONFIG": "./configs/custom.yaml",
+    }
     env_file = deploy_dir / ".env.flowmesh"
-    env_file.write_text(
-        "SERVER_HTTP_PORT=18000\nSERVER_GRPC_PORT=18001\n"
-        "REDIS_CONTROL_PORT=18002\nREDIS_TELEMETRY_PORT=18003\n"
-        "SERVER_WORKER_CONFIG=./configs/custom.yaml\n"
-    )
-    for key in STACK_PATH_KEYS:
-        monkeypatch.delenv(key, raising=False)
+    env_file.write_text("".join(f"{k}={v}\n" for k, v in env_keys.items()))
+    for key in (*env_keys, *STACK_PATH_KEYS):
+        monkeypatch.setenv(key, "")
     monkeypatch.setattr(load_env, "_loaded", None, raising=False)
 
     class _StubStack:
@@ -898,7 +898,7 @@ def test_stack_down_runs_without_a_workdir(
         def destroy_all_workers(self, *, ignore_unreachable: bool = False) -> bool:
             return False
 
-    compose_calls: list[list[str]] = []
+    compose_calls: list[tuple[list[str], dict[str, str] | None]] = []
 
     class _StubStack:
         def run(
@@ -908,7 +908,7 @@ def test_stack_down_runs_without_a_workdir(
             env_file: Path,
             env: dict[str, str] | None = None,
         ) -> object:
-            compose_calls.append(args)
+            compose_calls.append((args, env))
             return type("_Result", (), {"returncode": 0})()
 
     monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
@@ -918,10 +918,13 @@ def test_stack_down_runs_without_a_workdir(
     fm.stack_down(env_file)
     fm.stack_clean(env_file)
 
-    assert compose_calls == [
+    assert [args for args, _env in compose_calls] == [
         ["--profile", "root", "down"],
         ["--profile", "root", "down", "-v"],
     ]
+    for _args, env in compose_calls:
+        assert env is not None
+        assert env["COMPOSE_PROJECT_NAME"] == fm.stack_slug(env_file)
     assert not (deploy_dir / fm.WORKDIR_NAME).exists()
 
 
