@@ -12,6 +12,7 @@ from flowmesh_cli_stack.utils import (
     STACK_PATH_KEYS,
     STACK_SLUG_ENV,
     STACK_SUFFIX_ENV,
+    apply_plugin_data_env,
     ensure_deploy_paths,
     stack_compose_file,
     stack_env_example,
@@ -85,7 +86,9 @@ def _make_workdir(workdir: Path) -> Path:
 def _load_env(ef: Path) -> None:
     """Load the stack env file, resolving its relative path keys under the workdir."""
     ensure_env_file(ef, stack_env_example())
-    load_env(ef, base_dir=_workdir_for(ef), path_keys=STACK_PATH_KEYS)
+    base_dir = _workdir_for(ef)
+    load_env(ef, base_dir=base_dir, path_keys=STACK_PATH_KEYS)
+    apply_plugin_data_env(base_dir)
 
 
 _stack = DockerComposeStack(

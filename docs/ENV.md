@@ -171,7 +171,10 @@ Picked up by the bundled FlowMesh deploy helpers.
 
 A relative path in `REDIS_TLS_DIR`, `SERVER_TLS_DIR`, `SERVER_WORKER_CONFIG`
 or `FLOWMESH_PLUGIN_DIR` resolves under the deployment's `.flowmesh`
-directory, beside its `.env.flowmesh`.
+directory, beside its `.env.flowmesh`. `FLOWMESH_PLUGIN_DATA_DIR` does too,
+so each deployment mounts its own `.flowmesh/plugin-data` rather than the
+bundled stack's folder; a bare name there selects a named Docker volume
+instead.
 
 `lumilake deploy init --flowmesh` writes `.env.flowmesh`. On hosts that
 also run another FlowMesh stack, check the common defaults before
