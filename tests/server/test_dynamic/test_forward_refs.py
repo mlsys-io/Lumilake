@@ -797,7 +797,10 @@ _ROW_COUNT_SOURCE_CASES: list[Any] = [
         {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]}]},
         3,
         {"s0": ["r1", "r2", "r3", "r4", "r5"]},
-        id="list-lambda-one-list-element",
+        # Not the right bind: one list is what a list Lambda holding one list
+        # element produces. It records the known residual, where a same-round
+        # list Lambda's row count comes from the symbol count.
+        id="list-lambda-one-list-element-known-residual",
     ),
     pytest.param(
         {
@@ -836,6 +839,35 @@ def test_forward_whole_rowwise_leaf_groups_by_its_source(
         whole_refs={leaf_id},
     )
     assert inputs == expected
+
+
+def test_forward_whole_rowwise_leaf_explicit_column_groups_by_its_source():
+    # An explicit ``(node, path)`` column reaches the same grouping decision as
+    # the implicit form: the leaf's column reads the input node, a literal list
+    # FlowMesh does not group, so the leaf's one table expands at any symbol
+    # count.
+    leaf_id = "s0"
+    configs = {leaf_id: _sourced_rowwise_config(leaf_id, INPUT_NODE_ID)}
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [
+                {"label": "v", "node": leaf_id, "path": "items.output"}
+            ],
+        }
+    ]
+    ops, inputs = forward_refs(
+        subgraph,
+        {leaf_id: [{"output": ["a0", "a1", "a2"]}]},
+        configs,
+        rows=1,
+        whole_refs={leaf_id},
+    )
+    assert ops[0]["aggregate_table"][0]["node"] == f"{leaf_id} | items.output"
+    assert inputs == {f"{leaf_id} | items.output": ["a0", "a1", "a2"]}
 
 
 def _three_row_subgraph(ref: str) -> list[dict]:
