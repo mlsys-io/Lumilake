@@ -571,6 +571,21 @@ def _forward_values(
     return [_coerce_output_value(_walk_output_path(item, parts, ref)) for item in items]
 
 
+def _explicit_forward_path(op_type: str, config: dict[str, Any], path: str) -> str:
+    """The path that walks a producer's archived item for a declared read.
+
+    An API leaf archives the raw response record, so a declared ``items.output``
+    — the read an in-graph column makes of an API upstream — walks the
+    record's own content path instead, exactly as the runtime maps it. A gated
+    API leaf keeps its row under ``output`` and reads as declared.
+    """
+    if path != "items.output":
+        return path
+    if not _is_api_leaf(op_type, config) or config.get("row_gate") is not None:
+        return path
+    return _default_forward_path(op_type, config)
+
+
 def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
     """Whether an op archives one grouped item per input table.
 
@@ -850,8 +865,12 @@ def forward_refs(
         """Forward an explicit ``(node, path)`` reference, returning the
         ``(node, path)`` the consumer should read.
 
-        A grouped reference binds a JSON input per row plus a materializer.
+        The declared path is the read an in-graph column makes of the
+        producer, which need not be the shape the producer archived; the walk
+        follows the archive instead. A grouped reference binds a JSON input per
+        row plus a materializer.
         """
+        path = _explicit_forward_path(configs[ref].get("op", ""), configs[ref], path)
         input_id = f"{ref} | {path}"
         if input_id in materialized:
             return f"{input_id} | rows", "items.output"

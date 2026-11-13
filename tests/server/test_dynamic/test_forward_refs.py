@@ -8,6 +8,7 @@ import pytest
 
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
+    _API_ROW_PATH,
     DriverProtocolError,
     SubgraphPlan,
     _default_forward_path,
@@ -1500,6 +1501,46 @@ def test_forward_whole_rowwise_leaf_reading_an_earlier_rounds_leaf_binds_values(
     assert inputs == {leaf: values}
 
 
+def test_forward_rowwise_api_column_walks_the_archived_row_path():
+    # A rowwise column declaring ``items.output`` names the read an in-graph
+    # column makes of an API leaf, whose archived item keeps each row's
+    # response under ``rows``. The forward walks the archive's real shape, so
+    # the column binds that row's content instead of a field the archive does
+    # not carry.
+    llm_id = "s0"
+    contents = ["a0", "a1"]
+    configs = {
+        llm_id: _api_llm_config(
+            llm_id,
+            rowwise_template="{row}",
+            rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
+        )
+    }
+    results = {
+        llm_id: [
+            {"index": index, "rows": [_api_record(content, index=index)]}
+            for index, content in enumerate(contents)
+        ]
+    }
+    subgraph = [
+        {
+            "id": "q7",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "messages": [{"role": "user", "content": "{row}"}],
+            "rowwise_template": "{row}",
+            "rowwise_columns": [
+                {"label": "row", "node": llm_id, "path": "items.output"}
+            ],
+            "config": {"model": "m"},
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
+    input_id = f"{llm_id} | {_API_ROW_PATH}"
+    assert inputs == {input_id: contents}
+    assert ops[0]["rowwise_columns"] == [{"label": "row", "node": input_id, "path": ""}]
+
+
 def test_forward_whole_keeps_each_item_whole_when_only_some_hold_one_value():
     # A whole result whose items are tables of 1, 2 and 1 rows keeps every
     # table whole. Unwrapping one-element lists item by item would hand the
@@ -1627,3 +1668,47 @@ def test_forward_whole_gated_leaf_keeps_one_value_per_item():
             for index, row in enumerate(rows)
         ]
     }
+
+
+def test_forwarded_literal_input_binds_as_a_data_column():
+    # A forwarded reference becomes a workflow input that a rowwise column
+    # names by id, so the input op carries no consumer edge and the sorted op
+    # dict omits it. The runtime graph still resolves the id to the graph's
+    # input op and binds its values as a literal data column.
+    prior = "C_r0"
+    values = ["v0", "v1", "v2"]
+    subgraph = [
+        {
+            "id": "C_r1",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "messages": [{"role": "user", "content": "grade {row}"}],
+            "rowwise_template": "{row}",
+            "rowwise_columns": [
+                {"label": "row", "node": prior, "path": "items.output"}
+            ],
+            "config": {"model": "m"},
+        }
+    ]
+    ops, inputs = forward_refs(
+        subgraph,
+        {prior: [{"output": list(values)}]},
+        {prior: _rowwise_llm_config(prior)},
+        rows=3,
+        whole_refs={prior},
+    )
+    inputs["Symbols"] = ["NVDA", "AAPL", "MSFT"]
+    workflow = {
+        "name": "r2",
+        "inputs": inputs,
+        "ops": ops,
+        "outputs": [{"name": "o", "ref": "C_r1"}],
+    }
+    spec = next(iter(parse_yaml_payload(workflow).values()))
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    node = next(n for n in graph.nodes.values() if "C_r1" in n.node_id)
+    assert node.data_spec["columns"] == [
+        {"label": "row", "data": {"type": "list", "items": values}}
+    ]

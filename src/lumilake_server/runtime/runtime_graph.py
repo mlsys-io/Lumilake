@@ -421,6 +421,10 @@ class RuntimeGraphBuilder:
         # Per-row VLMs over a retrieval, flattened to one embedding + one
         # inference + a regroup step; readers bind to the regrouped output.
         self._flattened_vlm_ids: set[str] = set()
+        # InputOps of the graph being built, by id: a column, param or image
+        # source names one without an input edge, so it is absent from the
+        # sorted op dict.
+        self._input_ops_by_id: dict[str, InputOp] = {}
 
     def build(
         self,
@@ -431,6 +435,7 @@ class RuntimeGraphBuilder:
         graph_dict = compiled_graph.graph.as_dict()
         inputs_dict = compiled_graph.inputs
         input_ops_by_id = {op.id: op for op in compiled_graph.graph.input_ops.values()}
+        self._input_ops_by_id = input_ops_by_id
         self._flattened_vlm_ids = {
             op_id
             for op_id, op in graph_dict.items()
@@ -1055,9 +1060,8 @@ class RuntimeGraphBuilder:
                     columns.append({"label": label, "data": data})
                     continue
                 if isinstance(label, str) and isinstance(node_ref, str):
-                    if path is None and not isinstance(
-                        graph_dict.get(node_ref), InputOp
-                    ):
+                    upstream = self._graph_node(node_ref, graph_dict)
+                    if path is None and not isinstance(upstream, InputOp):
                         raise ValueError(
                             f"Column '{label}' of consumer '{llm_op_id}'"
                             f" references node '{node_ref}' without a path;"
@@ -1069,7 +1073,7 @@ class RuntimeGraphBuilder:
                             label=label,
                             node_ref=node_ref,
                             path=path if isinstance(path, str) else "",
-                            upstream=graph_dict.get(node_ref),
+                            upstream=upstream,
                             inputs_dict=inputs_dict,
                             graph_dict=graph_dict,
                             dsl_to_runtime=dsl_to_runtime,
@@ -1204,7 +1208,7 @@ class RuntimeGraphBuilder:
                     }
                 )
                 continue
-            up = graph_dict.get(c["node"])
+            up = self._graph_node(c["node"], graph_dict)
             if up is None:
                 raise ValueError(
                     f"Per-row VLM '{llm_op_id}' column '{c['label']}' reads node"
@@ -1407,6 +1411,18 @@ class RuntimeGraphBuilder:
         if upstream is None:
             upstream = input_ops_by_id.get(node_id)
         return upstream
+
+    def _graph_node(self, node_ref: str, graph_dict: dict[str, Op]) -> Op | None:
+        """Resolve a node reference, falling back to the graph's input ops.
+
+        A column, param or image source names a node by id rather than through
+        an input edge, so a literal InputOp named only that way is absent from
+        the sorted op dict.
+        """
+        op = graph_dict.get(node_ref)
+        if op is None:
+            op = self._input_ops_by_id.get(node_ref)
+        return op
 
     def _build_node_from_data_retrieval_op(
         self,
@@ -2835,7 +2851,7 @@ class RuntimeGraphBuilder:
                     f"LLMChatOp '{llm_op_id}' row gate column {label!r} "
                     "requires data or node"
                 )
-            upstream = graph_dict.get(node_ref)
+            upstream = self._graph_node(node_ref, graph_dict)
             if isinstance(upstream, InputOp):
                 values = inputs_dict.get(upstream.name)
                 if values is None:
@@ -3183,7 +3199,8 @@ class RuntimeGraphBuilder:
                 columns.append({"label": label, "data": data})
                 continue
             if isinstance(label, str) and isinstance(node_ref, str):
-                if path is None and not isinstance(graph_dict.get(node_ref), InputOp):
+                upstream = self._graph_node(node_ref, graph_dict)
+                if path is None and not isinstance(upstream, InputOp):
                     raise ValueError(
                         f"Column '{label}' of consumer '{llm_op_id}'"
                         f" references node '{node_ref}' without a path;"
@@ -3195,7 +3212,7 @@ class RuntimeGraphBuilder:
                         label=label,
                         node_ref=node_ref,
                         path=path if isinstance(path, str) else "",
-                        upstream=graph_dict.get(node_ref),
+                        upstream=upstream,
                         inputs_dict=inputs_dict,
                         graph_dict=graph_dict,
                         dsl_to_runtime=dsl_to_runtime,
@@ -3205,9 +3222,7 @@ class RuntimeGraphBuilder:
                 # An InputOp ref is bound as a literal column (no runtime node),
                 # so it must not become a dependency on a node that does not
                 # exist.
-                if node_ref not in dependencies and not isinstance(
-                    graph_dict.get(node_ref), InputOp
-                ):
+                if node_ref not in dependencies and not isinstance(upstream, InputOp):
                     dependencies.append(node_ref)
                 continue
             raise ValueError(
@@ -3257,7 +3272,7 @@ class RuntimeGraphBuilder:
             raise ValueError(f"LLMChatOp '{llm_op_id}' has no message column")
         node_ref = column.node
         path = column.path
-        upstream = graph_dict.get(node_ref)
+        upstream = self._graph_node(node_ref, graph_dict)
         if isinstance(upstream, InputOp):
             visited_node_ids.add(node_ref)
             values = inputs_dict.get(upstream.name)
@@ -3365,7 +3380,7 @@ class RuntimeGraphBuilder:
                     label=label,
                     node_ref=node_ref,
                     path=path,
-                    upstream=graph_dict.get(node_ref),
+                    upstream=self._graph_node(node_ref, graph_dict),
                     inputs_dict=inputs_dict,
                     graph_dict=graph_dict,
                     dsl_to_runtime=dsl_to_runtime,
@@ -3375,7 +3390,7 @@ class RuntimeGraphBuilder:
             # An InputOp ref is bound as a literal column (no runtime node), so
             # it must not become a dependency on a node that does not exist.
             if node_ref not in dependencies and not isinstance(
-                graph_dict.get(node_ref), InputOp
+                self._graph_node(node_ref, graph_dict), InputOp
             ):
                 dependencies.append(node_ref)
         for dep in self._collect_graph_template_dependencies(template_spec):
@@ -3605,7 +3620,7 @@ class RuntimeGraphBuilder:
                             continue
                     node_ref = col.get("node")
                     if isinstance(node_ref, str) and graph_dict is not None:
-                        upstream = graph_dict.get(node_ref)
+                        upstream = self._graph_node(node_ref, graph_dict)
                         if upstream is not None:
                             count = self._static_output_row_count(
                                 upstream, inputs_dict, graph_dict
