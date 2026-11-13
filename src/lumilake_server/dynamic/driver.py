@@ -655,7 +655,9 @@ def _source_grouped(
     chat op that is not row-wise reads one scalar per item, so it is ungrouped
     too. A column reading a same-round row-wise leaf takes that leaf's own
     grouping, which ``peer`` answers. Any other same-round op leaves the answer
-    unknown, because the driver never holds that op's values or row count.
+    unknown, because the driver never holds that op's values or row count; an
+    earlier round's fan-out read through such an op then falls back to the
+    run's row count, which keeps the leaf's answers as one list at one symbol.
 
     ``same_round`` holds the configs of the ops the leaf's own round declares,
     so ``results`` — every earlier round's results — is never mistaken for it.
