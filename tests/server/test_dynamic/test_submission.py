@@ -952,9 +952,12 @@ async def test_dynamic_submit_empty_symbol_returns_422(app: FastAPI) -> None:
 async def test_dynamic_submit_rejects_static_round_bound_above_ceiling(
     app: FastAPI,
 ) -> None:
+    # Each gated entry expands to four runtime nodes, so 25 entries plus the
+    # observation/proposer pair bound the declared round at 102, above the 100
+    # hard ceiling even though the entries themselves declare no ops.
     library = "".join(
         f"  r{i}: {{op: DataRetrievalOp, row_gate: {{node: r, branch: a}}}}\n"
-        for i in range(26)
+        for i in range(25)
     )
     spec = (
         "name: dynamic\ntype: dynamic\ngoal: test static bound\n"

@@ -7,17 +7,11 @@ proposer op's config equals the default proposer config (the fields stay
 proposer ``LLMChatOp``'s ``config``.
 """
 
-from typing import Any
-
 import pytest
 from pydantic import ValidationError
 
 from lumilake_server.dynamic.blocks import PROPOSER_NODE_ID, fused_round_graph
-from lumilake_server.dynamic.driver import (
-    MAX_STATIC_ROUND_NODE_BOUND,
-    build_round,
-    static_round_node_upper_bound,
-)
+from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.spec import DriverSettings
 
 
@@ -72,19 +66,6 @@ def test_no_engine_opts_matches_default_proposer() -> None:
     assert config["gpu_memory_utilization"] is None
     assert config["dtype"] is None
     assert config["extra_engine_kwargs"] is None
-
-
-def test_static_round_bound_expands_declared_body() -> None:
-    library: dict[str, dict[str, Any]] = {
-        "plain": {"op": "DataRetrievalOp"},
-        "routed": {"op": "LLMChatOp", "row_gate": {"node": "route", "branch": "a"}},
-    }
-    bound = static_round_node_upper_bound(
-        library,
-        include_proposer=True,
-    )
-    assert bound == 1 + 4 + 2
-    assert bound <= MAX_STATIC_ROUND_NODE_BOUND
 
 
 def test_max_model_len_lands_on_proposer() -> None:

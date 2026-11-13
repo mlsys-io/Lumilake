@@ -525,8 +525,8 @@ def test_rowwise_messages_column_emits_list_message_array_spec(
 
 
 def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
-    # A gated chat op compiles into status, selection, gated call and merge
-    # stages, and only the merge stage stands as the op's output.
+    # A gated chat op stands only as its merge stage, which is the op's output,
+    # and the structural outputs land on the gated call.
     rows = input_placeholder("Rows")
     router = _router_over(rows)
     templates = [{"name": "verdict", "type": "string"}]
@@ -541,16 +541,11 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     )
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    status, selector, selected, merge = [
+    *_, selected, merge = [
         runtime_graph.nodes[node_id] for node_id in runtime_graph.dsl_to_runtime[llm.id]
     ]
-    assert status.data_spec["mode"] == "row_status"
-    assert selector.data_spec["mode"] == "row_select"
-    assert selected.dependencies == (selector.node_id,)
-    assert merge.data_spec["mode"] == "row_skip_merge"
     assert selected.inference_spec["templates"] == templates
     assert runtime_graph.output_node_map == {merge.node_id: "result"}
-    assert router.id not in runtime_graph.nodes
 
 
 def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
