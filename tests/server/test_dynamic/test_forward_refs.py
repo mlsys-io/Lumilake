@@ -798,8 +798,8 @@ _ROW_COUNT_SOURCE_CASES: list[Any] = [
         3,
         {"s0": ["r1", "r2", "r3", "r4", "r5"]},
         # Not the right bind: one list is what a list Lambda holding one list
-        # element produces. It records the known residual, where a same-round
-        # list Lambda's row count comes from the symbol count.
+        # element produces. It records where a same-round list Lambda's row
+        # count still comes from the symbol count.
         id="list-lambda-one-list-element-known-residual",
     ),
     pytest.param(
@@ -1048,6 +1048,92 @@ def test_build_round_records_a_same_round_source_grouping(
         grouped_sources=producing.grouped_sources,
     )
     assert consuming.forwarded_inputs["s0"] == expected
+
+
+def _build(
+    ops: list[dict[str, Any]],
+    *,
+    results: dict[str, list[dict]] | None = None,
+    rows: int = 1,
+    round_index: int = 1,
+    whole_refs: set[str] | None = None,
+    export: tuple[str, ...] = (),
+    grouped_sources: dict[str, bool | None] | None = None,
+    registry: dict[str, dict[str, Any]] | None = None,
+) -> Any:
+    node_registry = registry or {op["id"]: op for op in ops}
+    return build_round(
+        ops,
+        node_registry=node_registry,
+        round_index=round_index,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=100,
+        model="m",
+        max_tokens=10,
+        temperature=0.0,
+        include_proposer=False,
+        results=results,
+        rows=rows,
+        whole_refs=whole_refs,
+        grouped_sources=grouped_sources,
+        export=export,
+    )
+
+
+def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
+    config = _llm_config(op_id)
+    config["config"] = {"model": "m"}
+    config["messages"] = [{"role": "user", "content": "{c0}"}]
+    config["prompt"]["format_kwargs"] = {"c0": source}
+    return config
+
+
+def test_build_round_decides_a_same_round_chat_source_as_ungrouped():
+    # A chat op that is not row-wise yields one scalar per item, so a row-wise
+    # leaf reading it builds one table of its own rows whatever the symbol
+    # count: the leaf's answers expand even at one symbol, where the fallback
+    # would bind them as one blob.
+    ops = [
+        _plain_chat("c0", INPUT_NODE_ID),
+        _same_round_source_leaf("s0", ("c0", None)),
+    ]
+    producing = _build(ops, round_index=0)
+    assert producing.grouped_sources == {"s0": False}
+    consuming = _build(
+        _three_row_subgraph("s0"),
+        results={"s0": [{"output": _TABLE_ROWS}]},
+        whole_refs={"s0"},
+        grouped_sources=producing.grouped_sources,
+        registry={op["id"]: op for op in ops},
+    )
+    assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
+
+
+@pytest.mark.parametrize(
+    ("source_columns", "expected_source", "expected_leaf"),
+    [
+        pytest.param([("t1", "items.table.symbol")], True, True, id="peer-grouped"),
+        pytest.param([(INPUT_NODE_ID, None)], False, False, id="peer-ungrouped"),
+    ],
+)
+def test_build_round_takes_a_same_round_leaf_source_grouping(
+    source_columns: list[tuple[str, str | None]],
+    expected_source: bool,
+    expected_leaf: bool,
+) -> None:
+    # A row-wise leaf reading another same-round row-wise leaf reads the same
+    # values that leaf read, so it takes that leaf's own grouping rather than
+    # falling back to the symbol count.
+    ops = [
+        _sql_config("t1"),
+        _same_round_source_leaf("t0", *source_columns),
+        _same_round_source_leaf("s0", ("t0", "items.output")),
+    ]
+    build = _build(ops, rows=3)
+    assert build.grouped_sources["t0"] is expected_source
+    assert build.grouped_sources["s0"] is expected_leaf
 
 
 def _api_llm_config(op_id: str, **overrides: Any) -> dict:

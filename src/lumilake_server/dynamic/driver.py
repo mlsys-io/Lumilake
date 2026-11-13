@@ -10,7 +10,7 @@ import ast
 import copy
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -623,10 +623,25 @@ def _retrieval_groups(path: Any) -> bool:
     return len(parts) > 2 and parts[:2] == ["items", "table"]
 
 
+def _is_scalar_llm_source(op_type: str, config: dict[str, Any]) -> bool:
+    """Whether a chat op yields one value per item, which FlowMesh does not group.
+
+    A chat op that is not row-wise builds one scalar per item, so a column
+    reading it sees one value per item rather than a list per item.
+    """
+    op_class = _OP_CLASSES.get(op_type)
+    if not isinstance(op_class, type) or issubclass(op_class, ops_pkg.LLMVisionOp):
+        return False
+    if not issubclass(op_class, ops_pkg.LLMChatOp):
+        return False
+    return not _is_rowwise_leaf(op_type, config)
+
+
 def _source_grouped(
     columns: Any,
     results: dict[str, list[dict[str, Any]]],
     same_round: Mapping[str, dict[str, Any]] | None = None,
+    peer: Callable[[str], bool | None] | None = None,
 ) -> bool | None:
     """Whether FlowMesh groups a leaf's rows from the columns it declares.
 
@@ -636,8 +651,11 @@ def _source_grouped(
     its source had. A column reading a same-round retrieval is grouped only
     when its path projects into the retrieval's rows (``items.table.<column>``
     or ``items.content``); a column reading the bare ``items.table`` binds one
-    table per item ungrouped, like a literal. Any other same-round op leaves
-    the answer unknown, because the driver never holds that op's values.
+    table per item ungrouped, like a literal. A column reading a same-round
+    chat op that is not row-wise reads one scalar per item, so it is ungrouped
+    too. A column reading a same-round row-wise leaf takes that leaf's own
+    grouping, which ``peer`` answers. Any other same-round op leaves the answer
+    unknown, because the driver never holds that op's values or row count.
 
     ``same_round`` holds the configs of the ops the leaf's own round declares,
     so ``results`` — every earlier round's results — is never mistaken for it.
@@ -655,12 +673,56 @@ def _source_grouped(
         if not isinstance(node, str):
             return None
         if node in same_round:
-            if same_round[node].get("op") != "DataRetrievalOp":
+            source = same_round[node]
+            op_type = str(source.get("op", ""))
+            if op_type == "DataRetrievalOp":
+                grouped = grouped or _retrieval_groups(column.get("path"))
+            elif _is_scalar_llm_source(op_type, source):
+                continue
+            elif _is_rowwise_leaf(op_type, source) and peer is not None:
+                decided = peer(node)
+                if decided is None:
+                    return None
+                grouped = grouped or decided
+            else:
                 return None
-            grouped = grouped or _retrieval_groups(column.get("path"))
         elif node != INPUT_NODE_ID and node not in results:
             return None
     return grouped
+
+
+def _decide_groupings(
+    subgraph: list[dict[str, Any]],
+    results: dict[str, list[dict[str, Any]]],
+    same_round: Mapping[str, dict[str, Any]],
+) -> dict[str, bool | None]:
+    """Decide each of a round's row-wise leaves' grouping, sources first.
+
+    A leaf reading another same-round row-wise leaf takes that leaf's own
+    decision, so a leaf is decided after the leaves it reads. A cycle leaves
+    both unknown.
+    """
+    decided: dict[str, bool | None] = {}
+
+    def decide(op_id: str, pending: frozenset[str]) -> bool | None:
+        if op_id in decided:
+            return decided[op_id]
+        if op_id in pending:
+            return None
+        op = same_round[op_id]
+        value = _source_grouped(
+            op.get("rowwise_columns"),
+            results,
+            same_round,
+            lambda ref: decide(ref, pending | {op_id}),
+        )
+        decided[op_id] = value
+        return value
+
+    for op in subgraph:
+        if _is_rowwise_leaf(str(op.get("op", "")), op):
+            decide(op["id"], frozenset())
+    return decided
 
 
 def _walk_each_item(
@@ -687,10 +749,11 @@ def _bind_whole(
     row; otherwise the item is one table and stays one value.
 
     A source of unknown grouping keeps the fallback of expanding over more than
-    one row, so a list Lambda that fans one symbol out into several rows before
-    a row-wise leaf still binds symbol-count-dependent there. Every other ref
-    keeps one value per item, unwrapping a one-element list only when every
-    item holds one.
+    one row. That covers any same-round op that is neither a retrieval, nor a
+    chat op, nor a row-wise leaf — a Lambda, a Format, or a chain ending in one
+    — so a list Lambda that fans one symbol out into several rows still binds
+    symbol-count-dependent there. Every other ref keeps one value per item,
+    unwrapping a one-element list only when every item holds one.
     """
     expand = grouped_source is False or (grouped_source is None and rows > 1)
     if grouped and expand and len(walked) == 1 and isinstance(walked[0], list):
@@ -1625,11 +1688,7 @@ def build_round(
     """
     subgraph = resolve_subgraph(subgraph, library)
     same_round = {op["id"]: op for op in subgraph}
-    decided = {
-        op["id"]: _source_grouped(op.get("rowwise_columns"), results or {}, same_round)
-        for op in subgraph
-        if _is_rowwise_leaf(str(op.get("op", "")), op)
-    }
+    decided = _decide_groupings(subgraph, results or {}, same_round)
     recorded = {**(grouped_sources or {}), **decided}
     forwarded, inputs = forward_refs(
         subgraph,
