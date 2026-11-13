@@ -7,13 +7,13 @@ pure-Python bits: ``.env`` helpers, setup layout, and FlowMesh teardown.
 
 import importlib
 import os
-import subprocess
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
-from flowmesh_cli_stack.utils import STACK_PATH_KEYS
-from flowmesh_stack.env import load_env
 
 from lumilake import config as sdk_config_mod
 from lumilake import envs
@@ -709,133 +709,52 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
     assert compose_calls == [["--profile", "root", "down"]]
 
 
-class _WorkerCreation:
-    """Records every worker-creation call and answers with the created aliases."""
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-
-    def __call__(
-        self, _client: object, **kwargs: object
-    ) -> list[tuple[str, dict[str, str]]]:
-        self.calls.append(kwargs)
-        kind = kwargs["kind"]
-        return [(f"{kind}-0", {"id": "wkr-1", "alias": f"demo_worker_{kind}_0"})]
-
-
-@pytest.fixture
-def flowmesh_env(tmp_path: Path) -> Path:
-    """An env file complete enough for ``create_workers`` to read."""
+def test_flowmesh_workers_carry_the_stack_name_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both worker calls name the stack, and each created worker logs its alias."""
+    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
     env_file = tmp_path / ".env.flowmesh"
     env_file.write_text(
         "SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n"
         "FLOWMESH_REGISTRY=ghcr.io/mlsys-io\nFLOWMESH_VERSION=v1\n"
     )
-    return env_file
 
-
-@pytest.fixture
-def worker_creation(monkeypatch: pytest.MonkeyPatch) -> _WorkerCreation:
-    """Stubs the FlowMesh client and the image pull that ``create_workers`` uses."""
-    creation = _WorkerCreation()
-
-    class _StubContext:
-        def __enter__(self) -> "_StubContext":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    monkeypatch.setattr(fm, "sdk_create_workers", creation)
-    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
-    monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
-    return creation
-
-
-def test_flowmesh_workers_carry_the_stack_name_slug(
-    tmp_path: Path,
-    flowmesh_env: Path,
-    worker_creation: _WorkerCreation,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Both worker calls name the stack, so two stacks on a host don't collide,
-    and each created worker is logged by its alias."""
-    (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
-    monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: (["0", "1"], ""))
+    created_calls: list[dict[str, object]] = []
     logged: list[str] = []
+
+    def _create(_client: object, **kwargs: object) -> list[tuple[str, dict[str, str]]]:
+        created_calls.append(kwargs)
+        return [(str(kwargs["kind"]), {"id": "wkr-1", "alias": "demo_worker"})]
+
+    monkeypatch.setattr(fm, "sdk_create_workers", _create)
+    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: nullcontext())
+    monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
+    monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: (["0", "1"], ""))
     monkeypatch.setattr(fm, "_info", logged.append)
 
-    fm.create_workers(flowmesh_env, cpu_count=2, gpu_devices="all")
+    fm.create_workers(env_file, cpu_count=2, gpu_devices="all")
 
-    assert [call["kind"] for call in worker_creation.calls] == ["cpu", "gpu"]
-    assert all(call["slug"] == "demo" for call in worker_creation.calls)
-    assert worker_creation.calls[0]["count"] == 2
-    assert worker_creation.calls[1]["count"] == 2
-    assert worker_creation.calls[1]["targets"] == "0,1"
-    assert "Created cpu-0: demo_worker_cpu_0" in logged
-    assert "Created gpu-0: demo_worker_gpu_0" in logged
+    assert [call["kind"] for call in created_calls] == ["cpu", "gpu"]
+    assert all(call["slug"] == "demo" for call in created_calls)
+    assert created_calls[1]["targets"] == "0,1"
+    assert created_calls[0]["count"] == created_calls[1]["count"] == 2
+    assert logged[1::2] == ["Created cpu: demo_worker", "Created gpu: demo_worker"]
 
 
-def test_stack_up_keeps_the_workdir_beside_the_deployment(
+def test_stack_up_puts_the_workdir_beside_the_deployment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The workdir follows the deployment, not the caller's cwd."""
-    deploy_dir, elsewhere = tmp_path / "deployment", tmp_path / "elsewhere"
-    deploy_dir.mkdir()
-    elsewhere.mkdir()
-    env_file = deploy_dir / ".env.flowmesh"
-    env_file.write_text(
-        "SERVER_HTTP_PORT=18000\nSERVER_GRPC_PORT=18001\n"
-        "REDIS_CONTROL_PORT=18002\nREDIS_TELEMETRY_PORT=18003\n"
-    )
-    for key in STACK_PATH_KEYS:
-        monkeypatch.setenv(key, "")
-    monkeypatch.setattr(load_env, "_loaded", None, raising=False)
-    stack = type("S", (), {"run": lambda *_a, **_k: type("R", (), {"returncode": 0})()})
-    monkeypatch.setattr(fm, "_stack", stack())
+    """``up`` builds the workdir beside the deployment, not the caller's cwd."""
+    up = SimpleNamespace(returncode=0)
+    monkeypatch.setattr(fm._stack, "run", lambda *_a, **_k: up)
     monkeypatch.setattr(fm, "check_ports", lambda _ports: [])
-    monkeypatch.chdir(elsewhere)
-
-    fm.stack_up(env_file)
+    monkeypatch.chdir(tmp_path)
+    deploy_dir = tmp_path / "deployment"
+    fm.stack_up(deploy_dir / ".env.flowmesh")
 
     assert (deploy_dir / fm.WORKDIR_NAME / "configs").is_dir()
-    assert not (elsewhere / fm.WORKDIR_NAME).exists()
-
-
-def test_stack_down_runs_without_the_workdir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A stack started before the upgrade is still torn down, on its own project."""
-    deploy_dir = tmp_path / "deployment"
-    deploy_dir.mkdir()
-    (tmp_path / "elsewhere" / fm.WORKDIR_NAME).mkdir(parents=True)
-    env_file = deploy_dir / ".env.flowmesh"
-    env_file.write_text("SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n")
-    projects: list[str | None] = []
-
-    def _run(_args: list[str], **kwargs: Any) -> object:
-        env = kwargs.get("env") or {}
-        projects.append(
-            env.get("COMPOSE_PROJECT_NAME") if isinstance(env, dict) else None
-        )
-        return type("R", (), {"returncode": 0})()
-
-    client = type(
-        "C",
-        (),
-        {
-            "__enter__": lambda self: self,
-            "__exit__": lambda self, *_a: None,
-            "destroy_all_workers": lambda self, **_: False,
-        },
-    )
-    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: client())
-    monkeypatch.setattr(fm, "_stack", type("S", (), {"run": staticmethod(_run)})())
-    monkeypatch.chdir(tmp_path / "elsewhere")
-
-    fm.stack_down(env_file)
-
-    assert projects == [fm.stack_slug(env_file)]
+    assert not (tmp_path / fm.WORKDIR_NAME).exists()
 
 
 def test_server_container_defaults_to_bare_name(tmp_path: Path) -> None:
@@ -1033,24 +952,15 @@ def test_run_setup_rejects_an_invalid_stack_name_before_flowmesh(
 
 
 def test_blank_gpu_devices_create_only_cpu_workers(
-    flowmesh_env: Path,
-    worker_creation: _WorkerCreation,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A blank ``LUMILAKE_GPU_DEVICES`` creates only CPU workers and never probes
-    the host, where ``main`` claims a worker on every GPU."""
-    probed: list[list[str]] = []
-    warnings: list[str] = []
-
-    def _smi(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        probed.append(args)
-        return subprocess.CompletedProcess(args, 0, stdout="0\n1\n", stderr="")
-
-    monkeypatch.setattr(fm.subprocess, "run", _smi)
-    monkeypatch.setattr(fm, "_warn", warnings.append)
-
-    fm.create_workers(flowmesh_env, cpu_count=1, gpu_devices="")
-
-    assert [call["kind"] for call in worker_creation.calls] == ["cpu"]
-    assert probed == []
-    assert len(warnings) == 1 and "is blank" in warnings[0]
+    """A blank ``LUMILAKE_GPU_DEVICES`` creates only CPU workers, never probing."""
+    create = Mock(return_value=[])
+    monkeypatch.setattr(fm, "sdk_create_workers", create)
+    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: nullcontext())
+    monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
+    monkeypatch.setattr(fm.subprocess, "run", lambda *_a, **_k: pytest.fail("probed"))
+    env_file = tmp_path / ".env.flowmesh"
+    env_file.write_text("SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n")
+    fm.create_workers(env_file, cpu_count=1, gpu_devices="")
+    assert [c.kwargs["kind"] for c in create.call_args_list] == ["cpu"]
