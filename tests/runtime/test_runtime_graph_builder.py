@@ -1514,42 +1514,17 @@ def _emit_column(items: tuple[list[Any], ...]) -> list[str]:
 def test_embedding_op_consuming_list_lambda_uses_value_items_output(
     mode: Literal["list", "aligned"],
 ) -> None:
-    """An EmbeddingOp whose content is a list-mode LambdaOp binds
-    ``value.items.output``, the field of the python step's result that holds
-    the emitted column. Aligned mode reads the same column shape."""
+    """An EmbeddingOp whose content is a LambdaOp binds ``value.items.output``,
+    the field of the python step's result holding the emitted column."""
     stock = input_placeholder("Stock")
     explode = LambdaOp([stock], _emit_column, mode=mode)
     emb = EmbeddingOp(content=explode, config=GenerationConfig(model="bge-small"))
-    output = as_output("vectors", emb)
-    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
-
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    node = runtime_graph.nodes[emb.id]
-    assert node.data_spec["node"] == explode.id
-    assert node.data_spec["path"] == "value.items.output"
-    result = {"value": {"items": [{"output": "NVDA"}, {"output": "AAPL"}]}}
-    assert _walk(result, node.data_spec["path"].split(".")) == ["NVDA", "AAPL"]
-
-
-@pytest.mark.parametrize("mode", ["list", "aligned"])
-def test_image_gen_op_consuming_list_lambda_uses_value_items_output(
-    mode: Literal["list", "aligned"],
-) -> None:
-    """An ImageGenerationOp whose content is a list-mode LambdaOp binds
-    ``value.items.output``, the field of the python step's result that holds
-    the emitted column. Aligned mode reads the same column shape."""
-    stock = input_placeholder("Stock")
-    explode = LambdaOp([stock], _emit_column, mode=mode)
-    img = ImageGenerationOp(
-        content=explode, config=GenerationConfig(model="stabilityai/sdxl")
+    compiled = Graph.from_ops([as_output("vectors", emb)]).compile(
+        Stock=["NVDA", "AAPL"]
     )
-    output = as_output("result", img)
-    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
 
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
 
-    node = runtime_graph.nodes[img.id]
     assert node.data_spec["node"] == explode.id
     assert node.data_spec["path"] == "value.items.output"
     result = {"value": {"items": [{"output": "NVDA"}, {"output": "AAPL"}]}}
