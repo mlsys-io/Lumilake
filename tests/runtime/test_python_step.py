@@ -342,61 +342,6 @@ def _run_reshape(
     return namespace["main"](inputs)
 
 
-def _run_row_status(
-    plan: python_step.ColumnPlan,
-    inputs: dict[str, str],
-    *,
-    rules: list[dict[str, str]],
-    default_branch: str,
-    terminal_branch: str | None = None,
-):
-    namespace: dict[str, Any] = {}
-    spec = {
-        "plan": plan,
-        "mode": "row_status",
-        "rules": rules,
-        "default_branch": default_branch,
-        "terminal_branch": terminal_branch,
-        "fn_name": "row_status",
-        "code": "",
-        "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-    }
-    code = python_step.flowmesh_spec("status", spec)["code"]
-    exec(code, namespace)
-    return namespace["main"](inputs)
-
-
-def _run_row_select(
-    plan: python_step.ColumnPlan,
-    inputs: dict[str, str],
-    *,
-    labels: list[str],
-    branch: str,
-):
-    namespace: dict[str, Any] = {}
-    code = python_step.row_select_source(
-        "select",
-        plan,
-        labels=labels,
-        branch=branch,
-    )
-    exec(code, namespace)
-    return namespace["main"](inputs)
-
-
-def _run_row_merge(
-    plan: python_step.ColumnPlan,
-    inputs: dict[str, str],
-    *,
-    branch: str,
-):
-    """Run a generated merge step, which pairs routed rows with model outputs."""
-    namespace: dict[str, Any] = {}
-    code = python_step.row_skip_merge_code("merge", plan, branch=branch)
-    exec(code, namespace)
-    return namespace["main"](inputs)
-
-
 def _stage(tmp_path: Path, name: str, result: dict[str, Any]) -> str:
     stage = tmp_path / name
     stage.mkdir()
@@ -416,69 +361,29 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     }
 
 
-def test_row_select_keeps_a_done_row_on_its_branch(tmp_path: Path) -> None:
-    # A terminal row's ``done`` flag does not keep it off a branch the router
-    # gave it, and the merge forwards every row as it was routed: a terminal row
-    # keeps ``done`` and an unrouted row keeps a null output.
-    source = _stage(
-        tmp_path,
-        "source",
-        {"items": [{"output": "normal"}, {"output": "COMPLETE: done"}]},
-    )
-    status = _run_row_status(
-        [{"kind": "stage", "node": "source"}],
-        {"source": source},
-        rules=[
-            {"branch": "finish", "match": "contains", "value": "COMPLETE"},
-            {"branch": "pending", "match": "equals", "value": "__never__"},
-        ],
-        default_branch="pending",
-        terminal_branch="finish",
-    )
-    status_stage = _stage(tmp_path, "status", status)
-    plan = [
-        {"kind": "stage", "node": "status"},
-        {"kind": "stage", "node": "source"},
-    ]
-    inputs = {"status": status_stage, "source": source}
-    assert _run_row_select(plan, inputs, labels=["row"], branch="finish") == {
-        "items": [{"row": "COMPLETE: done"}]
-    }
-    selected_stage = _stage(tmp_path, "selected", {"items": [{"output": "final"}]})
-    merged = _run_row_merge(
-        [
-            {"kind": "stage", "node": "status"},
-            {
-                "kind": "stage",
-                "node": "selected",
-                "flatten": True,
-                "allow_empty": True,
-            },
-        ],
-        {"status": status_stage, "selected": selected_stage},
-        branch="finish",
-    )
-    rows = [json.loads(item["output"]) for item in merged["items"]]
-    assert [(row["branch"], row["done"], row["output"]) for row in rows] == [
-        ("pending", False, None),
-        ("finish", True, "final"),
-    ]
-
-
 def test_row_status_routes_on_the_upstream_text(tmp_path: Path) -> None:
     # A whole-output read is the string the upstream emitted, so a rule tests
     # that text as it stands rather than a decoded and re-encoded value.
     outputs = ['{"verdict":"PASS"}', '{"verdict": "PASS"}']
     source = _stage(tmp_path, "source", {"items": [{"output": out} for out in outputs]})
-    status = _run_row_status(
-        [{"kind": "stage", "node": "source"}],
-        {"source": source},
-        rules=[
-            {"branch": "compact", "match": "equals", "value": '{"verdict":"PASS"}'},
-            {"branch": "spaced", "match": "equals", "value": '{"verdict": "PASS"}'},
-        ],
-        default_branch="other",
+    spec = python_step.flowmesh_spec(
+        "status",
+        {
+            "mode": "row_status",
+            "plan": [{"kind": "stage", "node": "source"}],
+            "rules": [
+                {"branch": "compact", "match": "equals", "value": outputs[0]},
+                {"branch": "spaced", "match": "equals", "value": outputs[1]},
+            ],
+            "default_branch": "other",
+            "fn_name": "row_status",
+            "code": "",
+            "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+        },
     )
+    namespace: dict[str, Any] = {}
+    exec(spec["code"], namespace)
+    status = namespace["main"]({"source": source})
     assert [item["value"]["branch"] for item in status["items"]] == [
         "compact",
         "spaced",
@@ -1414,7 +1319,7 @@ def _gated_chain() -> Any:
         router = RouterOp(
             classify,
             rules=[
-                RouterRule(branch="fail", match="equals", value="fail"),
+                RouterRule(branch="fail", match="contains", value="fail"),
                 RouterRule(branch="ok", match="equals", value="ok"),
             ],
             default_branch="ok",
@@ -1427,7 +1332,7 @@ def _gated_chain() -> Any:
             rowwise_columns=[
                 {"label": "code", "node": classify.id, "path": "items.output.code"}
             ],
-            row_gate=RowGate(node=router.id, branch=branch),
+            row_gate=RowGate(node=router.id, branch=branch, terminal=branch == "fail"),
             row_gate_op=router,
         )
         compiled.append(as_output(name, llm))
@@ -1498,6 +1403,6 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
     rows = [item["value"] for item in merged["items"]]
     assert [(row["branch"], row["done"], row["output"]) for row in rows] == [
         ("ok", False, None),
-        ("fail", False, "fixed"),
+        ("fail", True, "fixed"),
         ("ok", False, None),
     ]
