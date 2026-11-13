@@ -887,6 +887,8 @@ def _same_round_source_leaf(op_id: str, source: str) -> dict[str, Any]:
 _SAME_ROUND_SOURCE_CASES: list[Any] = [
     pytest.param(_ROW_LAMBDA_SOURCE, False, 1, id="row-lambda-column-only-one-symbol"),
     pytest.param(_ROW_LAMBDA_SOURCE, True, 1, id="row-lambda-exported-one-symbol"),
+    pytest.param(_sql_config("t1"), False, 3, id="retrieval-column-only-three-symbols"),
+    pytest.param(_sql_config("t1"), True, 3, id="retrieval-exported-three-symbols"),
 ]
 
 

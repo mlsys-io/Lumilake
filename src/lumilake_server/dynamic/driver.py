@@ -10,7 +10,7 @@ import ast
 import copy
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -607,27 +607,41 @@ def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
 
 
 def _source_grouped(
-    columns: Any, results: dict[str, list[dict[str, Any]]]
+    columns: Any,
+    results: dict[str, list[dict[str, Any]]],
+    same_round: Mapping[str, dict[str, Any]] | None = None,
 ) -> bool | None:
     """Whether FlowMesh groups a leaf's rows from the columns it declares.
 
     A column reading the input node or an earlier-round op becomes a literal
     list input in the leaf's round, and FlowMesh reads a literal column
     ungrouped, so the leaf builds one table of its own rows however many items
-    its source had. A column reading a same-round op leaves the answer unknown,
-    because the driver never holds that op's values.
+    its source had. A column reading a same-round retrieval is a table per
+    item, which FlowMesh groups. Any other same-round op leaves the answer
+    unknown, because the driver never holds that op's values.
+
+    ``same_round`` holds the configs of the ops the leaf's own round declares,
+    so ``results`` — every earlier round's results — is never mistaken for it.
     """
     if not isinstance(columns, list) or not columns:
         return None
+    same_round = same_round or {}
+    grouped = False
     for column in columns:
         if not isinstance(column, dict):
             return None
         node = column.get("node")
         if node is None:
             continue
-        if not isinstance(node, str) or (node != INPUT_NODE_ID and node not in results):
+        if not isinstance(node, str):
             return None
-    return False
+        if node in same_round:
+            if same_round[node].get("op") != "DataRetrievalOp":
+                return None
+            grouped = True
+        elif node != INPUT_NODE_ID and node not in results:
+            return None
+    return grouped
 
 
 def _walk_each_item(
@@ -1591,8 +1605,9 @@ def build_round(
     a ``results`` that then holds the producer's own round.
     """
     subgraph = resolve_subgraph(subgraph, library)
+    same_round = {op["id"]: op for op in subgraph}
     decided = {
-        op["id"]: _source_grouped(op.get("rowwise_columns"), results or {})
+        op["id"]: _source_grouped(op.get("rowwise_columns"), results or {}, same_round)
         for op in subgraph
         if _is_rowwise_leaf(str(op.get("op", "")), op)
     }
