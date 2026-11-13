@@ -225,16 +225,15 @@ def _llm_column_library() -> dict[str, dict[str, Any]]:
             "messages": [{"role": "user", "content": "review"}],
             "rowwise_template": "{prompt}",
             "rowwise_columns": [
-                {"label": "prompt", "node": "ReviewPrompt", "path": "items.output.x"},
                 {
-                    "label": "review_system",
+                    "label": label,
                     "node": "ReviewPrompt",
-                    "path": "items.output.y",
-                },
+                    "path": f"items.output.{label}",
+                }
+                for label in ("prompt", "review_system")
             ],
             "column_bindings": [
-                {"label": "prompt", "input": 0},
-                {"label": "review_system", "input": 0},
+                {"label": label, "input": 0} for label in ("prompt", "review_system")
             ],
             "config": {"model": "m"},
         }
@@ -464,7 +463,7 @@ def test_build_round_records_a_same_round_source_grouping(
     # producer's own round.
     ops = [source, _same_round_source_leaf("s0", node, path)]
     registry = {op["id"]: op for op in ops}
-    producing = _build(ops, round_index=0, registry=registry)
+    producing = _build(ops, round_index=0, node_registry=registry)
     archived = {"output": _TABLE_ROWS}
     consuming = _build(
         _three_row_subgraph("s0"),
@@ -472,26 +471,16 @@ def test_build_round_records_a_same_round_source_grouping(
         rows=rows,
         whole_refs={"s0"} if rows > 1 else set(),
         grouped_sources=producing.grouped_sources,
-        registry=registry,
+        node_registry=registry,
     )
     assert consuming.forwarded_inputs["s0"] == expected
 
 
-def _build(
-    ops: list[dict[str, Any]],
-    *,
-    results: dict[str, list[dict]] | None = None,
-    rows: int = 1,
-    round_index: int = 1,
-    whole_refs: set[str] | None = None,
-    grouped_sources: dict[str, bool | None] | None = None,
-    registry: dict[str, dict[str, Any]] | None = None,
-) -> Any:
-    node_registry = registry or {op["id"]: op for op in ops}
+def _build(ops: list[dict[str, Any]], **overrides: Any) -> Any:
+    overrides.setdefault("node_registry", {op["id"]: op for op in ops})
+    overrides.setdefault("round_index", 1)
     return build_round(
         ops,
-        node_registry=node_registry,
-        round_index=round_index,
         goal="g",
         observations=[],
         topology=[],
@@ -500,10 +489,7 @@ def _build(
         max_tokens=10,
         temperature=0.0,
         include_proposer=False,
-        results=results,
-        rows=rows,
-        whole_refs=whole_refs,
-        grouped_sources=grouped_sources,
+        **overrides,
     )
 
 
@@ -548,8 +534,18 @@ def _api_record(content: str) -> dict:
             [_api_record("a picture")],
             ["a picture"],
         ),
+        # A gated chat op archives the row-gate merge record, whose per-row
+        # value stays under ``output`` even when the gated call itself runs
+        # through the API executor.
+        (
+            _api_llm_config(
+                "s0", rowwise_template="{row}", row_gate={"node": "r0", "branch": "x"}
+            ),
+            [{"output": json.dumps({"row": 0, "output": "done"}), "value": {"row": 0}}],
+            [json.dumps({"row": 0, "output": "done"})],
+        ),
     ],
-    ids=["chat", "rowwise", "image_leaf"],
+    ids=["chat", "rowwise", "image_leaf", "gated"],
 )
 def test_walk_archived_items_reads_an_api_record(
     config: dict, archived: list[dict], expected: list[str]
@@ -557,25 +553,6 @@ def test_walk_archived_items_reads_an_api_record(
     assert walk_archived_items(
         {"s0": [json.dumps(item) for item in archived]}, {"s0": config}
     ) == {"s0": expected}
-
-
-def test_forward_implicit_gated_api_reference_binds_output():
-    # A gated chat op archives the row-gate merge record, whose per-row value
-    # stays under ``output`` even when the gated call itself runs through the
-    # API executor.
-    llm_id = "s0"
-    row = {"selected": True, "done": True, "branch": "finish", "row": 0}
-    item = {"output": json.dumps({**row, "output": "done text"}), "value": row}
-    results = {llm_id: [item]}
-    configs = {
-        llm_id: _api_llm_config(
-            llm_id,
-            rowwise_template="{row}",
-            row_gate={"node": "r0", "branch": "finish"},
-        )
-    }
-    ops, inputs = forward_refs(_three_row_subgraph(llm_id), results, configs)
-    assert inputs == {llm_id: [json.dumps({**row, "output": "done text"})]}
 
 
 def test_forward_per_row_implicit_reference_aligns_items_to_rows():
@@ -587,16 +564,22 @@ def test_forward_per_row_implicit_reference_aligns_items_to_rows():
 
 
 def test_forward_per_row_explicit_reference_aligns_items_to_rows():
+    # A scalar per row binds one value per row and keeps the rewritten
+    # ``path: ""``, with no materializer.
     sql_id = "s1"
     results = {
         sql_id: [{"table": json.dumps({"close": {"0": float(i)}})} for i in range(3)]
     }
     configs = {sql_id: _sql_config(sql_id)}
     subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
-    _, inputs = forward_refs(subgraph, results, configs, rows=3)
+    ops, inputs = forward_refs(subgraph, results, configs, rows=3)
     assert inputs[f"{sql_id} | items.table.close"] == [
         json.dumps({"0": float(i)}) for i in range(3)
     ]
+    assert len(ops) == 1
+    row = ops[0]["aggregate_table"][0]
+    assert row["node"] == f"{sql_id} | items.table.close"
+    assert row["path"] == ""
 
 
 def test_forward_per_row_rejects_item_count_that_is_not_the_row_count():
@@ -658,21 +641,6 @@ def test_forward_grouped_list_aggregate_column_materializes():
     assert parse_yaml_payload(
         {"name": "round_1", "inputs": inputs, "ops": ops, "outputs": []}
     )
-
-
-def test_forward_scalar_per_row_keeps_today_path():
-    # A scalar per row keeps today's path ("" after rewrite) and no materializer.
-    sql_id = "s1"
-    results = {
-        sql_id: [{"table": json.dumps({"close": {"0": float(i)}})} for i in range(3)]
-    }
-    configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=3)
-    assert len(ops) == 1
-    row = ops[0]["aggregate_table"][0]
-    assert row["node"] == f"{sql_id} | items.table.close"
-    assert row["path"] == ""
 
 
 def test_forward_rowwise_columns_reference():
