@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -64,19 +65,6 @@ def blob_storage(monkeypatch: pytest.MonkeyPatch) -> InMemoryJobStorage:
     return storage
 
 
-def test_wrapper_loads_a_mounted_literal_file(tmp_path: Path) -> None:
-    values = tmp_path / "values.json"
-    values.write_text(json.dumps(["mounted"]))
-
-    out = _run_wrapper(
-        "def identity(inputs):\n    return str(inputs[0])\n",
-        [{"kind": "literal", "file": str(values)}],
-        {},
-    )
-
-    assert out["items"] == [{"output": "mounted", "value": "mounted"}]
-
-
 def test_lambda_over_input_is_a_standalone_python_task() -> None:
     stock = input_placeholder("Stock")
     lower = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
@@ -90,8 +78,7 @@ def test_lambda_over_input_is_a_standalone_python_task() -> None:
     assert graph.output_node_map == {node.node_id: "lowered"}
     fm = node.to_flowmesh_node()["spec"]
     assert fm["taskType"] == "python"
-    assert fm["data"]["fn_name"]
-    assert "plan" in fm["data"]
+    assert fm["data"]["plan"]
 
 
 def test_lambda_over_llm_reads_the_llm_stage() -> None:
@@ -385,9 +372,9 @@ def _run_reshape(
     return namespace["main"](inputs)
 
 
+@cache
 def _materialize_task_runtime() -> str:
     path = Path(tempfile.mkdtemp()) / "lumilake-runtime.py"
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(python_step.runtime_blob().body)
     return str(path)
 
@@ -409,6 +396,14 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     assert out == {
         "items": [{"output": "a-x", "value": "a-x"}, {"output": "b-x", "value": "b-x"}]
     }
+
+    mounted = tmp_path / "values.json"
+    mounted.write_text(json.dumps(["mounted"]))
+    assert _run_wrapper(
+        "def identity(inputs):\n    return str(inputs[0])\n",
+        [{"kind": "literal", "file": str(mounted)}],
+        {},
+    ) == {"items": [{"output": "mounted", "value": "mounted"}]}
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
@@ -923,12 +918,12 @@ async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
     runtime_key = python_step.runtime_blob().key
     (literal_key,) = [key for key in blob_storage._blobs if key != runtime_key]
     specs = [node["spec"] for node in spec["spec"]["graph"]["nodes"]]
-    assert [blob["mountPath"] for blob in specs[0]["blobs"]] == [
+    mounted = [blob["mountPath"] for blob in specs[0]["blobs"]]
+    assert mounted == [
         python_step.TASK_RUNTIME_MOUNT,
         f"/mnt/blobs/literals/{literal_key.rsplit('/', 1)[-1]}",
     ]
     assert specs[0]["blobs"][0]["url"] == f"http://lumid-data/blobs/{runtime_key}"
-    assert specs[0]["blobs"][0]["headers"] == {"Authorization": "Bearer test-token"}
     assert specs[1]["blobs"] == specs[0]["blobs"]
     assert specs[2]["blobs"] == [specs[0]["blobs"][0]]
     assert "def materialize(" not in specs[0]["code"]

@@ -19,10 +19,6 @@ def job_storage(monkeypatch: pytest.MonkeyPatch) -> InMemoryJobStorage:
         "lumilake_server.runtime.runtime_manager.flowmesh",
     ):
         monkeypatch.setattr(f"{module}.get_job_storage", lambda: storage)
-    return storage
-
-
-@pytest.fixture(autouse=True)
-def lumid_blob_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    return storage

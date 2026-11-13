@@ -43,22 +43,16 @@ async def test_submit_error_names_the_python_blobs_requirement_only_for_blobs(
         nodes={}, node_order=[], output_node_map={}
     )
     rejection = ValidationError(
-        f"Invalid task payload for node 'out': {field} is not allowed",
+        f"node 'out': {field} is not allowed",
         status_code=status_code,
         method="POST",
         url="https://flowmesh.internal/api/v1/workflows",
         body={"detail": f"{field}: rejected"},
     )
 
-    class _FakeWorkflows:
-        async def submit(self, task_yaml: str) -> Any:
-            raise rejection
-
-    class _FakeFm:
-        def __init__(self) -> None:
-            self.workflows = _FakeWorkflows()
-
-    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+    monkeypatch.setattr(
+        FlowmeshRuntimeManager, "fm", property(lambda self: _Rejecting(rejection))
+    )
 
     with pytest.raises(ValidationError) as excinfo:
         await FlowmeshRuntimeManager().process_request(
@@ -68,3 +62,14 @@ async def test_submit_error_names_the_python_blobs_requirement_only_for_blobs(
         )
 
     assert ("FlowMesh #259" in str(excinfo.value)) is named
+
+
+class _Rejecting:
+    workflows = None
+
+    def __init__(self, rejection: ValidationError) -> None:
+        self._rejection = rejection
+        self.workflows = self
+
+    async def submit(self, task_yaml: str) -> Any:
+        raise self._rejection
