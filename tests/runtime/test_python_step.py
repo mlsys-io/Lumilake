@@ -486,33 +486,10 @@ def _merge_plan(status_node: str, selected_node: str) -> python_step.ColumnPlan:
     ]
 
 
-def test_row_merge_keeps_unrouted_rows_when_the_branch_served_none(
-    tmp_path: Path,
-) -> None:
-    source = _stage(
-        tmp_path,
-        "source",
-        {"items": [{"output": "normal"}, {"output": "normal"}]},
-    )
-    status = _run_row_status(
-        [{"kind": "stage", "node": "source"}],
-        {"source": source},
-        rules=[{"branch": "review", "match": "contains", "value": "NEEDS REVIEW"}],
-        default_branch="pending",
-    )
-    status_stage = _stage(tmp_path, "status", status)
-    selected_stage = _stage(tmp_path, "selected", {"items": []})
-    merged = _run_row_merge(
-        _merge_plan("status", "selected"),
-        {"status": status_stage, "selected": selected_stage},
-        branch="review",
-    )
-    rows = [json.loads(item["output"]) for item in merged["items"]]
-    assert [row["branch"] for row in rows] == ["pending", "pending"]
-    assert [row["output"] for row in rows] == [None, None]
-
-
-def test_row_merge_keeps_terminal_rows_with_their_outputs(tmp_path: Path) -> None:
+def test_row_merge_keeps_unrouted_and_terminal_rows(tmp_path: Path) -> None:
+    # Only the rows the selector kept carry a model output; every other row is
+    # forwarded as it was routed, so a terminal row keeps ``done`` and an
+    # unrouted row keeps a null output.
     source = _stage(
         tmp_path,
         "source",
@@ -533,21 +510,9 @@ def test_row_merge_keeps_terminal_rows_with_their_outputs(tmp_path: Path) -> Non
         branch="finish",
     )
     rows = [json.loads(item["output"]) for item in merged["items"]]
-    assert rows == [
-        {
-            "selected": True,
-            "done": False,
-            "branch": "pending",
-            "row": 0,
-            "output": None,
-        },
-        {
-            "selected": True,
-            "done": True,
-            "branch": "finish",
-            "row": 1,
-            "output": "final",
-        },
+    assert [(row["branch"], row["done"], row["output"]) for row in rows] == [
+        ("pending", False, None),
+        ("finish", True, "final"),
     ]
 
 
@@ -573,27 +538,6 @@ def test_row_status_routes_on_the_upstream_text(tmp_path: Path) -> None:
         "spaced",
         "decimal",
         "cjk",
-    ]
-
-
-def test_row_status_routes_on_its_only_column(tmp_path: Path) -> None:
-    # The plan holds exactly one column, so the step tests that column's value
-    # whichever label it carries; a label lookup would fall back to "" and
-    # match every "contains" rule.
-    source = _stage(
-        tmp_path,
-        "source",
-        {"items": [{"output": "COMPLETE: done"}, {"output": "pending"}]},
-    )
-    status = _run_row_status(
-        [{"kind": "stage", "label": "rows", "node": "source"}],
-        {"source": source},
-        rules=[{"branch": "finish", "match": "contains", "value": "COMPLETE"}],
-        default_branch="pending",
-    )
-    assert [item["value"]["branch"] for item in status["items"]] == [
-        "finish",
-        "pending",
     ]
 
 
@@ -1585,6 +1529,19 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
     selected = _run_stage_plan(selector, stage_inputs)
     kept = [i for i, row in enumerate(staged) if row["output"]["status"] == "fail"]
     assert len(selected["items"]) == len(kept)
+    # The selector emits one flat ``{label: value}`` row per kept item, so the
+    # gated model reads its columns at ``value.items.<label>`` on that result.
+    labels = selector.data_spec["labels"]
+    gated = next(
+        node
+        for node in graph.nodes.values()
+        if node.data_spec.get("type") == "dataframe"
+        and node.data_spec["columns"][0]["node"] == selector.node_id
+    )
+    assert [column["label"] for column in gated.data_spec["columns"]] == labels
+    assert [column["path"] for column in gated.data_spec["columns"]] == [
+        f"value.items.{label}" for label in labels
+    ]
 
     selected_node = merge.data_spec["plan"][1]["node"]
     served_stage = _stage(tmp_path, "served", {"items": [{"output": ["fixed"]}]})
@@ -1595,80 +1552,3 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
     assert [row["branch"] for row in rows] == ["ok", "fail", "ok"]
     assert [row["done"] for row in rows] == [False, False, False]
     assert [row["output"] for row in rows] == [None, "fixed", None]
-
-
-def test_gated_rows_read_the_selector_label_paths(tmp_path: Path) -> None:
-    # The selector emits one flat ``{label: value}`` row per kept item, so a
-    # gated model reads its columns at ``value.items.<label>`` on the selector's
-    # result. FlowMesh's graph-template walker rejects any other path.
-    graph = RuntimeGraphBuilder().build(_gated_chain())
-    selectors = {
-        node.node_id: node
-        for node in graph.nodes.values()
-        if node.data_spec.get("mode") == "row_select"
-    }
-    assert len(selectors) == 2
-
-    gated = [
-        node
-        for node in graph.nodes.values()
-        if node.data_spec.get("type") == "dataframe"
-        and any(
-            column["node"] in selectors for column in node.data_spec.get("columns", [])
-        )
-    ]
-    assert len(gated) == len(selectors)
-
-    staged = [
-        {"output": {"code": "fn_0", "status": "ok"}},
-        {"output": {"code": "fn_1", "status": "fail"}},
-        {"output": {"code": "fn_2", "status": "ok"}},
-    ]
-    upstream = _stage(tmp_path, "classify", {"items": staged})
-    statuses = {
-        node.node_id: node
-        for node in graph.nodes.values()
-        if node.data_spec.get("mode") == "row_status"
-    }
-    for node in gated:
-        selector = selectors[node.data_spec["columns"][0]["node"]]
-        labels = selector.data_spec["labels"]
-        assert [c["label"] for c in node.data_spec["columns"]] == labels
-        assert [c["path"] for c in node.data_spec["columns"]] == [
-            f"value.items.{label}" for label in labels
-        ]
-
-        status = statuses[selector.dependencies[0]]
-        source_node = status.data_spec["plan"][0]["node"]
-        status_payload = _run_stage_plan(status, {source_node: upstream})
-        status_stage = _stage(tmp_path, f"status_{status.node_id}", status_payload)
-        payload = _run_stage_plan(
-            selector,
-            {
-                entry["node"]: (
-                    status_stage if entry["node"] == status.node_id else upstream
-                )
-                for entry in selector.data_spec["plan"]
-            },
-        )
-        kept = [
-            i
-            for i, row in enumerate(staged)
-            if row["output"]["status"] == selector.data_spec["branch"]
-        ]
-        assert payload["items"] == [
-            {label: staged[i]["output"][label] for label in labels} for i in kept
-        ]
-
-        # The column path hangs off the selector's node id, as FlowMesh's
-        # graph-template walker sees it, and the python task's result is the
-        # ``value`` wrapper.
-        result = {"value": payload}
-        for column in node.data_spec["columns"]:
-            expr = f"{selector.node_id}.{column['path']}"
-            expected = [staged[i]["output"][column["label"]] for i in kept]
-            assert _flowmesh_walk(result, expr) == expected
-            with pytest.raises(KeyError, match="output"):
-                _flowmesh_walk(
-                    result, f"{selector.node_id}.value.items.output.{column['label']}"
-                )

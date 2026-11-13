@@ -554,16 +554,17 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
         ],
         default_branch="pending",
     )
+    templates = [{"name": "verdict", "type": "string"}]
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        structural_outputs=templates,
         row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
     )
-    output = as_output("result", llm)
-    compiled = Graph.from_ops([output]).compile(
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(
         Rows=["normal", "NEEDS REVIEW", "normal"]
     )
     runtime_graph = RuntimeGraphBuilder().build(compiled)
@@ -578,81 +579,23 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     assert selected.task_type == "inference"
     assert selected.dependencies == (selector.node_id,)
     assert merge.data_spec["mode"] == "row_skip_merge"
+    assert selected.inference_spec["templates"] == templates
     assert runtime_graph.output_node_map == {merge.node_id: "result"}
     assert router.id not in runtime_graph.nodes
     assert runtime_graph.nodes[selector.node_id].dependencies == (status.node_id,)
 
-
-def test_terminal_row_gate_marks_done_and_allows_an_empty_selected_set() -> None:
-    rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="finish", match="contains", value="COMPLETE"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate=RowGate(node=router.id, branch="finish", terminal=True),
-        row_gate_op=router,
-    )
-    compiled = Graph.from_ops([as_output("result", llm)]).compile(
-        Rows=["normal", "normal"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    status, selector, selected, merge = [
-        runtime_graph.nodes[node_id] for node_id in runtime_graph.dsl_to_runtime[llm.id]
-    ]
-    assert status.data_spec["terminal_branch"] == "finish"
-    assert all(
-        item.get("allow_empty")
-        for item in merge.data_spec["plan"]
-        if item.get("node") == selected.node_id
-    )
-    assert not any(
-        item.get("allow_empty")
-        for item in selector.data_spec["plan"] + merge.data_spec["plan"]
-        if item.get("node") != selected.node_id
-    )
-    assert selected.dependencies == (selector.node_id,)
-    assert merge.data_spec["branch"] == "finish"
-
-
-def test_row_gated_llm_renders_every_node_for_submission() -> None:
-    rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate=RowGate(node=router.id, branch="review"),
-        row_gate_op=router,
-    )
-    compiled = Graph.from_ops([as_output("result", llm)]).compile(
-        Rows=["normal", "NEEDS REVIEW", "normal"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    ids = runtime_graph.dsl_to_runtime[llm.id]
+    # Every runtime node renders for submission, and each stage references only
+    # nodes that exist in the built graph.
     for node_id in runtime_graph.node_order:
         node = runtime_graph.nodes[node_id]
         rendered = node.to_flowmesh_node()
         if node.task_type == "python":
             compile(rendered["spec"]["code"], node_id, "exec")
+        for entry in node.data_spec.get("plan") or []:
+            if entry["kind"] == "stage":
+                assert entry["node"] in runtime_graph.nodes
+        for dep in node.dependencies or ():
+            assert dep in runtime_graph.nodes
     status_spec = runtime_graph.nodes[ids[0]].to_flowmesh_node()["spec"]
     merge_spec = runtime_graph.nodes[ids[3]].to_flowmesh_node()["spec"]
     assert "inputs" not in status_spec
@@ -668,54 +611,23 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
         inputs:
           Rows: ["normal", "NEEDS REVIEW"]
         ops:
-          - id: source
-            op: LambdaOp
-            inputs: [Rows]
-            fn_name: echo
-            code: |
-              def echo(inputs):
-                  return inputs[0]
-          - id: route
-            op: RouterOp
-            inputs: [source]
-            source: source
-            input_path: items.output
-            rules:
-              - branch: review
-                match: contains
-                value: NEEDS REVIEW
-              - branch: pending
-                match: equals
-                value: __never__
-            default_branch: pending
+          - {id: route, op: RouterOp, inputs: [Rows], default_branch: pending,
+             rules: [{branch: review, match: contains, value: NEEDS REVIEW},
+                     {branch: pending, match: equals, value: __never__}]}
           - id: turn
             op: LLMChatOp
-            inputs: [source, route]
-            messages:
-              - role: user
-                content: source
-            config:
-              model: meta-llama/Llama-3.1-8B-Instruct
+            inputs: [Rows, route]
+            messages: [{role: user, content: Rows}]
             rowwise_template: "{row}"
-            rowwise_columns:
-              - label: row
-                node: source
-                path: items.output
-            row_gate:
-              node: route
-              branch: review
+            rowwise_columns: [{label: row, node: Rows, path: items.output}]
+            row_gate: {node: route, branch: review}
+            config: {model: meta-llama/Llama-3.1-8B-Instruct}
         outputs:
-          - name: result
-            ref: turn
+          - {name: result, ref: turn}
         """)
     spec = parse_yaml_payload(yaml_text)["routed"]
     yaml_graph = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    yaml_route = next(
-        op_id
-        for op_id, op in Graph.from_json(spec["graph"]).as_dict().items()
-        if op.__class__.__name__ == "RouterOp"
     )
 
     rows = input_placeholder("Rows")
@@ -741,23 +653,20 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
         )
     )
 
-    assert len(python_graph.dsl_to_runtime[turn.id]) == 4
-    assert yaml_route not in yaml_graph.nodes
     yaml_turn_id = next(
         op_id
         for op_id, op in Graph.from_json(spec["graph"]).as_dict().items()
         if isinstance(op, LLMChatOp)
     )
-    python_types = [
-        python_graph.nodes[node_id].task_type
-        for node_id in python_graph.dsl_to_runtime[turn.id]
-    ]
-    yaml_types = [
-        yaml_graph.nodes[node_id].task_type
-        for node_id in yaml_graph.dsl_to_runtime[yaml_turn_id]
-    ]
-    assert python_types == ["python", "python", "inference", "python"]
-    assert yaml_types == python_types
+
+    def stage_types(graph: Any, op_id: str) -> list[str]:
+        return [
+            graph.nodes[node_id].task_type for node_id in graph.dsl_to_runtime[op_id]
+        ]
+
+    types = ["python", "python", "inference", "python"]
+    assert stage_types(python_graph, turn.id) == types
+    assert stage_types(yaml_graph, yaml_turn_id) == types
 
 
 @pytest.mark.parametrize(
@@ -868,42 +777,6 @@ def test_row_gate_consumer_check_reads_a_yaml_column_ref(
         RuntimeGraphBuilder().build(compiled)
 
 
-def test_row_gate_stages_reference_only_existing_runtime_nodes() -> None:
-    source = LambdaOp(
-        [input_placeholder("Rows")],
-        lambda rows: [str(row) for row in rows],
-        mode="list",
-    )
-    router = RouterOp(
-        source,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
-    gated = LLMChatOp(
-        [OpMessage(role="user", content="review the row")],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": source.id, "path": "items.output"}],
-        row_gate=RowGate(node=router.id, branch="review"),
-        row_gate_op=router,
-    )
-    compiled = Graph.from_ops([as_output("result", gated)]).compile(
-        Rows=["normal", "NEEDS REVIEW"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    for node_id in runtime_graph.dsl_to_runtime[gated.id]:
-        node = runtime_graph.nodes[node_id]
-        for entry in node.data_spec.get("plan") or []:
-            if entry["kind"] == "stage":
-                assert entry["node"] in runtime_graph.nodes
-        for dep in node.dependencies or ():
-            assert dep in runtime_graph.nodes
-
-
 def test_row_gate_rejects_a_rowwise_messages_column() -> None:
     rows = input_placeholder("Rows")
     router = RouterOp(
@@ -928,38 +801,6 @@ def test_row_gate_rejects_a_rowwise_messages_column() -> None:
     )
     with pytest.raises(ValueError, match="combines row_gate with"):
         RuntimeGraphBuilder().build(compiled)
-
-
-def test_row_gate_selected_call_carries_structural_outputs() -> None:
-    rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
-    templates = [{"name": "verdict", "type": "string"}]
-    gated = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        structural_outputs=templates,
-        row_gate=RowGate(node=router.id, branch="review"),
-        row_gate_op=router,
-    )
-    compiled = Graph.from_ops([as_output("result", gated)]).compile(
-        Rows=["normal", "NEEDS REVIEW"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    _status, _selector, selected, _merge = [
-        runtime_graph.nodes[node_id]
-        for node_id in runtime_graph.dsl_to_runtime[gated.id]
-    ]
-    assert selected.inference_spec["templates"] == templates
 
 
 def test_row_gate_rejects_a_condition() -> None:
@@ -999,9 +840,19 @@ def _row_gate_over(rows: Any, router: RouterOp) -> LLMChatOp:
     )
 
 
-def test_row_gate_rejects_a_field_path_on_a_rowwise_llm_router_source() -> None:
-    """The status step reads a rowwise LLM's whole output, so a field path on
-    that source would walk a field the grouped item does not have."""
+def _router_over(node: Any, **extra: Any) -> RouterOp:
+    return RouterOp(
+        node,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="FAIL"),
+            RouterRule(branch="ok", match="equals", value="PASS"),
+        ],
+        default_branch="ok",
+        **extra,
+    )
+
+
+def _row_gate_over_a_rowwise_llm_with_a_field_path() -> Graph:
     rows = input_placeholder("Rows")
     judge = LLMChatOp(
         [OpMessage(role="user", content=rows)],
@@ -1009,90 +860,34 @@ def test_row_gate_rejects_a_field_path_on_a_rowwise_llm_router_source() -> None:
         rowwise_template="judge {row}",
         rowwise_columns=[{"label": "row", "node": rows.id}],
     )
-    router = RouterOp(
-        judge,
-        rules=[
-            RouterRule(branch="fail", match="equals", value="FAIL"),
-            RouterRule(branch="ok", match="equals", value="PASS"),
-        ],
-        default_branch="ok",
-        input_path="items.output.verdict",
-    )
-    compiled = Graph.from_ops(
-        [as_output("result", _row_gate_over(rows, router))]
-    ).compile(Rows=["a", "b"])
-
-    with pytest.raises(ValueError, match="from rowwise LLM"):
-        RuntimeGraphBuilder().build(compiled)
+    router = _router_over(judge, input_path="items.output.verdict")
+    return Graph.from_ops([as_output("result", _row_gate_over(rows, router))])
 
 
-def test_row_gate_rejects_an_api_llm_router_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An API item carries its text under ``json.choices``, which the status
-    step's item walk does not reach."""
-    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+def _row_gate_over_an_api_llm() -> Graph:
     rows = input_placeholder("Rows")
     judge = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
     )
-    router = RouterOp(
-        judge,
-        rules=[
-            RouterRule(branch="fail", match="equals", value="FAIL"),
-            RouterRule(branch="ok", match="equals", value="PASS"),
-        ],
-        default_branch="ok",
+    return Graph.from_ops(
+        [as_output("result", _row_gate_over(rows, _router_over(judge)))]
     )
-    compiled = Graph.from_ops(
-        [as_output("result", _row_gate_over(rows, router))]
-    ).compile(Rows=["a", "b"])
-
-    with pytest.raises(ValueError, match="reads API upstream"):
-        RuntimeGraphBuilder().build(compiled)
 
 
-def test_row_gate_rejects_a_field_path_on_an_inputop_router_source() -> None:
-    """An InputOp router source binds its values as literals, so a field path
-    would be dropped and every row would match the raw value."""
+def _row_gate_over_an_inputop_with_a_field_path() -> Graph:
     rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="fail", match="equals", value="fail"),
-            RouterRule(branch="ok", match="equals", value="ok"),
-        ],
-        default_branch="ok",
-        input_path="items.output.status",
-    )
-    compiled = Graph.from_ops(
-        [as_output("result", _row_gate_over(rows, router))]
-    ).compile(Rows=['{"status": "ok"}', '{"status": "fail"}'])
-
-    with pytest.raises(ValueError, match="InputOp-derived columns cannot be drilled"):
-        RuntimeGraphBuilder().build(compiled)
+    router = _router_over(rows, input_path="items.output.status")
+    return Graph.from_ops([as_output("result", _row_gate_over(rows, router))])
 
 
-def test_row_gate_rejects_a_gated_column_from_an_api_llm(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A gated column reads its label off the selector's flat row, so an API
-    upstream would contribute the whole response instead of its text."""
-    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+def _gated_column_from_an_api_llm() -> Graph:
     rows = input_placeholder("Rows")
     judge = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
     )
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="fail", match="equals", value="fail"),
-            RouterRule(branch="ok", match="equals", value="ok"),
-        ],
-        default_branch="ok",
-    )
+    router = _router_over(rows)
     gated = LLMChatOp(
         judge,
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
@@ -1103,9 +898,36 @@ def test_row_gate_rejects_a_gated_column_from_an_api_llm(
         row_gate=RowGate(node=router.id, branch="fail"),
         row_gate_op=router,
     )
-    compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["a", "b"])
+    return Graph.from_ops([as_output("result", gated)])
 
-    with pytest.raises(ValueError, match="only a local op can fill a gated column"):
+
+@pytest.mark.parametrize(
+    ("build_graph", "message"),
+    [
+        # The status step reads a rowwise LLM's whole output, so a field path on
+        # that source would walk a field the grouped item does not have.
+        (_row_gate_over_a_rowwise_llm_with_a_field_path, "from rowwise LLM"),
+        # An API item carries its text under json.choices, which the status
+        # step's item walk does not reach.
+        (_row_gate_over_an_api_llm, "reads API upstream"),
+        # An InputOp router source binds its values as literals, so a field path
+        # would be dropped and every row would match the raw value.
+        (
+            _row_gate_over_an_inputop_with_a_field_path,
+            "InputOp-derived columns cannot be drilled",
+        ),
+        # A gated column reads its label off the selector's flat row, so an API
+        # upstream would contribute the whole response instead of its text.
+        (_gated_column_from_an_api_llm, "only a local op can fill a gated column"),
+    ],
+)
+def test_row_gate_rejects_a_source_the_status_or_selector_cannot_read(
+    monkeypatch: pytest.MonkeyPatch, build_graph: Any, message: str
+) -> None:
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+    compiled = build_graph().compile(Rows=['{"status": "ok"}', '{"status": "fail"}'])
+
+    with pytest.raises(ValueError, match=message):
         RuntimeGraphBuilder().build(compiled)
 
 

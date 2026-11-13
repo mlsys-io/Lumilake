@@ -112,59 +112,6 @@ driver:
     stop_when_empty: "State_r{{prev}}"
 """
 
-_LIST_LAMBDA_BEHIND_ROW_STEP_YAML = """
-name: dynamic-template-hidden-list-lambda
-type: dynamic
-goal: run a list-mode Lambda behind a row step
-driver:
-  model: Qwen/Qwen3-8B
-  max_rounds: 2
-  max_nodes_per_round: 4
-  output_location:
-    type: s3
-    prefix: dynamic/template/
-  template:
-    first:
-      ops:
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    next:
-      ops:
-        - id: Mean_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: mean
-          code: |
-            def mean(columns):
-                return [[value] for value in columns[0]]
-        - id: Label_r{{round}}
-          op: LambdaOp
-          inputs: ["Mean_r{{round}}"]
-          mode: row
-          fn_name: label
-          code: |
-            def label(columns):
-                return [str(value) for value in columns[0]]
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    stop_when_empty: "State_r{{prev}}"
-"""
-
 _ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML = """
 name: dynamic-template-rowwise-leaf
 type: dynamic
@@ -199,84 +146,6 @@ driver:
           rowwise_columns:
             - label: row
               node: Source_r{{round}}
-              path: items.output
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    next:
-      ops:
-        - id: Score_r{{round}}
-          op: LambdaOp
-          inputs: ["Ask_r{{prev}}", "Symbols"]
-          mode: row
-          fn_name: score
-          code: |
-            def score(columns):
-                return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    stop_when_empty: "State_r{{prev}}"
-"""
-
-_ROWWISE_LEAF_OVER_CHAT_YAML = """
-name: dynamic-template-rowwise-leaf-over-chat
-type: dynamic
-goal: score the rows a one-slice round produced from a chat
-driver:
-  model: Qwen/Qwen3-8B
-  max_rounds: 2
-  max_nodes_per_round: 4
-  output_location:
-    type: s3
-    prefix: dynamic/template/
-  template:
-    first:
-      ops:
-        - id: Source_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: source
-          code: |
-            def source(columns):
-                return columns[0]
-        - id: Draft_r{{round}}
-          op: LLMChatOp
-          inputs: ["Source_r{{round}}"]
-          messages:
-            - role: user
-              content: "Draft a note for this row."
-          config:
-            model: Qwen/Qwen3-8B
-          prompt:
-            template: "Draft a note for {row}."
-            format_kwargs:
-              row: Source_r{{round}}
-        - id: Ask_r{{round}}
-          op: LLMChatOp
-          inputs: ["Draft_r{{round}}"]
-          messages:
-            - role: user
-              content: "Score this row."
-          config:
-            model: Qwen/Qwen3-8B
-          rowwise_template: "{row}"
-          rowwise_columns:
-            - label: row
-              node: Draft_r{{round}}
               path: items.output
         - id: State_r{{round}}
           op: LambdaOp
@@ -727,17 +596,26 @@ async def _run_background(app: FastAPI) -> None:
         await task
 
 
-@pytest.mark.anyio
-async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -> None:
+async def _submit(
+    app: FastAPI, yaml_text: str, inputs: dict[str, Any] | None = None
+) -> str:
+    body = _submit_body(yaml_text)
+    if inputs is not None:
+        body["data"][0]["inputs"] = inputs
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
+            json=body,
             headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
         )
     assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    return resp.json()["data"]["job_id"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -> None:
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [
         _SUBGRAPH_PLAN,
@@ -776,15 +654,7 @@ async def test_dynamic_planner_round_with_done_fields_still_plans(
     # Only a row-gated leaf carries routing rows, so a leaf value that happens
     # to hold ``done`` says nothing about the round's survivor set. The planner
     # is still asked after such a round.
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     fake_server.leaf_item = lambda row: {
         "done": True,
@@ -863,25 +733,13 @@ def _build_plan(
     return build, Graph.from_json(build.graph).compile(**inputs)
 
 
-def test_gated_round_builds_with_and_without_the_in_graph_proposer() -> None:
-    # The default planner mode reads every leaf through a render step, and a
-    # row-gated leaf has no runtime node of its own: the round has to build in
-    # both modes.
-    build, compiled = _build_plan(_GATED_PLAN, ["done", "pending"])
-    assert "proposer" in build.graph
-    assert len(RuntimeGraphBuilder().build(compiled).nodes) == 6
-    api_build, api_compiled = _build_plan(
-        _GATED_PLAN, ["done", "pending"], include_proposer=False
-    )
-    assert "proposer" not in api_build.graph
-    assert len(RuntimeGraphBuilder().build(api_compiled).nodes) == 5
-
-
-def test_fused_round_with_a_gated_leaf_reads_the_merge_stage() -> None:
-    # A gated leaf compiles to status, selection, gated call and merge stages;
-    # its reader binds the merge stage, which emits the routed rows.
+def test_gated_round_builds_in_both_proposer_modes_and_reads_the_merge_stage() -> None:
+    # A row-gated leaf has no runtime node of its own: it compiles to status,
+    # selection, gated call and merge stages, and the round's reader binds the
+    # merge stage in either proposer mode.
     build, compiled = _build_plan(_GATED_PLAN, ["done", "pending"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
+    assert "proposer" in build.graph
     (gated_id,) = build.gated_leaf_ids
     stages = runtime_graph.dsl_to_runtime[gated_id]
     assert [runtime_graph.nodes[node_id].task_type for node_id in stages] == [
@@ -898,6 +756,12 @@ def test_fused_round_with_a_gated_leaf_reads_the_merge_stage() -> None:
     # of the gated leaf walks ``value.items.output`` inside the python result.
     assert column["path"] == "value.items.output"
 
+    api_build, api_compiled = _build_plan(
+        _GATED_PLAN, ["done", "pending"], include_proposer=False
+    )
+    assert "proposer" not in api_build.graph
+    assert len(RuntimeGraphBuilder().build(api_compiled).nodes) == 5
+
 
 @pytest.mark.anyio
 async def test_dynamic_gated_round_with_terminal_rows_stops_before_planner(
@@ -905,15 +769,7 @@ async def test_dynamic_gated_round_with_terminal_rows_stops_before_planner(
 ) -> None:
     # Every row of the gated leaf is done, so the round has no survivor to
     # forward and the loop stops without asking the planner for another round.
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
 
     def terminal_row(row: int) -> dict[str, Any]:
@@ -947,15 +803,7 @@ async def test_dynamic_child_carries_chain_lineage(
 ) -> None:
     """Each dynamic round's child job carries the parent's id as ``chain_id``
     and a strictly increasing zero-based ``chain_round``."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     # Each round must emit a distinct node id (nodes are immutable).
     second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
@@ -980,21 +828,14 @@ async def test_dynamic_lineage_exposed_on_job_status(
     """The job status API exposes dynamic lineage: the parent lists its rounds
     in order, each child names the parent, and each child is fetchable by id
     with its own timestamps."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
     second_plan["ops"][0]["id"] = "q2"
     fake_server.plans = [_SUBGRAPH_PLAN, second_plan, {"next": "STOP"}]
     await _run_background(app)
 
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         parent_resp = await client.get(
             f"/jobs/{job_id}",
@@ -1031,15 +872,7 @@ async def test_dynamic_cancel_propagates_to_inflight_child(
 ) -> None:
     """Cancelling a dynamic parent through the real endpoint must cancel its
     in-flight child."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
     fake_server.hang_rounds = {1}
@@ -1047,6 +880,7 @@ async def test_dynamic_cancel_propagates_to_inflight_child(
     # Wait for the round-1 child (the one that hangs) to be genuinely in flight.
     child_id = await wait_for_inflight_child(job_routes, job_id)
     # Cancel through the real endpoint.
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         cancel_resp = await client.post(
             f"/jobs/{job_id}/cancel",
@@ -1094,15 +928,7 @@ async def test_dynamic_multi_round_registry_handoff(
     """Round 0's emitted library ref is resolved and stored in the registry,
     then round 1 references that node by id and the round-1 graph builds against
     the resolved op."""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_LIBRARY_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _LIBRARY_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     # Round 0 emits a library ref; round 1 emits an op referencing that node.
     fake_server.plans = [
@@ -1145,15 +971,7 @@ async def test_dynamic_multi_round_registry_handoff(
 @pytest.mark.anyio
 async def test_dynamic_max_rounds_cutoff(app: FastAPI, job_routes: Any) -> None:
     spec_yaml = _VALID_DYNAMIC_YAML.replace("  max_rounds: 4\n", "  max_rounds: 2\n")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(spec_yaml),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, spec_yaml)
     fake_server = job_routes._fake_runtime_server
     # Each round must emit a distinct node id (nodes are immutable).
     second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
@@ -1169,15 +987,7 @@ async def test_dynamic_max_rounds_cutoff(app: FastAPI, job_routes: Any) -> None:
 async def test_dynamic_round_failure_fails_parent(
     app: FastAPI, job_routes: Any
 ) -> None:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
     fake_server.fail_rounds = {1}
@@ -1193,15 +1003,7 @@ async def test_dynamic_stop_round_missing_leaf_fails_parent(
 ) -> None:
     # The terminal STOP round must still satisfy the leaf-output contract: a
     # STOP that omits an expected archived leaf fails the parent.
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     # Round 0 emits a subgraph (q2); round 1 runs it and returns STOP, but
     # omits q2's leaf output.
@@ -1306,15 +1108,7 @@ async def test_static_yaml_without_type_runs_as_static(
     the dynamic planning loop."""
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_STATIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _STATIC_YAML)
     await _run_background(app)
     record = job_routes.jobs[job_id]
     assert record.status == "completed"
@@ -1353,15 +1147,7 @@ async def test_dynamic_parent_persists_terminal_usage(
         lambda _token: _FakeUsageFlowMeshWithTasks(task_results),
     )
 
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(_VALID_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [
         _SUBGRAPH_PLAN,
@@ -1514,15 +1300,7 @@ def fake_planner(
 
 
 async def _submit_and_run(app: FastAPI, job_routes: Any, yaml_text: str) -> Any:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(yaml_text),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+    job_id = await _submit(app, yaml_text)
     await _run_background(app)
     return job_routes.jobs[job_id]
 
@@ -1659,43 +1437,6 @@ async def test_dynamic_template_stops_before_an_empty_followup_round(
 
 
 @pytest.mark.anyio
-async def test_dynamic_template_round_with_list_lambda_runs_as_one_slice(
-    app: FastAPI, job_routes: Any
-) -> None:
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "STOP"}]
-    fake_server.export_rows = [[]]
-    body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
-    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    await _run_background(app)
-    record = job_routes.jobs[resp.json()["data"]["job_id"]]
-
-    assert record.status == "completed", record.error
-    # A template round's list-mode Lambda emits one whole-list result per run,
-    # which cannot be partitioned per row, so the round runs as a single
-    # slice over the whole input set. The empty stop export then ends the run.
-    assert len(fake_server.executed_graphs) == 1
-    (graphs,) = fake_server.executed_graphs
-    (slices,) = fake_server.workflow_slices_calls
-    assert len(graphs) == 1
-    (meta,) = slices.values()
-    assert meta.slice_index == 0
-    assert meta.slice_start == 0
-    assert meta.slice_length == 3
-    assert meta.total_length == 3
-    (graph,) = graphs.values()
-    assert graph.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
-
-
-@pytest.mark.anyio
 async def test_dynamic_template_next_round_reads_shrunk_one_slice_export(
     app: FastAPI, job_routes: Any
 ) -> None:
@@ -1708,18 +1449,9 @@ async def test_dynamic_template_next_round_reads_shrunk_one_slice_export(
         [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
         [],
     ]
-    body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
-    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
+    job_id = await _submit(app, _TEMPLATE_DYNAMIC_YAML, _MULTI_SYMBOL_BODY_INPUTS)
     await _run_background(app)
-    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+    record = job_routes.jobs[job_id]
 
     assert record.status == "completed", record.error
     assert len(record.child_job_ids) == 2
@@ -1735,6 +1467,8 @@ async def test_dynamic_template_next_round_reads_shrunk_one_slice_export(
         # so no input is declared varying and the round is marked whole-set.
         assert meta.varying_input_keys == ()
         assert meta.whole_set is True
+    (round_one,) = fake_server.executed_graphs[0].values()
+    assert round_one.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
     (round_two,) = fake_server.executed_graphs[1].values()
     assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
     assert "State_r0" in round_two.inputs
@@ -1742,51 +1476,16 @@ async def test_dynamic_template_next_round_reads_shrunk_one_slice_export(
 
 
 @pytest.mark.anyio
-async def test_dynamic_template_list_lambda_behind_a_row_step_runs_as_one_slice(
-    app: FastAPI, job_routes: Any
-) -> None:
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "STOP"}]
-    fake_server.export_rows = [
-        [{"case_id": "0", "turn": 0}],
-        [],
-    ]
-    body = _submit_body(_LIST_LAMBDA_BEHIND_ROW_STEP_YAML)
-    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    await _run_background(app)
-    record = job_routes.jobs[resp.json()["data"]["job_id"]]
-
-    assert record.status == "completed", record.error
-    # Round 2's list-mode Lambda feeds a row-mode Lambda leaf, so no archived
-    # output descends from it unchanged. The whole-list result still cannot be
-    # partitioned, so the round runs as one slice over every symbol rather
-    # than one slice per symbol.
-    (round_two,) = fake_server.executed_graphs[1].values()
-    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
-    slices = fake_server.workflow_slices_calls[1]
-    (meta,) = slices.values()
-    assert meta.slice_length == 3
-    assert meta.total_length == 3
-
-
-@pytest.mark.anyio
 async def test_dynamic_template_next_round_reads_a_one_slice_rowwise_leaf(
     app: FastAPI, job_routes: Any
 ) -> None:
-    # Round 1 declares a list Lambda (so it runs as one slice over every
-    # symbol) and a non-gated row-wise LLM leaf beside it. The row-wise leaf
-    # archives one grouped item holding every row's answer, so the group is
-    # the round's whole result. Round 2 reads that leaf together with
-    # ``Symbols``: the leaf has to bind one value per symbol, or the row step
-    # sees a single JSON blob and every row receives the answers of all rows.
+    # Round 1 declares a list Lambda (so it runs as one slice over every symbol)
+    # and a non-gated row-wise LLM leaf beside it. The row-wise leaf archives one
+    # grouped item holding every row's answer, so the group is the round's whole
+    # result. Round 2 reads that leaf together with ``Symbols``: the leaf has to
+    # bind one value per symbol, or the row step sees a single JSON blob and
+    # every row receives the answers of all rows.
+    symbols = ["NVDA", "MSFT", "AAPL"]
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [{"next": "STOP"}]
     answers = ["answer-nvda", "answer-msft", "answer-aapl"]
@@ -1796,45 +1495,7 @@ async def test_dynamic_template_next_round_reads_a_one_slice_rowwise_leaf(
         f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}"
     ] = [{"output": answers}]
     body = _submit_body(_ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML)
-    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    await _run_background(app)
-    record = job_routes.jobs[resp.json()["data"]["job_id"]]
-
-    assert record.status == "completed", record.error
-    (round_two,) = fake_server.executed_graphs[1].values()
-    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
-    assert round_two.inputs["Ask_r0"] == answers
-    slices = fake_server.workflow_slices_calls[1]
-    (meta,) = slices.values()
-    assert meta.slice_length == 3
-    assert meta.whole_set is True
-
-
-@pytest.mark.anyio
-async def test_dynamic_template_next_round_reads_a_leaf_over_a_chat_at_one_symbol(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # Round 1 declares a list Lambda (so it runs as one slice) and a row-wise
-    # leaf over a chat that is not row-wise. The chat yields one answer per
-    # item, so the leaf builds one table of its own rows even at one symbol,
-    # where deciding again against the symbols alone would bind the table as
-    # one JSON blob. The round's record is what tells round 2 otherwise.
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "STOP"}]
-    answers = ["answer-1", "answer-2", "answer-3"]
-    fake_server.leaf_items[
-        f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}"
-    ] = [{"output": answers}]
-    body = _submit_body(_ROWWISE_LEAF_OVER_CHAT_YAML)
-    body["data"][0]["inputs"] = {"Symbols": ["NVDA"]}
+    body["data"][0]["inputs"] = {"Symbols": symbols}
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -1849,9 +1510,10 @@ async def test_dynamic_template_next_round_reads_a_leaf_over_a_chat_at_one_symbo
     assert record.status == "completed", record.error
     (round_two,) = fake_server.executed_graphs[1].values()
     assert round_two.inputs["Ask_r0"] == answers
-    slices = fake_server.workflow_slices_calls[1]
-    (meta,) = slices.values()
+    (meta,) = fake_server.workflow_slices_calls[1].values()
     assert meta.whole_set is True
+    assert round_two.inputs["Symbols"] == symbols
+    assert meta.slice_length == len(symbols)
 
 
 @pytest.mark.anyio

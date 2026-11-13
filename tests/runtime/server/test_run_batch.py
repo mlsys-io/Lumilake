@@ -1238,7 +1238,9 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
     server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
 
 
-def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> None:
+def _install_rowwise_api_build_and_schedule(
+    server: Any, output_name: str, node_prefix_name: str | None = None
+) -> None:
     """Fake build/schedule whose output node is a plain api task (not a
     list-mode python step), so the row-wise API demux path applies."""
 
@@ -1249,7 +1251,7 @@ def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> No
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
-        node_id = f"{node_prefix}__{suffix}"
+        node_id = f"{node_prefix_name or node_prefix}__{suffix}"
         op = RuntimeOp(
             node_id=node_id,
             task_type="api",
@@ -1963,61 +1965,18 @@ class _ShrunkReaderRuntimeManager(RecordingRuntimeManager):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("node_carries_workflow_id", [False, True])
 async def test_whole_set_round_accepts_its_own_row_count(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
+    node_carries_workflow_id: bool,
 ) -> None:
     """A one-slice round reads its whole input set, whose keys may disagree in
     length (four symbols alongside a two-row previous export). The round's row
-    count is set by its own list-mode reader, so the merged-workflow demux and
-    the slice buffer must accept that row count whole instead of demanding the
-    longest input's length."""
-    server = server_factory()
-    server.runtime_manager = cast(
-        Any, _ShrunkReaderRuntimeManager(values=["case-0", "case-1"])
-    )
-
-    workflows = [
-        make_workflow(
-            workflow_id="wf-shrunk",
-            request_id="req-shrunk",
-            graph_name="ga",
-            public_graph_name="shared",
-            dsl_inputs={
-                "Symbols": ["NVDA", "MSFT", "AAPL", "AMD"],
-                "Live_r0": ["a", "b"],
-            },
-            slice_length=4,
-            total_length=4,
-            whole_set=True,
-        ),
-    ]
-    handlers = attach_request_states(server, workflows)
-    batch = make_batch(workflows)
-
-    monkeypatch.setattr(
-        server,
-        "_merge_group_compiled_graph",
-        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
-    )
-    _install_rowwise_api_build_and_schedule(server, "out")
-
-    await server._run_batch(["worker-1"], batch)
-
-    resp = handlers["req-shrunk"].results[0]
-    assert resp.error_info is None
-    assert resp.outputs["shared"]["out"] == ["case-0", "case-1"]
-    assert len(resp.chat_histories["shared"]["out"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_whole_set_round_accepts_its_own_row_count_when_node_matches_slice(
-    server_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The same whole-set round also passes the per-slice check, taken when a
-    runtime node id carries its slice's workflow id: the round's own row count
-    must be accepted there too."""
+    count is set by its own list-mode reader, so both the per-slice check, taken
+    when a runtime node id carries its slice's workflow id, and the merged-group
+    demux accept that row count whole instead of demanding the longest input's
+    length."""
     server = server_factory()
     server.runtime_manager = cast(
         Any, _ShrunkReaderRuntimeManager(values=["case-0", "case-1"])
@@ -2041,52 +2000,13 @@ async def test_whole_set_round_accepts_its_own_row_count_when_node_matches_slice
     handlers = attach_request_states(server, workflows)
     batch = make_batch(workflows)
 
-    def _fake_build(
-        compiled_graph: Any,
-        task_type_override: str | None = None,
-        node_prefix: str | None = None,
-    ) -> RuntimeGraph:
-        suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
-        node_id = f"wf-node__{suffix}"
-        op = RuntimeOp(
-            node_id=node_id,
-            task_type="api",
-            backend="api",
-            model="",
-            data_spec={},
-            model_spec={},
-            inference_spec={},
-        )
-        output_node_map = (
-            {} if task_type_override == "data_profile" else {node_id: "out"}
-        )
-        return RuntimeGraph(
-            nodes={node_id: op}, node_order=[node_id], output_node_map=output_node_map
-        )
-
-    monkeypatch.setattr(server._runtime_builder, "build", _fake_build)
-
-    async def _fake_schedule(
-        *,
-        request_id: str,
-        batch_id: str,
-        optimizer_type: str,
-        runtime_graph: RuntimeGraph,
-        selected_workers: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
-        member_request_ids: set[str] | None = None,
-        bearer_token: str | None = None,
-    ) -> Schedule:
-        return Schedule(
-            worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
-        )
-
-    monkeypatch.setattr(server, "_generate_schedule_in_subprocess", _fake_schedule)
     monkeypatch.setattr(
         server,
         "_merge_group_compiled_graph",
         lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_rowwise_api_build_and_schedule(
+        server, "out", "wf-node" if node_carries_workflow_id else None
     )
 
     await server._run_batch(["worker-1"], batch)

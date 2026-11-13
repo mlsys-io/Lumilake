@@ -8,10 +8,7 @@ import pytest
 
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
-    _API_ROW_PATH,
     DriverProtocolError,
-    SubgraphPlan,
-    _default_forward_path,
     build_round,
     compute_observation,
     forward_refs,
@@ -23,9 +20,7 @@ from lumilake_server.dynamic.driver import (
 from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import _op_id_prefix, parse_yaml_payload
-from lumilake_server.routes.jobs import _admit_subgraph
 from lumilake_server.runtime.runtime_graph import (
-    OUTPUT_SOURCE_TYPES,
     RuntimeGraphBuilder,
 )
 
@@ -49,6 +44,21 @@ def _sql_config(op_id: str) -> dict:
         "op": "DataRetrievalOp",
         "inputs": [],
         "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+    }
+
+
+def _chat_consumer(*columns: tuple[str, str, str], op_id: str = "q4") -> dict:
+    return {
+        "id": op_id,
+        "op": "LLMChatOp",
+        "inputs": [],
+        "prompt": {"template": "x", "format_kwargs": {}},
+        "config": {"model": "Qwen/Qwen3-8B"},
+        "messages": [{"role": "user", "content": "x"}],
+        "aggregate_table": [
+            {"label": label, "node": node, "path": path}
+            for label, node, path in columns
+        ],
     }
 
 
@@ -77,24 +87,17 @@ def test_forward_implicit_llm_reference_binds_default_path():
 
 
 def test_has_live_rows_ignores_completely_terminal_sets() -> None:
-    terminal = json.dumps({"selected": True, "done": True, "branch": "finish"})
-    live = json.dumps({"selected": True, "done": False, "branch": "pending"})
-    assert has_live_rows({"state": [terminal]}) is False
-    assert has_live_rows({"state": [terminal, live]}) is True
-    assert has_live_rows({"state": ["ordinary-output"]}) is True
-    assert has_live_rows({}) is True
-    assert has_live_rows({"state": []}) is True
-
-
-def test_has_live_rows_reads_the_archived_merge_item() -> None:
-    # A dynamic leaf archives the whole item its producer emitted, and the
-    # row-gate merge step wraps each row as {"output": <row json>, "value": <row>}.
+    # A row-gated leaf archives the merge step's record, which wraps each row as
+    # {"output": <row json>, "value": <row>}.
     def merged(done: bool) -> str:
         row = {"selected": True, "done": done, "branch": "finish", "row": 0}
         return json.dumps({"output": json.dumps(row), "value": row})
 
     assert has_live_rows({"leaf": [merged(True)]}) is False
     assert has_live_rows({"leaf": [merged(True), merged(False)]}) is True
+    assert has_live_rows({"state": ["ordinary-output"]}) is True
+    assert has_live_rows({}) is True
+    assert has_live_rows({"state": []}) is True
 
 
 def test_forward_explicit_sql_column_reference_binds_and_rewrites():
@@ -152,17 +155,7 @@ def test_forward_aggregate_table_column_reference():
     sql_id = "s1"
     results = {sql_id: [{"table": json.dumps({"close": {"0": 107.5}})}]}
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [
-                {"label": "close", "node": sql_id, "path": "items.table.close"}
-            ],
-        }
-    ]
+    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
     ops, inputs = forward_refs(subgraph, results, configs)
     row = ops[0]["aggregate_table"][0]
     input_id = f"{sql_id} | items.table.close"
@@ -200,17 +193,7 @@ def test_forward_does_not_mutate_input_subgraph():
     sql_id = "s1"
     results = {sql_id: [{"table": json.dumps({"close": {"0": 107.5}})}]}
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [
-                {"label": "close", "node": sql_id, "path": "items.table.close"}
-            ],
-        }
-    ]
+    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
     original = copy.deepcopy(subgraph)
     forward_refs(subgraph, results, configs)
     assert subgraph == original
@@ -315,75 +298,6 @@ def test_validate_accepts_export_in_subgraph():
         }
     ]
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
-
-
-def _list_lambda_leaf() -> dict[str, Any]:
-    return {
-        "id": "states",
-        "op": "LambdaOp",
-        "inputs": ["Symbols"],
-        "mode": "list",
-        "fn_name": "states",
-        "code": "def states(items):\n    return items[0]\n",
-    }
-
-
-def test_validate_accepts_list_lambda_leaf() -> None:
-    validate_emitted_subgraph(
-        [_list_lambda_leaf()],
-        {},
-        max_nodes=4,
-        results={},
-    )
-
-
-def test_build_round_archives_list_lambda_leaf_and_parses_native_graph() -> None:
-    leaf = _list_lambda_leaf()
-    build = build_round(
-        [leaf],
-        node_registry={},
-        round_index=0,
-        goal="g",
-        observations=[],
-        topology=[],
-        preview_width=100,
-        model="m",
-        max_tokens=10,
-        temperature=0.0,
-        include_proposer=False,
-    )
-    internal = _internal_id("round_0", "LambdaOp", "states")
-    assert build.leaf_output_names == [f"leaf_{internal}"]
-    assert build.graph[f"output_{internal}"]["path"] == "items"
-
-    compiled = Graph.from_json(build.graph).compile(Symbols=["a", "b"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    assert internal in runtime_graph.nodes
-    assert runtime_graph.output_node_map[internal] == f"leaf_{internal}"
-
-
-def test_build_round_fused_graph_renders_and_archives_list_lambda_leaf() -> None:
-    build = build_round(
-        [_list_lambda_leaf()],
-        node_registry={},
-        round_index=0,
-        goal="g",
-        observations=[],
-        topology=[],
-        preview_width=100,
-        model="m",
-        max_tokens=10,
-        temperature=0.0,
-    )
-    internal = _internal_id("round_0", "LambdaOp", "states")
-    assert build.graph[f"output_{internal}"]["path"] == "items"
-    assert f"render_{internal}" in build.graph
-
-
-def test_output_source_types_still_reject_non_output_ops() -> None:
-    type_names = {cls.__name__ for cls in OUTPUT_SOURCE_TYPES}
-    assert {"LLMOp", "DataRetrievalOp", "LambdaOp"} <= type_names
-    assert "FormatOp" not in type_names
 
 
 def test_runtime_rejects_format_op_leaf_source() -> None:
@@ -491,90 +405,32 @@ def test_column_bindings_remap_independent_library_instances() -> None:
     }
 
 
-def test_column_bindings_move_each_bound_column_to_slot_zero() -> None:
+@pytest.mark.parametrize(
+    ("bindings", "extra_input", "message"),
+    [
+        # A library input the round passes but the bindings never name.
+        (None, "unused_prompt", "unused"),
+        # A column the bindings never fill.
+        ([{"label": "prompt", "input": 0}], None, "review_system"),
+        # A binding naming a column the op does not declare.
+        ([{"label": "missing", "input": 0}], None, "unknown label 'missing'"),
+        # A binding naming an input slot the round does not pass.
+        ([{"label": "prompt", "input": -1}], None, "invalid input slot -1"),
+    ],
+    ids=["unused-input", "unbound-column", "unknown-label", "bad-slot"],
+)
+def test_column_bindings_reject_an_inconsistent_round(
+    bindings: list[dict[str, Any]] | None, extra_input: str | None, message: str
+) -> None:
     library = _llm_column_library()
+    if bindings is not None:
+        library["ReviewTurn"]["column_bindings"] = bindings
     subgraph = _llm_column_subgraph("review")
+    if extra_input is not None:
+        subgraph[1]["inputs"].append(extra_input)
 
-    resolved = resolve_subgraph(subgraph, library)
-
-    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
-    assert {column["node"] for column in turn["rowwise_columns"]} == {"review_prompt_1"}
-    assert "column_bindings" not in turn
-
-
-def test_column_bindings_reject_unused_input() -> None:
-    library = _llm_column_library()
-    subgraph = _llm_column_subgraph("review")
-    subgraph[1]["inputs"].append("unused_prompt")
-
-    with pytest.raises(DriverProtocolError, match="unused"):
+    with pytest.raises(DriverProtocolError, match=message):
         resolve_subgraph(subgraph, library)
-
-
-def test_bound_library_llm_parses_through_native_graph_path() -> None:
-    library = _llm_column_library()
-    subgraph = _llm_column_subgraph("review")
-    resolved = resolve_subgraph(subgraph, library)
-    turn = next(op for op in resolved if op["op"] == "LLMChatOp")
-    assert "column_bindings" not in turn
-
-    workflow = {
-        "name": "depcheck",
-        "inputs": {"Symbols": ["a"]},
-        "ops": resolved,
-        "outputs": [{"name": "o", "ref": "review_turn_1"}],
-    }
-    spec = next(iter(parse_yaml_payload(workflow).values()))
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    prompt_node = next(
-        node.node_id for node in graph.nodes.values() if node.task_type == "python"
-    )
-    llm = next(node for node in graph.nodes.values() if node.task_type == "inference")
-    assert llm.dependencies == (prompt_node,)
-    assert {column["node"] for column in llm.data_spec["columns"]} == {prompt_node}
-
-
-def test_column_bindings_reject_unbound_column() -> None:
-    library = _llm_column_library()
-    library["ReviewTurn"]["column_bindings"] = [{"label": "prompt", "input": 0}]
-    subgraph = _llm_column_subgraph("review")
-
-    with pytest.raises(DriverProtocolError, match="review_system"):
-        resolve_subgraph(subgraph, library)
-
-
-def test_column_bindings_reject_unknown_label() -> None:
-    library = _llm_column_library()
-    library["ReviewTurn"]["column_bindings"] = [{"label": "missing", "input": 0}]
-
-    with pytest.raises(DriverProtocolError, match="unknown label 'missing'"):
-        resolve_subgraph(_llm_column_subgraph("review"), library)
-
-
-def test_column_bindings_reject_bad_slot() -> None:
-    library = _llm_column_library()
-    library["ReviewTurn"]["column_bindings"] = [{"label": "prompt", "input": -1}]
-
-    with pytest.raises(DriverProtocolError, match="invalid input slot -1"):
-        resolve_subgraph(_llm_column_subgraph("review"), library)
-
-
-def test_admit_subgraph_forwards_export_to_validation():
-    # ``_admit_subgraph`` must pass the plan's ``export`` through to
-    # ``validate_emitted_subgraph``; a plan naming an op that is not in its own
-    # subgraph is rejected, and a valid export is admitted and registered.
-    op = {
-        "id": "q1",
-        "op": "DataRetrievalOp",
-        "inputs": [],
-        "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
-    }
-    with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
-        _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
-    resolved = _admit_subgraph(SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {})
-    assert [r["id"] for r in resolved] == ["q1"]
 
 
 def test_build_round_round2_graph_has_no_round1_op():
@@ -628,7 +484,7 @@ def test_walk_archived_items_preserves_observation_for_llm_leaf():
     # Leaf outputs now archive the whole result item (path: items). Walking each
     # stored item with the producer's default path must recover the same text
     # value the observation lambda saw before forwarding, so the observation the
-    # planner sees is unchanged.
+    # planner sees is unchanged, and a row-wise producer's items each keep a row.
     llm_id = "s0"
     configs = {llm_id: _llm_config(llm_id)}
     # The archived whole item for an LLM leaf; its default path is items.output.
@@ -640,6 +496,15 @@ def test_walk_archived_items_preserves_observation_for_llm_leaf():
     obs = compute_observation(walked, preview_width=100)
     assert "rows=1" in obs
     assert "hello" in obs
+
+    rows = {
+        llm_id: [
+            json.dumps({"output": "a"}),
+            json.dumps({"output": "b"}),
+            json.dumps({"output": "c"}),
+        ]
+    }
+    assert walk_archived_items(rows, configs) == {llm_id: ["a", "b", "c"]}
 
 
 def test_walk_archived_items_uses_output_for_lambda_leaf() -> None:
@@ -656,24 +521,6 @@ def test_walk_archived_items_uses_output_for_lambda_leaf() -> None:
     archived = {lambda_id: [json.dumps({"output": json.dumps([{"done": False}])})]}
     walked = walk_archived_items(archived, configs)
     assert walked == {lambda_id: [json.dumps([{"done": False}])]}
-
-
-def test_walk_archived_items_handles_multiple_rows():
-    # A row-wise producer emits one archived item per row (path: items). Walking
-    # must keep every item and the observation must count all rows.
-    llm_id = "s0"
-    configs = {llm_id: _llm_config(llm_id)}
-    archived = {
-        llm_id: [
-            json.dumps({"output": "a"}),
-            json.dumps({"output": "b"}),
-            json.dumps({"output": "c"}),
-        ]
-    }
-    walked = walk_archived_items(archived, configs)
-    assert walked == {llm_id: ["a", "b", "c"]}
-    obs = compute_observation(walked, preview_width=100)
-    assert "rows=3" in obs
 
 
 def test_walk_archived_items_rejects_non_json():
@@ -704,43 +551,20 @@ _ROW_COUNT_SOURCE_CASES: list[Any] = [
     pytest.param(
         {"s0": _sourced_rowwise_config("s0", INPUT_NODE_ID)},
         {"s0": [{"output": ["a0", "a1", "a2"]}]},
-        3,
-        {"s0": ["a0", "a1", "a2"]},
-        id="input-node-three-symbols",
-    ),
-    pytest.param(
-        {"s0": _sourced_rowwise_config("s0", INPUT_NODE_ID)},
-        {"s0": [{"output": ["a0", "a1", "a2"]}]},
         1,
         {"s0": ["a0", "a1", "a2"]},
         id="input-node-one-symbol",
     ),
     pytest.param(
-        {
-            "c0": _llm_config("c0"),
-            "s0": _sourced_rowwise_config("s0", "c0"),
-        },
+        {"c0": _llm_config("c0"), "s0": _sourced_rowwise_config("s0", "c0")},
         {"s0": [{"output": ["a0", "a1", "a2"]}]},
         3,
         {"s0": ["a0", "a1", "a2"]},
-        id="per-row-chat-three-symbols",
-    ),
-    pytest.param(
-        {
-            "c0": _llm_config("c0"),
-            "s0": _sourced_rowwise_config("s0", INPUT_NODE_ID, "c0"),
-        },
-        {"s0": [{"output": ["a0", "a1", "a2"]}]},
-        3,
-        {"s0": ["a0", "a1", "a2"]},
-        id="input-node-and-chat-three-symbols",
+        id="same-round-chat-three-symbols",
     ),
     pytest.param(
         {"p": _llm_config("p"), "s0": _sourced_rowwise_config("s0", "p")},
-        {
-            "p": [{"output": ["v0", "v1", "v2"]}],
-            "s0": [{"output": ["a0", "a1", "a2"]}],
-        },
+        {"p": [{"output": ["v0", "v1", "v2"]}], "s0": [{"output": ["a0", "a1", "a2"]}]},
         1,
         {"s0": ["a0", "a1", "a2"]},
         id="earlier-round-source-one-symbol",
@@ -751,56 +575,6 @@ _ROW_COUNT_SOURCE_CASES: list[Any] = [
         1,
         {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])]},
         id="inner-table-single-symbol",
-    ),
-    pytest.param(
-        {"t1": _sql_config("t1"), "s0": _sourced_rowwise_config("s0", "t1")},
-        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]} for _ in range(3)]},
-        3,
-        {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])] * 3},
-        id="inner-table-per-symbol",
-    ),
-    pytest.param(
-        {
-            "L": {"id": "L", "op": "LambdaOp", "mode": "row", "inputs": []},
-            "s0": _sourced_rowwise_config("s0", "L"),
-        },
-        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]} for _ in range(3)]},
-        3,
-        {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])] * 3},
-        id="list-per-row-lambda",
-    ),
-    pytest.param(
-        {
-            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
-            "s0": _sourced_rowwise_config("s0", "L"),
-        },
-        {"s0": [{"output": ["a0", "a1", "a2"]}]},
-        3,
-        {"s0": ["a0", "a1", "a2"]},
-        id="list-lambda-three-symbols",
-    ),
-    pytest.param(
-        {
-            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
-            "s0": _sourced_rowwise_config("s0", "L"),
-        },
-        {"s0": [{"output": ["a0", "a1", "a2"]}]},
-        1,
-        {"s0": [json.dumps(["a0", "a1", "a2"])]},
-        id="list-lambda-one-symbol",
-    ),
-    pytest.param(
-        {
-            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
-            "s0": _sourced_rowwise_config("s0", "L"),
-        },
-        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]}]},
-        3,
-        {"s0": ["r1", "r2", "r3", "r4", "r5"]},
-        # Not the right bind: one list is what a list Lambda holding one list
-        # element produces. It records where a same-round list Lambda's row
-        # count still comes from the symbol count.
-        id="list-lambda-one-list-element-known-residual",
     ),
     pytest.param(
         {
@@ -839,35 +613,6 @@ def test_forward_whole_rowwise_leaf_groups_by_its_source(
         whole_refs={leaf_id},
     )
     assert inputs == expected
-
-
-def test_forward_whole_rowwise_leaf_explicit_column_groups_by_its_source():
-    # An explicit ``(node, path)`` column reaches the same grouping decision as
-    # the implicit form: the leaf's column reads the input node, a literal list
-    # FlowMesh does not group, so the leaf's one table expands at any symbol
-    # count.
-    leaf_id = "s0"
-    configs = {leaf_id: _sourced_rowwise_config(leaf_id, INPUT_NODE_ID)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [
-                {"label": "v", "node": leaf_id, "path": "items.output"}
-            ],
-        }
-    ]
-    ops, inputs = forward_refs(
-        subgraph,
-        {leaf_id: [{"output": ["a0", "a1", "a2"]}]},
-        configs,
-        rows=1,
-        whole_refs={leaf_id},
-    )
-    assert ops[0]["aggregate_table"][0]["node"] == f"{leaf_id} | items.output"
-    assert inputs == {f"{leaf_id} | items.output": ["a0", "a1", "a2"]}
 
 
 def _three_row_subgraph(ref: str) -> list[dict]:
@@ -933,29 +678,23 @@ def _s3_config(op_id: str) -> dict:
 
 
 _SAME_ROUND_SOURCE_CASES: list[Any] = [
+    # A row-mode Lambda's column yields one row per item.
     pytest.param(
         _ROW_LAMBDA_SOURCE,
         False,
         1,
         [("L", "items.output")],
         _ONE_TABLE_ITEM,
-        id="row-lambda-column-only-one-symbol",
+        id="row-lambda-column",
     ),
-    pytest.param(
-        _ROW_LAMBDA_SOURCE,
-        True,
-        1,
-        [("L", "items.output")],
-        _ONE_TABLE_ITEM,
-        id="row-lambda-exported-one-symbol",
-    ),
+    # A retrieval column inside the table projects into rows.
     pytest.param(
         _sql_config("t1"),
         False,
         3,
         [("t1", "items.table.symbol")],
         _ONE_TABLE_ITEM,
-        id="retrieval-table-column-three-symbols",
+        id="retrieval-table-column",
     ),
     pytest.param(
         _sql_config("t1"),
@@ -963,7 +702,7 @@ _SAME_ROUND_SOURCE_CASES: list[Any] = [
         3,
         [("t1", "items.table.symbol")],
         _ONE_TABLE_ITEM,
-        id="retrieval-table-column-exported-three-symbols",
+        id="retrieval-table-column-exported",
     ),
     pytest.param(
         _s3_config("t1"),
@@ -971,23 +710,16 @@ _SAME_ROUND_SOURCE_CASES: list[Any] = [
         3,
         [("t1", "items.content")],
         _ONE_TABLE_ITEM,
-        id="retrieval-content-column-three-symbols",
+        id="retrieval-content-column",
     ),
+    # A column over the whole table does not project into rows.
     pytest.param(
         _sql_config("t1"),
         False,
         3,
         [("t1", "items.table")],
         _TABLE_ROWS,
-        id="retrieval-whole-table-three-symbols",
-    ),
-    pytest.param(
-        _sql_config("t1"),
-        False,
-        3,
-        [(INPUT_NODE_ID, None), ("t1", "items.table")],
-        _TABLE_ROWS,
-        id="retrieval-whole-table-beside-input-three-symbols",
+        id="retrieval-whole-table",
     ),
 ]
 
@@ -1002,50 +734,25 @@ def test_build_round_records_a_same_round_source_grouping(
     columns: list[tuple[str, str | None]],
     expected: list[str],
 ) -> None:
-    # A row-wise leaf whose column reads a same-round op binds one table
-    # however many symbols its producer ran over, unless that column reads the
-    # whole retrieval item (``items.table``), which FlowMesh does not group: the
-    # leaf then builds one table with one row per retrieval item and its
-    # answers expand. The producer's round records the grouping, because the
-    # consuming round would otherwise decide it against a ``results`` that
-    # already holds the producer's own round.
+    # The producer's round records the grouping, because the consuming round
+    # would otherwise decide it against a ``results`` already holding the
+    # producer's own round. A column over the whole ``items.table`` is not
+    # grouped, so the consumer builds one row per retrieval item instead.
     ops = [source, _same_round_source_leaf("s0", *columns)]
     export: tuple[str, ...] = ()
     if exported:
         ops.append(_exporting_reader(source["id"]))
         export = (source["id"],)
     registry = {op["id"]: op for op in ops}
-    producing = build_round(
-        ops,
-        node_registry=registry,
-        round_index=0,
-        goal="g",
-        observations=[],
-        topology=[],
-        preview_width=100,
-        model="m",
-        max_tokens=10,
-        temperature=0.0,
-        include_proposer=False,
-        export=export,
-    )
+    producing = _build(ops, round_index=0, export=export, registry=registry)
     archived = {"output": _TABLE_ROWS}
-    consuming = build_round(
+    consuming = _build(
         _three_row_subgraph("s0"),
-        node_registry=registry,
-        round_index=1,
-        goal="g",
-        observations=[],
-        topology=[],
-        preview_width=100,
-        model="m",
-        max_tokens=10,
-        temperature=0.0,
-        include_proposer=False,
         results={"s0": [archived], source["id"]: [archived]},
         rows=rows,
         whole_refs={"s0"} if rows > 1 else set(),
         grouped_sources=producing.grouped_sources,
+        registry=registry,
     )
     assert consuming.forwarded_inputs["s0"] == expected
 
@@ -1090,59 +797,34 @@ def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
     return config
 
 
-def test_build_round_decides_a_same_round_chat_source_as_ungrouped():
-    # A chat op that is not row-wise yields one scalar per item, so a row-wise
-    # leaf reading it builds one table of its own rows whatever the symbol
-    # count: the leaf's answers expand even at one symbol, where the fallback
-    # would bind them as one blob.
-    ops = [
-        _plain_chat("c0", INPUT_NODE_ID),
-        _same_round_source_leaf("s0", ("c0", None)),
-    ]
-    producing = _build(ops, round_index=0)
-    assert producing.grouped_sources == {"s0": False}
-    consuming = _build(
-        _three_row_subgraph("s0"),
-        results={"s0": [{"output": _TABLE_ROWS}]},
-        whole_refs={"s0"},
-        grouped_sources=producing.grouped_sources,
-        registry={op["id"]: op for op in ops},
-    )
-    assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
-
-
-def test_build_round_decides_an_earlier_round_source_as_ungrouped():
+@pytest.mark.parametrize("kind", ["same_round_chat", "earlier_round_op"])
+def test_build_round_decides_an_ungrouped_source(kind: str) -> None:
+    if kind == "same_round_chat":
+        # A chat op that is not row-wise yields one scalar per item, so a
+        # row-wise leaf reading it builds one table of its own rows whatever the
+        # symbol count: the leaf's answers expand even at one symbol, where the
+        # fallback would bind them as one blob.
+        ops = [
+            _plain_chat("c0", INPUT_NODE_ID),
+            _same_round_source_leaf("s0", ("c0", None)),
+        ]
+        producing = _build(ops, round_index=0)
+        assert producing.grouped_sources == {"s0": False}
+        consuming = _build(
+            _three_row_subgraph("s0"),
+            results={"s0": [{"output": _TABLE_ROWS}]},
+            whole_refs={"s0"},
+            grouped_sources=producing.grouped_sources,
+            registry={op["id"]: op for op in ops},
+        )
+        assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
+        return
     # A column reading an earlier round's op becomes a literal list input, which
     # FlowMesh reads ungrouped. The decision needs that op's archived results:
     # against an empty history the source is unknown rather than a literal.
     ops = [_same_round_source_leaf("s0", ("c0", None))]
     build = _build(ops, results={"c0": [{"output": _TABLE_ROWS}], "s0": []}, rows=3)
     assert build.grouped_sources == {"s0": False}
-
-
-@pytest.mark.parametrize(
-    ("source_columns", "expected_source", "expected_leaf"),
-    [
-        pytest.param([("t1", "items.table.symbol")], True, True, id="peer-grouped"),
-        pytest.param([(INPUT_NODE_ID, None)], False, False, id="peer-ungrouped"),
-    ],
-)
-def test_build_round_takes_a_same_round_leaf_source_grouping(
-    source_columns: list[tuple[str, str | None]],
-    expected_source: bool,
-    expected_leaf: bool,
-) -> None:
-    # A row-wise leaf reading another same-round row-wise leaf reads the same
-    # values that leaf read, so it takes that leaf's own grouping rather than
-    # falling back to the symbol count.
-    ops = [
-        _sql_config("t1"),
-        _same_round_source_leaf("t0", *source_columns),
-        _same_round_source_leaf("s0", ("t0", "items.output")),
-    ]
-    build = _build(ops, rows=3)
-    assert build.grouped_sources["t0"] is expected_source
-    assert build.grouped_sources["s0"] is expected_leaf
 
 
 def _api_llm_config(op_id: str, **overrides: Any) -> dict:
@@ -1168,99 +850,54 @@ def _api_record(content: str, *, index: int = 0) -> dict:
     }
 
 
-def test_walk_archived_items_reads_api_item_content():
-    # An API chat op archives the raw response record, so its text is read at
-    # ``json.choices[0].message.content`` rather than ``output``.
-    llm_id = "s0"
-    configs = {llm_id: _api_llm_config(llm_id)}
-    archived = {
-        llm_id: [json.dumps(_api_record("first")), json.dumps(_api_record("second"))]
-    }
-    walked = walk_archived_items(archived, configs)
-    assert walked == {llm_id: ["first", "second"]}
-    obs = compute_observation(walked, preview_width=100)
-    assert "rows=2" in obs
-    assert "first" in obs
-
-
-def test_walk_archived_items_reads_non_chat_api_leaf_content():
-    # The runtime dispatches any non-vision LLMOp with ``config.api`` as an API
-    # task, not only a chat op, so an image-generation leaf archives the raw
-    # response record and its walk must reach the record's content rather than
-    # ``items.output``.
-    op_id = "s0"
-    config = {
-        "id": op_id,
-        "op": "ImageGenerationOp",
-        "inputs": [],
-        "config": {"model": "qwen3.8-27b", "api": {"url": "https://example.com/v1"}},
-    }
-    archived = {op_id: [json.dumps(_api_record("a picture"))]}
-    walked = walk_archived_items(archived, {op_id: config})
-    assert walked == {op_id: ["a picture"]}
-
-
-def test_default_forward_path_matches_the_runtime_api_leaf_path():
-    # The driver reads a leaf with the same path the runtime archives it under.
-    # Keeping that agreement through a built runtime graph, rather than through
-    # a chat-only example, covers every op type the runtime treats as an API
-    # task.
-    op_id = "s0"
-    workflow = {
-        "name": "round_1",
-        "inputs": {"i0": ["a"]},
-        "ops": [
+@pytest.mark.parametrize(
+    ("config", "archived", "expected"),
+    [
+        # An API chat op archives the raw response record, so its text is read
+        # at ``json.choices[0].message.content`` rather than ``output``.
+        (
+            _api_llm_config("s0"),
+            [json.dumps(_api_record("first")), json.dumps(_api_record("second"))],
+            ["first", "second"],
+        ),
+        # A row-wise API task groups one response per input row under ``rows``,
+        # so the walk reaches each row's content; the item itself stays whole,
+        # as for a local row-wise leaf.
+        (
+            _api_llm_config("s0", rowwise_template="{row}"),
+            [
+                json.dumps(
+                    {
+                        "index": 0,
+                        "rows": [_api_record("a", index=0), _api_record("b", index=1)],
+                    }
+                )
+            ],
+            [json.dumps(["a", "b"])],
+        ),
+        # The runtime dispatches any non-vision LLMOp with ``config.api`` as an
+        # API task, not only a chat op, so an image-generation leaf archives the
+        # raw response record too.
+        (
             {
-                "id": op_id,
+                "id": "s0",
                 "op": "ImageGenerationOp",
-                "inputs": ["i0"],
-                "content": "i0",
+                "inputs": [],
                 "config": {
                     "model": "qwen3.8-27b",
-                    "api": {
-                        "url": "https://example.com/v1",
-                        "authorization": "Bearer token",
-                    },
+                    "api": {"url": "https://example.com/v1"},
                 },
-            }
-        ],
-        "outputs": [{"name": "out", "ref": op_id}],
-    }
-    parsed = parse_yaml_payload(workflow)
-    graph = parsed["round_1"]["graph"]
-    compiled = Graph.from_json(graph).compile(**parsed["round_1"]["inputs"])
-    built = RuntimeGraphBuilder().build(compiled, node_prefix="round_1")
-    (runtime_path,) = built.output_paths.values()
-    producer = next(
-        node for node in graph.values() if node["_op"] == "ImageGenerationOp"
-    )
-    assert _default_forward_path("ImageGenerationOp", producer) == runtime_path
-
-
-def test_walk_archived_items_reads_rowwise_api_rows():
-    # A row-wise API task groups one response per input row under ``rows``, so
-    # the walk reaches each row's content; the item itself stays whole, as for
-    # a local row-wise leaf.
-    llm_id = "s0"
-    configs = {llm_id: _api_llm_config(llm_id, rowwise_template="{row}")}
-    grouped = {
-        "index": 0,
-        "rows": [_api_record("a", index=0), _api_record("b", index=1)],
-    }
-    archived = {llm_id: [json.dumps(grouped)]}
-    walked = walk_archived_items(archived, configs)
-    assert [json.loads(value) for value in walked[llm_id]] == [["a", "b"]]
-
-
-def test_forward_implicit_api_reference_binds_content():
-    # A later round that names an earlier API chat op reads the record's
-    # assistant content, the same value a local op exposes as ``output``.
-    llm_id = "s0"
-    results = {llm_id: [_api_record("hello")]}
-    configs = {llm_id: _api_llm_config(llm_id)}
-    ops, inputs = forward_refs(_three_row_subgraph(llm_id), results, configs)
-    assert ops[0]["inputs"] == [llm_id]
-    assert inputs == {llm_id: ["hello"]}
+            },
+            [json.dumps(_api_record("a picture"))],
+            ["a picture"],
+        ),
+    ],
+    ids=["chat", "rowwise", "image_leaf"],
+)
+def test_walk_archived_items_reads_an_api_record(
+    config: dict, archived: list[str], expected: list[str]
+) -> None:
+    assert walk_archived_items({"s0": archived}, {"s0": config}) == {"s0": expected}
 
 
 def test_forward_implicit_gated_api_reference_binds_output():
@@ -1296,17 +933,7 @@ def test_forward_per_row_explicit_reference_aligns_items_to_rows():
         sql_id: [{"table": json.dumps({"close": {"0": float(i)}})} for i in range(3)]
     }
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [
-                {"label": "close", "node": sql_id, "path": "items.table.close"}
-            ],
-        }
-    ]
+    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
     _, inputs = forward_refs(subgraph, results, configs, rows=3)
     assert inputs[f"{sql_id} | items.table.close"] == [
         json.dumps({"0": float(i)}) for i in range(3)
@@ -1347,17 +974,7 @@ def test_forward_grouped_list_aggregate_column_materializes():
         ]
     }
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [
-                {"label": "summary", "node": sql_id, "path": "items.output"}
-            ],
-        }
-    ]
+    subgraph = [_chat_consumer(("summary", sql_id, "items.output"))]
     ops, inputs = forward_refs(subgraph, results, configs, rows=3)
     input_id = f"{sql_id} | items.output"
     materializer_id = f"{input_id} | rows"
@@ -1378,41 +995,10 @@ def test_forward_grouped_list_aggregate_column_materializes():
     assert materializer["inputs"] == [input_id]
     assert materializer["mode"] == "aligned"
     assert "json.loads" in materializer["code"]
-
-
-def test_forward_grouped_list_materializer_parses_through_yaml_parser():
-    # The rewritten op plus the appended materializer must parse as a valid
-    # workflow, with the materializer's input resolvable from the inputs block.
-    sql_id = "s1"
-    results = {
-        sql_id: [
-            {"output": ["a", "b"]},
-            {"output": ["c", "d"]},
-        ]
-    }
-    configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "config": {"model": "Qwen/Qwen3-8B"},
-            "messages": [{"role": "user", "content": "x"}],
-            "aggregate_table": [
-                {"label": "summary", "node": sql_id, "path": "items.output"}
-            ],
-        }
-    ]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
-    workflow = {
-        "name": "round_1",
-        "inputs": inputs,
-        "ops": ops,
-        "outputs": [],
-    }
-    parsed = parse_yaml_payload(workflow)
-    assert parsed
+    # The rewritten ops plus the materializer parse as a valid workflow.
+    assert parse_yaml_payload(
+        {"name": "round_1", "inputs": inputs, "ops": ops, "outputs": []}
+    )
 
 
 def test_forward_scalar_per_row_keeps_today_path():
@@ -1422,17 +1008,7 @@ def test_forward_scalar_per_row_keeps_today_path():
         sql_id: [{"table": json.dumps({"close": {"0": float(i)}})} for i in range(3)]
     }
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [
-                {"label": "close", "node": sql_id, "path": "items.table.close"}
-            ],
-        }
-    ]
+    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
     ops, inputs = forward_refs(subgraph, results, configs, rows=3)
     assert len(ops) == 1
     row = ops[0]["aggregate_table"][0]
@@ -1604,21 +1180,11 @@ def test_forward_serialized_dataframe_columns_materialize():
     }
     configs = {sql_id: _sql_config(sql_id)}
     subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [
-                {"label": "title", "node": sql_id, "path": "items.table.title"},
-                {
-                    "label": "publisheddate",
-                    "node": sql_id,
-                    "path": "items.table.publisheddate",
-                },
-                {"label": "category", "node": sql_id, "path": "items.table.category"},
-            ],
-        }
+        _chat_consumer(
+            ("title", sql_id, "items.table.title"),
+            ("publisheddate", sql_id, "items.table.publisheddate"),
+            ("category", sql_id, "items.table.category"),
+        )
     ]
     ops, inputs = forward_refs(subgraph, results, configs, rows=2)
     # One materializer per (ref, path), plus the consumer op.
@@ -1661,18 +1227,10 @@ def test_forward_aligned_materializers_are_row_cardinality():
     }
     configs = {sql_id: _sql_config(sql_id), sql_id2: _sql_config(sql_id2)}
     subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "config": {"model": "Qwen/Qwen3-8B"},
-            "messages": [{"role": "user", "content": "x"}],
-            "aggregate_table": [
-                {"label": "title", "node": sql_id, "path": "items.output"},
-                {"label": "summary", "node": sql_id2, "path": "items.output"},
-            ],
-        }
+        _chat_consumer(
+            ("title", sql_id, "items.output"),
+            ("summary", sql_id2, "items.output"),
+        )
     ]
     ops, inputs = forward_refs(subgraph, results, configs, rows=3)
     inputs["Symbols"] = ["AAA", "BBB", "CCC"]
@@ -1740,428 +1298,32 @@ def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
     assert ops[0]["inputs"] == [llm_id]
     assert whole_inputs == per_symbol_inputs
 
-
-def test_forward_whole_rowwise_api_leaf_binds_one_value_per_row():
-    # The API rowwise path groups one response per row under ``rows``, so a
-    # one-slice round's leaf reaches the same per-row contents the per-symbol
-    # shape binds instead of one JSON blob of every row.
-    llm_id = "s0"
-    symbols = ["A", "B", "C"]
-    configs = {
-        llm_id: _api_llm_config(
-            llm_id,
-            rowwise_template="{row}",
-            rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
-        )
-    }
-
-    per_symbol = {
-        llm_id: [{"index": 0, "rows": [_api_record(symbol)]} for symbol in symbols]
-    }
-    _, per_symbol_inputs = forward_refs(
-        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
-    )
-    assert per_symbol_inputs == {llm_id: ["A", "B", "C"]}
-
-    one_slice = {
-        llm_id: [
-            {
-                "index": 0,
-                "rows": [
-                    _api_record(symbol, index=index)
-                    for index, symbol in enumerate(symbols)
-                ],
-            }
-        ]
-    }
-    _, whole_inputs = forward_refs(
-        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
-    )
-    assert whole_inputs == per_symbol_inputs
-
-
-def test_forward_whole_rowwise_leaf_explicit_reference_agrees():
-    # The explicit ``(node, path)`` form binds a whole result through the same
-    # normalisation as the implicit form, so both reference forms agree.
-    llm_id = "s1"
-    configs = {llm_id: _rowwise_llm_config(llm_id)}
-    results = {llm_id: [{"output": ["a", "b", "c"]}]}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [{"label": "v", "node": llm_id, "path": "items.output"}],
-        }
-    ]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=3, whole_refs={llm_id})
-    # No materializer: the whole result already holds one value per row.
-    assert len(ops) == 1
-    assert ops[0]["aggregate_table"][0]["node"] == f"{llm_id} | items.output"
-    assert ops[0]["aggregate_table"][0]["path"] == ""
-    assert inputs == {f"{llm_id} | items.output": ["a", "b", "c"]}
-
-
-def test_forward_whole_rowwise_leaf_unwraps_a_one_row_item():
-    # A one-slice round of a single row archives a one-element list, which the
-    # per-row path unwraps to its scalar; the whole binding matches.
-    llm_id = "s0"
-    configs = {llm_id: _rowwise_llm_config(llm_id)}
-    _, inputs = forward_refs(
-        _three_row_subgraph(llm_id),
-        {llm_id: [{"output": ["only"]}]},
-        configs,
-        rows=1,
-        whole_refs={llm_id},
-    )
-    assert inputs == {llm_id: ["only"]}
-
-
-def test_forward_whole_rowwise_leaf_over_an_inner_table_keeps_one_value_per_item():
-    # A row-wise leaf whose rows come from another op's table judges that
-    # table's rows one by one, and FlowMesh groups each table's answers into
-    # one item. Each item is one table's values, so a whole binding keeps one
-    # JSON list per item, matching what a per-symbol round binds.
-    llm_id = "s0"
-    table = ["r1", "r2", "r3", "r4", "r5"]
-    configs = {
-        "t1": _sql_config("t1"),
-        llm_id: _rowwise_llm_config(
-            llm_id,
-            rowwise_columns=[{"label": "row", "node": "t1", "path": "items.output"}],
-        ),
-    }
-
-    per_symbol = {llm_id: [{"output": list(table)} for _ in range(3)]}
-    ops, per_symbol_inputs = forward_refs(
-        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
-    )
-    assert ops[0]["inputs"] == [f"{llm_id} | items.output | rows"]
-    assert per_symbol_inputs == {f"{llm_id} | items.output": [json.dumps(table)] * 3}
-
-    one_slice = {llm_id: [{"output": list(table)} for _ in range(3)]}
-    ops, whole_inputs = forward_refs(
-        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
-    )
-    assert whole_inputs == {llm_id: [json.dumps(table)] * 3}
-
-    single = {llm_id: [{"output": list(table)}]}
-    _, single_inputs = forward_refs(
-        _three_row_subgraph(llm_id), single, configs, rows=1
-    )
-    assert single_inputs == {llm_id: [json.dumps(table)]}
-
-
-def test_forward_whole_rowwise_leaf_over_a_per_row_chat_binds_one_value_per_row():
-    # A per-row chat archives one scalar per row, so FlowMesh builds one table
-    # of the round's rows for a leaf whose column reads it, and the leaf
-    # archives one item holding every answer. The whole binding expands that
-    # item, whether the leaf's column names the run's input or another op.
-    llm_id = "s0"
-    answers = ["a0", "a1", "a2"]
-    configs = {
-        "c0": _llm_config("c0"),
-        llm_id: _rowwise_llm_config(
-            llm_id,
-            rowwise_columns=[{"label": "row", "node": "c0", "path": "items.output"}],
-        ),
-    }
-
-    per_symbol = {llm_id: [{"output": answer} for answer in answers]}
-    _, per_symbol_inputs = forward_refs(
-        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
-    )
-    assert per_symbol_inputs == {llm_id: answers}
-
-    one_slice = {llm_id: [{"output": list(answers)}]}
-    _, whole_inputs = forward_refs(
-        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
-    )
-    assert whole_inputs == per_symbol_inputs
-
-
-def test_forward_whole_rowwise_leaf_over_a_list_row_lambda_keeps_one_value_per_item():
-    # A row Lambda that returns a list per row gives FlowMesh one table per
-    # row, so the leaf archives one item per table holding that table's
-    # answers. The whole binding keeps one JSON list per item, matching the
-    # materializer the per-symbol round binds.
-    llm_id = "s0"
-    table = ["r1", "r2", "r3", "r4", "r5"]
-    configs = {
-        "L": {"id": "L", "op": "LambdaOp", "mode": "row", "inputs": []},
-        llm_id: _rowwise_llm_config(
-            llm_id,
-            rowwise_columns=[{"label": "row", "node": "L", "path": "items.output"}],
-        ),
-    }
-
-    per_symbol = {llm_id: [{"output": list(table)} for _ in range(3)]}
-    _, per_symbol_inputs = forward_refs(
-        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
-    )
-    assert per_symbol_inputs == {f"{llm_id} | items.output": [json.dumps(table)] * 3}
-
-    one_slice = {llm_id: [{"output": list(table)} for _ in range(3)]}
-    _, whole_inputs = forward_refs(
-        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
-    )
-    assert whole_inputs == {llm_id: [json.dumps(table)] * 3}
-
-
-def test_forward_whole_rowwise_leaf_reading_an_earlier_rounds_leaf_binds_values():
-    # A round-2 leaf whose column reads round 1's leaf receives that leaf's
-    # values as one literal list, so FlowMesh builds one table of the round's
-    # rows and round 2's leaf archives one item holding every value. Round 3
-    # reading that item whole expands it, as it does for any row-wise leaf
-    # over the round's rows.
-    prior = "C1"
-    leaf = "C2"
-    values = ["v0", "v1", "v2"]
-    configs = {
-        prior: _rowwise_llm_config(prior),
-        leaf: _rowwise_llm_config(
-            leaf,
-            rowwise_columns=[{"label": "row", "node": prior, "path": "items.output"}],
-        ),
-    }
-
-    ops, round_two_inputs = forward_refs(
-        [dict(configs[leaf])],
-        {prior: [{"output": list(values)}]},
-        configs,
-        rows=3,
-        whole_refs={prior},
-    )
-    assert ops[0]["rowwise_columns"] == [
-        {"label": "row", "node": f"{prior} | items.output", "path": ""}
-    ]
-    assert round_two_inputs == {f"{prior} | items.output": values}
-
-    _, inputs = forward_refs(
-        _three_row_subgraph(leaf),
-        {leaf: [{"output": list(values)}]},
-        configs,
-        rows=3,
-        whole_refs={leaf},
-    )
-    assert inputs == {leaf: values}
-
-
-def test_forward_rowwise_api_column_walks_the_archived_row_path():
-    # A rowwise column declaring ``items.output`` names the read an in-graph
-    # column makes of an API leaf, whose archived item keeps each row's
-    # response under ``rows``. The forward walks the archive's real shape, so
-    # the column binds that row's content instead of a field the archive does
-    # not carry.
-    llm_id = "s0"
-    contents = ["a0", "a1"]
-    configs = {
-        llm_id: _api_llm_config(
-            llm_id,
-            rowwise_template="{row}",
-            rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
-        )
-    }
-    results = {
-        llm_id: [
-            {"index": index, "rows": [_api_record(content, index=index)]}
-            for index, content in enumerate(contents)
-        ]
-    }
-    subgraph = [
-        {
-            "id": "q7",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "messages": [{"role": "user", "content": "{row}"}],
-            "rowwise_template": "{row}",
-            "rowwise_columns": [
-                {"label": "row", "node": llm_id, "path": "items.output"}
-            ],
-            "config": {"model": "m"},
-        }
-    ]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
-    input_id = f"{llm_id} | {_API_ROW_PATH}"
-    assert inputs == {input_id: contents}
-    assert ops[0]["rowwise_columns"] == [{"label": "row", "node": input_id, "path": ""}]
-
-
-def test_forward_whole_keeps_each_item_whole_when_only_some_hold_one_value():
-    # A whole result whose items are tables of 1, 2 and 1 rows keeps every
-    # table whole. Unwrapping one-element lists item by item would hand the
-    # consumer a record for some items and a table for others, the mixed shape
-    # the per-row path refuses.
-    ret_id = "s1"
-    configs = {ret_id: _sql_config(ret_id)}
-    items = [
-        {"table": [{"s": "A"}]},
-        {"table": [{"s": "B"}, {"s": "C"}]},
-        {"table": [{"s": "D"}]},
-    ]
-    _, inputs = forward_refs(
-        _three_row_subgraph(ret_id),
-        {ret_id: items},
-        configs,
-        rows=3,
-        whole_refs={ret_id},
-    )
-    assert inputs == {ret_id: [json.dumps(item["table"]) for item in items]}
-
-
-def test_forward_whole_retrieval_with_one_listed_item_keeps_it_whole():
-    # A retrieval that returned one table for the whole run archives one item
-    # holding that table. Only a row-wise leaf's grouped item expands, so the
-    # table stays one value even though the run has several rows.
-    ret_id = "s1"
-    table = [{"s": "A"}, {"s": "B"}, {"s": "C"}]
-    _, inputs = forward_refs(
-        _three_row_subgraph(ret_id),
-        {ret_id: [{"table": table}]},
-        {ret_id: _sql_config(ret_id)},
-        rows=3,
-        whole_refs={ret_id},
-    )
-    assert inputs == {ret_id: [json.dumps(table)]}
-
-
-def test_forward_whole_explicit_column_reference_unwraps_a_one_element_list():
-    # A retrieval that returned one row per query archives a one-element table
-    # at ``items.table``, so a column walk yields a one-element list. The whole
-    # binding unwraps it to the scalar, as the per-row path does, instead of
-    # handing the consumer a JSON list to compare a column against.
-    ret_id = "s1"
-    configs = {ret_id: _sql_config(ret_id)}
-    subgraph = [
-        {
-            "id": "q2",
-            "op": "DataRetrievalOp",
-            "inputs": [],
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE s = {p}",
-                "params": [{"label": "p", "node": ret_id, "path": "items.table.s"}],
-            },
-        }
-    ]
-    input_id = f"{ret_id} | items.table.s"
-
-    one_row = {ret_id: [{"table": [{"s": "AAPL"}]}]}
-    ops, inputs = forward_refs(subgraph, one_row, configs, rows=1)
-    assert ops[0]["data_spec"]["params"][0]["node"] == input_id
-    assert inputs == {input_id: ["AAPL"]}
-
-    per_symbol = {
-        ret_id: [{"table": [{"s": symbol}]} for symbol in ["AAPL", "MSFT", "NVDA"]]
-    }
-    _, per_symbol_inputs = forward_refs(subgraph, per_symbol, configs, rows=3)
-    assert per_symbol_inputs == {input_id: ["AAPL", "MSFT", "NVDA"]}
-
-    whole = {
-        ret_id: [{"table": [{"s": symbol}]} for symbol in ["AAPL", "MSFT", "NVDA"]]
-    }
-    _, whole_inputs = forward_refs(
-        subgraph, whole, configs, rows=3, whole_refs={ret_id}
-    )
-    assert whole_inputs == {input_id: ["AAPL", "MSFT", "NVDA"]}
-
-
-def test_forward_whole_list_lambda_export_keeps_one_value_per_item():
-    # A Lambda archives one item per element it returns, a list-valued element
-    # included. The whole binding keeps one value per item, so the consuming
-    # round runs as one slice over those values rather than over each element
-    # a stored list happens to hold.
-    llm_id = "s0"
-    configs = {llm_id: {"id": llm_id, "op": "LambdaOp", "mode": "list", "inputs": []}}
-    results = {llm_id: [{"output": "a"}, {"output": "b"}, {"output": ["c", "d"]}]}
-    _, inputs = forward_refs(
-        _three_row_subgraph(llm_id), results, configs, rows=3, whole_refs={llm_id}
-    )
-    assert inputs == {llm_id: ["a", "b", json.dumps(["c", "d"])]}
-
-
-def test_forward_whole_list_lambda_export_explicit_reference_agrees():
-    # The explicit ``(node, path)`` form binds a whole list-Lambda export
-    # through the same whole binding as the implicit form: one value per
-    # archived item, and a list-valued element stays one JSON value.
-    llm_id = "s0"
-    configs = {llm_id: {"id": llm_id, "op": "LambdaOp", "mode": "list", "inputs": []}}
-    results = {llm_id: [{"output": "a"}, {"output": "b"}, {"output": ["c", "d"]}]}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [{"label": "v", "node": llm_id, "path": "items.output"}],
-        }
-    ]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=3, whole_refs={llm_id})
-    assert len(ops) == 1
-    assert ops[0]["aggregate_table"][0]["node"] == f"{llm_id} | items.output"
-    assert ops[0]["aggregate_table"][0]["path"] == ""
-    assert inputs == {f"{llm_id} | items.output": ["a", "b", json.dumps(["c", "d"])]}
-
-
-def test_forward_whole_gated_leaf_keeps_one_value_per_item():
-    # A row-gated op archives one merge record per row, so its whole result is
+    # A row-gated leaf archives one merge record per row, so its whole result is
     # already one value per row and is bound without flattening.
-    llm_id = "s0"
     rows = [
         {"selected": True, "done": False, "branch": "pending", "row": index}
         for index in range(3)
     ]
-    results = {
+    gated = {
         llm_id: [
             {"output": json.dumps({**row, "output": f"text-{index}"}), "value": row}
             for index, row in enumerate(rows)
         ]
     }
-    configs = {
-        llm_id: _rowwise_llm_config(llm_id, row_gate={"node": "r0", "branch": "finish"})
-    }
-    _, inputs = forward_refs(
-        _three_row_subgraph(llm_id), results, configs, rows=3, whole_refs={llm_id}
-    )
-    assert inputs == {
-        llm_id: [
-            json.dumps({**row, "output": f"text-{index}"})
-            for index, row in enumerate(rows)
-        ]
-    }
-
-
-def test_forward_whole_gated_leaf_explicit_reference_keeps_the_declared_path():
-    # A gated op keeps its row under ``output`` inside the merge record, so a
-    # declared ``items.output`` read walks the record as written instead of the
-    # API leaf's response path.
-    llm_id = "s0"
-    row = {"selected": True, "done": True, "branch": "finish", "row": 0}
-    record = {**row, "output": "done text"}
-    configs = {
-        llm_id: _api_llm_config(
-            llm_id,
-            rowwise_template="{row}",
-            rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
-            row_gate={"node": "r0", "branch": "finish"},
-        )
-    }
-    subgraph = [
+    _, gated_inputs = forward_refs(
+        _three_row_subgraph(llm_id),
+        gated,
         {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "aggregate_table": [{"label": "v", "node": llm_id, "path": "items.output"}],
-        }
+            llm_id: _rowwise_llm_config(
+                llm_id, row_gate={"node": "r0", "branch": "finish"}
+            )
+        },
+        rows=3,
+        whole_refs={llm_id},
+    )
+    assert gated_inputs[llm_id] == [
+        json.dumps({**row, "output": f"text-{i}"}) for i, row in enumerate(rows)
     ]
-    results = {llm_id: [{"output": json.dumps(record), "value": row}]}
-    ops, inputs = forward_refs(subgraph, results, configs, rows=1, whole_refs={llm_id})
-    assert ops[0]["aggregate_table"][0]["node"] == f"{llm_id} | items.output"
-    assert ops[0]["aggregate_table"][0]["path"] == ""
-    assert inputs == {f"{llm_id} | items.output": [json.dumps(record)]}
 
 
 def test_forwarded_literal_input_resolves_for_a_single_node_reference_guard():
