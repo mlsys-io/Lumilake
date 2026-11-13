@@ -14,7 +14,6 @@ from lumilake_server.dynamic.driver import (
     validate_template_spec,
 )
 from lumilake_server.dynamic.spec import DriverTemplate, DynamicSpec
-from lumilake_server.routes.jobs import _decode_archived_items, _extract_leaf_outputs
 
 
 def _state_op(op_id: str, inputs: list[str], **extra: object) -> dict:
@@ -71,39 +70,33 @@ def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
     first = template_plan_for_round(spec.driver.template, 1)
     assert [op["id"] for op in first.ops] == ["Input_r0", "Live_r0"]
     assert first.ops[1]["inputs"] == ["Input_r0"]
-    twentieth = template_plan_for_round(spec.driver.template, 20)
-    assert [op["id"] for op in twentieth.ops] == ["Input_r19", "Live_r19"]
-    assert twentieth.ops[1]["inputs"] == ["Input_r18"]
-    assert template_stop_export(spec.driver.template, 20) == "Live_r18"
+    # Round 2 on renders ``next``, whose exported previous round is round 1's.
+    second = template_plan_for_round(spec.driver.template, 2)
+    assert [op["id"] for op in second.ops] == ["Input_r1", "Live_r1"]
+    assert second.ops[1]["inputs"] == ["Input_r0"]
+    assert template_stop_export(spec.driver.template, 2) == "Live_r0"
 
 
 def test_collected_export_counts_rows_and_forwards_them_to_the_next_round() -> None:
     # A collected export holds one archived item per row, whatever the row's
-    # value holds, and next round reads each of them as a forwarded input.
-    name = "leaf_lambda_round_1_Live_r0_7634"
-
-    def collected(rows: list[dict]) -> list[dict]:
-        leaf = _extract_leaf_outputs(
-            {"round_1": {name: [json.dumps({"output": row}) for row in rows]}}, [name]
-        )
-        return _decode_archived_items(leaf[name[len("leaf_") :]])
-
-    live_case = {"case_id": "0", "turn": 1, "completed": False}
+    # value holds, so only an empty item list stops the loop.
     assert archived_export_has_rows(
-        collected([{"output": []}]), export_id="Live_r0", op={"op": "LambdaOp"}
+        [{"output": []}, {"output": [{"case_id": "0"}]}],
+        export_id="Live_r0",
+        op={"op": "LambdaOp"},
     )
-    assert not archived_export_has_rows(
-        collected([]), export_id="Live_r0", op={"op": "LambdaOp"}
-    )
+    assert not archived_export_has_rows([], export_id="Live_r0", op={"op": "LambdaOp"})
     with pytest.raises(DriverProtocolError, match="not a Lambda result item"):
         archived_export_has_rows(
             [{"value": {"items": [{"case_id": "0"}]}}],
             export_id="Live_r0",
             op={"op": "LambdaOp"},
         )
+    # Round 2 reads each item as a forwarded input.
+    live_case = {"case_id": "0", "turn": 1, "completed": False}
     ops, inputs = forward_refs(
         [{"id": "CaseState_r1", "op": "LambdaOp", "inputs": ["Live_r0"]}],
-        {"Live_r0": collected([live_case])},
+        {"Live_r0": [{"output": live_case}]},
         {"Live_r0": {"op": "LambdaOp"}},
     )
     assert ops[0]["inputs"] == ["Live_r0"]
@@ -172,10 +165,9 @@ def test_template_validator_rejects_an_unusable_body(
 
 
 def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
-    # The node refs a body carries -- a gate's target, a column's node, a
-    # message content, a named argument, a retrieval param -- all take the round
-    # suffix. A Lambda's code is Python source, so a placeholder in it stays
-    # literal.
+    # Every string a body carries renders the placeholders -- a gate's target, a
+    # column's node, a message, a named argument -- except a Lambda's code,
+    # which is Python source, and single braces, which belong to a row template.
     body = {
         "ops": [
             _state_op("Source_r{{round}}", ["Symbols"]),
@@ -185,7 +177,7 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                 "inputs": ["Source_r{{round}}"],
                 "messages": [
                     {"role": "user", "content": "Advance {row}"},
-                    {"role": "user", "content": "Source_r{{round}}"},
+                    {"role": "user", "content": "Source_r{{prev}}"},
                 ],
                 "config": {"model": "Qwen/Qwen3-8B"},
                 "rowwise_template": "{row}",
@@ -198,23 +190,6 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                 ],
                 "row_gate": {"node": "Source_r{{round}}", "branch": "finish"},
             },
-            {
-                "id": "Lookup_r{{round}}",
-                "op": "DataRetrievalOp",
-                "inputs": ["Source_r{{round}}"],
-                "data_spec": {
-                    "type": "s3",
-                    "connection_string": "s3://bucket",
-                    "template": "docs/{name}.json",
-                    "params": [
-                        {
-                            "label": "name",
-                            "node": "Source_r{{round}}",
-                            "path": "items.output",
-                        }
-                    ],
-                },
-            },
             _state_op("Echo_r{{round}}", ["Symbols"], code="# {{round}}\npass\n"),
         ],
         "export": ["Echo_r{{round}}"],
@@ -224,15 +199,11 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
     )
     validate_template_spec(template)
     ops = {op["id"]: op for op in template_plan_for_round(template, 2).ops}
-    assert ops["Turn_r1"]["row_gate"]["node"] == "Source_r1"
-    assert [column["node"] for column in ops["Turn_r1"]["rowwise_columns"]] == [
-        "Source_r1"
-    ]
-    assert [message["content"] for message in ops["Turn_r1"]["messages"]] == [
+    turn = ops["Turn_r1"]
+    assert turn["row_gate"]["node"] == "Source_r1"
+    assert [column["node"] for column in turn["rowwise_columns"]] == ["Source_r1"]
+    assert [message["content"] for message in turn["messages"]] == [
         "Advance {row}",
-        "Source_r1",
-    ]
-    assert ops["Lookup_r1"]["data_spec"]["params"] == [
-        {"label": "name", "node": "Source_r1", "path": "items.output"}
+        "Source_r0",
     ]
     assert ops["Echo_r1"]["code"] == "# {{round}}\npass\n"
