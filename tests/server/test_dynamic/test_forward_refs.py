@@ -1111,6 +1111,15 @@ def test_build_round_decides_a_same_round_chat_source_as_ungrouped():
     assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
 
 
+def test_build_round_decides_an_earlier_round_source_as_ungrouped():
+    # A column reading an earlier round's op becomes a literal list input, which
+    # FlowMesh reads ungrouped. The decision needs that op's archived results:
+    # against an empty history the source is unknown rather than a literal.
+    ops = [_same_round_source_leaf("s0", ("c0", None))]
+    build = _build(ops, results={"c0": [{"output": _TABLE_ROWS}], "s0": []}, rows=3)
+    assert build.grouped_sources == {"s0": False}
+
+
 @pytest.mark.parametrize(
     ("source_columns", "expected_source", "expected_leaf"),
     [

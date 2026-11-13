@@ -231,6 +231,84 @@ driver:
     stop_when_empty: "State_r{{prev}}"
 """
 
+_ROWWISE_LEAF_OVER_CHAT_YAML = """
+name: dynamic-template-rowwise-leaf-over-chat
+type: dynamic
+goal: score the rows a one-slice round produced from a chat
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 2
+  max_nodes_per_round: 4
+  output_location:
+    type: s3
+    prefix: dynamic/template/
+  template:
+    first:
+      ops:
+        - id: Source_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: source
+          code: |
+            def source(columns):
+                return columns[0]
+        - id: Draft_r{{round}}
+          op: LLMChatOp
+          inputs: ["Source_r{{round}}"]
+          messages:
+            - role: user
+              content: "Draft a note for this row."
+          config:
+            model: Qwen/Qwen3-8B
+          prompt:
+            template: "Draft a note for {row}."
+            format_kwargs:
+              row: Source_r{{round}}
+        - id: Ask_r{{round}}
+          op: LLMChatOp
+          inputs: ["Draft_r{{round}}"]
+          messages:
+            - role: user
+              content: "Score this row."
+          config:
+            model: Qwen/Qwen3-8B
+          rowwise_template: "{row}"
+          rowwise_columns:
+            - label: row
+              node: Draft_r{{round}}
+              path: items.output
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
+      export: ["State_r{{round}}"]
+    next:
+      ops:
+        - id: Score_r{{round}}
+          op: LambdaOp
+          inputs: ["Ask_r{{prev}}", "Symbols"]
+          mode: row
+          fn_name: score
+          code: |
+            def score(columns):
+                return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]
+        - id: State_r{{round}}
+          op: LambdaOp
+          inputs: ["Symbols"]
+          mode: list
+          fn_name: state
+          code: |
+            def state(columns):
+                return columns[0]
+      export: ["State_r{{round}}"]
+    stop_when_empty: "State_r{{prev}}"
+"""
+
 _LIBRARY_TEMPLATE_DYNAMIC_YAML = """
 name: dynamic-library-template
 type: dynamic
@@ -1737,6 +1815,42 @@ async def test_dynamic_template_next_round_reads_a_one_slice_rowwise_leaf(
     slices = fake_server.workflow_slices_calls[1]
     (meta,) = slices.values()
     assert meta.slice_length == 3
+    assert meta.whole_set is True
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_next_round_reads_a_leaf_over_a_chat_at_one_symbol(
+    app: FastAPI, job_routes: Any
+) -> None:
+    # Round 1 declares a list Lambda (so it runs as one slice) and a row-wise
+    # leaf over a chat that is not row-wise. The chat yields one answer per
+    # item, so the leaf builds one table of its own rows even at one symbol,
+    # where deciding again against the symbols alone would bind the table as
+    # one JSON blob. The round's record is what tells round 2 otherwise.
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    answers = ["answer-1", "answer-2", "answer-3"]
+    fake_server.leaf_items[
+        f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}"
+    ] = [{"output": answers}]
+    body = _submit_body(_ROWWISE_LEAF_OVER_CHAT_YAML)
+    body["data"][0]["inputs"] = {"Symbols": ["NVDA"]}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    await _run_background(app)
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+
+    assert record.status == "completed", record.error
+    (round_two,) = fake_server.executed_graphs[1].values()
+    assert round_two.inputs["Ask_r0"] == answers
+    slices = fake_server.workflow_slices_calls[1]
+    (meta,) = slices.values()
     assert meta.whole_set is True
 
 
