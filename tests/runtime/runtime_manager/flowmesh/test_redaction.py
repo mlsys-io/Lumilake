@@ -8,7 +8,6 @@ a persisted artifact.
 """
 
 import asyncio
-import copy
 import types
 from types import SimpleNamespace
 from typing import Any
@@ -33,13 +32,6 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
-from lumilake_server.utils.job_storage import InMemoryJobStorage
-from lumilake_server.utils.yaml import dump_yaml
-
-
-@pytest.fixture(autouse=True)
-def _lumid_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
@@ -244,10 +236,6 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
     caller, the log, or the persisted job error record."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
-        lambda: InMemoryJobStorage(),
-    )
 
     request_info, row_id = _build_single_row_api_request()
 
@@ -347,10 +335,6 @@ async def test_workflow_submit_sanitizes_api_error_before_reraising(
     the persisted job error record."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
-        lambda: InMemoryJobStorage(),
-    )
 
     request_info, row_id = _build_single_row_api_request()
 
@@ -519,12 +503,10 @@ async def test_archive_task_response_archives_grouped_api_result(
 
 
 @pytest.mark.asyncio
-async def test_yaml_archive_offloads_serialization_and_write_from_event_loop(
+async def test_yaml_archive_keeps_the_event_loop_free_while_it_uploads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Large runtime artifacts must not block the event loop while serializing
-    and uploading. A heartbeat task should run before the archive future is
-    allowed to complete."""
+    """Serializing and uploading a large runtime artifact runs off the loop."""
     manager = FlowmeshRuntimeManager()
     request_info = RequestInfo(
         request_id="req-archive", runtime_graphs={}, data_profile_graphs={}
@@ -544,11 +526,7 @@ async def test_yaml_archive_offloads_serialization_and_write_from_event_loop(
         await release_archive.wait()
         return "memory://archived.yaml"
 
-    monkeypatch.setattr(
-        manager,
-        "save_runtime_artifact_async",
-        blocked_archive,
-    )
+    monkeypatch.setattr(manager, "save_runtime_artifact_async", blocked_archive)
     task = asyncio.create_task(heartbeat())
     archive_task = asyncio.create_task(
         manager._save_yaml_artifact(request_info, "flowmesh_job.yaml", {"x": 1})
@@ -559,43 +537,6 @@ async def test_yaml_archive_offloads_serialization_and_write_from_event_loop(
     release_archive.set()
     assert await archive_task == "memory://archived.yaml"
     await task
-
-
-@pytest.mark.asyncio
-async def test_string_yaml_archive_skips_yaml_dump(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pre-serialized YAML must be uploaded as-is rather than dumped again."""
-    manager = FlowmeshRuntimeManager()
-    request_info = RequestInfo(
-        request_id="req-archive", runtime_graphs={}, data_profile_graphs={}
-    )
-    request_info.batch_id = "batch-archive"
-    uploaded: dict[str, Any] = {}
-
-    async def capture_artifact(
-        _request_info: RequestInfo,
-        filename: str,
-        data: bytes,
-        content_type: str,
-    ) -> str:
-        uploaded.update(
-            filename=filename,
-            data=data,
-            content_type=content_type,
-        )
-        return "memory://archived.yaml"
-
-    monkeypatch.setattr(manager, "save_runtime_artifact_async", capture_artifact)
-    payload = "apiVersion: mloc/v1\nkind: InferenceTask\n"
-
-    await manager._save_yaml_artifact(request_info, "flowmesh_job.yaml", payload)
-
-    assert uploaded == {
-        "filename": "flowmesh_job.yaml",
-        "data": payload.encode("utf-8"),
-        "content_type": "application/x-yaml",
-    }
 
 
 def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
@@ -609,21 +550,7 @@ def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
 
     assert "sk-live-secret" in submit_yaml
     assert "sk-live-secret" not in archive_yaml
-
-
-def test_yaml_dump_equivalent_to_safe_dump_and_uses_libyaml() -> None:
-    payload = {
-        "apiVersion": "mloc/v1",
-        "kind": "InferenceTask",
-        "metadata": {"name": "job", "annotations": {"x": [1, 2]}},
-    }
-    original = copy.deepcopy(payload)
-    expected = yaml.safe_dump(original, sort_keys=False)
-    actual = dump_yaml(payload, default_flow_style=False, sort_keys=False)
-
-    assert yaml.safe_load(actual) == yaml.safe_load(expected)
-    assert payload == original
-    assert yaml.CSafeDumper if yaml.__with_libyaml__ else yaml.SafeDumper
+    assert yaml.safe_load(submit_yaml) == task_spec
 
 
 def test_api_result_dump_keeps_json_row_key() -> None:

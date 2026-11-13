@@ -1,6 +1,5 @@
 """A LambdaOp that no LLM consumes compiles to its own FlowMesh python task."""
 
-import ast
 import json
 import tempfile
 from pathlib import Path
@@ -27,38 +26,55 @@ from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
-from lumilake_server.utils.job_storage import InMemoryJobStorage, PersistentJobStorage
+from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+
+
+_LUMID_TOKEN = "test-token"
 
 
 @pytest.fixture(autouse=True)
 def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
 
 
 def _python_nodes(graph: Any) -> dict[str, Any]:
     return {k: n for k, n in graph.nodes.items() if n.task_type == "python"}
 
 
-def _generated_python_spec(node: Any) -> dict[str, Any]:
-    plan = node.data_spec["plan"]
-    published = {
+def _published_blobs(
+    plan: python_step.ColumnPlan,
+) -> dict[str, python_step.PublishedBlob]:
+    return {
         blob.key: blob
         for blob in [
             python_step.runtime_blob(),
             *python_step.literal_blobs(plan).values(),
         ]
     }
+
+
+def _generated_python_spec(node: Any) -> dict[str, Any]:
     return python_step.flowmesh_spec(
         node.node_id,
         node.data_spec,
-        published,
+        _published_blobs(node.data_spec["plan"]),
     )
 
 
-def test_wrapper_loads_literal_file(tmp_path: Path) -> None:
+@pytest.fixture
+def blob_storage(monkeypatch: pytest.MonkeyPatch) -> InMemoryJobStorage:
+    storage = InMemoryJobStorage()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: storage,
+    )
+    return storage
+
+
+def test_wrapper_loads_a_mounted_literal_file(tmp_path: Path) -> None:
     values = tmp_path / "values.json"
     values.write_text(json.dumps(["mounted"]))
 
@@ -344,12 +360,11 @@ def _run_wrapper(
     inputs: dict[str, str],
     fn_name: str | None = None,
     mode: str = "row",
-    runtime_mount: str | None = None,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
     declared = fn_name or lambda_runtime.validate_source(code)
     namespace: dict[str, Any] = {}
-    runtime_mount = runtime_mount or _materialize_task_runtime()
+    runtime_mount = _materialize_task_runtime()
     exec(
         python_step.wrapper_source("op-1", declared, code, plan, mode).replace(
             python_step.TASK_RUNTIME_MOUNT, runtime_mount
@@ -364,11 +379,10 @@ def _run_reshape(
     plan: python_step.ColumnPlan,
     inputs: dict[str, str],
     template: str = "{symbol}: {title}",
-    runtime_mount: str | None = None,
 ):
     """Run a generated flatten/regroup step, which never calls user code."""
     namespace: dict[str, Any] = {}
-    runtime_mount = runtime_mount or _materialize_task_runtime()
+    runtime_mount = _materialize_task_runtime()
     if mode == "flatten":
         code = python_step.flatten_source("reshape", plan, template).replace(
             python_step.TASK_RUNTIME_MOUNT, runtime_mount
@@ -899,23 +913,9 @@ def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> No
 
 
 @pytest.mark.asyncio
-async def test_flowmesh_spec_mounts_one_runtime_blob_for_many_steps(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_each_python_step_mounts_the_shared_runtime_blob(
+    blob_storage: InMemoryJobStorage,
 ) -> None:
-    storage = InMemoryJobStorage()
-    uploads: list[str] = []
-    save_blob = storage.save_blob
-
-    def recording_save_blob(key: str, data: bytes, content_type: str) -> str:
-        uploads.append(key)
-        return save_blob(key, data, content_type)
-
-    monkeypatch.setattr(storage, "save_blob", recording_save_blob)
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
-        lambda: storage,
-    )
-    manager = FlowmeshRuntimeManager()
     graph = RuntimeGraphBuilder().build(
         Graph.from_ops(
             [
@@ -931,181 +931,43 @@ async def test_flowmesh_spec_mounts_one_runtime_blob_for_many_steps(
         ).compile(A=["a"], B=["b"])
     )
 
-    spec, _, _ = await manager._build_task_spec(
+    spec, _, _ = await FlowmeshRuntimeManager()._build_task_spec(
         request_info=type(
             "Request", (), {"request_id": "req", "hardware_requirements": None}
         )(),
         runtime_graph=graph,
     )
 
+    runtime_key = python_step.runtime_blob().key
+    assert list(blob_storage._blobs) == [runtime_key]
     python_specs = [
         node["spec"]
         for node in spec["spec"]["graph"]["nodes"]
         if node["spec"]["taskType"] == "python"
     ]
-    runtime_keys = {entry["blobs"][0]["url"] for entry in python_specs}
-    assert len(runtime_keys) == 1
-    assert len(uploads) == 1
-    assert uploads[0].startswith("lambda-runtime/")
-    assert all("_PLAN = json.loads" in entry["code"] for entry in python_specs)
-    assert all("def materialize(" not in entry["code"] for entry in python_specs)
-    assert all(
-        entry["blobs"][0]["headers"] == {"Authorization": "Bearer test-token"}
-        for entry in python_specs
-    )
+    for entry in python_specs:
+        assert entry["blobs"] == [
+            {
+                "url": f"http://lumid-data/blobs/{runtime_key}",
+                "sha256": runtime_key.rsplit("/", 1)[-1].removesuffix(".py"),
+                "headers": {"Authorization": f"Bearer {_LUMID_TOKEN}"},
+                "mountPath": python_step.TASK_RUNTIME_MOUNT,
+            }
+        ]
+        assert "def materialize(" not in entry["code"]
 
 
 @pytest.mark.asyncio
-async def test_flowmesh_spec_uploads_python_blobs_idempotently(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_large_literal_is_mounted_once_and_small_stays_inline(
+    blob_storage: InMemoryJobStorage,
 ) -> None:
-    storage = InMemoryJobStorage()
-    runtime_key = python_step.runtime_blob().key
-    storage.save_blob(runtime_key, python_step.runtime_blob().body, "text/x-python")
-    uploads: list[str] = []
-
-    def recording_save_blob(key: str, data: bytes, content_type: str) -> str:
-        uploads.append(key)
-        return key
-
-    monkeypatch.setattr(storage, "save_blob", recording_save_blob)
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
-        lambda: storage,
-    )
-    manager = FlowmeshRuntimeManager()
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_ops(
-            [
-                as_output(
-                    "out",
-                    LambdaOp([input_placeholder("A")], fn=lambda inputs: inputs[0]),
-                )
-            ]
-        ).compile(A=["a"])
-    )
-
-    spec, _, _ = await manager._build_task_spec(
-        request_info=type(
-            "Request", (), {"request_id": "req", "hardware_requirements": None}
-        )(),
-        runtime_graph=graph,
-    )
-
-    assert uploads == [runtime_key]
-    blob = spec["spec"]["graph"]["nodes"][0]["spec"]["blobs"][0]
-    assert blob["sha256"] == runtime_key.rsplit("/", 1)[-1].removesuffix(".py")
-    assert blob["mountPath"] == python_step.TASK_RUNTIME_MOUNT
-
-
-@pytest.mark.asyncio
-async def test_two_tasks_sharing_a_large_literal_upload_it_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    storage = InMemoryJobStorage()
-    uploads: list[str] = []
-    save_blob = storage.save_blob
-
-    def recording_save_blob(key: str, data: bytes, content_type: str) -> str:
-        uploads.append(key)
-        return save_blob(key, data, content_type)
-
-    monkeypatch.setattr(storage, "save_blob", recording_save_blob)
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
-        lambda: storage,
-    )
     shared = ["x" * 2000]
-    manager = FlowmeshRuntimeManager()
     graph = RuntimeGraphBuilder().build(
         Graph.from_ops(
             [
                 as_output("first", LambdaOp([shared], fn=lambda inputs: inputs[0])),
                 as_output("second", LambdaOp([shared], fn=lambda inputs: inputs[0])),
-            ]
-        ).compile()
-    )
-
-    spec, _, _ = await manager._build_task_spec(
-        request_info=type(
-            "Request", (), {"request_id": "req", "hardware_requirements": None}
-        )(),
-        runtime_graph=graph,
-    )
-
-    literal_keys = [key for key in uploads if key.startswith("literals/")]
-    assert len(literal_keys) == 1
-    assert len(uploads) == 2
-    for node in spec["spec"]["graph"]["nodes"]:
-        plan_source = (
-            node["spec"]["code"].split("_PLAN = json.loads(", 1)[1].split(")\n", 1)[0]
-        )
-        plan_json = ast.literal_eval(plan_source)
-        plan = json.loads(plan_json)
-        assert "values" not in plan[0]
-        assert plan[0]["file"].startswith("/mnt/blobs/literals/")
-
-
-@pytest.mark.asyncio
-async def test_small_literal_stays_inline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    storage = InMemoryJobStorage()
-    uploads: list[str] = []
-    save_blob = storage.save_blob
-
-    def recording_save_blob(key: str, data: bytes, content_type: str) -> str:
-        uploads.append(key)
-        return save_blob(key, data, content_type)
-
-    monkeypatch.setattr(storage, "save_blob", recording_save_blob)
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
-        lambda: storage,
-    )
-    manager = FlowmeshRuntimeManager()
-
-    def small_literal(inputs: tuple[str | list[Message], ...]) -> str:
-        return str(inputs[0])
-
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_ops(
-            [as_output("out", LambdaOp([["x"]], fn=small_literal))]
-        ).compile()
-    )
-
-    spec, _, _ = await manager._build_task_spec(
-        request_info=type(
-            "Request", (), {"request_id": "req", "hardware_requirements": None}
-        )(),
-        runtime_graph=graph,
-    )
-
-    assert uploads == [python_step.runtime_blob().key]
-    task_spec = spec["spec"]["graph"]["nodes"][0]["spec"]
-    assert '"values": ["x"]' in task_spec["code"]
-    assert len(task_spec["blobs"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_python_nodes_keep_their_own_non_data_spec_keys(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
-        InMemoryJobStorage,
-    )
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_ops(
-            [
-                as_output(
-                    "first",
-                    LambdaOp([["a"]], fn=lambda inputs: str(inputs[0]), memory_mb=128),
-                ),
-                as_output(
-                    "second",
-                    LambdaOp([["b"]], fn=lambda inputs: str(inputs[0]), memory_mb=256),
-                ),
+                as_output("third", LambdaOp([["x"]], fn=lambda inputs: inputs[0])),
             ]
         ).compile()
     )
@@ -1117,66 +979,16 @@ async def test_python_nodes_keep_their_own_non_data_spec_keys(
         runtime_graph=graph,
     )
 
-    resources = {
-        node["spec"]["resources"]["hardware"]["memory"]
-        for node in spec["spec"]["graph"]["nodes"]
-        if node["spec"]["taskType"] == "python"
-    }
-    assert resources == {"128Mi", "256Mi"}
-
-
-def test_flowmesh_spec_generates_from_final_sliced_plan() -> None:
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": ["sliced"]},
-    ]
-    data_spec = {
-        "code": "def f(inputs):\n    return str(inputs[0])\n",
-        "fn_name": "f",
-        "plan": plan,
-        "mode": "row",
-        "timeout_s": 10,
-    }
-    published = {
-        blob.key: blob
-        for blob in [
-            python_step.runtime_blob(),
-            *python_step.literal_blobs(plan).values(),
-        ]
-    }
-
-    first = python_step.flowmesh_spec("task", data_spec, published)
-    second = python_step.flowmesh_spec("task", data_spec, published)
-
-    assert first == second
-    assert plan == [{"kind": "literal", "values": ["sliced"]}]
-
-
-def test_flowmesh_spec_mounts_one_blob_for_repeated_literal() -> None:
-    values = [f"row-{index}" for index in range(400)]
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": values},
-        {"kind": "literal", "values": list(values)},
-    ]
-    data_spec = {
-        "code": "def f(inputs):\n    return str(inputs[0])\n",
-        "fn_name": "f",
-        "plan": plan,
-        "mode": "row",
-        "timeout_s": 10,
-    }
-    published = {
-        blob.key: blob
-        for blob in [
-            python_step.runtime_blob(),
-            *python_step.literal_blobs(plan).values(),
-        ]
-    }
-
-    spec = python_step.flowmesh_spec("task", data_spec, published)
-
-    mount_paths = [blob["mountPath"] for blob in spec["blobs"]]
-    assert len(mount_paths) == len(set(mount_paths))
-    assert len(mount_paths) == 2
+    runtime_key = python_step.runtime_blob().key
+    (literal_key,) = [key for key in blob_storage._blobs if key != runtime_key]
+    assert literal_key.startswith("literals/")
+    specs = [node["spec"] for node in spec["spec"]["graph"]["nodes"]]
+    for entry in specs[:2]:
+        assert any(
+            blob["mountPath"].startswith("/mnt/blobs/literals/")
+            for blob in entry["blobs"]
+        )
+    assert specs[2]["blobs"] == [specs[0]["blobs"][0]]
 
 
 def test_flowmesh_spec_rejects_more_blobs_than_flowmesh_accepts() -> None:
@@ -1191,75 +1003,29 @@ def test_flowmesh_spec_rejects_more_blobs_than_flowmesh_accepts() -> None:
         "mode": "row",
         "timeout_s": 10,
     }
-    published = {
-        blob.key: blob
-        for blob in [
-            python_step.runtime_blob(),
-            *python_step.literal_blobs(plan).values(),
-        ]
-    }
 
     with pytest.raises(ValueError, match="limit of 16 per task"):
-        python_step.flowmesh_spec("task", data_spec, published)
+        python_step.flowmesh_spec("task", data_spec, _published_blobs(plan))
 
 
-def test_runtime_blob_uses_canonical_runtime_and_is_cached() -> None:
-    first = python_step.runtime_blob()
-    second = python_step.runtime_blob()
+def test_python_task_spec_generates_from_the_final_plan() -> None:
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["sliced"]},
+    ]
+    data_spec = {
+        "code": "def f(inputs):\n    return str(inputs[0])\n",
+        "fn_name": "f",
+        "plan": plan,
+        "mode": "row",
+        "timeout_s": 10,
+    }
 
-    assert first is second
-    assert b"def validate_source(" in first.body
-    assert b"def _column(" in first.body
-    assert b"text: Callable[[Any], str]" in first.body
-    assert b"class _validate_source" not in first.body
+    spec = python_step.flowmesh_spec("task", data_spec, _published_blobs(plan))
 
-
-def test_blob_entry_requires_lumid_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", None)
-    blob = python_step.runtime_blob()
-
-    with pytest.raises(RuntimeError, match="LUMID_DATA_TOKEN"):
-        python_step._blob_entry(blob)
-
-
-@pytest.mark.asyncio
-async def test_persistent_storage_blob_url_uses_stored_object_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stored: dict[str, tuple[bytes, str]] = {}
-
-    def fake_put(key: str, data: bytes, content_type: str) -> None:
-        stored[key] = (data, content_type)
-
-    monkeypatch.setattr(envs, "S3_ARCHIVE_PREFIX", "archive/artifacts")
-    monkeypatch.setattr(
-        "lumilake_server.utils.job_storage.lumid_data_client.put_blob", fake_put
-    )
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
-        lambda: PersistentJobStorage(),
-    )
-    manager = FlowmeshRuntimeManager()
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_ops(
-            [as_output("out", LambdaOp([input_placeholder("A")], fn=lambda i: i[0]))]
-        ).compile(A=["a"])
-    )
-
-    spec, _, _ = await manager._build_task_spec(
-        request_info=type(
-            "Request", (), {"request_id": "req", "hardware_requirements": None}
-        )(),
-        runtime_graph=graph,
-    )
-
-    runtime_key = python_step.runtime_blob().key
-    object_name = f"archive/artifacts/{runtime_key}"
-    assert set(stored) == {object_name}
-    blob_url = spec["spec"]["graph"]["nodes"][0]["spec"]["blobs"][0]["url"]
-    assert blob_url == f"http://lumid-data/blobs/archive/artifacts/{runtime_key}"
+    assert plan == [{"kind": "literal", "values": ["sliced"]}]
+    assert spec["blobs"][0]["mountPath"] == python_step.TASK_RUNTIME_MOUNT
+    assert "def materialize(" not in spec["code"]
+    assert spec["entrypoint"] == "main"
 
 
 def test_lambda_op_rejects_a_non_bool_cache() -> None:

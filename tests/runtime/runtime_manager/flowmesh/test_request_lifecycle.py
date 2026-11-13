@@ -13,7 +13,6 @@ from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import PythonResult
 from flowmesh.models.tasks import TaskStatusView
 
-import lumilake_server.runtime.runtime_manager.flowmesh as flowmesh_module
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
@@ -217,13 +216,6 @@ def _task_info(
         last_error=last_error,
         graph_node_name=graph_node_name,
     )
-
-
-@pytest.fixture(autouse=True)
-def _worker_lumid_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
-    monkeypatch.setattr(flowmesh_module, "get_job_storage", InMemoryJobStorage)
 
 
 def _build_two_row_request() -> tuple[RequestInfo, str, str]:
