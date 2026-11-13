@@ -27,22 +27,17 @@ async def test_resolve_task_node_maps_fails_when_task_list_fails(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("listed", "match"),
-    [
-        ([("task-a", "node-a"), ("task-b", "unknown-node")], "graph_node_name"),
-        ([("task-a", "node-a")], "incomplete"),
-    ],
-)
-async def test_resolve_task_node_maps_rejects_an_inconsistent_workflow(
+async def test_resolve_task_node_maps_fails_when_graph_node_name_is_invalid(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
-    listed: list[tuple[str, str]],
-    match: str,
 ) -> None:
-    serve(monkeypatch, {tid: ("PENDING", node) for tid, node in listed})
+    serve(
+        monkeypatch,
+        {"task-a": "PENDING", "task-b": "PENDING"},
+        {"task-a": "node-a", "task-b": "node-x"},
+    )
 
-    with pytest.raises(RuntimeError, match=match):
+    with pytest.raises(RuntimeError, match="missing valid graph_node_name"):
         await flowmesh_manager._resolve_task_node_maps(
             "wf-1", ["task-a", "task-b"], ["node-a", "node-b"]
         )

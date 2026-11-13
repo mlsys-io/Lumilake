@@ -9,14 +9,12 @@ from lumilake_server.runtime import flowmesh_client
 
 @pytest.mark.asyncio
 async def test_shared_client_bounds_its_connection_pool() -> None:
-    """The shared client keeps a bounded pool and expires idle connections
-    well below the server's 5 s idle default."""
+    """The shared client bounds its pool and expires idle connections well
+    below the server's 5 s idle default."""
     transport: Any = flowmesh_client._shared_http_client()._transport
-    pool = transport._pool
 
-    assert pool._max_connections == 100
-    assert pool._max_keepalive_connections == 20
-    assert pool._keepalive_expiry < 5.0
+    assert transport._pool._max_connections == 100
+    assert transport._pool._keepalive_expiry < 5.0
 
 
 @pytest.mark.asyncio

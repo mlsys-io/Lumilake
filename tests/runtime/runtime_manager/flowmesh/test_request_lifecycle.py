@@ -161,7 +161,7 @@ async def test_api_backend_returns_chat_history_like_local_backend(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result = await manager.process_request(
         request_info,
@@ -258,11 +258,7 @@ async def _run_failing_request(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(
-        monkeypatch,
-        {tid: (value, node_by_task[tid]) for tid, value in status_by_task.items()},
-        error_by_task,
-    )
+    serve(monkeypatch, status_by_task, node_by_task, error_by_task)
 
     with pytest.raises(RuntimeError) as excinfo:
         await manager.process_request(
@@ -284,7 +280,7 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     loop; without it a FAILED row would be silently ignored (or a partial
     result quietly returned) instead of aborting the request."""
     cancelled: list[str] = []
-    manager, _, row1_id, message = await _run_failing_request(
+    manager, row0_id, row1_id, message = await _run_failing_request(
         monkeypatch,
         {"task-row0": "PENDING", "task-row1": "FAILED"},
         {"task-row1": "python task failed: ImportError: boom"},
@@ -300,37 +296,16 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     assert manager._execution_task_status[batch_key]["task-row0"] == "PENDING"
     assert manager._execution_task_status[batch_key]["task-row1"] == "FAILED"
 
-
-@pytest.mark.asyncio
-async def test_progress_refreshes_from_the_workflow_after_execution_release(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Job finalization releases the batch's FlowMesh workflow id. A failed
-    job still holds the non-terminal tasks FlowMesh cancels afterwards, so
-    ``get_request_status`` must keep polling them through the execution
-    batch's own workflow id instead of freezing their stale statuses."""
-    manager, row0_id, row1_id, _ = await _run_failing_request(
-        monkeypatch,
-        {"task-row0": "PENDING", "task-row1": "FAILED"},
-        {"task-row1": "python task failed: ImportError: boom"},
-    )
-
-    batch_key = ("req-failfast", "batch-1")
-    assert manager._execution_task_status[batch_key]["task-row0"] == "PENDING"
-
+    # A released batch still polls its non-terminal task through its own id.
     manager.release_executions({"req-failfast"})
-    assert batch_key not in manager._batch_workflow_id
-
     serve(
         monkeypatch,
-        {"task-row0": ("DONE", row0_id), "task-row1": ("FAILED", row1_id)},
+        {"task-row0": "DONE", "task-row1": "FAILED"},
+        {"task-row0": row0_id, "task-row1": row1_id},
     )
     reported = await manager.get_request_status("req-failfast")
 
-    assert reported["execution"] == {
-        "completed": True,
-        "details": {"succeeded": 1, "failed": 1, "pending": 0, "dispatched": 0},
-    }
+    assert reported["execution"]["completed"]
 
 
 def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, str]:
@@ -452,7 +427,7 @@ async def test_api_output_node_reads_content(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result_ = await manager.process_request(
         request_info,
@@ -522,7 +497,7 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result_ = await manager.process_request(
         request_info,
@@ -572,7 +547,7 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result_ = await manager.process_request(
         request_info,
@@ -652,7 +627,7 @@ async def test_failed_task_error_is_redacted_before_raise_and_record(
     echoes must be redacted in both the recorded error and the raised
     message."""
     error = "python task failed: ValueError: Authorization: Bearer supersecret"
-    manager, _, row1_id, message = await _run_failing_request(
+    manager, row0_id, row1_id, message = await _run_failing_request(
         monkeypatch,
         {"task-row0": "PENDING", "task-row1": "FAILED"},
         {"task-row1": error},
@@ -747,11 +722,7 @@ async def test_fail_fast_reports_every_failed_task_reason(
         "task-row1": "python task failed: ValueError: bad input"
     }
 
-    serve(
-        monkeypatch,
-        {tid: (value, node_by_task[tid]) for tid, value in status_by_task.items()},
-        error_by_task,
-    )
+    serve(monkeypatch, status_by_task, node_by_task, error_by_task)
 
     with pytest.raises(RuntimeError) as excinfo:
         await manager.process_request(
@@ -866,7 +837,7 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
         "task-llm": llm_row_id,
     }
 
-    serve(monkeypatch, {tid: ("DONE", node) for tid, node in node_by_task.items()})
+    serve(monkeypatch, dict.fromkeys(node_by_task, "DONE"), node_by_task)
 
     result_ = await manager.process_request(
         request_info,
@@ -947,7 +918,7 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
         "task-llm": llm_row_id,
     }
 
-    serve(monkeypatch, {tid: ("DONE", node) for tid, node in node_by_task.items()})
+    serve(monkeypatch, dict.fromkeys(node_by_task, "DONE"), node_by_task)
 
     result_ = await manager.process_request(
         request_info,

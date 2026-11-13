@@ -135,7 +135,7 @@ async def test_dispatched_request_carries_resolved_caller_credential(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, {"task-1": ("DONE", row_id)})
+    serve(monkeypatch, {"task-1": "DONE"}, {"task-1": row_id})
 
     await manager.process_request(
         request_info,

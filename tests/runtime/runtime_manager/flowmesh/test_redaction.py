@@ -100,10 +100,8 @@ async def test_fetch_workflow_task_statuses_sanitizes_api_error_before_reraising
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A FlowMesh rejection on a workflow status listing can echo back the
-    submitted task spec, Authorization header included.
-    fetch_workflow_task_statuses must re-raise a sanitized APIError so the
-    credential never reaches the caller, the log, or the persisted job error
-    record."""
+    submitted task spec, Authorization header included, so the re-raised
+    APIError is sanitized."""
 
     class _FakeTasks:
         async def list_statuses(self, workflow_id: str) -> Any:
@@ -287,7 +285,7 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: fake_fm))
 
-    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     with pytest.raises(APIError) as excinfo:
         await manager.process_request(
