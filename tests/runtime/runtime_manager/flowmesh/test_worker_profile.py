@@ -1,6 +1,5 @@
 """``get_worker_profile`` carries the task types a worker's executors advertise,
-so the scheduler can place a node only on a worker that can run it, and each GPU
-device's memory share, so it can tell a whole card from a fraction of one."""
+so the scheduler can place a node only on a worker that can run it."""
 
 from typing import Any
 
@@ -42,14 +41,11 @@ def _serve(
 ) -> None:
     payload = worker.model_dump(mode="json")
     if shares is not None:
-        payload["hardware"] = {
-            **payload["hardware"],
-            "gpu": {
-                "devices": [
-                    {"index": index, "memory_share": share}
-                    for index, share in enumerate(shares)
-                ]
-            },
+        payload["hardware"]["gpu"] = {
+            "devices": [
+                {"index": index, "memory_share": share}
+                for index, share in enumerate(shares)
+            ]
         }
 
     async def fake_get(path: str) -> dict[str, Any]:
@@ -92,10 +88,9 @@ async def test_profile_carries_the_devices_memory_shares(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hardware = WorkerHardware(
-        gpu=GpuPlatformInfo(devices=[GpuInfo(index=0), GpuInfo(index=1)])
-    )
-    _serve(monkeypatch, _worker("w", frozenset(), hardware), [0.3, None])
+    gpus = GpuPlatformInfo(devices=[GpuInfo(index=0), GpuInfo(index=1)])
+    worker = _worker("w", frozenset(), WorkerHardware(gpu=gpus))
+    _serve(monkeypatch, worker, [0.3, None])
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 

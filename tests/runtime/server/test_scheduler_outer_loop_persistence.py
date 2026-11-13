@@ -1148,7 +1148,6 @@ _BIG_GPU = {"has_gpu": True, "gpu_memory_share": 0.8}
 
 
 def _op(task_type: str, backend: str, model_spec: dict[str, Any] | None = None) -> Any:
-    """A graph node whose model spec names no utilization unless one is passed."""
     return SimpleNamespace(task_type=task_type, backend=backend, model_spec=model_spec)
 
 
@@ -1162,74 +1161,48 @@ def _generation_batch(utilization: float) -> Any:
     )
 
 
-def _gpu_cluster(server: Any, profiles: dict[str, dict[str, Any]]) -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cluster", "idle", "expected"),
+    [
+        (("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), ["gpu-big"]),
+        (("gpu-small", "gpu-big"), ("gpu-small",), None),
+        (("gpu-small",), ("gpu-small",), ["gpu-small"]),
+        (("gpu-whole",), ("gpu-whole",), ["gpu-whole"]),
+    ],
+)
+async def test_try_claim_workers_takes_only_a_worker_whose_share_fits(
+    server_factory,
+    cluster: tuple[str, ...],
+    idle: tuple[str, ...],
+    expected: list[str] | None,
+) -> None:
+    """A worker whose share cannot hold the node is never claimed: the claim waits
+    while a fitting one is busy, and proceeds when the cluster holds none."""
+    shares: dict[str, dict[str, Any]] = {
+        "gpu-small": _SMALL_GPU,
+        "gpu-big": _BIG_GPU,
+        "gpu-whole": {"has_gpu": True},
+    }
+    server = server_factory()
+    server.config.gpu_worker_group_size = 1
+    server.config.cpu_worker_group_size = 0
+
     async def total() -> FreeCapacity:
         return FreeCapacity(
-            cpu_worker_ids=(), gpu_worker_ids=tuple(profiles), profiles=profiles
+            cpu_worker_ids=(),
+            gpu_worker_ids=cluster,
+            profiles={name: shares[name] for name in cluster},
         )
 
     server._snapshot_total_capacity = total
-
-
-@pytest.mark.asyncio
-async def test_try_claim_workers_takes_the_gpu_worker_whose_share_fits(
-    server_factory,
-) -> None:
-    """Two idle GPU workers, the smaller share listed first, and a GPU group of
-    one: the claim must take the worker whose share holds the node's
-    utilization, not the first idle one the optimizer would reject."""
-    server = server_factory()
-    server.config.gpu_worker_group_size = 1
-    server.config.cpu_worker_group_size = 0
-    profiles = {"gpu-small": _SMALL_GPU, "gpu-big": _BIG_GPU}
-    _gpu_cluster(server, profiles)
-    free = FreeCapacity(
-        cpu_worker_ids=(), gpu_worker_ids=("gpu-small", "gpu-big"), profiles=profiles
-    )
-
-    assert await server._try_claim_workers(_generation_batch(0.8), free) == ["gpu-big"]
-
-
-@pytest.mark.asyncio
-async def test_try_claim_workers_waits_while_the_fitting_gpu_worker_is_busy(
-    server_factory,
-) -> None:
-    """The worker that fits is busy and only a smaller share is idle: the claim
-    returns None so the scheduler waits rather than claiming a worker the
-    optimizer would reject."""
-    server = server_factory()
-    server.config.gpu_worker_group_size = 1
-    server.config.cpu_worker_group_size = 0
-    _gpu_cluster(server, {"gpu-small": _SMALL_GPU, "gpu-big": _BIG_GPU})
     free = FreeCapacity(
         cpu_worker_ids=(),
-        gpu_worker_ids=("gpu-small",),
-        profiles={"gpu-small": _SMALL_GPU},
+        gpu_worker_ids=idle,
+        profiles={name: shares[name] for name in idle},
     )
 
-    assert await server._try_claim_workers(_generation_batch(0.8), free) is None
-    assert server.busy_workers == set()
-
-
-@pytest.mark.asyncio
-async def test_try_claim_workers_lets_the_optimizer_fail_when_no_share_fits(
-    server_factory,
-) -> None:
-    """No GPU worker in the cluster holds the utilization: waiting would never
-    end, so the claim proceeds and the optimizer fails the batch with the shares."""
-    server = server_factory()
-    server.config.gpu_worker_group_size = 1
-    server.config.cpu_worker_group_size = 0
-    _gpu_cluster(server, {"gpu-small": _SMALL_GPU})
-    free = FreeCapacity(
-        cpu_worker_ids=(),
-        gpu_worker_ids=("gpu-small",),
-        profiles={"gpu-small": _SMALL_GPU},
-    )
-
-    assert await server._try_claim_workers(_generation_batch(0.8), free) == [
-        "gpu-small"
-    ]
+    assert await server._try_claim_workers(_generation_batch(0.8), free) == expected
 
 
 class _CommitRaisesJobManager:

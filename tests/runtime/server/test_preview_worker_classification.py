@@ -4,6 +4,7 @@ ever assigned to CPU workers, same as "db"/data_retrieval). Otherwise an
 API-only or mixed preview can select a GPU-only worker (or no CPU worker at
 all), and HALO then rejects the node the preview approved."""
 
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -17,10 +18,7 @@ def _profile(
     task_types: list[str] | None = None,
     memory_share: float | None = None,
 ) -> dict[str, Any]:
-    devices = [
-        {"memory_total_bytes": None, "memory_share": memory_share}
-        for _ in range(gpu_count)
-    ]
+    devices = [{"memory_share": memory_share} for _ in range(gpu_count)]
     return {
         "cpu": {"logical_cores": 16},
         "memory": {"total_bytes": 64 * (1024**3)},
@@ -66,29 +64,6 @@ def _inference_op(node_id: str) -> RuntimeOp:
     )
 
 
-def _generation_op(node_id: str, utilization: float) -> RuntimeOp:
-    return RuntimeOp(
-        node_id=node_id,
-        task_type="inference",
-        backend="vllm",
-        model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec={},
-        model_spec={"vllm": {"gpu_memory_utilization": utilization}},
-        inference_spec={},
-    )
-
-
-class _MultiWorkerRuntimeManager:
-    def __init__(self, profiles: dict[str, dict[str, Any]]) -> None:
-        self._profiles = profiles
-
-    async def get_workers(self) -> list[str]:
-        return list(self._profiles)
-
-    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
-        return self._profiles[worker_id]
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("profiles", "expected"),
@@ -100,32 +75,30 @@ class _MultiWorkerRuntimeManager:
 async def test_preview_takes_a_worker_whose_share_holds_the_node(
     server_factory, profiles: dict[str, float], expected: list[str] | str
 ) -> None:
-    """The smaller share is listed first; the preview picks the worker that fits
-    and raises naming the shares when none does."""
     server = server_factory()
-    server.runtime_manager = cast(
-        Any,
-        _MultiWorkerRuntimeManager(
-            {
-                name: _profile(gpu_count=1, memory_share=share)
-                for name, share in profiles.items()
-            }
-        ),
-    )
-    runtime_graph = RuntimeGraph(
-        nodes={"llm-node": _generation_op("llm-node", 0.8)},
-        node_order=["llm-node"],
-        output_node_map={"llm-node": "output"},
-    )
+    manager = {n: _profile(1, memory_share=s) for n, s in profiles.items()}
+    server.runtime_manager = cast(Any, _MultiWorkerRuntimeManager(manager))
+    spec = {"vllm": {"gpu_memory_utilization": 0.8}}
+    op = replace(_inference_op("llm"), model_spec=spec)
+    graph = RuntimeGraph(nodes={"llm": op}, node_order=["llm"], output_node_map={})
 
     if isinstance(expected, str):
         with pytest.raises(RuntimeError, match=expected):
-            await server._select_preview_workers_and_profiles(runtime_graph)
+            await server._select_preview_workers_and_profiles(graph)
         return
-    selected_workers, _ = await server._select_preview_workers_and_profiles(
-        runtime_graph
-    )
-    assert selected_workers == expected
+    selected, _ = await server._select_preview_workers_and_profiles(graph)
+    assert selected == expected
+
+
+class _MultiWorkerRuntimeManager:
+    def __init__(self, profiles: dict[str, dict[str, Any]]) -> None:
+        self._profiles = profiles
+
+    async def get_workers(self) -> list[str]:
+        return list(self._profiles)
+
+    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
+        return self._profiles[worker_id]
 
 
 @pytest.mark.asyncio

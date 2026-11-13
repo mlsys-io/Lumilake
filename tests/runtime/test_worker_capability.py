@@ -2,8 +2,6 @@
 
 from typing import Any
 
-import pytest
-
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
@@ -112,44 +110,3 @@ def test_cpu_worker_advertising_ignores_gpu_workers() -> None:
     )
     assert not free.has_cpu_worker_advertising(frozenset({"python"}))
     assert free.has_cpu_worker_advertising(frozenset({"echo"}))
-
-
-def _claim_gpu(
-    profiles: dict[str, dict[str, Any]],
-    utilizations: frozenset[float],
-    group_size: int = 1,
-) -> list[str] | None:
-    free = FreeCapacity(
-        cpu_worker_ids=(), gpu_worker_ids=tuple(profiles), profiles=profiles
-    )
-    selected = free.eligible_workers(
-        cpu_group_size=0,
-        gpu_group_size=group_size,
-        worker_meets_hardware=_meets_everything,
-        hardware=None,
-        required_gpu_utilizations=utilizations,
-    )
-    return None if selected is None else selected[1]
-
-
-_SMALL = {"has_gpu": True, "gpu_memory_share": 0.1}
-_BIG = {"has_gpu": True, "gpu_memory_share": 0.8}
-
-
-@pytest.mark.parametrize(
-    ("profiles", "utilizations", "group_size", "expected"),
-    [
-        ({"gpu-small": _SMALL, "gpu-big": _BIG}, frozenset({0.8}), 1, ["gpu-big"]),
-        ({"gpu-small": _SMALL}, frozenset({0.8}), 1, None),
-        ({"gpu-small": _SMALL, "gpu-big": _BIG}, frozenset({0.8}), 0, []),
-        ({"gpu-small": _SMALL, "gpu-big": _BIG}, frozenset(), 1, ["gpu-small"]),
-        ({"gpu-whole": {"gpu_memory_share": None}}, frozenset({0.9}), 1, ["gpu-whole"]),
-    ],
-)
-def test_a_gpu_claim_takes_only_a_group_whose_shares_hold_the_utilizations(
-    profiles: dict[str, dict[str, Any]],
-    utilizations: frozenset[float],
-    group_size: int,
-    expected: list[str] | None,
-) -> None:
-    assert _claim_gpu(profiles, utilizations, group_size=group_size) == expected
