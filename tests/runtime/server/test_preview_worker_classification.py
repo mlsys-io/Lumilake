@@ -90,17 +90,25 @@ class _MultiWorkerRuntimeManager:
 
 
 @pytest.mark.asyncio
-async def test_preview_gpu_worker_holds_the_requested_memory_utilization(
-    server_factory,
+@pytest.mark.parametrize(
+    ("profiles", "expected"),
+    [
+        ({"gpu-small": 0.1, "gpu-big": 0.8}, ["gpu-big"]),
+        ({"gpu-small": 0.1}, "memory share holds"),
+    ],
+)
+async def test_preview_takes_a_worker_whose_share_holds_the_node(
+    server_factory, profiles: dict[str, float], expected: list[str] | str
 ) -> None:
-    """The small worker comes first; the preview still picks the one that fits."""
+    """The smaller share is listed first; the preview picks the worker that fits
+    and raises naming the shares when none does."""
     server = server_factory()
     server.runtime_manager = cast(
         Any,
         _MultiWorkerRuntimeManager(
             {
-                "gpu-small": _profile(gpu_count=1, memory_share=0.1),
-                "gpu-big": _profile(gpu_count=1, memory_share=0.8),
+                name: _profile(gpu_count=1, memory_share=share)
+                for name, share in profiles.items()
             }
         ),
     )
@@ -110,52 +118,14 @@ async def test_preview_gpu_worker_holds_the_requested_memory_utilization(
         output_node_map={"llm-node": "output"},
     )
 
-    selected_workers, profiles = await server._select_preview_workers_and_profiles(
-        runtime_graph
-    )
-
-    assert selected_workers == ["gpu-big"]
-    assert profiles["gpu-big"]["gpu_memory_share"] == 0.8
-
-
-@pytest.mark.asyncio
-async def test_preview_raises_when_no_gpu_share_holds_the_utilization(
-    server_factory,
-) -> None:
-    server = server_factory()
-    server.runtime_manager = cast(
-        Any,
-        _MultiWorkerRuntimeManager(
-            {"gpu-small": _profile(gpu_count=1, memory_share=0.1)}
-        ),
-    )
-    runtime_graph = RuntimeGraph(
-        nodes={"llm-node": _generation_op("llm-node", 0.8)},
-        node_order=["llm-node"],
-        output_node_map={"llm-node": "output"},
-    )
-
-    with pytest.raises(RuntimeError, match="memory share holds"):
-        await server._select_preview_workers_and_profiles(runtime_graph)
-
-
-@pytest.mark.asyncio
-async def test_preview_takes_a_whole_device_for_any_utilization(server_factory) -> None:
-    server = server_factory()
-    server.runtime_manager = cast(
-        Any, _MultiWorkerRuntimeManager({"gpu-whole": _profile(gpu_count=1)})
-    )
-    runtime_graph = RuntimeGraph(
-        nodes={"llm-node": _generation_op("llm-node", 0.9)},
-        node_order=["llm-node"],
-        output_node_map={"llm-node": "output"},
-    )
-
+    if isinstance(expected, str):
+        with pytest.raises(RuntimeError, match=expected):
+            await server._select_preview_workers_and_profiles(runtime_graph)
+        return
     selected_workers, _ = await server._select_preview_workers_and_profiles(
         runtime_graph
     )
-
-    assert selected_workers == ["gpu-whole"]
+    assert selected_workers == expected
 
 
 @pytest.mark.asyncio
