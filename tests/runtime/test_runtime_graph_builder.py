@@ -650,36 +650,7 @@ def _router_over(node: Any, **extra: Any) -> RouterOp:
     )
 
 
-def _row_gate_over_a_rowwise_llm_with_a_field_path() -> Graph:
-    rows = input_placeholder("Rows")
-    judge = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="judge {row}",
-        rowwise_columns=[{"label": "row", "node": rows.id}],
-    )
-    router = _router_over(judge, input_path="items.output.verdict")
-    return Graph.from_ops([as_output("result", _row_gate_over(rows, router))])
-
-
-def _row_gate_over_an_api_llm() -> Graph:
-    rows = input_placeholder("Rows")
-    judge = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
-    )
-    return Graph.from_ops(
-        [as_output("result", _row_gate_over(rows, _router_over(judge)))]
-    )
-
-
-def _row_gate_over_an_inputop_with_a_field_path() -> Graph:
-    rows = input_placeholder("Rows")
-    router = _router_over(rows, input_path="items.output.status")
-    return Graph.from_ops([as_output("result", _row_gate_over(rows, router))])
-
-
-def _gated_column_from_an_api_llm() -> Graph:
+def _row_gate_over_a_gated_column_from_an_api_llm() -> Graph:
     rows = input_placeholder("Rows")
     judge = LLMChatOp(
         [OpMessage(role="user", content=rows)],
@@ -700,32 +671,59 @@ def _gated_column_from_an_api_llm() -> Graph:
 
 
 @pytest.mark.parametrize(
-    ("build_graph", "message"),
+    ("source", "path", "message"),
     [
         # The status step reads a rowwise LLM's whole output, so a field path on
         # that source would walk a field the grouped item does not have.
-        (_row_gate_over_a_rowwise_llm_with_a_field_path, "from rowwise LLM"),
+        ("rowwise", "items.output.verdict", "from rowwise LLM"),
         # An API item carries its text under json.choices, which the status
         # step's item walk does not reach.
-        (_row_gate_over_an_api_llm, "reads API upstream"),
+        ("api", "items.output", "reads API upstream"),
         # An InputOp router source binds its values as literals, so a field path
         # would be dropped and every row would match the raw value.
-        (
-            _row_gate_over_an_inputop_with_a_field_path,
-            "InputOp-derived columns cannot be drilled",
-        ),
-        # A gated column reads its label off the selector's flat row, so an API
-        # upstream would contribute the whole response instead of its text.
-        (_gated_column_from_an_api_llm, "only a local op can fill a gated column"),
+        ("input", "items.output.status", "InputOp-derived columns cannot be drilled"),
     ],
+    ids=["rowwise-llm-path", "api-source", "inputop-path"],
 )
-def test_row_gate_rejects_a_source_the_status_or_selector_cannot_read(
-    monkeypatch: pytest.MonkeyPatch, build_graph: Any, message: str
+def test_row_gate_rejects_a_source_the_status_step_cannot_read(
+    monkeypatch: pytest.MonkeyPatch, source: str, path: str, message: str
 ) -> None:
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
-    compiled = build_graph().compile(Rows=['{"status": "ok"}', '{"status": "fail"}'])
+    rows = input_placeholder("Rows")
+    upstream: Any = rows
+    if source != "input":
+        upstream = LLMChatOp(
+            [OpMessage(role="user", content=rows)],
+            config=GenerationConfig(
+                model="org/model-8B",
+                api=ApiConfig() if source == "api" else None,
+            ),
+            rowwise_template="judge {row}" if source == "rowwise" else None,
+            rowwise_columns=[{"label": "row", "node": rows.id}],
+        )
+    compiled = Graph.from_ops(
+        [
+            as_output(
+                "result", _row_gate_over(rows, _router_over(upstream, input_path=path))
+            )
+        ]
+    ).compile(Rows=['{"status": "ok"}', '{"status": "fail"}'])
 
     with pytest.raises(ValueError, match=message):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_row_gate_rejects_an_api_upstream_filling_a_gated_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A gated column reads its label off the selector's flat row, so an API
+    # upstream would contribute the whole response instead of its text.
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+    compiled = _row_gate_over_a_gated_column_from_an_api_llm().compile(
+        Rows=['{"status": "ok"}', '{"status": "fail"}']
+    )
+
+    with pytest.raises(ValueError, match="only a local op can fill a gated column"):
         RuntimeGraphBuilder().build(compiled)
 
 
