@@ -1151,28 +1151,45 @@ def _op(task_type: str, backend: str, model_spec: dict[str, Any] | None = None) 
     return SimpleNamespace(task_type=task_type, backend=backend, model_spec=model_spec)
 
 
-def _generation_batch(utilization: float) -> Any:
-    op = _op("inference", "vllm", {"vllm": {"gpu_memory_utilization": utilization}})
+def _generation_batch(*utilizations: float) -> Any:
+    nodes = {
+        f"n{index}": _op(
+            "inference", "vllm", {"vllm": {"gpu_memory_utilization": utilization}}
+        )
+        for index, utilization in enumerate(utilizations)
+    }
     return SimpleNamespace(
         config=SimpleNamespace(hardware_requirements=None),
         workflows=[SimpleNamespace(request_id="req", id="wf")],
-        runtime_graphs={"g": SimpleNamespace(nodes={"n": op})},
+        runtime_graphs={"g": SimpleNamespace(nodes=nodes)},
         clustering_seconds=0.0,
     )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("cluster", "idle", "expected"),
+    ("utilizations", "gpu_group_size", "cluster", "idle", "expected"),
     [
-        (("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), ["gpu-big"]),
-        (("gpu-small", "gpu-big"), ("gpu-small",), None),
-        (("gpu-small",), ("gpu-small",), ["gpu-small"]),
-        (("gpu-whole",), ("gpu-whole",), ["gpu-whole"]),
+        ((0.8,), 1, ("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), ["gpu-big"]),
+        ((0.8,), 1, ("gpu-small", "gpu-big"), ("gpu-small",), None),
+        ((0.8,), 1, ("gpu-small",), ("gpu-small",), ["gpu-small"]),
+        ((0.8,), 1, ("gpu-whole",), ("gpu-whole",), ["gpu-whole"]),
+        # The group takes the worker that holds the largest fraction.
+        (
+            (0.1, 0.8),
+            1,
+            ("gpu-small", "gpu-big"),
+            ("gpu-small", "gpu-big"),
+            ["gpu-big"],
+        ),
+        # A batch claiming no GPU worker is not gated on the shares.
+        ((0.8,), 0, ("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), None),
     ],
 )
 async def test_try_claim_workers_takes_only_a_worker_whose_share_fits(
     server_factory,
+    utilizations: tuple[float, ...],
+    gpu_group_size: int,
     cluster: tuple[str, ...],
     idle: tuple[str, ...],
     expected: list[str] | None,
@@ -1185,7 +1202,7 @@ async def test_try_claim_workers_takes_only_a_worker_whose_share_fits(
         "gpu-whole": {"has_gpu": True},
     }
     server = server_factory()
-    server.config.gpu_worker_group_size = 1
+    server.config.gpu_worker_group_size = gpu_group_size
     server.config.cpu_worker_group_size = 0
 
     async def total() -> FreeCapacity:
@@ -1202,7 +1219,10 @@ async def test_try_claim_workers_takes_only_a_worker_whose_share_fits(
         profiles={name: shares[name] for name in idle},
     )
 
-    assert await server._try_claim_workers(_generation_batch(0.8), free) == expected
+    assert (
+        await server._try_claim_workers(_generation_batch(*utilizations), free)
+        == expected
+    )
 
 
 class _CommitRaisesJobManager:
