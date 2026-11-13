@@ -81,79 +81,71 @@ def _echo(op_id: str) -> dict[str, Any]:
     }
 
 
-_ROUTED_ROWS = {"label": "messages_json", "node": "source", "path": "items.output"}
 _ROUTED_ROUTER = {
     "id": "route",
     "op": "RouterOp",
     "inputs": ["source"],
-    "input_path": "items.output",
     "rules": [
         {"branch": "review", "match": "contains", "value": "NEEDS REVIEW"},
         {"branch": "pending", "match": "equals", "value": "__never__"},
     ],
     "default_branch": "pending",
 }
-_ROUTED_GATE = {"node": "route", "branch": "review"}
 
 
-def _routed_payload(
-    router: dict[str, Any] | None = None,
-    gate: dict[str, Any] | None = None,
-    turn_rows: bool = False,
-) -> dict[str, Any]:
-    """A routed workflow: a router, one gated model, one reading a column."""
-    turn: dict[str, Any] = {
+_ROUTED_ROWS = {"node": "source", "path": "items.output", "label": "msgs"}
+
+
+def _turn(**overrides: Any) -> dict[str, Any]:
+    """A model gated by ``route``, its rows taken from the router it names."""
+    return {
         "id": "turn",
         "op": "LLMChatOp",
         "inputs": ["source", "route"],
         "messages": [{"role": "user", "content": "source"}],
         "config": {"model": "dummy-model"},
+        "row_gate": {"node": "route", "branch": "review", "terminal": True},
+        **overrides,
     }
-    if gate is not None:
-        turn["row_gate"] = gate
-    if turn_rows:
-        turn["rowwise_messages_column"] = _ROUTED_ROWS
-    ops = [_echo("source"), _echo("two")]
-    if router is not None:
-        ops.append(router)
-    ops += [
-        turn,
-        {
-            "id": "ask",
-            "op": "LLMChatOp",
-            "inputs": ["source"],
-            "messages": [{"role": "user", "content": "source"}],
-            "config": {"model": "dummy-model"},
-            "rowwise_columns": [
-                {"label": "message_count", "data": {"type": "list", "items": [1]}}
-            ],
-            "rowwise_messages_column": _ROUTED_ROWS,
-        },
-    ]
+
+
+def _routed(*ops: dict[str, Any], turn: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A routed workflow whose output is the gated model."""
     return {
         "name": "routed",
         "inputs": {"rows": ["normal", "NEEDS REVIEW"]},
-        "ops": ops,
+        "ops": [_echo("source"), *ops, turn or _turn()],
         "outputs": [{"name": "result", "ref": "turn"}],
     }
 
 
-def test_router_op_and_row_gate_are_declarative() -> None:
-    spec = parse_yaml_payload(_routed_payload(_ROUTED_ROUTER, _ROUTED_GATE))["routed"]
+def test_router_row_gate_and_messages_column_parse() -> None:
+    ask = {
+        "id": "ask",
+        "op": "LLMChatOp",
+        "inputs": ["source"],
+        "messages": [{"role": "user", "content": "source"}],
+        "config": {"model": "dummy-model"},
+        "rowwise_messages_column": _ROUTED_ROWS,
+    }
+    spec = parse_yaml_payload(_routed(_ROUTED_ROUTER, ask))["routed"]
     graph = Graph.from_json(spec["graph"])
     router = next(iter(graph.iter_ops(RouterOp)))
+    assert (router.default_branch, router.branches) == (
+        "pending",
+        ["review", "pending"],
+    )
     chats = list(graph.iter_ops(LLMChatOp))
     gated = next(op for op in chats if op.row_gate is not None)
-    messages = next(op for op in chats if op.row_gate is None)
-    assert router.default_branch == "pending"
-    assert router.branches == ["review", "pending"]
     assert gated.row_gate is not None
-    assert gated.row_gate.branch == "review"
-    # An ungated model can take its messages from an upstream column instead of
+    assert (gated.row_gate.branch, gated.row_gate.terminal) == ("review", True)
+    # The gate's router becomes an input of the model that names it.
+    assert router.id in {op.id for op in gated.inputs}
+    # An ungated model can take its prompts from an upstream column instead of
     # a rowwise template.
-    assert messages.rowwise_template is None
-    assert messages.rowwise_messages_column is not None
-    assert messages.rowwise_messages_column.label == "messages_json"
+    plain = next(op for op in chats if op.row_gate is None)
+    assert plain.rowwise_messages_column is not None
+    assert plain.rowwise_messages_column.label == "msgs"
 
 
 @pytest.mark.parametrize(
@@ -161,23 +153,29 @@ def test_router_op_and_row_gate_are_declarative() -> None:
     [
         # A router reads exactly one upstream.
         (
-            _routed_payload({**_ROUTED_ROUTER, "inputs": ["source", "two"]}),
+            _routed(_echo("two"), {**_ROUTED_ROUTER, "inputs": ["source", "two"]}),
             "exactly one input",
         ),
         # Every default branch names one of the declared rules.
         (
-            _routed_payload({**_ROUTED_ROUTER, "default_branch": "missing"}),
+            _routed({**_ROUTED_ROUTER, "default_branch": "missing"}),
             "default_branch",
         ),
         # A gate names the branch it keeps.
         (
-            _routed_payload(_ROUTED_ROUTER, {"node": "route"}),
+            _routed(_ROUTED_ROUTER, turn=_turn(row_gate={"node": "route"})),
             "requires the 'branch' field",
         ),
         # A gated model reads its rows through the selector, so it cannot also
         # take its messages from a rowwise column.
         (
-            _routed_payload(_ROUTED_ROUTER, _ROUTED_GATE, turn_rows=True),
+            _routed(
+                _ROUTED_ROUTER,
+                turn=_turn(
+                    row_gate={"node": "route", "branch": "review"},
+                    rowwise_messages_column=_ROUTED_ROWS,
+                ),
+            ),
             "combines row_gate with",
         ),
     ],
