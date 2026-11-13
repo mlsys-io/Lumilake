@@ -29,7 +29,7 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
     _sanitize_flowmesh_api_error,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.flowmesh.conftest import serve, status
+from tests.runtime.runtime_manager.flowmesh.conftest import serve
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
@@ -287,7 +287,7 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: fake_fm))
 
-    serve(monkeypatch, [status("task-row0", node=row_id)])
+    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
 
     with pytest.raises(APIError) as excinfo:
         await manager.process_request(

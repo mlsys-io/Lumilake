@@ -1,7 +1,7 @@
 import pytest
 
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
-from tests.runtime.runtime_manager.flowmesh.conftest import serve, status
+from tests.runtime.runtime_manager.flowmesh.conftest import serve
 
 
 @pytest.mark.asyncio
@@ -14,12 +14,13 @@ async def test_update_task_status_refreshes_a_workflow_in_one_request(
     polled."""
     serve(
         monkeypatch,
-        [
-            status("task-0"),
-            status("task-1"),
-            status("task-2", "FAILED", error="Authorization: Bearer secret"),
-            status("task-3", "PENDING"),
-        ],
+        {
+            "task-0": ("DONE", None),
+            "task-1": ("DONE", None),
+            "task-2": ("FAILED", None),
+            "task-3": ("PENDING", None),
+        },
+        {"task-2": "Authorization: Bearer secret"},
     )
     task_statuses = {f"task-{i}": "PENDING" for i in range(1_500)}
     task_statuses["task-0"] = "DONE"

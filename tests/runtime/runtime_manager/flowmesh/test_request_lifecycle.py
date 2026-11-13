@@ -26,7 +26,7 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.flowmesh.conftest import serve, status
+from tests.runtime.runtime_manager.flowmesh.conftest import serve
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
@@ -161,7 +161,7 @@ async def test_api_backend_returns_chat_history_like_local_backend(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, [status("task-row0", node=row_id)])
+    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
 
     result = await manager.process_request(
         request_info,
@@ -260,10 +260,8 @@ async def _run_failing_request(
 
     serve(
         monkeypatch,
-        [
-            status(tid, value, node_by_task[tid], error_by_task.get(tid))
-            for tid, value in status_by_task.items()
-        ],
+        {tid: (value, node_by_task[tid]) for tid, value in status_by_task.items()},
+        error_by_task,
     )
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -325,7 +323,7 @@ async def test_progress_refreshes_from_the_workflow_after_execution_release(
 
     serve(
         monkeypatch,
-        [status("task-row0", node=row0_id), status("task-row1", "FAILED", row1_id)],
+        {"task-row0": ("DONE", row0_id), "task-row1": ("FAILED", row1_id)},
     )
     reported = await manager.get_request_status("req-failfast")
 
@@ -454,7 +452,7 @@ async def test_api_output_node_reads_content(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, [status("task-row0", node=row_id)])
+    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
 
     result_ = await manager.process_request(
         request_info,
@@ -524,7 +522,7 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, [status("task-row0", node=row_id)])
+    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
 
     result_ = await manager.process_request(
         request_info,
@@ -574,7 +572,7 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    serve(monkeypatch, [status("task-row0", node=row_id)])
+    serve(monkeypatch, {"task-row0": ("DONE", row_id)})
 
     result_ = await manager.process_request(
         request_info,
@@ -745,14 +743,14 @@ async def test_fail_fast_reports_every_failed_task_reason(
         "task-row1": "FAILED",
         "task-row2": "PENDING",
     }
-    error_by_task = {"task-row1": "python task failed: ValueError: bad input"}
+    error_by_task: dict[str, str | None] = {
+        "task-row1": "python task failed: ValueError: bad input"
+    }
 
     serve(
         monkeypatch,
-        [
-            status(tid, value, node_by_task[tid], error_by_task.get(tid))
-            for tid, value in status_by_task.items()
-        ],
+        {tid: (value, node_by_task[tid]) for tid, value in status_by_task.items()},
+        error_by_task,
     )
 
     with pytest.raises(RuntimeError) as excinfo:
@@ -868,10 +866,7 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
         "task-llm": llm_row_id,
     }
 
-    serve(
-        monkeypatch,
-        [status(tid, node=node) for tid, node in node_by_task.items()],
-    )
+    serve(monkeypatch, {tid: ("DONE", node) for tid, node in node_by_task.items()})
 
     result_ = await manager.process_request(
         request_info,
@@ -952,10 +947,7 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
         "task-llm": llm_row_id,
     }
 
-    serve(
-        monkeypatch,
-        [status(tid, node=node) for tid, node in node_by_task.items()],
-    )
+    serve(monkeypatch, {tid: ("DONE", node) for tid, node in node_by_task.items()})
 
     result_ = await manager.process_request(
         request_info,

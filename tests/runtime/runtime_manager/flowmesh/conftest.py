@@ -9,22 +9,24 @@ def flowmesh_manager() -> FlowmeshRuntimeManager:
     return FlowmeshRuntimeManager()
 
 
-def status(
-    task_id: str, value: str = "DONE", node: str | None = None, error: str | None = None
-) -> TaskStatusView:
-    return TaskStatusView.model_construct(
-        task_id=task_id,
-        status=value,
-        error=error,
-        last_error=None,
-        graph_node_name=node,
-    )
-
-
-def serve(monkeypatch: pytest.MonkeyPatch, tasks: list[TaskStatusView]) -> None:
-    """Answer every workflow status listing with ``tasks``, read on each call."""
+def serve(
+    monkeypatch: pytest.MonkeyPatch,
+    tasks: dict[str, tuple[str, str | None]],
+    errors: dict[str, str | None] | None = None,
+) -> None:
+    """Answer every workflow status listing from ``{task id: (status, node)}``,
+    read on each call so a test can advance a task's status."""
 
     async def _list(self: FlowmeshRuntimeManager, workflow_id: str) -> list:
-        return tasks
+        return [
+            TaskStatusView.model_construct(
+                task_id=task_id,
+                status=status,
+                graph_node_name=node,
+                error=(errors or {}).get(task_id),
+                last_error=None,
+            )
+            for task_id, (status, node) in tasks.items()
+        ]
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fetch_workflow_task_statuses", _list)

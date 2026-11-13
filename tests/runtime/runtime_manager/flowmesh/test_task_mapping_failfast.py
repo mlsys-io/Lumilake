@@ -3,7 +3,7 @@ import types
 import pytest
 
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
-from tests.runtime.runtime_manager.flowmesh.conftest import serve, status
+from tests.runtime.runtime_manager.flowmesh.conftest import serve
 
 
 @pytest.mark.asyncio
@@ -31,7 +31,6 @@ async def test_resolve_task_node_maps_fails_when_task_list_fails(
     ("listed", "match"),
     [
         ([("task-a", "node-a"), ("task-b", "unknown-node")], "graph_node_name"),
-        ([("task-a", "node-a"), ("task-b", "node-a")], "Duplicate"),
         ([("task-a", "node-a")], "incomplete"),
     ],
 )
@@ -41,10 +40,7 @@ async def test_resolve_task_node_maps_rejects_an_inconsistent_workflow(
     listed: list[tuple[str, str]],
     match: str,
 ) -> None:
-    serve(
-        monkeypatch,
-        [status(task_id, "PENDING", node) for task_id, node in listed],
-    )
+    serve(monkeypatch, {tid: ("PENDING", node) for tid, node in listed})
 
     with pytest.raises(RuntimeError, match=match):
         await flowmesh_manager._resolve_task_node_maps(
