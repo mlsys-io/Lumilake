@@ -259,11 +259,11 @@ class _FakeRuntimeServer:
         # returned plan); emit one value per leaf OutputOp so the loop can
         # validate and accumulate an observation (unless the test asks to omit
         # them).
-        export_names = set(self._export_output_names(graphs))
+        export_names = set(self._output_names(graphs, "export_"))
         if not self.omit_leaf_outputs:
             leaf_names = [
                 name
-                for name in self._leaf_output_names(graphs)
+                for name in self._output_names(graphs, "leaf_")
                 if name not in export_names
             ]
             # The job manager merges a round's per-row slices into one batch,
@@ -286,19 +286,11 @@ class _FakeRuntimeServer:
                 ]
         return LumilakeResponse(outputs=outputs)
 
-    def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
+    def _output_names(self, graphs: dict[str, Any], prefix: str) -> list[str]:
         names: list[str] = []
         for graph in graphs.values():
             for name in graph.graph.output_ops:
-                if str(name).startswith("leaf_") and name not in names:
-                    names.append(str(name))
-        return names
-
-    def _export_output_names(self, graphs: dict[str, Any]) -> list[str]:
-        names: list[str] = []
-        for graph in graphs.values():
-            for name in graph.graph.output_ops:
-                if str(name).startswith("export_") and name not in names:
+                if str(name).startswith(prefix) and str(name) not in names:
                     names.append(str(name))
         return names
 
@@ -533,28 +525,6 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
     assert list(subgraph_leaf.values())[0] == [{"market_cap": 10}]
 
 
-@pytest.mark.anyio
-async def test_dynamic_planner_round_with_done_fields_still_plans(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # Only a row-gated leaf carries routing rows, so a leaf value that happens
-    # to hold ``done`` says nothing about the round's survivor set. The planner
-    # is still asked after such a round.
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
-    fake_server = job_routes._fake_runtime_server
-    fake_server.leaf_item = lambda row: {
-        "done": True,
-        "table": {"market_cap": 10 + row},
-        "output": {"market_cap": 10 + row},
-    }
-    fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "completed", record.error
-    assert len(record.child_job_ids) == 2
-    assert record.result.outputs["round"]["plan"][-1]["next"] == "STOP"
-
-
 _GATED_PLAN: dict[str, Any] = {
     "next": "subgraph",
     "ops": [
@@ -593,6 +563,50 @@ _GATED_PLAN: dict[str, Any] = {
 }
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("leaf_item", "plans", "expected"),
+    [
+        # Only a row-gated leaf carries routing rows, so a leaf value that
+        # happens to hold ``done`` says nothing about the round's survivor set;
+        # the planner still makes the stop.
+        (
+            lambda row: {"done": True, "table": {"market_cap": 10 + row}},
+            [_SUBGRAPH_PLAN, {"next": "STOP"}],
+            ("STOP", "proposer"),
+        ),
+        # Every row of the gated leaf is done, so the round has no survivor to
+        # forward and the observation ends the loop before the planner runs.
+        (
+            lambda row: {
+                "output": json.dumps({"done": True, "branch": "finish"}),
+                "value": {"done": True, "branch": "finish"},
+            },
+            [_GATED_PLAN, _SUBGRAPH_PLAN],
+            ("STOP", "observation"),
+        ),
+    ],
+    ids=["leaf-value-holds-done", "gated-rows-terminal"],
+)
+async def test_dynamic_round_stops_on_the_planner_or_a_gated_observation(
+    app: FastAPI,
+    job_routes: Any,
+    leaf_item: Callable[[int], dict],
+    plans: list[dict[str, Any]],
+    expected: tuple[str, str],
+) -> None:
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.leaf_item = leaf_item
+    fake_server.plans = plans
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed", record.error
+    assert len(record.child_job_ids) == 2
+    plan = record.result.outputs["round"]["plan"][-1]
+    assert (plan["next"], plan["source"]) == expected
+
+
 def test_gated_round_binds_its_reader_to_the_merge_stage() -> None:
     # A row-gated leaf has no runtime node of its own: it compiles to status,
     # selection, gated call and merge stages, and the round's proposer reads the
@@ -621,33 +635,6 @@ def test_gated_round_binds_its_reader_to_the_merge_stage() -> None:
     (column,) = runtime_graph.nodes["proposer"].data_spec["template"]["columns"]
     assert column["node"] == runtime_graph.dsl_to_runtime[gated_id][-1]
     assert column["path"] == "value.items.output"
-
-
-@pytest.mark.anyio
-async def test_dynamic_gated_round_with_terminal_rows_stops_before_planner(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # Every row of the gated leaf is done, so the round has no survivor to
-    # forward and the loop stops without asking the planner for another round.
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
-    fake_server = job_routes._fake_runtime_server
-    # The row-gate merge stage emits ``{"output": <row json>, "value": <row>}``
-    # and the leaf archives that item whole; every row is done.
-    routing = {"selected": True, "done": True, "branch": "finish", "row": 0}
-    fake_server.leaf_item = lambda row: {
-        "output": json.dumps(routing),
-        "value": routing,
-    }
-    fake_server.plans = [_GATED_PLAN, _SUBGRAPH_PLAN]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "completed", record.error
-    # The second plan would have run a third round; the stop rule ends the loop
-    # instead, and the plan list records the observation as the stop source.
-    assert len(record.child_job_ids) == 2
-    assert record.result is not None
-    plans = record.result.outputs["round"]["plan"]
-    assert (plans[-1]["next"], plans[-1]["source"]) == ("STOP", "observation")
 
 
 @pytest.mark.anyio
