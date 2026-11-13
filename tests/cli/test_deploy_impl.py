@@ -792,7 +792,7 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
         "REDIS_TELEMETRY_PORT": "18003",
         "REDIS_TLS_DIR": "./secrets/tls/redis",
         "SERVER_TLS_DIR": "./secrets/tls/server",
-        "SERVER_WORKER_CONFIG": "./configs/worker_config.yaml",
+        "SERVER_WORKER_CONFIG": "./configs/custom.yaml",
         "FLOWMESH_PLUGIN_DATA_DIR": "./plugin-data",
     }
     env_file = deploy_dir / ".env.flowmesh"
@@ -823,7 +823,7 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
     workdir = deploy_dir / fm.WORKDIR_NAME
     assert (workdir / "secrets" / "tls" / "redis").is_dir()
     assert (workdir / "secrets" / "tls" / "server").is_dir()
-    assert (workdir / "configs" / "worker_config.yaml").is_file()
+    assert (workdir / "configs" / "custom.yaml").is_file()
     assert (workdir / "plugin-data").is_dir()
     assert not (elsewhere / fm.WORKDIR_NAME).exists()
     for key in (
@@ -834,43 +834,6 @@ def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
     ):
         assert Path(os.environ[key]).is_relative_to(workdir)
     assert compose_calls == [["--profile", "root", "up", "-d", "--wait"]]
-
-
-def test_stack_up_creates_the_env_files_worker_config_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The worker config composes mounts is the one the env file names."""
-    deploy_dir = tmp_path / "deployment"
-    deploy_dir.mkdir()
-    env_keys = {
-        "SERVER_HTTP_PORT": "18000",
-        "SERVER_GRPC_PORT": "18001",
-        "REDIS_CONTROL_PORT": "18002",
-        "REDIS_TELEMETRY_PORT": "18003",
-        "SERVER_WORKER_CONFIG": "./configs/custom.yaml",
-    }
-    env_file = deploy_dir / ".env.flowmesh"
-    env_file.write_text("".join(f"{k}={v}\n" for k, v in env_keys.items()))
-    for key in (*env_keys, *STACK_PATH_KEYS):
-        monkeypatch.setenv(key, "")
-    monkeypatch.setattr(load_env, "_loaded", None, raising=False)
-
-    class _StubStack:
-        def run(
-            self,
-            args: list[str],
-            *,
-            env_file: Path,
-            env: dict[str, str] | None = None,
-        ) -> object:
-            return type("_Result", (), {"returncode": 0})()
-
-    monkeypatch.setattr(fm, "_stack", _StubStack())
-    monkeypatch.setattr(fm, "check_ports", lambda _ports: [])
-
-    fm.stack_up(env_file)
-
-    assert (deploy_dir / fm.WORKDIR_NAME / "configs" / "custom.yaml").is_file()
 
 
 def test_stack_down_runs_without_a_workdir(
