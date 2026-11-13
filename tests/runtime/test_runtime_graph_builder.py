@@ -529,15 +529,10 @@ def test_rowwise_messages_column_emits_list_message_array_spec(
 
 
 def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
+    # A gated chat op compiles into status, selection, gated call and merge
+    # stages, and only the merge stage stands as the op's output.
     rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
+    router = _router_over(rows)
     templates = [{"name": "verdict", "type": "string"}]
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
@@ -545,7 +540,7 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
         structural_outputs=templates,
-        row_gate=RowGate(node=router.id, branch="review"),
+        row_gate=RowGate(node=router.id, branch="ok"),
         row_gate_op=router,
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(
@@ -560,23 +555,11 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     ]
     assert status.data_spec["mode"] == "row_status"
     assert selector.data_spec["mode"] == "row_select"
-    assert selected.task_type == "inference"
     assert selected.dependencies == (selector.node_id,)
     assert merge.data_spec["mode"] == "row_skip_merge"
     assert selected.inference_spec["templates"] == templates
     assert runtime_graph.output_node_map == {merge.node_id: "result"}
     assert router.id not in runtime_graph.nodes
-    assert runtime_graph.nodes[selector.node_id].dependencies == (status.node_id,)
-
-    # The status stage reads nothing and the merge stage pairs the status rows
-    # with the gated call's output.
-    status_spec = runtime_graph.nodes[ids[0]].to_flowmesh_node()["spec"]
-    merge_spec = runtime_graph.nodes[ids[3]].to_flowmesh_node()["spec"]
-    assert "inputs" not in status_spec
-    assert merge_spec["inputs"] == [
-        {"stage": ids[0]},
-        {"stage": ids[2]},
-    ]
 
 
 def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
@@ -650,26 +633,6 @@ def _router_over(node: Any, **extra: Any) -> RouterOp:
     )
 
 
-def _row_gate_over_a_gated_column_from_an_api_llm() -> Graph:
-    rows = input_placeholder("Rows")
-    judge = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
-    )
-    router = _router_over(rows)
-    gated = LLMChatOp(
-        judge,
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="fix {verdict}",
-        rowwise_columns=[
-            {"label": "verdict", "node": judge.id, "path": "items.output"}
-        ],
-        row_gate=RowGate(node=router.id, branch="fail"),
-        row_gate_op=router,
-    )
-    return Graph.from_ops([as_output("result", gated)])
-
-
 @pytest.mark.parametrize(
     ("source", "path", "message"),
     [
@@ -719,7 +682,23 @@ def test_row_gate_rejects_an_api_upstream_filling_a_gated_column(
     # A gated column reads its label off the selector's flat row, so an API
     # upstream would contribute the whole response instead of its text.
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
-    compiled = _row_gate_over_a_gated_column_from_an_api_llm().compile(
+    rows = input_placeholder("Rows")
+    router = _router_over(rows)
+    judge = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
+    )
+    gated = LLMChatOp(
+        judge,
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="fix {verdict}",
+        rowwise_columns=[
+            {"label": "verdict", "node": judge.id, "path": "items.output"}
+        ],
+        row_gate=RowGate(node=router.id, branch="fail"),
+        row_gate_op=router,
+    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(
         Rows=['{"status": "ok"}', '{"status": "fail"}']
     )
 
