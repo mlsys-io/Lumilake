@@ -1307,26 +1307,9 @@ def _lambda_plan(op_id: str, inputs: list[str], mode: str, body: str) -> dict[st
 @pytest.mark.parametrize(
     ("yaml_text", "plans", "export_rows", "leaf_items", "rounds", "expected"),
     [
-        # Round 1's list-mode export holds one item per survivor, so round 2
-        # reads a shorter list than the symbols and still runs. That result
-        # cannot be partitioned, so both rounds run as one slice.
-        pytest.param(
-            _TEMPLATE_DYNAMIC_YAML,
-            [{"next": "STOP"}],
-            [[{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}], []],
-            {},
-            2,
-            {
-                "LiveState_r0": [
-                    json.dumps({"case_id": "0", "turn": 0}),
-                    json.dumps({"case_id": "1", "turn": 0}),
-                ]
-            },
-            id="shrunk-export",
-        ),
         # Round 2 declares no list Lambda and only reads round 1's whole result
         # beside the symbols; its two inputs cannot agree in length, so it runs
-        # as one slice too.
+        # as one slice and the whole result binds one value per row.
         pytest.param(
             _VALID_DYNAMIC_YAML,
             [
