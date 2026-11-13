@@ -1303,11 +1303,8 @@ async def recover_in_flight_jobs_until_done(
 def _record_from_payload(loaded: dict[str, Any]) -> JobRecord:
     """Rebuild a record from storage, treating a record already terminal as
     usage-finalized since its stored usage is the whole story."""
-    payload = dict(loaded)
-    payload.setdefault(
-        "terminal_usage_finalized", payload["status"] in TERMINAL_JOB_STATUSES
-    )
-    return JobRecord(**payload)
+    finalized = loaded["status"] in TERMINAL_JOB_STATUSES
+    return JobRecord(**{"terminal_usage_finalized": finalized, **loaded})
 
 
 async def _load_job_record(job_id: str) -> JobRecord | None:
