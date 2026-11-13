@@ -73,11 +73,14 @@ def _inference_op(node_id: str) -> RuntimeOp:
     ],
 )
 async def test_preview_takes_a_worker_whose_share_holds_the_node(
-    server_factory, profiles: dict[str, float], expected: list[str] | str
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    profiles: dict[str, float],
+    expected: list[str] | str,
 ) -> None:
     server = server_factory()
     manager = {n: _profile(1, memory_share=s) for n, s in profiles.items()}
-    server.runtime_manager = cast(Any, _MultiWorkerRuntimeManager(manager))
+    monkeypatch.setattr(server, "runtime_manager", _MultiWorkerRuntimeManager(manager))
     spec = {"vllm": {"gpu_memory_utilization": 0.8}}
     op = replace(_inference_op("llm"), model_spec=spec)
     graph = RuntimeGraph(nodes={"llm": op}, node_order=["llm"], output_node_map={})
