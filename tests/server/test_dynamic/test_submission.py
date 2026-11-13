@@ -83,9 +83,6 @@ driver:
   model: Qwen/Qwen3-8B
   max_rounds: 3
   max_nodes_per_round: 4
-  output_location:
-    type: s3
-    prefix: dynamic/template/
   template:
     first:
       ops:
