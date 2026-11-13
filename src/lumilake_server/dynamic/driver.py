@@ -606,6 +606,30 @@ def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
     return bool(config.get("rowwise_template") or config.get("rowwise_messages_column"))
 
 
+def _source_grouped(
+    columns: Any, results: dict[str, list[dict[str, Any]]]
+) -> bool | None:
+    """Whether FlowMesh groups a leaf's rows from the columns it declares.
+
+    A column reading the input node or an earlier-round op becomes a literal
+    list input in the leaf's round, and FlowMesh reads a literal column
+    ungrouped, so the leaf builds one table of its own rows however many items
+    its source had. A column reading a same-round op leaves the answer unknown,
+    because the driver never holds that op's values.
+    """
+    if not isinstance(columns, list) or not columns:
+        return None
+    for column in columns:
+        if not isinstance(column, dict):
+            return None
+        node = column.get("node")
+        if node is None:
+            continue
+        if not isinstance(node, str) or (node != INPUT_NODE_ID and node not in results):
+            return None
+    return False
+
+
 def _walk_each_item(
     items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
 ) -> list[Any]:
@@ -613,21 +637,30 @@ def _walk_each_item(
     return [_walk_output_path(item, parts, ref) for item in items]
 
 
-def _bind_whole(walked: list[Any], *, rows: int, grouped: bool) -> list[Any]:
+def _bind_whole(
+    walked: list[Any], *, rows: int, grouped: bool, grouped_source: bool | None
+) -> list[Any]:
     """Bind a whole result one value per archived item, as the per-row path
     does, expanding a row-wise leaf that archived the round's rows as one
     table.
 
     ``grouped`` marks a row-wise leaf, whose archive is one grouped item per
-    table. FlowMesh groups its rows only when the row source holds a list per
-    item, so a leaf over scalar rows emits one item holding every row while a
-    leaf over list rows emits one item per table. A row-wise leaf's single
-    item over more than one row is therefore that one table, and its list
-    expands to one value per row; several items are one table each and bind
-    one value per item. Every other ref keeps one value per item, unwrapping
-    a one-element list only when every item holds one element.
+    table, and ``grouped_source`` whether FlowMesh grouped that leaf's rows from
+    its source column: ``False`` when the driver bound the source as a literal
+    list input, which FlowMesh reads ungrouped and so builds one table of the
+    leaf's own rows; ``None`` when the source is a same-round op whose values
+    the driver never held. A row-wise leaf's single item is one table of its
+    rows when the source was ungrouped, so its list expands to one value per
+    row; otherwise the item is one table and stays one value.
+
+    A source of unknown grouping keeps the fallback of expanding over more than
+    one row, so a list Lambda that fans one symbol out into several rows before
+    a row-wise leaf still binds symbol-count-dependent there. Every other ref
+    keeps one value per item, unwrapping a one-element list only when every
+    item holds one.
     """
-    if grouped and rows > 1 and len(walked) == 1 and isinstance(walked[0], list):
+    expand = grouped_source is False or (grouped_source is None and rows > 1)
+    if grouped and expand and len(walked) == 1 and isinstance(walked[0], list):
         return list(walked[0])
     one_element = bool(walked) and all(
         isinstance(value, list) and len(value) == 1 for value in walked
@@ -857,6 +890,9 @@ def forward_refs(
                     walked,
                     rows=rows,
                     grouped=_is_rowwise_leaf(op_type, configs[ref]),
+                    grouped_source=_source_grouped(
+                        configs[ref].get("rowwise_columns"), results
+                    ),
                 )
             )
         return None
@@ -895,6 +931,9 @@ def forward_refs(
                         rows=rows,
                         grouped=_is_rowwise_leaf(
                             configs[ref].get("op", ""), configs[ref]
+                        ),
+                        grouped_source=_source_grouped(
+                            configs[ref].get("rowwise_columns"), results
                         ),
                     )
                 )

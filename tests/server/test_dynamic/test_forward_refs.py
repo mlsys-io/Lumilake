@@ -686,6 +686,158 @@ def test_walk_archived_items_rejects_non_json():
         walk_archived_items(archived, configs)
 
 
+def _sourced_rowwise_config(op_id: str, *sources: str) -> dict:
+    config = _llm_config(op_id)
+    config["rowwise_template"] = "{c0}"
+    config["rowwise_columns"] = [
+        {
+            "label": f"c{index}",
+            "node": source,
+            **({} if source == INPUT_NODE_ID else {"path": "items.output"}),
+        }
+        for index, source in enumerate(sources)
+    ]
+    return config
+
+
+_ROW_COUNT_SOURCE_CASES: list[Any] = [
+    pytest.param(
+        {"s0": _sourced_rowwise_config("s0", INPUT_NODE_ID)},
+        {"s0": [{"output": ["a0", "a1", "a2"]}]},
+        3,
+        {"s0": ["a0", "a1", "a2"]},
+        id="input-node-three-symbols",
+    ),
+    pytest.param(
+        {"s0": _sourced_rowwise_config("s0", INPUT_NODE_ID)},
+        {"s0": [{"output": ["a0", "a1", "a2"]}]},
+        1,
+        {"s0": ["a0", "a1", "a2"]},
+        id="input-node-one-symbol",
+    ),
+    pytest.param(
+        {
+            "c0": _llm_config("c0"),
+            "s0": _sourced_rowwise_config("s0", "c0"),
+        },
+        {"s0": [{"output": ["a0", "a1", "a2"]}]},
+        3,
+        {"s0": ["a0", "a1", "a2"]},
+        id="per-row-chat-three-symbols",
+    ),
+    pytest.param(
+        {
+            "c0": _llm_config("c0"),
+            "s0": _sourced_rowwise_config("s0", INPUT_NODE_ID, "c0"),
+        },
+        {"s0": [{"output": ["a0", "a1", "a2"]}]},
+        3,
+        {"s0": ["a0", "a1", "a2"]},
+        id="input-node-and-chat-three-symbols",
+    ),
+    pytest.param(
+        {"p": _llm_config("p"), "s0": _sourced_rowwise_config("s0", "p")},
+        {
+            "p": [{"output": ["v0", "v1", "v2"]}],
+            "s0": [{"output": ["a0", "a1", "a2"]}],
+        },
+        1,
+        {"s0": ["a0", "a1", "a2"]},
+        id="earlier-round-source-one-symbol",
+    ),
+    pytest.param(
+        {"t1": _sql_config("t1"), "s0": _sourced_rowwise_config("s0", "t1")},
+        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]}]},
+        1,
+        {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])]},
+        id="inner-table-single-symbol",
+    ),
+    pytest.param(
+        {"t1": _sql_config("t1"), "s0": _sourced_rowwise_config("s0", "t1")},
+        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]} for _ in range(3)]},
+        3,
+        {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])] * 3},
+        id="inner-table-per-symbol",
+    ),
+    pytest.param(
+        {
+            "L": {"id": "L", "op": "LambdaOp", "mode": "row", "inputs": []},
+            "s0": _sourced_rowwise_config("s0", "L"),
+        },
+        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]} for _ in range(3)]},
+        3,
+        {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])] * 3},
+        id="list-per-row-lambda",
+    ),
+    pytest.param(
+        {
+            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
+            "s0": _sourced_rowwise_config("s0", "L"),
+        },
+        {"s0": [{"output": ["a0", "a1", "a2"]}]},
+        3,
+        {"s0": ["a0", "a1", "a2"]},
+        id="list-lambda-three-symbols",
+    ),
+    pytest.param(
+        {
+            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
+            "s0": _sourced_rowwise_config("s0", "L"),
+        },
+        {"s0": [{"output": ["a0", "a1", "a2"]}]},
+        1,
+        {"s0": [json.dumps(["a0", "a1", "a2"])]},
+        id="list-lambda-one-symbol",
+    ),
+    pytest.param(
+        {
+            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
+            "s0": _sourced_rowwise_config("s0", "L"),
+        },
+        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]}]},
+        3,
+        {"s0": ["r1", "r2", "r3", "r4", "r5"]},
+        id="list-lambda-one-list-element",
+    ),
+    pytest.param(
+        {
+            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
+            "S": _sourced_rowwise_config("S", "L"),
+        },
+        {"S": [{"output": ["a1", "a2"]}, {"output": ["b1", "b2"]}]},
+        3,
+        {"S": [json.dumps(["a1", "a2"]), json.dumps(["b1", "b2"])]},
+        id="list-lambda-list-elements",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("configs", "results", "rows", "expected"),
+    _ROW_COUNT_SOURCE_CASES,
+)
+def test_forward_whole_rowwise_leaf_groups_by_its_source(
+    configs: dict[str, dict], results: dict[str, list[dict]], rows: int, expected: dict
+) -> None:
+    # A row-wise leaf whose column reads the input node or an earlier-round op
+    # reads a literal list input, which FlowMesh does not group: the leaf's one
+    # table holds its own rows, so the whole binding expands it whatever the
+    # symbol count. A column reading a same-round op leaves the grouping
+    # unknown, and the binding falls back to expanding over more than one
+    # symbol.
+    leaf_id = next(
+        op_id for op_id, config in configs.items() if config.get("rowwise_columns")
+    )
+    _, inputs = forward_refs(
+        _three_row_subgraph(leaf_id),
+        results,
+        configs,
+        rows=rows,
+        whole_refs={leaf_id},
+    )
+    assert inputs == expected
+
+
 def _three_row_subgraph(ref: str) -> list[dict]:
     return [
         {
