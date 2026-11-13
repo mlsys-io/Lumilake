@@ -25,7 +25,7 @@ Run `lumilake deploy -C <deploy-dir> doctor` after editing `.env`.
 | `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` | FlowMesh server URL used for workflow dispatch. |
 | `LUMILAKE_IMAGE_TAG` | Docker image tag used by local deployment. Defaults to `dev` (the rolling main-built image). Pin to a `vX.Y.Z` semver tag for production. |
 | `LUMILAKE_REGISTRY` | Container registry the deploy CLI pulls the server image from. Defaults to `ghcr.io/mlsys-io`. **Trust-bearing**: setting this points `lumilake deploy pull` at a different host, so only override it to a registry you control. |
-| `LUMILAKE_DEPLOY_SUFFIX` | Suffix appended to every container and volume name the deploy stack creates, so multiple Lumilake stacks can coexist on one host. Empty by default, giving the bare names (`lumilake-server`, ...). Example: `-dyn` yields `lumilake-server-dyn`, `lumilake-postgres-data-dyn`, and so on for every service and volume. |
+| `LUMILAKE_STACK_NAME` | Name of this deploy stack: the Compose project name, and the name carried in every container, volume and FlowMesh worker the stack creates, so several stacks can share one host. Empty by default, keeping the bare names (`lumilake-server`, ...) and the Compose project Compose derives from the directory. `demo` names the `demo` Compose project, `lumilake-server-demo` and `flowmesh_node_demo_*`, with the `demo_worker_cpu_0` worker aliases. Must be lowercase letters, digits, hyphens and underscores, starting and ending with a letter or digit, at most 48 characters; `lumilake` is reserved because it is the FlowMesh name an unnamed bundled deployment uses. |
 
 ## Lumid.data routing
 
@@ -63,12 +63,13 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_DEFAULT_OPTIMIZER` | Optimizer used when a job omits its own `optimizer` field (`POST /api/v1/jobs`, `POST /api/v1/jobs/preview`, CLI `--optimizer`). Must resolve to a `BaseOptimizer` registered in `OPTIMIZER_TYPES` — the built-ins `halo` and `topological-sort`, plus any types a plugin adds to `OPTIMIZER_TYPES` at install time. Types advertised only via an `OptimizerProvider` (e.g. `lumilake_hook.RemoteOptimizer`) are not eligible at boot and must be selected per job. Defaults to `halo`. |
 | `LUMILAKE_OPTIMIZER_BATCH_SIZE` | Maximum batch size used by the optimizer loop. |
 | `LUMILAKE_BATCH_ACCUMULATION_SECONDS` | Wait window before forming the first optimization batch. |
+| `LUMILAKE_DISPATCH_QUEUE_DEPTH` | In-flight batches a worker may carry before the scheduler stops offering it. Defaults to `1`, which admits a worker again only once the batch it was claimed for finishes. A higher value offers the worker while an earlier batch is still queued or running on it, so the next batch's CPU work overlaps the current batch's GPU work. The trade-off is latency: work admitted later, including a higher-priority job, waits behind up to depth − 1 of the earlier batches already queued on that worker. |
 | `LUMILAKE_STARVATION_LIMIT` | Starvation threshold; `0` means immediate override. |
 | `LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS` | Timeout for optimizer subprocess execution. |
 | `LUMILAKE_QUEUE_QUANTUM_HIGH` | High-priority queue quantum. Defaults to `20`. |
 | `LUMILAKE_QUEUE_QUANTUM_MEDIUM` | Medium-priority queue quantum. Defaults to `10`. |
 | `LUMILAKE_QUEUE_QUANTUM_LOW` | Low-priority queue quantum. Defaults to `5`. |
-| `LUMILAKE_POLL_TIMEOUT_SECONDS` | Overall timeout for runtime polling. Defaults to `inf`. |
+| `LUMILAKE_POLL_TIMEOUT_SECONDS` | Overall timeout for runtime polling, including time a batch spends queued behind earlier batches on its workers. Defaults to `inf`. |
 | `LUMILAKE_POLL_INTERVAL_SECONDS` | Interval between runtime status polls. Defaults to `5`. |
 | `LUMILAKE_FLOWMESH_OUTPUT_DESTINATION` | FlowMesh result delivery mode. `local` (default) or `http`. |
 
@@ -85,7 +86,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_CAPACITY_AWARE_SELECTION` | Capacity-aware selection. Default `1` (on): dispatch filters selection by free capacity, skipping an unrunnable batch in favour of runnable work, and the partition key carries `requires_gpu` so a GPU item never suppresses a CPU-only sibling. `0` makes selection capacity-blind and drops `requires_gpu` from the partition key: CPU and GPU items in the same class share a partition, and a batch no worker can run blocks dispatch until capacity frees. |
 | `LUMILAKE_COST_DB_SEC_PER_QUERY` | Estimated seconds per data-retrieval query in the analytic cost model. Defaults to `0.05`, mirroring HALO's `_db_input_sec`. |
 | `LUMILAKE_COST_CPU_SEC_PER_NODE` | Estimated seconds per pure-CPU node in the analytic cost model. Defaults to `0.1` — a small constant for non-GPU, non-DB work whose duration is otherwise unmodeled. |
-| `LUMILAKE_COST_DEFAULT_MODEL_SIZE_B` | Fallback model size (billions of parameters) when a GPU op's model name carries no inferable size. Defaults to `20`, matching HALO's `_default_model_size_b`. |
+| `LUMILAKE_COST_DEFAULT_MODEL_SIZE_B` | Fallback model size (billions of parameters) for the analytic job-cost estimator when a GPU op's model name carries no inferable size. Defaults to `20`. HALO placement does not use it. |
 | `LUMILAKE_COST_INPUT_QUERY_COUNT` | Assumed input query count per graph for cost estimation. Defaults to `1`, matching HALO's `_input_query_count_default`. |
 
 ## Worker Groups

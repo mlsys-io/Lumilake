@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from flowmesh.exceptions import APIError
+from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
@@ -855,6 +856,23 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         """
         workers = await flowmesh_for_server().workers.list()
         return [w.id for w in workers if not w.stale]
+
+    async def get_dispatchable_workers(self) -> list[str]:
+        """Return registered workers in a state that can take a queued task.
+
+        A worker qualifies while FlowMesh lists it idle or busy and its cordon
+        is off: a task pinned to such a worker waits for it. On a stopping,
+        unavailable or cordoned worker the pin can be lifted and the task run
+        on another worker, so the scheduler does not plan work onto it.
+        """
+        workers = await flowmesh_for_server().workers.list()
+        return [
+            w.id
+            for w in workers
+            if not w.stale
+            and not w.cordoned
+            and w.status in (WorkerStatus.IDLE, WorkerStatus.BUSY)
+        ]
 
     def count_runtime_nodes(self, graphs: dict[str, RuntimeGraph]) -> int:
         return sum(graph.node_count for graph in graphs.values())
@@ -2782,8 +2800,8 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     @staticmethod
     def _build_index_partitions(total: int, shard_count: int) -> list[tuple[int, int]]:
-        safe_total = max(1, int(total))
-        safe_count = max(1, int(shard_count))
+        safe_total = max(1, total)
+        safe_count = max(1, shard_count)
         base = safe_total // safe_count
         remainder = safe_total % safe_count
         partitions: list[tuple[int, int]] = []

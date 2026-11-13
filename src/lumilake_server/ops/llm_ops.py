@@ -128,6 +128,66 @@ def llm_chat(
     )
 
 
+@Op.registry.register("LLMCompletionOp")
+class LLMCompletionOp(LLMOp):
+    """Generate from rendered string prompts without a chat template."""
+
+    def __init__(
+        self,
+        prompt: str | list[str] | Op,
+        config: GenerationConfig | None = None,
+        cacheable: bool = False,
+    ) -> None:
+        prompt_op = (
+            prompt if isinstance(prompt, Op) else DataOp(data=_as_prompt_list(prompt))
+        )
+        super().__init__([prompt_op], config, cacheable)
+        if self.config.api is not None:
+            raise ValueError("LLMCompletionOp does not support API mode")
+        if self.config.chat_template_kwargs is not None:
+            raise ValueError(
+                "LLMCompletionOp does not apply the chat template, so it"
+                " does not support chat_template_kwargs"
+            )
+
+    @property
+    def prompt(self) -> Op:
+        return self.inputs[0]
+
+    def _serialize(self) -> dict[str, Any]:
+        return {
+            "prompt": self.prompt.id,
+            "config": self.config.to_dict(),
+            "cacheable": self.cacheable,
+        }
+
+    @classmethod
+    def _from_json(
+        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
+    ) -> "LLMCompletionOp":
+        return cls(
+            prompt=other_ops[data["prompt"]],
+            config=GenerationConfig(**data["config"]),
+            cacheable=data["cacheable"],
+        )
+
+
+def _as_prompt_list(prompt: str | list[str]) -> list[str]:
+    values = [prompt] if isinstance(prompt, str) else list(prompt)
+    if not values or not all(isinstance(value, str) and value for value in values):
+        raise ValueError("LLMCompletionOp prompt must contain non-empty strings")
+    return values
+
+
+def llm_completion(
+    prompt: str | list[str] | Op,
+    config: GenerationConfig | None = None,
+    cacheable: bool = False,
+) -> LLMCompletionOp:
+    """Run rendered string prompts through raw local generation."""
+    return LLMCompletionOp(prompt=prompt, config=config, cacheable=cacheable)
+
+
 @Op.registry.register("LLMVisionOp")
 class LLMVisionOp(LLMChatOp):
     """LLMChatOp variant that consumes an image input via embedding."""

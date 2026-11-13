@@ -53,7 +53,7 @@ class TopologicalSortOptimizer(BaseOptimizer):
                 if not candidates:
                     raise ValueError(
                         f"Node '{node_id}' has task type {op.task_type!r}, but none"
-                        f" of the selected CPU workers in {list(worker_names)}"
+                        f" of the selected CPU workers in {worker_names}"
                         " advertises it."
                     )
                 assignment[candidates[0]].append(node_id)

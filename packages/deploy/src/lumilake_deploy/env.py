@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 ENV_FILE_NAME = ".env"
 ENV_TEMPLATE_NAME = ".env.example"
 FLOWMESH_ENV_FILE_NAME = ".env.flowmesh"
@@ -17,24 +19,25 @@ def _line(key: str, value: str) -> str:
     return f"{key}={_quote(value)}\n"
 
 
+def read_env_file(path: Path) -> dict[str, str]:
+    """Parse a ``.env``-style file the way docker compose reads it.
+
+    Inline ``# comment`` is not part of a value, quotes are stripped, and a
+    missing file reads as empty.
+    """
+    if not path.is_file():
+        return {}
+    return {key: value or "" for key, value in dotenv_values(path).items()}
+
+
 def read_env_value(path: Path, key: str) -> str:
     """Read a single env var value from a ``.env``-style file.
 
-    Returns an empty string if the key is not found. Strips surrounding
-    double-quotes on the value.
+    Returns an empty string if the key is not found. Parsing matches what
+    docker compose reads from the same file, so an inline ``# comment``
+    is not part of the value and quoting is stripped.
     """
-    if not path.is_file():
-        return ""
-    prefix = f"{key}="
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or not line.startswith(prefix):
-            continue
-        value = line[len(prefix) :]
-        if value.startswith('"') and value.endswith('"'):
-            value = value[1:-1]
-        return value
-    return ""
+    return read_env_file(path).get(key, "")
 
 
 def patch_env_value(path: Path, key: str, value: str) -> None:

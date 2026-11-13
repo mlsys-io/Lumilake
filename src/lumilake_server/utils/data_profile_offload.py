@@ -199,7 +199,7 @@ def run_data_profile_task(
         try:
             num_test_queries = max(1, int(num_test_queries_raw))
         except (TypeError, ValueError):
-            num_test_queries = max(1, int(envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES))
+            num_test_queries = max(1, envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES)
         queries = _build_sample_data_profile_queries(
             template=template,
             params=data_spec.get("params"),
@@ -442,7 +442,7 @@ def _build_sample_data_profile_queries(
 
     rng = random.Random(0)
     queries: list[str] = []
-    sample_count = max(1, int(num_samples))
+    sample_count = max(1, num_samples)
     for _ in range(sample_count):
         row = dict(fixed_row)
         for label in sorted(variable_candidates):

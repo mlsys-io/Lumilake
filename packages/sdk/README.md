@@ -54,7 +54,7 @@ Constructing either client without `.from_config()` resolves the server URL in t
 
 | Surface | Sync | Async |
 |---|---|---|
-| `lumilake deploy up` | writes `~/.lumilake/config.toml` | - |
+| `lumilake init --deploy-dir <dir>` (writes `~/.lumilake/config.toml`) | CLI only | CLI only |
 | `lumilake info` / `health` | `client.health()` | same, await |
 | `lumilake deploy {init,up,down,clean,restart,reset,logs,update-flowmesh}` | `client.deploy.<verb>(...)` | `await client.deploy.<verb>(...)` |
 | `lumilake deploy {doctor,build,status}` | CLI only | CLI only |
@@ -66,6 +66,6 @@ Constructing either client without `.from_config()` resolves the server URL in t
 
 - **Sync + async parity.** One sync class, one async class, and each SDK resource exposes both. Shared base classes (`BaseClient` / `BaseAsyncClient`) handle version-prefix, envelope unwrapping, and error-to-exception mapping. Async resources `await` the same code paths.
 - **Two transport modes.** Server-API resources speak HTTP (`httpx.Client` / `httpx.AsyncClient`). Deploy lifecycle calls `lumilake_deploy` directly; async dispatches the same Python calls through `asyncio.to_thread` so the event loop stays responsive across Docker and FlowMesh setup work.
-- **Config shared with the CLI.** `from_config()` reads the same `~/.lumilake/config.toml` the CLI writes from `lumilake deploy up`.
+- **Config shared with the CLI.** `from_config()` reads the same `~/.lumilake/config.toml` that `lumilake init --deploy-dir <dir>` writes.
 - **Never raw `docker compose up`.** Deploy resource always uses the `lumilake_deploy` machinery — the project rule applies inside the SDK too.
 - **Context-manager support.** `with LumilakeClient(...) as client:` (sync) and `async with AsyncLumilakeClient(...) as client:` close the underlying httpx client cleanly.
