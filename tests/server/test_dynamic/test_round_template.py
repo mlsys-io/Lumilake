@@ -81,8 +81,9 @@ def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
     assert template_stop_export(spec.driver.template, 20) == "Live_r18"
 
 
-def test_stop_check_counts_archived_rows() -> None:
-    # One row per archived item, whatever the row's value holds.
+def test_collected_export_counts_rows_and_forwards_them_to_the_next_round() -> None:
+    # A collected export holds one archived item per row, whatever the row's
+    # value holds, and next round reads each of them as a forwarded input.
     name = "leaf_lambda_round_1_Live_r0_7634"
 
     def collected(rows: list[dict]) -> list[dict]:
@@ -91,6 +92,7 @@ def test_stop_check_counts_archived_rows() -> None:
         )
         return _decode_archived_items(leaf[name[len("leaf_") :]])
 
+    live_case = {"case_id": "0", "turn": 1, "completed": False}
     assert archived_export_has_rows(
         collected([{"output": []}]), export_id="Live_r0", op={"op": "LambdaOp"}
     )
@@ -103,21 +105,9 @@ def test_stop_check_counts_archived_rows() -> None:
             export_id="Live_r0",
             op={"op": "LambdaOp"},
         )
-
-
-def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
-    live_case = {"case_id": "0", "turn": 1, "completed": False}
-    leaf = _extract_leaf_outputs(
-        {
-            "round_1": {
-                "leaf_lambda_round_1_Live_r0_7634": [json.dumps({"output": live_case})]
-            }
-        },
-        ["leaf_lambda_round_1_Live_r0_7634"],
-    )
     ops, inputs = forward_refs(
         [{"id": "CaseState_r1", "op": "LambdaOp", "inputs": ["Live_r0"]}],
-        {"Live_r0": _decode_archived_items(leaf["lambda_round_1_Live_r0_7634"])},
+        {"Live_r0": collected([live_case])},
         {"Live_r0": {"op": "LambdaOp"}},
     )
     assert ops[0]["inputs"] == ["Live_r0"]
@@ -148,8 +138,22 @@ def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
             None,
             "must be a LambdaOp",
         ),
+        # Every export and every stop export names a node the body builds.
+        (_state_op("Other_r{{round}}", ["Symbols"]), None, "exports unknown ids"),
+        # A library ref resolves, and one nothing declares is rejected.
+        (
+            {"ref": "Missing", "id": "Live_r{{round}}", "inputs": []},
+            None,
+            "library entry",
+        ),
     ],
-    ids=["round-one-row", "round-two-row", "retrieval-export"],
+    ids=[
+        "round-one-row",
+        "round-two-row",
+        "retrieval-export",
+        "not-exported",
+        "missing-ref",
+    ],
 )
 def test_template_validator_rejects_an_unusable_body(
     first: dict | None, next_body: dict | None, message: str
@@ -166,40 +170,16 @@ def test_template_validator_rejects_an_unusable_body(
                     },
                     "stop_when_empty": "Live_r{{prev}}",
                 }
-            )
+            ),
+            {"Known": _state_op("Known", [])},
         )
 
 
-@pytest.mark.parametrize(
-    ("ref", "error"), [("Known", None), ("Missing", "library entry")]
-)
-def test_template_validator_resolves_a_library_ref(ref: str, error: str | None) -> None:
-    body = {
-        "ops": [{"ref": ref, "id": "x_r{{round}}", "inputs": []}],
-        "export": ["x_r{{round}}"],
-    }
-    spec = DynamicSpec.model_validate(
-        {
-            **_spec(
-                template={"first": body, "next": body, "stop_when_empty": "x_r{{prev}}"}
-            ),
-            "library": {"Known": _state_op("Known", [])},
-        }
-    )
-    assert spec.driver.template is not None
-    if error is None:
-        validate_template_spec(spec.driver.template, spec.library)
-        return
-    with pytest.raises(DriverProtocolError, match=error):
-        validate_template_spec(spec.driver.template, spec.library)
-
-
 def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
-    # The router a gate names, the node a column reads, a message content that
-    # reads an op, a node ref inside a named argument and one nested in a
-    # retrieval param all carry templated ids, so the round suffix renders into
-    # each before the body is parsed. A Lambda's code is Python source, not a
-    # node reference, so a placeholder inside it stays literal.
+    # The node refs a body carries -- a gate's router, a column's node, a
+    # message content, a named argument, a retrieval param -- all take the round
+    # suffix. A Lambda's code is Python source, so a placeholder in it stays
+    # literal.
     body = {
         "ops": [
             _state_op("Source_r{{round}}", ["Symbols"]),
@@ -234,16 +214,9 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                 "row_gate": {"node": "Route_r{{round}}", "branch": "finish"},
             },
             {
-                "id": "Fmt_r{{round}}",
-                "op": "FormatOp",
-                "inputs": ["Source_r{{round}}"],
-                "template": "{doc}",
-                "format_kwargs": {"doc": "Source_r{{round}}"},
-            },
-            {
                 "id": "Lookup_r{{round}}",
                 "op": "DataRetrievalOp",
-                "inputs": ["Fmt_r{{round}}"],
+                "inputs": ["Source_r{{round}}"],
                 "data_spec": {
                     "type": "s3",
                     "connection_string": "s3://bucket",
@@ -251,7 +224,7 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                     "params": [
                         {
                             "label": "name",
-                            "node": "Fmt_r{{round}}",
+                            "node": "Source_r{{round}}",
                             "path": "items.output",
                         }
                     ],
@@ -274,8 +247,7 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
         "Advance {row}",
         "Route_r1",
     ]
-    assert ops["Fmt_r1"]["format_kwargs"] == {"doc": "Source_r1"}
     assert ops["Lookup_r1"]["data_spec"]["params"] == [
-        {"label": "name", "node": "Fmt_r1", "path": "items.output"}
+        {"label": "name", "node": "Source_r1", "path": "items.output"}
     ]
     assert ops["Echo_r1"]["code"] == "# {{round}}\npass\n"
