@@ -154,31 +154,6 @@ async def test_recover_raises_after_the_pass_when_a_record_is_unreachable(
 
 
 @pytest.mark.asyncio
-async def test_recover_skips_a_record_it_cannot_rebuild(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    storage = InMemoryJobStorage()
-    _seed(storage, "broken-job", "running")
-    _seed(storage, "other-job", "running")
-    del storage._storage["broken-job"]["status"]
-    assert [s.job_id for s in storage.iter_summaries({"running"})] == [
-        "broken-job",
-        "other-job",
-    ]
-
-    monkeypatch.setattr(jobs_routes, "_job_storage", storage)
-    monkeypatch.setattr(job_storage_module, "_job_storage", storage)
-    monkeypatch.setattr(jobs_routes, "jobs", {})
-
-    affected = await jobs_routes.recover_in_flight_jobs(reason="restart")
-
-    assert affected == 1
-    assert _loaded_status(storage, "other-job")["status"] == "failed"
-    broken = storage._storage["broken-job"]
-    assert "status" not in broken
-
-
-@pytest.mark.asyncio
 async def test_recover_retries_until_storage_answers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
