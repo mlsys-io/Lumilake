@@ -1425,84 +1425,133 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     )
 
 
+_ROUND_ONE_LIST_LAMBDA_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "source",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "states",
+            "code": "def states(items):\n    return items[0]\n",
+        }
+    ],
+}
+
+_ROUND_TWO_WHOLE_READER_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "score",
+            "op": "LambdaOp",
+            "inputs": ["source", "Symbols"],
+            "mode": "row",
+            "fn_name": "score",
+            "code": (
+                "def score(columns):\n"
+                '    return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]\n'
+            ),
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "plans", "export_rows", "leaf_items", "rounds", "expected"),
+    [
+        # Round 1's list-mode export holds one item per survivor, so round 2
+        # reads a shorter list than the symbols and still runs. That result
+        # cannot be partitioned, so both rounds run as one slice.
+        pytest.param(
+            _TEMPLATE_DYNAMIC_YAML,
+            [{"next": "STOP"}],
+            [[{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}], []],
+            {},
+            2,
+            {
+                "State_r0": [
+                    json.dumps({"case_id": "0", "turn": 0}),
+                    json.dumps({"case_id": "1", "turn": 0}),
+                ]
+            },
+            id="shrunk-export",
+        ),
+        # A non-gated row-wise leaf archives one grouped item holding every
+        # row's answer, so round 2 reads that leaf beside ``Symbols`` and binds
+        # one value per symbol rather than one JSON blob every row would get.
+        pytest.param(
+            _ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML,
+            [{"next": "STOP"}],
+            None,
+            {
+                f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}": [
+                    {"output": ["nvda-answer", "msft-answer", "aapl-answer"]}
+                ]
+            },
+            2,
+            {"Ask_r0": ["nvda-answer", "msft-answer", "aapl-answer"]},
+            id="rowwise-leaf",
+        ),
+        # Round 2 declares no list Lambda and only reads round 1's whole result
+        # beside the symbols; its two inputs cannot agree in length, so it runs
+        # as one slice too.
+        pytest.param(
+            _VALID_DYNAMIC_YAML,
+            [
+                _ROUND_ONE_LIST_LAMBDA_PLAN,
+                _ROUND_TWO_WHOLE_READER_PLAN,
+                {"next": "STOP"},
+            ],
+            None,
+            {
+                f"leaf_{make_id('round_1', _op_id_prefix('LambdaOp'), 'source')}": [
+                    {"output": "A"},
+                    {"output": "B"},
+                ]
+            },
+            3,
+            {"source": ["A", "B"]},
+            id="whole-reader",
+        ),
+    ],
+)
 @pytest.mark.anyio
-async def test_dynamic_template_next_round_reads_shrunk_one_slice_export(
-    app: FastAPI, job_routes: Any
+async def test_dynamic_one_slice_round_binds_a_whole_result_per_row(
+    app: FastAPI,
+    job_routes: Any,
+    yaml_text: str,
+    plans: list[dict[str, Any]],
+    export_rows: list[list[dict[str, Any]]] | None,
+    leaf_items: dict[str, list[dict[str, Any]]],
+    rounds: int,
+    expected: dict[str, Any],
 ) -> None:
+    symbols = ["NVDA", "MSFT", "AAPL"]
+    job_id = await _submit(app, yaml_text, {"Symbols": symbols})
     fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "STOP"}]
-    # Round 1's list-mode export holds one item per survivor. Two of the three
-    # symbols survive, so the next round reads a shorter list than the symbols
-    # and still has to run.
-    fake_server.export_rows = [
-        [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
-        [],
-    ]
-    job_id = await _submit(app, _TEMPLATE_DYNAMIC_YAML, _MULTI_SYMBOL_BODY_INPUTS)
+    fake_server.plans = plans
+    fake_server.export_rows = export_rows
+    fake_server.leaf_items.update(leaf_items)
     await _run_background(app)
     record = job_routes.jobs[job_id]
 
     assert record.status == "completed", record.error
-    assert len(record.child_job_ids) == 2
-    # Both rounds run as one slice: the round that produces the list-mode
-    # export because that result cannot be partitioned, and the round that
-    # reads it because its two inputs no longer agree in length.
-    assert len(fake_server.workflow_slices_calls) == 2
-    for slices in fake_server.workflow_slices_calls:
+    assert len(fake_server.executed_graphs) == rounds
+    # The round that produces the whole result and the one that reads it both
+    # run as one slice.
+    for slices in fake_server.workflow_slices_calls[-2:]:
         (meta,) = slices.values()
-        assert meta.slice_length == 3
-        assert meta.total_length == 3
+        assert meta.slice_length == len(symbols)
+        assert meta.total_length == len(symbols)
         # A one-slice round's results come back at the round's own row count,
         # so no input is declared varying and the round is marked whole-set.
         assert meta.varying_input_keys == ()
         assert meta.whole_set is True
-    (round_one,) = fake_server.executed_graphs[0].values()
-    assert round_one.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
-    (round_two,) = fake_server.executed_graphs[1].values()
-    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
-    assert "State_r0" in round_two.inputs
-    assert len(round_two.inputs["State_r0"]) == 2
-
-
-@pytest.mark.anyio
-async def test_dynamic_template_next_round_reads_a_one_slice_rowwise_leaf(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # Round 1 declares a list Lambda (so it runs as one slice over every symbol)
-    # and a non-gated row-wise LLM leaf beside it. The row-wise leaf archives one
-    # grouped item holding every row's answer, so the group is the round's whole
-    # result. Round 2 reads that leaf together with ``Symbols``: the leaf has to
-    # bind one value per symbol, or the row step sees a single JSON blob and
-    # every row receives the answers of all rows.
-    symbols = ["NVDA", "MSFT", "AAPL"]
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "STOP"}]
-    answers = ["answer-nvda", "answer-msft", "answer-aapl"]
-    # The row-wise leaf archives one item holding every row's value, so the
-    # archive shape is one item with a three-value list at ``items.output``.
-    fake_server.leaf_items[
-        f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}"
-    ] = [{"output": answers}]
-    body = _submit_body(_ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML)
-    body["data"][0]["inputs"] = {"Symbols": symbols}
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    await _run_background(app)
-    record = job_routes.jobs[resp.json()["data"]["job_id"]]
-
-    assert record.status == "completed", record.error
-    (round_two,) = fake_server.executed_graphs[1].values()
-    assert round_two.inputs["Ask_r0"] == answers
-    (meta,) = fake_server.workflow_slices_calls[1].values()
-    assert meta.whole_set is True
+    (round_two,) = fake_server.executed_graphs[-1].values()
     assert round_two.inputs["Symbols"] == symbols
-    assert meta.slice_length == len(symbols)
+    for name, value in expected.items():
+        assert round_two.inputs[name] == value
 
 
 @pytest.mark.anyio
@@ -1752,38 +1801,6 @@ _LLM_PLAN: dict[str, Any] = {
 }
 
 
-_ROUND_ONE_LIST_LAMBDA_PLAN: dict[str, Any] = {
-    "next": "subgraph",
-    "ops": [
-        {
-            "id": "source",
-            "op": "LambdaOp",
-            "inputs": ["Symbols"],
-            "mode": "list",
-            "fn_name": "states",
-            "code": "def states(items):\n    return items[0]\n",
-        }
-    ],
-}
-
-_ROUND_TWO_WHOLE_READER_PLAN: dict[str, Any] = {
-    "next": "subgraph",
-    "ops": [
-        {
-            "id": "score",
-            "op": "LambdaOp",
-            "inputs": ["source", "Symbols"],
-            "mode": "row",
-            "fn_name": "score",
-            "code": (
-                "def score(columns):\n"
-                '    return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]\n'
-            ),
-        }
-    ],
-}
-
-
 async def _submit_multi_symbol(app: FastAPI, job_routes: Any) -> Any:
     body = _submit_body(_VALID_DYNAMIC_YAML)
     body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
@@ -1863,43 +1880,6 @@ async def test_dynamic_multi_symbol_rounds_slice_per_row_and_forward_row_aligned
         {"market_cap": 11},
         {"market_cap": 12},
     ]
-
-
-@pytest.mark.anyio
-async def test_dynamic_round_that_only_reads_a_whole_result_runs_as_one_slice(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # Round 1 declares a list Lambda, so it runs as one slice and its leaf is
-    # one whole result per surviving row: two items for three symbols. Round 2
-    # declares no list Lambda of its own and only reads that result alongside
-    # the symbols. Its two inputs cannot agree in length, so the round has to
-    # run as one slice as well; sliced per symbol it would be refused.
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [
-        _ROUND_ONE_LIST_LAMBDA_PLAN,
-        _ROUND_TWO_WHOLE_READER_PLAN,
-        {"next": "STOP"},
-    ]
-    fake_server.leaf_items[
-        f"leaf_{make_id('round_1', _op_id_prefix('LambdaOp'), 'source')}"
-    ] = [{"output": "A"}, {"output": "B"}]
-    job_id = await _submit_multi_symbol(app, job_routes)
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-
-    assert record.status == "completed", record.error
-    # Round 0 dispatches the empty opening subgraph, one slice per symbol;
-    # rounds 1 and 2 each run as one slice.
-    assert len(fake_server.executed_graphs) == 3
-    for slices in fake_server.workflow_slices_calls[1:]:
-        (meta,) = slices.values()
-        assert meta.slice_length == 3
-        assert meta.total_length == 3
-        assert meta.varying_input_keys == ()
-        assert meta.whole_set is True
-    (round_two,) = fake_server.executed_graphs[2].values()
-    assert round_two.inputs["Symbols"] == ["NVDA", "MSFT", "AAPL"]
-    assert round_two.inputs["source"] == ["A", "B"]
 
 
 @pytest.mark.anyio
