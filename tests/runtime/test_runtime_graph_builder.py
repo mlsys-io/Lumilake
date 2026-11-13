@@ -498,36 +498,19 @@ def test_local_rowwise_op_emits_condition() -> None:
     }
 
 
-def test_local_rowwise_messages_column_emits_list_message_array_spec() -> None:
-    rows = input_placeholder("Rows")
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
-        rowwise_messages_column=MessagesColumn(
-            node=rows.id, path="items", label="messages_json"
-        ),
-    )
-    compiled = Graph.from_ops([as_output("result", llm)]).compile(
-        Rows=['[{"role":"user","content":"hello"}]']
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    node = runtime_graph.nodes[llm.id]
-    assert node.data_spec["type"] == "list"
-    assert node.data_spec["items"][0] == [{"role": "user", "content": "hello"}]
-    assert "messages" not in node.data_spec
-
-
-def test_api_rowwise_messages_column_emits_list_message_array_spec(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("api", [False, True])
+def test_rowwise_messages_column_emits_list_message_array_spec(
+    monkeypatch: pytest.MonkeyPatch, api: bool
 ) -> None:
+    # A messages column decodes each row's JSON into a message array, whether
+    # the op is dispatched locally or through the API executor.
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
     rows = input_placeholder("Rows")
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(
             model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig(),
+            api=ApiConfig() if api else None,
         ),
         rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
         rowwise_messages_column=MessagesColumn(
@@ -539,9 +522,10 @@ def test_api_rowwise_messages_column_emits_list_message_array_spec(
     )
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     node = runtime_graph.nodes[llm.id]
-    assert node.task_type == "api"
+    assert node.task_type == ("api" if api else "inference")
     assert node.data_spec["type"] == "list"
     assert node.data_spec["items"][0] == [{"role": "user", "content": "hello"}]
+    assert "messages" not in node.data_spec
 
 
 def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
@@ -604,8 +588,7 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
         {"stage": ids[2]},
     ]
 
-
-def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
+    # The YAML path builds the same stages as the Python ops do.
     yaml_text = textwrap.dedent("""
         name: routed
         inputs:
@@ -629,30 +612,6 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
     yaml_graph = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
-
-    rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
-    turn = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate=RowGate(node=router.id, branch="review"),
-        row_gate_op=router,
-    )
-    python_graph = RuntimeGraphBuilder().build(
-        Graph.from_ops([as_output("result", turn)]).compile(
-            Rows=["normal", "NEEDS REVIEW"]
-        )
-    )
-
     yaml_turn_id = next(
         op_id
         for op_id, op in Graph.from_json(spec["graph"]).as_dict().items()
@@ -665,7 +624,7 @@ def test_row_gate_python_and_yaml_graphs_compile_the_same_runtime_ids() -> None:
         ]
 
     types = ["python", "python", "inference", "python"]
-    assert stage_types(python_graph, turn.id) == types
+    assert stage_types(runtime_graph, llm.id) == types
     assert stage_types(yaml_graph, yaml_turn_id) == types
 
 
