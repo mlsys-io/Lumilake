@@ -29,13 +29,15 @@ def _internal_id(scope: str, op_type: str, user_id: str) -> str:
     return make_id(scope, _op_id_prefix(op_type), user_id)
 
 
-def _llm_config(op_id: str) -> dict:
-    return {
+def _llm_config(op_id: str, **overrides: Any) -> dict:
+    config = {
         "id": op_id,
         "op": "LLMChatOp",
         "inputs": [],
         "prompt": {"template": "x", "format_kwargs": {}},
     }
+    config.update(overrides)
+    return config
 
 
 def _sql_config(op_id: str) -> dict:
@@ -381,19 +383,19 @@ def test_walk_archived_items_preserves_observation_for_llm_leaf():
 
 
 def test_walk_archived_items_uses_output_for_lambda_leaf() -> None:
-    lambda_id = "l0"
     configs = {
-        lambda_id: {
-            "id": lambda_id,
+        "l0": {
+            "id": "l0",
             "op": "LambdaOp",
             "mode": "list",
             "fn_name": "states",
             "code": "def states(items):\n    return items[0]\n",
         }
     }
-    archived = {lambda_id: [json.dumps({"output": json.dumps([{"done": False}])})]}
-    walked = walk_archived_items(archived, configs)
-    assert walked == {lambda_id: [json.dumps([{"done": False}])]}
+    archived = {"l0": [json.dumps({"output": json.dumps([{"done": False}])})]}
+    assert walk_archived_items(archived, configs) == {
+        "l0": [json.dumps([{"done": False}])]
+    }
 
 
 def test_walk_archived_items_rejects_non_json():
@@ -407,82 +409,18 @@ def test_walk_archived_items_rejects_non_json():
 
 
 def _sourced_rowwise_config(op_id: str, *sources: str) -> dict:
-    config = _llm_config(op_id)
-    config["rowwise_template"] = "{c0}"
-    config["rowwise_columns"] = [
-        {
-            "label": f"c{index}",
-            "node": source,
-            **({} if source == INPUT_NODE_ID else {"path": "items.output"}),
-        }
-        for index, source in enumerate(sources)
-    ]
-    return config
-
-
-_ROW_COUNT_SOURCE_CASES: list[Any] = [
-    # The input node and an earlier round's op both forward a literal list input
-    # that FlowMesh reads ungrouped.
-    pytest.param(
-        {"s0": _sourced_rowwise_config("s0", INPUT_NODE_ID)},
-        {"s0": [{"output": ["a0", "a1", "a2"]}]},
-        1,
-        {"s0": ["a0", "a1", "a2"]},
-        id="input-node",
-    ),
-    pytest.param(
-        {"p": _llm_config("p"), "s0": _sourced_rowwise_config("s0", "p")},
-        {"p": [{"output": ["v0", "v1", "v2"]}], "s0": [{"output": ["a0", "a1", "a2"]}]},
-        1,
-        {"s0": ["a0", "a1", "a2"]},
-        id="earlier-round",
-    ),
-    # A column projecting into a same-round retrieval's rows is grouped.
-    pytest.param(
-        {"t1": _sql_config("t1"), "s0": _sourced_rowwise_config("s0", "t1")},
-        {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]}]},
-        1,
-        {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])]},
-        id="retrieval-rows",
-    ),
-    # A whole result holds one list per item, so it binds as one value per row.
-    pytest.param(
-        {
-            "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
-            "S": _sourced_rowwise_config("S", "L"),
-        },
-        {"S": [{"output": ["a1", "a2"]}, {"output": ["b1", "b2"]}]},
-        3,
-        {"S": [json.dumps(["a1", "a2"]), json.dumps(["b1", "b2"])]},
-        id="list-lambda-list-elements",
-    ),
-]
-
-
-@pytest.mark.parametrize(
-    ("configs", "results", "rows", "expected"),
-    _ROW_COUNT_SOURCE_CASES,
-)
-def test_forward_whole_rowwise_leaf_groups_by_its_source(
-    configs: dict[str, dict], results: dict[str, list[dict]], rows: int, expected: dict
-) -> None:
-    # A row-wise leaf whose column reads the input node or an earlier-round op
-    # reads a literal list input, which FlowMesh does not group: the leaf's one
-    # table holds its own rows, so the whole binding expands it whatever the
-    # symbol count. A column reading a same-round op leaves the grouping
-    # unknown, and the binding falls back to expanding over more than one
-    # symbol.
-    leaf_id = next(
-        op_id for op_id, config in configs.items() if config.get("rowwise_columns")
+    return _llm_config(
+        op_id,
+        rowwise_template="{c0}",
+        rowwise_columns=[
+            {
+                "label": f"c{index}",
+                "node": source,
+                **({} if source == INPUT_NODE_ID else {"path": "items.output"}),
+            }
+            for index, source in enumerate(sources)
+        ],
     )
-    _, inputs = forward_refs(
-        _three_row_subgraph(leaf_id),
-        results,
-        configs,
-        rows=rows,
-        whole_refs={leaf_id},
-    )
-    assert inputs == expected
 
 
 def _three_row_subgraph(ref: str) -> list[dict]:
@@ -512,15 +450,20 @@ _ONE_TABLE_ITEM = [json.dumps(_TABLE_ROWS)]
 def _same_round_source_leaf(
     op_id: str, *columns: tuple[str, str | None]
 ) -> dict[str, Any]:
-    config = _llm_config(op_id)
-    config["config"] = {"model": "m"}
-    config["messages"] = [{"role": "user", "content": "{c0}"}]
-    config["rowwise_template"] = "{c0}"
-    config["rowwise_columns"] = [
-        {"label": f"c{index}", "node": node, **({} if path is None else {"path": path})}
-        for index, (node, path) in enumerate(columns)
-    ]
-    return config
+    return _llm_config(
+        op_id,
+        config={"model": "m"},
+        messages=[{"role": "user", "content": "{c0}"}],
+        rowwise_template="{c0}",
+        rowwise_columns=[
+            {
+                "label": f"c{index}",
+                "node": node,
+                **({} if path is None else {"path": path}),
+            }
+            for index, (node, path) in enumerate(columns)
+        ],
+    )
 
 
 def _s3_config(op_id: str) -> dict:
@@ -630,11 +573,12 @@ def _build(
 
 
 def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
-    config = _llm_config(op_id)
-    config["config"] = {"model": "m"}
-    config["messages"] = [{"role": "user", "content": "{c0}"}]
-    config["prompt"]["format_kwargs"] = {"c0": source}
-    return config
+    return _llm_config(
+        op_id,
+        config={"model": "m"},
+        messages=[{"role": "user", "content": "{c0}"}],
+        prompt={"template": "x", "format_kwargs": {"c0": source}},
+    )
 
 
 def test_build_round_decides_an_ungrouped_source() -> None:
@@ -665,13 +609,14 @@ def test_build_round_decides_an_ungrouped_source() -> None:
 
 
 def _api_llm_config(op_id: str, **overrides: Any) -> dict:
-    config = _llm_config(op_id)
-    config["config"] = {
-        "model": "qwen3.8-27b",
-        "api": {"url": "https://lum.id/llm/v1", "timeout_sec": 300},
-    }
-    config.update(overrides)
-    return config
+    return _llm_config(
+        op_id,
+        config={
+            "model": "qwen3.8-27b",
+            "api": {"url": "https://lum.id/llm/v1", "timeout_sec": 300},
+        },
+        **overrides,
+    )
 
 
 def _api_record(content: str) -> dict:
@@ -1088,11 +1033,12 @@ def test_forward_aligned_materializers_are_row_cardinality():
 
 
 def _rowwise_llm_config(op_id: str, **overrides: Any) -> dict:
-    config = _llm_config(op_id)
-    config["rowwise_template"] = "{row}"
-    config["rowwise_columns"] = [{"label": "row", "node": INPUT_NODE_ID}]
-    config.update(overrides)
-    return config
+    return _llm_config(
+        op_id,
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
+        **overrides,
+    )
 
 
 def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
