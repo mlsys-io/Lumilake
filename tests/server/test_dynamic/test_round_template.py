@@ -34,80 +34,94 @@ def _body(export_previous: bool = False) -> dict:
         "ops": [
             _state_op("Input_r{{round}}", ["Symbols"]),
             _state_op(
-                "LiveState_r{{round}}",
+                "Live_r{{round}}",
                 ["Input_r{{prev}}" if export_previous else "Input_r{{round}}"],
             ),
         ],
-        "export": ["LiveState_r{{round}}"],
+        "export": ["Live_r{{round}}"],
     }
 
 
-def _template() -> dict:
-    return {
-        "first": _body(),
-        "next": _body(export_previous=True),
-        "stop_when_empty": "LiveState_r{{prev}}",
-    }
-
-
-def _spec(template: dict, **extra: object) -> dict:
+def _spec(**driver: object) -> dict:
     return {
         "type": "dynamic",
         "goal": "one fixed shape",
-        "driver": {"model": "Qwen/Qwen3-8B", "template": template, **extra},
+        "driver": {"model": "Qwen/Qwen3-8B", **driver},
+    }
+
+
+def _template(**overrides: object) -> dict:
+    return {
+        "first": _body(),
+        "next": _body(export_previous=True),
+        "stop_when_empty": "Live_r{{prev}}",
+        **overrides,
     }
 
 
 def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
     # A template and an API planner are alternatives, and neither the template
     # nor a body takes an unknown key.
-    for template, extra in [
-        (_template(), {"api": {"url": "http://planner.test"}}),
-        ({**_template(), "unknown": True}, {}),
-        ({**_template(), "first": {**_body(), "unknown": True}}, {}),
-    ]:
+    for driver in (
+        {"template": _template(), "api": {"url": "http://planner.test"}},
+        {"template": _template(unknown=True)},
+        {"template": _template(first={**_body(), "unknown": True})},
+    ):
         with pytest.raises(ValidationError):
-            DynamicSpec.model_validate(_spec(template, **extra))
-    spec = DynamicSpec.model_validate(_spec(_template()))
+            DynamicSpec.model_validate(_spec(**driver))
+
+    spec = DynamicSpec.model_validate(_spec(template=_template()))
     assert spec.driver.template is not None
     first = template_plan_for_round(spec.driver.template, 1)
-    assert [op["id"] for op in first.ops] == ["Input_r0", "LiveState_r0"]
+    assert [op["id"] for op in first.ops] == ["Input_r0", "Live_r0"]
     assert first.ops[1]["inputs"] == ["Input_r0"]
     twentieth = template_plan_for_round(spec.driver.template, 20)
-    assert [op["id"] for op in twentieth.ops] == ["Input_r19", "LiveState_r19"]
+    assert [op["id"] for op in twentieth.ops] == ["Input_r19", "Live_r19"]
     assert twentieth.ops[1]["inputs"] == ["Input_r18"]
-    assert template_stop_export(spec.driver.template, 20) == "LiveState_r18"
-
-
-def _collected_export(rows: list[dict]) -> list[dict]:
-    outputs = {
-        "round_1": {
-            "leaf_lambda_round_1_LiveState_r0_7634": [
-                json.dumps({"output": row}) for row in rows
-            ]
-        }
-    }
-    name = "leaf_lambda_round_1_LiveState_r0_7634"
-    leaf_outputs = _extract_leaf_outputs(outputs, [name])
-    return _decode_archived_items(leaf_outputs[name[len("leaf_") :]])
+    assert template_stop_export(spec.driver.template, 20) == "Live_r18"
 
 
 def test_stop_check_counts_archived_rows() -> None:
     # One row per archived item, whatever the row's value holds.
+    name = "leaf_lambda_round_1_Live_r0_7634"
+
+    def collected(rows: list[dict]) -> list[dict]:
+        leaf = _extract_leaf_outputs(
+            {"round_1": {name: [json.dumps({"output": row}) for row in rows]}}, [name]
+        )
+        return _decode_archived_items(leaf[name[len("leaf_") :]])
+
     assert archived_export_has_rows(
-        _collected_export([{"output": []}]),
-        export_id="LiveState_r0",
-        op={"op": "LambdaOp"},
+        collected([{"output": []}]), export_id="Live_r0", op={"op": "LambdaOp"}
     )
     assert not archived_export_has_rows(
-        _collected_export([]), export_id="LiveState_r0", op={"op": "LambdaOp"}
+        collected([]), export_id="Live_r0", op={"op": "LambdaOp"}
     )
     with pytest.raises(DriverProtocolError, match="not a Lambda result item"):
         archived_export_has_rows(
             [{"value": {"items": [{"case_id": "0"}]}}],
-            export_id="LiveState_r0",
+            export_id="Live_r0",
             op={"op": "LambdaOp"},
         )
+
+
+def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
+    live_case = {"case_id": "0", "turn": 1, "completed": False}
+    leaf = _extract_leaf_outputs(
+        {
+            "round_1": {
+                "leaf_lambda_round_1_Live_r0_7634": [json.dumps({"output": live_case})]
+            }
+        },
+        ["leaf_lambda_round_1_Live_r0_7634"],
+    )
+    ops, inputs = forward_refs(
+        [{"id": "CaseState_r1", "op": "LambdaOp", "inputs": ["Live_r0"]}],
+        {"Live_r0": _decode_archived_items(leaf["lambda_round_1_Live_r0_7634"])},
+        {"Live_r0": {"op": "LambdaOp"}},
+    )
+    assert ops[0]["inputs"] == ["Live_r0"]
+    assert inputs == {"Live_r0": [json.dumps(live_case)]}
 
 
 @pytest.mark.parametrize(
@@ -129,11 +143,7 @@ def test_stop_check_counts_archived_rows() -> None:
                 "id": "Live_r{{round}}",
                 "op": "DataRetrievalOp",
                 "inputs": ["Symbols"],
-                "data_spec": {
-                    "type": "lumid",
-                    "mode": "sql",
-                    "template": "SELECT 1",
-                },
+                "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT 1"},
             },
             None,
             "must be a LambdaOp",
@@ -141,65 +151,56 @@ def test_stop_check_counts_archived_rows() -> None:
     ],
     ids=["round-one-row", "round-two-row", "retrieval-export"],
 )
-def test_template_validator_rejects_a_stop_export_that_cannot_stop(
+def test_template_validator_rejects_an_unusable_body(
     first: dict | None, next_body: dict | None, message: str
 ) -> None:
     list_op = _state_op("Live_r{{round}}", ["Symbols"])
-    template = DriverTemplate.model_validate(
-        {
-            "first": {"ops": [first or list_op], "export": ["Live_r{{round}}"]},
-            "next": {"ops": [next_body or list_op], "export": ["Live_r{{round}}"]},
-            "stop_when_empty": "Live_r{{prev}}",
-        }
-    )
     with pytest.raises(DriverProtocolError, match=message):
-        validate_template_spec(template)
-    # A body may name a library entry instead of spelling out the op, and the
-    # validator resolves it.
-    known = _library_ref_spec("Known")
-    assert known.driver.template is not None
-    validate_template_spec(known.driver.template, known.library)
-    unknown = _library_ref_spec("Missing")
-    assert unknown.driver.template is not None
-    with pytest.raises(DriverProtocolError, match="unknown library entry"):
-        validate_template_spec(unknown.driver.template, unknown.library)
+        validate_template_spec(
+            DriverTemplate.model_validate(
+                {
+                    "first": {"ops": [first or list_op], "export": ["Live_r{{round}}"]},
+                    "next": {
+                        "ops": [next_body or list_op],
+                        "export": ["Live_r{{round}}"],
+                    },
+                    "stop_when_empty": "Live_r{{prev}}",
+                }
+            )
+        )
 
 
-def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
-    live_case = {"case_id": "0", "turn": 1, "completed": False}
-    ops, inputs = forward_refs(
-        [{"id": "CaseState_r1", "op": "LambdaOp", "inputs": ["LiveState_r0"]}],
-        {"LiveState_r0": _collected_export([live_case])},
-        {"LiveState_r0": {"op": "LambdaOp"}},
-    )
-    assert ops[0]["inputs"] == ["LiveState_r0"]
-    assert inputs == {"LiveState_r0": [json.dumps(live_case)]}
-
-
-def _library_ref_spec(ref: str) -> DynamicSpec:
+@pytest.mark.parametrize(
+    ("ref", "error"), [("Known", None), ("Missing", "library entry")]
+)
+def test_template_validator_resolves_a_library_ref(ref: str, error: str | None) -> None:
     body = {
         "ops": [{"ref": ref, "id": "x_r{{round}}", "inputs": []}],
         "export": ["x_r{{round}}"],
     }
-    return DynamicSpec.model_validate(
+    spec = DynamicSpec.model_validate(
         {
-            "type": "dynamic",
-            "goal": "library ref",
-            "driver": {
-                "model": "Qwen/Qwen3-8B",
-                "template": {
-                    "first": body,
-                    "next": body,
-                    "stop_when_empty": "x_r{{prev}}",
-                },
-            },
+            **_spec(
+                template={"first": body, "next": body, "stop_when_empty": "x_r{{prev}}"}
+            ),
             "library": {"Known": _state_op("Known", [])},
         }
     )
+    assert spec.driver.template is not None
+    if error is None:
+        validate_template_spec(spec.driver.template, spec.library)
+        return
+    with pytest.raises(DriverProtocolError, match=error):
+        validate_template_spec(spec.driver.template, spec.library)
 
 
-def _gated_body() -> dict:
-    return {
+def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
+    # The router a gate names, the node a column reads, a message content that
+    # reads an op, a node ref inside a named argument and one nested in a
+    # retrieval param all carry templated ids, so the round suffix renders into
+    # each before the body is parsed. A Lambda's code is Python source, not a
+    # node reference, so a placeholder inside it stays literal.
+    body = {
         "ops": [
             _state_op("Source_r{{round}}", ["Symbols"]),
             {
@@ -230,26 +231,8 @@ def _gated_body() -> dict:
                         "path": "items.output",
                     }
                 ],
-                "row_gate": {
-                    "node": "Route_r{{round}}",
-                    "branch": "finish",
-                    "terminal": True,
-                },
+                "row_gate": {"node": "Route_r{{round}}", "branch": "finish"},
             },
-            _state_op("Live_r{{round}}", ["Source_r{{round}}"]),
-        ],
-        "export": ["Live_r{{round}}"],
-    }
-
-
-def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
-    # The router a gate names, the node a column reads, a message content that
-    # reads an op, a node ref inside a named argument and one nested in a
-    # retrieval param all carry templated ids, so the round suffix renders into
-    # each before the body is parsed.
-    body = _gated_body()
-    body["ops"].extend(
-        [
             {
                 "id": "Fmt_r{{round}}",
                 "op": "FormatOp",
@@ -274,17 +257,15 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                     ],
                 },
             },
-            # A Lambda's code is Python source, not a node reference, so a
-            # placeholder inside it stays literal while the op's id renders.
             _state_op("Echo_r{{round}}", ["Symbols"], code="# {{round}}\npass\n"),
-        ]
-    )
+        ],
+        "export": ["Echo_r{{round}}"],
+    }
     template = DriverTemplate.model_validate(
-        {"first": body, "next": body, "stop_when_empty": "Live_r{{prev}}"}
+        {"first": body, "next": body, "stop_when_empty": "Echo_r{{prev}}"}
     )
     validate_template_spec(template)
-    plan = template_plan_for_round(template, 2)
-    ops = {op["id"]: op for op in plan.ops}
+    ops = {op["id"]: op for op in template_plan_for_round(template, 2).ops}
     assert ops["Turn_r1"]["row_gate"]["node"] == "Route_r1"
     assert [column["node"] for column in ops["Turn_r1"]["rowwise_columns"]] == [
         "Source_r1"
