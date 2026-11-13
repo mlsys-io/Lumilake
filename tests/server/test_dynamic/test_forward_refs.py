@@ -433,7 +433,7 @@ def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    ("source", "rows", "node", "path", "expected"),
+    ("source", "rows", "node", "path", "expected", "source_in_round"),
     [
         # A row-mode Lambda's column yields one row per item; a retrieval column
         # projects into rows only when its path reaches into them, so a column
@@ -441,11 +441,25 @@ def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
         # retrieval item instead. A chat op that is not row-wise yields one
         # scalar per item, so a leaf reading it is ungrouped even at one symbol,
         # where the fallback would bind its answers as one blob.
-        (_ROW_LAMBDA_SOURCE, 1, "L", "items.output", _ONE_TABLE_ITEM),
-        (_sql_config("t1"), 3, "t1", "items.table.symbol", _ONE_TABLE_ITEM),
-        (_s3_config("t1"), 3, "t1", "items.content", _ONE_TABLE_ITEM),
-        (_sql_config("t1"), 3, "t1", "items.table", _TABLE_ROWS),
-        (_plain_chat("c0", INPUT_NODE_ID), 1, "c0", "items.output", _TABLE_ROWS),
+        (_ROW_LAMBDA_SOURCE, 1, "L", "items.output", _ONE_TABLE_ITEM, True),
+        (_sql_config("t1"), 3, "t1", "items.table.symbol", _ONE_TABLE_ITEM, True),
+        (_s3_config("t1"), 3, "t1", "items.content", _ONE_TABLE_ITEM, True),
+        (_sql_config("t1"), 3, "t1", "items.table", _TABLE_ROWS, True),
+        (_plain_chat("c0", INPUT_NODE_ID), 1, "c0", "items.output", _TABLE_ROWS, True),
+        # A column reading an earlier round's op becomes a literal list input,
+        # which FlowMesh reads ungrouped. The decision needs that round's
+        # results: against an empty history the source is unknown, not literal.
+        (_sql_config("c0"), 1, "c0", "items.output", _TABLE_ROWS, False),
+        # A row-wise leaf reading another same-round row-wise leaf takes that
+        # leaf's grouping, so a leaf chain over the input node stays ungrouped.
+        (
+            _same_round_source_leaf("L", INPUT_NODE_ID, ""),
+            1,
+            "L",
+            "items.output",
+            _TABLE_ROWS,
+            True,
+        ),
     ],
     ids=[
         "row-lambda-column",
@@ -453,17 +467,30 @@ def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
         "retrieval-content-column",
         "whole-table",
         "scalar-chat",
+        "earlier-round-source",
+        "rowwise-leaf-chain",
     ],
 )
 def test_build_round_records_a_same_round_source_grouping(
-    source: dict[str, Any], rows: int, node: str, path: str, expected: list[str]
+    source: dict[str, Any],
+    rows: int,
+    node: str,
+    path: str,
+    expected: list[str],
+    source_in_round: bool,
 ) -> None:
     # The producer's round records the grouping, because the consuming round
     # would otherwise decide it against a ``results`` already holding the
     # producer's own round.
-    ops = [source, _same_round_source_leaf("s0", node, path)]
-    registry = {op["id"]: op for op in ops}
-    producing = _build(ops, round_index=0, node_registry=registry)
+    leaf = _same_round_source_leaf("s0", node, path)
+    ops = [source, leaf] if source_in_round else [leaf]
+    registry = {op["id"]: op for op in (ops if source_in_round else [leaf, source])}
+    producing = _build(
+        ops,
+        round_index=0,
+        node_registry=registry,
+        results={} if source_in_round else {source["id"]: [{"output": _TABLE_ROWS}]},
+    )
     archived = {"output": _TABLE_ROWS}
     consuming = _build(
         _three_row_subgraph("s0"),
