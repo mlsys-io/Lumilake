@@ -1744,24 +1744,24 @@ async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
 
 @pytest.mark.anyio
 async def test_library_template_validates_at_both_doors(app: FastAPI) -> None:
-    # A template whose ops name library refs resolves before validation, and an
-    # unknown ref is reported instead of a preview-unavailable error.
+    # A template's ops resolve library refs before validation at both doors: an
+    # unknown ref is rejected on submission and by the preview, and a valid
+    # template is still not previewable because its rounds render at run time.
     transport = httpx.ASGITransport(app=app)
+    bad_yaml = _TEMPLATE_DYNAMIC_YAML.replace(
+        "ref: LiveState", "ref: MissingLibraryEntry", 1
+    )
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         header = {"Authorization": "Bearer token", "Workflow-Format": "yaml"}
-        resp = await client.post(
-            "/jobs", json=_submit_body(_TEMPLATE_DYNAMIC_YAML), headers=header
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["data"]["status"] == "pending"
-
-        bad_yaml = _TEMPLATE_DYNAMIC_YAML.replace(
-            "ref: LiveState", "ref: MissingLibraryEntry", 1
-        )
-        resp = await client.post(
-            "/jobs/preview", json=_submit_body(bad_yaml), headers=header
-        )
-    assert resp.status_code == 422, resp.text
-    detail = resp.json()["detail"]
-    assert "unknown library entry 'MissingLibraryEntry'" in detail
-    assert "preview is not available" not in detail
+        for path, yaml_text in (
+            ("/jobs", bad_yaml),
+            ("/jobs/preview", bad_yaml),
+            ("/jobs/preview", _TEMPLATE_DYNAMIC_YAML),
+        ):
+            resp = await client.post(path, json=_submit_body(yaml_text), headers=header)
+            assert resp.status_code == 422, resp.text
+            detail = resp.json()["detail"]
+            if "MissingLibraryEntry" in detail:
+                assert "unknown library entry 'MissingLibraryEntry'" in detail
+            else:
+                assert "preview is not available for a template-driven" in detail

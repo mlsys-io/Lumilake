@@ -1303,17 +1303,25 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
 
 
-def _gated_chain() -> Any:
+def _classify_row(columns: tuple[Any, ...]) -> Any:
+    code = str(columns[0])
+    return {"code": f"fn_{code}", "status": "fail" if code == "b" else "ok"}
+
+
+def _gated_chain(classifier_mode: str = "list") -> Any:
     """One model that reads the rows a router marked with its branch."""
     rows = input_placeholder("Rows")
-    classify = LambdaOp(
-        [rows],
-        fn=lambda items: [
-            {"code": f"fn_{index}", "status": "fail" if index == 1 else "ok"}
-            for index in range(len(items[0]))
-        ],
-        mode="list",
-    )
+    if classifier_mode == "row":
+        classify = LambdaOp([rows], fn=_classify_row, mode="row")
+    else:
+        classify = LambdaOp(
+            [rows],
+            fn=lambda items: [
+                {"code": f"fn_{index}", "status": "fail" if index == 1 else "ok"}
+                for index in range(len(items[0]))
+            ],
+            mode="list",
+        )
     router = RouterOp(
         classify,
         rules=[
@@ -1343,26 +1351,38 @@ def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
     return namespace["main"](inputs)
 
 
-def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None:
+def _classified(
+    classifier_mode: str, rows: list[tuple[str, str]]
+) -> list[dict[str, Any]]:
+    """One staged classifier item per row, shaped as the mode archives it."""
+    if classifier_mode == "row":
+        return [
+            {
+                "output": json.dumps({"code": code, "status": status}),
+                "value": {"code": code, "status": status},
+            }
+            for code, status in rows
+        ]
+    return [{"output": {"code": code, "status": status}} for code, status in rows]
+
+
+@pytest.mark.parametrize("classifier_mode", ["list", "row"])
+def test_gated_stage_source_runs_status_select_and_merge(
+    tmp_path: Path, classifier_mode: str
+) -> None:
     # The three gated stages read each other's archives: status labels every
     # row, selection keeps the gated rows with their label columns, and merge
     # pairs the label rows with the gated call's output, marking the skipped
-    # rows done without one.
-    graph = RuntimeGraphBuilder().build(_gated_chain())
+    # rows done without one. A row-mode classifier emits its raw value under
+    # ``value``, so a gated column reads that field there.
+    graph = RuntimeGraphBuilder().build(_gated_chain(classifier_mode))
     (merge_id,) = graph.output_node_map
     (fail_ids,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
     status, selector, _selected, merge = [graph.nodes[i] for i in fail_ids]
 
+    rows = [("fn_0", "ok"), ("fn_1", "fail"), ("fn_2", "ok")]
     upstream = _stage(
-        tmp_path,
-        "classify",
-        {
-            "items": [
-                {"output": {"code": "fn_0", "status": "ok"}},
-                {"output": {"code": "fn_1", "status": "fail"}},
-                {"output": {"code": "fn_2", "status": "ok"}},
-            ]
-        },
+        tmp_path, "classify", {"items": _classified(classifier_mode, rows)}
     )
     status_payload = _run_stage_plan(
         status, {status.data_spec["plan"][0]["node"]: upstream}
@@ -1389,9 +1409,24 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
         merge,
         {status.node_id: status_stage, merge.data_spec["plan"][1]["node"]: served},
     )
-    rows = [item["value"] for item in merged["items"]]
-    assert [(row["done"], row["output"]) for row in rows] == [
+    merged_rows = [item["value"] for item in merged["items"]]
+    assert [(row["done"], row["output"]) for row in merged_rows] == [
         (False, None),
         (True, "fixed"),
         (False, None),
     ]
+
+    # No row routes to the branch, so the gated call has no stage to read and
+    # the merge keeps every row undone with no output.
+    all_ok = _stage(
+        tmp_path, "all-ok", {"items": _classified(classifier_mode, [("fn_0", "ok")])}
+    )
+    ok_stage = _stage(
+        tmp_path,
+        "ok-status",
+        _run_stage_plan(status, {status.data_spec["plan"][0]["node"]: all_ok}),
+    )
+    unrouted = _run_stage_plan(merge, {status.node_id: ok_stage})
+    assert [
+        (item["value"]["done"], item["value"]["output"]) for item in unrouted["items"]
+    ] == [(False, None)]
