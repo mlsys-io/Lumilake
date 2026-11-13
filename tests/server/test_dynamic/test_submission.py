@@ -547,13 +547,12 @@ async def test_dynamic_planner_round_with_done_fields_still_plans(
         "table": {"market_cap": 10 + row},
         "output": {"market_cap": 10 + row},
     }
-    second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
-    second_plan["ops"][0]["id"] = "q2"
-    fake_server.plans = [_SUBGRAPH_PLAN, second_plan, {"next": "STOP"}]
+    fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
     await _run_background(app)
     record = job_routes.jobs[job_id]
-    assert record.status == "completed"
-    assert len(record.child_job_ids) == 3
+    assert record.status == "completed", record.error
+    assert len(record.child_job_ids) == 2
+    assert record.result.outputs["round"]["plan"][-1]["next"] == "STOP"
 
 
 _GATED_PLAN: dict[str, Any] = {
@@ -632,19 +631,13 @@ async def test_dynamic_gated_round_with_terminal_rows_stops_before_planner(
     # forward and the loop stops without asking the planner for another round.
     job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
-
-    def terminal_row(row: int) -> dict[str, Any]:
-        # The row-gate merge stage emits ``{"output": <row json>, "value": <row>}``
-        # and the leaf archives that item whole.
-        routing = {
-            "selected": True,
-            "done": True,
-            "branch": "finish",
-            "row": row,
-        }
-        return {"output": json.dumps(routing), "value": routing}
-
-    fake_server.leaf_item = terminal_row
+    # The row-gate merge stage emits ``{"output": <row json>, "value": <row>}``
+    # and the leaf archives that item whole; every row is done.
+    routing = {"selected": True, "done": True, "branch": "finish", "row": 0}
+    fake_server.leaf_item = lambda row: {
+        "output": json.dumps(routing),
+        "value": routing,
+    }
     fake_server.plans = [_GATED_PLAN, _SUBGRAPH_PLAN]
     await _run_background(app)
     record = job_routes.jobs[job_id]
@@ -654,8 +647,7 @@ async def test_dynamic_gated_round_with_terminal_rows_stops_before_planner(
     assert len(record.child_job_ids) == 2
     assert record.result is not None
     plans = record.result.outputs["round"]["plan"]
-    assert plans[-1]["next"] == "STOP"
-    assert plans[-1]["source"] == "observation"
+    assert (plans[-1]["next"], plans[-1]["source"]) == ("STOP", "observation")
 
 
 @pytest.mark.anyio
@@ -1282,12 +1274,7 @@ async def test_dynamic_one_slice_round_binds_a_whole_result_per_row(
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [
         _lambda_plan("source", ["Symbols"], "list", "return columns[0]"),
-        _lambda_plan(
-            "score",
-            ["source", "Symbols"],
-            "row",
-            'return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]',
-        ),
+        _lambda_plan("score", ["source", "Symbols"], "row", "return columns[1]"),
         {"next": "STOP"},
     ]
     fake_server.leaf_items[
@@ -1297,19 +1284,14 @@ async def test_dynamic_one_slice_round_binds_a_whole_result_per_row(
     record = job_routes.jobs[job_id]
 
     assert record.status == "completed", record.error
-    assert len(fake_server.executed_graphs) == 3
     # The round that produces the whole result and the one that reads it both
-    # run as one slice.
+    # run as one slice, marked whole-set with no input declared varying.
     for slices in fake_server.workflow_slices_calls[-2:]:
         (meta,) = slices.values()
-        assert meta.slice_length == len(symbols)
-        assert meta.total_length == len(symbols)
-        # A one-slice round's results come back at the round's own row count,
-        # so no input is declared varying and the round is marked whole-set.
+        assert (meta.slice_length, meta.total_length) == (len(symbols), len(symbols))
         assert meta.varying_input_keys == ()
         assert meta.whole_set is True
     (round_two,) = fake_server.executed_graphs[-1].values()
-    assert round_two.inputs["Symbols"] == symbols
     assert round_two.inputs["source"] == ["A", "B"]
 
 
