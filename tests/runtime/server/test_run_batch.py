@@ -1986,8 +1986,10 @@ async def test_whole_set_round_accepts_its_own_row_count(
     refused: bool,
 ) -> None:
     server = server_factory()
-    server.runtime_manager = cast(
-        Any, _ShrunkReaderRuntimeManager(values=["case-0", "case-1"])
+    monkeypatch.setattr(
+        server,
+        "runtime_manager",
+        _ShrunkReaderRuntimeManager(values=["case-0", "case-1"]),
     )
     workflows = [
         make_workflow(
@@ -2013,7 +2015,7 @@ async def test_whole_set_round_accepts_its_own_row_count(
     monkeypatch.setattr(
         server,
         "_merge_group_compiled_graph",
-        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+        lambda items: SimpleNamespace(_coalesce_rewrite_hits={}),
     )
     _install_rowwise_api_build_and_schedule(
         server, "out", "wf-node-0" if node_carries_workflow_id else None
