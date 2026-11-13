@@ -108,73 +108,6 @@ library:
           return columns[0]
 """
 
-_ROWWISE_LEAF_DYNAMIC_YAML = """
-name: dynamic-template-rowwise-leaf
-type: dynamic
-goal: read a one-slice round's row-wise leaf
-driver:
-  model: Qwen/Qwen3-8B
-  max_rounds: 2
-  max_nodes_per_round: 4
-  template:
-    first:
-      ops:
-        - id: Source_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: source
-          code: |
-            def source(columns):
-                return columns[0]
-        - id: Draft_r{{round}}
-          op: LLMChatOp
-          inputs: ["Source_r{{round}}"]
-          messages:
-            - {role: user, content: "Draft this row."}
-          config: {model: Qwen/Qwen3-8B}
-          prompt:
-            template: "Draft {row}."
-            format_kwargs: {row: "Source_r{{round}}"}
-        - id: Ask_r{{round}}
-          op: LLMChatOp
-          inputs: ["Draft_r{{round}}"]
-          messages:
-            - {role: user, content: "Score this row."}
-          config: {model: Qwen/Qwen3-8B}
-          rowwise_template: "{row}"
-          rowwise_columns:
-            - {label: row, node: "Draft_r{{round}}", path: "items.output"}
-        - ref: LiveState
-          id: "LiveState_r{{round}}"
-          inputs: ["Symbols"]
-      export: ["LiveState_r{{round}}"]
-    next:
-      ops:
-        - id: Score_r{{round}}
-          op: LambdaOp
-          inputs: ["Ask_r{{prev}}", "Symbols"]
-          mode: row
-          fn_name: score
-          code: |
-            def score(columns):
-                return columns[0]
-        - ref: LiveState
-          id: "LiveState_r{{round}}"
-          inputs: ["Symbols"]
-      export: ["LiveState_r{{round}}"]
-    stop_when_empty: "LiveState_r{{prev}}"
-library:
-  LiveState:
-    op: LambdaOp
-    inputs: ["Symbols"]
-    mode: list
-    fn_name: state
-    code: |
-      def state(columns):
-          return columns[0]
-"""
-
 
 class _AllowAllIdentity:
     name = "test.identity"
@@ -1358,17 +1291,49 @@ async def test_dynamic_rowwise_leaf_of_a_one_slice_round_binds_per_row(
     # symbols, and the grouping round 1 recorded binds one value per row
     # instead of one JSON blob.
     answers = ["answer-1", "answer-2", "answer-3"]
-    job_id = await _submit(app, _ROWWISE_LEAF_DYNAMIC_YAML, {"Symbols": ["NVDA"]})
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML, {"Symbols": ["NVDA"]})
     fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [
+        _lambda_plan("Source", ["Symbols"], "list", "return columns[0]"),
+        {
+            "next": "subgraph",
+            "ops": [
+                {
+                    "id": "Draft",
+                    "op": "LLMChatOp",
+                    "inputs": ["Source"],
+                    "messages": [{"role": "user", "content": "Draft this row."}],
+                    "config": {"model": "Qwen/Qwen3-8B"},
+                    "prompt": {
+                        "template": "Draft {row}.",
+                        "format_kwargs": {"row": "Source"},
+                    },
+                },
+                {
+                    "id": "Ask",
+                    "op": "LLMChatOp",
+                    "inputs": ["Draft"],
+                    "messages": [{"role": "user", "content": "Score this row."}],
+                    "config": {"model": "Qwen/Qwen3-8B"},
+                    "rowwise_template": "{row}",
+                    "rowwise_columns": [
+                        {"label": "row", "node": "Draft", "path": "items.output"}
+                    ],
+                },
+            ],
+        },
+        _lambda_plan("Score", ["Ask", "Symbols"], "row", "return columns[0]"),
+        {"next": "STOP"},
+    ]
     fake_server.leaf_items[
-        f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}"
+        f"leaf_{make_id('round_2', _op_id_prefix('LLMChatOp'), 'Ask')}"
     ] = [{"output": answers}]
     await _run_background(app)
     record = job_routes.jobs[job_id]
 
     assert record.status == "completed", record.error
-    (round_two,) = fake_server.executed_graphs[-1].values()
-    assert round_two.inputs["Ask_r0"] == answers
+    (round_three,) = fake_server.executed_graphs[-1].values()
+    assert round_three.inputs["Ask"] == answers
 
 
 @pytest.mark.anyio

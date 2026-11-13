@@ -581,11 +581,16 @@ def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
             {"condition": {"node": "Rows", "expr": "x == 'on'"}},
             "combines row_gate with condition",
         ),
-        # A gate needs a row template to build its prompts from, so the native
-        # graph format rejects one without it.
+        # A gate needs a row template to build its prompts from, and its branch
+        # must be one the router its rules declare, which the native graph
+        # format reaches without the YAML parser's own validation.
         ({"rowwise_template": None}, "requires rowwise_template"),
+        (
+            {"branch": "missing"},
+            "branch 'missing' is not declared",
+        ),
     ],
-    ids=["messages-column", "condition", "no-rowwise-template"],
+    ids=["messages-column", "condition", "no-rowwise-template", "undeclared-branch"],
 )
 def test_row_gate_rejects_a_rowwise_messages_column_or_a_condition(
     fields: dict[str, Any], message: str
@@ -598,46 +603,30 @@ def test_row_gate_rejects_a_rowwise_messages_column_or_a_condition(
         RuntimeGraphBuilder().build(compiled)
 
 
-@pytest.mark.parametrize(
-    "gate_branch_declared",
-    [False, True],
-    ids=["not-a-router", "undeclared-branch"],
-)
-def test_row_gate_rejects_a_router_it_cannot_use(
-    gate_branch_declared: bool,
-) -> None:
-    # The gate names a router, and its branch must be one the router's rules
-    # declare. The native graph format reaches both checks, which the YAML
-    # parser's own validation never runs.
+def test_row_gate_rejects_a_node_that_is_not_a_router() -> None:
     rows = input_placeholder("Rows")
-    if gate_branch_declared:
-        router: Any = RouterOp(
-            rows,
-            rules=[RouterRule(branch="ok", match="equals", value="PASS")],
-            default_branch="ok",
-        )
-        expected = "row_gate branch 'fail' is not declared"
-    else:
-        router = rows
-        expected = "must be a RouterOp"
     gated = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate=RowGate(node=router.id, branch="fail"),
-        row_gate_op=router if gate_branch_declared else None,
+        row_gate=RowGate(node=rows.id, branch="fail"),
     )
     compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["PASS"])
 
-    with pytest.raises(ValueError, match=expected):
+    with pytest.raises(ValueError, match="must be a RouterOp"):
         RuntimeGraphBuilder().build(compiled)
 
 
 def _row_gate_over(
-    rows: Any, router: RouterOp, *, rowwise_template: str | None = "{row}", **extra: Any
+    rows: Any,
+    router: RouterOp,
+    *,
+    rowwise_template: str | None = "{row}",
+    branch: str = "fail",
+    **extra: Any,
 ) -> LLMChatOp:
-    extra.setdefault("row_gate", RowGate(node=router.id, branch="fail"))
+    extra.setdefault("row_gate", RowGate(node=router.id, branch=branch))
     return LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),

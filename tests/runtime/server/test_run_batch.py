@@ -1939,10 +1939,6 @@ class _ShrunkReaderRuntimeManager(RecordingRuntimeManager):
     """Fakes FlowMesh dispatch for a one-slice round whose own list-mode reader
     answers with fewer rows than the round's longest input holds."""
 
-    def __init__(self, *, values: list[str]) -> None:
-        super().__init__()
-        self._values = values
-
     async def process_request(
         self,
         request_info: Any,
@@ -1950,12 +1946,13 @@ class _ShrunkReaderRuntimeManager(RecordingRuntimeManager):
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
+        values = ["case-0", "case-1"]
         flat_outputs: dict[str, list[str]] = {}
         histories: dict[str, list[list[dict[str, str]]]] = {}
         for node_id in request_info.output_node_map:
-            flat_outputs[node_id] = self._values
+            flat_outputs[node_id] = values
             histories[node_id] = [
-                [{"role": "assistant", "content": value}] for value in self._values
+                [{"role": "assistant", "content": value}] for value in values
             ]
         return {
             "flat_outputs": flat_outputs,
@@ -1986,21 +1983,13 @@ async def test_whole_set_round_accepts_its_own_row_count(
     refused: bool,
 ) -> None:
     server = server_factory()
-    monkeypatch.setattr(
-        server,
-        "runtime_manager",
-        _ShrunkReaderRuntimeManager(values=["case-0", "case-1"]),
-    )
+    monkeypatch.setattr(server, "runtime_manager", _ShrunkReaderRuntimeManager())
     workflows = [
         make_workflow(
             workflow_id=f"wf-node-{index}",
             request_id="req-node",
             graph_name=f"g{index}",
             public_graph_name="shared",
-            dsl_inputs={
-                "Symbols": ["NVDA", "MSFT", "AAPL", "AMD"],
-                "Live_r0": ["a", "b"],
-            },
             template_hash="template-shared",
             slice_index=index,
             slice_length=4,
