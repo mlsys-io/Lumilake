@@ -864,7 +864,6 @@ class _EmbeddingRuntimeManager(RecordingRuntimeManager):
                 expected_row_count=self._row_count,
                 list_lambda=False,
                 list_lambda_cardinality=False,
-                list_lambda_direct_read=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1051,9 +1050,15 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
     """Fakes FlowMesh dispatch but runs the real list-Lambda aggregation,
     proving the whole-list output satisfies `_process_batch`'s demux."""
 
-    def __init__(self, *, items: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        *,
+        items: list[dict[str, Any]],
+        history: list[dict[str, str]] | None = None,
+    ) -> None:
         super().__init__()
         self._items = items
+        self._history = history
 
     async def process_request(
         self,
@@ -1064,6 +1069,7 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
+        histories: dict[str, list[list[dict[str, str]]]] = {}
         for node_id in request_info.output_node_map:
             flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
                 output_op_id=node_id,
@@ -1073,35 +1079,12 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
                 output_path="items.output",
                 list_lambda=True,
                 list_lambda_cardinality=False,
-                list_lambda_direct_read=False,
             )
-        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
-
-
-class _ListLambdaChatRuntimeManager(RecordingRuntimeManager):
-    """Fakes FlowMesh dispatch for a chat over a list-mode Lambda: the node
-    answers once per run, so it emits one whole-list output value and one
-    chat history that cover every input row of the slice."""
-
-    def __init__(self, *, answer: str, history: list[dict[str, str]]) -> None:
-        super().__init__()
-        self._answer = answer
-        self._history = history
-
-    async def process_request(
-        self,
-        request_info: Any,
-        schedule: Schedule,
-        worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
-    ) -> dict[str, Any]:
+            if self._history is not None:
+                histories[node_id] = [self._history]
         return {
-            "flat_outputs": {
-                node_id: [self._answer] for node_id in request_info.output_node_map
-            },
-            "chat_histories": {
-                node_id: [self._history] for node_id in request_info.output_node_map
-            },
+            "flat_outputs": flat_outputs,
+            "chat_histories": histories,
             "task_node_map": {},
         }
 
@@ -1132,7 +1115,6 @@ class _RowwiseApiRuntimeManager(RecordingRuntimeManager):
                 output_path="items.rows.json.choices[0].message.content",
                 list_lambda=False,
                 list_lambda_cardinality=False,
-                list_lambda_direct_read=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1166,8 +1148,6 @@ class _RowwiseApiListLambdaRuntimeManager(RecordingRuntimeManager):
                 list_lambda=False,
                 list_lambda_cardinality=node_id
                 in request_info.runtime_graph.list_lambda_cardinality_nodes(),
-                list_lambda_direct_read=node_id
-                in request_info.runtime_graph.list_lambda_direct_read_nodes(),
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1201,8 +1181,6 @@ class _RowwisePythonDownstreamListLambdaRuntimeManager(RecordingRuntimeManager):
                 list_lambda=False,
                 list_lambda_cardinality=node_id
                 in request_info.runtime_graph.list_lambda_cardinality_nodes(),
-                list_lambda_direct_read=node_id
-                in request_info.runtime_graph.list_lambda_direct_read_nodes(),
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
@@ -1514,9 +1492,16 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
         {"fid": "f2", "statement": "s2", "quote": "q2"},
         {"fid": "f3", "statement": "s3", "quote": "q3"},
     ]
+    history = [
+        {"role": "user", "content": "Summarize the table."},
+        {"role": "assistant", "content": "one rule"},
+    ]
     server = server_factory()
     server.runtime_manager = cast(
-        Any, _ListLambdaRuntimeManager(items=[{"output": it} for it in whole_list])
+        Any,
+        _ListLambdaRuntimeManager(
+            items=[{"output": it} for it in whole_list], history=history
+        ),
     )
 
     workflows = [
@@ -1546,6 +1531,7 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
     observations = resp.outputs["shared"]["observations"]
     assert len(observations) == 1
     assert json.loads(observations[0]) == whole_list
+    assert resp.chat_histories["shared"]["observations"] == [history]
 
 
 @pytest.mark.asyncio
@@ -1634,53 +1620,6 @@ async def test_list_lambda_output_multi_slice_run_fails_closed(
     )
 
 
-@pytest.mark.asyncio
-async def test_list_lambda_chat_single_slice_demux_accepts_one_history(
-    server_factory,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A chat over a list-mode Lambda answers once per run, so a three-row
-    slice carries one output value and one chat history. The merged-workflow
-    demux must accept both for the single slice instead of comparing the
-    history against the slice length."""
-    server = server_factory()
-    history = [
-        {"role": "user", "content": "Summarize the table."},
-        {"role": "assistant", "content": "rules for every stock"},
-    ]
-    server.runtime_manager = cast(
-        Any, _ListLambdaChatRuntimeManager(answer="rules", history=history)
-    )
-
-    workflows = [
-        make_workflow(
-            workflow_id="wf-list-chat",
-            request_id="req-list-chat",
-            graph_name="ga",
-            public_graph_name="shared",
-            slice_length=3,
-            total_length=3,
-        ),
-    ]
-    handlers = attach_request_states(server, workflows)
-    batch = make_batch(workflows)
-
-    monkeypatch.setattr(
-        server,
-        "_merge_group_compiled_graph",
-        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
-    )
-    _install_list_lambda_build_and_schedule(server, "summary")
-
-    await server._run_batch(["worker-1"], batch)
-
-    resp = handlers["req-list-chat"].results[0]
-    assert resp.error_info is None
-    assert resp.outputs["shared"]["summary"] == ["rules"]
-    [slice_history] = resp.chat_histories["shared"]["summary"]
-    assert slice_history == history
-
-
 class _AlignedRuntimeManager(RecordingRuntimeManager):
     """Fakes FlowMesh dispatch but runs the real row-wise aggregation."""
 
@@ -1706,7 +1645,6 @@ class _AlignedRuntimeManager(RecordingRuntimeManager):
                 output_path="items.output",
                 list_lambda=False,
                 list_lambda_cardinality=False,
-                list_lambda_direct_read=False,
             )
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 

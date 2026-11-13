@@ -18,7 +18,6 @@ async def _aggregate(output_path: str | None) -> list[str]:
         output_path=output_path,
         list_lambda=False,
         list_lambda_cardinality=False,
-        list_lambda_direct_read=False,
     )
 
 
@@ -63,7 +62,6 @@ async def test_aggregate_valid_indexed_path_resolves() -> None:
         output_path="items.rows.json.choices[0].message.content",
         list_lambda=False,
         list_lambda_cardinality=False,
-        list_lambda_direct_read=False,
     )
     assert values == ["ok"]
 
@@ -79,7 +77,6 @@ async def test_aggregate_valid_bracket_index_resolves() -> None:
         output_path="items.rows[0].output",
         list_lambda=False,
         list_lambda_cardinality=False,
-        list_lambda_direct_read=False,
     )
     assert values == ["ok"]
 
@@ -96,7 +93,6 @@ async def _aggregate_list_lambda(output_path: str | None) -> list[str]:
         output_path=output_path,
         list_lambda=True,
         list_lambda_cardinality=False,
-        list_lambda_direct_read=False,
     )
 
 
@@ -131,3 +127,18 @@ async def test_aggregate_list_lambda_rejects_malformed_paths() -> None:
     for bad in ("items.", "items..x", "items.[0]"):
         with pytest.raises(RuntimeError, match="malformed path"):
             await _aggregate_list_lambda(bad)
+
+
+@pytest.mark.asyncio
+async def test_a_list_lambda_direct_read_folds_to_one_value() -> None:
+    values = await FlowmeshRuntimeManager()._aggregate_output_node(
+        output_op_id="output",
+        output_task_id="task-1",
+        request_id="req-1",
+        items=[{"output": "a"}, {"output": "b"}],
+        output_path=None,
+        list_lambda=False,
+        list_lambda_cardinality=False,
+        list_lambda_direct_read=True,
+    )
+    assert values == [json.dumps(["a", "b"])]

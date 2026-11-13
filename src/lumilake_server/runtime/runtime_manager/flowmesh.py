@@ -1110,7 +1110,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         expected_row_count: int | None = None,
         list_lambda: bool,
         list_lambda_cardinality: bool,
-        list_lambda_direct_read: bool,
+        list_lambda_direct_read: bool = False,
         rowwise_llm: bool = False,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
