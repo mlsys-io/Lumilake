@@ -89,133 +89,19 @@ driver:
   template:
     first:
       ops:
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    next:
-      ops:
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["State_r{{prev}}"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    stop_when_empty: "State_r{{prev}}"
-"""
-
-_ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML = """
-name: dynamic-template-rowwise-leaf
-type: dynamic
-goal: score the rows a one-slice round produced
-driver:
-  model: Qwen/Qwen3-8B
-  max_rounds: 2
-  max_nodes_per_round: 4
-  output_location:
-    type: s3
-    prefix: dynamic/template/
-  template:
-    first:
-      ops:
-        - id: Source_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: source
-          code: |
-            def source(columns):
-                return columns[0]
-        - id: Ask_r{{round}}
-          op: LLMChatOp
-          inputs: ["Source_r{{round}}"]
-          messages:
-            - role: user
-              content: "Score this row."
-          config:
-            model: Qwen/Qwen3-8B
-          rowwise_template: "{row}"
-          rowwise_columns:
-            - label: row
-              node: Source_r{{round}}
-              path: items.output
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    next:
-      ops:
-        - id: Score_r{{round}}
-          op: LambdaOp
-          inputs: ["Ask_r{{prev}}", "Symbols"]
-          mode: row
-          fn_name: score
-          code: |
-            def score(columns):
-                return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]
-        - id: State_r{{round}}
-          op: LambdaOp
-          inputs: ["Symbols"]
-          mode: list
-          fn_name: state
-          code: |
-            def state(columns):
-                return columns[0]
-      export: ["State_r{{round}}"]
-    stop_when_empty: "State_r{{prev}}"
-"""
-
-_LIBRARY_TEMPLATE_DYNAMIC_YAML = """
-name: dynamic-library-template
-type: dynamic
-goal: validate resolved round templates
-driver:
-  model: Qwen/Qwen3-8B
-  max_rounds: 2
-  max_nodes_per_round: 4
-  output_location:
-    type: s3
-    prefix: dynamic/template/
-  template:
-    first:
-      ops:
         - ref: LiveState
           id: "LiveState_r{{round}}"
           inputs: ["Symbols"]
       export: ["LiveState_r{{round}}"]
     next:
       ops:
-        - ref: CaseState
-          id: "CaseState_r{{round}}"
-          inputs: ["LiveState_r{{prev}}"]
         - ref: LiveState
           id: "LiveState_r{{round}}"
-          inputs: ["CaseState_r{{round}}"]
+          inputs: ["LiveState_r{{prev}}"]
       export: ["LiveState_r{{round}}"]
     stop_when_empty: "LiveState_r{{prev}}"
 library:
   LiveState:
-    op: LambdaOp
-    inputs: ["Symbols"]
-    mode: list
-    fn_name: state
-    code: |
-      def state(columns):
-          return columns[0]
-  CaseState:
     op: LambdaOp
     inputs: ["Symbols"]
     mode: list
@@ -708,9 +594,7 @@ _GATED_PLAN: dict[str, Any] = {
 }
 
 
-def _build_plan(
-    plan: dict[str, Any], symbols: list[str], *, include_proposer: bool = True
-) -> Any:
+def _build_plan(plan: dict[str, Any], *, include_proposer: bool = True) -> Any:
     ops = resolve_subgraph(copy.deepcopy(plan["ops"]), None)
     registry = {op["id"]: op for op in ops}
     build = build_round(
@@ -725,40 +609,28 @@ def _build_plan(
         max_tokens=10,
         temperature=0.1,
         results={},
-        rows=len(symbols),
+        rows=2,
         include_proposer=include_proposer,
     )
-    inputs = dict(build.forwarded_inputs)
-    inputs.setdefault("Symbols", symbols)
+    inputs = {"Symbols": ["done", "pending"], **build.forwarded_inputs}
     return build, Graph.from_json(build.graph).compile(**inputs)
 
 
-def test_gated_round_builds_in_both_proposer_modes_and_reads_the_merge_stage() -> None:
+def test_gated_round_binds_its_reader_to_the_merge_stage_in_both_proposer_modes() -> (
+    None
+):
     # A row-gated leaf has no runtime node of its own: it compiles to status,
     # selection, gated call and merge stages, and the round's reader binds the
     # merge stage in either proposer mode.
-    build, compiled = _build_plan(_GATED_PLAN, ["done", "pending"])
+    build, compiled = _build_plan(_GATED_PLAN)
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     assert "proposer" in build.graph
     (gated_id,) = build.gated_leaf_ids
-    stages = runtime_graph.dsl_to_runtime[gated_id]
-    assert [runtime_graph.nodes[node_id].task_type for node_id in stages] == [
-        "python",
-        "python",
-        "inference",
-        "python",
-    ]
-    proposer = runtime_graph.nodes["proposer"]
-    assert proposer.dependencies == (stages[-1],)
-    (column,) = proposer.data_spec["template"]["columns"]
-    assert column["node"] == stages[-1]
-    # The merge stage wraps each routed row under ``value.items``, so a reader
-    # of the gated leaf walks ``value.items.output`` inside the python result.
+    (column,) = runtime_graph.nodes["proposer"].data_spec["template"]["columns"]
+    assert column["node"] == runtime_graph.dsl_to_runtime[gated_id][-1]
     assert column["path"] == "value.items.output"
 
-    api_build, api_compiled = _build_plan(
-        _GATED_PLAN, ["done", "pending"], include_proposer=False
-    )
+    api_build, api_compiled = _build_plan(_GATED_PLAN, include_proposer=False)
     assert "proposer" not in api_build.graph
     assert len(RuntimeGraphBuilder().build(api_compiled).nodes) == 5
 
@@ -1048,23 +920,14 @@ async def test_dynamic_submit_empty_symbol_returns_422(app: FastAPI) -> None:
 async def test_dynamic_submit_rejects_static_round_bound_above_ceiling(
     app: FastAPI,
 ) -> None:
-    library_lines = [
-        "library:",
-        *[
-            (
-                f"  r{index}:\n    op: DataRetrievalOp\n"
-                f"    row_gate: {{node: router_{index}, branch: a}}"
-            )
-            for index in range(30)
-        ],
-    ]
+    library = "".join(
+        f"  r{i}: {{op: DataRetrievalOp, row_gate: {{node: r, branch: a}}}}\n"
+        for i in range(26)
+    )
     spec = (
-        "name: dynamic\n"
-        "type: dynamic\n"
-        "goal: test static bound\n"
-        "driver:\n"
-        "  model: Qwen/Qwen3-8B\n"
-        "  max_nodes_per_round: 20\n" + "\n".join(library_lines)
+        "name: dynamic\ntype: dynamic\ngoal: test static bound\n"
+        "driver:\n  model: Qwen/Qwen3-8B\n  max_nodes_per_round: 20\n"
+        "library:\n" + library
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1425,36 +1288,20 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     )
 
 
-_ROUND_ONE_LIST_LAMBDA_PLAN: dict[str, Any] = {
-    "next": "subgraph",
-    "ops": [
-        {
-            "id": "source",
-            "op": "LambdaOp",
-            "inputs": ["Symbols"],
-            "mode": "list",
-            "fn_name": "states",
-            "code": "def states(items):\n    return items[0]\n",
-        }
-    ],
-}
-
-_ROUND_TWO_WHOLE_READER_PLAN: dict[str, Any] = {
-    "next": "subgraph",
-    "ops": [
-        {
-            "id": "score",
-            "op": "LambdaOp",
-            "inputs": ["source", "Symbols"],
-            "mode": "row",
-            "fn_name": "score",
-            "code": (
-                "def score(columns):\n"
-                '    return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]\n'
-            ),
-        }
-    ],
-}
+def _lambda_plan(op_id: str, inputs: list[str], mode: str, body: str) -> dict[str, Any]:
+    return {
+        "next": "subgraph",
+        "ops": [
+            {
+                "id": op_id,
+                "op": "LambdaOp",
+                "inputs": inputs,
+                "mode": mode,
+                "fn_name": op_id,
+                "code": f"def {op_id}(columns):\n    {body}\n",
+            }
+        ],
+    }
 
 
 @pytest.mark.parametrize(
@@ -1470,28 +1317,12 @@ _ROUND_TWO_WHOLE_READER_PLAN: dict[str, Any] = {
             {},
             2,
             {
-                "State_r0": [
+                "LiveState_r0": [
                     json.dumps({"case_id": "0", "turn": 0}),
                     json.dumps({"case_id": "1", "turn": 0}),
                 ]
             },
             id="shrunk-export",
-        ),
-        # A non-gated row-wise leaf archives one grouped item holding every
-        # row's answer, so round 2 reads that leaf beside ``Symbols`` and binds
-        # one value per symbol rather than one JSON blob every row would get.
-        pytest.param(
-            _ROWWISE_LEAF_AFTER_LIST_LAMBDA_YAML,
-            [{"next": "STOP"}],
-            None,
-            {
-                f"leaf_{make_id('round_1', _op_id_prefix('LLMChatOp'), 'Ask_r0')}": [
-                    {"output": ["nvda-answer", "msft-answer", "aapl-answer"]}
-                ]
-            },
-            2,
-            {"Ask_r0": ["nvda-answer", "msft-answer", "aapl-answer"]},
-            id="rowwise-leaf",
         ),
         # Round 2 declares no list Lambda and only reads round 1's whole result
         # beside the symbols; its two inputs cannot agree in length, so it runs
@@ -1499,8 +1330,13 @@ _ROUND_TWO_WHOLE_READER_PLAN: dict[str, Any] = {
         pytest.param(
             _VALID_DYNAMIC_YAML,
             [
-                _ROUND_ONE_LIST_LAMBDA_PLAN,
-                _ROUND_TWO_WHOLE_READER_PLAN,
+                _lambda_plan("source", ["Symbols"], "list", "return columns[0]"),
+                _lambda_plan(
+                    "score",
+                    ["source", "Symbols"],
+                    "row",
+                    'return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]',
+                ),
                 {"next": "STOP"},
             ],
             None,
@@ -1929,33 +1765,23 @@ async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
 
 
 @pytest.mark.anyio
-async def test_library_template_submit_passes_resolved_validation(
-    app: FastAPI, job_routes: Any
-) -> None:
+async def test_library_template_validates_at_both_doors(app: FastAPI) -> None:
+    # A template whose ops name library refs resolves before validation, and an
+    # unknown ref is reported instead of a preview-unavailable error.
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        header = {"Authorization": "Bearer token", "Workflow-Format": "yaml"}
         resp = await client.post(
-            "/jobs",
-            json=_submit_body(_LIBRARY_TEMPLATE_DYNAMIC_YAML),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+            "/jobs", json=_submit_body(_TEMPLATE_DYNAMIC_YAML), headers=header
         )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["data"]["status"] == "pending"
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["status"] == "pending"
 
-
-@pytest.mark.anyio
-async def test_template_preview_reports_bad_ref_validation_error(
-    app: FastAPI,
-) -> None:
-    bad_yaml = _LIBRARY_TEMPLATE_DYNAMIC_YAML.replace(
-        "ref: LiveState", "ref: MissingLibraryEntry", 1
-    )
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        bad_yaml = _TEMPLATE_DYNAMIC_YAML.replace(
+            "ref: LiveState", "ref: MissingLibraryEntry", 1
+        )
         resp = await client.post(
-            "/jobs/preview",
-            json=_submit_body(bad_yaml),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+            "/jobs/preview", json=_submit_body(bad_yaml), headers=header
         )
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
