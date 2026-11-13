@@ -296,15 +296,25 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     assert manager._execution_task_status[batch_key]["task-row0"] == "PENDING"
     assert manager._execution_task_status[batch_key]["task-row1"] == "FAILED"
 
-    # A released batch still polls its non-terminal task through its own id.
+    # A released batch still polls its non-terminal task through its own id,
+    # and a second batch is polled through its own workflow too.
+    second_key = ("req-failfast", "batch-2")
+    manager._execution_task_status[second_key] = {"task-row2": "PENDING"}
+    manager._execution_workflow_id[second_key] = "wf-2"
+    manager._execution_output_tasks[second_key] = {"task-row2"}
+    manager._batch_status[second_key] = "RUNNING"
     manager.release_executions({"req-failfast"})
-    serve(
+    polled = serve(
         monkeypatch,
-        {"task-row0": "DONE", "task-row1": "FAILED"},
-        {"task-row0": row0_id, "task-row1": row1_id},
+        {},
+        by_workflow={
+            "wf-1": {"task-row0": "DONE", "task-row1": "FAILED"},
+            "wf-2": {"task-row2": "DONE"},
+        },
     )
     reported = await manager.get_request_status("req-failfast")
 
+    assert sorted(polled) == ["wf-1", "wf-2"]
     assert reported["execution"]["completed"]
 
 

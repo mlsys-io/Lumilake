@@ -14,7 +14,8 @@ async def test_shared_client_bounds_its_connection_pool() -> None:
     transport: Any = flowmesh_client._shared_http_client()._transport
 
     assert transport._pool._max_connections == 100
-    assert transport._pool._keepalive_expiry < 5.0
+    assert transport._pool._max_keepalive_connections == 20
+    assert 0 < transport._pool._keepalive_expiry < 5.0
 
 
 @pytest.mark.asyncio
