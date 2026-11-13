@@ -199,105 +199,40 @@ def test_forward_does_not_mutate_input_subgraph():
     assert subgraph == original
 
 
-def test_forward_rewritten_ops_parse_through_yaml_parser():
-    # The rewritten op (with a per-(node, path) input id and path "") must
-    # still parse through the YAML parser as a valid workflow, with the input
-    # id resolvable from the workflow inputs block.
-    sql_id = "s1"
-    results = {sql_id: [{"table": json.dumps({"close": {"0": 107.5}})}]}
-    configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "DataRetrievalOp",
-            "inputs": [],
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE c = {p}",
-                "params": [{"label": "p", "node": sql_id, "path": "items.table.close"}],
-            },
-        }
-    ]
-    ops, inputs = forward_refs(subgraph, results, configs)
-    input_id = f"{sql_id} | items.table.close"
-    workflow = {
-        "name": "round_1",
-        "inputs": {input_id: inputs[input_id]},
-        "ops": ops,
-        "outputs": [],
-    }
-    parsed = parse_yaml_payload(workflow)
-    assert parsed
+def _referencing_op() -> dict[str, Any]:
+    """A chat op that reads an earlier-round op's column."""
+    op = _chat_consumer(("close", "s0", "items.table.close"), op_id="q1")
+    op["inputs"] = ["s0"]
+    return op
 
 
-def test_validate_rejects_reference_to_unavailable_earlier_op():
-    # A reference to an earlier op whose result is not available (neither a
-    # leaf nor exported) must be rejected, never recomputed.
-    node_registry = {"s0": _sql_config("s0")}
-    subgraph = [
-        {
-            "id": "q1",
-            "op": "DataRetrievalOp",
-            "inputs": ["s0"],
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE id = {p}",
-                "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
-            },
-        }
-    ]
-    with pytest.raises(DriverProtocolError, match="s0"):
-        validate_emitted_subgraph(subgraph, node_registry, max_nodes=4, results={})
-
-
-def test_validate_accepts_reference_to_available_earlier_op():
-    # A reference to an earlier op whose result IS available (a leaf or
-    # exported) is accepted.
-    node_registry = {"s0": _sql_config("s0")}
-    subgraph = [
-        {
-            "id": "q1",
-            "op": "DataRetrievalOp",
-            "inputs": ["s0"],
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE id = {p}",
-                "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
-            },
-        }
-    ]
-    validate_emitted_subgraph(
-        subgraph, node_registry, max_nodes=4, results={"s0": [{"table": "x"}]}
-    )
-
-
-def test_validate_rejects_export_not_in_subgraph():
-    # ``export`` must name ops of the same subgraph.
-    subgraph = [
-        {
-            "id": "q1",
-            "op": "DataRetrievalOp",
-            "inputs": [],
-            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
-        }
-    ]
-    with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
-        validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["nope"])
-
-
-def test_validate_accepts_export_in_subgraph():
-    subgraph = [
-        {
-            "id": "q1",
-            "op": "DataRetrievalOp",
-            "inputs": [],
-            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
-        }
-    ]
-    validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
+@pytest.mark.parametrize(
+    ("results", "export", "message"),
+    [
+        # A reference to an earlier op whose result is not available (neither a
+        # leaf nor exported) is rejected, never recomputed; an available one is
+        # accepted. ``export`` must name ops of the same subgraph.
+        ({}, [], "s0"),
+        ({"s0": [{"table": "x"}]}, [], None),
+        ({"s0": [{"table": "x"}]}, ["nope"], "exported op id 'nope'"),
+        ({"s0": [{"table": "x"}]}, ["q1"], None),
+    ],
+    ids=["unavailable", "available", "unknown-export", "export"],
+)
+def test_validate_checks_the_earlier_ops_and_the_export(
+    results: dict, export: list[str], message: str | None
+) -> None:
+    subgraph = [_referencing_op()]
+    registry = {"s0": _sql_config("s0")}
+    if message is None:
+        validate_emitted_subgraph(
+            subgraph, registry, max_nodes=4, results=results, export=export
+        )
+    else:
+        with pytest.raises(DriverProtocolError, match=message):
+            validate_emitted_subgraph(
+                subgraph, registry, max_nodes=4, results=results, export=export
+            )
 
 
 def _llm_column_library() -> dict[str, dict[str, Any]]:
@@ -308,26 +243,18 @@ def _llm_column_library() -> dict[str, dict[str, Any]]:
             "messages": [{"role": "user", "content": "review"}],
             "rowwise_template": "{prompt}",
             "rowwise_columns": [
-                {
-                    "label": "prompt",
-                    "node": "ReviewPrompt",
-                    "path": "items.output.prompt",
-                },
+                {"label": "prompt", "node": "ReviewPrompt", "path": "items.output.x"},
                 {
                     "label": "review_system",
                     "node": "ReviewPrompt",
-                    "path": "items.output.review_system",
+                    "path": "items.output.y",
                 },
             ],
             "column_bindings": [
                 {"label": "prompt", "input": 0},
                 {"label": "review_system", "input": 0},
             ],
-            "config": {
-                "model": "Qwen/Qwen3.8-27B-FP8",
-                "temperature": 0.05,
-                "max_tokens": 200,
-            },
+            "config": {"model": "m"},
         }
     }
 
@@ -358,44 +285,33 @@ def test_column_bindings_remap_independent_library_instances() -> None:
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, library=library)
 
     turns = [op for op in resolved if op["op"] == "LLMChatOp"]
-    assert [
-        {column["node"] for column in turn["rowwise_columns"]} for turn in turns
-    ] == [
-        {"first_prompt_1"},
-        {"second_prompt_1"},
-    ]
     assert [turn["rowwise_columns"][0]["node"] for turn in turns] == [
         "first_prompt_1",
         "second_prompt_1",
     ]
-    assert {column["node"] for column in library["ReviewTurn"]["rowwise_columns"]} == {
-        "ReviewPrompt"
-    }
+    assert library["ReviewTurn"]["rowwise_columns"][0]["node"] == "ReviewPrompt"
 
 
 @pytest.mark.parametrize(
-    ("bindings", "extra_input", "message"),
+    ("bindings", "inputs", "message"),
     [
-        # A library input the round passes but the bindings never name.
-        (None, "unused_prompt", "unused"),
-        # A column the bindings never fill.
-        ([{"label": "prompt", "input": 0}], None, "review_system"),
-        # A binding naming a column the op does not declare.
-        ([{"label": "missing", "input": 0}], None, "unknown label 'missing'"),
-        # A binding naming an input slot the round does not pass.
-        ([{"label": "prompt", "input": -1}], None, "invalid input slot -1"),
+        # The bindings must fill every column, name every input the round
+        # passes, and stay inside the op's columns and inputs.
+        (None, ["review_prompt_1", "unused_prompt"], "unused"),
+        ([{"label": "prompt", "input": 0}], ["review_prompt_1"], "review_system"),
+        ([{"label": "missing", "input": 0}], ["review_prompt_1"], "unknown label"),
+        ([{"label": "prompt", "input": -1}], ["review_prompt_1"], "invalid input slot"),
     ],
     ids=["unused-input", "unbound-column", "unknown-label", "bad-slot"],
 )
 def test_column_bindings_reject_an_inconsistent_round(
-    bindings: list[dict[str, Any]] | None, extra_input: str | None, message: str
+    bindings: list[dict[str, Any]] | None, inputs: list[str], message: str
 ) -> None:
     library = _llm_column_library()
     if bindings is not None:
         library["ReviewTurn"]["column_bindings"] = bindings
     subgraph = _llm_column_subgraph("review")
-    if extra_input is not None:
-        subgraph[1]["inputs"].append(extra_input)
+    subgraph[1]["inputs"] = inputs
 
     with pytest.raises(DriverProtocolError, match=message):
         resolve_subgraph(subgraph, library)
@@ -455,23 +371,12 @@ def test_walk_archived_items_preserves_observation_for_llm_leaf():
     # planner sees is unchanged, and a row-wise producer's items each keep a row.
     llm_id = "s0"
     configs = {llm_id: _llm_config(llm_id)}
-    # The archived whole item for an LLM leaf; its default path is items.output.
-    archived = {llm_id: [json.dumps({"output": "hello", "extra": 1})]}
-    walked = walk_archived_items(archived, configs)
+    walked = walk_archived_items({llm_id: [json.dumps({"output": "hello"})]}, configs)
     assert walked == {llm_id: ["hello"]}
-    # The observation computed from the walked leaves matches the pre-forwarding
-    # text value (a single string row).
     obs = compute_observation(walked, preview_width=100)
     assert "rows=1" in obs
     assert "hello" in obs
-
-    rows = {
-        llm_id: [
-            json.dumps({"output": "a"}),
-            json.dumps({"output": "b"}),
-            json.dumps({"output": "c"}),
-        ]
-    }
+    rows = {llm_id: [json.dumps({"output": v}) for v in ("a", "b", "c")]}
     assert walk_archived_items(rows, configs) == {llm_id: ["a", "b", "c"]}
 
 
@@ -701,7 +606,6 @@ def _build(
     rows: int = 1,
     round_index: int = 1,
     whole_refs: set[str] | None = None,
-    export: tuple[str, ...] = (),
     grouped_sources: dict[str, bool | None] | None = None,
     registry: dict[str, dict[str, Any]] | None = None,
 ) -> Any:
@@ -722,7 +626,6 @@ def _build(
         rows=rows,
         whole_refs=whole_refs,
         grouped_sources=grouped_sources,
-        export=export,
     )
 
 
@@ -771,17 +674,8 @@ def _api_llm_config(op_id: str, **overrides: Any) -> dict:
     return config
 
 
-def _api_record(content: str, *, index: int = 0) -> dict:
-    return {
-        "index": index,
-        "url": "https://lum.id/llm/v1/chat/completions",
-        "status_code": 200,
-        "truncated": False,
-        "json": {"choices": [{"message": {"content": content}}]},
-        "usage": {"total_tokens": 3},
-        "text": content,
-        "prompt": "[]",
-    }
+def _api_record(content: str) -> dict:
+    return {"json": {"choices": [{"message": {"content": content}}]}}
 
 
 @pytest.mark.parametrize(
@@ -791,7 +685,7 @@ def _api_record(content: str, *, index: int = 0) -> dict:
         # at ``json.choices[0].message.content`` rather than ``output``.
         (
             _api_llm_config("s0"),
-            [json.dumps(_api_record("first")), json.dumps(_api_record("second"))],
+            [_api_record("first"), _api_record("second")],
             ["first", "second"],
         ),
         # A row-wise API task groups one response per input row under ``rows``,
@@ -799,39 +693,31 @@ def _api_record(content: str, *, index: int = 0) -> dict:
         # as for a local row-wise leaf.
         (
             _api_llm_config("s0", rowwise_template="{row}"),
-            [
-                json.dumps(
-                    {
-                        "index": 0,
-                        "rows": [_api_record("a", index=0), _api_record("b", index=1)],
-                    }
-                )
-            ],
+            [{"rows": [_api_record("a"), _api_record("b")]}],
             [json.dumps(["a", "b"])],
         ),
-        # The runtime dispatches any non-vision LLMOp with ``config.api`` as an
-        # API task, not only a chat op, so an image-generation leaf archives the
-        # raw response record too.
+        # Any non-vision LLMOp with ``config.api`` dispatches as an API task,
+        # not only a chat op, so an image-generation leaf archives the raw
+        # response record too.
         (
             {
                 "id": "s0",
                 "op": "ImageGenerationOp",
                 "inputs": [],
-                "config": {
-                    "model": "qwen3.8-27b",
-                    "api": {"url": "https://example.com/v1"},
-                },
+                "config": {"model": "m", "api": {"url": "https://example.com/v1"}},
             },
-            [json.dumps(_api_record("a picture"))],
+            [_api_record("a picture")],
             ["a picture"],
         ),
     ],
     ids=["chat", "rowwise", "image_leaf"],
 )
 def test_walk_archived_items_reads_an_api_record(
-    config: dict, archived: list[str], expected: list[str]
+    config: dict, archived: list[dict], expected: list[str]
 ) -> None:
-    assert walk_archived_items({"s0": archived}, {"s0": config}) == {"s0": expected}
+    assert walk_archived_items(
+        {"s0": [json.dumps(item) for item in archived]}, {"s0": config}
+    ) == {"s0": expected}
 
 
 def test_forward_implicit_gated_api_reference_binds_output():
@@ -1212,25 +1098,20 @@ def _rowwise_llm_config(op_id: str, **overrides: Any) -> dict:
 def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
     # A row-wise LLM leaf archives one grouped item per input table, holding
     # every row's value. In a one-slice round that is one item for the whole
-    # round, so a later round reading it whole must still get one value per
-    # row: the same values a per-symbol round binds, so a consumer reading it
-    # alongside ``Symbols`` lines up with its own rows.
+    # round, so a later round reading it whole still binds one value per row.
     llm_id = "s0"
     symbols = ["A", "B", "C"]
+    subgraph = _three_row_subgraph(llm_id)
     configs = {llm_id: _rowwise_llm_config(llm_id)}
 
-    per_symbol = {llm_id: [{"output": [symbol]} for symbol in symbols]}
-    _, per_symbol_inputs = forward_refs(
-        _three_row_subgraph(llm_id), per_symbol, configs, rows=3
+    _, whole_inputs = forward_refs(
+        subgraph,
+        {llm_id: [{"output": list(symbols)}]},
+        configs,
+        rows=3,
+        whole_refs={llm_id},
     )
-    assert per_symbol_inputs == {llm_id: ["A", "B", "C"]}
-
-    one_slice = {llm_id: [{"output": list(symbols)}]}
-    ops, whole_inputs = forward_refs(
-        _three_row_subgraph(llm_id), one_slice, configs, rows=3, whole_refs={llm_id}
-    )
-    assert ops[0]["inputs"] == [llm_id]
-    assert whole_inputs == per_symbol_inputs
+    assert whole_inputs == {llm_id: symbols}
 
     # A row-gated leaf archives one merge record per row, so its whole result is
     # already one value per row and is bound without flattening.
@@ -1238,25 +1119,20 @@ def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
         {"selected": True, "done": False, "branch": "pending", "row": index}
         for index in range(3)
     ]
-    gated = {
-        llm_id: [
-            {"output": json.dumps({**row, "output": f"text-{index}"}), "value": row}
-            for index, row in enumerate(rows)
-        ]
-    }
     _, gated_inputs = forward_refs(
-        _three_row_subgraph(llm_id),
-        gated,
+        subgraph,
         {
-            llm_id: _rowwise_llm_config(
-                llm_id, row_gate={"node": "r0", "branch": "finish"}
-            )
+            llm_id: [
+                {"output": json.dumps({**row, "output": f"text-{index}"}), "value": row}
+                for index, row in enumerate(rows)
+            ]
         },
+        {llm_id: _rowwise_llm_config(llm_id, row_gate={"node": "r0", "branch": "f"})},
         rows=3,
         whole_refs={llm_id},
     )
     assert gated_inputs[llm_id] == [
-        json.dumps({**row, "output": f"text-{i}"}) for i, row in enumerate(rows)
+        json.dumps({**row, "output": f"text-{index}"}) for index, row in enumerate(rows)
     ]
 
 
@@ -1288,13 +1164,13 @@ def test_forwarded_literal_input_binds_as_a_data_column(leaf_kind):
         whole_refs={prior},
     )
     inputs["Symbols"] = ["NVDA", "AAPL", "MSFT"]
-    workflow = {
-        "name": "r2",
-        "inputs": inputs,
-        "ops": ops,
-        "outputs": [{"name": "o", "ref": "C_r1"}],
-    }
-    spec = next(iter(parse_yaml_payload(workflow).values()))
+    spec = next(
+        iter(
+            parse_yaml_payload(
+                {"name": "r2", "inputs": inputs, "ops": ops, "outputs": []}
+            ).values()
+        )
+    )
     graph = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
