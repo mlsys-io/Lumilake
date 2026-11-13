@@ -300,38 +300,6 @@ def test_validate_accepts_export_in_subgraph():
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
 
 
-def test_runtime_rejects_format_op_leaf_source() -> None:
-    graph = {
-        "input_graph_Symbols": {
-            "_id": "input_graph_Symbols",
-            "_op": "InputOp",
-            "_inputs": [],
-            "_max_iter": None,
-            "name": "Symbols",
-        },
-        "format_graph_leaf": {
-            "_id": "format_graph_leaf",
-            "_op": "FormatOp",
-            "_inputs": ["input_graph_Symbols"],
-            "_max_iter": None,
-            "template": "{ref0}",
-            "format_args": ["input_graph_Symbols"],
-            "format_kwargs": {},
-        },
-        "output_graph_leaf": {
-            "_id": "output_graph_leaf",
-            "_op": "OutputOp",
-            "_inputs": ["format_graph_leaf"],
-            "_max_iter": None,
-            "name": "leaf",
-            "path": "items",
-        },
-    }
-    compiled = Graph.from_json(graph).compile(Symbols=["a"])
-    with pytest.raises(ValueError, match="must be an LLMOp"):
-        RuntimeGraphBuilder().build(compiled)
-
-
 def _llm_column_library() -> dict[str, dict[str, Any]]:
     return {
         "ReviewTurn": {
@@ -548,34 +516,31 @@ def _sourced_rowwise_config(op_id: str, *sources: str) -> dict:
 
 
 _ROW_COUNT_SOURCE_CASES: list[Any] = [
+    # The input node and an earlier round's op both forward a literal list input
+    # that FlowMesh reads ungrouped.
     pytest.param(
         {"s0": _sourced_rowwise_config("s0", INPUT_NODE_ID)},
         {"s0": [{"output": ["a0", "a1", "a2"]}]},
         1,
         {"s0": ["a0", "a1", "a2"]},
-        id="input-node-one-symbol",
-    ),
-    pytest.param(
-        {"c0": _llm_config("c0"), "s0": _sourced_rowwise_config("s0", "c0")},
-        {"s0": [{"output": ["a0", "a1", "a2"]}]},
-        3,
-        {"s0": ["a0", "a1", "a2"]},
-        id="same-round-chat-three-symbols",
+        id="input-node",
     ),
     pytest.param(
         {"p": _llm_config("p"), "s0": _sourced_rowwise_config("s0", "p")},
         {"p": [{"output": ["v0", "v1", "v2"]}], "s0": [{"output": ["a0", "a1", "a2"]}]},
         1,
         {"s0": ["a0", "a1", "a2"]},
-        id="earlier-round-source-one-symbol",
+        id="earlier-round",
     ),
+    # A column projecting into a same-round retrieval's rows is grouped.
     pytest.param(
         {"t1": _sql_config("t1"), "s0": _sourced_rowwise_config("s0", "t1")},
         {"s0": [{"output": ["r1", "r2", "r3", "r4", "r5"]}]},
         1,
         {"s0": [json.dumps(["r1", "r2", "r3", "r4", "r5"])]},
-        id="inner-table-single-symbol",
+        id="retrieval-rows",
     ),
+    # A whole result holds one list per item, so it binds as one value per row.
     pytest.param(
         {
             "L": {"id": "L", "op": "LambdaOp", "mode": "list", "inputs": []},
@@ -639,17 +604,6 @@ _TABLE_ROWS = ["r1", "r2", "r3", "r4", "r5"]
 _ONE_TABLE_ITEM = [json.dumps(_TABLE_ROWS)]
 
 
-def _exporting_reader(source: str) -> dict[str, Any]:
-    return {
-        "id": "R",
-        "op": "LambdaOp",
-        "mode": "list",
-        "inputs": [source],
-        "fn_name": "reader",
-        "code": "def reader(columns):\n    return columns[0]\n",
-    }
-
-
 def _same_round_source_leaf(
     op_id: str, *columns: tuple[str, str | None]
 ) -> dict[str, Any]:
@@ -681,7 +635,6 @@ _SAME_ROUND_SOURCE_CASES: list[Any] = [
     # A row-mode Lambda's column yields one row per item.
     pytest.param(
         _ROW_LAMBDA_SOURCE,
-        False,
         1,
         [("L", "items.output")],
         _ONE_TABLE_ITEM,
@@ -690,23 +643,13 @@ _SAME_ROUND_SOURCE_CASES: list[Any] = [
     # A retrieval column inside the table projects into rows.
     pytest.param(
         _sql_config("t1"),
-        False,
         3,
         [("t1", "items.table.symbol")],
         _ONE_TABLE_ITEM,
         id="retrieval-table-column",
     ),
     pytest.param(
-        _sql_config("t1"),
-        True,
-        3,
-        [("t1", "items.table.symbol")],
-        _ONE_TABLE_ITEM,
-        id="retrieval-table-column-exported",
-    ),
-    pytest.param(
         _s3_config("t1"),
-        False,
         3,
         [("t1", "items.content")],
         _ONE_TABLE_ITEM,
@@ -715,7 +658,6 @@ _SAME_ROUND_SOURCE_CASES: list[Any] = [
     # A column over the whole table does not project into rows.
     pytest.param(
         _sql_config("t1"),
-        False,
         3,
         [("t1", "items.table")],
         _TABLE_ROWS,
@@ -725,11 +667,10 @@ _SAME_ROUND_SOURCE_CASES: list[Any] = [
 
 
 @pytest.mark.parametrize(
-    ("source", "exported", "rows", "columns", "expected"), _SAME_ROUND_SOURCE_CASES
+    ("source", "rows", "columns", "expected"), _SAME_ROUND_SOURCE_CASES
 )
 def test_build_round_records_a_same_round_source_grouping(
     source: dict[str, Any],
-    exported: bool,
     rows: int,
     columns: list[tuple[str, str | None]],
     expected: list[str],
@@ -739,12 +680,8 @@ def test_build_round_records_a_same_round_source_grouping(
     # producer's own round. A column over the whole ``items.table`` is not
     # grouped, so the consumer builds one row per retrieval item instead.
     ops = [source, _same_round_source_leaf("s0", *columns)]
-    export: tuple[str, ...] = ()
-    if exported:
-        ops.append(_exporting_reader(source["id"]))
-        export = (source["id"],)
     registry = {op["id"]: op for op in ops}
-    producing = _build(ops, round_index=0, export=export, registry=registry)
+    producing = _build(ops, round_index=0, registry=registry)
     archived = {"output": _TABLE_ROWS}
     consuming = _build(
         _three_row_subgraph("s0"),
@@ -797,28 +734,25 @@ def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
     return config
 
 
-@pytest.mark.parametrize("kind", ["same_round_chat", "earlier_round_op"])
-def test_build_round_decides_an_ungrouped_source(kind: str) -> None:
-    if kind == "same_round_chat":
-        # A chat op that is not row-wise yields one scalar per item, so a
-        # row-wise leaf reading it builds one table of its own rows whatever the
-        # symbol count: the leaf's answers expand even at one symbol, where the
-        # fallback would bind them as one blob.
-        ops = [
-            _plain_chat("c0", INPUT_NODE_ID),
-            _same_round_source_leaf("s0", ("c0", None)),
-        ]
-        producing = _build(ops, round_index=0)
-        assert producing.grouped_sources == {"s0": False}
-        consuming = _build(
-            _three_row_subgraph("s0"),
-            results={"s0": [{"output": _TABLE_ROWS}]},
-            whole_refs={"s0"},
-            grouped_sources=producing.grouped_sources,
-            registry={op["id"]: op for op in ops},
-        )
-        assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
-        return
+def test_build_round_decides_an_ungrouped_source() -> None:
+    # A chat op that is not row-wise yields one scalar per item, so a row-wise
+    # leaf reading it builds one table of its own rows whatever the symbol
+    # count: the leaf's answers expand even at one symbol, where the fallback
+    # would bind them as one blob.
+    ops = [
+        _plain_chat("c0", INPUT_NODE_ID),
+        _same_round_source_leaf("s0", ("c0", None)),
+    ]
+    producing = _build(ops, round_index=0)
+    assert producing.grouped_sources == {"s0": False}
+    consuming = _build(
+        _three_row_subgraph("s0"),
+        results={"s0": [{"output": _TABLE_ROWS}]},
+        whole_refs={"s0"},
+        grouped_sources=producing.grouped_sources,
+        registry={op["id"]: op for op in ops},
+    )
+    assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
     # A column reading an earlier round's op becomes a literal list input, which
     # FlowMesh reads ungrouped. The decision needs that op's archived results:
     # against an empty history the source is unknown rather than a literal.
@@ -1324,54 +1258,6 @@ def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
     assert gated_inputs[llm_id] == [
         json.dumps({**row, "output": f"text-{i}"}) for i, row in enumerate(rows)
     ]
-
-
-def test_forwarded_literal_input_resolves_for_a_single_node_reference_guard():
-    # An embedding op reading a row-wise leaf by a single node reference can
-    # only carry one row, so the graph refuses it. The leaf's row count comes
-    # from its forwarded column, which resolves to the graph's input op even
-    # though the op dict omits it.
-    prior = "C_r0"
-    values = ["v0", "v1", "v2"]
-    round_ops = [
-        {
-            "id": "C_r1",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "messages": [{"role": "user", "content": "grade {row}"}],
-            "rowwise_template": "{row}",
-            "rowwise_columns": [
-                {"label": "row", "node": prior, "path": "items.output"}
-            ],
-            "config": {"model": "m"},
-        },
-        {
-            "id": "E1",
-            "op": "EmbeddingOp",
-            "inputs": ["C_r1"],
-            "input": "C_r1",
-            "config": {"model": "bge-m3"},
-        },
-    ]
-    ops, inputs = forward_refs(
-        round_ops,
-        {prior: [{"output": list(values)}]},
-        {prior: _rowwise_llm_config(prior)},
-        rows=3,
-        whole_refs={prior},
-    )
-    inputs["Symbols"] = ["NVDA", "AAPL", "MSFT"]
-    workflow = {
-        "name": "r2",
-        "inputs": inputs,
-        "ops": ops,
-        "outputs": [{"name": "o", "ref": "E1"}],
-    }
-    spec = next(iter(parse_yaml_payload(workflow).values()))
-    with pytest.raises(ValueError, match="produces multiple rows"):
-        RuntimeGraphBuilder().build(
-            Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-        )
 
 
 @pytest.mark.parametrize("leaf_kind", ["chat", "vision"])

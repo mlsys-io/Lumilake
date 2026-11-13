@@ -20,7 +20,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def _slice_meta(graph_name: str, *, whole_set: bool = False) -> WorkflowSliceMeta:
+def _slice_meta(graph_name: str) -> WorkflowSliceMeta:
     return WorkflowSliceMeta(
         public_graph_name=graph_name,
         slice_index=0,
@@ -29,7 +29,6 @@ def _slice_meta(graph_name: str, *, whole_set: bool = False) -> WorkflowSliceMet
         total_length=1,
         template_hash=f"hash-{graph_name}",
         varying_input_keys=(),
-        whole_set=whole_set,
     )
 
 
@@ -991,22 +990,6 @@ def test_standalone_job_config_has_no_chain_lineage() -> None:
     job = _build_job("req-standalone", "graph-1")
     assert job.config.chain_id is None
     assert job.config.chain_round == 0
-
-
-@pytest.mark.asyncio
-async def test_enqueue_carries_the_slice_whole_set_flag() -> None:
-    """``whole_set`` reaches the queued item, so the runtime reads a one-slice
-    round's own row count instead of the slice's input row count."""
-    manager = PriorityJobManager(
-        optimizer=MagicMock(spec=BaseOptimizer),
-        quantums=_priority_quantums(8),
-    )
-    job = _build_job("req-whole", "graph-whole")
-    job.workflow_slices["graph-whole"] = _slice_meta("graph-whole", whole_set=True)
-
-    (item,) = await manager.enqueue(job)
-
-    assert item.whole_set is True
 
 
 def test_chain_round_rejects_negative_values() -> None:

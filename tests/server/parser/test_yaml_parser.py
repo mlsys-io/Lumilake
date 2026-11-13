@@ -112,6 +112,23 @@ def test_router_op_and_row_gate_are_declarative() -> None:
             row_gate:
               node: route
               branch: review
+          - id: ask
+            op: LLMChatOp
+            inputs: [source]
+            messages:
+              - role: user
+                content: source
+            config:
+              model: dummy-model
+            rowwise_columns:
+              - label: message_count
+                data:
+                  type: list
+                  items: [1]
+            rowwise_messages_column:
+              label: messages_json
+              node: source
+              path: items.output
         outputs:
           - name: result
             ref: turn
@@ -119,11 +136,18 @@ def test_router_op_and_row_gate_are_declarative() -> None:
     spec = parse_yaml_payload(yaml_text)["routed"]
     graph = Graph.from_json(spec["graph"])
     router = next(iter(graph.iter_ops(RouterOp)))
-    turn = next(iter(graph.iter_ops(LLMChatOp)))
+    chats = list(graph.iter_ops(LLMChatOp))
+    gated = next(op for op in chats if op.row_gate is not None)
+    messages = next(op for op in chats if op.row_gate is None)
     assert router.default_branch == "pending"
     assert router.branches == ["review", "pending"]
-    assert turn.row_gate is not None
-    assert turn.row_gate.branch == "review"
+    assert gated.row_gate is not None
+    assert gated.row_gate.branch == "review"
+    # An ungated model can take its messages from an upstream column instead of
+    # a rowwise template.
+    assert messages.rowwise_template is None
+    assert messages.rowwise_messages_column is not None
+    assert messages.rowwise_messages_column.label == "messages_json"
 
 
 @pytest.mark.parametrize(
@@ -244,48 +268,6 @@ def test_yaml_rejects_an_incomplete_row_gate(turn_extra: str, message: str) -> N
     )
     with pytest.raises(ValueError, match=message):
         parse_yaml_payload(yaml_text)
-
-
-def test_yaml_rowwise_messages_column_is_parsed() -> None:
-    yaml_text = textwrap.dedent("""
-        name: messages
-        inputs:
-          Rows: ["[]"]
-        ops:
-          - id: source
-            op: LambdaOp
-            inputs: [Rows]
-            fn_name: echo
-            code: |
-              def echo(inputs):
-                  return inputs[0]
-          - id: turn
-            op: LLMChatOp
-            inputs: [source]
-            messages:
-              - role: user
-                content: source
-            config:
-              model: dummy-model
-            rowwise_columns:
-              - label: message_count
-                data:
-                  type: list
-                  items: [1]
-            rowwise_messages_column:
-              label: messages_json
-              node: source
-              path: items.output
-        outputs:
-          - name: result
-            ref: turn
-        """)
-    spec = parse_yaml_payload(yaml_text)["messages"]
-    graph = Graph.from_json(spec["graph"])
-    turn = next(iter(graph.iter_ops(LLMChatOp)))
-    assert turn.rowwise_template is None
-    assert turn.rowwise_messages_column is not None
-    assert turn.rowwise_messages_column.label == "messages_json"
 
 
 def test_multi_op_topology_inputs() -> None:

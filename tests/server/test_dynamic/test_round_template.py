@@ -58,21 +58,16 @@ def _spec(template: dict, **extra: object) -> dict:
     }
 
 
-@pytest.mark.parametrize(
-    ("template", "extra"),
-    [
+def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
+    # A template and an API planner are alternatives, and neither the template
+    # nor a body takes an unknown key.
+    for template, extra in [
         (_template(), {"api": {"url": "http://planner.test"}}),
         ({**_template(), "unknown": True}, {}),
         ({**_template(), "first": {**_body(), "unknown": True}}, {}),
-    ],
-    ids=["api-and-template", "outer-key", "nested-key"],
-)
-def test_template_spec_rejects_bad_shapes(template: dict, extra: dict) -> None:
-    with pytest.raises(ValidationError):
-        DynamicSpec.model_validate(_spec(template, **extra))
-
-
-def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
+    ]:
+        with pytest.raises(ValidationError):
+            DynamicSpec.model_validate(_spec(template, **extra))
     spec = DynamicSpec.model_validate(_spec(_template()))
     assert spec.driver.template is not None
     first = template_plan_for_round(spec.driver.template, 1)
@@ -159,6 +154,15 @@ def test_template_validator_rejects_a_stop_export_that_cannot_stop(
     )
     with pytest.raises(DriverProtocolError, match=message):
         validate_template_spec(template)
+    # A body may name a library entry instead of spelling out the op, and the
+    # validator resolves it.
+    known = _library_ref_spec("Known")
+    assert known.driver.template is not None
+    validate_template_spec(known.driver.template, known.library)
+    unknown = _library_ref_spec("Missing")
+    assert unknown.driver.template is not None
+    with pytest.raises(DriverProtocolError, match="unknown library entry"):
+        validate_template_spec(unknown.driver.template, unknown.library)
 
 
 def test_collected_export_forwards_live_case_rows_to_next_round() -> None:
@@ -192,16 +196,6 @@ def _library_ref_spec(ref: str) -> DynamicSpec:
             "library": {"Known": _state_op("Known", [])},
         }
     )
-
-
-def test_template_validator_resolves_a_library_ref() -> None:
-    known = _library_ref_spec("Known")
-    assert known.driver.template is not None
-    validate_template_spec(known.driver.template, known.library)
-    unknown = _library_ref_spec("Missing")
-    assert unknown.driver.template is not None
-    with pytest.raises(DriverProtocolError, match="unknown library entry"):
-        validate_template_spec(unknown.driver.template, unknown.library)
 
 
 def _gated_body() -> dict:
@@ -280,6 +274,9 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                     ],
                 },
             },
+            # A Lambda's code is Python source, not a node reference, so a
+            # placeholder inside it stays literal while the op's id renders.
+            _state_op("Echo_r{{round}}", ["Symbols"], code="# {{round}}\npass\n"),
         ]
     )
     template = DriverTemplate.model_validate(
@@ -300,20 +297,4 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
     assert ops["Lookup_r1"]["data_spec"]["params"] == [
         {"label": "name", "node": "Fmt_r1", "path": "items.output"}
     ]
-
-
-def test_template_body_leaves_a_lambda_code_untouched() -> None:
-    # A Lambda's code is Python source, not a node reference, so a placeholder
-    # inside it stays literal even while the op's id renders.
-    body = {
-        "ops": [_state_op("Echo_r{{round}}", ["Symbols"], code="# {{round}}\npass\n")],
-        "export": ["Echo_r{{round}}"],
-    }
-    template = DriverTemplate.model_validate(
-        {"first": body, "next": body, "stop_when_empty": "Echo_r{{prev}}"}
-    )
-    validate_template_spec(template)
-    echo = next(
-        op for op in template_plan_for_round(template, 2).ops if op["id"] == "Echo_r1"
-    )
-    assert echo["code"] == "# {{round}}\npass\n"
+    assert ops["Echo_r1"]["code"] == "# {{round}}\npass\n"

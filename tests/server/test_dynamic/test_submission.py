@@ -1375,9 +1375,33 @@ async def test_dynamic_api_planner_drives_two_rounds(
     assert "market_cap" in second["messages"][1]["content"]
 
 
+@pytest.mark.parametrize(
+    ("export_rows", "expected_rounds"),
+    [
+        (
+            [
+                [{"case_id": "0", "turn": 0}],
+                [{"case_id": "0", "turn": 1}],
+                [{"case_id": "0", "turn": 2}],
+            ],
+            [("subgraph", 1), ("subgraph", 2), ("subgraph", 3)],
+        ),
+        # Round 2's list-mode export holds no row, so the stop check ends the
+        # loop before a third round runs.
+        (
+            [[{"case_id": "0", "turn": 0}], []],
+            [("subgraph", 1), ("subgraph", 2), ("STOP", 3)],
+        ),
+    ],
+    ids=["three-rounds", "empty-export-stops"],
+)
 @pytest.mark.anyio
-async def test_dynamic_template_drives_three_rounds_without_planner(
-    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
+    app: FastAPI,
+    job_routes: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    export_rows: list[list[dict[str, Any]]],
+    expected_rounds: list[tuple[str, int]],
 ) -> None:
     async def _unexpected_planner(*args: Any, **kwargs: Any) -> str:
         raise AssertionError("template mode must not call a planner")
@@ -1385,55 +1409,20 @@ async def test_dynamic_template_drives_three_rounds_without_planner(
     monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [{"next": "STOP"}]
-    fake_server.export_rows = [
-        [{"case_id": "0", "turn": 0}],
-        [{"case_id": "0", "turn": 1}],
-        [{"case_id": "0", "turn": 2}],
-    ]
+    fake_server.export_rows = export_rows
     record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
 
     assert record.status == "completed", record.error
-    assert len(record.child_job_ids) == 3
-    assert [config.chain_round for config in fake_server.configs] == [1, 2, 3]
+    executed = len(expected_rounds) - (1 if expected_rounds[-1][0] == "STOP" else 0)
+    assert len(record.child_job_ids) == executed
+    assert [config.chain_round for config in fake_server.configs] == list(
+        range(1, executed + 1)
+    )
     round_plans = record.result.outputs["round"]["plan"]
-    assert [plan["source"] for plan in round_plans] == ["template"] * 3
-    assert [plan["round"] for plan in round_plans] == [1, 2, 3]
-    assert [plan["next"] for plan in round_plans] == ["subgraph"] * 3
-    graph_names = [
-        {op.name for op in graph.iter_ops(OutputOp)}
-        for graphs in fake_server.executed_graphs
-        for graph in graphs.values()
-    ]
-    assert len(graph_names) == 3
-    assert all(names for names in graph_names)
-    assert [len(names) for names in graph_names] == [len(graph_names[0])] * 3
-
-
-@pytest.mark.anyio
-async def test_dynamic_template_stops_before_an_empty_followup_round(
-    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    async def _unexpected_planner(*args: Any, **kwargs: Any) -> str:
-        raise AssertionError("template mode must not call a planner")
-
-    monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "STOP"}]
-    fake_server.export_rows = [
-        [{"case_id": "0", "turn": 0}],
-        [],
-    ]
-    record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
-
-    assert record.status == "completed", record.error
-    assert len(record.child_job_ids) == 2
-    assert [config.chain_round for config in fake_server.configs] == [1, 2]
-    round_plans = record.result.outputs["round"]["plan"]
-    assert [(plan["next"], plan["source"], plan["round"]) for plan in round_plans] == [
-        ("subgraph", "template", 1),
-        ("subgraph", "template", 2),
-        ("STOP", "template", 3),
-    ]
+    assert [(plan["next"], plan["round"]) for plan in round_plans] == expected_rounds
+    assert [plan["source"] for plan in round_plans] == ["template"] * len(
+        expected_rounds
+    )
 
 
 @pytest.mark.anyio

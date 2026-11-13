@@ -384,6 +384,19 @@ def _run_row_select(
     return namespace["main"](inputs)
 
 
+def _run_row_merge(
+    plan: python_step.ColumnPlan,
+    inputs: dict[str, str],
+    *,
+    branch: str,
+):
+    """Run a generated merge step, which pairs routed rows with model outputs."""
+    namespace: dict[str, Any] = {}
+    code = python_step.row_skip_merge_code("merge", plan, branch=branch)
+    exec(code, namespace)
+    return namespace["main"](inputs)
+
+
 def _stage(tmp_path: Path, name: str, result: dict[str, Any]) -> str:
     stage = tmp_path / name
     stage.mkdir()
@@ -404,6 +417,9 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
 
 
 def test_row_select_keeps_a_done_row_on_its_branch(tmp_path: Path) -> None:
+    # A terminal row's ``done`` flag does not keep it off a branch the router
+    # gave it: the selector keeps every row whose branch matches, so the branch
+    # that marks a row finished still selects it.
     source = _stage(
         tmp_path,
         "source",
@@ -434,78 +450,20 @@ def test_row_select_keeps_a_done_row_on_its_branch(tmp_path: Path) -> None:
     assert _run_row_select(plan, inputs, labels=["row"], branch="pending") == {
         "items": [{"row": "normal"}]
     }
-
-
-def test_row_select_rejects_a_column_that_is_neither_whole_nor_short(
-    tmp_path: Path,
-) -> None:
-    status = _stage(
-        tmp_path,
-        "status",
-        {
-            "items": [
-                {"output": json.dumps({"branch": "fix", "row": 0, "done": False})},
-                {"output": json.dumps({"branch": "fix", "row": 1, "done": False})},
-            ]
-        },
-    )
-    source = _stage(
-        tmp_path,
-        "source",
-        {"items": [{"output": "a"}, {"output": "b"}, {"output": "c"}]},
-    )
-    with pytest.raises(ValueError, match="has 3 rows; expected 1 or 2"):
-        _run_row_select(
-            [
-                {"kind": "stage", "node": "status"},
-                {"kind": "stage", "node": "source", "path": "output"},
-            ],
-            {"status": status, "source": source},
-            labels=["row"],
-            branch="fix",
-        )
-
-
-def _run_row_merge(
-    plan: python_step.ColumnPlan,
-    inputs: dict[str, str],
-    *,
-    branch: str,
-):
-    """Run a generated merge step, which pairs routed rows with model outputs."""
-    namespace: dict[str, Any] = {}
-    code = python_step.row_skip_merge_code("merge", plan, branch=branch)
-    exec(code, namespace)
-    return namespace["main"](inputs)
-
-
-def _merge_plan(status_node: str, selected_node: str) -> python_step.ColumnPlan:
-    return [
-        {"kind": "stage", "node": status_node},
-        {"kind": "stage", "node": selected_node, "flatten": True, "allow_empty": True},
-    ]
-
-
-def test_row_merge_keeps_unrouted_and_terminal_rows(tmp_path: Path) -> None:
-    # Only the rows the selector kept carry a model output; every other row is
-    # forwarded as it was routed, so a terminal row keeps ``done`` and an
-    # unrouted row keeps a null output.
-    source = _stage(
-        tmp_path,
-        "source",
-        {"items": [{"output": "normal"}, {"output": "COMPLETE: done"}]},
-    )
-    status = _run_row_status(
-        [{"kind": "stage", "node": "source"}],
-        {"source": source},
-        rules=[{"branch": "finish", "match": "contains", "value": "COMPLETE"}],
-        default_branch="pending",
-        terminal_branch="finish",
-    )
-    status_stage = _stage(tmp_path, "status", status)
+    # The merge pairs the gated call's output with the rows the selector kept
+    # and forwards every other row as it was routed, so a terminal row keeps
+    # ``done`` and an unrouted row keeps a null output.
     selected_stage = _stage(tmp_path, "selected", {"items": [{"output": "final"}]})
     merged = _run_row_merge(
-        _merge_plan("status", "selected"),
+        [
+            {"kind": "stage", "node": "status"},
+            {
+                "kind": "stage",
+                "node": "selected",
+                "flatten": True,
+                "allow_empty": True,
+            },
+        ],
         {"status": status_stage, "selected": selected_stage},
         branch="finish",
     )

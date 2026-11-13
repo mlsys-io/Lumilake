@@ -1238,9 +1238,7 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
     server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
 
 
-def _install_rowwise_api_build_and_schedule(
-    server: Any, output_name: str, node_prefix_name: str | None = None
-) -> None:
+def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> None:
     """Fake build/schedule whose output node is a plain api task (not a
     list-mode python step), so the row-wise API demux path applies."""
 
@@ -1251,7 +1249,7 @@ def _install_rowwise_api_build_and_schedule(
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
-        node_id = f"{node_prefix_name or node_prefix}__{suffix}"
+        node_id = f"{node_prefix}__{suffix}"
         op = RuntimeOp(
             node_id=node_id,
             task_type="api",
@@ -1933,88 +1931,6 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
     assert resp.error_info is None
     out = resp.outputs["shared"]["out"]
     assert out == ["tagged:NVDA", "tagged:AAPL"]
-
-
-class _ShrunkReaderRuntimeManager(RecordingRuntimeManager):
-    """Fakes FlowMesh dispatch for a one-slice round whose own list-mode reader
-    answers with fewer rows than the round's longest input holds."""
-
-    def __init__(self, *, values: list[str]) -> None:
-        super().__init__()
-        self._values = values
-
-    async def process_request(
-        self,
-        request_info: Any,
-        schedule: Schedule,
-        worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
-    ) -> dict[str, Any]:
-        flat_outputs: dict[str, list[str]] = {}
-        histories: dict[str, list[list[dict[str, str]]]] = {}
-        for node_id in request_info.output_node_map:
-            flat_outputs[node_id] = list(self._values)
-            histories[node_id] = [
-                [{"role": "assistant", "content": value}] for value in self._values
-            ]
-        return {
-            "flat_outputs": flat_outputs,
-            "chat_histories": histories,
-            "task_node_map": {},
-        }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("node_carries_workflow_id", [False, True])
-async def test_whole_set_round_accepts_its_own_row_count(
-    server_factory,
-    monkeypatch: pytest.MonkeyPatch,
-    node_carries_workflow_id: bool,
-) -> None:
-    """A one-slice round reads its whole input set, whose keys may disagree in
-    length (four symbols alongside a two-row previous export). The round's row
-    count is set by its own list-mode reader, so both the per-slice check, taken
-    when a runtime node id carries its slice's workflow id, and the merged-group
-    demux accept that row count whole instead of demanding the longest input's
-    length."""
-    server = server_factory()
-    server.runtime_manager = cast(
-        Any, _ShrunkReaderRuntimeManager(values=["case-0", "case-1"])
-    )
-
-    workflows = [
-        make_workflow(
-            workflow_id="wf-node",
-            request_id="req-node",
-            graph_name="ga",
-            public_graph_name="shared",
-            dsl_inputs={
-                "Symbols": ["NVDA", "MSFT", "AAPL", "AMD"],
-                "Live_r0": ["a", "b"],
-            },
-            slice_length=4,
-            total_length=4,
-            whole_set=True,
-        ),
-    ]
-    handlers = attach_request_states(server, workflows)
-    batch = make_batch(workflows)
-
-    monkeypatch.setattr(
-        server,
-        "_merge_group_compiled_graph",
-        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
-    )
-    _install_rowwise_api_build_and_schedule(
-        server, "out", "wf-node" if node_carries_workflow_id else None
-    )
-
-    await server._run_batch(["worker-1"], batch)
-
-    resp = handlers["req-node"].results[0]
-    assert resp.error_info is None
-    assert resp.outputs["shared"]["out"] == ["case-0", "case-1"]
-    assert len(resp.chat_histories["shared"]["out"]) == 2
 
 
 def _two_request_batch(server: Any) -> tuple[dict[str, Any], BatchSelection]:

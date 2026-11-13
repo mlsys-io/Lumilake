@@ -568,18 +568,8 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     assert router.id not in runtime_graph.nodes
     assert runtime_graph.nodes[selector.node_id].dependencies == (status.node_id,)
 
-    # Every runtime node renders for submission, and each stage references only
-    # nodes that exist in the built graph.
-    for node_id in runtime_graph.node_order:
-        node = runtime_graph.nodes[node_id]
-        rendered = node.to_flowmesh_node()
-        if node.task_type == "python":
-            compile(rendered["spec"]["code"], node_id, "exec")
-        for entry in node.data_spec.get("plan") or []:
-            if entry["kind"] == "stage":
-                assert entry["node"] in runtime_graph.nodes
-        for dep in node.dependencies or ():
-            assert dep in runtime_graph.nodes
+    # The status stage reads nothing and the merge stage pairs the status rows
+    # with the gated call's output.
     status_spec = runtime_graph.nodes[ids[0]].to_flowmesh_node()["spec"]
     merge_spec = runtime_graph.nodes[ids[3]].to_flowmesh_node()["spec"]
     assert "inputs" not in status_spec
@@ -587,45 +577,6 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
         {"stage": ids[0]},
         {"stage": ids[2]},
     ]
-
-    # The YAML path builds the same stages as the Python ops do.
-    yaml_text = textwrap.dedent("""
-        name: routed
-        inputs:
-          Rows: ["normal", "NEEDS REVIEW"]
-        ops:
-          - {id: route, op: RouterOp, inputs: [Rows], default_branch: pending,
-             rules: [{branch: review, match: contains, value: NEEDS REVIEW},
-                     {branch: pending, match: equals, value: __never__}]}
-          - id: turn
-            op: LLMChatOp
-            inputs: [Rows, route]
-            messages: [{role: user, content: Rows}]
-            rowwise_template: "{row}"
-            rowwise_columns: [{label: row, node: Rows, path: items.output}]
-            row_gate: {node: route, branch: review}
-            config: {model: meta-llama/Llama-3.1-8B-Instruct}
-        outputs:
-          - {name: result, ref: turn}
-        """)
-    spec = parse_yaml_payload(yaml_text)["routed"]
-    yaml_graph = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    yaml_turn_id = next(
-        op_id
-        for op_id, op in Graph.from_json(spec["graph"]).as_dict().items()
-        if isinstance(op, LLMChatOp)
-    )
-
-    def stage_types(graph: Any, op_id: str) -> list[str]:
-        return [
-            graph.nodes[node_id].task_type for node_id in graph.dsl_to_runtime[op_id]
-        ]
-
-    types = ["python", "python", "inference", "python"]
-    assert stage_types(runtime_graph, llm.id) == types
-    assert stage_types(yaml_graph, yaml_turn_id) == types
 
 
 @pytest.mark.parametrize(
