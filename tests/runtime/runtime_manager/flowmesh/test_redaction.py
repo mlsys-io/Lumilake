@@ -106,7 +106,7 @@ async def test_fetch_workflow_task_statuses_sanitizes_api_error_before_reraising
     record."""
 
     class _FakeTasks:
-        async def list_statuses(self, workflow_id: str) -> Any:
+        async def list_statuses(self, workflow_id: str, **_: Any) -> Any:
             raise APIError(
                 "task spec invalid",
                 status_code=422,

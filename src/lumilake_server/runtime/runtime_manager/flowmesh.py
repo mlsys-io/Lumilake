@@ -23,7 +23,7 @@ from typing import Any
 
 import yaml
 from flowmesh.exceptions import APIError
-from flowmesh.models.tasks import TaskStatusView
+from flowmesh.models.tasks import TaskStatusPage
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
@@ -52,6 +52,23 @@ from lumilake_server.utils.job_storage import get_job_storage
 from .base import BaseRuntimeManager
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+_STATUS_POLL_FIELDS = ("status", "error", "last_error")
+
+
+class _TaskStatusRow(BaseModel):
+    """One row of the status feed, projected to ``_STATUS_POLL_FIELDS``."""
+
+    task_id: str
+    status: str
+    error: str | None = None
+    last_error: str | None = None
+
+
+class _TaskNodeRow(BaseModel):
+    """One row of the status feed, projected to the task's graph node name."""
+
+    task_id: str
+    graph_node_name: str | None = None
 
 
 @dataclass
@@ -296,6 +313,11 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         # FM workflow id per (request_id, batch_id); drives cancel + trace forwarding.
         self._batch_workflow_id: dict[tuple[str, str], str] = {}
+        # FlowMesh workflow id -> status feed cursor, advanced by the execution
+        # loop's own polls, the only reader of the feed while it runs.
+        self._workflow_status_cursors: dict[str, str] = {}
+        # (request_id, batch_id) whose execution loop is reading the feed.
+        self._active_execution_loops: set[tuple[str, str]] = set()
         # (member request id, workflow id) -> owned task ids, for per-job usage.
         self._request_task_ids: dict[tuple[str, str], list[str]] = {}
         self._cancelled_requests: set[str] = set()
@@ -386,11 +408,24 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return task_info.model_dump()
 
     async def fetch_workflow_task_statuses(
-        self, workflow_id: str
-    ) -> list[TaskStatusView]:
+        self,
+        workflow_id: str,
+        fields: Sequence[str] = _STATUS_POLL_FIELDS,
+        cursor: str | None = None,
+    ) -> TaskStatusPage:
+        """List a workflow's task status rows, projected to ``fields``.
+
+        ``cursor`` keeps only tasks whose status changed after the cursor an
+        earlier page returned, so a poller reads each transition once; the page
+        carries the cursor for the next call.
+        """
         try:
             return await _retry_transient_read(
-                lambda: self.fm.tasks.list_statuses(workflow_id=workflow_id),
+                lambda: self.fm.tasks.list_statuses(
+                    workflow_id=workflow_id,
+                    fields=list(fields),
+                    cursor=cursor,
+                ),
                 f"workflow {workflow_id} task statuses",
             )
         except APIError as e:
@@ -454,9 +489,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
     ) -> str:
         """`` (node <id>): <FlowMesh error>`` for a failed task.
 
-        The error comes from the ``TaskStatusView`` the status poll already
-        retrieved for the failed task. A task with no recorded error yields
-        just the node suffix.
+        The error comes from the status row the poll already retrieved for the
+        failed task. A task with no recorded error yields just the node
+        suffix.
         """
         node_id = task_node_map.get(task_id)
         reason = f" (node {node_id})" if node_id else ""
@@ -476,17 +511,20 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         node_to_task: dict[str, str] = {}
 
         try:
-            tasks = await self.fetch_workflow_task_statuses(workflow_id)
+            page = await self.fetch_workflow_task_statuses(
+                workflow_id, fields=("graph_node_name",)
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to list FlowMesh tasks for workflow_id={workflow_id}"
             ) from e
-        tasks_by_id = {task.task_id: task for task in tasks}
+        rows = [_TaskNodeRow.model_validate(row) for row in page.rows]
+        tasks_by_id = {row.task_id: row for row in rows}
         for task_id in task_ids:
-            task = tasks_by_id.get(task_id)
-            if task is None:
+            row = tasks_by_id.get(task_id)
+            if row is None:
                 continue
-            node_name = task.graph_node_name
+            node_name = row.graph_node_name
             if not isinstance(node_name, str) or node_name not in expected_set:
                 raise RuntimeError(
                     "FlowMesh task description missing valid graph_node_name for "
@@ -518,53 +556,65 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
         return task_to_node, node_to_task
 
-    async def _update_workflow_task_statuses(
+    async def _update_batch_task_statuses(
         self,
-        task_status: dict[str, str],
-        task_workflows: Mapping[str, str],
+        statuses_by_batch: Mapping[tuple[str, str], dict[str, str]],
+        batch_keys: Sequence[tuple[str, str]],
+        workflow_ids: Mapping[tuple[str, str], str],
     ) -> bool:
-        completed = all(
-            task_id in task_workflows or status in TERMINAL_STATUSES
-            for task_id, status in task_status.items()
-        )
-        for workflow_id in dict.fromkeys(
-            task_workflows[task_id]
-            for task_id in task_status
-            if task_id in task_workflows
-        ):
-            workflow_status = {
-                task_id: task_status[task_id]
-                for task_id, task_workflow_id in task_workflows.items()
-                if task_workflow_id == workflow_id and task_id in task_status
-            }
-            if not await self.update_task_status(workflow_status, workflow_id):
+        """Refresh each batch's pending tasks from its workflow's status feed.
+
+        A batch whose execution loop is running is left as the loop reports it:
+        the loop owns that map while it runs, and a page applied from another
+        read could put a task the loop already read as terminal back to a
+        running status, or mark one terminal after the loop's download pass
+        had skipped it, so the loop would wait out its poll timeout on a task
+        that had finished or exit before that task's response was archived.
+        """
+        completed = True
+        for batch_key in batch_keys:
+            batch_status = statuses_by_batch[batch_key]
+            workflow_id = workflow_ids.get(batch_key)
+            if workflow_id is None or batch_key in self._active_execution_loops:
+                if any(
+                    status not in TERMINAL_STATUSES for status in batch_status.values()
+                ):
+                    completed = False
+                continue
+            if not await self.update_task_status(
+                batch_status, workflow_id, advance_cursor=False
+            ):
                 completed = False
-            for task_id, status in workflow_status.items():
-                task_status[task_id] = status
         return completed
 
     @staticmethod
-    def _task_workflows(
-        statuses_by_batch: Mapping[tuple[str, str], Mapping[str, str]],
+    def _merged_batch_status(
+        statuses_by_batch: Mapping[tuple[str, str], dict[str, str]],
         batch_keys: Sequence[tuple[str, str]],
-        workflow_ids: Mapping[tuple[str, str], str],
     ) -> dict[str, str]:
-        """Map each tracked task id to the workflow id of its batch."""
-        task_workflows: dict[str, str] = {}
+        """Combine the tracked statuses of every batch into one map."""
+        merged: dict[str, str] = {}
         for batch_key in batch_keys:
-            workflow_id = workflow_ids.get(batch_key)
-            if workflow_id is None:
-                continue
-            task_workflows.update(
-                {task_id: workflow_id for task_id in statuses_by_batch[batch_key]}
-            )
-        return task_workflows
+            merged.update(statuses_by_batch[batch_key])
+        return merged
 
     async def update_task_status(
         self,
         task_status: dict[str, str],
         workflow_id: str,
+        *,
+        advance_cursor: bool = True,
     ) -> bool:
+        """Advance ``task_status`` from the workflow's task status feed.
+
+        The first poll of a workflow lists every task; each later poll asks
+        only for the tasks whose status changed since the previous one, so an
+        unchanged task is not read again. Only the execution loop advances the
+        per-workflow feed cursor, as the only reader of a workflow it runs; a
+        caller for a workflow nobody is polling (``advance_cursor=False``) lists
+        every task and stores no cursor, so the rows FlowMesh filters to that
+        caller's view never move a cursor another reader depends on.
+        """
         pending_task_ids = {
             task_id
             for task_id, status in task_status.items()
@@ -573,30 +623,45 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         if not pending_task_ids:
             return True
 
-        task_infos = await self.fetch_workflow_task_statuses(workflow_id)
-        async with self._task_status_lock:
-            for task_info in task_infos:
-                if task_info.task_id not in pending_task_ids:
-                    continue
-                task_status[task_info.task_id] = task_info.status
-                if task_info.status == "FAILED":
-                    self._record_task_error(task_info.task_id, task_info)
-            completed = all(
+        page = await self.fetch_workflow_task_statuses(
+            workflow_id,
+            cursor=(
+                self._workflow_status_cursors.get(workflow_id)
+                if advance_cursor
+                else None
+            ),
+        )
+        rows = [_TaskStatusRow.model_validate(row) for row in page.rows]
+        for row in rows:
+            task_id = row.task_id
+            if task_id not in pending_task_ids:
+                continue
+            task_status[task_id] = row.status
+            if row.status == "FAILED":
+                self._record_task_error(task_id, row)
+        if not advance_cursor:
+            return all(
                 task_status[task_id] in TERMINAL_STATUSES
                 for task_id in pending_task_ids
             )
+        completed = all(
+            task_status[task_id] in TERMINAL_STATUSES for task_id in pending_task_ids
+        )
+        if completed:
+            self._workflow_status_cursors.pop(workflow_id, None)
+        elif page.cursor:
+            self._workflow_status_cursors[workflow_id] = page.cursor
         return completed
 
-    def _record_task_error(self, task_id: str, task_info: TaskStatusView) -> None:
+    def _record_task_error(self, task_id: str, row: _TaskStatusRow) -> None:
         """Record the FlowMesh error of a failed task, if it has one.
 
-        The error is read from the same ``TaskStatusView`` the status poll already
-        retrieved. A task with no recorded error is left unrecorded; the
-        caller then reports the plain message. The error is an untrusted
-        remote field, so it is redacted before it is recorded and later
-        raised or logged.
+        The error is read from the same status row the poll retrieved. A task
+        with no recorded error is left unrecorded; the caller then reports the
+        plain message. The error is an untrusted remote field, so it is
+        redacted before it is recorded and later raised or logged.
         """
-        error = task_info.error or task_info.last_error
+        error = row.error or row.last_error
         if error and error.strip():
             self._execution_task_errors[task_id] = redact_secrets_in_text(error.strip())
 
@@ -904,18 +969,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         # Aggregate data_profile tasks status across all batches
         if data_profile_batch_keys:
-            # Merge all batches' data_profile tasks
-            all_data_profile_tasks: dict[str, str] = {}
-            for batch_key in data_profile_batch_keys:
-                all_data_profile_tasks.update(self._data_profile_task_status[batch_key])
-
-            data_profile_task_workflows = self._task_workflows(
+            data_profile_completed = await self._update_batch_task_statuses(
                 self._data_profile_task_status,
                 data_profile_batch_keys,
                 self._batch_workflow_id,
             )
-            data_profile_completed = await self._update_workflow_task_statuses(
-                all_data_profile_tasks, data_profile_task_workflows
+            all_data_profile_tasks = self._merged_batch_status(
+                self._data_profile_task_status, data_profile_batch_keys
             )
             aggregated_status["data probing"] = {
                 "completed": data_profile_completed,
@@ -926,18 +986,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
         # Aggregate execution tasks status across all batches
         if execution_batch_keys:
-            # Merge all batches' execution tasks
-            all_execution_tasks: dict[str, str] = {}
-            for batch_key in execution_batch_keys:
-                all_execution_tasks.update(self._execution_task_status[batch_key])
-
-            execution_task_workflows = self._task_workflows(
+            execution_completed = await self._update_batch_task_statuses(
                 self._execution_task_status,
                 execution_batch_keys,
                 self._execution_workflow_id,
             )
-            execution_completed = await self._update_workflow_task_statuses(
-                all_execution_tasks, execution_task_workflows
+            all_execution_tasks = self._merged_batch_status(
+                self._execution_task_status, execution_batch_keys
             )
             aggregated_status["execution"] = {
                 "completed": execution_completed,
@@ -1411,148 +1466,162 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         output_nodes = len(output_node_indices)
         raw_task_node_map: dict[str, str] = {}
 
-        async with self._task_status_lock:
-            batch_key = (request_info.request_id, request_info.batch_id)
-            self._execution_output_tasks[batch_key] = set(task_ids)
-            self._execution_task_status[batch_key] = {
-                tid: "PENDING" for tid in task_ids
-            }
-            self._execution_workflow_id[batch_key] = workflow_id
-            for task_id, node_name in task_node_map.items():
-                if node_name not in flowmesh_to_raw:
-                    raise ValueError(
-                        "Missing raw-node mapping for FlowMesh node "
-                        f"'{node_name}' (task_id={task_id})"
-                    )
-                raw_task_node_map[task_id] = flowmesh_to_raw[node_name]
-            self._task_node_map[batch_key] = raw_task_node_map
-            # Attribute each task to the member requests whose pre-dedup
-            # graphs contributed its canonical node.
-            owner_members = request_info.task_owner_members
-            member_task_ids: dict[str, list[str]] = {
-                member_id: [] for member_id in request_info.member_request_ids
-            }
-            for task_id, canonical_node in raw_task_node_map.items():
-                for member_id in owner_members.get(canonical_node, set()):
-                    if member_id in member_task_ids:
-                        member_task_ids[member_id].append(task_id)
-            for member_id, task_ids in member_task_ids.items():
-                if task_ids:
-                    self._request_task_ids[(member_id, workflow_id)] = task_ids
-            metadata = self._batch_metadata.setdefault(
-                batch_key,
-                {
-                    "total_nodes": 0,
-                    "output_nodes": 0,
-                    "start_time": None,
-                    "end_time": None,
-                },
-            )
-            metadata["raw_nodes"] = raw_node_count
-            metadata["flowmesh_nodes"] = flowmesh_node_count
-
-        mapping_uri = self._save_json_artifact(
-            request_info,
-            "task-node-map.json",
-            raw_task_node_map,
-        )
-        self.logger.info(
-            "Archived task-node mapping (%d tasks) to %s",
-            len(raw_task_node_map),
-            mapping_uri,
-        )
-
-        # Poll for completion
-        poll_timeout = envs.LUMILAKE_POLL_TIMEOUT_SECONDS
-        poll_interval = envs.LUMILAKE_POLL_INTERVAL_SECONDS
-        downloaded_tasks: set[str] = set()
-        output_terminal = False
-        output_task_status: dict[str, str] = {}
-        start_time = time.time()
         batch_key = (request_info.request_id, request_info.batch_id)
-        while (elapsed := time.time() - start_time) < poll_timeout:
-            if await self.is_request_cancelled(request_info.request_id):
-                self.logger.info(
-                    "Stopping request %s (cancelled during execution)",
-                    request_info.request_id,
-                )
-                raise RequestCancelledError(request_info.request_id)
-            await self.update_task_status(
-                self._execution_task_status[batch_key],
-                self._execution_workflow_id[batch_key],
-            )
-
-            # Download responses for newly completed tasks
-            for tid in task_ids:
-                status = self._execution_task_status[batch_key][tid]
-                if status == "DONE" and tid not in downloaded_tasks:
-                    node_id = task_node_map.get(tid)
-                    if node_id is None:
-                        raise RuntimeError(
-                            "Missing task->node mapping for task "
-                            f"{tid}. Known task ids={sorted(task_node_map.keys())}"
+        # While this loop runs it is the only reader of the workflow's status
+        # feed; the jobs route reports the map it fills instead of polling. The
+        # batch is marked active in the same lock block that publishes it, so a
+        # progress read never finds a batch with a workflow id that is not yet
+        # active, and the loop's map has a single writer.
+        try:
+            async with self._task_status_lock:
+                self._active_execution_loops.add(batch_key)
+                self._execution_output_tasks[batch_key] = set(task_ids)
+                self._execution_task_status[batch_key] = {
+                    tid: "PENDING" for tid in task_ids
+                }
+                self._execution_workflow_id[batch_key] = workflow_id
+                for task_id, node_name in task_node_map.items():
+                    if node_name not in flowmesh_to_raw:
+                        raise ValueError(
+                            "Missing raw-node mapping for FlowMesh node "
+                            f"'{node_name}' (task_id={task_id})"
                         )
-                    await self._archive_task_response(request_info, tid, node_id)
-                    downloaded_tasks.add(tid)
+                    raw_task_node_map[task_id] = flowmesh_to_raw[node_name]
+                self._task_node_map[batch_key] = raw_task_node_map
+                # Attribute each task to the member requests whose pre-dedup
+                # graphs contributed its canonical node.
+                owner_members = request_info.task_owner_members
+                member_task_ids: dict[str, list[str]] = {
+                    member_id: [] for member_id in request_info.member_request_ids
+                }
+                for task_id, canonical_node in raw_task_node_map.items():
+                    for member_id in owner_members.get(canonical_node, set()):
+                        if member_id in member_task_ids:
+                            member_task_ids[member_id].append(task_id)
+                for member_id, owned_task_ids in member_task_ids.items():
+                    if owned_task_ids:
+                        self._request_task_ids[(member_id, workflow_id)] = (
+                            owned_task_ids
+                        )
+                metadata = self._batch_metadata.setdefault(
+                    batch_key,
+                    {
+                        "total_nodes": 0,
+                        "output_nodes": 0,
+                        "start_time": None,
+                        "end_time": None,
+                    },
+                )
+                metadata["raw_nodes"] = raw_node_count
+                metadata["flowmesh_nodes"] = flowmesh_node_count
 
-            # Count statuses for all nodes and output nodes
-            all_statuses = list(self._execution_task_status[batch_key].values())
-            status_counts = {s: all_statuses.count(s) for s in set(all_statuses)}
-            output_task_status = {
-                task_id: self._execution_task_status[batch_key][task_id]
-                for task_id in self._execution_output_tasks[batch_key]
-            }
-            output_status_counts = {
-                s: list(output_task_status.values()).count(s)
-                for s in output_task_status.values()
-            }
-
+            mapping_uri = self._save_json_artifact(
+                request_info,
+                "task-node-map.json",
+                raw_task_node_map,
+            )
             self.logger.info(
-                f"Polling {total_nodes} nodes ({output_nodes} outputs):"
-                f" all={status_counts}, outputs={output_status_counts} | elapsed:"
-                f" {elapsed:.1f}s"
+                "Archived task-node mapping (%d tasks) to %s",
+                len(raw_task_node_map),
+                mapping_uri,
             )
 
-            # Check if all output nodes are terminal
-            output_terminal = all(
-                status in TERMINAL_STATUSES for status in output_task_status.values()
-            )
+            # Poll for completion
+            poll_timeout = envs.LUMILAKE_POLL_TIMEOUT_SECONDS
+            poll_interval = envs.LUMILAKE_POLL_INTERVAL_SECONDS
+            downloaded_tasks: set[str] = set()
+            output_terminal = False
+            output_task_status: dict[str, str] = {}
+            start_time = time.time()
 
-            if output_terminal:
+            while (elapsed := time.time() - start_time) < poll_timeout:
+                if await self.is_request_cancelled(request_info.request_id):
+                    self.logger.info(
+                        "Stopping request %s (cancelled during execution)",
+                        request_info.request_id,
+                    )
+                    raise RequestCancelledError(request_info.request_id)
+                await self.update_task_status(
+                    self._execution_task_status[batch_key],
+                    self._execution_workflow_id[batch_key],
+                )
+
+                # Download responses for newly completed tasks
+                for tid in task_ids:
+                    status = self._execution_task_status[batch_key][tid]
+                    if status == "DONE" and tid not in downloaded_tasks:
+                        node_id = task_node_map.get(tid)
+                        if node_id is None:
+                            raise RuntimeError(
+                                "Missing task->node mapping for task "
+                                f"{tid}. Known task ids={sorted(task_node_map.keys())}"
+                            )
+                        await self._archive_task_response(request_info, tid, node_id)
+                        downloaded_tasks.add(tid)
+
+                # Count statuses for all nodes and output nodes
+                all_statuses = list(self._execution_task_status[batch_key].values())
+                status_counts = {s: all_statuses.count(s) for s in set(all_statuses)}
+                output_task_status = {
+                    task_id: self._execution_task_status[batch_key][task_id]
+                    for task_id in self._execution_output_tasks[batch_key]
+                }
+                output_status_counts = {
+                    s: list(output_task_status.values()).count(s)
+                    for s in output_task_status.values()
+                }
+
                 self.logger.info(
-                    "All output nodes reached terminal status. Total elapsed:"
+                    f"Polling {total_nodes} nodes ({output_nodes} outputs):"
+                    f" all={status_counts}, outputs={output_status_counts} | elapsed:"
                     f" {elapsed:.1f}s"
                 )
-                break
 
-            # Fail fast: any task failure terminates the workflow. Waiting
-            # for output-node terminality alone leaves the user staring at
-            # a "running" job for the full poll timeout when an upstream
-            # task has already crashed the downstream chain.
-            failed_tasks = [
-                tid
-                for tid, status in self._execution_task_status[batch_key].items()
-                if status == "FAILED"
-            ]
-            if failed_tasks:
-                self.logger.error(
-                    "Fast-failing request %s: %d task(s) reported FAILED at"
-                    " elapsed=%.1fs (first: %s)",
-                    request_info.request_id,
-                    len(failed_tasks),
-                    elapsed,
-                    failed_tasks[0],
-                )
-                reasons = "; ".join(
-                    f"Task {tid} failed{self._task_failure_reason(tid, task_node_map)}"
-                    for tid in failed_tasks
-                )
-                raise RuntimeError(
-                    f"{reasons}; aborting workflow"
-                    f" ({len(failed_tasks)} task(s) failed in total)"
+                # Check if all output nodes are terminal
+                output_terminal = all(
+                    status in TERMINAL_STATUSES
+                    for status in output_task_status.values()
                 )
 
-            await asyncio.sleep(poll_interval)
+                if output_terminal:
+                    self.logger.info(
+                        "All output nodes reached terminal status. Total elapsed:"
+                        f" {elapsed:.1f}s"
+                    )
+                    break
+
+                # Fail fast: any task failure terminates the workflow. Waiting
+                # for output-node terminality alone leaves the user staring at
+                # a "running" job for the full poll timeout when an upstream
+                # task has already crashed the downstream chain.
+                failed_tasks = [
+                    tid
+                    for tid, status in self._execution_task_status[batch_key].items()
+                    if status == "FAILED"
+                ]
+                if failed_tasks:
+                    self.logger.error(
+                        "Fast-failing request %s: %d task(s) reported FAILED at"
+                        " elapsed=%.1fs (first: %s)",
+                        request_info.request_id,
+                        len(failed_tasks),
+                        elapsed,
+                        failed_tasks[0],
+                    )
+                    reasons = "; ".join(
+                        f"Task {tid} failed"
+                        f"{self._task_failure_reason(tid, task_node_map)}"
+                        for tid in failed_tasks
+                    )
+                    raise RuntimeError(
+                        f"{reasons}; aborting workflow"
+                        f" ({len(failed_tasks)} task(s) failed in total)"
+                    )
+
+                await asyncio.sleep(poll_interval)
+        finally:
+            self._active_execution_loops.discard(batch_key)
+            self._workflow_status_cursors.pop(workflow_id, None)
 
         # Check timeout
         if not output_terminal:
@@ -2968,7 +3037,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         """Drop ``_batch_workflow_id`` entries for the given executions.
 
         Called once a request's ``trace_ids`` have been persisted to
-        ``JobStorage``; the in-memory tuple→workflow id map can then go.
+        ``JobStorage``; the in-memory tuple→workflow id map can then go. The
+        status cursor of each workflow belongs to its execution loop and is
+        dropped when that loop ends, whether or not the release has run yet.
 
         Snapshots the keys via ``.copy()`` before popping — entries can be
         added on the runtime async thread while we run on the FastAPI thread.
