@@ -508,20 +508,16 @@ def test_rowwise_messages_column_emits_list_message_array_spec(
     rows = input_placeholder("Rows")
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(
-            model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig() if api else None,
-        ),
+        config=GenerationConfig(model="m", api=ApiConfig() if api else None),
         rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
         rowwise_messages_column=MessagesColumn(
-            node=rows.id, path="items", label="messages_json"
+            node=rows.id, path="items", label="msgs"
         ),
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(
         Rows=['[{"role":"user","content":"hello"}]']
     )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    node = runtime_graph.nodes[llm.id]
+    node = RuntimeGraphBuilder().build(compiled).nodes[llm.id]
     assert node.task_type == ("api" if api else "inference")
     assert node.data_spec["type"] == "list"
     assert node.data_spec["items"][0] == [{"role": "user", "content": "hello"}]
@@ -534,24 +530,19 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     rows = input_placeholder("Rows")
     router = _router_over(rows)
     templates = [{"name": "verdict", "type": "string"}]
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+    llm = _row_gate_over(
+        rows,
+        router,
         structural_outputs=templates,
         row_gate=RowGate(node=router.id, branch="ok"),
-        row_gate_op=router,
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(
         Rows=["normal", "NEEDS REVIEW", "normal"]
     )
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    ids = runtime_graph.dsl_to_runtime[llm.id]
-    assert len(ids) == 4
     status, selector, selected, merge = [
-        runtime_graph.nodes[node_id] for node_id in ids
+        runtime_graph.nodes[node_id] for node_id in runtime_graph.dsl_to_runtime[llm.id]
     ]
     assert status.data_spec["mode"] == "row_status"
     assert selector.data_spec["mode"] == "row_select"
@@ -568,7 +559,7 @@ def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
     gated = _row_gate_over(rows, _router_over(rows))
     after = LLMChatOp(
         [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        config=GenerationConfig(model="m"),
         rowwise_template="{prev}",
         rowwise_columns=[{"label": "prev", "node": gated.id, "path": "items.output"}],
     )
@@ -610,12 +601,12 @@ def test_row_gate_rejects_a_rowwise_messages_column_or_a_condition(
 
 
 def _row_gate_over(rows: Any, router: RouterOp, **extra: Any) -> LLMChatOp:
+    extra.setdefault("row_gate", RowGate(node=router.id, branch="fail"))
     return LLMChatOp(
         [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        config=GenerationConfig(model="m"),
         rowwise_template="{row}",
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate=RowGate(node=router.id, branch="fail"),
         row_gate_op=router,
         **extra,
     )
@@ -658,8 +649,7 @@ def test_row_gate_rejects_a_source_the_status_step_cannot_read(
         upstream = LLMChatOp(
             [OpMessage(role="user", content=rows)],
             config=GenerationConfig(
-                model="org/model-8B",
-                api=ApiConfig() if source == "api" else None,
+                model="m", api=ApiConfig() if source == "api" else None
             ),
             rowwise_template="judge {row}" if source == "rowwise" else None,
             rowwise_columns=[{"label": "row", "node": rows.id}],
@@ -670,7 +660,7 @@ def test_row_gate_rejects_a_source_the_status_step_cannot_read(
                 "result", _row_gate_over(rows, _router_over(upstream, input_path=path))
             )
         ]
-    ).compile(Rows=['{"status": "ok"}', '{"status": "fail"}'])
+    ).compile(Rows=["ok"])
 
     with pytest.raises(ValueError, match=message):
         RuntimeGraphBuilder().build(compiled)
@@ -686,11 +676,11 @@ def test_row_gate_rejects_an_api_upstream_filling_a_gated_column(
     router = _router_over(rows)
     judge = LLMChatOp(
         [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="org/model-8B", api=ApiConfig()),
+        config=GenerationConfig(model="m", api=ApiConfig()),
     )
     gated = LLMChatOp(
         judge,
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        config=GenerationConfig(model="m"),
         rowwise_template="fix {verdict}",
         rowwise_columns=[
             {"label": "verdict", "node": judge.id, "path": "items.output"}
@@ -698,9 +688,7 @@ def test_row_gate_rejects_an_api_upstream_filling_a_gated_column(
         row_gate=RowGate(node=router.id, branch="fail"),
         row_gate_op=router,
     )
-    compiled = Graph.from_ops([as_output("result", gated)]).compile(
-        Rows=['{"status": "ok"}', '{"status": "fail"}']
-    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["ok"])
 
     with pytest.raises(ValueError, match="only a local op can fill a gated column"):
         RuntimeGraphBuilder().build(compiled)
