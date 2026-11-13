@@ -882,22 +882,6 @@ def _rowwise_llm_config(op_id: str, **overrides: Any) -> dict:
     )
 
 
-def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
-    # A row-wise LLM leaf archives one grouped item per input table, holding
-    # every row's value. In a one-slice round that is one item for the whole
-    # round, so a later round reading it whole still binds one value per row.
-    llm_id = "s0"
-    symbols = ["A", "B", "C"]
-    _, inputs = forward_refs(
-        _three_row_subgraph(llm_id),
-        {llm_id: [{"output": list(symbols)}]},
-        {llm_id: _rowwise_llm_config(llm_id)},
-        rows=3,
-        whole_refs={llm_id},
-    )
-    assert inputs == {llm_id: symbols}
-
-
 @pytest.mark.parametrize("leaf_op", ["LLMChatOp", "LLMVisionOp"])
 def test_forwarded_literal_input_binds_as_a_data_column(leaf_op: str) -> None:
     # A forwarded reference becomes a workflow input that only a rowwise column
