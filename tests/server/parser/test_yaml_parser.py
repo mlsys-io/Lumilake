@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from lumilake_server.common import ApiConfig
 from lumilake_server.graphs import Graph
@@ -71,69 +72,101 @@ def test_inputs_and_outputs_wiring() -> None:
     assert compiled is not None
 
 
+def _routed_yaml(router: str = "", gate: str = "", turn: str = "") -> dict:
+    """A routed workflow whose ungated model reads its messages from a column."""
+    template = """
+name: routed
+inputs:
+  rows: ["normal", "NEEDS REVIEW"]
+ops:
+  - id: source
+    op: LambdaOp
+    inputs: [rows]
+    fn_name: echo
+    code: |
+      def echo(inputs):
+          return inputs[0]
+  - id: two
+    op: LambdaOp
+    inputs: [rows]
+    fn_name: echo
+    code: |
+      def echo(inputs):
+          return inputs[0]
+@ROUTER@
+  - id: turn
+    op: LLMChatOp
+    inputs: [source, route]
+    messages:
+      - role: user
+        content: source
+    config:
+      model: dummy-model
+@TURN_EXTRA@
+@GATE@
+  - id: ask
+    op: LLMChatOp
+    inputs: [source]
+    messages:
+      - role: user
+        content: source
+    config:
+      model: dummy-model
+    rowwise_columns:
+      - label: message_count
+        data:
+          type: list
+          items: [1]
+    rowwise_messages_column:
+      label: messages_json
+      node: source
+      path: items.output
+outputs:
+  - name: result
+    ref: turn
+"""
+    for marker, block, indent in (
+        ("@ROUTER@", router, 2),
+        ("@TURN_EXTRA@", turn, 4),
+        ("@GATE@", gate, 4),
+    ):
+        template = template.replace(
+            marker, textwrap.indent(textwrap.dedent(block).strip(), " " * indent)
+        )
+    return yaml.safe_load(template)
+
+
+_ROUTED_ROWS = """
+rowwise_messages_column:
+  label: messages_json
+  node: source
+  path: items.output
+"""
+
+_ROUTED_GATE = """
+row_gate:
+  node: route
+  branch: review
+"""
+
+_ROUTED_ROUTER = """
+  - id: route
+    op: RouterOp
+    inputs: [source]
+    input_path: items.output
+    rules:
+      - branch: review
+        match: contains
+        value: NEEDS REVIEW
+      - branch: pending
+        match: equals
+        value: __never__
+    default_branch: pending
+"""
+
+
 def test_router_op_and_row_gate_are_declarative() -> None:
-    yaml_text = textwrap.dedent("""
-        name: routed
-        inputs:
-          rows: ["normal", "NEEDS REVIEW"]
-        ops:
-          - id: source
-            op: LambdaOp
-            inputs: [rows]
-            fn_name: echo
-            code: |
-              def echo(inputs):
-                  return inputs[0]
-          - id: route
-            op: RouterOp
-            inputs: [source]
-            input_path: items.output
-            rules:
-              - branch: review
-                match: contains
-                value: NEEDS REVIEW
-              - branch: pending
-                match: equals
-                value: __never__
-            default_branch: pending
-          - id: turn
-            op: LLMChatOp
-            inputs: [source, route]
-            messages:
-              - role: user
-                content: source
-            config:
-              model: dummy-model
-            rowwise_template: "{row}"
-            rowwise_columns:
-              - label: row
-                node: source
-                path: items.output
-            row_gate:
-              node: route
-              branch: review
-          - id: ask
-            op: LLMChatOp
-            inputs: [source]
-            messages:
-              - role: user
-                content: source
-            config:
-              model: dummy-model
-            rowwise_columns:
-              - label: message_count
-                data:
-                  type: list
-                  items: [1]
-            rowwise_messages_column:
-              label: messages_json
-              node: source
-              path: items.output
-        outputs:
-          - name: result
-            ref: turn
-        """)
-    spec = parse_yaml_payload(yaml_text)["routed"]
+    spec = parse_yaml_payload(_routed_yaml(_ROUTED_ROUTER, _ROUTED_GATE))["routed"]
     graph = Graph.from_json(spec["graph"])
     router = next(iter(graph.iter_ops(RouterOp)))
     chats = list(graph.iter_ops(LLMChatOp))
@@ -151,123 +184,41 @@ def test_router_op_and_row_gate_are_declarative() -> None:
 
 
 @pytest.mark.parametrize(
-    ("router_block", "message"),
+    ("router", "gate", "turn", "message"),
     [
+        # A router reads exactly one upstream.
         (
-            # A router reads one upstream and routes its rows.
-            "  - id: route\n"
-            "    op: RouterOp\n"
-            "    inputs: [one, two]\n"
-            "    rules:\n"
-            "      - branch: review\n"
-            "        match: contains\n"
-            "        value: NEEDS REVIEW\n"
-            "    default_branch: review\n",
+            _ROUTED_ROUTER.replace("[source]", "[source, two]"),
+            "",
+            "",
             "exactly one input",
         ),
+        # Every default branch names one of the declared rules.
         (
-            # Every default branch has to name one of the declared rules.
-            "  - id: route\n"
-            "    op: RouterOp\n"
-            "    inputs: [one]\n"
-            "    rules:\n"
-            "      - branch: review\n"
-            "        match: contains\n"
-            "        value: NEEDS REVIEW\n"
-            "    default_branch: pending\n",
+            _ROUTED_ROUTER.replace(
+                "default_branch: pending", "default_branch: missing"
+            ),
+            "",
+            "",
             "default_branch",
-        ),
-    ],
-)
-def test_router_op_rejects_an_invalid_declaration(
-    router_block: str, message: str
-) -> None:
-    yaml_text = textwrap.dedent("""
-        name: routed
-        inputs:
-          rows: ["normal"]
-        ops:
-          - id: one
-            op: LambdaOp
-            inputs: [rows]
-            fn_name: echo
-            code: |
-              def echo(inputs):
-                  return inputs[0]
-          - id: two
-            op: LambdaOp
-            inputs: [rows]
-            fn_name: echo
-            code: |
-              def echo(inputs):
-                  return inputs[0]
-        """) + router_block
-    with pytest.raises(ValueError, match=message):
-        parse_yaml_payload(yaml_text)
-
-
-@pytest.mark.parametrize(
-    ("turn_extra", "message"),
-    [
-        # A gated model reads its rows through the selector, so it cannot also
-        # take its messages from a rowwise column.
-        (
-            "rowwise_messages_column:\n"
-            "  label: messages_json\n"
-            "  node: source\n"
-            "  path: items.output\n"
-            "row_gate:\n"
-            "  node: route\n"
-            "  branch: review\n",
-            "combines row_gate with",
         ),
         # A gate names the branch it keeps.
         (
-            "row_gate:\n  node: route\n",
-            "row_gate: requires the 'branch' field",
-        ),
+            _ROUTED_ROUTER,
+            "\nrow_gate:\n  node: route\n",
+            "",
+            "requires the 'branch' field",
+        ),  # A gated model reads its rows through the selector, so it cannot also
+        # take its messages from a rowwise column.
+        (_ROUTED_ROUTER, _ROUTED_GATE, _ROUTED_ROWS, "combines row_gate with"),
     ],
+    ids=["router-inputs", "router-default", "gate-branch", "gate-with-rows"],
 )
-def test_yaml_rejects_an_incomplete_row_gate(turn_extra: str, message: str) -> None:
-    yaml_text = textwrap.dedent("""
-        name: messages
-        inputs:
-          Rows: ["[]"]
-        ops:
-          - id: source
-            op: LambdaOp
-            inputs: [Rows]
-            fn_name: echo
-            code: |
-              def echo(inputs):
-                  return inputs[0]
-          - id: route
-            op: RouterOp
-            inputs: [source]
-            input_path: items.output
-            rules:
-              - branch: review
-                match: contains
-                value: NEEDS
-              - branch: pending
-                match: equals
-                value: __never__
-            default_branch: pending
-          - id: turn
-            op: LLMChatOp
-            inputs: [source, route]
-            messages:
-              - role: user
-                content: source
-            config:
-              model: dummy-model
-        """)
-    yaml_text = yaml_text.replace(
-        "      model: dummy-model\n",
-        "      model: dummy-model\n" + textwrap.indent(turn_extra, " " * 4),
-    )
+def test_yaml_rejects_an_invalid_router_or_gate(
+    router: str, gate: str, turn: str, message: str
+) -> None:
     with pytest.raises(ValueError, match=message):
-        parse_yaml_payload(yaml_text)
+        parse_yaml_payload(_routed_yaml(router, gate, turn))
 
 
 def test_multi_op_topology_inputs() -> None:
