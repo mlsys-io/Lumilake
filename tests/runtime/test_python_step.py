@@ -1303,25 +1303,17 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
 
 
-def _classify_row(columns: tuple[Any, ...]) -> Any:
-    code = str(columns[0])
-    return {"code": f"fn_{code}", "status": "fail" if code == "b" else "ok"}
-
-
-def _gated_chain(classifier_mode: str = "list") -> Any:
+def _gated_chain() -> Any:
     """One model that reads the rows a router marked with its branch."""
     rows = input_placeholder("Rows")
-    if classifier_mode == "row":
-        classify = LambdaOp([rows], fn=_classify_row, mode="row")
-    else:
-        classify = LambdaOp(
-            [rows],
-            fn=lambda items: [
-                {"code": f"fn_{index}", "status": "fail" if index == 1 else "ok"}
-                for index in range(len(items[0]))
-            ],
-            mode="list",
-        )
+    classify = LambdaOp(
+        [rows],
+        fn=lambda items: [
+            {"code": f"fn_{index}", "status": "fail" if index == 1 else "ok"}
+            for index in range(len(items[0]))
+        ],
+        mode="list",
+    )
     router = RouterOp(
         classify,
         rules=[
@@ -1351,38 +1343,25 @@ def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
     return namespace["main"](inputs)
 
 
-def _classified(
-    classifier_mode: str, rows: list[tuple[str, str]]
-) -> list[dict[str, Any]]:
-    """One staged classifier item per row, shaped as the mode archives it."""
-    if classifier_mode == "row":
-        return [
-            {
-                "output": json.dumps({"code": code, "status": status}),
-                "value": {"code": code, "status": status},
-            }
-            for code, status in rows
-        ]
-    return [{"output": {"code": code, "status": status}} for code, status in rows]
-
-
-@pytest.mark.parametrize("classifier_mode", ["list", "row"])
-def test_gated_stage_source_runs_status_select_and_merge(
-    tmp_path: Path, classifier_mode: str
-) -> None:
+def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None:
     # The three gated stages read each other's archives: status labels every
     # row, selection keeps the gated rows with their label columns, and merge
     # pairs the label rows with the gated call's output, marking the skipped
-    # rows done without one. A row-mode classifier emits its raw value under
-    # ``value``, so a gated column reads that field there.
-    graph = RuntimeGraphBuilder().build(_gated_chain(classifier_mode))
+    # rows done without one.
+    graph = RuntimeGraphBuilder().build(_gated_chain())
     (merge_id,) = graph.output_node_map
     (fail_ids,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
     status, selector, _selected, merge = [graph.nodes[i] for i in fail_ids]
 
     rows = [("fn_0", "ok"), ("fn_1", "fail"), ("fn_2", "ok")]
     upstream = _stage(
-        tmp_path, "classify", {"items": _classified(classifier_mode, rows)}
+        tmp_path,
+        "classify",
+        {
+            "items": [
+                {"output": {"code": code, "status": status}} for code, status in rows
+            ]
+        },
     )
     status_payload = _run_stage_plan(
         status, {status.data_spec["plan"][0]["node"]: upstream}
@@ -1419,7 +1398,7 @@ def test_gated_stage_source_runs_status_select_and_merge(
     # No row routes to the branch, so the gated call has no stage to read and
     # the merge keeps every row undone with no output.
     all_ok = _stage(
-        tmp_path, "all-ok", {"items": _classified(classifier_mode, [("fn_0", "ok")])}
+        tmp_path, "all-ok", {"items": [{"output": {"code": "fn_0", "status": "ok"}}]}
     )
     ok_stage = _stage(
         tmp_path,

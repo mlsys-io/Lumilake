@@ -1999,15 +1999,14 @@ class RuntimeGraphBuilder:
         llm_op_id: str,
         label: str,
         path: str,
-        upstream: Op | None,
     ) -> str:
         """Map a gated column's declared read to the python step's item path.
 
         The selector reads the upstream's item list first, so a declared
         ``items.output.<field>`` read walks ``output.<field>`` inside each
-        item. A row-mode Lambda emits its raw value under ``value`` and a
-        JSON-textified copy under ``output``, so its field read walks
-        ``value.<field>`` and skips the round trip through text.
+        item. The walker decodes a JSON string before stepping into it, so a
+        row-mode Lambda's textified ``output`` reads the same value as its raw
+        ``value``.
         """
         if not path.startswith("items.output."):
             raise ValueError(
@@ -2015,10 +2014,7 @@ class RuntimeGraphBuilder:
                 f" {path!r}; only 'items.output' (the whole output) or a"
                 " field under it is supported."
             )
-        field_path = path[len("items.") :]
-        if isinstance(upstream, LambdaOp) and not upstream.takes_whole_columns:
-            return "value." + path[len("items.output.") :]
-        return field_path
+        return path[len("items.") :]
 
     def _node_ref_column(
         self,
@@ -2903,7 +2899,6 @@ class RuntimeGraphBuilder:
                     llm_op_id=llm_op_id,
                     label=label,
                     path=column_path,
-                    upstream=upstream,
                 )
             select_plan.append(entry)
             if runtime_ids[0] not in select_dependencies:
