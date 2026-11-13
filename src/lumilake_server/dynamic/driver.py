@@ -577,11 +577,10 @@ def _explicit_forward_path(op_type: str, config: dict[str, Any], path: str) -> s
     An API leaf archives the raw response record, so a declared ``items.output``
     — the read an in-graph column makes of an API upstream — walks the
     record's own content path instead, exactly as the runtime maps it. A gated
-    API leaf keeps its row under ``output`` and reads as declared.
+    API leaf keeps its row under ``output``, which the default path already
+    returns.
     """
-    if path != "items.output":
-        return path
-    if not _is_api_leaf(op_type, config) or config.get("row_gate") is not None:
+    if path != "items.output" or not _is_api_leaf(op_type, config):
         return path
     return _default_forward_path(op_type, config)
 

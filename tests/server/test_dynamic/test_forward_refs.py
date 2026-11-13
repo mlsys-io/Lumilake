@@ -1715,6 +1715,22 @@ def test_forward_whole_keeps_each_item_whole_when_only_some_hold_one_value():
     assert inputs == {ret_id: [json.dumps(item["table"]) for item in items]}
 
 
+def test_forward_whole_retrieval_with_one_listed_item_keeps_it_whole():
+    # A retrieval that returned one table for the whole run archives one item
+    # holding that table. Only a row-wise leaf's grouped item expands, so the
+    # table stays one value even though the run has several rows.
+    ret_id = "s1"
+    table = [{"s": "A"}, {"s": "B"}, {"s": "C"}]
+    _, inputs = forward_refs(
+        _three_row_subgraph(ret_id),
+        {ret_id: [{"table": table}]},
+        {ret_id: _sql_config(ret_id)},
+        rows=3,
+        whole_refs={ret_id},
+    )
+    assert inputs == {ret_id: [json.dumps(table)]}
+
+
 def test_forward_whole_explicit_column_reference_unwraps_a_one_element_list():
     # A retrieval that returned one row per query archives a one-element table
     # at ``items.table``, so a column walk yields a one-element list. The whole
@@ -1822,14 +1838,45 @@ def test_forward_whole_gated_leaf_keeps_one_value_per_item():
     }
 
 
-def test_forwarded_literal_input_binds_as_a_data_column():
-    # A forwarded reference becomes a workflow input that a rowwise column
-    # names by id, so the input op carries no consumer edge and the sorted op
-    # dict omits it. The runtime graph still resolves the id to the graph's
-    # input op and binds its values as a literal data column.
+def test_forward_whole_gated_leaf_explicit_reference_keeps_the_declared_path():
+    # A gated op keeps its row under ``output`` inside the merge record, so a
+    # declared ``items.output`` read walks the record as written instead of the
+    # API leaf's response path.
+    llm_id = "s0"
+    row = {"selected": True, "done": True, "branch": "finish", "row": 0}
+    record = {**row, "output": "done text"}
+    configs = {
+        llm_id: _api_llm_config(
+            llm_id,
+            rowwise_template="{row}",
+            rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
+            row_gate={"node": "r0", "branch": "finish"},
+        )
+    }
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [{"label": "v", "node": llm_id, "path": "items.output"}],
+        }
+    ]
+    results = {llm_id: [{"output": json.dumps(record), "value": row}]}
+    ops, inputs = forward_refs(subgraph, results, configs, rows=1, whole_refs={llm_id})
+    assert ops[0]["aggregate_table"][0]["node"] == f"{llm_id} | items.output"
+    assert ops[0]["aggregate_table"][0]["path"] == ""
+    assert inputs == {f"{llm_id} | items.output": [json.dumps(record)]}
+
+
+def test_forwarded_literal_input_resolves_for_a_single_node_reference_guard():
+    # An embedding op reading a row-wise leaf by a single node reference can
+    # only carry one row, so the graph refuses it. The leaf's row count comes
+    # from its forwarded column, which resolves to the graph's input op even
+    # though the op dict omits it.
     prior = "C_r0"
     values = ["v0", "v1", "v2"]
-    subgraph = [
+    round_ops = [
         {
             "id": "C_r1",
             "op": "LLMChatOp",
@@ -1840,10 +1887,58 @@ def test_forwarded_literal_input_binds_as_a_data_column():
                 {"label": "row", "node": prior, "path": "items.output"}
             ],
             "config": {"model": "m"},
-        }
+        },
+        {
+            "id": "E1",
+            "op": "EmbeddingOp",
+            "inputs": ["C_r1"],
+            "input": "C_r1",
+            "config": {"model": "bge-m3"},
+        },
     ]
     ops, inputs = forward_refs(
-        subgraph,
+        round_ops,
+        {prior: [{"output": list(values)}]},
+        {prior: _rowwise_llm_config(prior)},
+        rows=3,
+        whole_refs={prior},
+    )
+    inputs["Symbols"] = ["NVDA", "AAPL", "MSFT"]
+    workflow = {
+        "name": "r2",
+        "inputs": inputs,
+        "ops": ops,
+        "outputs": [{"name": "o", "ref": "E1"}],
+    }
+    spec = next(iter(parse_yaml_payload(workflow).values()))
+    with pytest.raises(ValueError, match="produces multiple rows"):
+        RuntimeGraphBuilder().build(
+            Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+        )
+
+
+@pytest.mark.parametrize("leaf_kind", ["chat", "vision"])
+def test_forwarded_literal_input_binds_as_a_data_column(leaf_kind):
+    # A forwarded reference becomes a workflow input that a rowwise column
+    # names by id, so the input op carries no consumer edge and the sorted op
+    # dict omits it. The runtime graph still resolves the id to the graph's
+    # input op and binds its values as a literal data column, on a row-wise
+    # chat and on a row-wise VLM alike.
+    prior = "C_r0"
+    values = ["v0", "v1", "v2"]
+    leaf: dict[str, Any] = {
+        "id": "C_r1",
+        "op": "LLMVisionOp" if leaf_kind == "vision" else "LLMChatOp",
+        "inputs": [],
+        "messages": [{"role": "user", "content": "grade {row}"}],
+        "rowwise_template": "{row}",
+        "rowwise_columns": [{"label": "row", "node": prior, "path": "items.output"}],
+        "config": {"model": "m"},
+    }
+    if leaf_kind == "vision":
+        leaf["image_source"] = prior
+    ops, inputs = forward_refs(
+        [leaf],
         {prior: [{"output": list(values)}]},
         {prior: _rowwise_llm_config(prior)},
         rows=3,
@@ -1860,7 +1955,14 @@ def test_forwarded_literal_input_binds_as_a_data_column():
     graph = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
-    node = next(n for n in graph.nodes.values() if "C_r1" in n.node_id)
-    assert node.data_spec["columns"] == [
-        {"label": "row", "data": {"type": "list", "items": values}}
-    ]
+    node = next(
+        n
+        for n in graph.nodes.values()
+        if "C_r1" in n.node_id and n.data_spec.get("type") != "list"
+    )
+    columns = (
+        node.data_spec["template"]["columns"]
+        if leaf_kind == "vision"
+        else node.data_spec["columns"]
+    )
+    assert columns[0] == {"label": "row", "data": {"type": "list", "items": values}}
