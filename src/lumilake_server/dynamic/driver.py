@@ -262,6 +262,7 @@ class RoundBuild(BaseModel):
     export_output_names: list[str] = []
     export_user_ids: list[str] = []
     forwarded_inputs: dict[str, list[str]] = {}
+    grouped_sources: dict[str, bool | None] = {}
 
 
 def round_output_location(
@@ -808,6 +809,7 @@ def forward_refs(
     configs: dict[str, dict[str, Any]],
     rows: int = 1,
     whole_refs: set[str] | None = None,
+    grouped_sources: dict[str, bool | None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     """Rewrite a round's subgraph so references to earlier-round ops bind as
     workflow inputs carrying exactly the value the in-graph reference would
@@ -818,8 +820,22 @@ def forward_refs(
     stored item binds as ``rows == 1`` does, whatever ``rows`` says; the
     consumer then carries a different item count from the symbols and runs as
     one slice itself.
+
+    ``grouped_sources`` holds the grouping each round recorded for its row-wise
+    ops when it built them, where ``results`` still held only earlier rounds. A
+    producer with a recorded value is bound by it; one without is decided here
+    from ``results``, which is right only because every caller that keeps a
+    record covers every row-wise op of every earlier round.
     """
     whole = whole_refs or set()
+    recorded = grouped_sources or {}
+
+    def grouped_source(ref: str) -> bool | None:
+        """The grouping ``ref``'s rows were produced with."""
+        if ref in recorded:
+            return recorded[ref]
+        return _source_grouped(configs[ref].get("rowwise_columns"), results)
+
     inputs: dict[str, list[str]] = {}
     ops: list[dict[str, Any]] = []
     materializers: list[dict[str, Any]] = []
@@ -889,9 +905,7 @@ def forward_refs(
                     walked,
                     rows=rows,
                     grouped=_is_rowwise_leaf(op_type, configs[ref]),
-                    grouped_source=_source_grouped(
-                        configs[ref].get("rowwise_columns"), results
-                    ),
+                    grouped_source=grouped_source(ref),
                 )
             )
         return None
@@ -931,9 +945,7 @@ def forward_refs(
                         grouped=_is_rowwise_leaf(
                             configs[ref].get("op", ""), configs[ref]
                         ),
-                        grouped_source=_source_grouped(
-                            configs[ref].get("rowwise_columns"), results
-                        ),
+                        grouped_source=grouped_source(ref),
                     )
                 )
         return input_id, ""
@@ -1565,20 +1577,33 @@ def build_round(
     include_proposer: bool = True,
     rows: int = 1,
     whole_refs: set[str] | None = None,
+    grouped_sources: dict[str, bool | None] | None = None,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
-    ``whole_refs`` names earlier results that a one-slice round produced.
+    ``whole_refs`` names earlier results that a one-slice round produced, and
+    ``grouped_sources`` the grouping each earlier round recorded for its
+    row-wise leaves. This round's own grouping is decided here, where
+    ``results`` holds only earlier rounds, and returned for later rounds; an
+    undecided grouping is recorded too, so no later round re-decides it against
+    a ``results`` that then holds the producer's own round.
     """
     subgraph = resolve_subgraph(subgraph, library)
+    decided = {
+        op["id"]: _source_grouped(op.get("rowwise_columns"), results or {})
+        for op in subgraph
+        if _is_rowwise_leaf(str(op.get("op", "")), op)
+    }
+    recorded = {**(grouped_sources or {}), **decided}
     forwarded, inputs = forward_refs(
         subgraph,
         results if results is not None else {},
         node_registry,
         rows,
         whole_refs=whole_refs,
+        grouped_sources=recorded,
     )
     workflow_inputs: dict[str, list[str]] = {INPUT_NODE_ID: []}
     workflow_inputs.update(inputs)
@@ -1645,6 +1670,7 @@ def build_round(
         export_output_names=[f"export_{export_id}" for export_id in export_ids],
         export_user_ids=export_user_ids,
         forwarded_inputs=inputs,
+        grouped_sources=decided,
     )
 
 

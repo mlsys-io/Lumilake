@@ -2152,6 +2152,10 @@ async def _run_dynamic_job(
         # whole results, so a later round binds them whole and runs as one
         # slice itself.
         whole_refs: set[str] = set()
+        # The grouping each round decided for its row-wise ops, when it built
+        # them and ``all_results`` held only earlier rounds. A later round
+        # binds a producer's rows by its recorded value.
+        grouped_sources: dict[str, bool | None] = {}
 
         async with jobs_lock:
             record.progress.execution = ProgressStep(
@@ -2298,6 +2302,7 @@ async def _run_dynamic_job(
                     include_proposer=include_proposer,
                     rows=len(symbols),
                     whole_refs=whole_refs,
+                    grouped_sources=grouped_sources,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2480,6 +2485,7 @@ async def _run_dynamic_job(
                     # whole and runs as one slice itself.
                     whole_refs.update(round_build.leaf_user_ids)
                     whole_refs.update(round_build.export_user_ids)
+                grouped_sources.update(round_build.grouped_sources)
                 if isinstance(next_plan, StopPlan):
                     stopped_by = STOP
                     break

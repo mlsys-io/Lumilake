@@ -850,6 +850,95 @@ def _three_row_subgraph(ref: str) -> list[dict]:
     ]
 
 
+_ROW_LAMBDA_SOURCE: dict[str, Any] = {
+    "id": "L",
+    "op": "LambdaOp",
+    "mode": "row",
+    "inputs": [],
+    "fn_name": "row",
+    "code": "def row(columns):\n    return columns[0]\n",
+}
+_TABLE_ROWS = ["r1", "r2", "r3", "r4", "r5"]
+_ONE_TABLE_ITEM = [json.dumps(_TABLE_ROWS)]
+
+
+def _exporting_reader(source: str) -> dict[str, Any]:
+    return {
+        "id": "R",
+        "op": "LambdaOp",
+        "mode": "list",
+        "inputs": [source],
+        "fn_name": "reader",
+        "code": "def reader(columns):\n    return columns[0]\n",
+    }
+
+
+def _same_round_source_leaf(op_id: str, source: str) -> dict[str, Any]:
+    config = _llm_config(op_id)
+    config["config"] = {"model": "m"}
+    config["messages"] = [{"role": "user", "content": "{c0}"}]
+    config["rowwise_template"] = "{c0}"
+    config["rowwise_columns"] = [
+        {"label": "c0", "node": source, "path": "items.output"}
+    ]
+    return config
+
+
+_SAME_ROUND_SOURCE_CASES: list[Any] = [
+    pytest.param(_ROW_LAMBDA_SOURCE, False, 1, id="row-lambda-column-only-one-symbol"),
+    pytest.param(_ROW_LAMBDA_SOURCE, True, 1, id="row-lambda-exported-one-symbol"),
+]
+
+
+@pytest.mark.parametrize(("source", "exported", "rows"), _SAME_ROUND_SOURCE_CASES)
+def test_build_round_records_a_same_round_source_grouping(
+    source: dict[str, Any], exported: bool, rows: int
+) -> None:
+    # A row-wise leaf whose column reads a same-round op binds one table
+    # however many symbols its producer ran over. The producer's round records
+    # the grouping, because the consuming round would otherwise decide it
+    # against a ``results`` that already holds the producer's own round.
+    ops = [source, _same_round_source_leaf("s0", source["id"])]
+    export: tuple[str, ...] = ()
+    if exported:
+        ops.append(_exporting_reader(source["id"]))
+        export = (source["id"],)
+    registry = {op["id"]: op for op in ops}
+    producing = build_round(
+        ops,
+        node_registry=registry,
+        round_index=0,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=100,
+        model="m",
+        max_tokens=10,
+        temperature=0.0,
+        include_proposer=False,
+        export=export,
+    )
+    archived = {"output": _TABLE_ROWS}
+    consuming = build_round(
+        _three_row_subgraph("s0"),
+        node_registry=registry,
+        round_index=1,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=100,
+        model="m",
+        max_tokens=10,
+        temperature=0.0,
+        include_proposer=False,
+        results={"s0": [archived], source["id"]: [archived]},
+        rows=rows,
+        whole_refs={"s0"} if rows > 1 else set(),
+        grouped_sources=producing.grouped_sources,
+    )
+    assert consuming.forwarded_inputs["s0"] == _ONE_TABLE_ITEM
+
+
 def _api_llm_config(op_id: str, **overrides: Any) -> dict:
     config = _llm_config(op_id)
     config["config"] = {
