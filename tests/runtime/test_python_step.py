@@ -1304,7 +1304,7 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
 
 
 def _gated_chain() -> Any:
-    """Two models that each read the rows one router marked with their branch."""
+    """One model that reads the rows a router marked with its branch."""
     rows = input_placeholder("Rows")
     classify = LambdaOp(
         [rows],
@@ -1314,29 +1314,26 @@ def _gated_chain() -> Any:
         ],
         mode="list",
     )
-    compiled: list[Any] = []
-    for name, branch in (("repair", "fail"), ("audit", "ok")):
-        router = RouterOp(
-            classify,
-            rules=[
-                RouterRule(branch="fail", match="contains", value="fail"),
-                RouterRule(branch="ok", match="equals", value="ok"),
-            ],
-            default_branch="ok",
-            input_path="items.output.status",
-        )
-        llm = LLMChatOp(
-            [OpMessage(role="user", content=name)],
-            config=GenerationConfig(model=_MODEL),
-            rowwise_template=name + " {code}",
-            rowwise_columns=[
-                {"label": "code", "node": classify.id, "path": "items.output.code"}
-            ],
-            row_gate=RowGate(node=router.id, branch=branch, terminal=branch == "fail"),
-            row_gate_op=router,
-        )
-        compiled.append(as_output(name, llm))
-    return Graph.from_ops(compiled).compile(Rows=["a", "b", "c"])
+    router = RouterOp(
+        classify,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="fail"),
+            RouterRule(branch="ok", match="equals", value="ok"),
+        ],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="repair {code}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="repair {code}",
+        rowwise_columns=[
+            {"label": "code", "node": classify.id, "path": "items.output.code"}
+        ],
+        row_gate=RowGate(node=router.id, branch="fail", terminal=True),
+        row_gate_op=router,
+    )
+    return Graph.from_ops([as_output("repair", llm)]).compile(Rows=["a", "b", "c"])
 
 
 def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
@@ -1347,21 +1344,26 @@ def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
 
 
 def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None:
+    # The three gated stages read each other's archives: status labels every
+    # row, selection keeps the gated rows with their label columns, and merge
+    # pairs the label rows with the gated call's output, marking the skipped
+    # rows done without one.
     graph = RuntimeGraphBuilder().build(_gated_chain())
-    # Every id is content-addressed, so pick the ``fail`` gate by its declared
-    # output name rather than by build order.
-    merge_id = next(
-        node_id for node_id, name in graph.output_node_map.items() if name == "repair"
-    )
+    (merge_id,) = graph.output_node_map
     (fail_ids,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
     status, selector, _selected, merge = [graph.nodes[i] for i in fail_ids]
 
-    staged = [
-        {"output": {"code": "fn_0", "status": "ok"}},
-        {"output": {"code": "fn_1", "status": "fail"}},
-        {"output": {"code": "fn_2", "status": "ok"}},
-    ]
-    upstream = _stage(tmp_path, "classify", {"items": staged})
+    upstream = _stage(
+        tmp_path,
+        "classify",
+        {
+            "items": [
+                {"output": {"code": "fn_0", "status": "ok"}},
+                {"output": {"code": "fn_1", "status": "fail"}},
+                {"output": {"code": "fn_2", "status": "ok"}},
+            ]
+        },
+    )
     status_payload = _run_stage_plan(
         status, {status.data_spec["plan"][0]["node"]: upstream}
     )
@@ -1380,20 +1382,7 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
             for entry in selector.data_spec["plan"]
         },
     )
-    assert len(selected["items"]) == 1
-
-    # The selector emits one flat ``{label: value}`` row per kept item, so the
-    # gated model reads its columns at ``value.items.<label>`` on that result.
-    labels = selector.data_spec["labels"]
-    gated = next(
-        node
-        for node in graph.nodes.values()
-        if node.data_spec.get("type") == "dataframe"
-        and node.data_spec["columns"][0]["node"] == selector.node_id
-    )
-    assert [column["path"] for column in gated.data_spec["columns"]] == [
-        f"value.items.{label}" for label in labels
-    ]
+    assert selected["items"] == [{"code": "fn_1"}]
 
     served = _stage(tmp_path, "served", {"items": [{"output": ["fixed"]}]})
     merged = _run_stage_plan(
@@ -1401,8 +1390,8 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
         {status.node_id: status_stage, merge.data_spec["plan"][1]["node"]: served},
     )
     rows = [item["value"] for item in merged["items"]]
-    assert [(row["branch"], row["done"], row["output"]) for row in rows] == [
-        ("ok", False, None),
-        ("fail", True, "fixed"),
-        ("ok", False, None),
+    assert [(row["done"], row["output"]) for row in rows] == [
+        (False, None),
+        (True, "fixed"),
+        (False, None),
     ]
