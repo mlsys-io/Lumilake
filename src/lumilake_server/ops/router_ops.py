@@ -96,7 +96,7 @@ class RouterOp(FunctionalOp):
         if not input_path:
             raise ValueError("RouterOp input_path must be a non-empty string")
         super().__init__([source])
-        self.rules = list(rules)
+        self.rules = rules
         self.default_branch = default_branch
         self.input_path = input_path
 

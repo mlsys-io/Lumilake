@@ -2568,7 +2568,7 @@ class LumilakeServer:
                     # count is its own answer rather than the input accounting
                     # length, so its result is taken whole rather than checked
                     # against that length.
-                    buffers[output_name] = list(values)
+                    buffers[output_name] = values
                     continue
                 if output_name in list_lambda_names:
                     if len(values) != 1:
@@ -3251,7 +3251,7 @@ class LumilakeServer:
                     f"Duplicate {label} assignment for workflow "
                     f"{workflow.workflow_id}:{output_name}"
                 )
-            workflow_values[output_name] = list(values)
+            workflow_values[output_name] = values
 
         runtime_graph = batch_request_info.runtime_graph
         list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()

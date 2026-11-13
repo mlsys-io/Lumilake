@@ -2780,7 +2780,7 @@ class RuntimeGraphBuilder:
                 {
                     "kind": "literal",
                     "label": "source",
-                    "values": list(values),
+                    "values": values,
                 }
             ]
             status_dependencies = ()
@@ -2844,7 +2844,7 @@ class RuntimeGraphBuilder:
                         f"LLMChatOp '{llm_op_id}' row gate column {label!r} "
                         "requires a list data payload"
                     )
-                select_plan.append({"kind": "literal", "values": list(items)})
+                select_plan.append({"kind": "literal", "values": items})
                 continue
             if not isinstance(node_ref, str):
                 raise ValueError(
@@ -2859,7 +2859,7 @@ class RuntimeGraphBuilder:
                         f"LLMChatOp '{llm_op_id}' row gate column {label!r} "
                         f"references input {upstream.name!r} with no values"
                     )
-                select_plan.append({"kind": "literal", "values": list(values)})
+                select_plan.append({"kind": "literal", "values": values})
                 continue
             runtime_ids = dsl_to_runtime.get(node_ref, [])
             rowwise_upstream = not isinstance(

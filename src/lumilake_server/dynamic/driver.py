@@ -144,7 +144,7 @@ def _render_node_refs(op: dict[str, Any], round_number: int) -> None:
     because it is Python source rather than a node reference.
     """
     is_lambda = op.get("op") == "LambdaOp"
-    for key, value in list(op.items()):
+    for key, value in op.items():
         if is_lambda and key in {"code", "_code"}:
             continue
         op[key] = _render_op_strings(value, round_number)
@@ -380,7 +380,7 @@ def _apply_column_bindings(
         raise DriverProtocolError(
             f"library entry {ref!r} rowwise_columns entries must be mappings"
         )
-    by_label = {column.get("label"): dict(column) for column in columns}
+    by_label = {column.get("label"): column.copy() for column in columns}
     used_slots: set[int] = set()
     for binding in bindings:
         if not isinstance(binding, dict):
@@ -759,7 +759,7 @@ def _bind_whole(
     """
     expand = grouped_source is False or (grouped_source is None and rows > 1)
     if grouped and expand and len(walked) == 1 and isinstance(walked[0], list):
-        return list(walked[0])
+        return walked[0]
     one_element = bool(walked) and all(
         isinstance(value, list) and len(value) == 1 for value in walked
     )

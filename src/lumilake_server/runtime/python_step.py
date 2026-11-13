@@ -308,7 +308,7 @@ def main(inputs):
     served = dict(zip(routed, outputs))
     merged = []
     for index, status in enumerate(statuses):
-        row = dict(status)
+        row = status.copy()
         row["output"] = served.get(index)
         merged.append({{"output": json.dumps(row), "value": row}})
     return {{"items": merged}}
