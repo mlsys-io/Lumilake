@@ -379,14 +379,22 @@ def test_model_size_resolution_parses_suffix(
     assert metadata_calls == []
 
 
+@pytest.mark.parametrize(
+    ("node_type", "model", "expected"),
+    [
+        ("diffusion", "stabilityai/stable-diffusion-xl-base-1.0", 3.5),
+        ("classification", "BAAI/bge-reranker-v2-m3", 0.568),
+        ("classification", "cross-encoder/ms-marco-MiniLM-L6-v2", 0.0227),
+    ],
+)
 def test_model_size_resolution_uses_lookup(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, node_type: str, model: str, expected: float
 ) -> None:
     optimizer = HaloOptimizer()
     metadata_calls: list[str] = []
 
-    def resolve(model: str) -> int:
-        metadata_calls.append(model)
+    def resolve(called: str) -> int:
+        metadata_calls.append(called)
         return 1
 
     monkeypatch.setattr(
@@ -395,28 +403,10 @@ def test_model_size_resolution_uses_lookup(
         resolve,
     )
     size = optimizer._model_size_b(
-        Node(
-            id="n1",
-            type="diffusion",
-            engine="vllm",
-            model="stabilityai/stable-diffusion-xl-base-1.0",
-            raw={},
-        )
+        Node(id="n1", type=node_type, engine="vllm", model=model, raw={})
     )
-    assert size == pytest.approx(3.5)
+    assert size == pytest.approx(expected)
     assert metadata_calls == []
-
-
-def test_model_size_resolution_covers_common_cross_encoders() -> None:
-    optimizer = HaloOptimizer()
-    for model, expected in (
-        ("BAAI/bge-reranker-v2-m3", 0.568),
-        ("cross-encoder/ms-marco-MiniLM-L6-v2", 0.0227),
-    ):
-        size = optimizer._model_size_b(
-            Node(id="n1", type="classification", engine="vllm", model=model, raw={})
-        )
-        assert size == pytest.approx(expected)
 
 
 def test_model_size_resolution_uses_safetensors_metadata(

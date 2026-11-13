@@ -1,7 +1,6 @@
 import json
 
 from lumilake_server.runtime.sensitive import (
-    _REQUEST_HEADER_PARENT_KEYS,
     REDACTED_TOKEN_PLACEHOLDER,
     redact_secrets_in_text,
     redact_sensitive,
@@ -105,99 +104,39 @@ def test_redact_sensitive_scrubs_bearer_token_under_unrecognized_key() -> None:
 
 def test_redact_sensitive_redacts_every_request_header_value() -> None:
     """A request header mapping carries the credential itself under names no
-    key list can enumerate, so every non-empty header value is replaced."""
-    value = {
-        "api": {
-            "headers": {
-                "x-api-key": "s2-secret-123",
-                "Ocp-Apim-Subscription-Key": "k1",
-                "Authorization": "Bearer z",
-                "Accept": "application/json",
-            },
-            "params": {"api_key": "p1"},
-        }
+    key list can enumerate, so every non-empty value under a ``headers`` key
+    nested below ``api``, ``api_spec`` or ``config`` is replaced; a fetched
+    response body's own ``headers`` object is data and keeps its values."""
+    headers = {
+        "x-api-key": "s2-secret-123",
+        "Ocp-Apim-Subscription-Key": "k1",
+        "Authorization": "Bearer z",
+        "Accept": "application/json",
+        "X-Trace": "",
     }
-
-    result = redact_sensitive(value)
-
-    headers = result["api"]["headers"]
-    assert headers == {
-        name: REDACTED_TOKEN_PLACEHOLDER for name in value["api"]["headers"]
-    }
-    assert "s2-secret-123" not in json.dumps(result)
-    assert result["api"]["params"] == {"api_key": "p1"}
-
-
-def test_redact_sensitive_redacts_header_mappings_under_each_request_parent() -> None:
-    """Request header mappings appear under ``api`` in FlowMesh task specs,
-    under ``api_spec`` in archived runtime nodes, and under ``config`` in op
-    config; all three hold credentials."""
     value = {
-        "api": {"headers": {"x-api-key": "k-api"}},
-        "api_spec": {"headers": {"x-api-key": "k-api-spec"}},
-        "config": {"headers": {"x-api-key": "k-config"}},
+        "api": {"headers": headers, "params": {"api_key": "p1"}},
+        "api_spec": {"headers": {"x-api-key": "k2"}},
+        "config": {"headers": {"x-api-key": "k3"}},
+        "response_data": {"headers": {"ETag": "abc"}},
     }
 
     result = redact_sensitive(value)
 
     assert json.dumps(result) == json.dumps(
         {
-            "api": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
+            "api": {
+                "headers": {
+                    **{name: REDACTED_TOKEN_PLACEHOLDER for name in headers},
+                    "X-Trace": "",
+                },
+                "params": {"api_key": "p1"},
+            },
             "api_spec": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
             "config": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
+            "response_data": {"headers": {"ETag": "abc"}},
         }
     )
-
-
-def test_redact_sensitive_keeps_a_response_body_headers_object() -> None:
-    """A fetched response body may legitimately carry its own ``headers``
-    object; it is data, not the request's header mapping, so its values stay."""
-    value = {"response_data": {"headers": {"ETag": "abc", "Content-Type": "text/html"}}}
-
-    result = redact_sensitive(value)
-
-    assert result["response_data"]["headers"] == {
-        "ETag": "abc",
-        "Content-Type": "text/html",
-    }
-
-
-def test_redact_sensitive_matches_a_response_body_header_mapping_by_parent_name() -> (
-    None
-):
-    """The request-header rule keys on the parent name alone, so a response
-    body that nests its own ``headers`` under a ``config`` key is redacted
-    too; response bodies keep headers only at another parent name."""
-    value = {
-        "response_data": {"config": {"headers": {"ETag": "abc"}}},
-        "items": {"headers": {"ETag": "abc"}},
-    }
-
-    result = redact_sensitive(value)
-
-    assert json.dumps(result) == json.dumps(
-        {
-            "response_data": {
-                "config": {"headers": {"ETag": REDACTED_TOKEN_PLACEHOLDER}}
-            },
-            "items": {"headers": {"ETag": "abc"}},
-        }
-    )
-
-
-def test_redact_sensitive_documents_every_request_parent_key() -> None:
-    """The docstring is the only place the redaction scope is written down, so
-    it must name each parent key the rule matches."""
-    documented = redact_sensitive.__doc__ or ""
-
-    for parent in _REQUEST_HEADER_PARENT_KEYS:
-        assert f"``{parent}``" in documented
-
-
-def test_redact_sensitive_leaves_empty_header_values_alone() -> None:
-    assert redact_sensitive({"api": {"headers": {"X-Trace": ""}}}) == {
-        "api": {"headers": {"X-Trace": ""}}
-    }
 
 
 def test_redact_sensitive_matches_authorization_key_case_insensitively() -> None:

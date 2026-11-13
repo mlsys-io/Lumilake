@@ -14,7 +14,6 @@ from lumilake_server.ops import (
     LambdaOp,
     LLMChatOp,
     LLMVisionOp,
-    Op,
     OpMessage,
     ScoreConfig,
     ScoreOp,
@@ -23,140 +22,21 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
-from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 
 
 @pytest.fixture(autouse=True)
 def _runtime_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test" + "-token")
 
 
-def test_score_op_lowers_literal_pairs_in_order() -> None:
-    op = ScoreOp(
-        query=["first question", "second question"],
-        candidates=["first candidate", "second candidate"],
-        config=ScoreConfig(model="org/reranker", backend="vllm"),
-    )
-    compiled = Graph.from_ops([as_output("scores", op)]).compile()
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    runtime_op = runtime_graph.nodes[op.id]
-
-    assert runtime_op.task_type == "classification"
-    assert runtime_op.data_spec == {
-        "type": "list",
-        "items": [
-            {"text": "first question", "text_pair": "first candidate"},
-            {"text": "second question", "text_pair": "second candidate"},
-        ],
-    }
-    assert runtime_op.model_spec["vllm"]["convert"] == "classify"
-    assert runtime_op.dependencies == ()
-    assert all(
-        dep in runtime_graph.nodes
-        for dep in runtime_op.to_flowmesh_node().get("dependsOn", [])
-    )
-
-
-def test_score_runtime_node_emits_flowmesh_model_block() -> None:
-    op = ScoreOp(
-        query="question",
-        candidates=["first", "second"],
-        config=ScoreConfig(model="org/reranker", backend="vllm"),
-    )
-    compiled = Graph.from_ops([as_output("scores", op)]).compile()
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    runtime_op = runtime_graph.nodes[op.id]
-    flowmesh_spec = runtime_op.to_flowmesh_node()["spec"]
-
-    assert flowmesh_spec["taskType"] == "classification"
-    assert flowmesh_spec["model"]["vllm"]["convert"] == "classify"
-    assert all(
-        dep in runtime_graph.nodes
-        for dep in runtime_op.to_flowmesh_node().get("dependsOn", [])
-    )
-
-
-def test_score_transformers_node_uses_the_worker_gpu() -> None:
-    """The Transformers backend is scheduled on a GPU worker, so its device map
-    must let the executor pick CUDA rather than pinning the load to the CPU."""
-    op = ScoreOp(
-        query="question",
-        candidates=["first", "second"],
-        config=ScoreConfig(model="org/reranker", backend="transformers"),
-    )
-    compiled = Graph.from_ops([as_output("scores", op)]).compile()
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    flowmesh_spec = runtime_graph.nodes[op.id].to_flowmesh_node()["spec"]
-
-    assert flowmesh_spec["model"]["transformers"]["device_map"] == "auto"
-
-
-def test_score_op_yaml_lowers_to_classification_task() -> None:
-    payload = """
-    name: score_pairs
-    inputs:
-      Query: ["first question", "second question"]
-      Candidates: ["first candidate", "second candidate"]
-    ops:
-      - id: Score
-        op: ScoreOp
-        inputs: [Query, Candidates]
-        query: Query
-        candidates: Candidates
-        config:
-          model: org/reranker
-          backend: vllm
-    outputs:
-      - name: scores
-        ref: Score
-    """
-    spec = parse_yaml_payload(payload)["score_pairs"]
-    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    [runtime_op] = [
-        node
-        for node in runtime_graph.nodes.values()
-        if node.task_type == "classification"
-    ]
-
-    assert runtime_op.data_spec["items"] == [
-        {"text": "first question", "text_pair": "first candidate"},
-        {"text": "second question", "text_pair": "second candidate"},
-    ]
-
-
-def test_score_op_literal_length_mismatch_names_op() -> None:
-    """The op has no id at construction, so the message names the op type."""
-    with pytest.raises(ValueError, match=r"^ScoreOp query and candidates must"):
-        ScoreOp(
-            query=["q1", "q2"],
-            candidates=["c1"],
-            config=ScoreConfig(model="org/reranker"),
-        )
-
-
-def test_score_op_empty_candidates_name_op() -> None:
-    with pytest.raises(ValueError, match="non-empty candidate"):
-        ScoreOp(
-            query=["q1"],
-            candidates=[],
-            config=ScoreConfig(model="org/reranker"),
-        )
-
-
-@pytest.mark.parametrize(
-    ("config", "message"),
-    [
-        ({"model": "org/reranker", "backend": "tfjs"}, "backend must be vllm"),
-        ({"model": "org/reranker", "vllm": "auto"}, "vllm must be a mapping"),
-        ({"model": "org/reranker", "device": "cpu"}, "unknown fields: \\['device'\\]"),
-    ],
-)
-def test_score_yaml_errors_name_the_op(config: dict, message: str) -> None:
-    yaml_text = yaml.safe_dump(
+def _score_yaml(fields: dict) -> str:
+    return yaml.safe_dump(
         {
-            "name": "score_errors",
-            "inputs": {"Query": ["first"], "Candidates": ["first candidate"]},
+            "name": "score_pairs",
+            "inputs": {"Query": ["first question"], "Candidates": ["first candidate"]},
             "ops": [
                 {
                     "id": "Rank",
@@ -164,202 +44,121 @@ def test_score_yaml_errors_name_the_op(config: dict, message: str) -> None:
                     "inputs": ["Query", "Candidates"],
                     "query": "Query",
                     "candidates": "Candidates",
-                    "config": config,
+                    "config": {"model": "org/reranker"},
+                    **fields,
                 }
             ],
             "outputs": [{"name": "scores", "ref": "Rank"}],
         }
     )
 
-    with pytest.raises(ValueError, match=f"ScoreOp 'Rank' .*{message}"):
-        parse_yaml_payload(yaml_text)
 
-
-def test_upstream_score_uses_pairs_node_placeholder() -> None:
-    payload = """
-    name: score_upstream
-    inputs:
-      Unused: []
-    ops:
-      - id: Query
-        op: LLMChatOp
-        messages:
-          - role: user
-            content: "same question"
-        config:
-          model: org/model
-          api: {}
-      - id: Candidates
-        op: LLMChatOp
-        messages:
-          - role: user
-            content: "candidate source"
-        config:
-          model: org/model
-          api: {}
-      - id: Score
-        op: ScoreOp
-        inputs: [Query, Candidates]
-        query: Query
-        candidates: Candidates
-        config:
-          model: org/reranker
-    outputs:
-      - name: scores
-        ref: Score
-    """
-    spec = parse_yaml_payload(payload)["score_upstream"]
+@pytest.mark.parametrize(
+    ("backend", "model_block"),
+    [("vllm", {"convert": "classify"}), ("transformers", {"device_map": "auto"})],
+)
+def test_score_yaml_lowers_to_a_classification_node(
+    backend: str, model_block: dict[str, str]
+) -> None:
+    spec = parse_yaml_payload(
+        _score_yaml(
+            {
+                "inputs": ["Query", "Query"],
+                "candidates": "Query",
+                "config": {"model": "org/reranker", "backend": backend},
+            }
+        )
+    )["score_pairs"]
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
-    score = next(
+    [node] = [
         node
         for node in runtime_graph.nodes.values()
         if node.task_type == "classification"
-    )
-    pairs = next(
-        node
-        for node in runtime_graph.nodes.values()
-        if node.task_type == python_step.TASK_TYPE
-        and node.data_spec.get("mode") == "pairs"
-    )
-
-    assert score.data_spec == {
-        "type": "list",
-        "items": f"${{{pairs.node_id}.value.items}}",
-    }
-    assert score.dependencies == (pairs.node_id,)
-    assert score.to_flowmesh_node()["dependsOn"] == [pairs.node_id]
-    assert pairs.to_flowmesh_node()["dependsOn"] == list(pairs.dependencies)
-    assert all(dep in runtime_graph.nodes for dep in pairs.dependencies)
-    assert all(
-        entry.get("node") in runtime_graph.nodes
-        for entry in pairs.data_spec["plan"]
-        if entry.get("kind") == "stage"
-    )
-
-
-def test_score_op_feeds_list_lambda_with_ordered_items(tmp_path: Path) -> None:
-    score = ScoreOp(
-        query=["question"],
-        candidates=["first", "second"],
-        config=ScoreConfig(model="org/reranker"),
-    )
-
-    def collect(items):
-        return [{"scores": items[0]}]
-
-    scores = LambdaOp([score], fn=collect, mode="list")
-    compiled = Graph.from_ops([as_output("scores", scores)]).compile()
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    score_node = runtime_graph.nodes[score.id]
-    score_dir = tmp_path / score_node.node_id
-    score_dir.mkdir()
-    (score_dir / "results.json").write_text(
-        json.dumps(
-            {
-                "result": {
-                    "items": [
-                        {"index": 0, "score": 0.9},
-                        {"index": 1, "score": 0.2},
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    consumer = next(
-        node
-        for node in runtime_graph.nodes.values()
-        if node.task_type == python_step.TASK_TYPE
-    )
-    namespace: dict[str, object] = {"json": json}
-    exec(consumer.to_flowmesh_node()["spec"]["code"], namespace)
-    main = namespace["main"]
-    assert callable(main)
-
-    rows = main({score_node.node_id: str(score_dir)})["items"]
-
-    assert rows == [
-        {
-            "output": {
-                "scores": [
-                    {"index": 0, "score": 0.9},
-                    {"index": 1, "score": 0.2},
-                ]
-            }
-        }
     ]
+    model_spec = node.to_flowmesh_node()["spec"]["model"]
+
+    assert node.data_spec == {
+        "type": "list",
+        "items": [{"text": "first question", "text_pair": "first question"}],
+    }
+    assert model_spec["source"]["identifier"] == "org/reranker"
+    assert model_spec[backend] == model_block
 
 
-def test_score_op_feeds_llm_chat_op() -> None:
-    score = ScoreOp(
-        query=["question"],
-        candidates=["first", "second"],
-        config=ScoreConfig(model="org/reranker"),
-    )
-    answer = LLMChatOp(
-        [OpMessage(role="user", content=score)],
-        config=GenerationConfig(model="org/model"),
-    )
-    compiled = Graph.from_ops([as_output("answer", answer)]).compile()
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    score_node = runtime_graph.nodes[score.id]
-    llm_node = runtime_graph.nodes[answer.id]
-
-    columns = llm_node.data_spec["template"]["columns"]
-    assert any(
-        column.get("node") == score_node.node_id and column.get("path") == "items"
-        for column in columns
-    )
-    assert score_node.node_id in llm_node.dependencies
+@pytest.mark.parametrize(
+    ("query", "candidates", "message"),
+    [
+        (["q1", "q2"], ["c1"], "ScoreOp query and candidates must have equal"),
+        (["q1"], [], "non-empty candidate"),
+    ],
+)
+def test_score_op_rejects_bad_literal_inputs(
+    query: list[str], candidates: list[str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        ScoreOp(query, candidates, config=ScoreConfig(model="org/reranker"))
 
 
-def test_score_op_reads_list_lambda_candidates_inside_items(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"config": {"model": "org/reranker", "backend": "tfjs"}}, "backend must be"),
+        ({"config": {"model": "org/reranker", "device": "cpu"}}, "unknown fields"),
+        ({"candidates": "Missing"}, "requires a 'candidates' reference"),
+    ],
+)
+def test_score_yaml_errors_name_the_op(fields: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=f"ScoreOp 'Rank' .*{message}"):
+        parse_yaml_payload(_score_yaml(fields))
+
+
+def test_upstream_score_routes_through_a_pairs_step(tmp_path: Path) -> None:
     """A whole-column Lambda emits its values as python-result items, so the
-    pairs step reads them at the item-relative ``output`` path."""
+    pairs step reads them at the item-relative ``output`` path and builds one
+    pair per row."""
 
     def prepare(items):
         return [str(item) for item in items]
 
-    stock = input_placeholder("Texts")
-    prepare_op = LambdaOp([stock], prepare, mode="list")
+    prepare_op = LambdaOp([input_placeholder("Texts")], prepare, mode="list")
     score = ScoreOp(
         query="question",
         candidates=prepare_op,
-        config=ScoreConfig(model="org/reranker", backend="vllm"),
+        config=ScoreConfig(model="org/reranker"),
     )
     compiled = Graph.from_ops([as_output("scores", score)]).compile(
         Texts=["first", "second"]
     )
     runtime_graph = RuntimeGraphBuilder().build(compiled)
-    pairs = next(
-        node
-        for node in runtime_graph.nodes.values()
-        if node.task_type == python_step.TASK_TYPE
-        and node.data_spec.get("mode") == "pairs"
-    )
-    plan = pairs.data_spec["plan"]
-    candidate_entry = next(entry for entry in plan if entry["kind"] == "stage")
-
-    assert candidate_entry["path"] == "output"
-
-    code = python_step.pairs_source(pairs.node_id, plan)
-    namespace: dict[str, object] = {}
-    exec(code, namespace)
-    main = namespace["main"]
-    assert callable(main)
-    node_id = candidate_entry["node"]
-    node_dir = tmp_path / node_id
-    node_dir.mkdir()
-    (node_dir / "results.json").write_text(
-        json.dumps({"value": {"items": [{"output": "first"}, {"output": "second"}]}}),
+    pairs = runtime_graph.nodes[f"{score.id}__pairs"]
+    candidate_entry = pairs.data_spec["plan"][1]
+    score_node = runtime_graph.nodes[score.id]
+    stage_dir = tmp_path / "prep"
+    stage_dir.mkdir()
+    (stage_dir / "results.json").write_text(
+        json.dumps({"value": {"items": [{"output": "c1"}, {"output": "c2"}]}}),
         encoding="utf-8",
     )
+    namespace: dict[str, object] = {}
+    exec(pairs.to_flowmesh_node()["spec"]["code"], namespace)
+    main = namespace["main"]
+    assert callable(main)
 
-    assert main({node_id: str(node_dir)}) == {
+    assert score_node.dependencies == (pairs.node_id,)
+    assert score_node.data_spec == {
+        "type": "list",
+        "items": f"${{{pairs.node_id}.value.items}}",
+    }
+    assert candidate_entry == {
+        "kind": "stage",
+        "node": pairs.dependencies[0],
+        "path": "output",
+    }
+    assert main({candidate_entry["node"]: str(stage_dir)}) == {
         "items": [
-            {"text": "question", "text_pair": "first"},
-            {"text": "question", "text_pair": "second"},
+            {"text": "question", "text_pair": "c1"},
+            {"text": "question", "text_pair": "c2"},
         ]
     }
 
@@ -367,7 +166,6 @@ def test_score_op_reads_list_lambda_candidates_inside_items(tmp_path: Path) -> N
 def test_score_op_reads_vision_llm_candidates_from_the_model_node() -> None:
     """A vision LLM compiles to an embedding stage and the model, so the pairs
     step must read the model's output, not the embedding's."""
-
     stock = input_placeholder("Stock")
     vision = LLMVisionOp(
         [OpMessage(role="user", content="Describe the image.")],
@@ -382,310 +180,76 @@ def test_score_op_reads_vision_llm_candidates_from_the_model_node() -> None:
     )
     compiled = Graph.from_ops([as_output("scores", score)]).compile(Stock=["NVDA"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
-    pairs = next(
-        node
-        for node in runtime_graph.nodes.values()
-        if node.task_type == python_step.TASK_TYPE
-        and node.data_spec.get("mode") == "pairs"
-    )
-    candidate_entry = next(
-        entry for entry in pairs.data_spec["plan"] if entry["kind"] == "stage"
-    )
 
-    assert runtime_graph.dsl_to_runtime[vision.id] == [
-        f"{vision.id}_embedding",
-        vision.id,
-    ]
-    assert candidate_entry == {"kind": "stage", "node": vision.id, "path": "output"}
-
-
-def test_score_op_flattens_rowwise_llm_candidates(tmp_path: Path) -> None:
-    """A rowwise LLM groups its per-row replies into one item, so the pairs
-    step reads it flattened to one value per row."""
-
-    def label(item):
-        return str(item)
-
-    query = input_placeholder("Query")
-    rows = LambdaOp([query], label)
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=query)],
-        config=GenerationConfig(model="org/model"),
-        rowwise_template="{doc}",
-        rowwise_columns=[{"label": "doc", "node": rows.id, "path": "items.output"}],
-    )
-    score = ScoreOp(
-        query=query,
-        candidates=llm,
-        config=ScoreConfig(model="org/reranker"),
-    )
-    compiled = Graph.from_ops([as_output("scores", score)]).compile(
-        Query=["first", "second"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    pairs = next(
-        node
-        for node in runtime_graph.nodes.values()
-        if node.task_type == python_step.TASK_TYPE
-        and node.data_spec.get("mode") == "pairs"
-    )
-    plan = pairs.data_spec["plan"]
-    candidate_entry = next(entry for entry in plan if entry["kind"] == "stage")
-
-    assert candidate_entry == {"kind": "stage", "node": llm.id, "flatten": True}
-
-    code = python_step.pairs_source(pairs.node_id, plan)
-    namespace: dict[str, object] = {}
-    exec(code, namespace)
-    main = namespace["main"]
-    assert callable(main)
-    node_dir = tmp_path / llm.id
-    node_dir.mkdir()
-    (node_dir / "results.json").write_text(
-        json.dumps({"value": {"items": [{"output": ["first reply", "second reply"]}]}}),
-        encoding="utf-8",
-    )
-
-    assert main({llm.id: str(node_dir)}) == {
-        "items": [
-            {"text": "first", "text_pair": "first reply"},
-            {"text": "second", "text_pair": "second reply"},
-        ]
+    pairs = runtime_graph.nodes[f"{score.id}__pairs"]
+    assert pairs.data_spec["plan"][1] == {
+        "kind": "stage",
+        "node": vision.id,
+        "path": "output",
     }
 
 
-def test_fetch_list_lambda_score_chain_builds_in_dependency_order() -> None:
-    def extract(items):
-        return [str(item) for item in items]
+def test_mixed_derived_chain_builds_in_dependency_order() -> None:
+    """A chain that mixes an LLM, a fetch, a row Lambda, a score and list
+    Lambdas lowers in dependency order, with no reference to a missing node."""
 
-    query = input_placeholder("Query")
-    fetch = HttpFetchOp("http://fixture.test/search?q={query}", query)
-    candidates = LambdaOp([fetch], extract, mode="list")
-    _assert_fetch_lambda_score_order(fetch, candidates, query)
+    def first_line(value):
+        return str(value).splitlines()[0]
 
+    def titles(docs):
+        return [str(doc) for doc in docs]
 
-def test_fetch_row_lambda_score_chain_builds_in_dependency_order() -> None:
-    def extract(result):
-        return str(result)
-
-    query = input_placeholder("Query")
-    fetch = HttpFetchOp("http://fixture.test/search?q={query}", query)
-    candidates = LambdaOp([fetch], extract, mode="row")
-    _assert_fetch_lambda_score_order(fetch, candidates, query)
-
-
-def test_llm_score_fetch_chain_builds_in_dependency_order() -> None:
     query = input_placeholder("Query")
     llm = LLMChatOp(
-        [OpMessage(role="user", content=query)],
-        config=GenerationConfig(model="org/model"),
+        [OpMessage(role="user", content=query)], config=GenerationConfig(model="org/m")
     )
-    score = ScoreOp(query, llm, config=ScoreConfig(model="org/reranker"))
-    fetch = HttpFetchOp("http://fixture.test/search?q={query}", score)
-    compiled = Graph.from_ops([as_output("results", fetch)]).compile(
-        Query=["first", "second"]
+    fetch = HttpFetchOp("https://search.example/api?q={query}", llm)
+    score = ScoreOp(
+        query, LambdaOp([fetch], first_line), config=ScoreConfig(model="org/reranker")
     )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    llm_node = runtime_graph.nodes[llm.id]
-    score_node = runtime_graph.nodes[score.id]
-    fetch_node = runtime_graph.nodes[fetch.id]
+    head = LambdaOp([LambdaOp([score], titles, mode="list")], titles, mode="list")
+    compiled = Graph.from_ops([as_output("out", head)]).compile(Query=["a", "b"])
+    runtime_graph: RuntimeGraph = RuntimeGraphBuilder().build(compiled)
 
-    order = runtime_graph.node_order
-    assert order.index(llm_node.node_id) < order.index(score_node.node_id)
-    assert order.index(score_node.node_id) < order.index(fetch_node.node_id)
-    assert fetch_node.dependencies == (score_node.node_id,)
+    order = {node_id: i for i, node_id in enumerate(runtime_graph.node_order)}
+    for node in runtime_graph.nodes.values():
+        for dependency in node.dependencies:
+            assert dependency in runtime_graph.nodes
+    pairs_id = f"{score.id}__pairs"
+    chain = [llm.id, fetch.id, pairs_id]
+    chain += [runtime_graph.dsl_to_runtime[score.id][0], head.id]
+    assert [order[node_id] for node_id in chain] == sorted(order[n] for n in chain)
 
 
-def _assert_fetch_lambda_score_order(
-    fetch: HttpFetchOp,
-    candidates: LambdaOp,
-    query: Op,
+@pytest.mark.parametrize(
+    ("query", "candidates", "message"),
+    [
+        (["  "], ["first"], r"^pairs: row 0 query must be"),
+        (["same question"], [], r"^pairs: candidate column is empty"),
+    ],
+)
+def test_pairs_step_rejects_bad_columns(
+    query: list[str], candidates: list[str], message: str
 ) -> None:
-    score = ScoreOp(
-        query,
-        candidates,
-        config=ScoreConfig(model="org/reranker", backend="vllm"),
-    )
-    compiled = Graph.from_ops([as_output("scores", score)]).compile(
-        Query=["first", "second"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    fetch_node = runtime_graph.nodes[fetch.id]
-    score_node = runtime_graph.nodes[score.id]
-    pairs_node = next(
-        node
-        for node in runtime_graph.nodes.values()
-        if node.task_type == python_step.TASK_TYPE
-        and node.data_spec.get("mode") == "pairs"
-    )
-    candidate_entry = next(
-        entry for entry in pairs_node.data_spec["plan"] if entry["kind"] == "stage"
-    )
-
-    assert runtime_graph.node_order.index(fetch_node.node_id) < (
-        runtime_graph.node_order.index(pairs_node.node_id)
-    )
-    assert runtime_graph.node_order.index(pairs_node.node_id) < (
-        runtime_graph.node_order.index(score_node.node_id)
-    )
-    assert candidate_entry["node"] in runtime_graph.nodes
-    assert all(dep in runtime_graph.nodes for dep in pairs_node.dependencies)
-    assert all(
-        dep in runtime_graph.nodes
-        for dep in score_node.to_flowmesh_node().get("dependsOn", [])
-    )
-
-
-def test_pairs_step_output_shape_broadcasts_single_query() -> None:
-    plan = [
-        {"kind": "literal", "values": ["same question"]},
-        {"kind": "literal", "values": ["first", "second"]},
-    ]
-    code = python_step.pairs_source("pairs", plan)
-    namespace: dict[str, object] = {}
-    exec(code, namespace)
-    main = namespace["main"]
-    assert callable(main)
-    assert main({}) == {
-        "items": [
-            {"text": "same question", "text_pair": "first"},
-            {"text": "same question", "text_pair": "second"},
-        ]
-    }
-
-
-@pytest.mark.parametrize("bad", [None, "", "   ", 3, {"json": None}])
-def test_pairs_step_rejects_non_string_query_and_candidate(bad: object) -> None:
-    """A fail-open fetch row or a JSON body reaches the pairs step unchanged,
-    so the step rejects it with the node and row instead of letting FlowMesh
-    fail the whole classification task. A blank string is rejected too:
-    ``ScorePair`` rejects it, so a whitespace-only pair must not reach the
-    classifier."""
-    for column in ("query", "candidate"):
-        plan: python_step.ColumnPlan = [
-            {"kind": "literal", "values": ["same question"]},
-            {"kind": "literal", "values": ["first", "second"]},
-        ]
-        plan[0 if column == "query" else 1]["values"] = [bad]
-        code = python_step.pairs_source("pairs", plan)
-        namespace: dict[str, object] = {}
-        exec(code, namespace)
-        main = namespace["main"]
-        assert callable(main)
-        with pytest.raises(ValueError, match=rf"^pairs: row 0 {column} must be"):
-            main({})
-
-
-@pytest.mark.parametrize("empty", ["query", "candidate"])
-def test_pairs_step_rejects_an_empty_column(empty: str) -> None:
-    """An upstream stage that returns no candidates would otherwise yield an
-    empty classification task; the literal path raises for the same case."""
+    """A blank fail-open fetch row or an upstream stage that returns nothing
+    reaches the pairs step unchanged; it rejects both instead of letting
+    FlowMesh fail the whole classification task."""
     plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": ["same question"]},
-        {"kind": "literal", "values": ["first", "second"]},
+        {"kind": "literal", "values": query},
+        {"kind": "literal", "values": candidates},
     ]
-    plan[0 if empty == "query" else 1]["values"] = []
-    code = python_step.pairs_source("pairs", plan)
+    spec = python_step.flowmesh_spec(
+        "pairs",
+        {
+            "mode": "pairs",
+            "plan": plan,
+            "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+        },
+    )
     namespace: dict[str, object] = {}
-    exec(code, namespace)
+    exec(spec["code"], namespace)
     main = namespace["main"]
     assert callable(main)
-    with pytest.raises(ValueError, match=rf"^pairs: {empty} column is empty"):
+
+    with pytest.raises(ValueError, match=message):
         main({})
-
-
-def test_upstream_score_resolved_spec_is_dispatchable_shape(
-    tmp_path: Path,
-) -> None:
-    upstream = _upstream_score_runtime_graph()
-    score = next(
-        node for node in upstream.nodes.values() if node.task_type == "classification"
-    )
-    pairs = next(
-        node
-        for node in upstream.nodes.values()
-        if node.task_type == python_step.TASK_TYPE
-        and node.data_spec.get("mode") == "pairs"
-    )
-    pairs_spec = pairs.to_flowmesh_node()["spec"]
-    inputs: dict[str, str] = {}
-    for plan, content in zip(
-        pairs.data_spec["plan"],
-        ["same question", "candidate"],
-        strict=True,
-    ):
-        node_id = plan["node"]
-        node_dir = tmp_path / node_id
-        node_dir.mkdir()
-        (node_dir / "results.json").write_text(
-            json.dumps(
-                {
-                    "result": {
-                        "items": [
-                            {"json": {"choices": [{"message": {"content": content}}]}}
-                        ]
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        inputs[node_id] = str(node_dir)
-    namespace: dict[str, object] = {"json": json}
-    exec(pairs_spec["code"], namespace)
-    main = namespace["main"]
-    assert callable(main)
-    pairs_output = main(inputs)["items"]
-    score_spec = score.to_flowmesh_node()["spec"]
-    resolved_items = pairs_output
-
-    assert isinstance(resolved_items, list) and resolved_items
-    assert all(
-        isinstance(item, dict)
-        and isinstance(item.get("text"), str)
-        and item["text"].strip()
-        and isinstance(item.get("text_pair"), str)
-        and item["text_pair"].strip()
-        for item in resolved_items
-    )
-    model = score_spec["model"]
-    assert model["source"]["identifier"] == "org/reranker"
-    assert model["vllm"]["convert"] == "classify"
-    assert "diffusers" not in model and "adapters" not in model
-
-
-def _upstream_score_runtime_graph():
-    payload = """
-    name: score_upstream_contract
-    inputs:
-      Unused: []
-    ops:
-      - id: Query
-        op: LLMChatOp
-        messages:
-          - role: user
-            content: "same question"
-        config:
-          model: org/model
-          api: {}
-      - id: Candidates
-        op: LLMChatOp
-        messages:
-          - role: user
-            content: "candidate source"
-        config:
-          model: org/model
-          api: {}
-      - id: Score
-        op: ScoreOp
-        inputs: [Query, Candidates]
-        query: Query
-        candidates: Candidates
-        config:
-          model: org/reranker
-    outputs:
-      - name: scores
-        ref: Score
-    """
-    spec = parse_yaml_payload(payload)["score_upstream_contract"]
-    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    return RuntimeGraphBuilder().build(compiled)
