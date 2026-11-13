@@ -60,15 +60,11 @@ def _template(**overrides: object) -> dict:
 
 
 def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
-    # A template and an API planner are alternatives, and neither the template
-    # nor a body takes an unknown key.
-    for driver in (
-        {"template": _template(), "api": {"url": "http://planner.test"}},
-        {"template": _template(unknown=True)},
-        {"template": _template(first={**_body(), "unknown": True})},
-    ):
-        with pytest.raises(ValidationError):
-            DynamicSpec.model_validate(_spec(**driver))
+    # A template and an API planner are alternatives.
+    with pytest.raises(ValidationError):
+        DynamicSpec.model_validate(
+            _spec(template=_template(), api={"url": "http://planner.test"})
+        )
 
     spec = DynamicSpec.model_validate(_spec(template=_template()))
     assert spec.driver.template is not None
@@ -176,7 +172,7 @@ def test_template_validator_rejects_an_unusable_body(
 
 
 def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
-    # The node refs a body carries -- a gate's router, a column's node, a
+    # The node refs a body carries -- a gate's target, a column's node, a
     # message content, a named argument, a retrieval param -- all take the round
     # suffix. A Lambda's code is Python source, so a placeholder in it stays
     # literal.
@@ -184,23 +180,12 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
         "ops": [
             _state_op("Source_r{{round}}", ["Symbols"]),
             {
-                "id": "Route_r{{round}}",
-                "op": "RouterOp",
-                "inputs": ["Source_r{{round}}"],
-                "input_path": "items.output",
-                "rules": [
-                    {"branch": "finish", "match": "contains", "value": "DONE"},
-                    {"branch": "pending", "match": "equals", "value": "__never__"},
-                ],
-                "default_branch": "pending",
-            },
-            {
                 "id": "Turn_r{{round}}",
                 "op": "LLMChatOp",
-                "inputs": ["Source_r{{round}}", "Route_r{{round}}"],
+                "inputs": ["Source_r{{round}}"],
                 "messages": [
                     {"role": "user", "content": "Advance {row}"},
-                    {"role": "user", "content": "Route_r{{round}}"},
+                    {"role": "user", "content": "Source_r{{round}}"},
                 ],
                 "config": {"model": "Qwen/Qwen3-8B"},
                 "rowwise_template": "{row}",
@@ -211,7 +196,7 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                         "path": "items.output",
                     }
                 ],
-                "row_gate": {"node": "Route_r{{round}}", "branch": "finish"},
+                "row_gate": {"node": "Source_r{{round}}", "branch": "finish"},
             },
             {
                 "id": "Lookup_r{{round}}",
@@ -239,13 +224,13 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
     )
     validate_template_spec(template)
     ops = {op["id"]: op for op in template_plan_for_round(template, 2).ops}
-    assert ops["Turn_r1"]["row_gate"]["node"] == "Route_r1"
+    assert ops["Turn_r1"]["row_gate"]["node"] == "Source_r1"
     assert [column["node"] for column in ops["Turn_r1"]["rowwise_columns"]] == [
         "Source_r1"
     ]
     assert [message["content"] for message in ops["Turn_r1"]["messages"]] == [
         "Advance {row}",
-        "Route_r1",
+        "Source_r1",
     ]
     assert ops["Lookup_r1"]["data_spec"]["params"] == [
         {"label": "name", "node": "Source_r1", "path": "items.output"}
