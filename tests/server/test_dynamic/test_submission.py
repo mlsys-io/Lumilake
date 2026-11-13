@@ -1764,7 +1764,7 @@ async def test_library_template_validates_at_both_doors(app: FastAPI) -> None:
             resp = await client.post(path, json=_submit_body(yaml_text), headers=header)
             assert resp.status_code == 422, resp.text
             detail = resp.json()["detail"]
-            if "MissingLibraryEntry" in detail:
+            if yaml_text is bad_yaml:
                 assert "unknown library entry 'MissingLibraryEntry'" in detail
             else:
                 assert "preview is not available for a template-driven" in detail
