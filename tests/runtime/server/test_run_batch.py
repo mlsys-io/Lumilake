@@ -1078,6 +1078,34 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
 
+class _ListLambdaChatRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch for a chat over a list-mode Lambda: the node
+    answers once per run, so it emits one whole-list output value and one
+    chat history that cover every input row of the slice."""
+
+    def __init__(self, *, answer: str, history: list[dict[str, str]]) -> None:
+        super().__init__()
+        self._answer = answer
+        self._history = history
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        return {
+            "flat_outputs": {
+                node_id: [self._answer] for node_id in request_info.output_node_map
+            },
+            "chat_histories": {
+                node_id: [self._history] for node_id in request_info.output_node_map
+            },
+            "task_node_map": {},
+        }
+
+
 class _RowwiseApiRuntimeManager(RecordingRuntimeManager):
     """Fakes FlowMesh dispatch but runs the real row-wise API aggregation,
     proving a two-row slice demultiplexes into two row-aligned outputs."""
@@ -1604,6 +1632,53 @@ async def test_list_lambda_output_multi_slice_run_fails_closed(
         "List-Lambda output cannot be split across slices" in str(item)
         for item in resp.error_info
     )
+
+
+@pytest.mark.asyncio
+async def test_list_lambda_chat_single_slice_demux_accepts_one_history(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chat over a list-mode Lambda answers once per run, so a three-row
+    slice carries one output value and one chat history. The merged-workflow
+    demux must accept both for the single slice instead of comparing the
+    history against the slice length."""
+    server = server_factory()
+    history = [
+        {"role": "user", "content": "Summarize the table."},
+        {"role": "assistant", "content": "rules for every stock"},
+    ]
+    server.runtime_manager = cast(
+        Any, _ListLambdaChatRuntimeManager(answer="rules", history=history)
+    )
+
+    workflows = [
+        make_workflow(
+            workflow_id="wf-list-chat",
+            request_id="req-list-chat",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=3,
+            total_length=3,
+        ),
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
+    )
+    _install_list_lambda_build_and_schedule(server, "summary")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-list-chat"].results[0]
+    assert resp.error_info is None
+    assert resp.outputs["shared"]["summary"] == ["rules"]
+    [slice_history] = resp.chat_histories["shared"]["summary"]
+    assert slice_history == history
 
 
 class _AlignedRuntimeManager(RecordingRuntimeManager):

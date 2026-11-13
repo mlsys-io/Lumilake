@@ -3286,6 +3286,21 @@ class LumilakeServer:
                     f" {type(history).__name__}"
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
+            if (group_key, output_name) in list_lambda_outputs:
+                group_slices = grouped_workflows.get(group_key, [])
+                if len(group_slices) != 1:
+                    raise ValueError(
+                        "List-Lambda history cannot be split across slices: "
+                        f"{output_name} covers {len(group_slices)} slice(s) in "
+                        f"group {group_key}. A list-mode Lambda runs once per "
+                        "run and its single whole-list result cannot be "
+                        "partitioned per slice."
+                    )
+                (single_workflow,) = group_slices
+                direct_histories.setdefault(single_workflow.workflow_id, {})[
+                    output_name
+                ] = history
+                continue
             if matched_workflow is not None:
                 if len(history) != matched_workflow.slice_length:
                     raise ValueError(

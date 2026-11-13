@@ -646,9 +646,8 @@ async def test_aggregate_chat_over_list_lambda_returns_bare_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An aggregate chat over a list-mode Lambda answers once per run, so its
-    one item is the output value as it is. The node still belongs to the
-    list-Lambda cardinality set, so its single value covers the whole run and
-    no per-row history can be built from it."""
+    one item is the output value as it is. That item keeps the whole prompt,
+    so the node's single value still yields one chat history."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
@@ -713,7 +712,8 @@ async def test_aggregate_chat_over_list_lambda_returns_bare_answer(
         worker_ids=["worker-1"],
     )
     assert result_["flat_outputs"][llm_row_id] == ["one summary"]
-    assert llm_row_id not in result_["chat_histories"]
+    [history] = result_["chat_histories"][llm_row_id]
+    assert history[-1] == {"role": "assistant", "content": "one summary"}
 
 
 def _build_completion_over_list_lambda_request() -> tuple[RequestInfo, str, str]:

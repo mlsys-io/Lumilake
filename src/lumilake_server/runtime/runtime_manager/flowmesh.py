@@ -1577,6 +1577,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
             list_lambda_cardinality = output_op_id in list_lambda_cardinality_nodes
             list_lambda_direct_read = output_op_id in list_lambda_direct_read_nodes
+            rowwise_llm = (
+                output_node is not None
+                and output_node.data_spec.get("type") == "dataframe"
+            )
             outputs = await self._aggregate_output_node(
                 output_op_id=output_op_id,
                 output_task_id=output_task_id,
@@ -1589,20 +1593,21 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 list_lambda=list_lambda,
                 list_lambda_cardinality=list_lambda_cardinality,
                 list_lambda_direct_read=list_lambda_direct_read,
-                rowwise_llm=output_node is not None
-                and output_node.data_spec.get("type") == "dataframe",
+                rowwise_llm=rowwise_llm,
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
             # A flattened rowwise/items.rows output has one grouped item per
             # table but one output value per row, so per-row prompts cannot be
             # recovered from the grouped item (FlowMesh keeps only the first
-            # row's prompt). A folded value covers its whole run the same way,
-            # even when the item and value counts happen to match. Emit history
-            # only for one unfolded value per item.
-            if len(items) == len(outputs) and not (
-                list_lambda or list_lambda_cardinality or list_lambda_direct_read
-            ):
+            # row's prompt). A value folded over a list-Lambda table covers its
+            # whole run the same way, even when the item and value counts
+            # happen to match. Emit history only for one unfolded value per
+            # item.
+            folded_list_lambda = list_lambda_direct_read or (
+                rowwise_llm and list_lambda_cardinality
+            )
+            if len(items) == len(outputs) and not (list_lambda or folded_list_lambda):
                 for item, text in zip(items, outputs):
                     try:
                         prompt = item["metadata"]["prompt"]
