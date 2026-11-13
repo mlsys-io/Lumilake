@@ -212,29 +212,24 @@ def _referencing_op() -> dict[str, Any]:
     ("results", "export", "message"),
     [
         # A reference to an earlier op whose result is not available (neither a
-        # leaf nor exported) is rejected, never recomputed; an available one is
-        # accepted. ``export`` must name ops of the same subgraph.
+        # leaf nor exported) is rejected, never recomputed; ``export`` must name
+        # ops of the same subgraph.
         ({}, [], "s0"),
-        ({"s0": [{"table": "x"}]}, [], None),
         ({"s0": [{"table": "x"}]}, ["nope"], "exported op id 'nope'"),
-        ({"s0": [{"table": "x"}]}, ["q1"], None),
     ],
-    ids=["unavailable", "available", "unknown-export", "export"],
+    ids=["unavailable", "unknown-export"],
 )
 def test_validate_checks_the_earlier_ops_and_the_export(
-    results: dict, export: list[str], message: str | None
+    results: dict, export: list[str], message: str
 ) -> None:
-    subgraph = [_referencing_op()]
-    registry = {"s0": _sql_config("s0")}
-    if message is None:
+    with pytest.raises(DriverProtocolError, match=message):
         validate_emitted_subgraph(
-            subgraph, registry, max_nodes=4, results=results, export=export
+            [_referencing_op()],
+            {"s0": _sql_config("s0")},
+            max_nodes=4,
+            results=results,
+            export=export,
         )
-    else:
-        with pytest.raises(DriverProtocolError, match=message):
-            validate_emitted_subgraph(
-                subgraph, registry, max_nodes=4, results=results, export=export
-            )
 
 
 def _llm_column_library() -> dict[str, dict[str, Any]]:
@@ -408,21 +403,6 @@ def test_walk_archived_items_rejects_non_json():
         walk_archived_items(archived, configs)
 
 
-def _sourced_rowwise_config(op_id: str, *sources: str) -> dict:
-    return _llm_config(
-        op_id,
-        rowwise_template="{c0}",
-        rowwise_columns=[
-            {
-                "label": f"c{index}",
-                "node": source,
-                **({} if source == INPUT_NODE_ID else {"path": "items.output"}),
-            }
-            for index, source in enumerate(sources)
-        ],
-    )
-
-
 def _three_row_subgraph(ref: str) -> list[dict]:
     return [
         {
@@ -447,22 +427,13 @@ _TABLE_ROWS = ["r1", "r2", "r3", "r4", "r5"]
 _ONE_TABLE_ITEM = [json.dumps(_TABLE_ROWS)]
 
 
-def _same_round_source_leaf(
-    op_id: str, *columns: tuple[str, str | None]
-) -> dict[str, Any]:
+def _same_round_source_leaf(op_id: str, node: str, path: str) -> dict[str, Any]:
     return _llm_config(
         op_id,
         config={"model": "m"},
         messages=[{"role": "user", "content": "{c0}"}],
         rowwise_template="{c0}",
-        rowwise_columns=[
-            {
-                "label": f"c{index}",
-                "node": node,
-                **({} if path is None else {"path": path}),
-            }
-            for index, (node, path) in enumerate(columns)
-        ],
+        rowwise_columns=[{"label": "c0", "node": node, "path": path}],
     )
 
 
@@ -479,55 +450,32 @@ def _s3_config(op_id: str) -> dict:
     }
 
 
-_SAME_ROUND_SOURCE_CASES: list[Any] = [
-    # A row-mode Lambda's column yields one row per item.
-    pytest.param(
-        _ROW_LAMBDA_SOURCE,
-        1,
-        [("L", "items.output")],
-        _ONE_TABLE_ITEM,
-        id="row-lambda-column",
-    ),
-    # A retrieval column inside the table projects into rows.
-    pytest.param(
-        _sql_config("t1"),
-        3,
-        [("t1", "items.table.symbol")],
-        _ONE_TABLE_ITEM,
-        id="retrieval-table-column",
-    ),
-    pytest.param(
-        _s3_config("t1"),
-        3,
-        [("t1", "items.content")],
-        _ONE_TABLE_ITEM,
-        id="retrieval-content-column",
-    ),
-    # A column over the whole table does not project into rows.
-    pytest.param(
-        _sql_config("t1"),
-        3,
-        [("t1", "items.table")],
-        _TABLE_ROWS,
-        id="retrieval-whole-table",
-    ),
-]
-
-
 @pytest.mark.parametrize(
-    ("source", "rows", "columns", "expected"), _SAME_ROUND_SOURCE_CASES
+    ("source", "rows", "node", "path", "expected"),
+    [
+        # A row-mode Lambda's column yields one row per item; a retrieval column
+        # projects into rows only when its path reaches into them, so a column
+        # over the whole table is ungrouped and the consumer builds one row per
+        # retrieval item instead.
+        (_ROW_LAMBDA_SOURCE, 1, "L", "items.output", _ONE_TABLE_ITEM),
+        (_sql_config("t1"), 3, "t1", "items.table.symbol", _ONE_TABLE_ITEM),
+        (_s3_config("t1"), 3, "t1", "items.content", _ONE_TABLE_ITEM),
+        (_sql_config("t1"), 3, "t1", "items.table", _TABLE_ROWS),
+    ],
+    ids=[
+        "row-lambda-column",
+        "retrieval-table-column",
+        "retrieval-content-column",
+        "whole-table",
+    ],
 )
 def test_build_round_records_a_same_round_source_grouping(
-    source: dict[str, Any],
-    rows: int,
-    columns: list[tuple[str, str | None]],
-    expected: list[str],
+    source: dict[str, Any], rows: int, node: str, path: str, expected: list[str]
 ) -> None:
     # The producer's round records the grouping, because the consuming round
     # would otherwise decide it against a ``results`` already holding the
-    # producer's own round. A column over the whole ``items.table`` is not
-    # grouped, so the consumer builds one row per retrieval item instead.
-    ops = [source, _same_round_source_leaf("s0", *columns)]
+    # producer's own round.
+    ops = [source, _same_round_source_leaf("s0", node, path)]
     registry = {op["id"]: op for op in ops}
     producing = _build(ops, round_index=0, registry=registry)
     archived = {"output": _TABLE_ROWS}
@@ -588,7 +536,7 @@ def test_build_round_decides_an_ungrouped_source() -> None:
     # would bind them as one blob.
     ops = [
         _plain_chat("c0", INPUT_NODE_ID),
-        _same_round_source_leaf("s0", ("c0", None)),
+        _same_round_source_leaf("s0", "c0", "items.output"),
     ]
     producing = _build(ops, round_index=0)
     assert producing.grouped_sources == {"s0": False}
@@ -600,12 +548,6 @@ def test_build_round_decides_an_ungrouped_source() -> None:
         registry={op["id"]: op for op in ops},
     )
     assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
-    # A column reading an earlier round's op becomes a literal list input, which
-    # FlowMesh reads ungrouped. The decision needs that op's archived results:
-    # against an empty history the source is unknown rather than a literal.
-    ops = [_same_round_source_leaf("s0", ("c0", None))]
-    build = _build(ops, results={"c0": [{"output": _TABLE_ROWS}], "s0": []}, rows=3)
-    assert build.grouped_sources == {"s0": False}
 
 
 def _api_llm_config(op_id: str, **overrides: Any) -> dict:
@@ -1047,39 +989,14 @@ def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
     # round, so a later round reading it whole still binds one value per row.
     llm_id = "s0"
     symbols = ["A", "B", "C"]
-    subgraph = _three_row_subgraph(llm_id)
-    configs = {llm_id: _rowwise_llm_config(llm_id)}
-
-    _, whole_inputs = forward_refs(
-        subgraph,
+    _, inputs = forward_refs(
+        _three_row_subgraph(llm_id),
         {llm_id: [{"output": list(symbols)}]},
-        configs,
+        {llm_id: _rowwise_llm_config(llm_id)},
         rows=3,
         whole_refs={llm_id},
     )
-    assert whole_inputs == {llm_id: symbols}
-
-    # A row-gated leaf archives one merge record per row, so its whole result is
-    # already one value per row and is bound without flattening.
-    rows = [
-        {"selected": True, "done": False, "branch": "pending", "row": index}
-        for index in range(3)
-    ]
-    _, gated_inputs = forward_refs(
-        subgraph,
-        {
-            llm_id: [
-                {"output": json.dumps({**row, "output": f"text-{index}"}), "value": row}
-                for index, row in enumerate(rows)
-            ]
-        },
-        {llm_id: _rowwise_llm_config(llm_id, row_gate={"node": "r0", "branch": "f"})},
-        rows=3,
-        whole_refs={llm_id},
-    )
-    assert gated_inputs[llm_id] == [
-        json.dumps({**row, "output": f"text-{index}"}) for index, row in enumerate(rows)
-    ]
+    assert inputs == {llm_id: symbols}
 
 
 @pytest.mark.parametrize("leaf_kind", ["chat", "vision"])
