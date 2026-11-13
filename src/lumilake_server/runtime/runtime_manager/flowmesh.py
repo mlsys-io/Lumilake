@@ -1570,6 +1570,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
 
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)
+            list_lambda = (
+                output_node is not None
+                and output_node.task_type == python_step.TASK_TYPE
+                and output_node.data_spec.get("mode") == "list"
+            )
+            list_lambda_cardinality = output_op_id in list_lambda_cardinality_nodes
+            list_lambda_direct_read = output_op_id in list_lambda_direct_read_nodes
             outputs = await self._aggregate_output_node(
                 output_op_id=output_op_id,
                 output_task_id=output_task_id,
@@ -1579,11 +1586,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 expected_row_count=self._embedding_row_count(
                     request_info.runtime_graph, output_op_id
                 ),
-                list_lambda=output_node is not None
-                and output_node.task_type == python_step.TASK_TYPE
-                and output_node.data_spec.get("mode") == "list",
-                list_lambda_cardinality=output_op_id in list_lambda_cardinality_nodes,
-                list_lambda_direct_read=output_op_id in list_lambda_direct_read_nodes,
+                list_lambda=list_lambda,
+                list_lambda_cardinality=list_lambda_cardinality,
+                list_lambda_direct_read=list_lambda_direct_read,
                 rowwise_llm=output_node is not None
                 and output_node.data_spec.get("type") == "dataframe",
             )
@@ -1592,9 +1597,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             # A flattened rowwise/items.rows output has one grouped item per
             # table but one output value per row, so per-row prompts cannot be
             # recovered from the grouped item (FlowMesh keeps only the first
-            # row's prompt). Emit history only when there is exactly one item
-            # per output value; otherwise leave the node without history.
-            if len(items) == len(outputs):
+            # row's prompt). A folded value covers its whole run the same way,
+            # even when the item and value counts happen to match. Emit history
+            # only for one unfolded value per item.
+            if len(items) == len(outputs) and not (
+                list_lambda or list_lambda_cardinality or list_lambda_direct_read
+            ):
                 for item, text in zip(items, outputs):
                     try:
                         prompt = item["metadata"]["prompt"]

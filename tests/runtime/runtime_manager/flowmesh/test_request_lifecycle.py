@@ -645,9 +645,10 @@ def _build_aggregate_chat_over_list_lambda_request() -> tuple[RequestInfo, str, 
 async def test_aggregate_chat_over_list_lambda_returns_bare_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An aggregate chat over a list-mode Lambda already answers once per run,
-    so its one item is the output value as it is; the history's assistant turn
-    is the reply, not a JSON-encoded list of the reply."""
+    """An aggregate chat over a list-mode Lambda answers once per run, so its
+    one item is the output value as it is. The node still belongs to the
+    list-Lambda cardinality set, so its single value covers the whole run and
+    no per-row history can be built from it."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
@@ -712,8 +713,7 @@ async def test_aggregate_chat_over_list_lambda_returns_bare_answer(
         worker_ids=["worker-1"],
     )
     assert result_["flat_outputs"][llm_row_id] == ["one summary"]
-    [history] = result_["chat_histories"][llm_row_id]
-    assert history[-1] == {"role": "assistant", "content": "one summary"}
+    assert llm_row_id not in result_["chat_histories"]
 
 
 def _build_completion_over_list_lambda_request() -> tuple[RequestInfo, str, str]:
@@ -1313,4 +1313,143 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
     )
     assert result_["flat_outputs"][llm_row_id] == ["reply-0", "reply-1", "reply-2"]
     # One grouped item for three outputs: no recoverable per-row history.
+    assert result_["chat_histories"] == {}
+
+
+def _build_rowwise_llm_over_list_lambda_request() -> tuple[RequestInfo, str, str]:
+    """InputOp(3 rows) -> list-mode LambdaOp -> rowwise LLM -> output.
+
+    The list-mode Lambda explodes the whole input into one table, and the
+    row-wise LLM reads that table one row per prompt, so the LLM task runs
+    once per unit and FlowMesh groups its outputs back into one item.
+    Returns ``(request_info, lambda_row_id, llm_row_id)``.
+    """
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode="list")
+    summary = LLMChatOp(
+        [OpMessage(role="user", content="Summarize {chunk}")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        rowwise_template="Summarize {chunk}",
+        rowwise_columns=[
+            {"label": "chunk", "node": explode.id, "path": "items.output.value"}
+        ],
+    )
+    summary.inputs.append(explode)
+    output = as_output("summary", summary)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL", "CLINTOX"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    (lambda_row_id,) = runtime_graph.dsl_to_runtime[explode.id]
+    (llm_row_id,) = runtime_graph.dsl_to_runtime[summary.id]
+
+    request_info = RequestInfo(
+        request_id="req-rowwise-llm-over-list-lambda",
+        runtime_graphs={"g": runtime_graph},
+        data_profile_graphs={},
+    )
+    request_info.batch_id = "batch-1"
+    request_info.runtime_graph = runtime_graph
+    request_info.data_profile_graph = RuntimeGraph(
+        nodes={}, node_order=[], output_node_map={}
+    )
+    return request_info, lambda_row_id, llm_row_id
+
+
+@pytest.mark.asyncio
+async def test_rowwise_llm_over_list_lambda_folds_to_one_value_and_no_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row-wise LLM reading a list-mode Lambda's table runs once per unit, so
+    its node covers the whole run and its grouped results fold into one output
+    value. One grouped item and one folded value then agree in count, which is
+    not evidence of one prompt per item: the item keeps only the first row's
+    prompt, so the node must emit no history."""
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
+    manager = FlowmeshRuntimeManager()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        lambda: InMemoryJobStorage(),
+    )
+
+    request_info, lambda_row_id, llm_row_id = (
+        _build_rowwise_llm_over_list_lambda_request()
+    )
+
+    class _FakeWorkflows:
+        async def submit(self, task_yaml: str) -> Any:
+            return SimpleNamespace(
+                tasks=[
+                    SimpleNamespace(task_id="task-lambda"),
+                    SimpleNamespace(task_id="task-llm"),
+                ],
+                workflow_id="wf-1",
+            )
+
+    class _FakeResults:
+        async def retrieve(self, task_id: str) -> dict[str, Any]:
+            if task_id == "task-lambda":
+                return {
+                    "value": {
+                        "items": [
+                            {"value": "nvda"},
+                            {"value": "aapl"},
+                            {"value": "clintox"},
+                        ]
+                    }
+                }
+            # The rowwise LLM groups its three per-row answers into one item,
+            # which carries only the first row's prompt.
+            return {
+                "items": [
+                    {
+                        "index": 0,
+                        "output": ["rules-nvda", "rules-aapl", "rules-clintox"],
+                        "metadata": {
+                            "prompt": [{"role": "user", "content": "Summarize nvda"}]
+                        },
+                    }
+                ]
+            }
+
+    class _FakeFm:
+        def __init__(self) -> None:
+            self.workflows = _FakeWorkflows()
+            self.results = _FakeResults()
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
+
+    node_by_task = {
+        "task-lambda": lambda_row_id,
+        "task-llm": llm_row_id,
+    }
+
+    async def _fetch_task_status(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> TaskStatusView:
+        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
+
+    async def _fetch_task_description(
+        _self: FlowmeshRuntimeManager, task_id: str
+    ) -> dict[str, Any]:
+        return {"graph_node_name": node_by_task[task_id]}
+
+    monkeypatch.setattr(
+        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
+    )
+    monkeypatch.setattr(
+        manager,
+        "fetch_task_description",
+        types.MethodType(_fetch_task_description, manager),
+    )
+
+    result_ = await manager.process_request(
+        request_info,
+        Schedule(
+            worker_assignment={
+                "worker-1": [lambda_row_id, llm_row_id],
+            }
+        ),
+        worker_ids=["worker-1"],
+    )
+    [folded] = result_["flat_outputs"][llm_row_id]
+    assert json.loads(folded) == ["rules-nvda", "rules-aapl", "rules-clintox"]
     assert result_["chat_histories"] == {}
