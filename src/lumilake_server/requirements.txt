@@ -21,7 +21,7 @@ idna==3.20
 lumid-hooks==0.2.0
 multidict==6.9.1
 numpy==2.5.3
-opentelemetry-api==1.45.1
+opentelemetry-api==1.45.2
 pandas==3.0.6
 propcache==0.5.4
 pydantic-core==2.46.5
