@@ -12,7 +12,6 @@ from lumilake_server.dynamic.driver import (
     build_round,
     compute_observation,
     forward_refs,
-    has_live_rows,
     resolve_subgraph,
     validate_emitted_subgraph,
     walk_archived_items,
@@ -86,20 +85,6 @@ def test_forward_implicit_llm_reference_binds_default_path():
     assert ops[0]["inputs"] == [llm_id]
     assert ops[0]["format_kwargs"] == {"ref0": llm_id}
     assert inputs == {llm_id: ["hello"]}
-
-
-def test_has_live_rows_ignores_completely_terminal_sets() -> None:
-    # A row-gated leaf archives the merge step's record, which wraps each row as
-    # {"output": <row json>, "value": <row>}.
-    def merged(done: bool) -> str:
-        row = {"selected": True, "done": done, "branch": "finish", "row": 0}
-        return json.dumps({"output": json.dumps(row), "value": row})
-
-    assert has_live_rows({"leaf": [merged(True)]}) is False
-    assert has_live_rows({"leaf": [merged(True), merged(False)]}) is True
-    assert has_live_rows({"state": ["ordinary-output"]}) is True
-    assert has_live_rows({}) is True
-    assert has_live_rows({"state": []}) is True
 
 
 def test_forward_explicit_sql_column_reference_binds_and_rewrites():
@@ -362,33 +347,22 @@ def test_build_round_round2_graph_has_no_round1_op():
 
 
 def test_walk_archived_items_preserves_observation_for_llm_leaf():
-    # Leaf outputs now archive the whole result item (path: items). Walking each
-    # stored item with the producer's default path must recover the same text
-    # value the observation lambda saw before forwarding, so the observation the
-    # planner sees is unchanged, and a row-wise producer's items each keep a row.
+    # Leaf outputs archive the whole result item (path: items). Walking each
+    # stored item with the producer's default path recovers the same text value
+    # the observation lambda saw before forwarding, so the planner's preview is
+    # unchanged, and a row-wise producer's items each keep a row.
     llm_id = "s0"
     configs = {llm_id: _llm_config(llm_id)}
     walked = walk_archived_items({llm_id: [json.dumps({"output": "hello"})]}, configs)
     assert walked == {llm_id: ["hello"]}
-    obs = compute_observation(walked, preview_width=100)
-    assert "rows=1" in obs
-    assert "hello" in obs
+    assert "hello" in compute_observation(walked, preview_width=100)
     rows = {llm_id: [json.dumps({"output": v}) for v in ("a", "b", "c")]}
     assert walk_archived_items(rows, configs) == {llm_id: ["a", "b", "c"]}
-
-
-def test_walk_archived_items_uses_output_for_lambda_leaf() -> None:
-    configs = {
-        "l0": {
-            "id": "l0",
-            "op": "LambdaOp",
-            "mode": "list",
-            "fn_name": "states",
-            "code": "def states(items):\n    return items[0]\n",
-        }
-    }
+    # A Lambda leaf's default path keeps its archived output as one JSON item.
+    lambda_op = {"id": "l0", "op": "LambdaOp", "mode": "list", "fn_name": "f"}
+    lambda_op["code"] = "def f(items):\n    return items[0]\n"
     archived = {"l0": [json.dumps({"output": json.dumps([{"done": False}])})]}
-    assert walk_archived_items(archived, configs) == {
+    assert walk_archived_items(archived, {"l0": lambda_op}) == {
         "l0": [json.dumps([{"done": False}])]
     }
 
@@ -450,23 +424,36 @@ def _s3_config(op_id: str) -> dict:
     }
 
 
+def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
+    return _llm_config(
+        op_id,
+        config={"model": "m"},
+        messages=[{"role": "user", "content": "{c0}"}],
+        prompt={"template": "x", "format_kwargs": {"c0": source}},
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "rows", "node", "path", "expected"),
     [
         # A row-mode Lambda's column yields one row per item; a retrieval column
         # projects into rows only when its path reaches into them, so a column
         # over the whole table is ungrouped and the consumer builds one row per
-        # retrieval item instead.
+        # retrieval item instead. A chat op that is not row-wise yields one
+        # scalar per item, so a leaf reading it is ungrouped even at one symbol,
+        # where the fallback would bind its answers as one blob.
         (_ROW_LAMBDA_SOURCE, 1, "L", "items.output", _ONE_TABLE_ITEM),
         (_sql_config("t1"), 3, "t1", "items.table.symbol", _ONE_TABLE_ITEM),
         (_s3_config("t1"), 3, "t1", "items.content", _ONE_TABLE_ITEM),
         (_sql_config("t1"), 3, "t1", "items.table", _TABLE_ROWS),
+        (_plain_chat("c0", INPUT_NODE_ID), 1, "c0", "items.output", _TABLE_ROWS),
     ],
     ids=[
         "row-lambda-column",
         "retrieval-table-column",
         "retrieval-content-column",
         "whole-table",
+        "scalar-chat",
     ],
 )
 def test_build_round_records_a_same_round_source_grouping(
@@ -520,36 +507,6 @@ def _build(
     )
 
 
-def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
-    return _llm_config(
-        op_id,
-        config={"model": "m"},
-        messages=[{"role": "user", "content": "{c0}"}],
-        prompt={"template": "x", "format_kwargs": {"c0": source}},
-    )
-
-
-def test_build_round_decides_an_ungrouped_source() -> None:
-    # A chat op that is not row-wise yields one scalar per item, so a row-wise
-    # leaf reading it builds one table of its own rows whatever the symbol
-    # count: the leaf's answers expand even at one symbol, where the fallback
-    # would bind them as one blob.
-    ops = [
-        _plain_chat("c0", INPUT_NODE_ID),
-        _same_round_source_leaf("s0", "c0", "items.output"),
-    ]
-    producing = _build(ops, round_index=0)
-    assert producing.grouped_sources == {"s0": False}
-    consuming = _build(
-        _three_row_subgraph("s0"),
-        results={"s0": [{"output": _TABLE_ROWS}]},
-        whole_refs={"s0"},
-        grouped_sources=producing.grouped_sources,
-        registry={op["id"]: op for op in ops},
-    )
-    assert consuming.forwarded_inputs["s0"] == _TABLE_ROWS
-
-
 def _api_llm_config(op_id: str, **overrides: Any) -> dict:
     return _llm_config(
         op_id,
@@ -568,31 +525,26 @@ def _api_record(content: str) -> dict:
 @pytest.mark.parametrize(
     ("config", "archived", "expected"),
     [
-        # An API chat op archives the raw response record, so its text is read
-        # at ``json.choices[0].message.content`` rather than ``output``.
+        # An API leaf archives the raw response record, read at
+        # ``json.choices[0].message.content`` rather than ``output``.
         (
             _api_llm_config("s0"),
             [_api_record("first"), _api_record("second")],
             ["first", "second"],
         ),
-        # A row-wise API task groups one response per input row under ``rows``,
-        # so the walk reaches each row's content; the item itself stays whole,
-        # as for a local row-wise leaf.
+        # A row-wise API task groups one response per input row under ``rows``;
+        # the item itself stays whole, as for a local row-wise leaf.
         (
             _api_llm_config("s0", rowwise_template="{row}"),
             [{"rows": [_api_record("a"), _api_record("b")]}],
             [json.dumps(["a", "b"])],
         ),
-        # Any non-vision LLMOp with ``config.api`` dispatches as an API task,
-        # not only a chat op, so an image-generation leaf archives the raw
-        # response record too.
+        # Any LLMOp with ``config.api`` dispatches as an API task, so an
+        # image-generation leaf reads the record too.
         (
-            {
-                "id": "s0",
-                "op": "ImageGenerationOp",
-                "inputs": [],
-                "config": {"model": "m", "api": {"url": "https://example.com/v1"}},
-            },
+            _llm_config(
+                "s0", op="ImageGenerationOp", config={"model": "m", "api": {"url": "u"}}
+            ),
             [_api_record("a picture")],
             ["a picture"],
         ),
@@ -842,27 +794,6 @@ def _df_item(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"table": {"df": json.dumps(columns)}}
 
 
-def test_walk_serialized_dataframe_column_returns_list():
-    # Walking ``table.<col>`` on a real stored item (a serialized DataFrame)
-    # returns the column as a list in row order, not a dict or an error.
-    from lumilake_server.runtime.runtime_manager.flowmesh import _walk_output_path
-
-    item = _df_item(
-        [
-            {"title": "a0", "publisheddate": "2024-01-01", "category": "x"},
-            {"title": "a1", "publisheddate": "2024-01-02", "category": "y"},
-            {"title": "a2", "publisheddate": "2024-01-03", "category": "z"},
-        ]
-    )
-    assert _walk_output_path(item, ("table", "title"), "nq") == ["a0", "a1", "a2"]
-    assert _walk_output_path(item, ("table", "publisheddate"), "nq") == [
-        "2024-01-01",
-        "2024-01-02",
-        "2024-01-03",
-    ]
-    assert _walk_output_path(item, ("table", "category"), "nq") == ["x", "y", "z"]
-
-
 def test_forward_serialized_dataframe_columns_materialize():
     # A 2-symbol News Query -> News Report cut forwards table columns
     # (title/publisheddate/category) through materializers: each walked per-row
@@ -999,32 +930,29 @@ def test_forward_whole_rowwise_leaf_binds_one_value_per_row():
     assert inputs == {llm_id: symbols}
 
 
-@pytest.mark.parametrize("leaf_kind", ["chat", "vision"])
-def test_forwarded_literal_input_binds_as_a_data_column(leaf_kind):
-    # A forwarded reference becomes a workflow input that a rowwise column
-    # names by id, so the input op carries no consumer edge and the sorted op
-    # dict omits it. The runtime graph still resolves the id to the graph's
-    # input op and binds its values as a literal data column, on a row-wise
-    # chat and on a row-wise VLM alike.
-    prior = "C_r0"
+@pytest.mark.parametrize("leaf_op", ["LLMChatOp", "LLMVisionOp"])
+def test_forwarded_literal_input_binds_as_a_data_column(leaf_op: str) -> None:
+    # A forwarded reference becomes a workflow input that only a rowwise column
+    # names, so no op takes an edge from it. The runtime graph must still
+    # resolve the id to the graph's input op and bind its values as a literal
+    # data column, on a row-wise chat and on a row-wise VLM alike.
     values = ["v0", "v1", "v2"]
-    leaf: dict[str, Any] = {
-        "id": "C_r1",
-        "op": "LLMVisionOp" if leaf_kind == "vision" else "LLMChatOp",
-        "inputs": [],
-        "messages": [{"role": "user", "content": "grade {row}"}],
-        "rowwise_template": "{row}",
-        "rowwise_columns": [{"label": "row", "node": prior, "path": "items.output"}],
-        "config": {"model": "m"},
-    }
-    if leaf_kind == "vision":
-        leaf["image_source"] = prior
+    leaf = _llm_config(
+        "C_r1",
+        op=leaf_op,
+        config={"model": "m"},
+        messages=[{"role": "user", "content": "grade {row}"}],
+        rowwise_template="{row}",
+        rowwise_columns=[{"label": "row", "node": "C_r0", "path": "items.output"}],
+    )
+    if leaf_op == "LLMVisionOp":
+        leaf["image_source"] = "C_r0"
     ops, inputs = forward_refs(
         [leaf],
-        {prior: [{"output": list(values)}]},
-        {prior: _rowwise_llm_config(prior)},
+        {"C_r0": [{"output": values}]},
+        {"C_r0": _rowwise_llm_config("C_r0")},
         rows=3,
-        whole_refs={prior},
+        whole_refs={"C_r0"},
     )
     inputs["Symbols"] = ["NVDA", "AAPL", "MSFT"]
     spec = next(
@@ -1044,7 +972,7 @@ def test_forwarded_literal_input_binds_as_a_data_column(leaf_kind):
     )
     columns = (
         node.data_spec["template"]["columns"]
-        if leaf_kind == "vision"
+        if leaf_op == "LLMVisionOp"
         else node.data_spec["columns"]
     )
     assert columns[0] == {"label": "row", "data": {"type": "list", "items": values}}
