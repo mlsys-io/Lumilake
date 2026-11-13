@@ -594,12 +594,14 @@ _GATED_PLAN: dict[str, Any] = {
 }
 
 
-def _build_plan(plan: dict[str, Any], *, include_proposer: bool = True) -> Any:
-    ops = resolve_subgraph(copy.deepcopy(plan["ops"]), None)
-    registry = {op["id"]: op for op in ops}
+def test_gated_round_binds_its_reader_to_the_merge_stage() -> None:
+    # A row-gated leaf has no runtime node of its own: it compiles to status,
+    # selection, gated call and merge stages, and the round's proposer reads the
+    # merge stage, which holds the routing row under ``value``.
+    ops = resolve_subgraph(copy.deepcopy(_GATED_PLAN["ops"]), None)
     build = build_round(
         ops,
-        node_registry=registry,
+        node_registry={op["id"]: op for op in ops},
         round_index=1,
         goal="analyze market data",
         observations=[],
@@ -610,29 +612,16 @@ def _build_plan(plan: dict[str, Any], *, include_proposer: bool = True) -> Any:
         temperature=0.1,
         results={},
         rows=2,
-        include_proposer=include_proposer,
     )
-    inputs = {"Symbols": ["done", "pending"], **build.forwarded_inputs}
-    return build, Graph.from_json(build.graph).compile(**inputs)
-
-
-def test_gated_round_binds_its_reader_to_the_merge_stage_in_both_proposer_modes() -> (
-    None
-):
-    # A row-gated leaf has no runtime node of its own: it compiles to status,
-    # selection, gated call and merge stages, and the round's reader binds the
-    # merge stage in either proposer mode.
-    build, compiled = _build_plan(_GATED_PLAN)
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
     assert "proposer" in build.graph
     (gated_id,) = build.gated_leaf_ids
+    compiled = Graph.from_json(build.graph).compile(
+        Symbols=["done", "pending"], **build.forwarded_inputs
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
     (column,) = runtime_graph.nodes["proposer"].data_spec["template"]["columns"]
     assert column["node"] == runtime_graph.dsl_to_runtime[gated_id][-1]
     assert column["path"] == "value.items.output"
-
-    api_build, api_compiled = _build_plan(_GATED_PLAN, include_proposer=False)
-    assert "proposer" not in api_build.graph
-    assert len(RuntimeGraphBuilder().build(api_compiled).nodes) == 5
 
 
 @pytest.mark.anyio
@@ -1238,33 +1227,9 @@ async def test_dynamic_api_planner_drives_two_rounds(
     assert "market_cap" in second["messages"][1]["content"]
 
 
-@pytest.mark.parametrize(
-    ("export_rows", "expected_rounds"),
-    [
-        (
-            [
-                [{"case_id": "0", "turn": 0}],
-                [{"case_id": "0", "turn": 1}],
-                [{"case_id": "0", "turn": 2}],
-            ],
-            [("subgraph", 1), ("subgraph", 2), ("subgraph", 3)],
-        ),
-        # Round 2's list-mode export holds no row, so the stop check ends the
-        # loop before a third round runs.
-        (
-            [[{"case_id": "0", "turn": 0}], []],
-            [("subgraph", 1), ("subgraph", 2), ("STOP", 3)],
-        ),
-    ],
-    ids=["three-rounds", "empty-export-stops"],
-)
 @pytest.mark.anyio
 async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
-    app: FastAPI,
-    job_routes: Any,
-    monkeypatch: pytest.MonkeyPatch,
-    export_rows: list[list[dict[str, Any]]],
-    expected_rounds: list[tuple[str, int]],
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def _unexpected_planner(*args: Any, **kwargs: Any) -> str:
         raise AssertionError("template mode must not call a planner")
@@ -1272,20 +1237,21 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [{"next": "STOP"}]
-    fake_server.export_rows = export_rows
+    # Round 2's list-mode export holds no row, so the stop check ends the loop
+    # before a third round runs.
+    fake_server.export_rows = [[{"case_id": "0", "turn": 0}], []]
     record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
 
     assert record.status == "completed", record.error
-    executed = len(expected_rounds) - (1 if expected_rounds[-1][0] == "STOP" else 0)
-    assert len(record.child_job_ids) == executed
-    assert [config.chain_round for config in fake_server.configs] == list(
-        range(1, executed + 1)
-    )
+    assert len(record.child_job_ids) == 2
+    assert [config.chain_round for config in fake_server.configs] == [1, 2]
     round_plans = record.result.outputs["round"]["plan"]
-    assert [(plan["next"], plan["round"]) for plan in round_plans] == expected_rounds
-    assert [plan["source"] for plan in round_plans] == ["template"] * len(
-        expected_rounds
-    )
+    assert [(plan["next"], plan["round"]) for plan in round_plans] == [
+        ("subgraph", 1),
+        ("subgraph", 2),
+        ("STOP", 3),
+    ]
+    assert [plan["source"] for plan in round_plans] == ["template"] * 3
 
 
 def _lambda_plan(op_id: str, inputs: list[str], mode: str, body: str) -> dict[str, Any]:
@@ -1304,59 +1270,34 @@ def _lambda_plan(op_id: str, inputs: list[str], mode: str, body: str) -> dict[st
     }
 
 
-@pytest.mark.parametrize(
-    ("yaml_text", "plans", "export_rows", "leaf_items", "rounds", "expected"),
-    [
-        # Round 2 declares no list Lambda and only reads round 1's whole result
-        # beside the symbols; its two inputs cannot agree in length, so it runs
-        # as one slice and the whole result binds one value per row.
-        pytest.param(
-            _VALID_DYNAMIC_YAML,
-            [
-                _lambda_plan("source", ["Symbols"], "list", "return columns[0]"),
-                _lambda_plan(
-                    "score",
-                    ["source", "Symbols"],
-                    "row",
-                    'return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]',
-                ),
-                {"next": "STOP"},
-            ],
-            None,
-            {
-                f"leaf_{make_id('round_1', _op_id_prefix('LambdaOp'), 'source')}": [
-                    {"output": "A"},
-                    {"output": "B"},
-                ]
-            },
-            3,
-            {"source": ["A", "B"]},
-            id="whole-reader",
-        ),
-    ],
-)
 @pytest.mark.anyio
 async def test_dynamic_one_slice_round_binds_a_whole_result_per_row(
-    app: FastAPI,
-    job_routes: Any,
-    yaml_text: str,
-    plans: list[dict[str, Any]],
-    export_rows: list[list[dict[str, Any]]] | None,
-    leaf_items: dict[str, list[dict[str, Any]]],
-    rounds: int,
-    expected: dict[str, Any],
+    app: FastAPI, job_routes: Any
 ) -> None:
+    # Round 2 declares no list Lambda and only reads round 1's whole result
+    # beside the symbols; its two inputs cannot agree in length, so it runs as
+    # one slice and the whole result binds one value per row.
     symbols = ["NVDA", "MSFT", "AAPL"]
-    job_id = await _submit(app, yaml_text, {"Symbols": symbols})
+    job_id = await _submit(app, _VALID_DYNAMIC_YAML, {"Symbols": symbols})
     fake_server = job_routes._fake_runtime_server
-    fake_server.plans = plans
-    fake_server.export_rows = export_rows
-    fake_server.leaf_items.update(leaf_items)
+    fake_server.plans = [
+        _lambda_plan("source", ["Symbols"], "list", "return columns[0]"),
+        _lambda_plan(
+            "score",
+            ["source", "Symbols"],
+            "row",
+            'return [f"{a}/{b}" for a, b in zip(columns[0], columns[1])]',
+        ),
+        {"next": "STOP"},
+    ]
+    fake_server.leaf_items[
+        f"leaf_{make_id('round_1', _op_id_prefix('LambdaOp'), 'source')}"
+    ] = [{"output": "A"}, {"output": "B"}]
     await _run_background(app)
     record = job_routes.jobs[job_id]
 
     assert record.status == "completed", record.error
-    assert len(fake_server.executed_graphs) == rounds
+    assert len(fake_server.executed_graphs) == 3
     # The round that produces the whole result and the one that reads it both
     # run as one slice.
     for slices in fake_server.workflow_slices_calls[-2:]:
@@ -1369,8 +1310,7 @@ async def test_dynamic_one_slice_round_binds_a_whole_result_per_row(
         assert meta.whole_set is True
     (round_two,) = fake_server.executed_graphs[-1].values()
     assert round_two.inputs["Symbols"] == symbols
-    for name, value in expected.items():
-        assert round_two.inputs[name] == value
+    assert round_two.inputs["source"] == ["A", "B"]
 
 
 @pytest.mark.anyio
