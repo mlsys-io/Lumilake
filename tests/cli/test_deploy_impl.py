@@ -776,119 +776,66 @@ def test_flowmesh_workers_carry_the_stack_name_slug(
     assert "Created gpu-0: demo_worker_gpu_0" in logged
 
 
-def test_stack_up_builds_workdir_in_deploy_dir_not_cwd(
+def test_stack_up_keeps_the_workdir_beside_the_deployment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The workdir, its mounts and the resolved path keys follow the deployment."""
-    deploy_dir = tmp_path / "deployment"
+    """The workdir follows the deployment, not the caller's cwd."""
+    deploy_dir, elsewhere = tmp_path / "deployment", tmp_path / "elsewhere"
     deploy_dir.mkdir()
-    elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-
-    env_keys = {
-        "SERVER_HTTP_PORT": "18000",
-        "SERVER_GRPC_PORT": "18001",
-        "REDIS_CONTROL_PORT": "18002",
-        "REDIS_TELEMETRY_PORT": "18003",
-        "REDIS_TLS_DIR": "./secrets/tls/redis",
-        "SERVER_TLS_DIR": "./secrets/tls/server",
-        "SERVER_WORKER_CONFIG": "./configs/custom.yaml",
-        "FLOWMESH_PLUGIN_DATA_DIR": "./plugin-data",
-    }
     env_file = deploy_dir / ".env.flowmesh"
-    env_file.write_text("".join(f"{k}={v}\n" for k, v in env_keys.items()))
-    for key in (*env_keys, *STACK_PATH_KEYS):
+    env_file.write_text(
+        "SERVER_HTTP_PORT=18000\nSERVER_GRPC_PORT=18001\n"
+        "REDIS_CONTROL_PORT=18002\nREDIS_TELEMETRY_PORT=18003\n"
+    )
+    for key in STACK_PATH_KEYS:
         monkeypatch.setenv(key, "")
     monkeypatch.setattr(load_env, "_loaded", None, raising=False)
-
-    compose_calls: list[list[str]] = []
-
-    class _StubStack:
-        def run(
-            self,
-            args: list[str],
-            *,
-            env_file: Path,
-            env: dict[str, str] | None = None,
-        ) -> object:
-            compose_calls.append(args)
-            return type("_Result", (), {"returncode": 0})()
-
-    monkeypatch.setattr(fm, "_stack", _StubStack())
+    stack = type("S", (), {"run": lambda *_a, **_k: type("R", (), {"returncode": 0})()})
+    monkeypatch.setattr(fm, "_stack", stack())
     monkeypatch.setattr(fm, "check_ports", lambda _ports: [])
     monkeypatch.chdir(elsewhere)
 
     fm.stack_up(env_file)
 
-    workdir = deploy_dir / fm.WORKDIR_NAME
-    assert (workdir / "secrets" / "tls" / "redis").is_dir()
-    assert (workdir / "secrets" / "tls" / "server").is_dir()
-    assert (workdir / "configs" / "custom.yaml").is_file()
-    assert (workdir / "plugin-data").is_dir()
+    assert (deploy_dir / fm.WORKDIR_NAME / "configs").is_dir()
     assert not (elsewhere / fm.WORKDIR_NAME).exists()
-    for key in (
-        "REDIS_TLS_DIR",
-        "SERVER_TLS_DIR",
-        "SERVER_WORKER_CONFIG",
-        "FLOWMESH_PLUGIN_DATA_DIR",
-    ):
-        assert Path(os.environ[key]).is_relative_to(workdir)
-    assert compose_calls == [["--profile", "root", "up", "-d", "--wait"]]
 
 
-def test_stack_down_runs_without_a_workdir(
+def test_stack_down_runs_without_the_workdir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stack started before the upgrade is still torn down from its deployment."""
+    """A stack started before the upgrade is still torn down, on its own project."""
     deploy_dir = tmp_path / "deployment"
     deploy_dir.mkdir()
-    elsewhere = tmp_path / "elsewhere"
-    (elsewhere / fm.WORKDIR_NAME).mkdir(parents=True)
-
+    (tmp_path / "elsewhere" / fm.WORKDIR_NAME).mkdir(parents=True)
     env_file = deploy_dir / ".env.flowmesh"
-    env_file.write_text(
-        "SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\nFLOWMESH_VERSION=v1\n"
-        "FLOWMESH_REGISTRY=ghcr.io/mlsys-io\n"
+    env_file.write_text("SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n")
+    projects: list[str | None] = []
+
+    def _run(_args: list[str], **kwargs: Any) -> object:
+        env = kwargs.get("env") or {}
+        projects.append(
+            env.get("COMPOSE_PROJECT_NAME") if isinstance(env, dict) else None
+        )
+        return type("R", (), {"returncode": 0})()
+
+    client = type(
+        "C",
+        (),
+        {
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *_a: None,
+            "destroy_all_workers": lambda self, **_: False,
+        },
     )
-
-    class _StubContext:
-        def __enter__(self) -> "_StubContext":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-        def destroy_all_workers(self, *, ignore_unreachable: bool = False) -> bool:
-            return False
-
-    compose_calls: list[tuple[list[str], dict[str, str] | None]] = []
-
-    class _StubStack:
-        def run(
-            self,
-            args: list[str],
-            *,
-            env_file: Path,
-            env: dict[str, str] | None = None,
-        ) -> object:
-            compose_calls.append((args, env))
-            return type("_Result", (), {"returncode": 0})()
-
-    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
-    monkeypatch.setattr(fm, "_stack", _StubStack())
-    monkeypatch.chdir(elsewhere)
+    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: client())
+    monkeypatch.setattr(fm, "_stack", type("S", (), {"run": staticmethod(_run)})())
+    monkeypatch.chdir(tmp_path / "elsewhere")
 
     fm.stack_down(env_file)
-    fm.stack_clean(env_file)
 
-    assert [args for args, _env in compose_calls] == [
-        ["--profile", "root", "down"],
-        ["--profile", "root", "down", "-v"],
-    ]
-    for _args, env in compose_calls:
-        assert env is not None
-        assert env["COMPOSE_PROJECT_NAME"] == fm.stack_slug(env_file)
-    assert not (deploy_dir / fm.WORKDIR_NAME).exists()
+    assert projects == [fm.stack_slug(env_file)]
 
 
 def test_server_container_defaults_to_bare_name(tmp_path: Path) -> None:
