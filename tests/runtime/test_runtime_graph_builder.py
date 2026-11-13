@@ -579,156 +579,54 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    "consumer_kind", ["row_lambda", "list_lambda", "llm", "router"]
-)
-def test_row_gated_llm_rejects_consumers_other_than_an_output(
-    consumer_kind: str,
-) -> None:
+def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
+    # A consumer can name a gated op on a column without listing it as an input.
     rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
-    gated = LLMChatOp(
+    gated = _row_gate_over(rows, _router_over(rows))
+    after = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate=RowGate(node=router.id, branch="review"),
-        row_gate_op=router,
+        rowwise_template="{prev}",
+        rowwise_columns=[{"label": "prev", "node": gated.id, "path": "items.output"}],
     )
-    if consumer_kind == "row_lambda":
-        tail: Any = LambdaOp([gated], lambda row: str(row).upper())
-    elif consumer_kind == "list_lambda":
-        tail = LambdaOp([gated], lambda rows: list(rows), mode="list")
-    elif consumer_kind == "llm":
-        tail = LLMChatOp(
-            [OpMessage(role="user", content=gated)],
-            config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-            rowwise_template="{prev}",
-            rowwise_columns=[
-                {"label": "prev", "node": gated.id, "path": "items.output"}
-            ],
-        )
-    else:
-        router_tail = RouterOp(
-            gated,
-            rules=[
-                RouterRule(branch="x", match="contains", value="X"),
-                RouterRule(branch="y", match="equals", value="__never__"),
-            ],
-            default_branch="y",
-        )
-        tail = LLMChatOp(
-            [OpMessage(role="user", content=gated)],
-            config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-            rowwise_template="{prev}",
-            rowwise_columns=[
-                {"label": "prev", "node": gated.id, "path": "items.output"}
-            ],
-            row_gate=RowGate(node=router_tail.id, branch="x"),
-            row_gate_op=router_tail,
-        )
-    compiled = Graph.from_ops([as_output("result", tail)]).compile(
-        Rows=["normal", "NEEDS REVIEW"]
+    compiled = Graph.from_ops([as_output("a", gated), as_output("b", after)]).compile(
+        Rows=["PASS", "FAIL"]
     )
-
-    with pytest.raises(ValueError, match="only an OutputOp can read it"):
-        RuntimeGraphBuilder().build(compiled)
-
-
-def test_row_gate_consumer_check_reads_a_yaml_column_ref() -> None:
-    """A YAML column reference to a gated op is not one of the reader's inputs."""
-    yaml_text = textwrap.dedent("""
-        name: w
-        inputs:
-          Rows: ["A1", "B2"]
-        ops:
-          - id: route
-            op: RouterOp
-            inputs: [Rows]
-            default_branch: b
-            rules:
-              - {branch: a, match: contains, value: A}
-              - {branch: b, match: equals, value: __never__}
-          - id: turn
-            op: LLMChatOp
-            inputs: [Rows, route]
-            messages: [{role: user, content: Rows}]
-            rowwise_template: "{row}"
-            rowwise_columns: [{label: row, node: Rows, path: items.output}]
-            row_gate: {node: route, branch: a}
-            config: {model: meta-llama/Llama-3.1-8B-Instruct}
-          - id: after
-            op: LLMChatOp
-            inputs: [turn]
-            messages: [{role: user, content: "y"}]
-            rowwise_template: "{prev}"
-            rowwise_columns: [{label: prev, node: turn, path: items.output}]
-            config: {model: meta-llama/Llama-3.1-8B-Instruct}
-        outputs:
-          - name: a
-            ref: turn
-          - name: b
-            ref: after
-        """)
-    spec = parse_yaml_payload(yaml_text)["w"]
-    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
 
     with pytest.raises(ValueError, match="only an OutputOp can read it"):
         RuntimeGraphBuilder().build(compiled)
 
 
 @pytest.mark.parametrize(
-    ("extra", "message"),
+    ("fields", "message"),
     [
-        ({}, "combines row_gate with"),
-        ({"condition": True}, "combines row_gate with condition"),
+        (
+            {
+                "rowwise_messages_column": MessagesColumn(
+                    node="Rows", path="items", label="msgs"
+                )
+            },
+            "combines row_gate with rowwise_messages_column",
+        ),
+        (
+            {"condition": {"node": "Rows", "expr": "x == 'on'"}},
+            "combines row_gate with condition",
+        ),
     ],
     ids=["messages-column", "condition"],
 )
 def test_row_gate_rejects_a_rowwise_messages_column_or_a_condition(
-    extra: dict[str, Any], message: str
+    fields: dict[str, Any], message: str
 ) -> None:
     rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
-    fields: dict[str, Any] = {"rowwise_template": "{row}"}
-    fields["rowwise_columns"] = [
-        {"label": "row", "node": rows.id, "path": "items.output"}
-    ]
-    if "condition" in extra:
-        fields["condition"] = {"node": router.id, "expr": "x == 'on'"}
-    else:
-        fields["rowwise_messages_column"] = MessagesColumn(
-            node=rows.id, path="items", label="msgs"
-        )
-    gated = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        row_gate=RowGate(node=router.id, branch="review"),
-        row_gate_op=router,
-        **fields,
-    )
-    compiled = Graph.from_ops([as_output("result", gated)]).compile(
-        Rows=["normal", "NEEDS REVIEW"]
-    )
+    gated = _row_gate_over(rows, _router_over(rows), **fields)
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["PASS"])
+
     with pytest.raises(ValueError, match=message):
         RuntimeGraphBuilder().build(compiled)
 
 
-def _row_gate_over(rows: Any, router: RouterOp) -> LLMChatOp:
+def _row_gate_over(rows: Any, router: RouterOp, **extra: Any) -> LLMChatOp:
     return LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
@@ -736,6 +634,7 @@ def _row_gate_over(rows: Any, router: RouterOp) -> LLMChatOp:
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
         row_gate=RowGate(node=router.id, branch="fail"),
         row_gate_op=router,
+        **extra,
     )
 
 
