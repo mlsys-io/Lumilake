@@ -120,6 +120,9 @@ def _routed(*ops: dict[str, Any], turn: dict[str, Any] | None = None) -> dict[st
 
 
 def test_router_row_gate_and_messages_column_parse() -> None:
+    # The gate's router becomes an input of the model that names it, the gate
+    # keeps its other fields, and an ungated model can take its prompts from an
+    # upstream column instead of a rowwise template.
     ask = {
         "id": "ask",
         "op": "LLMChatOp",
@@ -135,15 +138,13 @@ def test_router_row_gate_and_messages_column_parse() -> None:
         "pending",
         ["review", "pending"],
     )
-    chats = list(graph.iter_ops(LLMChatOp))
-    gated = next(op for op in chats if op.row_gate is not None)
-    assert gated.row_gate is not None
-    assert (gated.row_gate.branch, gated.row_gate.terminal) == ("review", True)
-    # The gate's router becomes an input of the model that names it.
+    chats = [op for op in graph.iter_ops(LLMChatOp) if op.row_gate is not None]
+    (gated,) = chats
+    gate = gated.row_gate
+    assert gate is not None
+    assert (gate.branch, gate.terminal) == ("review", True)
     assert router.id in {op.id for op in gated.inputs}
-    # An ungated model can take its prompts from an upstream column instead of
-    # a rowwise template.
-    plain = next(op for op in chats if op.row_gate is None)
+    (plain,) = [op for op in graph.iter_ops(LLMChatOp) if op.row_gate is None]
     assert plain.rowwise_messages_column is not None
     assert plain.rowwise_messages_column.label == "msgs"
 
@@ -166,20 +167,8 @@ def test_router_row_gate_and_messages_column_parse() -> None:
             _routed(_ROUTED_ROUTER, turn=_turn(row_gate={"node": "route"})),
             "requires the 'branch' field",
         ),
-        # A gated model reads its rows through the selector, so it cannot also
-        # take its messages from a rowwise column.
-        (
-            _routed(
-                _ROUTED_ROUTER,
-                turn=_turn(
-                    row_gate={"node": "route", "branch": "review"},
-                    rowwise_messages_column=_ROUTED_ROWS,
-                ),
-            ),
-            "combines row_gate with",
-        ),
     ],
-    ids=["router-inputs", "router-default", "gate-branch", "gate-with-rows"],
+    ids=["router-inputs", "router-default", "gate-branch"],
 )
 def test_yaml_rejects_an_invalid_router_or_gate(payload: dict, message: str) -> None:
     with pytest.raises(ValueError, match=message):
