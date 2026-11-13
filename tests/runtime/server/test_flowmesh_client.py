@@ -88,31 +88,22 @@ async def test_inject_auth_header_concurrent_task_isolation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shared_client_bounds_the_connect_timeout() -> None:
-    """A dropped SYN then fails as ``ConnectTimeout`` within seconds instead of
-    waiting for the OS to give up, which is what the read retry repeats."""
-    client = flowmesh_client._shared_http_client()
-
-    assert client.timeout.connect == min(
-        flowmesh_client._CONNECT_TIMEOUT_SECONDS,
-        envs.LUMILAKE_HTTP_TIMEOUT_SECONDS,
-    )
-    assert client.timeout.read == envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
-    assert client.timeout.pool == envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
-
-    await flowmesh_client.close_current_loop_http_client()
-
-
-@pytest.mark.asyncio
-async def test_shared_client_never_lengthens_a_short_http_timeout(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("http_timeout", "connect"),
+    [(300.0, flowmesh_client._CONNECT_TIMEOUT_SECONDS), (3.0, 3.0)],
+    ids=["bounded", "short-http-timeout-kept"],
+)
+async def test_shared_client_bounds_the_connect_timeout(
+    http_timeout: float, connect: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A configured HTTP timeout shorter than the connect bound stays the bound."""
-    monkeypatch.setattr(envs, "LUMILAKE_HTTP_TIMEOUT_SECONDS", 3.0)
+    """A dropped SYN fails as ``ConnectTimeout`` within seconds instead of
+    waiting for the OS to give up, which is what the read retry repeats."""
+    monkeypatch.setattr(envs, "LUMILAKE_HTTP_TIMEOUT_SECONDS", http_timeout)
 
     client = flowmesh_client._shared_http_client()
 
-    assert client.timeout.connect == 3.0
-    assert client.timeout.read == 3.0
+    assert client.timeout.connect == connect
+    assert client.timeout.read == http_timeout
+    assert client.timeout.pool == http_timeout
 
     await flowmesh_client.close_current_loop_http_client()
