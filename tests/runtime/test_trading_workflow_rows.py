@@ -274,17 +274,12 @@ def test_per_row_vlm_nodes_export_to_flowmesh(symbols: list[str]) -> None:
     for node_id, node in runtime_graph.nodes.items():
         flowmesh_node = node.to_flowmesh_node()
         if node.task_type == "python":
-            plan = flowmesh_node["spec"]["data"]["plan"]
-            published = {
-                blob.key: blob
-                for blob in [
-                    python_step.runtime_blob(),
-                    *python_step.literal_blobs(plan).values(),
-                ]
-            }
-            final = python_step.flowmesh_spec(
-                node_id,
-                flowmesh_node["spec"]["data"],
-                published,
+            data_spec = flowmesh_node["spec"]["data"]
+            blobs = [
+                python_step.runtime_blob(),
+                *python_step.literal_blobs(data_spec["plan"]).values(),
+            ]
+            spec = python_step.flowmesh_spec(
+                node_id, data_spec, {blob.key: blob for blob in blobs}
             )
-            compile(final["code"], node_id, "exec")
+            compile(spec["code"], node_id, "exec")

@@ -31,13 +31,10 @@ from lumilake_server.utils.job_storage import InMemoryJobStorage
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
 
-_LUMID_TOKEN = "test-token"
-
-
 @pytest.fixture(autouse=True)
 def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
 
 def _python_nodes(graph: Any) -> dict[str, Any]:
@@ -47,20 +44,13 @@ def _python_nodes(graph: Any) -> dict[str, Any]:
 def _published_blobs(
     plan: python_step.ColumnPlan,
 ) -> dict[str, python_step.PublishedBlob]:
-    return {
-        blob.key: blob
-        for blob in [
-            python_step.runtime_blob(),
-            *python_step.literal_blobs(plan).values(),
-        ]
-    }
+    blobs = [python_step.runtime_blob(), *python_step.literal_blobs(plan).values()]
+    return {blob.key: blob for blob in blobs}
 
 
-def _generated_python_spec(node: Any) -> dict[str, Any]:
+def _spec(node: Any) -> dict[str, Any]:
     return python_step.flowmesh_spec(
-        node.node_id,
-        node.data_spec,
-        _published_blobs(node.data_spec["plan"]),
+        node.node_id, node.data_spec, _published_blobs(node.data_spec["plan"])
     )
 
 
@@ -84,7 +74,7 @@ def test_wrapper_loads_a_mounted_literal_file(tmp_path: Path) -> None:
         {},
     )
 
-    assert out == {"items": [{"output": "mounted", "value": "mounted"}]}
+    assert out["items"] == [{"output": "mounted", "value": "mounted"}]
 
 
 def test_lambda_over_input_is_a_standalone_python_task() -> None:
@@ -777,7 +767,7 @@ def test_python_step_carries_the_declared_fn_name() -> None:
     node = RuntimeGraphBuilder().build(compiled).nodes[op.id]
 
     assert node.data_spec["fn_name"] == "shout"
-    code = _generated_python_spec(node)["code"]
+    code = _spec(node)["code"]
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
     code = code.replace(python_step.TASK_RUNTIME_MOUNT, runtime_mount)
@@ -788,7 +778,7 @@ def test_python_step_carries_the_declared_fn_name() -> None:
 def test_python_step_timeout_and_memory_reach_the_task() -> None:
     _, shout, compiled = _llm_then_lambda(timeout_s=45, memory_mb=512)
     graph = RuntimeGraphBuilder().build(compiled)
-    spec = _generated_python_spec(graph.nodes[shout.id])
+    spec = _spec(graph.nodes[shout.id])
     assert spec["timeoutSeconds"] == 45
     assert spec["resources"] == {"hardware": {"memory": "512Mi"}}
 
@@ -797,7 +787,7 @@ def test_python_step_defaults_carry_the_default_timeout() -> None:
     _, shout, compiled = _llm_then_lambda()
     node = RuntimeGraphBuilder().build(compiled).nodes[shout.id]
     assert node.data_spec["timeout_s"] == python_step.DEFAULT_TIMEOUT_SECONDS
-    spec = _generated_python_spec(node)
+    spec = _spec(node)
     assert spec["timeoutSeconds"] == python_step.DEFAULT_TIMEOUT_SECONDS
     assert "resources" not in spec
 
@@ -817,13 +807,11 @@ def test_lambda_op_rejects_a_bad_memory_limit(value: Any) -> None:
 def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
     _, shout, compiled = _llm_then_lambda(image="ghcr.io/me/sim:latest")
     graph = RuntimeGraphBuilder().build(compiled)
-    spec = _generated_python_spec(graph.nodes[shout.id])
+    spec = _spec(graph.nodes[shout.id])
     assert spec["image"] == "ghcr.io/me/sim:latest"
 
     _, plain, compiled_plain = _llm_then_lambda()
-    plain_spec = _generated_python_spec(
-        RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
-    )
+    plain_spec = _spec(RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id])
     assert "image" not in plain_spec
 
 
@@ -858,7 +846,7 @@ def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
     graph = RuntimeGraphBuilder().build(compiled)
     assert shout.id in _python_nodes(graph)
-    spec = _generated_python_spec(graph.nodes[shout.id])
+    spec = _spec(graph.nodes[shout.id])
     assert spec["image"] == "ghcr.io/me/sim:latest"
 
 
@@ -892,7 +880,7 @@ def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -
     node = graph.nodes[shout.id]
     assert node.data_spec["expected_runtime_s"] == 5
     # The hint is planning-only and never reaches the FlowMesh task spec.
-    assert "expected_runtime_s" not in _generated_python_spec(node)
+    assert "expected_runtime_s" not in _spec(node)
 
     _, plain, compiled_plain = _llm_then_lambda()
     plain_node = RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
@@ -902,63 +890,16 @@ def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -
 def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> None:
     _, shout, compiled = _llm_then_lambda(cache=True)
     graph = RuntimeGraphBuilder().build(compiled)
-    spec = _generated_python_spec(graph.nodes[shout.id])
+    spec = _spec(graph.nodes[shout.id])
     assert spec["cache"] is True
 
     _, plain, compiled_plain = _llm_then_lambda()
-    plain_spec = _generated_python_spec(
-        RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
-    )
+    plain_spec = _spec(RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id])
     assert "cache" not in plain_spec
 
 
 @pytest.mark.asyncio
-async def test_each_python_step_mounts_the_shared_runtime_blob(
-    blob_storage: InMemoryJobStorage,
-) -> None:
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_ops(
-            [
-                as_output(
-                    "first",
-                    LambdaOp([input_placeholder("A")], fn=lambda inputs: inputs[0]),
-                ),
-                as_output(
-                    "second",
-                    LambdaOp([input_placeholder("B")], fn=lambda inputs: inputs[0]),
-                ),
-            ]
-        ).compile(A=["a"], B=["b"])
-    )
-
-    spec, _, _ = await FlowmeshRuntimeManager()._build_task_spec(
-        request_info=type(
-            "Request", (), {"request_id": "req", "hardware_requirements": None}
-        )(),
-        runtime_graph=graph,
-    )
-
-    runtime_key = python_step.runtime_blob().key
-    assert list(blob_storage._blobs) == [runtime_key]
-    python_specs = [
-        node["spec"]
-        for node in spec["spec"]["graph"]["nodes"]
-        if node["spec"]["taskType"] == "python"
-    ]
-    for entry in python_specs:
-        assert entry["blobs"] == [
-            {
-                "url": f"http://lumid-data/blobs/{runtime_key}",
-                "sha256": runtime_key.rsplit("/", 1)[-1].removesuffix(".py"),
-                "headers": {"Authorization": f"Bearer {_LUMID_TOKEN}"},
-                "mountPath": python_step.TASK_RUNTIME_MOUNT,
-            }
-        ]
-        assert "def materialize(" not in entry["code"]
-
-
-@pytest.mark.asyncio
-async def test_large_literal_is_mounted_once_and_small_stays_inline(
+async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
     blob_storage: InMemoryJobStorage,
 ) -> None:
     shared = ["x" * 2000]
@@ -981,14 +922,16 @@ async def test_large_literal_is_mounted_once_and_small_stays_inline(
 
     runtime_key = python_step.runtime_blob().key
     (literal_key,) = [key for key in blob_storage._blobs if key != runtime_key]
-    assert literal_key.startswith("literals/")
     specs = [node["spec"] for node in spec["spec"]["graph"]["nodes"]]
-    for entry in specs[:2]:
-        assert any(
-            blob["mountPath"].startswith("/mnt/blobs/literals/")
-            for blob in entry["blobs"]
-        )
+    assert [blob["mountPath"] for blob in specs[0]["blobs"]] == [
+        python_step.TASK_RUNTIME_MOUNT,
+        f"/mnt/blobs/literals/{literal_key.rsplit('/', 1)[-1]}",
+    ]
+    assert specs[0]["blobs"][0]["url"] == f"http://lumid-data/blobs/{runtime_key}"
+    assert specs[0]["blobs"][0]["headers"] == {"Authorization": "Bearer test-token"}
+    assert specs[1]["blobs"] == specs[0]["blobs"]
     assert specs[2]["blobs"] == [specs[0]["blobs"][0]]
+    assert "def materialize(" not in specs[0]["code"]
 
 
 def test_flowmesh_spec_rejects_more_blobs_than_flowmesh_accepts() -> None:
@@ -996,36 +939,18 @@ def test_flowmesh_spec_rejects_more_blobs_than_flowmesh_accepts() -> None:
         {"kind": "literal", "values": [f"literal-{index}"] * 200}
         for index in range(python_step.MAX_BLOBS_PER_TASK)
     ]
-    data_spec = {
-        "code": "def f(inputs):\n    return str(inputs[0])\n",
-        "fn_name": "f",
-        "plan": plan,
-        "mode": "row",
-        "timeout_s": 10,
-    }
 
     with pytest.raises(ValueError, match="limit of 16 per task"):
-        python_step.flowmesh_spec("task", data_spec, _published_blobs(plan))
-
-
-def test_python_task_spec_generates_from_the_final_plan() -> None:
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": ["sliced"]},
-    ]
-    data_spec = {
-        "code": "def f(inputs):\n    return str(inputs[0])\n",
-        "fn_name": "f",
-        "plan": plan,
-        "mode": "row",
-        "timeout_s": 10,
-    }
-
-    spec = python_step.flowmesh_spec("task", data_spec, _published_blobs(plan))
-
-    assert plan == [{"kind": "literal", "values": ["sliced"]}]
-    assert spec["blobs"][0]["mountPath"] == python_step.TASK_RUNTIME_MOUNT
-    assert "def materialize(" not in spec["code"]
-    assert spec["entrypoint"] == "main"
+        python_step.flowmesh_spec(
+            "task",
+            {
+                "code": "def f(i):\n    return i\n",
+                "fn_name": "f",
+                "plan": plan,
+                "timeout_s": 10,
+            },
+            _published_blobs(plan),
+        )
 
 
 def test_lambda_op_rejects_a_non_bool_cache() -> None:

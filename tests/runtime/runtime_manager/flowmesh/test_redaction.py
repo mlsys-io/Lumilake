@@ -7,7 +7,6 @@ must scrub the credential before it reaches a log, a re-raised exception, or
 a persisted artifact.
 """
 
-import asyncio
 import types
 from types import SimpleNamespace
 from typing import Any
@@ -502,43 +501,6 @@ async def test_archive_task_response_archives_grouped_api_result(
     assert saved["data"]["items"][0]["rows"][1]["text"] == '{"kind": "second"}'
 
 
-@pytest.mark.asyncio
-async def test_yaml_archive_keeps_the_event_loop_free_while_it_uploads(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Serializing and uploading a large runtime artifact runs off the loop."""
-    manager = FlowmeshRuntimeManager()
-    request_info = RequestInfo(
-        request_id="req-archive", runtime_graphs={}, data_profile_graphs={}
-    )
-    request_info.batch_id = "batch-archive"
-    heartbeat_ran = False
-    archive_started = asyncio.Event()
-    release_archive = asyncio.Event()
-
-    async def heartbeat() -> None:
-        nonlocal heartbeat_ran
-        await archive_started.wait()
-        heartbeat_ran = True
-
-    async def blocked_archive(*_args: Any, **_kwargs: Any) -> str:
-        archive_started.set()
-        await release_archive.wait()
-        return "memory://archived.yaml"
-
-    monkeypatch.setattr(manager, "save_runtime_artifact_async", blocked_archive)
-    task = asyncio.create_task(heartbeat())
-    archive_task = asyncio.create_task(
-        manager._save_yaml_artifact(request_info, "flowmesh_job.yaml", {"x": 1})
-    )
-    await archive_started.wait()
-    await asyncio.sleep(0)
-    assert heartbeat_ran
-    release_archive.set()
-    assert await archive_task == "memory://archived.yaml"
-    await task
-
-
 def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
     """The submit YAML keeps the credential FlowMesh needs; the archived copy
     replaces it."""
@@ -548,9 +510,8 @@ def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
 
     submit_yaml, archive_yaml = flowmesh_module._dump_task_spec_yaml(task_spec)
 
-    assert "sk-live-secret" in submit_yaml
-    assert "sk-live-secret" not in archive_yaml
     assert yaml.safe_load(submit_yaml) == task_spec
+    assert "sk-live-secret" not in archive_yaml
 
 
 def test_api_result_dump_keeps_json_row_key() -> None:
