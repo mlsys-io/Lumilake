@@ -606,6 +606,23 @@ def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
     return bool(config.get("rowwise_template") or config.get("rowwise_messages_column"))
 
 
+def _retrieval_groups(path: Any) -> bool:
+    """Whether a column reading a retrieval at ``path`` yields a list per item.
+
+    A retrieval archives one item per input row. A column that projects into
+    that item's rows — ``items.table.<column>`` or the s3 ``items.content``
+    list — reads one list per item, which FlowMesh groups. A column reading the
+    whole item (``items.table``) reads one DataFrame per item, which FlowMesh
+    does not group, so it binds like a literal.
+    """
+    if not isinstance(path, str):
+        return False
+    parts = path.split(".")
+    if parts[:2] == ["items", "content"]:
+        return True
+    return len(parts) > 2 and parts[:2] == ["items", "table"]
+
+
 def _source_grouped(
     columns: Any,
     results: dict[str, list[dict[str, Any]]],
@@ -616,9 +633,11 @@ def _source_grouped(
     A column reading the input node or an earlier-round op becomes a literal
     list input in the leaf's round, and FlowMesh reads a literal column
     ungrouped, so the leaf builds one table of its own rows however many items
-    its source had. A column reading a same-round retrieval is a table per
-    item, which FlowMesh groups. Any other same-round op leaves the answer
-    unknown, because the driver never holds that op's values.
+    its source had. A column reading a same-round retrieval is grouped only
+    when its path projects into the retrieval's rows (``items.table.<column>``
+    or ``items.content``); a column reading the bare ``items.table`` binds one
+    table per item ungrouped, like a literal. Any other same-round op leaves
+    the answer unknown, because the driver never holds that op's values.
 
     ``same_round`` holds the configs of the ops the leaf's own round declares,
     so ``results`` — every earlier round's results — is never mistaken for it.
@@ -638,7 +657,7 @@ def _source_grouped(
         if node in same_round:
             if same_round[node].get("op") != "DataRetrievalOp":
                 return None
-            grouped = True
+            grouped = grouped or _retrieval_groups(column.get("path"))
         elif node != INPUT_NODE_ID and node not in results:
             return None
     return grouped

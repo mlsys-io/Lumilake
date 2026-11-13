@@ -905,34 +905,111 @@ def _exporting_reader(source: str) -> dict[str, Any]:
     }
 
 
-def _same_round_source_leaf(op_id: str, source: str) -> dict[str, Any]:
+def _same_round_source_leaf(
+    op_id: str, *columns: tuple[str, str | None]
+) -> dict[str, Any]:
     config = _llm_config(op_id)
     config["config"] = {"model": "m"}
     config["messages"] = [{"role": "user", "content": "{c0}"}]
     config["rowwise_template"] = "{c0}"
     config["rowwise_columns"] = [
-        {"label": "c0", "node": source, "path": "items.output"}
+        {"label": f"c{index}", "node": node, **({} if path is None else {"path": path})}
+        for index, (node, path) in enumerate(columns)
     ]
     return config
 
 
+def _s3_config(op_id: str) -> dict:
+    return {
+        "id": op_id,
+        "op": "DataRetrievalOp",
+        "inputs": [],
+        "data_spec": {
+            "type": "s3",
+            "connection_string": "s3://bucket",
+            "template": "k",
+        },
+    }
+
+
 _SAME_ROUND_SOURCE_CASES: list[Any] = [
-    pytest.param(_ROW_LAMBDA_SOURCE, False, 1, id="row-lambda-column-only-one-symbol"),
-    pytest.param(_ROW_LAMBDA_SOURCE, True, 1, id="row-lambda-exported-one-symbol"),
-    pytest.param(_sql_config("t1"), False, 3, id="retrieval-column-only-three-symbols"),
-    pytest.param(_sql_config("t1"), True, 3, id="retrieval-exported-three-symbols"),
+    pytest.param(
+        _ROW_LAMBDA_SOURCE,
+        False,
+        1,
+        [("L", "items.output")],
+        _ONE_TABLE_ITEM,
+        id="row-lambda-column-only-one-symbol",
+    ),
+    pytest.param(
+        _ROW_LAMBDA_SOURCE,
+        True,
+        1,
+        [("L", "items.output")],
+        _ONE_TABLE_ITEM,
+        id="row-lambda-exported-one-symbol",
+    ),
+    pytest.param(
+        _sql_config("t1"),
+        False,
+        3,
+        [("t1", "items.table.symbol")],
+        _ONE_TABLE_ITEM,
+        id="retrieval-table-column-three-symbols",
+    ),
+    pytest.param(
+        _sql_config("t1"),
+        True,
+        3,
+        [("t1", "items.table.symbol")],
+        _ONE_TABLE_ITEM,
+        id="retrieval-table-column-exported-three-symbols",
+    ),
+    pytest.param(
+        _s3_config("t1"),
+        False,
+        3,
+        [("t1", "items.content")],
+        _ONE_TABLE_ITEM,
+        id="retrieval-content-column-three-symbols",
+    ),
+    pytest.param(
+        _sql_config("t1"),
+        False,
+        3,
+        [("t1", "items.table")],
+        _TABLE_ROWS,
+        id="retrieval-whole-table-three-symbols",
+    ),
+    pytest.param(
+        _sql_config("t1"),
+        False,
+        3,
+        [(INPUT_NODE_ID, None), ("t1", "items.table")],
+        _TABLE_ROWS,
+        id="retrieval-whole-table-beside-input-three-symbols",
+    ),
 ]
 
 
-@pytest.mark.parametrize(("source", "exported", "rows"), _SAME_ROUND_SOURCE_CASES)
+@pytest.mark.parametrize(
+    ("source", "exported", "rows", "columns", "expected"), _SAME_ROUND_SOURCE_CASES
+)
 def test_build_round_records_a_same_round_source_grouping(
-    source: dict[str, Any], exported: bool, rows: int
+    source: dict[str, Any],
+    exported: bool,
+    rows: int,
+    columns: list[tuple[str, str | None]],
+    expected: list[str],
 ) -> None:
     # A row-wise leaf whose column reads a same-round op binds one table
-    # however many symbols its producer ran over. The producer's round records
-    # the grouping, because the consuming round would otherwise decide it
-    # against a ``results`` that already holds the producer's own round.
-    ops = [source, _same_round_source_leaf("s0", source["id"])]
+    # however many symbols its producer ran over, unless that column reads the
+    # whole retrieval item (``items.table``), which FlowMesh does not group: the
+    # leaf then builds one table with one row per retrieval item and its
+    # answers expand. The producer's round records the grouping, because the
+    # consuming round would otherwise decide it against a ``results`` that
+    # already holds the producer's own round.
+    ops = [source, _same_round_source_leaf("s0", *columns)]
     export: tuple[str, ...] = ()
     if exported:
         ops.append(_exporting_reader(source["id"]))
@@ -970,7 +1047,7 @@ def test_build_round_records_a_same_round_source_grouping(
         whole_refs={"s0"} if rows > 1 else set(),
         grouped_sources=producing.grouped_sources,
     )
-    assert consuming.forwarded_inputs["s0"] == _ONE_TABLE_ITEM
+    assert consuming.forwarded_inputs["s0"] == expected
 
 
 def _api_llm_config(op_id: str, **overrides: Any) -> dict:
