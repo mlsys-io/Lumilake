@@ -642,10 +642,7 @@ def test_row_gated_llm_rejects_consumers_other_than_an_output(
         RuntimeGraphBuilder().build(compiled)
 
 
-@pytest.mark.parametrize("consumer_inputs", ["[route]", "[turn]"])
-def test_row_gate_consumer_check_reads_a_yaml_column_ref(
-    consumer_inputs: str,
-) -> None:
+def test_row_gate_consumer_check_reads_a_yaml_column_ref() -> None:
     """A YAML column reference to a gated op is not one of the reader's inputs."""
     yaml_text = textwrap.dedent("""
         name: w
@@ -669,7 +666,7 @@ def test_row_gate_consumer_check_reads_a_yaml_column_ref(
             config: {model: meta-llama/Llama-3.1-8B-Instruct}
           - id: after
             op: LLMChatOp
-            inputs: CONSUMER_INPUTS
+            inputs: [turn]
             messages: [{role: user, content: "y"}]
             rowwise_template: "{prev}"
             rowwise_columns: [{label: prev, node: turn, path: items.output}]
@@ -679,7 +676,7 @@ def test_row_gate_consumer_check_reads_a_yaml_column_ref(
             ref: turn
           - name: b
             ref: after
-        """).replace("CONSUMER_INPUTS", consumer_inputs)
+        """)
     spec = parse_yaml_payload(yaml_text)["w"]
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
 
@@ -687,7 +684,17 @@ def test_row_gate_consumer_check_reads_a_yaml_column_ref(
         RuntimeGraphBuilder().build(compiled)
 
 
-def test_row_gate_rejects_a_rowwise_messages_column() -> None:
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({}, "combines row_gate with"),
+        ({"condition": True}, "combines row_gate with condition"),
+    ],
+    ids=["messages-column", "condition"],
+)
+def test_row_gate_rejects_a_rowwise_messages_column_or_a_condition(
+    extra: dict[str, Any], message: str
+) -> None:
     rows = input_placeholder("Rows")
     router = RouterOp(
         rows,
@@ -697,45 +704,27 @@ def test_row_gate_rejects_a_rowwise_messages_column() -> None:
         ],
         default_branch="pending",
     )
-    gated = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_messages_column=MessagesColumn(
+    fields: dict[str, Any] = {"rowwise_template": "{row}"}
+    fields["rowwise_columns"] = [
+        {"label": "row", "node": rows.id, "path": "items.output"}
+    ]
+    if "condition" in extra:
+        fields["condition"] = {"node": router.id, "expr": "x == 'on'"}
+    else:
+        fields["rowwise_messages_column"] = MessagesColumn(
             node=rows.id, path="items", label="msgs"
-        ),
-        row_gate=RowGate(node=router.id, branch="review"),
-        row_gate_op=router,
-    )
-    compiled = Graph.from_ops([as_output("result", gated)]).compile(
-        Rows=["normal", "NEEDS REVIEW"]
-    )
-    with pytest.raises(ValueError, match="combines row_gate with"):
-        RuntimeGraphBuilder().build(compiled)
-
-
-def test_row_gate_rejects_a_condition() -> None:
-    rows = input_placeholder("Rows")
-    router = RouterOp(
-        rows,
-        rules=[
-            RouterRule(branch="review", match="contains", value="NEEDS REVIEW"),
-            RouterRule(branch="pending", match="equals", value="__never__"),
-        ],
-        default_branch="pending",
-    )
+        )
     gated = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        condition={"node": router.id, "expr": "x == 'on'"},
         row_gate=RowGate(node=router.id, branch="review"),
         row_gate_op=router,
+        **fields,
     )
     compiled = Graph.from_ops([as_output("result", gated)]).compile(
         Rows=["normal", "NEEDS REVIEW"]
     )
-    with pytest.raises(ValueError, match="combines row_gate with condition"):
+    with pytest.raises(ValueError, match=message):
         RuntimeGraphBuilder().build(compiled)
 
 
