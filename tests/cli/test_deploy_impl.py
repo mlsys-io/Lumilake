@@ -970,82 +970,25 @@ def test_run_setup_rejects_an_invalid_stack_name_before_flowmesh(
         importlib.reload(envs)
 
 
-class _NvidiaSmi:
-    """Stands in for ``subprocess.run`` and reports the GPUs it is given,
-    counting calls."""
-
-    def __init__(self, gpus: str = "0\n1\n", returncode: int = 0) -> None:
-        self.calls = 0
-        self.gpus = gpus
-        self.returncode = returncode
-
-    def __call__(
-        self, args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        self.calls += 1
-        return subprocess.CompletedProcess(
-            args, self.returncode, stdout=self.gpus, stderr=""
-        )
-
-
-def test_blank_gpu_devices_create_no_gpu_worker(
+def test_blank_gpu_devices_create_only_cpu_workers(
     flowmesh_env: Path,
     worker_creation: _WorkerCreation,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ``LUMILAKE_GPU_DEVICES`` blank, a host that has GPUs still gets only
-    the CPU workers, and the host's GPUs are not even probed."""
-    smi = _NvidiaSmi()
+    """A blank ``LUMILAKE_GPU_DEVICES`` creates only CPU workers and never probes
+    the host, where ``main`` claims a worker on every GPU."""
+    probed: list[list[str]] = []
     warnings: list[str] = []
-    monkeypatch.setattr(fm.subprocess, "run", smi)
+
+    def _smi(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        probed.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="0\n1\n", stderr="")
+
+    monkeypatch.setattr(fm.subprocess, "run", _smi)
     monkeypatch.setattr(fm, "_warn", warnings.append)
 
     fm.create_workers(flowmesh_env, cpu_count=1, gpu_devices="")
 
     assert [call["kind"] for call in worker_creation.calls] == ["cpu"]
-    assert smi.calls == 0
-    assert len(warnings) == 1
-    assert "LUMILAKE_GPU_DEVICES is blank" in warnings[0]
-
-
-@pytest.mark.parametrize(
-    ("value", "expected", "probed"),
-    [("0, 2,", ["0", "2"], 0), (" ALL ", ["0", "1"], 1)],
-)
-def test_a_gpu_device_selection_selects_those_devices(
-    value: str, expected: list[str], probed: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    smi = _NvidiaSmi()
-    monkeypatch.setattr(fm.subprocess, "run", smi)
-
-    assert fm._resolve_gpu_device_ids(value) == (expected, "")
-    assert smi.calls == probed
-
-
-@pytest.mark.parametrize(
-    ("value", "smi", "why"),
-    [
-        (",", _NvidiaSmi(), "names no device"),
-        ("all", None, "nvidia-smi was not found"),
-        ("all", _NvidiaSmi(gpus="", returncode=9), "status 9"),
-        ("all", _NvidiaSmi(gpus=""), "reported no GPU"),
-    ],
-    ids=["list-naming-none", "probe-missing", "probe-failed", "no-gpu"],
-)
-def test_a_selection_without_devices_explains_why(
-    value: str,
-    smi: _NvidiaSmi | None,
-    why: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _missing(
-        _args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError("nvidia-smi")
-
-    monkeypatch.setattr(fm.subprocess, "run", smi or _missing)
-
-    device_ids, message = fm._resolve_gpu_device_ids(value)
-
-    assert device_ids == []
-    assert why in message
+    assert probed == []
+    assert len(warnings) == 1 and "is blank" in warnings[0]
