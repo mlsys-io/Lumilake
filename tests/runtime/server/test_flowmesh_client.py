@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, cast
+from typing import Any
 
 import httpx
 import pytest
@@ -8,13 +8,26 @@ from lumilake_server.runtime import flowmesh_client
 
 
 @pytest.mark.asyncio
-async def test_shared_client_has_bounded_pool_and_keepalive() -> None:
-    client = flowmesh_client._shared_http_client()
-    transport = cast(Any, client._transport)
+async def test_shared_client_bounds_its_connection_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared client keeps a bounded pool and expires idle connections
+    well below the server's 5 s idle default."""
+    created: list[dict[str, Any]] = []
 
-    assert transport._pool._max_connections == 100
-    assert transport._pool._max_keepalive_connections == 20
-    assert transport._pool._keepalive_expiry < 5.0
+    def _client(**kwargs: Any) -> Any:
+        created.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(flowmesh_client.httpx, "AsyncClient", _client)
+    monkeypatch.setattr(flowmesh_client, "_http_clients", {})
+
+    flowmesh_client._shared_http_client()
+
+    limits = created[0]["limits"]
+    assert limits.max_connections == 100
+    assert limits.max_keepalive_connections == 20
+    assert limits.keepalive_expiry < 5.0
 
 
 @pytest.mark.asyncio

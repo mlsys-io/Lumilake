@@ -7,13 +7,11 @@ credential from the dispatch-token store, keyed by the originating job id
 (``member_request_ids``) rather than the synthetic ``exec-*`` request id.
 """
 
-import types
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import yaml
-from flowmesh.models.tasks import TaskStatusView
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -30,6 +28,7 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
     FlowmeshRuntimeManager,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+from tests.runtime.runtime_manager.flowmesh.conftest import serve, status
 
 _TRUSTED_URL = "https://lum.id/llm/v1/chat/completions"
 _UNTRUSTED_URL = "https://api.example.com/v1/chat/completions"
@@ -136,29 +135,7 @@ async def test_dispatched_request_carries_resolved_caller_credential(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_workflow_task_statuses(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[TaskStatusView]:
-        return [
-            TaskStatusView(
-                task_id="task-1",
-                workflow_id=workflow_id,
-                status="DONE",
-                submitted_at="2026-01-01T00:00:00Z",
-                submitted_ts=0.0,
-                attempts=1,
-                max_attempts=1,
-                completed=True,
-                failed=False,
-                graph_node_name=row_id,
-            )
-        ]
-
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_task_statuses",
-        types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
+    serve(monkeypatch, [status("task-1", node=row_id)])
 
     await manager.process_request(
         request_info,

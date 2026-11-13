@@ -15,7 +15,6 @@ import pytest
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
-from flowmesh.models.tasks import TaskStatusView
 from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
@@ -30,6 +29,7 @@ from lumilake_server.runtime.runtime_manager.flowmesh import (
     _sanitize_flowmesh_api_error,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+from tests.runtime.runtime_manager.flowmesh.conftest import serve, status
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
@@ -287,29 +287,7 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: fake_fm))
 
-    async def _fetch_workflow_task_statuses(
-        _self: FlowmeshRuntimeManager, workflow_id: str
-    ) -> list[TaskStatusView]:
-        return [
-            TaskStatusView(
-                task_id="task-row0",
-                workflow_id=workflow_id,
-                status="DONE",
-                submitted_at="2026-01-01T00:00:00Z",
-                submitted_ts=0.0,
-                attempts=1,
-                max_attempts=1,
-                completed=True,
-                failed=False,
-                graph_node_name=row_id,
-            )
-        ]
-
-    monkeypatch.setattr(
-        manager,
-        "fetch_workflow_task_statuses",
-        types.MethodType(_fetch_workflow_task_statuses, manager),
-    )
+    serve(monkeypatch, [status("task-row0", node=row_id)])
 
     with pytest.raises(APIError) as excinfo:
         await manager.process_request(
