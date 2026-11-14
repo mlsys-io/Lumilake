@@ -68,13 +68,6 @@ class LLMChatOp(LLMOp):
         self.system_messages = system_messages
         self.condition = condition
         self.row_gate = row_gate
-        if row_gate is not None and row_gate_op is not None:
-            if row_gate.node != row_gate_op.id:
-                raise ValueError(
-                    "LLMChatOp row_gate node "
-                    f"{row_gate.node!r} does not match row_gate_op "
-                    f"{row_gate_op.id!r}"
-                )
         if row_gate_op is not None:
             self.inputs.append(row_gate_op)
 

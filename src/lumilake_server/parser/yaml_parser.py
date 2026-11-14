@@ -90,7 +90,7 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
-from lumilake_server.ops.router_ops import MessagesColumn, RouterRule, RowGate
+from lumilake_server.ops.router_ops import MessagesColumn, RowGate
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -802,12 +802,11 @@ def _emit_llm_like_op(
             raise ValueError(
                 f"{op_kind} '{entry.id}' rowwise_messages_column requires a known node"
             )
-        column = _build_messages_column(
-            spec=rowwise_messages_column,
+        op_dict["rowwise_messages_column"] = MessagesColumn(
             node=user_id_to_internal[node],
-            error_prefix=f"{op_kind} '{entry.id}' rowwise_messages_column",
-        )
-        op_dict["rowwise_messages_column"] = column.to_dict()
+            path=_require_str(rowwise_messages_column, "path"),
+            label=_require_str(rowwise_messages_column, "label"),
+        ).to_dict()
     row_gate = entry.fields.get("row_gate")
     if row_gate is not None:
         if not isinstance(row_gate, dict):
@@ -815,10 +814,8 @@ def _emit_llm_like_op(
         node = row_gate.get("node")
         if not isinstance(node, str) or node not in user_id_to_internal:
             raise ValueError(f"{op_kind} '{entry.id}' row_gate requires a known node")
-        gate = _build_row_gate(
-            spec=row_gate,
-            node=user_id_to_internal[node],
-            error_prefix=f"{op_kind} '{entry.id}' row_gate",
+        gate = RowGate(
+            node=user_id_to_internal[node], branch=_require_str(row_gate, "branch")
         )
         if "rowwise_messages_column" in op_dict:
             raise ValueError(
@@ -1123,70 +1120,25 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         op_dict["cache"] = cache
 
 
+def _require_str(spec: dict[str, Any], key: str) -> str:
+    """A field's value, typed for the op whose constructor validates it."""
+    value = spec.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"requires the {key!r} field as a string")
+    return value
+
+
 def _emit_router_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
-    rules = entry.fields.get("rules")
-    if not isinstance(rules, list) or not rules:
-        raise ValueError(f"RouterOp '{entry.id}' requires non-empty rules")
-    parsed_rules: list[RouterRule] = []
-    for index, rule in enumerate(rules):
-        if not isinstance(rule, dict):
-            raise ValueError(f"RouterOp '{entry.id}' rules[{index}] must be a mapping")
-        try:
-            parsed_rules.append(
-                RouterRule(
-                    branch=_field(rule, "branch"),
-                    match=_field(rule, "match"),
-                    value=_field(rule, "value"),
-                )
-            )
-        except ValueError as exc:
-            raise ValueError(f"RouterOp '{entry.id}' rules[{index}]: {exc}") from exc
-    branches = [rule.branch for rule in parsed_rules]
-    if len(set(branches)) != len(branches):
-        raise ValueError(f"RouterOp '{entry.id}' rule branches must be unique")
-    default_branch = entry.fields.get("default_branch")
-    if default_branch not in branches:
-        raise ValueError(
-            f"RouterOp '{entry.id}' default_branch must name one of branches"
-        )
+    """Emit a router's raw fields; the op constructor validates them."""
     if len(op_dict["_inputs"]) != 1:
         raise ValueError(
             f"RouterOp '{entry.id}' requires exactly one input, the source node"
         )
-    input_path = entry.fields.get("input_path", "items.output")
-    if not isinstance(input_path, str) or not input_path:
-        raise ValueError(f"RouterOp '{entry.id}' input_path must be a non-empty string")
     op_dict.update(
-        rules=[rule.to_dict() for rule in parsed_rules],
-        default_branch=default_branch,
-        input_path=input_path,
+        rules=entry.fields.get("rules"),
+        default_branch=entry.fields.get("default_branch"),
+        input_path=entry.fields.get("input_path", "items.output"),
     )
-
-
-def _field(spec: dict[str, Any], key: str) -> Any:
-    if key not in spec:
-        raise ValueError(f"requires the {key!r} field")
-    return spec[key]
-
-
-def _build_messages_column(
-    *, spec: dict[str, Any], node: str, error_prefix: str
-) -> MessagesColumn:
-    try:
-        return MessagesColumn(
-            node=node,
-            path=_field(spec, "path"),
-            label=_field(spec, "label"),
-        )
-    except ValueError as exc:
-        raise ValueError(f"{error_prefix}: {exc}") from exc
-
-
-def _build_row_gate(*, spec: dict[str, Any], node: str, error_prefix: str) -> RowGate:
-    try:
-        return RowGate(node=node, branch=_field(spec, "branch"))
-    except ValueError as exc:
-        raise ValueError(f"{error_prefix}: {exc}") from exc
 
 
 def _build_generation_config(

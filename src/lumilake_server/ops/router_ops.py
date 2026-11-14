@@ -13,14 +13,14 @@ class RouterRule:
     value: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.branch, str) or not self.branch:
+        if not isinstance(self.value, str):
+            raise ValueError("RouterRule requires a string value")
+        if not self.branch:
             raise ValueError("RouterRule requires a non-empty branch")
         if self.match not in {"equals", "contains"}:
             raise ValueError(
                 f"RouterRule match must be 'equals' or 'contains', got {self.match!r}"
             )
-        if not isinstance(self.value, str):
-            raise ValueError("RouterRule requires a string value")
 
     def to_dict(self) -> dict[str, str]:
         return {"branch": self.branch, "match": self.match, "value": self.value}
@@ -34,9 +34,9 @@ class RowGate:
     branch: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.node, str) or not self.node:
+        if not self.node:
             raise ValueError("RowGate requires a node")
-        if not isinstance(self.branch, str) or not self.branch:
+        if not self.branch:
             raise ValueError("RowGate requires a non-empty branch")
 
     def to_dict(self) -> dict[str, str]:
@@ -52,11 +52,11 @@ class MessagesColumn:
     label: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.node, str) or not self.node:
+        if not self.node:
             raise ValueError("MessagesColumn requires a node")
-        if not isinstance(self.path, str) or not self.path:
+        if not self.path:
             raise ValueError("MessagesColumn requires a path")
-        if not isinstance(self.label, str) or not self.label:
+        if not self.label:
             raise ValueError("MessagesColumn requires a label")
 
     def to_dict(self) -> dict[str, str]:
@@ -85,7 +85,17 @@ class RouterOp(FunctionalOp):
     ) -> None:
         if not rules:
             raise ValueError("RouterOp rules must not be empty")
-        branches = [rule.branch for rule in rules]
+        parsed = [
+            (
+                rule
+                if isinstance(rule, RouterRule)
+                else RouterRule(
+                    rule.get("branch"), rule.get("match"), rule.get("value")
+                )
+            )
+            for rule in rules
+        ]
+        branches = [rule.branch for rule in parsed]
         if len(set(branches)) != len(branches):
             raise ValueError("RouterOp rule branches must be unique")
         if default_branch not in branches:
@@ -93,7 +103,7 @@ class RouterOp(FunctionalOp):
         if not input_path:
             raise ValueError("RouterOp input_path must be a non-empty string")
         super().__init__([source])
-        self.rules = rules
+        self.rules = parsed
         self.default_branch = default_branch
         self.input_path = input_path
 
@@ -119,7 +129,7 @@ class RouterOp(FunctionalOp):
             raise ValueError("RouterOp must have exactly one input")
         return cls(
             other_ops[source_ids[0]],
-            rules=[RouterRule(**rule) for rule in data["rules"]],
+            rules=data["rules"],
             default_branch=data["default_branch"],
             input_path=data["input_path"],
         )

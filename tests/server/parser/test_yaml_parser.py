@@ -165,14 +165,17 @@ def test_router_row_gate_and_messages_column_parse() -> None:
         # A gate names the branch it keeps.
         (
             _routed(_ROUTED_ROUTER, turn=_turn(row_gate={"node": "route"})),
-            "requires the 'branch' field",
+            "requires the 'branch' field as a string",
         ),
     ],
     ids=["router-inputs", "router-default", "gate-branch"],
 )
 def test_yaml_rejects_an_invalid_router_or_gate(payload: dict, message: str) -> None:
+    # A router's rules and its gate are validated by the ops when the graph is
+    # built, which is the same door a submission goes through.
     with pytest.raises(ValueError, match=message):
-        parse_yaml_payload(payload)
+        parsed = parse_yaml_payload(payload)
+        Graph.from_json(parsed["routed"]["graph"])
 
 
 def test_multi_op_topology_inputs() -> None:
