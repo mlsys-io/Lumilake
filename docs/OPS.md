@@ -80,7 +80,7 @@ A rowwise `LLMChatOp` with `row_gate` calls the model only for rows whose
 branch matches. The stage still emits one row per input row, and skipped
 rows carry `output: null`, which is how a skipped row differs from a failed
 call. A gated op has no single runtime node, so only an `OutputOp` or a
-list-mode `LambdaOp` reads its result.
+list-mode `LambdaOp` reads its result, one value per input row.
 
 A rowwise `LLMChatOp` may instead declare `rowwise_messages_column`. That
 column holds one serialized message array per row, sent as the whole chat

@@ -1690,19 +1690,17 @@ class RuntimeGraphBuilder:
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMChatOp) and inp.row_gate is not None:
-                # A gated op has no runtime node of its own. Its gated call
-                # answers one value per routed row, and flattening that call's
-                # items reads one value per row with ``None`` for a row the gate
-                # skipped, which is what a reader of the op expects.
-                gated_runtime = dsl_to_runtime.get(inp.id) or []
-                if len(gated_runtime) != 4:
+                # A gated op has no runtime node of its own: its merge stage is
+                # its output, one item per input row holding the served answer
+                # under ``output`` and ``None`` for a row the gate skipped.
+                merge_id = f"{inp.id}__rows"
+                if merge_id not in dsl_to_runtime.get(inp.id, []):
                     raise ValueError(
                         f"LambdaOp '{op_id}' reads the row-gated LLMChatOp"
                         f" '{inp.id}' before its stages are built"
                     )
-                selected_id = gated_runtime[2]
-                plan.append({"kind": "stage", "node": selected_id, "flatten": True})
-                dependencies.append(selected_id)
+                plan.append(self._python_plan_entry(merge_id, path="value.output"))
+                dependencies.append(merge_id)
             elif isinstance(inp, LLMOp):
                 plan.append(
                     self._python_plan_entry(
@@ -2350,8 +2348,8 @@ class RuntimeGraphBuilder:
         A row gate compiles its LLM into status, selection, gated call and
         merge stages, so the op has no single runtime node a consumer could
         bind to. A fused round reads each leaf through a render step, and a
-        list-mode Lambda takes the whole merge-stage item list, so both bind
-        the merge stage. References declared on a column
+        list-mode Lambda reads the merge stage's item list, which holds one
+        item per input row. References declared on a column
         (``rowwise_columns``, ``aggregate_table``), on a messages column or in
         a ``condition`` read the op without listing it as an input, so they are
         checked as well.
@@ -2377,8 +2375,8 @@ class RuntimeGraphBuilder:
                 ):
                     continue
                 if isinstance(consumer, LambdaOp) and consumer.takes_whole_columns:
-                    # A list-mode Lambda reads the merge stage's whole item list,
-                    # so it takes the routed rows as one column.
+                    # A list-mode Lambda reads the merge stage, one item per
+                    # input row, so it sees the routed answer or ``None``.
                     continue
                 raise ValueError(
                     f"Op '{consumer_id}' reads the row-gated LLMChatOp '{op_id}',"

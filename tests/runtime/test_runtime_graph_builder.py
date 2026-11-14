@@ -595,21 +595,22 @@ def test_row_gate_rejects_an_unusable_gate(
         RuntimeGraphBuilder().build(compiled)
 
 
-def test_list_lambda_reads_a_gated_op_through_its_gated_call() -> None:
+def test_list_lambda_reads_a_gated_op_through_its_merge_stage() -> None:
     # A list-mode Lambda may read a gated op. The op has no runtime node of its
-    # own, so the Lambda binds the gated call with one value per routed row.
+    # own, so the Lambda binds the merge stage, whose items are one per input
+    # row with the served answer or ``None``.
     rows = input_placeholder("Rows")
-    router = _router_over(rows)
-    gated = _row_gate_over(rows, router)
+    gated = _row_gate_over(rows, _router_over(rows))
     reader = LambdaOp([gated], lambda columns: columns[0], mode="list")
     compiled = Graph.from_ops(
         [as_output("gated", gated), as_output("fixed", reader)]
     ).compile(Rows=["FAIL", "PASS"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    _, _, selected, _ = graph.dsl_to_runtime[gated.id]
-    plan = graph.nodes[reader.id].data_spec["plan"]
-    assert plan == [{"kind": "stage", "node": selected, "flatten": True}]
+    (merge_id,) = [i for i in graph.dsl_to_runtime[gated.id] if i.endswith("__rows")]
+    assert graph.nodes[reader.id].data_spec["plan"] == [
+        {"kind": "stage", "node": merge_id, "path": "value.output"}
+    ]
 
 
 def _row_gate_over(

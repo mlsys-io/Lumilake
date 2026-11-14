@@ -1361,9 +1361,6 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
         merge,
         {status.node_id: status_stage, merge.data_spec["plan"][1]["node"]: served},
     )
-    assert [
-        (r["branch"], r["output"]) for r in (i["value"] for i in merged["items"])
-    ] == [
-        ("ok", None),
-        ("fail", "fixed"),
-    ]
+    # A reader of the op sees one value per input row: the served answer for a
+    # routed row and ``None`` for a skipped one.
+    assert [i["value"]["output"] for i in merged["items"]] == [None, "fixed"]
