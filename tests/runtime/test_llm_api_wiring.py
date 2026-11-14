@@ -160,9 +160,12 @@ def test_api_output_enforcement_reaches_task_spec_not_request_body() -> None:
     runtime_graph, llm_id = _build_api_graph(
         output_enforcement=OutputEnforcement(max_attempts=3, text_regex="^ok$")
     )
-    node = runtime_graph.nodes[llm_id]
-    assert node.to_flowmesh_node()["spec"]["output_enforcement"]["max_attempts"] == 3
-    assert "output_enforcement" not in node.api_spec["json"]
+    prefixed = runtime_graph.with_node_prefix("run")
+    prefixed_node = prefixed.nodes[f"run__{llm_id}"]
+    assert prefixed_node.to_flowmesh_node()["spec"]["output_enforcement"] == (
+        runtime_graph.nodes[llm_id].to_flowmesh_node()["spec"]["output_enforcement"]
+    )
+    assert "output_enforcement" not in prefixed_node.api_spec["json"]
 
 
 def test_api_key_redacted_on_serialization() -> None:

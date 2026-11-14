@@ -199,6 +199,11 @@ def _dedupe_runtime_graph(
             model_spec=_remap_node_spec(op.model_spec, mapping),
             inference_spec=_remap_node_spec(op.inference_spec, mapping),
             api_spec=_remap_node_spec(op.api_spec, mapping),
+            output_enforcement=(
+                _remap_node_spec(op.output_enforcement, mapping)
+                if op.output_enforcement is not None
+                else None
+            ),
             dependencies=tuple(_dedupe_ordered(remapped_deps)),
             output_spec=(
                 _remap_node_spec(op.output_spec, mapping)
