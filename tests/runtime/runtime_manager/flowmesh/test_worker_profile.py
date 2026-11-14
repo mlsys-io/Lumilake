@@ -32,24 +32,18 @@ def _worker(
     )
 
 
-class _FakeWorkersResource:
-    def __init__(self, worker: WorkerInfo) -> None:
-        self._worker = worker
+def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> dict[str, Any]:
+    """Serve ``worker`` as the raw response and return its payload."""
+    payload = worker.model_dump(mode="json")
 
-    async def retrieve(self, worker_id: str) -> WorkerInfo:
-        return self._worker
+    async def fake_get(path: str) -> dict[str, Any]:
+        return payload
 
-
-class _FakeFlowMesh:
-    def __init__(self, worker: WorkerInfo) -> None:
-        self.workers = _FakeWorkersResource(worker)
-
-
-def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_server",
-        lambda: _FakeFlowMesh(worker),
+        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_get_for_server",
+        fake_get,
     )
+    return payload
 
 
 @pytest.mark.asyncio
@@ -70,9 +64,12 @@ async def test_profile_keeps_the_hardware_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hardware = WorkerHardware(memory=MemoryInfo(total_bytes=1024))
-    _serve(monkeypatch, _worker("w", frozenset(), hardware))
+    payload = _serve(monkeypatch, _worker("w", frozenset(), hardware))
+    payload["hardware"]["gpu"] = {
+        "devices": [{"index": 0, "memory_fraction": 0.3}, {"index": 1}]
+    }
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 
     assert profile["memory"]["total_bytes"] == 1024
-    assert profile["supported_task_types"] == []
+    assert [d["memory_fraction"] for d in profile["gpu"]["devices"]] == [0.3, None]

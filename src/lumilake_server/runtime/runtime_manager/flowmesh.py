@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 import yaml
 from flowmesh.exceptions import APIError, FlowMeshConnectionError
-from flowmesh.models import WorkerStatus
+from flowmesh.models import WorkerInfo, WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
@@ -35,6 +35,7 @@ from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
+    flowmesh_get_for_server,
     is_api_origin_trusted,
     resolve_api_credential,
 )
@@ -250,6 +251,27 @@ def _with_auth_scheme(credential: str) -> str:
     return f"Bearer {credential}"
 
 
+def _raw_gpu_memory_fractions(raw_worker: Any) -> dict[Any, float]:
+    """Map each GPU device index in a raw worker payload to its memory fraction.
+
+    Devices without a numeric ``memory_fraction`` are left out; the payload is
+    read loosely because it is unvalidated FlowMesh JSON.
+    """
+    fractions: dict[Any, float] = {}
+    hardware = raw_worker.get("hardware") if isinstance(raw_worker, dict) else None
+    gpu = hardware.get("gpu") if isinstance(hardware, dict) else None
+    devices = gpu.get("devices") if isinstance(gpu, dict) else None
+    if not isinstance(devices, list):
+        return fractions
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        fraction = device.get("memory_fraction")
+        if isinstance(fraction, int | float) and not isinstance(fraction, bool):
+            fractions[device.get("index")] = float(fraction)
+    return fractions
+
+
 @dataclass(slots=True)
 class ShardRewriteResult:
     nodes: list[dict[str, Any]]
@@ -282,6 +304,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self._execution_task_status: dict[tuple[str, str], dict[str, str]] = (
             {}
         )  # (request_id, batch_id) -> dict of execution task IDs -> status
+        self._execution_workflow_id: dict[tuple[str, str], str] = (
+            {}
+        )  # (request_id, batch_id) -> FlowMesh workflow id of the execution
         self._execution_task_errors: dict[str, str] = (
             {}
         )  # task ID -> recorded FlowMesh error for a failed task
@@ -379,18 +404,6 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             "application/json",
         )
 
-    async def fetch_task_status(
-        self,
-        task_id: str,
-    ) -> TaskStatusView:
-        try:
-            task_info = await _retry_transient_read(
-                lambda: self.fm.tasks.status(task_id), f"task {task_id}"
-            )
-        except APIError as e:
-            raise _sanitize_flowmesh_api_error(e) from None
-        return task_info
-
     async def fetch_task_description(
         self,
         task_id: str,
@@ -402,6 +415,17 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
         return task_info.model_dump()
+
+    async def fetch_workflow_task_statuses(
+        self, workflow_id: str
+    ) -> list[TaskStatusView]:
+        try:
+            return await _retry_transient_read(
+                lambda: self.fm.tasks.list_statuses(workflow_id=workflow_id),
+                f"workflow {workflow_id} task statuses",
+            )
+        except APIError as e:
+            raise _sanitize_flowmesh_api_error(e) from None
 
     async def _find_submitted_workflow(
         self, submit_id: str, since: datetime
@@ -474,6 +498,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
 
     async def _resolve_task_node_maps(
         self,
+        workflow_id: str,
         task_ids: list[str],
         expected_node_names: list[str],
     ) -> tuple[dict[str, str], dict[str, str]]:
@@ -481,16 +506,18 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         task_to_node: dict[str, str] = {}
         node_to_task: dict[str, str] = {}
 
-        descriptions = await asyncio.gather(
-            *(self.fetch_task_description(task_id) for task_id in task_ids),
-            return_exceptions=True,
-        )
-        for task_id, task_desc in zip(task_ids, descriptions):
-            if isinstance(task_desc, BaseException):
-                raise RuntimeError(
-                    f"Failed to fetch FlowMesh task description for task_id={task_id}"
-                ) from task_desc
-            node_name = task_desc.get("graph_node_name")
+        try:
+            tasks = await self.fetch_workflow_task_statuses(workflow_id)
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to list FlowMesh tasks for workflow_id={workflow_id}"
+            ) from e
+        tasks_by_id = {task.task_id: task for task in tasks}
+        for task_id in task_ids:
+            task = tasks_by_id.get(task_id)
+            if task is None:
+                continue
+            node_name = task.graph_node_name
             if not isinstance(node_name, str) or node_name not in expected_set:
                 raise RuntimeError(
                     "FlowMesh task description missing valid graph_node_name for "
@@ -522,20 +549,73 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
         return task_to_node, node_to_task
 
+    async def _update_workflow_task_statuses(
+        self,
+        task_status: dict[str, str],
+        task_workflows: Mapping[str, str],
+    ) -> bool:
+        completed = all(
+            task_id in task_workflows or status in TERMINAL_STATUSES
+            for task_id, status in task_status.items()
+        )
+        for workflow_id in dict.fromkeys(
+            task_workflows[task_id]
+            for task_id in task_status
+            if task_id in task_workflows
+        ):
+            workflow_status = {
+                task_id: task_status[task_id]
+                for task_id, task_workflow_id in task_workflows.items()
+                if task_workflow_id == workflow_id and task_id in task_status
+            }
+            if not await self.update_task_status(workflow_status, workflow_id):
+                completed = False
+            for task_id, status in workflow_status.items():
+                task_status[task_id] = status
+        return completed
+
+    @staticmethod
+    def _task_workflows(
+        statuses_by_batch: Mapping[tuple[str, str], Mapping[str, str]],
+        batch_keys: Sequence[tuple[str, str]],
+        workflow_ids: Mapping[tuple[str, str], str],
+    ) -> dict[str, str]:
+        """Map each tracked task id to the workflow id of its batch."""
+        task_workflows: dict[str, str] = {}
+        for batch_key in batch_keys:
+            workflow_id = workflow_ids.get(batch_key)
+            if workflow_id is None:
+                continue
+            task_workflows.update(
+                {task_id: workflow_id for task_id in statuses_by_batch[batch_key]}
+            )
+        return task_workflows
+
     async def update_task_status(
         self,
         task_status: dict[str, str],
+        workflow_id: str,
     ) -> bool:
-        completed = True
-        for task_id, status in list(task_status.items()):
-            if status not in TERMINAL_STATUSES:
-                task_info = await self.fetch_task_status(task_id)
-                async with self._task_status_lock:
-                    task_status[task_id] = task_info.status
-                    if task_info.status == "FAILED":
-                        self._record_task_error(task_id, task_info)
-                if task_info.status not in TERMINAL_STATUSES:
-                    completed = False
+        pending_task_ids = {
+            task_id
+            for task_id, status in task_status.items()
+            if status not in TERMINAL_STATUSES
+        }
+        if not pending_task_ids:
+            return True
+
+        task_infos = await self.fetch_workflow_task_statuses(workflow_id)
+        async with self._task_status_lock:
+            for task_info in task_infos:
+                if task_info.task_id not in pending_task_ids:
+                    continue
+                task_status[task_info.task_id] = task_info.status
+                if task_info.status == "FAILED":
+                    self._record_task_error(task_info.task_id, task_info)
+            completed = all(
+                task_status[task_id] in TERMINAL_STATUSES
+                for task_id in pending_task_ids
+            )
         return completed
 
     def _record_task_error(self, task_id: str, task_info: TaskStatusView) -> None:
@@ -842,17 +922,27 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         -------
         dict[str, Any]
             The worker's hardware sections plus ``supported_task_types``, the
-            sorted task types its executors advertise.
+            sorted task types its executors advertise. Each GPU device also
+            carries ``memory_fraction``, the fraction of the card's memory the
+            worker owns, read from the same response and ``None`` for a whole
+            device, because the SDK model does not keep it.
         """
-        worker = await _retry_transient_read(
-            lambda: flowmesh_for_server().workers.retrieve(worker_id),
+        raw_worker = await _retry_transient_read(
+            lambda: flowmesh_get_for_server(f"/workers/{worker_id}"),
             f"worker {worker_id}",
         )
+        worker = WorkerInfo.model_validate(raw_worker)
         assert worker.id == worker_id
         profile = worker.hardware.model_dump() if worker.hardware else {}
         profile["supported_task_types"] = sorted(
             str(task_type) for task_type in worker.capabilities.supported_task_types
         )
+        gpu = profile.get("gpu")
+        if isinstance(gpu, dict) and isinstance(gpu.get("devices"), list):
+            raw_fractions = _raw_gpu_memory_fractions(raw_worker)
+            for device in gpu["devices"]:
+                if isinstance(device, dict):
+                    device["memory_fraction"] = raw_fractions.get(device.get("index"))
         return profile
 
     async def get_request_status(
@@ -887,8 +977,13 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             for batch_key in data_profile_batch_keys:
                 all_data_profile_tasks.update(self._data_profile_task_status[batch_key])
 
-            data_profile_completed = await self.update_task_status(
-                all_data_profile_tasks
+            data_profile_task_workflows = self._task_workflows(
+                self._data_profile_task_status,
+                data_profile_batch_keys,
+                self._batch_workflow_id,
+            )
+            data_profile_completed = await self._update_workflow_task_statuses(
+                all_data_profile_tasks, data_profile_task_workflows
             )
             aggregated_status["data probing"] = {
                 "completed": data_profile_completed,
@@ -904,7 +999,14 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             for batch_key in execution_batch_keys:
                 all_execution_tasks.update(self._execution_task_status[batch_key])
 
-            execution_completed = await self.update_task_status(all_execution_tasks)
+            execution_task_workflows = self._task_workflows(
+                self._execution_task_status,
+                execution_batch_keys,
+                self._execution_workflow_id,
+            )
+            execution_completed = await self._update_workflow_task_statuses(
+                all_execution_tasks, execution_task_workflows
+            )
             aggregated_status["execution"] = {
                 "completed": execution_completed,
                 "details": self._formulate_details(all_execution_tasks),
@@ -1371,7 +1473,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             if node.get("name")
         ]
         task_node_map, node_task_map = await self._resolve_task_node_maps(
-            task_ids, node_names
+            workflow_id, task_ids, node_names
         )
 
         total_nodes = len(task_ids)
@@ -1384,6 +1486,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             self._execution_task_status[batch_key] = {
                 tid: "PENDING" for tid in task_ids
             }
+            self._execution_workflow_id[batch_key] = workflow_id
             for task_id, node_name in task_node_map.items():
                 if node_name not in flowmesh_to_raw:
                     raise ValueError(
@@ -1443,7 +1546,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                     request_info.request_id,
                 )
                 raise RequestCancelledError(request_info.request_id)
-            await self.update_task_status(self._execution_task_status[batch_key])
+            await self.update_task_status(
+                self._execution_task_status[batch_key],
+                self._execution_workflow_id[batch_key],
+            )
 
             # Download responses for newly completed tasks
             for tid in task_ids:

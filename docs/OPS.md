@@ -248,6 +248,9 @@ row. When it is the workflow output, its per-row results are returned as one
 output value per input row (FlowMesh groups them back into one item per table
 internally; the runtime flattens that back to per-row values at aggregation).
 
+When every upstream column a per-row chat reads is empty, FlowMesh completes
+the task with an empty result without dispatching a worker.
+
 ### LLMCompletionOp
 
 `LLMCompletionOp` generates from rendered string prompts without the model
@@ -256,7 +259,9 @@ LLM op that produces one prompt string per row; render a templated prompt with
 a `LambdaOp`. Use it when the prompt already carries the model's own chat
 control tokens. Sampling fields are the same as `LLMChatOp`'s.
 `config.api` and `config.chat_template_kwargs` are not accepted: the task never
-applies a chat template, so both would have no effect.
+applies a chat template, so both would have no effect. The same holds for a
+prompt read from an upstream op: when that op's output column is empty the task
+completes with an empty result without dispatching a worker.
 
 ```yaml
 ops:

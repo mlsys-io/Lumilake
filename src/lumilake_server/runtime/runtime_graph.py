@@ -356,6 +356,7 @@ class RuntimeGraph:
                     if op.condition is not None
                     else None
                 ),
+                skip_when_all_inputs_empty=op.skip_when_all_inputs_empty,
             )
 
         node_order = [mapping[node_id] for node_id in self.node_order]
@@ -950,6 +951,7 @@ class RuntimeGraphBuilder:
         output_spec: dict[str, Any] | None = None,
         condition: dict[str, str] | None = None,
         api_spec: dict[str, Any] | None = None,
+        skip_when_all_inputs_empty: bool = False,
     ) -> RuntimeOp:
         data_spec = self._attach_lumid_cfg(data_spec)
         return RuntimeOp(
@@ -964,6 +966,7 @@ class RuntimeGraphBuilder:
             dependencies=tuple(dependencies or []),
             output_spec=output_spec,
             condition=condition,
+            skip_when_all_inputs_empty=skip_when_all_inputs_empty,
         )
 
     def _build_model_spec(
@@ -2665,6 +2668,7 @@ class RuntimeGraphBuilder:
                 dependencies=row_dependencies if row_dependencies else None,
                 output_spec=output_spec,
                 condition=None,
+                skip_when_all_inputs_empty=bool(row_dependencies),
             )
 
         if self._is_rowwise_llm(llm_op):
@@ -2693,6 +2697,7 @@ class RuntimeGraphBuilder:
                     inputs_dict,
                     dsl_to_runtime,
                 ),
+                skip_when_all_inputs_empty=True,
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
@@ -3154,6 +3159,7 @@ class RuntimeGraphBuilder:
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None,
+        skip_when_all_inputs_empty: bool = False,
     ) -> list[RuntimeOp]:
         """Build the single FlowMesh ``api`` task for an externally-hosted LLM:
         the data_spec matches the local path, and the executor substitutes each
@@ -3214,6 +3220,7 @@ class RuntimeGraphBuilder:
                     inputs_dict,
                     dsl_to_runtime,
                 ),
+                skip_when_all_inputs_empty=skip_when_all_inputs_empty,
             )
         ]
 
@@ -3532,6 +3539,7 @@ class RuntimeGraphBuilder:
             graph_dict=graph_dict,
             inputs_dict=inputs_dict,
             dsl_to_runtime=dsl_to_runtime,
+            skip_when_all_inputs_empty=True,
         )
 
     def _build_api_aggregate_op(
