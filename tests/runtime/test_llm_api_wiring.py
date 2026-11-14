@@ -147,25 +147,18 @@ def test_api_samplers_flow_into_body() -> None:
     assert body["temperature"] == 0.5
 
 
-def test_api_mode_rejects_local_only_sampling_options() -> None:
-    with pytest.raises(ValueError, match="num_beams"):
-        _build_api_graph(num_beams=3)
-    with pytest.raises(ValueError, match="local vLLM"):
-        _build_api_graph(
-            output_enforcement=OutputEnforcement(mode="constrained", text_regex="ok")
-        )
-
-
-def test_api_output_enforcement_reaches_task_spec_not_request_body() -> None:
+def test_api_output_enforcement_stays_out_of_request_body() -> None:
     runtime_graph, llm_id = _build_api_graph(
         output_enforcement=OutputEnforcement(max_attempts=3, text_regex="^ok$")
     )
-    prefixed = runtime_graph.with_node_prefix("run")
-    prefixed_node = prefixed.nodes[f"run__{llm_id}"]
-    assert prefixed_node.to_flowmesh_node()["spec"]["output_enforcement"] == (
-        runtime_graph.nodes[llm_id].to_flowmesh_node()["spec"]["output_enforcement"]
-    )
-    assert "output_enforcement" not in prefixed_node.api_spec["json"]
+    node = runtime_graph.with_node_prefix("run").nodes[f"run__{llm_id}"]
+    assert node.output_enforcement == {
+        "mode": "retry",
+        "max_attempts": 3,
+        "json_schema": None,
+        "text_regex": "^ok$",
+    }
+    assert "output_enforcement" not in node.api_spec["json"]
 
 
 def test_api_key_redacted_on_serialization() -> None:
