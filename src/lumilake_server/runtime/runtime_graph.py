@@ -553,8 +553,7 @@ class RuntimeGraphBuilder:
         for lambda_op_id, lambda_op in list_lambda_ops.items():
             if task_type_override == "data_profile":
                 continue
-            for input_op in lambda_op.inputs:
-                visited_node_ids.add(input_op.id)
+            visited_node_ids.update(op.id for op in lambda_op.inputs)
             if any(
                 isinstance(inp, LLMChatOp) and inp.row_gate is not None
                 for inp in lambda_op.inputs
@@ -562,8 +561,6 @@ class RuntimeGraphBuilder:
                 # A gated op's merge stage is built with the LLM ops below, so
                 # this Lambda is built after them.
                 visited_node_ids.add(lambda_op_id)
-                for input_op in lambda_op.inputs:
-                    visited_node_ids.add(input_op.id)
                 continue
             runtime_op = self._build_node_from_list_lambda_op(
                 lambda_op_id,
