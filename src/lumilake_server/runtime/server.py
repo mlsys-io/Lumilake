@@ -2563,6 +2563,13 @@ class LumilakeServer:
             ).setdefault(public_name, {})
             merged_without_errors = True
             for output_name, values in payload.items():
+                if workflow.whole_set:
+                    # This slice holds the whole input set of a round whose row
+                    # count is its own answer rather than the input accounting
+                    # length, so its result is taken whole rather than checked
+                    # against that length.
+                    buffers[output_name] = values
+                    continue
                 if output_name in list_lambda_names:
                     if len(values) != 1:
                         append_error(
@@ -3262,7 +3269,9 @@ class LumilakeServer:
                 ] = outputs
                 continue
             if matched_workflow is not None:
-                if len(outputs) != matched_workflow.slice_length:
+                if not matched_workflow.whole_set and (
+                    len(outputs) != matched_workflow.slice_length
+                ):
                     raise ValueError(
                         "Output length mismatch for workflow slice "
                         f"{matched_workflow.workflow_id}:{output_name}. "
@@ -3300,7 +3309,9 @@ class LumilakeServer:
                 direct_histories[single_workflow.workflow_id][output_name] = history
                 continue
             if matched_workflow is not None:
-                if len(history) != matched_workflow.slice_length:
+                if not matched_workflow.whole_set and (
+                    len(history) != matched_workflow.slice_length
+                ):
                     raise ValueError(
                         "History length mismatch for workflow slice "
                         f"{matched_workflow.workflow_id}:{output_name}. "
@@ -3322,6 +3333,23 @@ class LumilakeServer:
         }
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(workflows, key=lambda item: item.slice_index)
+            # A whole-set group is one slice holding the whole input set of a
+            # round whose row count is its own answer, so its result is taken
+            # verbatim rather than split across slices.
+            if any(item.whole_set for item in ordered):
+                if len(ordered) != 1:
+                    raise ValueError(
+                        "A whole-set round must run as exactly one slice, but "
+                        f"group {group_key} holds {len(ordered)}"
+                    )
+                (workflow,) = ordered
+                remapped_outputs.setdefault(workflow.workflow_id, {}).update(
+                    grouped_outputs.get(group_key, {})
+                )
+                remapped_histories.setdefault(workflow.workflow_id, {}).update(
+                    grouped_histories.get(group_key, {})
+                )
+                continue
             total_slice_len = sum(item.slice_length for item in ordered)
             group_outputs = grouped_outputs.get(group_key, {})
             for output_name, values in group_outputs.items():

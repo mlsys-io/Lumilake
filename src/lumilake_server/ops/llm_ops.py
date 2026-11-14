@@ -3,6 +3,7 @@ from typing import Any
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake_server.ops.ops import Op
+from lumilake_server.ops.router_ops import MessagesColumn, RowGate
 
 
 class LLMOp(Op):
@@ -35,8 +36,10 @@ class LLMChatOp(LLMOp):
     aggregate_table: list[dict[str, Any]] | None
     rowwise_template: str | None
     rowwise_columns: list[dict[str, Any]] | None
+    rowwise_messages_column: MessagesColumn | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
+    row_gate: RowGate | None
 
     def __init__(
         self,
@@ -47,9 +50,12 @@ class LLMChatOp(LLMOp):
         aggregate_table: list[dict[str, Any]] | None = None,
         rowwise_template: str | None = None,
         rowwise_columns: list[dict[str, Any]] | None = None,
+        rowwise_messages_column: MessagesColumn | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
+        row_gate: RowGate | None = None,
+        row_gate_op: Op | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
         super().__init__([messages], config, cacheable)
@@ -58,8 +64,12 @@ class LLMChatOp(LLMOp):
         self.aggregate_table = aggregate_table
         self.rowwise_template = rowwise_template
         self.rowwise_columns = rowwise_columns
+        self.rowwise_messages_column = rowwise_messages_column
         self.system_messages = system_messages
         self.condition = condition
+        self.row_gate = row_gate
+        if row_gate_op is not None:
+            self.inputs.append(row_gate_op)
 
     @property
     def messages(self) -> Op:
@@ -80,10 +90,14 @@ class LLMChatOp(LLMOp):
             payload["rowwise_template"] = self.rowwise_template
         if self.rowwise_columns is not None:
             payload["rowwise_columns"] = self.rowwise_columns
+        if self.rowwise_messages_column is not None:
+            payload["rowwise_messages_column"] = self.rowwise_messages_column.to_dict()
         if self.system_messages is not None:
             payload["system_messages"] = self.system_messages
         if self.condition is not None:
             payload["condition"] = self.condition
+        if self.row_gate is not None:
+            payload["row_gate"] = self.row_gate.to_dict()
         return payload
 
     @classmethod
@@ -98,8 +112,15 @@ class LLMChatOp(LLMOp):
         aggregate_table = data.get("aggregate_table")
         rowwise_template = data.get("rowwise_template")
         rowwise_columns = data.get("rowwise_columns")
+        column_data = data.get("rowwise_messages_column")
+        rowwise_messages_column = (
+            MessagesColumn(**column_data) if column_data is not None else None
+        )
         system_messages = data.get("system_messages")
         condition = data.get("condition")
+        gate_data = data.get("row_gate")
+        row_gate = RowGate(**gate_data) if gate_data is not None else None
+        row_gate_op = other_ops.get(row_gate.node) if row_gate is not None else None
         return cls(
             message,
             config,
@@ -108,9 +129,12 @@ class LLMChatOp(LLMOp):
             aggregate_table,
             rowwise_template,
             rowwise_columns,
+            rowwise_messages_column,
             system_messages,
             cacheable,
             condition,
+            row_gate,
+            row_gate_op,
         )
 
 

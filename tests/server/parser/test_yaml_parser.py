@@ -6,7 +6,14 @@ import pytest
 
 from lumilake_server.common import ApiConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import InputOp, LambdaOp, LLMChatOp, MessageOp, OutputOp
+from lumilake_server.ops import (
+    InputOp,
+    LambdaOp,
+    LLMChatOp,
+    MessageOp,
+    OutputOp,
+    RouterOp,
+)
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
@@ -62,6 +69,85 @@ def test_inputs_and_outputs_wiring() -> None:
 
     compiled = graph.compile(**spec["inputs"])
     assert compiled is not None
+
+
+def _echo(op_id: str) -> dict[str, Any]:
+    return {
+        "id": op_id,
+        "op": "LambdaOp",
+        "inputs": ["rows"],
+        "fn_name": "echo",
+        "code": "def echo(inputs):\n    return inputs[0]\n",
+    }
+
+
+def _routed(*ops: dict[str, Any]) -> dict[str, Any]:
+    """A routed workflow: an echo, the given ops, and a gated model output."""
+    return {
+        "name": "routed",
+        "inputs": {"rows": ["normal", "NEEDS REVIEW"]},
+        "ops": [
+            _echo("source"),
+            {
+                "id": "route",
+                "op": "RouterOp",
+                "inputs": ["source"],
+                "rules": [
+                    {"branch": "review", "match": "contains", "value": "NEEDS REVIEW"},
+                    {"branch": "pending", "match": "equals", "value": "__never__"},
+                ],
+                "default_branch": "pending",
+            },
+            *ops,
+            {
+                "id": "turn",
+                "op": "LLMChatOp",
+                "inputs": ["source", "route"],
+                "messages": [{"role": "user", "content": "source"}],
+                "config": {"model": "dummy-model"},
+                "row_gate": {"node": "route", "branch": "review"},
+            },
+        ],
+        "outputs": [{"name": "result", "ref": "turn"}],
+    }
+
+
+def test_router_row_gate_and_messages_column_parse() -> None:
+    # The gate's router becomes an input of the model that names it, and an
+    # ungated model can take its prompts from an upstream column.
+    graph = Graph.from_json(
+        parse_yaml_payload(
+            _routed(
+                {
+                    "id": "ask",
+                    "op": "LLMChatOp",
+                    "inputs": ["source"],
+                    "messages": [{"role": "user", "content": "source"}],
+                    "config": {"model": "dummy-model"},
+                    "rowwise_messages_column": {
+                        "node": "source",
+                        "path": "items.output",
+                        "label": "msgs",
+                    },
+                }
+            )
+        )["routed"]["graph"]
+    )
+    (router,) = list(graph.iter_ops(RouterOp))
+    gated, plain = sorted(graph.iter_ops(LLMChatOp), key=lambda op: op.row_gate is None)
+    assert (router.default_branch, router.branches) == (
+        "pending",
+        ["review", "pending"],
+    )
+    assert gated.row_gate is not None and gated.row_gate.branch == "review"
+    assert router.id in {op.id for op in gated.inputs}
+    assert plain.rowwise_messages_column is not None
+    assert plain.rowwise_messages_column.label == "msgs"
+    # A router reads exactly one upstream, which the parser checks itself.
+    with pytest.raises(ValueError, match="exactly one input"):
+        payload = _routed()
+        payload["ops"][1]["inputs"] = ["source", "source"]
+        parse_yaml_payload(payload)
 
 
 def test_multi_op_topology_inputs() -> None:

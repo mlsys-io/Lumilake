@@ -36,7 +36,13 @@ outputs:
 
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `FormatOp`, `LambdaOp`, and `RouterOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+
+`RouterOp` declares deterministic per-row branch selection, and a rowwise `LLMChatOp` names a router and branch in `row_gate`; see [`docs/OPS.md`](OPS.md#routerop-and-row-gates) for both.
+
+A rowwise `LLMChatOp` may use `rowwise_messages_column` instead of
+`rowwise_template`, holding one serialized list of role/content messages per
+row.
 
 ## n8n code-node notes
 
@@ -102,8 +108,11 @@ continues traversal — so `items.table.symbol` projects the `symbol` column.
 
 The path `items` (exactly, with no field) selects the whole result item rather
 than one field of it. Dynamic workflows use it to archive each leaf and each
-`export`ed op so later rounds can read any field of the stored item; see
-[`docs/SDK.md`](SDK.md#dynamic-workflows).
+`export`ed op so later rounds can read any field of the stored item. Only LLM
+ops, `DataRetrievalOp` and `LambdaOp` can feed an `OutputOp`, so a dynamic leaf
+must be one of them. A dynamic template declares fixed `first`/`next` round
+bodies instead of using a planner; see
+[`docs/SDK.md`](SDK.md#fixed-round-templates-drivertemplate).
 
 > **n8n note.** n8n-imported workflows do **not** support the `path:`
 > selector — n8n's UI has no equivalent annotation. They fall back to the

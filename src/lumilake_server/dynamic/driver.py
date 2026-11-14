@@ -1,8 +1,9 @@
 """Validation and graph-assembly helpers for dynamic workflow rounds.
 
-A round is a single job running the emitted subgraph. Without ``driver.api``
-the round graph also holds an observation LambdaOp and a proposer LLMChatOp;
-with it, the server computes the observation and calls the external planner.
+A round is a single job running an emitted or template-supplied subgraph.
+Without ``driver.api`` or ``driver.template`` the round graph also holds an
+observation LambdaOp and a proposer LLMChatOp; with ``api`` the server calls
+the external planner, and with ``template`` it renders a fixed body.
 """
 
 import ast
@@ -23,14 +24,14 @@ from lumilake_server.dynamic.blocks import (
     PROPOSER_NODE_ID,
     fused_round_graph,
 )
-from lumilake_server.ops.data_ops import DataRetrievalOp
-from lumilake_server.ops.llm_ops import LLMOp
+from lumilake_server.dynamic.spec import DriverRoundBody, DriverTemplate
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import (
     SUPPORTED_OPS,
     _op_id_prefix,
     parse_yaml_payload,
 )
+from lumilake_server.runtime.runtime_graph import OUTPUT_SOURCE_TYPES
 from lumilake_server.runtime.runtime_manager.flowmesh import (
     _coerce_output_value,
     _walk_output_path,
@@ -91,10 +92,11 @@ if _MISSING_OP_CLASSES:
         f"op types not exported by lumilake_server.ops: {sorted(_MISSING_OP_CLASSES)}"
     )
 _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
-    name
-    for name in SUPPORTED_OPS
-    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp))
+    name for name in SUPPORTED_OPS if issubclass(_OP_CLASSES[name], OUTPUT_SOURCE_TYPES)
 )
+
+_TEMPLATE_ROUND = "{{round}}"
+_TEMPLATE_PREV = "{{prev}}"
 
 
 class DriverProtocolError(Exception):
@@ -103,6 +105,42 @@ class DriverProtocolError(Exception):
     Distinct from :class:`RuntimeError` so callers can distinguish a malformed
     plan/config from a job that legitimately failed.
     """
+
+
+def _render_template_string(value: str, round_number: int) -> str:
+    """Substitute the dynamic template placeholders in one id or input."""
+    return value.replace(_TEMPLATE_ROUND, str(round_number)).replace(
+        _TEMPLATE_PREV, str(round_number - 1)
+    )
+
+
+def _render_op_strings(value: Any, round_number: int) -> Any:
+    """Render the template placeholders in every string a field carries."""
+    if isinstance(value, str):
+        return _render_template_string(value, round_number)
+    if isinstance(value, list):
+        return [_render_op_strings(item, round_number) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _render_op_strings(item, round_number) for key, item in value.items()
+        }
+    return value
+
+
+def _render_node_refs(op: dict[str, Any], round_number: int) -> None:
+    """Render the template placeholders in every string the op carries.
+
+    The YAML parser reads node references from many fields — inputs, gate and
+    column targets, prompt arguments, message content, retrieval params — and a
+    field added later would silently keep the literal placeholder. Rendering
+    every string covers all of them; only a LambdaOp's ``code`` is left alone,
+    because it is Python source rather than a node reference.
+    """
+    is_lambda = op.get("op") == "LambdaOp"
+    for key, value in op.items():
+        if is_lambda and key in {"code", "_code"}:
+            continue
+        op[key] = _render_op_strings(value, round_number)
 
 
 class StopPlan(BaseModel):
@@ -118,6 +156,40 @@ class SubgraphPlan(BaseModel):
 
     ops: list[dict[str, Any]]
     export: list[str] = []
+
+
+def render_template_body(body: DriverRoundBody, round_number: int) -> SubgraphPlan:
+    """Render a fixed body for the one-based round number.
+
+    ``{{round}}`` is the zero-based suffix of this round and ``{{prev}}`` is
+    that suffix minus one. Double braces avoid collisions with JSON or Python
+    braces in library templates. The placeholders render in every string the
+    body carries — each op's ``id``, its references and its arguments, and the
+    export list — except a LambdaOp's ``code``.
+    """
+    if round_number < 1:
+        raise DriverProtocolError("template rounds start at 1")
+    suffix = round_number - 1
+    ops = copy.deepcopy(body.ops)
+    for op in ops:
+        _render_node_refs(op, suffix)
+    export = [_render_template_string(value, suffix) for value in body.export]
+    return SubgraphPlan(ops=ops, export=export)
+
+
+def template_plan_for_round(
+    template: DriverTemplate, round_number: int
+) -> SubgraphPlan:
+    """Select and render ``first`` or ``next`` for a one-based round number."""
+    body = template.first if round_number == 1 else template.next
+    return render_template_body(body, round_number)
+
+
+def template_stop_export(template: DriverTemplate, round_number: int) -> str:
+    """The previous-round export id whose rows gate another template round."""
+    if round_number < 2:
+        raise DriverProtocolError("stop_when_empty applies only after round 1")
+    return _render_template_string(template.stop_when_empty, round_number - 1)
 
 
 class _RawPlan(BaseModel):
@@ -242,6 +314,81 @@ def _apply_param_bindings(
     return {**data_spec, "params": list(by_label.values())}
 
 
+def _apply_column_bindings(
+    template: dict[str, Any], ref: str, inputs: list[Any]
+) -> dict[str, Any] | None:
+    """Substitute instance ids into an LLM template's row-reading columns.
+
+    A template declares its row-reading columns either as ``rowwise_columns``
+    or as one ``rowwise_messages_column``; a binding names either by its label.
+    """
+    bindings = template.get("column_bindings")
+    if bindings is None:
+        return None
+    if not isinstance(bindings, list) or not all(
+        isinstance(binding, dict) for binding in bindings
+    ):
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings must be a list of mappings"
+        )
+    columns = template.get("rowwise_columns")
+    messages_column = template.get("rowwise_messages_column")
+    if columns is None and messages_column is None:
+        raise DriverProtocolError(
+            f"library entry {ref!r} has column_bindings but no row-reading column"
+        )
+    if columns is None:
+        columns = []
+    if not isinstance(columns, list) or not all(
+        isinstance(column, dict) for column in columns
+    ):
+        raise DriverProtocolError(
+            f"library entry {ref!r} rowwise_columns must be a list of mappings"
+        )
+    by_label = {column.get("label"): column.copy() for column in columns}
+    if isinstance(messages_column, dict):
+        by_label[messages_column.get("label")] = messages_column.copy()
+    used_slots: set[int] = set()
+    for binding in bindings:
+        label = binding.get("label")
+        slot = binding.get("input")
+        if not isinstance(slot, int) or isinstance(slot, bool):
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding for {label!r} has a "
+                f"non-integer input slot {slot!r}"
+            )
+        if label not in by_label:
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding references unknown "
+                f"label {label!r}; columns: {sorted(by_label)}"
+            )
+        if not 0 <= slot < len(inputs):
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding for {label!r} has "
+                f"invalid input slot {slot!r}"
+            )
+        by_label[label]["node"] = inputs[slot]
+        used_slots.add(slot)
+    unbound_labels = set(by_label) - {binding.get("label") for binding in bindings}
+    if unbound_labels:
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings leave column(s) "
+            f"{sorted(unbound_labels)} unbound"
+        )
+    unused_slots = set(range(len(inputs))) - used_slots
+    if unused_slots:
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings leave input slot(s) "
+            f"{sorted(unused_slots)} unused"
+        )
+    bound: dict[str, Any] = {}
+    if columns:
+        bound["rowwise_columns"] = [by_label[column["label"]] for column in columns]
+    if isinstance(messages_column, dict):
+        bound["rowwise_messages_column"] = by_label[messages_column["label"]]
+    return bound
+
+
 def resolve_subgraph(
     subgraph: list[dict[str, Any]],
     library: dict[str, dict[str, Any]] | None,
@@ -251,8 +398,9 @@ def resolve_subgraph(
     An op that carries a ``ref`` key names a library template; the resolved op
     is the template's config with the emitted op's ``id`` and ``inputs`` applied
     on top. ``inputs`` wires the template's declared param slots (see
-    :func:`_apply_param_bindings`); a declared ``op`` is asserted to match the
-    template and ignored during merge. The planner may not override the
+    :func:`_apply_param_bindings`) and rowwise LLM columns (see
+    :func:`_apply_column_bindings`); a declared ``op`` is asserted to match
+    the template and ignored during merge. The planner may not override the
     template's other config (``data_spec``, ``model``, etc.). Ops without a
     ``ref`` pass through unchanged (fully-inline ops are allowed), so this is
     idempotent.
@@ -300,8 +448,12 @@ def resolve_subgraph(
                 merged["inputs"] = value
                 if isinstance(template.get("data_spec"), dict):
                     merged["data_spec"] = _apply_param_bindings(template, ref, value)
+                bound = _apply_column_bindings(template, ref, value)
+                if bound is not None:
+                    merged.update(bound)
                 continue
             merged[key] = value
+        merged.pop("column_bindings", None)
         resolved.append(merged)
     return resolved
 
@@ -820,12 +972,87 @@ def validate_emitted_subgraph(
         if types[op_id] not in _OUTPUT_SOURCE_OPS:
             raise DriverProtocolError(
                 f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be "
-                "archived; every leaf must be an LLMOp or DataRetrievalOp"
+                "archived; every leaf must be an LLMOp, DataRetrievalOp or LambdaOp"
             )
 
 
 _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+
+
+def validate_template_spec(
+    template: DriverTemplate,
+    library: dict[str, dict[str, Any]] | None = None,
+    *,
+    max_nodes_per_round: int,
+) -> None:
+    """Validate the first/next template bodies and the stop export wiring.
+
+    Round 3 renders ``next`` again, so validating it checks that every later
+    round reads an op ``next`` itself ran.
+    """
+    plans = {
+        round_number: template_plan_for_round(template, round_number)
+        for round_number in (1, 2, 3)
+    }
+    previous_export = template_stop_export(template, 2)
+    if previous_export not in plans[1].export:
+        raise DriverProtocolError(
+            f"stop_when_empty {previous_export!r} must be exported by round 1"
+        )
+    registry: dict[str, dict[str, Any]] = {}
+    results: set[str] = set()
+    for plan in plans.values():
+        validate_emitted_subgraph(
+            plan.ops,
+            registry,
+            max_nodes_per_round,
+            library,
+            export=plan.export,
+            results={op_id: [] for op_id in results},
+        )
+        registry.update({op["id"]: op for op in resolve_subgraph(plan.ops, library)})
+        # A later body binds one value per archived item, which is exact only for
+        # a list-mode Lambda: each element it returns is one row. The route
+        # archives every leaf of a round, so a list-mode Lambda counts whether
+        # the body exports it or not.
+        for run_id in [*_current_leaves(plan.ops), *plan.export]:
+            if registry[run_id].get("op") == "LambdaOp" and (
+                registry[run_id].get("mode") == "list"
+            ):
+                results.add(run_id)
+    # ``next`` runs every round from round 2 on, so its export decides every
+    # stop from round 3 on.
+    later_export = template_stop_export(template, 3)
+    if later_export not in plans[2].export:
+        raise DriverProtocolError(
+            f"stop_when_empty {later_export!r} must be exported by round 2"
+        )
+    for export_id in (previous_export, later_export):
+        _validate_stop_export_is_list_lambda(registry[export_id], export_id)
+
+
+def _validate_stop_export_is_list_lambda(op: dict[str, Any], export_id: str) -> None:
+    """Require the stop export to count one archived item per Lambda element.
+
+    The stop check counts one row per archived item, which is what a list-mode
+    Lambda produces: its python step emits one item per element of the list it
+    returns. A row- or aligned-mode export archives one item per input row
+    instead, so it reads as non-empty whatever its rows hold, and the job would
+    silently spend every remaining round. Refusing it at submission turns that
+    into a spec error.
+    """
+    op_type = op.get("op", "")
+    if op_type != "LambdaOp":
+        raise DriverProtocolError(
+            f"stop_when_empty {export_id!r} must be a LambdaOp, got {op_type!r}"
+        )
+    if op.get("mode") != "list":
+        raise DriverProtocolError(
+            f"stop_when_empty {export_id!r} must be a list-mode LambdaOp, got "
+            f"mode {op.get('mode')!r}: each element it returns is one row, so "
+            "only a list-mode export can read as empty"
+        )
 
 
 def _strip_plan_wrappers(value: str) -> str:
@@ -1090,7 +1317,10 @@ def build_round(
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
-        subgraph, results if results is not None else {}, node_registry, rows
+        subgraph,
+        results if results is not None else {},
+        node_registry,
+        rows,
     )
     workflow_inputs: dict[str, list[str]] = {INPUT_NODE_ID: []}
     workflow_inputs.update(inputs)

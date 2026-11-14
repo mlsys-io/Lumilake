@@ -208,9 +208,11 @@ round never recomputes earlier nodes: the round graph contains only the ops
 emitted that round, and each reference to an earlier node is bound as a
 workflow input carrying that node's stored result. A node's result is
 available to later rounds when it was a leaf of its round (an op no other op
-of that round consumes) or the plan listed it under `export`. A reference to
-any other earlier node is rejected with an error naming it. A run targets one
-or more non-empty symbols. The parent's result carries the per-round plans.
+of that round consumes) or the plan listed it under `export`. A leaf must be
+an LLM op, a `DataRetrievalOp` or a `LambdaOp`, the op types that can feed an
+`OutputOp`; its whole result item is archived under `leaf_<id>`. A reference
+to any other earlier node is rejected with an error naming it. A run targets
+one or more non-empty symbols. The parent's result carries the per-round plans.
 
 With several symbols, each round child is sliced like a static submission with
 `input_batch_size: 1`: one graph per symbol, merged back into one batch by the
@@ -288,6 +290,41 @@ describe the planner request. The engine-sizing fields (`max_model_len`,
 in-graph proposer and have no effect when `api` is set. Without `api`,
 behavior is unchanged.
 
+#### Fixed round templates (`driver.template`)
+
+A workload whose round body is fixed can supply `driver.template` and skip the planner:
+
+```yaml
+driver:
+  model: Qwen/Qwen3.8-27B-FP8
+  max_rounds: 20
+  template:
+    first:
+      ops:
+        - {ref: Load, id: Load_r{{round}}, inputs: []}
+        - {ref: Advance, id: Advance_r{{round}}, inputs: ["Load_r{{round}}", "Symbols"]}
+      export: ["Advance_r{{round}}"]
+    next:
+      ops:
+        - {ref: Advance, id: Advance_r{{round}}, inputs: ["Advance_r{{prev}}", "Symbols"]}
+      export: ["Advance_r{{round}}"]
+    stop_when_empty: "Advance_r{{prev}}"
+```
+
+`first` runs as round 1 and `next` as every later round, with `{{round}}`
+and `{{prev}}` rendered into every string the body carries: each op's id, its
+node references and its arguments, and the export list. A LambdaOp's `code`
+is left alone, because it is Python source rather than a node reference.
+`stop_when_empty` names the previous round's export, which must be a
+list-mode LambdaOp: each element it returns is one row, and the server stops
+before a round whose predecessor exported none. A template round runs as one
+slice over the whole input set, because a list-mode Lambda's whole-list result
+cannot be partitioned per row, and a `next` body reads an earlier round only
+through a list-mode LambdaOp that round ran, as a leaf or an export.
+Template mode calls no planner and is mutually exclusive with `api`; every
+rendered body passes the same checks as a planner plan, and each stored plan
+records `source: "template"`.
+
 The `driver:` YAML settings the server accepts are:
 
 - `model` — proposer model, required.
@@ -296,7 +333,7 @@ The `driver:` YAML settings the server accepts are:
 - `preview_width` — observation preview character limit, default `900`; must be a positive integer.
 - `job_timeout` — per-job wait timeout in seconds, default `600.0`; must be greater than zero.
 - `max_rounds` — round limit, default `10`.
-- `max_nodes_per_round` — per-round subgraph node limit, default `8`.
+- `max_nodes_per_round` — per-round subgraph node limit, default `8`. Admission enforces it on every round.
 - `threshold` — sufficiency threshold, default `None`.
 - `chat_template_kwargs` — chat-template kwargs for the proposer, default
   `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:
@@ -329,8 +366,15 @@ templates the planner can emit by id. Each entry is a full op config (e.g. a
 `DataRetrievalOp` with a real SQL template). The planner references one with
 `{"ref": "<id>", "id": <unique>, "inputs": [...]}`; the template is
 authoritative for its config, so the planner may only override `id` and
-`inputs`. Ops without a `ref` are emitted fully inline. The planner sees the
-library (id, op type, key config) in its system message each round.
+`inputs`. A template may declare `data_spec.param_bindings` for a retrieval op, or `column_bindings` for a rowwise `LLMChatOp`, each a list of `{"label": <template label>, "input": <inputs index>}` mappings that point the template's placeholder at the node passed at that position. One library entry can therefore be instantiated repeatedly under distinct node ids. Every input slot must be bound and every rowwise column covered. Ops without a `ref` are emitted fully inline. The planner sees the library (id, op type, key config) in its system message each round.
+
+A dynamic round body may route rows with `RouterOp` and a rowwise
+`LLMChatOp` `row_gate` instead of several list-mode stages. The branch
+decision is a declared graph element, so it is validated like any other op,
+and a gated op keeps one row per input row. Rows that carry their own growing
+conversation use `rowwise_messages_column`, so the complete role/content
+sequence survives a round boundary. See
+[`docs/OPS.md`](OPS.md#routerop-and-row-gates).
 
 The parent job's result carries the per-round plans. Missing, malformed,
 unknown, or wrongly typed plan output fails the parent; it never becomes a

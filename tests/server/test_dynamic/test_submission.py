@@ -23,6 +23,7 @@ from lumilake_server.dynamic.driver import (
     resolve_subgraph,
 )
 from lumilake_server.dynamic.spec import DynamicSpec
+from lumilake_server.graphs import Graph
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.ops import OutputOp
 from lumilake_server.routes import jobs as job_routes_module
@@ -71,6 +72,26 @@ _SUBGRAPH_PLAN: dict[str, Any] = {
         }
     ],
 }
+
+_TEMPLATE_DYNAMIC_YAML = """
+name: dynamic-template
+type: dynamic
+goal: advance fixed rounds
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 3
+  max_nodes_per_round: 4
+  template:
+    first: {ops: [{ref: LiveState, id: "LiveState_r{{round}}", inputs: [Symbols]}],
+            export: ["LiveState_r{{round}}"]}
+    next: {ops: [{ref: LiveState, id: "LiveState_r{{round}}",
+                  inputs: ["LiveState_r{{prev}}"]}],
+           export: ["LiveState_r{{round}}"]}
+    stop_when_empty: "LiveState_r{{prev}}"
+library:
+  LiveState: {op: LambdaOp, inputs: [Symbols], mode: list, fn_name: state,
+              code: "def state(columns):\n    return columns[0]\n"}
+"""
 
 
 class _AllowAllIdentity:
@@ -163,6 +184,7 @@ class _FakeRuntimeServer:
         self.fail_cancel = False
         self.cancel_raises_cancelled = False
         self.omit_leaf_outputs = False
+        self.export_rows: list[list[dict[str, Any]]] | None = None
         self.leaf_item: Callable[[int], dict[str, Any]] = lambda row: {
             "table": {"market_cap": 10 + row},
             "output": {"market_cap": 10 + row},
@@ -175,8 +197,6 @@ class _FakeRuntimeServer:
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         self.parse_query_calls.append(graph_specs)
-        from lumilake_server.graphs import Graph
-
         return {
             name: Graph.from_json(spec["graph"]).compile(**spec["inputs"])
             for name, spec in graph_specs.items()
@@ -232,23 +252,32 @@ class _FakeRuntimeServer:
                 outputs["round"][name] = [
                     json.dumps(self.leaf_item(row)) for row in range(max(rows, 1))
                 ]
+        if self.export_rows is not None:
+            # A template export archives one item per element, wrapped as the
+            # reader's `value.output`.
+            rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
+            for name in leaf_names:
+                outputs["round"][name] = [
+                    json.dumps({"output": row, "value": {"items": row}}) for row in rows
+                ]
         return LumilakeResponse(outputs=outputs)
 
     def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
-        from lumilake_server.ops import OutputOp
-
-        names: list[str] = []
-        for graph in graphs.values():
-            for op in graph.iter_ops(OutputOp):
-                if str(op.name).startswith("leaf_") and op.name not in names:
-                    names.append(op.name)
-        return names
+        return [
+            name
+            for graph in graphs.values()
+            for name in graph.graph.output_ops
+            if str(name).startswith("leaf_")
+        ]
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
         return list(self._traces.get(job_id, []))
 
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.0
+
+    def task_ids_for_request(self, job_id: str) -> dict[str, list[str]]:
+        return {}
 
     def workflow_dispatches_for_request(
         self, request_id: str
@@ -419,6 +448,23 @@ def _submit_body(yaml_text: str) -> dict[str, Any]:
 async def _run_background(app: FastAPI) -> None:
     for task in list(app.state.background_tasks):
         await task
+
+
+async def _submit(
+    app: FastAPI, yaml_text: str, inputs: dict[str, Any] | None = None
+) -> str:
+    body = _submit_body(yaml_text)
+    if inputs is not None:
+        body["data"][0]["inputs"] = inputs
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]["job_id"]
 
 
 @pytest.mark.anyio
@@ -1001,16 +1047,13 @@ def fake_planner(
     return _install
 
 
-async def _submit_and_run(app: FastAPI, job_routes: Any, yaml_text: str) -> Any:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(yaml_text),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    job_id = resp.json()["data"]["job_id"]
+async def _submit_and_run(
+    app: FastAPI,
+    job_routes: Any,
+    yaml_text: str,
+    inputs: dict[str, Any] | None = None,
+) -> Any:
+    job_id = await _submit(app, yaml_text, inputs)
     await _run_background(app)
     return job_routes.jobs[job_id]
 
@@ -1079,6 +1122,68 @@ async def test_dynamic_api_planner_drives_two_rounds(
     assert second["messages"][1]["role"] == "user"
     assert second["messages"][1]["content"].startswith(f"{user}\n\n")
     assert "market_cap" in second["messages"][1]["content"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _unexpected_planner(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("template mode must not call a planner")
+
+    monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    # Round 2's list-mode export holds no row, so the stop check ends the loop
+    # before a third round runs.
+    fake_server.export_rows = [[{"case_id": "0", "turn": 0}], []]
+    record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
+
+    assert record.status == "completed", record.error
+    assert [config.chain_round for config in fake_server.configs] == [1, 2]
+    # Round 1 holds the whole input set in one slice, and the loop stops before
+    # a third round runs.
+    assert [
+        meta.whole_set
+        for slices in fake_server.workflow_slices_calls
+        for meta in slices.values()
+    ] == [True, True]
+    round_plans = record.result.outputs["round"]["plan"]
+    assert [(plan["next"], plan["round"], plan["source"]) for plan in round_plans] == [
+        ("subgraph", 1, "template"),
+        ("subgraph", 2, "template"),
+        ("STOP", 3, "template"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_round_binds_the_export_per_item(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A template round runs over four symbols but binds the previous round's
+    # list-mode export one value per archived item, so a two-element export
+    # reaches round 2 as two values rather than failing the symbol row count.
+    async def _no_planner(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("template mode must not call a planner")
+
+    monkeypatch.setattr(job_routes_module, "_call_api_planner", _no_planner)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    fake_server.export_rows = [
+        [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
+        [{"case_id": "0", "turn": 1}],
+    ]
+    record = await _submit_and_run(
+        app,
+        job_routes,
+        _TEMPLATE_DYNAMIC_YAML,
+        inputs={"Symbols": ["a", "b", "c", "d"]},
+    )
+
+    assert record.status == "completed", record.error
+    (round_two,) = fake_server.executed_graphs[1].values()
+    bound = round_two.inputs["LiveState_r0"]
+    assert [json.loads(value) for value in bound] == fake_server.export_rows[0]
 
 
 @pytest.mark.anyio
@@ -1453,3 +1558,28 @@ async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
         )
     assert resp.status_code == 422
     await _run_background(app)
+
+
+@pytest.mark.anyio
+async def test_library_template_validates_at_both_doors(app: FastAPI) -> None:
+    # A template's ops resolve library refs before validation at both doors: an
+    # unknown ref is rejected on submission and by the preview, and a valid
+    # template is still not previewable because its rounds render at run time.
+    transport = httpx.ASGITransport(app=app)
+    bad_yaml = _TEMPLATE_DYNAMIC_YAML.replace(
+        "ref: LiveState", "ref: MissingLibraryEntry", 1
+    )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        header = {"Authorization": "Bearer token", "Workflow-Format": "yaml"}
+        for path, yaml_text in (
+            ("/jobs", bad_yaml),
+            ("/jobs/preview", bad_yaml),
+            ("/jobs/preview", _TEMPLATE_DYNAMIC_YAML),
+        ):
+            resp = await client.post(path, json=_submit_body(yaml_text), headers=header)
+            assert resp.status_code == 422, resp.text
+            detail = resp.json()["detail"]
+            if yaml_text is bad_yaml:
+                assert "unknown library entry 'MissingLibraryEntry'" in detail
+            else:
+                assert "preview is not available for a template-driven" in detail

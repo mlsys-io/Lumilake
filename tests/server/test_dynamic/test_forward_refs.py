@@ -12,6 +12,7 @@ from lumilake_server.dynamic.driver import (
     build_round,
     compute_observation,
     forward_refs,
+    resolve_subgraph,
     validate_emitted_subgraph,
     walk_archived_items,
 )
@@ -300,6 +301,105 @@ def test_admit_subgraph_forwards_export_to_validation():
         _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
     resolved = _admit_subgraph(SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {})
     assert [r["id"] for r in resolved] == ["q1"]
+
+
+def _llm_column_library() -> dict[str, dict[str, Any]]:
+    labels = ("prompt", "review_system")
+    return {
+        "ReviewTurn": {
+            "op": "LLMChatOp",
+            "inputs": ["ReviewPrompt"],
+            "messages": [{"role": "user", "content": "review"}],
+            "rowwise_template": "{prompt}",
+            "rowwise_columns": [
+                {
+                    "label": label,
+                    "node": "ReviewPrompt",
+                    "path": f"items.output.{label}",
+                }
+                for label in labels
+            ],
+            "column_bindings": [{"label": label, "input": 0} for label in labels],
+            "config": {"model": "m"},
+        }
+    }
+
+
+def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"{prefix}_prompt_1",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "mode": "list",
+            "fn_name": "review_prompt",
+            "code": "def review_prompt(items):\n    return [{'prompt': 'x'}]\n",
+        },
+        {
+            "ref": "ReviewTurn",
+            "id": f"{prefix}_turn_1",
+            "inputs": [f"{prefix}_prompt_1"],
+        },
+    ]
+
+
+def test_column_bindings_remap_a_messages_column() -> None:
+    # A template that reads its rows as one message array per row binds that
+    # column the same way a rowwise column binds.
+    library = {
+        "Turn": {
+            "op": "LLMChatOp",
+            "messages": [{"role": "user", "content": "x"}],
+            "rowwise_messages_column": {"label": "m", "node": "P", "path": "out"},
+            "column_bindings": [{"label": "m", "input": 0}],
+            "config": {"model": "m"},
+        }
+    }
+    resolved = resolve_subgraph(
+        [{"ref": "Turn", "id": "t1", "inputs": ["P1"]}], library
+    )
+    assert resolved[0]["rowwise_messages_column"]["node"] == "P1"
+
+
+def test_column_bindings_remap_independent_library_instances() -> None:
+    library = _llm_column_library()
+    subgraph = _llm_column_subgraph("first") + _llm_column_subgraph("second")
+
+    resolved = resolve_subgraph(subgraph, library)
+    validate_emitted_subgraph(subgraph, {}, max_nodes=4, library=library)
+
+    turns = [op for op in resolved if op["op"] == "LLMChatOp"]
+    assert [turn["rowwise_columns"][0]["node"] for turn in turns] == [
+        "first_prompt_1",
+        "second_prompt_1",
+    ]
+    assert library["ReviewTurn"]["rowwise_columns"][0]["node"] == "ReviewPrompt"
+
+
+@pytest.mark.parametrize(
+    ("bindings", "inputs", "message"),
+    [
+        # The bindings must fill every column, name every input the round
+        # passes, and stay inside the op's columns and inputs.
+        (None, ["review_prompt_1", "unused"], "unused"),
+        ([{"label": "prompt", "input": 0}], ["review_prompt_1"], "review_system"),
+        ([{"label": "missing", "input": 0}], ["review_prompt_1"], "unknown label"),
+        ([{"label": "prompt", "input": -1}], ["review_prompt_1"], "invalid input slot"),
+        ([{"label": "prompt", "input": "0"}], ["review_prompt_1"], "non-integer"),
+    ],
+    ids=["unused-input", "unbound-column", "unknown-label", "bad-slot", "str-slot"],
+)
+def test_column_bindings_reject_an_inconsistent_round(
+    bindings: list[dict[str, Any]] | None, inputs: list[str], message: str
+) -> None:
+    library = _llm_column_library()
+    if bindings is not None:
+        library["ReviewTurn"]["column_bindings"] = bindings
+    subgraph = _llm_column_subgraph("review")
+    subgraph[1]["inputs"] = inputs
+
+    with pytest.raises(DriverProtocolError, match=message):
+        resolve_subgraph(subgraph, library)
 
 
 def test_build_round_round2_graph_has_no_round1_op():

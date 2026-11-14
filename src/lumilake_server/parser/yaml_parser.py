@@ -90,6 +90,12 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.ops.router_ops import (
+    MessagesColumn,
+    RouterMatch,
+    RouterRule,
+    RowGate,
+)
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -110,6 +116,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "EmbeddingOp",
         "FormatOp",
         "LambdaOp",
+        "RouterOp",
     }
 )
 
@@ -408,6 +415,8 @@ def _build_op_dict(
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
         _emit_lambda_op(op_dict, entry)
+    elif entry.op == "RouterOp":
+        _emit_router_op(op_dict, entry)
     else:  # pragma: no cover - guarded upstream
         raise ValueError(f"unsupported op type '{entry.op}'")
 
@@ -787,6 +796,47 @@ def _emit_llm_like_op(
         op_dict["rowwise_template"] = entry.fields["rowwise_template"]
     if resolved_rowwise is not None:
         op_dict["rowwise_columns"] = resolved_rowwise
+    rowwise_messages_column = entry.fields.get("rowwise_messages_column")
+    if rowwise_messages_column is not None:
+        if not isinstance(rowwise_messages_column, dict):
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column must be a mapping"
+            )
+        node = rowwise_messages_column.get("node")
+        if not isinstance(node, str) or node not in user_id_to_internal:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' rowwise_messages_column requires a known node"
+            )
+        op_dict["rowwise_messages_column"] = MessagesColumn(
+            node=user_id_to_internal[node],
+            path=_require_str(
+                rowwise_messages_column, "path", f"{op_kind} '{entry.id}'"
+            ),
+            label=_require_str(
+                rowwise_messages_column, "label", f"{op_kind} '{entry.id}'"
+            ),
+        ).to_dict()
+    row_gate = entry.fields.get("row_gate")
+    if row_gate is not None:
+        if not isinstance(row_gate, dict):
+            raise ValueError(f"{op_kind} '{entry.id}' row_gate must be a mapping")
+        node = row_gate.get("node")
+        if not isinstance(node, str) or node not in user_id_to_internal:
+            raise ValueError(f"{op_kind} '{entry.id}' row_gate requires a known node")
+        gate = RowGate(
+            node=user_id_to_internal[node],
+            branch=_require_str(row_gate, "branch", f"{op_kind} '{entry.id}' row_gate"),
+        )
+        if "rowwise_messages_column" in op_dict:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' combines row_gate with"
+                " rowwise_messages_column; the gated path builds its prompts"
+                " from rowwise_template, so a messages column would be ignored."
+                " Use rowwise_template, or drop the row gate."
+            )
+        op_dict["row_gate"] = gate.to_dict()
+        if gate.node not in op_dict["_inputs"]:
+            op_dict["_inputs"].append(gate.node)
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
     elif "rowwise_template" in entry.fields and isinstance(inline_messages, list):
@@ -814,6 +864,11 @@ def _emit_llm_like_op(
                 node_id = item.get("node")
                 if isinstance(node_id, str) and node_id not in llm_inputs:
                     llm_inputs.append(node_id)
+        row_gate = op_dict.get("row_gate")
+        if isinstance(row_gate, dict):
+            gate_node = row_gate.get("node")
+            if isinstance(gate_node, str) and gate_node not in llm_inputs:
+                llm_inputs.append(gate_node)
     op_dict["_inputs"] = llm_inputs
 
 
@@ -1075,6 +1130,53 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         op_dict["cache"] = cache
 
 
+def _require_str(spec: dict[str, Any], key: str, where: str) -> str:
+    """A field's value, typed for the op whose constructor validates it."""
+    value = spec.get(key)
+    if not isinstance(value, str):
+        raise ValueError(f"{where}: requires the {key!r} field as a string")
+    return value
+
+
+def _require_match(rule: dict[str, Any], where: str) -> RouterMatch:
+    """A rule's match mode, typed for the rule that validates it."""
+    match = _require_str(rule, "match", where)
+    if match == "equals":
+        return "equals"
+    if match == "contains":
+        return "contains"
+    raise ValueError(
+        f"{where}: requires the 'match' field to be 'equals' or 'contains'"
+    )
+
+
+def _emit_router_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
+    """Emit a router's raw fields; the op constructor validates them."""
+    if len(op_dict["_inputs"]) != 1:
+        raise ValueError(
+            f"RouterOp '{entry.id}' requires exactly one input, the source node"
+        )
+    rules = entry.fields.get("rules")
+    if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
+        raise ValueError(f"RouterOp '{entry.id}' rules must be a list of mappings")
+    op_dict.update(
+        rules=[
+            RouterRule(
+                branch=_require_str(
+                    rule, "branch", f"RouterOp '{entry.id}' rules[{index}]"
+                ),
+                match=_require_match(rule, f"RouterOp '{entry.id}' rules[{index}]"),
+                value=_require_str(
+                    rule, "value", f"RouterOp '{entry.id}' rules[{index}]"
+                ),
+            ).to_dict()
+            for index, rule in enumerate(rules)
+        ],
+        default_branch=entry.fields.get("default_branch"),
+        input_path=entry.fields.get("input_path", "items.output"),
+    )
+
+
 def _build_generation_config(
     config: dict[str, Any], entry_id: str, op_kind: str = "LLMChatOp"
 ) -> dict[str, Any]:
@@ -1099,5 +1201,6 @@ def _op_id_prefix(op_type: str) -> str:
         "EmbeddingOp": "embedding",
         "FormatOp": "format",
         "LambdaOp": "lambda",
+        "RouterOp": "router",
     }
     return mapping.get(op_type, op_type.lower())

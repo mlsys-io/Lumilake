@@ -4,7 +4,7 @@ from typing import Any, Literal
 import pytest
 
 from lumilake import envs
-from lumilake_server.common import GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -14,10 +14,12 @@ from lumilake_server.ops import (
     LLMChatOp,
     LLMVisionOp,
     OpMessage,
+    RouterOp,
     SingleDtype,
     as_output,
     input_placeholder,
 )
+from lumilake_server.ops.router_ops import MessagesColumn, RouterRule, RowGate
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -494,6 +496,147 @@ def test_local_rowwise_op_emits_condition() -> None:
         "node": "gate",
         "expr": "gate == 'on'",
     }
+
+
+def test_rowwise_messages_column_emits_list_message_array_spec() -> None:
+    rows = input_placeholder("Rows")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="m"),
+        rowwise_messages_column=MessagesColumn(rows.id, "items", "msgs"),
+    )
+    graph = Graph.from_ops([as_output("result", llm)]).compile(Rows=['["msg"]'])
+    node = RuntimeGraphBuilder().build(graph).nodes[llm.id]
+    assert node.data_spec["items"] == [["msg"]]
+
+
+def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
+    # A gated chat op stands only as its merge stage, which is the op's output,
+    # and the structural outputs land on the gated call.
+    rows = input_placeholder("Rows")
+    router = _router_over(rows)
+    templates = [{"name": "verdict", "type": "string"}]
+    gate = RowGate(node=router.id, branch="ok")
+    llm = _row_gate_over(rows, router, structural_outputs=templates, row_gate=gate)
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("result", llm)]).compile(Rows=["a", "b"])
+    )
+    *_, selected, merge = [graph.nodes[i] for i in graph.dsl_to_runtime[llm.id]]
+    assert selected.inference_spec["templates"] == templates
+    assert graph.output_node_map == {merge.node_id: "result"}
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        (
+            {
+                "rowwise_messages_column": MessagesColumn(
+                    node="Rows", path="items", label="msgs"
+                )
+            },
+            "combines row_gate with rowwise_messages_column",
+        ),
+        (
+            {"condition": {"node": "Rows", "expr": "x == 'on'"}},
+            "combines row_gate with condition",
+        ),
+        # A gate needs a row template to build its prompts from, and its branch
+        # must be one the router its rules declare, which the native graph
+        # format reaches without the YAML parser's own validation.
+        ({"rowwise_template": None}, "requires rowwise_template"),
+        ({"gate_branch": "missing"}, "branch 'missing' is not declared"),
+        # The gate names a router op; any other node is refused.
+        ({"gate_node": "rows"}, "must be a RouterOp"),
+        # The status step cannot read a field of a rowwise LLM's grouped item,
+        # or an API item, whose text sits under json.choices.
+        (
+            {"source": "rowwise", "input_path": "items.output.verdict"},
+            "from rowwise LLM",
+        ),
+        ({"source": "api"}, "reads API upstream"),
+    ],
+    ids=[
+        "messages-column",
+        "condition",
+        "no-rowwise-template",
+        "undeclared-branch",
+        "not-a-router",
+        "rowwise-source-path",
+        "api-source",
+    ],
+)
+def test_row_gate_rejects_an_unusable_gate(
+    fields: dict[str, Any], message: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+    rows = input_placeholder("Rows")
+    gate_node: Any = fields.pop("gate_node", None)
+    gate_branch = fields.pop("gate_branch", "fail")
+    source = fields.pop("source", None)
+    router_source: Any = rows
+    if source is not None:
+        router_source = LLMChatOp(
+            [OpMessage(role="user", content=rows)],
+            config=GenerationConfig(
+                model="m", api=ApiConfig() if source == "api" else None
+            ),
+            rowwise_template="judge {row}" if source == "rowwise" else None,
+            rowwise_columns=[{"label": "row", "node": rows.id}],
+        )
+    router_extra = {k: fields.pop(k) for k in ("input_path",) if k in fields}
+    router = _router_over(router_source, **router_extra)
+    gated = _row_gate_over(
+        rows,
+        router,
+        row_gate=RowGate(
+            node=rows.id if gate_node == "rows" else router.id, branch=gate_branch
+        ),
+        **fields,
+    )
+    compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["PASS"])
+
+    with pytest.raises(ValueError, match=message):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_list_lambda_reads_a_gated_op_through_its_merge_stage() -> None:
+    # A list-mode Lambda may read a gated op. The op has no runtime node of its
+    # own, so the Lambda binds the merge stage, whose items are one per input
+    # row with the served answer or ``None``.
+    rows = input_placeholder("Rows")
+    gated = _row_gate_over(rows, _router_over(rows))
+    reader = LambdaOp([gated], lambda columns: columns[0], mode="list")
+    outs = [as_output("gated", gated), as_output("fixed", reader)]
+    graph = RuntimeGraphBuilder().build(Graph.from_ops(outs).compile(Rows=["a", "b"]))
+    (merge_id,) = [i for i in graph.dsl_to_runtime[gated.id] if i.endswith("__rows")]
+    assert graph.nodes[reader.id].data_spec["plan"] == [
+        {"kind": "stage", "node": merge_id, "path": "value.output"}
+    ]
+
+
+def _row_gate_over(rows: Any, router: RouterOp, **extra: Any) -> LLMChatOp:
+    extra.setdefault("row_gate", RowGate(node=router.id, branch="fail"))
+    return LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="m"),
+        rowwise_template=extra.pop("rowwise_template", "{row}"),
+        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
+        row_gate_op=router,
+        **extra,
+    )
+
+
+def _router_over(node: Any, **extra: Any) -> RouterOp:
+    return RouterOp(
+        node,
+        rules=[
+            RouterRule(branch="fail", match="equals", value="FAIL"),
+            RouterRule(branch="ok", match="equals", value="PASS"),
+        ],
+        default_branch="ok",
+        **extra,
+    )
 
 
 def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:

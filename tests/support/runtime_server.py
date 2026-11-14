@@ -42,7 +42,9 @@ class RecordingRuntimeManager:
         *,
         cancelled: set[str] | None = None,
         status_by_request: dict[str, dict[str, Any]] | None = None,
+        output_values: list[str] | None = None,
     ) -> None:
+        self.output_values = output_values
         self.cancelled = set() if cancelled is None else set(cancelled)
         self.status_by_request = {} if status_by_request is None else status_by_request
         self._dispatch_tokens: dict[str, str | None] = {}
@@ -107,7 +109,21 @@ class RecordingRuntimeManager:
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
-        return {"flat_outputs": {}, "chat_histories": {}, "task_node_map": {}}
+        if self.output_values is None:
+            return {"flat_outputs": {}, "chat_histories": {}, "task_node_map": {}}
+        return {
+            "flat_outputs": dict.fromkeys(
+                request_info.output_node_map, self.output_values
+            ),
+            "chat_histories": {
+                node_id: [
+                    [{"role": "assistant", "content": value}]
+                    for value in self.output_values
+                ]
+                for node_id in request_info.output_node_map
+            },
+            "task_node_map": {},
+        }
 
     async def get_request_status(self, request_id: str) -> dict[str, Any]:
         return self.status_by_request.get(request_id, {"error": "Request ID not found"})
@@ -176,6 +192,7 @@ def make_workflow(
     template_hash: str | None = None,
     dsl_inputs: dict[str, list[str]] | None = None,
     varying_input_keys: tuple[str, ...] = (),
+    whole_set: bool = False,
     slice_index: int = 0,
     slice_start: int = 0,
     slice_length: int = 1,
@@ -200,6 +217,7 @@ def make_workflow(
             f"template-{graph_name}" if template_hash is None else template_hash
         ),
         varying_input_keys=varying_input_keys,
+        whole_set=whole_set,
         runtime_graph=runtime_graph,
         data_profile_graph=runtime_graph,
         dsl_graph=cast(Any, compiled_graph),

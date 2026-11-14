@@ -15,9 +15,12 @@ from lumilake_server.ops import (
     LambdaOp,
     LLMChatOp,
     OpMessage,
+    RouterOp,
+    RowGate,
     as_output,
     input_placeholder,
 )
+from lumilake_server.ops.router_ops import RouterRule
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
@@ -1269,3 +1272,69 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
+
+
+def _gated_chain() -> Any:
+    """One model that reads the rows a router marked with its branch."""
+    rows = input_placeholder("Rows")
+    classify = LambdaOp(
+        [rows],
+        fn=lambda items: [
+            {"code": f"fn_{i}", "status": "fail" if i == 1 else "ok"}
+            for i in range(len(items[0]))
+        ],
+        mode="list",
+    )
+    router = RouterOp(
+        classify,
+        rules=[RouterRule("fail", "equals", "fail"), RouterRule("ok", "equals", "ok")],
+        default_branch="ok",
+        input_path="items.output.status",
+    )
+    column = {"label": "code", "node": classify.id, "path": "items.output.code"}
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="repair {code}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="repair {code}",
+        rowwise_columns=[column],
+        row_gate=RowGate(node=router.id, branch="fail"),
+        row_gate_op=router,
+    )
+    return Graph.from_ops([as_output("repair", llm)]).compile(Rows=["a", "b", "c"])
+
+
+def _run_stage(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
+    """Run the code a built python step emits, over staged upstream results."""
+    namespace: dict[str, Any] = {}
+    exec(node.to_flowmesh_node()["spec"]["code"], namespace)
+    return namespace["main"](inputs)
+
+
+def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
+    # The three generated steps read each other's archives: status labels every
+    # row, selection keeps the routed rows, and merge gives one value per input
+    # row at ``value.output``, ``None`` for a row the gate skipped.
+    graph = RuntimeGraphBuilder().build(_gated_chain())
+    (merge_id,) = graph.output_node_map
+    (gated,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
+    status, selector, _selected, merge = [graph.nodes[i] for i in gated]
+
+    items = [
+        {"output": {"code": f"fn_{i}", "status": s}}
+        for i, s in enumerate(("ok", "fail"))
+    ]
+    upstream = _stage(tmp_path, "classify", {"items": items})
+    status_payload = _run_stage(status, {status.data_spec["plan"][0]["node"]: upstream})
+    assert [i["value"]["branch"] for i in status_payload["items"]] == ["ok", "fail"]
+
+    with_status = _stage(tmp_path, "status", status_payload)
+    stages = {
+        e["node"]: with_status if e["node"] == status.node_id else upstream
+        for e in selector.data_spec["plan"]
+    }
+    assert _run_stage(selector, stages)["items"] == [{"code": "fn_1"}]
+
+    served = _stage(tmp_path, "served", {"items": [{"output": ["fixed"]}]})
+    read = {status.node_id: with_status, merge.data_spec["plan"][1]["node"]: served}
+    merged = _run_stage(merge, read)
+    assert [i["value"]["output"] for i in merged["items"]] == [None, "fixed"]

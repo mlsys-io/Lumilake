@@ -1251,7 +1251,9 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
     server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
 
 
-def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> None:
+def _install_rowwise_api_build_and_schedule(
+    server: Any, output_name: str, node_prefix_name: str | None = None
+) -> None:
     """Fake build/schedule whose output node is a plain api task (not a
     list-mode python step), so the row-wise API demux path applies."""
 
@@ -1262,7 +1264,7 @@ def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> No
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
-        node_id = f"{node_prefix}__{suffix}"
+        node_id = f"{node_prefix_name or node_prefix}__{suffix}"
         op = RuntimeOp(
             node_id=node_id,
             task_type="api",
@@ -1952,6 +1954,50 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
     assert resp.error_info is None
     out = resp.outputs["shared"]["out"]
     assert out == ["tagged:NVDA", "tagged:AAPL"]
+
+
+@pytest.mark.asyncio
+async def test_whole_set_round_accepts_its_own_row_count(
+    server_factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The round's row count is its own answer, so the per-slice check takes it
+    # verbatim rather than against the round's longest input.
+
+    server = server_factory()
+    monkeypatch.setattr(
+        server,
+        "runtime_manager",
+        RecordingRuntimeManager(output_values=["case-0", "case-1"]),
+    )
+    workflows = [
+        make_workflow(
+            workflow_id="wf-node-0",
+            request_id="req-node",
+            graph_name="g0",
+            public_graph_name="shared",
+            template_hash="template-shared",
+            slice_index=0,
+            slice_length=4,
+            total_length=4,
+            whole_set=True,
+        )
+    ]
+    handlers = attach_request_states(server, workflows)
+    batch = make_batch(workflows)
+
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: SimpleNamespace(_coalesce_rewrite_hits={}),
+    )
+    _install_rowwise_api_build_and_schedule(server, "out", "wf-node-0")
+
+    await server._run_batch(["worker-1"], batch)
+
+    resp = handlers["req-node"].results[0]
+    assert resp.error_info is None
+    assert resp.outputs["shared"]["out"] == ["case-0", "case-1"]
+    assert len(resp.chat_histories["shared"]["out"]) == 2
 
 
 def _two_request_batch(server: Any) -> tuple[dict[str, Any], BatchSelection]:

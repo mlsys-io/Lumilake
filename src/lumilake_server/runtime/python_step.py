@@ -67,6 +67,8 @@ def _row_content(row):
 def _column(entry, inputs, text):
     if entry["kind"] == "literal":
         return [text(v) for v in entry["values"]]
+    if entry.get("allow_empty") and not inputs.get(entry["node"]):
+        return []
     with open(os.path.join(inputs[entry["node"]], "results.json")) as fh:
         envelope = json.load(fh)
     result = envelope.get("result", envelope)
@@ -227,6 +229,90 @@ def main(inputs):
     }}
 """
 
+_ROW_STATUS_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    n = max((len(c) for c in columns), default=0)
+    for entry, col in zip(_PLAN, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "input %r has %d rows; expected 1 or %d"
+                % (entry.get("node", "literal"), len(col), n)
+            )
+    (source,) = columns
+    rules = {rules}
+    statuses = []
+    for i in range(n):
+        # Match the upstream value as it stands: a whole output is the string
+        # the upstream emitted, and a field read is the value the path walk
+        # decoded. Re-encoding either would rewrite the text the rules test.
+        source_value = source[0] if len(source) == 1 else source[i]
+        if not isinstance(source_value, str):
+            source_value = json.dumps(source_value)
+        branch = {default_branch}
+        for rule in rules:
+            if rule["match"] == "equals":
+                matched = source_value == rule["value"]
+            else:
+                matched = rule["value"] in source_value
+            if matched:
+                branch = rule["branch"]
+                break
+        row = {{"selected": True, "branch": branch, "row": i}}
+        statuses.append({{"output": json.dumps(row), "value": row}})
+    return {{"items": statuses}}
+"""
+
+_ROW_SKIP_MERGE_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    statuses = columns[0]
+    outputs = columns[1]
+    routed = [
+        index
+        for index, status in enumerate(statuses)
+        if status.get("branch") == {branch}
+    ]
+    if len(routed) != len(outputs):
+        raise ValueError(
+            "%s: merged %d outputs for %d routed rows"
+            % (_NODE, len(outputs), len(routed))
+        )
+    served = dict(zip(routed, outputs))
+    merged = []
+    for index, status in enumerate(statuses):
+        row = status.copy()
+        row["output"] = served.get(index)
+        merged.append({{"output": json.dumps(row), "value": row}})
+    return {{"items": merged}}
+"""
+
+_ROW_SELECT_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    statuses = columns[0]
+    n = len(statuses)
+    for entry, col in zip(_PLAN[1:], columns[1:]):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "input %r has %d rows; expected 1 or %d"
+                % (entry.get("node", "literal"), len(col), n)
+            )
+    labels = {labels}
+    selected = []
+    for index, status in enumerate(statuses):
+        if status.get("branch") != {branch}:
+            continue
+        row = {{}}
+        for label, column in zip(labels, columns[1:]):
+            row[label] = column[0] if len(column) == 1 else column[index]
+        selected.append(row)
+    return {{"items": selected}}
+"""
+
 _LIST_MAIN = """\
 
 def main(inputs):
@@ -276,6 +362,52 @@ def regroup_source(node_id: str, plan: ColumnPlan) -> str:
     )
 
 
+def row_skip_merge_code(
+    node_id: str,
+    plan: ColumnPlan,
+    *,
+    branch: str,
+) -> str:
+    """Generated merge step: one row per input row, with its gate outcome."""
+    return (_RESHAPE_PRELUDE + _ROW_SKIP_MERGE_MAIN).format(
+        op_id=node_id,
+        plan=json.dumps(plan),
+        branch=repr(branch),
+    )
+
+
+def row_select_source(
+    node_id: str,
+    plan: ColumnPlan,
+    *,
+    labels: list[str],
+    branch: str,
+) -> str:
+    """Generated list-mode step that keeps only one routed branch."""
+    return (_RESHAPE_PRELUDE + _ROW_SELECT_MAIN).format(
+        op_id=node_id,
+        plan=json.dumps(plan),
+        labels=json.dumps(labels),
+        branch=repr(branch),
+    )
+
+
+def row_status_source(
+    node_id: str,
+    plan: ColumnPlan,
+    *,
+    rules: list[dict[str, str]],
+    default_branch: str,
+) -> str:
+    """Generated row-status step over the router rules."""
+    return (_RESHAPE_PRELUDE + _ROW_STATUS_MAIN).format(
+        op_id=node_id,
+        plan=json.dumps(plan),
+        rules=json.dumps(rules),
+        default_branch=repr(default_branch),
+    )
+
+
 def wrapper_source(
     op_id: str,
     fn_name: str,
@@ -307,6 +439,19 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
         code = flatten_source(node_id, plan, data_spec["template"])
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
+    elif mode == "row_skip_merge":
+        code = row_skip_merge_code(node_id, plan, branch=data_spec["branch"])
+    elif mode == "row_select":
+        code = row_select_source(
+            node_id, plan, labels=data_spec["labels"], branch=data_spec["branch"]
+        )
+    elif mode == "row_status":
+        code = row_status_source(
+            node_id,
+            plan,
+            rules=data_spec["rules"],
+            default_branch=data_spec["default_branch"],
+        )
     else:
         code = wrapper_source(
             node_id, data_spec["fn_name"], data_spec["code"], plan, mode

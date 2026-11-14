@@ -30,6 +30,7 @@ class WorkflowItem:
     total_length: int
     template_hash: str
     varying_input_keys: tuple[str, ...]
+    whole_set: bool
     runtime_graph: RuntimeGraph
     data_profile_graph: RuntimeGraph
     dsl_graph: CompiledGraph
