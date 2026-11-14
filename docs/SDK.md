@@ -319,10 +319,11 @@ is left alone, because it is Python source rather than a node reference.
 list-mode LambdaOp: each element it returns is one row, and the server stops
 before a round whose predecessor exported none. A template round runs as one
 slice over the whole input set, because a list-mode Lambda's whole-list result
-cannot be partitioned per row, and a `next` body reads earlier rounds only
-through list-mode Lambda exports. Template mode calls no planner and is
-mutually exclusive with `api`; every rendered body passes the same checks as a
-planner plan, and each stored plan records `source: "template"`.
+cannot be partitioned per row, and a `next` body reads an earlier round only
+through a list-mode LambdaOp that round ran, as a leaf or an export.
+Template mode calls no planner and is mutually exclusive with `api`; every
+rendered body passes the same checks as a planner plan, and each stored plan
+records `source: "template"`.
 
 The `driver:` YAML settings the server accepts are:
 

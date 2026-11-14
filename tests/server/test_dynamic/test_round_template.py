@@ -25,14 +25,16 @@ def _state(op_id: str, inputs: list[str], **extra: object) -> dict:
 
 
 _LIST = _state("Live_r{{round}}", ["Symbols"])
-_TEMPLATE = {
-    "first": {"ops": [_LIST], "export": ["Live_r{{round}}"]},
-    "next": {
-        "ops": [_state("Live_r{{round}}", ["Live_r{{prev}}"])],
-        "export": ["Live_r{{round}}"],
-    },
-    "stop_when_empty": "Live_r{{prev}}",
-}
+
+
+def _template() -> dict:
+    """A template whose next body reads the previous round's export."""
+    export = {"export": ["Live_r{{round}}"]}
+    return {
+        "first": {**export, "ops": [_LIST]},
+        "next": {**export, "ops": [dict(_LIST, inputs=["Live_r{{prev}}"])]},
+        "stop_when_empty": "Live_r{{prev}}",
+    }
 
 
 def _validate(first: list[dict], next_ops: list[dict]) -> None:
@@ -58,7 +60,7 @@ def _driver(template: dict, **extra: object) -> dict:
 
 
 def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
-    template = DynamicSpec.model_validate(_driver(_TEMPLATE)).driver.template
+    template = DynamicSpec.model_validate(_driver(_template())).driver.template
     assert template is not None
     # Round 2 on renders ``next``, whose previous round is round 1's.
     (op,) = template_plan_for_round(template, 2).ops
@@ -66,7 +68,7 @@ def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
     assert template_stop_export(template, 2) == "Live_r0"
     # A template and an API planner are alternatives.
     with pytest.raises(ValidationError):
-        DynamicSpec.model_validate(_driver(_TEMPLATE, api={"url": "http://p.test"}))
+        DynamicSpec.model_validate(_driver(_template(), api={"url": "http://p.test"}))
 
 
 _RETRIEVAL = {
@@ -77,7 +79,6 @@ _RETRIEVAL = {
 }
 _ROW_NEXT = dict(_LIST, mode="row", inputs=["Live_r{{prev}}"])
 _MISSING = {"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}
-_STATE_ECHO = _state("Echo_r{{round}}", ["Echo_r{{prev}}"])
 
 
 @pytest.mark.parametrize(
@@ -102,40 +103,31 @@ def test_template_validator_rejects_an_unusable_body(
         _validate(first, next_ops)
 
 
-def _leaf_read(op: dict) -> DriverTemplate:
-    """A template whose next body reads a leaf of the round before it."""
-    later = [dict(_LIST, inputs=["Live_r{{prev}}"]), dict(op, inputs=["T_r{{prev}}"])]
+def test_template_validator_checks_a_later_read_of_a_round_leaf() -> None:
+    # A next body may read a list-mode Lambda the earlier round ran, which is
+    # how a tally carries across rounds. Any other leaf, a row-wise chat among
+    # them, archives one grouped item per table and is refused.
+    live = _state("Live_r{{round}}", ["Symbols"])
+    leaf = _state("T_r{{round}}", ["Symbols"])
     export = {"export": ["Live_r{{round}}"]}
-    return DriverTemplate.model_validate(
-        {
-            "first": {**export, "ops": [_LIST, op]},
-            "next": {**export, "ops": later},
-            "stop_when_empty": "Live_r{{prev}}",
-        }
-    )
+    read = _state("T_r{{round}}", ["T_r{{prev}}"])
 
+    def template(op: dict) -> DriverTemplate:
+        later = [dict(live, inputs=["Live_r{{prev}}"]), op]
+        return DriverTemplate.model_validate(
+            {
+                "first": {**export, "ops": [live, leaf]},
+                "next": {**export, "ops": later},
+                "stop_when_empty": "Live_r{{prev}}",
+            }
+        )
 
-def test_template_validator_accepts_a_later_read_of_a_list_lambda_leaf() -> None:
-    # The route archives every leaf, so a next body may read a list-mode Lambda.
-    validate_template_spec(
-        _leaf_read(_state("T_r{{round}}", ["Symbols"])), max_nodes_per_round=8
-    )
-
-
-def test_template_validator_refuses_a_later_read_of_a_chat_leaf() -> None:
-    # A row-wise chat leaf archives one grouped item per table, so binding it
-    # per archived item would misread it.
-    chat = {
-        "id": "T_r{{round}}",
-        "op": "LLMChatOp",
-        "inputs": ["Symbols"],
-        "messages": [{"role": "user", "content": "x"}],
-        "config": {"model": "m"},
-        "rowwise_template": "{row}",
-        "rowwise_columns": [{"label": "r", "node": "Symbols", "path": "items.output"}],
-    }
+    validate_template_spec(template(read), max_nodes_per_round=8)
     with pytest.raises(DriverProtocolError, match="'T_r1'"):
-        validate_template_spec(_leaf_read(chat), max_nodes_per_round=8)
+        validate_template_spec(
+            template(dict(leaf, mode="row", inputs=["T_r{{prev}}"])),
+            max_nodes_per_round=8,
+        )
 
 
 def test_template_validator_rejects_a_round_three_read() -> None:
