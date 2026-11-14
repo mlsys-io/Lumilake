@@ -217,16 +217,7 @@ _read_logger = init_child_logger("FlowmeshReadRetry")
 
 
 async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) -> T:
-    """Run a read-only FlowMesh call, retrying gateway 502/503/504 responses and
-    dropped connections.
-
-    Only idempotent reads go through here: after a dropped connection the request
-    may or may not have reached FlowMesh, which is safe to repeat for a read and
-    not for a submit. A connect timeout is retried, because the request never
-    left and the shared client bounds the wait at ten seconds. No other timeout
-    is: read, write and pool keep the full HTTP timeout, so retrying them would
-    wait it out again on every attempt.
-    """
+    """Retry a read-only FlowMesh call on gateway errors and dropped connections."""
     for delay in _FLOWMESH_RETRY_DELAYS_S:
         try:
             return await call()

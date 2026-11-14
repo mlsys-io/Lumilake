@@ -6,12 +6,11 @@ import httpx
 import pytest
 
 import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 
 
 @pytest.mark.asyncio
 async def test_a_read_repeats_a_dropped_connection_but_a_submit_does_not(
-    flowmesh_manager: FlowmeshRuntimeManager, monkeypatch: pytest.MonkeyPatch
+    flowmesh_manager: fm_mod.FlowmeshRuntimeManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The task-status read survives a refused connection at the gateway delays;
     a submit raises it, since FlowMesh may already hold the workflow."""
@@ -40,7 +39,7 @@ async def test_a_read_repeats_a_dropped_connection_but_a_submit_does_not(
         },
     )()
     monkeypatch.setattr(fm_mod.asyncio, "sleep", _sleep)
-    monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: fm))
+    monkeypatch.setattr(fm_mod.FlowmeshRuntimeManager, "fm", property(lambda self: fm))
 
     assert await flowmesh_manager.fetch_task_status("t-1") == "DONE"
     with pytest.raises(httpx.ConnectError):
