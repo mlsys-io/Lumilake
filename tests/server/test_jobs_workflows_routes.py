@@ -2242,3 +2242,45 @@ async def test_download_logs_spool_spills_to_disk(
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_a_terminal_progress_read_computes_the_usage_it_finalizes(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read before the finalizer serves the computed usage and finalizes it."""
+    _seed_job(job_routes, "j-1", ["wf-1"])
+    record = job_routes.jobs["j-1"]
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(
+            lambda cls: _FakeProgressServer(
+                {"error": "not found"}, {"j-1": {"wf-1": ["tsk-00000001"]}}
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        job_routes_module,
+        "flowmesh_for",
+        lambda _r: _FakeFlowMesh(
+            _FakeWorkflows(
+                workflows={"wf-1": _FakeWorkflow("wf-1", "DONE", ["tsk-00000001"])},
+                logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
+            ),
+            task_results={
+                "tsk-00000001": _api_result(
+                    "tsk-00000001", _api_usage(100, 50, calls=4)
+                )
+            },
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/jobs/j-1/progress", headers={"Authorization": "Bearer token"}
+        )
+
+    assert resp.json()["data"]["progress"]["usage"]["calls"] == 4
+    assert record.terminal_usage_finalized is True
