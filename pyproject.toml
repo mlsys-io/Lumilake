@@ -82,7 +82,6 @@ lint = [
     "types-requests==2.33.0.20260906",
     "types-pyyaml==6.0.12.20260906",
     "types-docker==7.2.0.20260923",
-    "types-jsonschema==4.26.0.20261006",
     "pandas-stubs==3.0.5.260914",
     "pre-commit==4.6.2",
 ]
@@ -117,7 +116,6 @@ server-runtime = [
     "flowmesh-sdk==0.1.13",
     "huggingface-hub==2.3.0",
     "httpx2==2.16.0",
-    "jsonschema==4.25.1",
     # Security floors for transitive dependencies.
     "anyio==4.15.1",
     "certifi==2026.10.23",
