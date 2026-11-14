@@ -283,17 +283,13 @@ class RuntimeGraph:
         """Node ids whose list column binds a list-mode ``LambdaOp`` one hop
         away. FlowMesh runs such a task once per element, so the task's items
         are the whole list and the aggregator folds them into one value."""
-        list_lambda_nodes = {
-            node_id
-            for node_id, node in self.nodes.items()
-            if node.task_type == python_step.TASK_TYPE
-            and node.data_spec.get("mode") == "list"
-        }
         return {
             node_id
             for node_id, node in self.nodes.items()
             if node.data_spec.get("type") == "list"
-            and node.data_spec.get("node") in list_lambda_nodes
+            and (upstream := self.nodes.get(node.data_spec.get("node", ""))) is not None
+            and upstream.task_type == python_step.TASK_TYPE
+            and upstream.data_spec.get("mode") == "list"
         }
 
     def with_node_prefix(self, prefix: str, separator: str = "__") -> Self:
@@ -1898,17 +1894,8 @@ class RuntimeGraphBuilder:
 
     @staticmethod
     def _lambda_result_path(upstream: LambdaOp, path: str) -> str:
-        """Map a declared ``items.output[...]`` read of a LambdaOp's result to
-        the matching path inside the python step's result envelope.
-
-        A list-mode or aligned-mode Lambda emits its values as items, so a
-        whole-column read of ``items.output`` maps to ``value.items.output``
-        and a field read (``items.output.<f>``) maps to
-        ``value.items.output.<f>``. A row-mode Lambda emits each row's value
-        under ``value.items.value``, so a field read maps to
-        ``value.items.value.<f>`` while its whole-column read stays
-        ``value.items.output``.
-        """
+        """Map a LambdaOp ``items.output`` read to its path in the step result;
+        a row-mode field read sits under ``value.items.value``."""
         if not upstream.takes_whole_columns and path != "items.output":
             return "value.items.value." + path[len("items.output.") :]
         return "value." + path

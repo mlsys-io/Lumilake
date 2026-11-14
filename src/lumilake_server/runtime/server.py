@@ -3199,7 +3199,7 @@ class LumilakeServer:
         grouped_outputs: dict[str, dict[str, list[Any]]] = {}
         grouped_histories: dict[str, dict[str, list[Any]]] = {}
         direct_outputs: dict[str, dict[str, list[Any]]] = {}
-        direct_histories: dict[str, dict[str, list[Any]]] = {}
+        direct_histories: defaultdict[str, dict[str, list[Any]]] = defaultdict(dict)
         group_workflow_prefixes: dict[str, list[tuple[str, Any]]] = {}
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(
@@ -3297,9 +3297,7 @@ class LumilakeServer:
                         "partitioned per slice."
                     )
                 (single_workflow,) = group_slices
-                direct_histories.setdefault(single_workflow.workflow_id, {})[
-                    output_name
-                ] = history
+                direct_histories[single_workflow.workflow_id][output_name] = history
                 continue
             if matched_workflow is not None:
                 if len(history) != matched_workflow.slice_length:
@@ -3308,9 +3306,7 @@ class LumilakeServer:
                         f"{matched_workflow.workflow_id}:{output_name}. "
                         f"expected={matched_workflow.slice_length} got={len(history)}"
                     )
-                direct_histories.setdefault(matched_workflow.workflow_id, {})[
-                    output_name
-                ] = history
+                direct_histories[matched_workflow.workflow_id][output_name] = history
                 continue
             grouped_histories.setdefault(group_key, {}).setdefault(
                 output_name, []
