@@ -8,6 +8,7 @@ import yaml
 from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 
 _WORKFLOW = """\
@@ -273,4 +274,12 @@ def test_per_row_vlm_nodes_export_to_flowmesh(symbols: list[str]) -> None:
     for node_id, node in runtime_graph.nodes.items():
         flowmesh_node = node.to_flowmesh_node()
         if node.task_type == "python":
-            compile(flowmesh_node["spec"]["code"], node_id, "exec")
+            data_spec = flowmesh_node["spec"]["data"]
+            blobs = [
+                python_step.runtime_blob(),
+                *python_step.literal_blobs(data_spec["plan"]).values(),
+            ]
+            spec = python_step.flowmesh_spec(
+                node_id, data_spec, {blob.key: blob for blob in blobs}
+            )
+            compile(spec["code"], node_id, "exec")

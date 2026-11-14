@@ -1,5 +1,6 @@
 """Base classes for runtime execution backends."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,21 @@ class BaseRuntimeManager(ABC):
         return get_job_storage().save_artifact(
             request_info.request_id,
             f"runtime/{request_info.batch_id}/{filename}",
+            data,
+            content_type,
+        )
+
+    async def save_runtime_artifact_async(
+        self,
+        request_info: RequestInfo,
+        filename: str,
+        data: bytes,
+        content_type: str,
+    ) -> str:
+        return await asyncio.to_thread(
+            self.save_runtime_artifact,
+            request_info,
+            filename,
             data,
             content_type,
         )

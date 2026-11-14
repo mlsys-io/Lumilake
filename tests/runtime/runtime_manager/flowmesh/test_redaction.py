@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
@@ -25,11 +26,11 @@ from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placehold
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_manager import flowmesh as flowmesh_module
 from lumilake_server.runtime.runtime_manager.flowmesh import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
-from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
@@ -234,10 +235,6 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
     caller, the log, or the persisted job error record."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
-        lambda: InMemoryJobStorage(),
-    )
 
     request_info, row_id = _build_single_row_api_request()
 
@@ -337,10 +334,6 @@ async def test_workflow_submit_sanitizes_api_error_before_reraising(
     the persisted job error record."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
-        lambda: InMemoryJobStorage(),
-    )
 
     request_info, row_id = _build_single_row_api_request()
 
@@ -408,7 +401,7 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
     )
     saved: dict[str, Any] = {}
 
-    def _fake_save_json_artifact(
+    async def _fake_save_json_artifact(
         _self: FlowmeshRuntimeManager,
         _request_info: Any,
         _filename: str,
@@ -484,7 +477,7 @@ async def test_archive_task_response_archives_grouped_api_result(
     )
     saved: dict[str, Any] = {}
 
-    def _fake_save_json_artifact(
+    async def _fake_save_json_artifact(
         _self: FlowmeshRuntimeManager,
         _request_info: Any,
         _filename: str,
@@ -506,6 +499,19 @@ async def test_archive_task_response_archives_grouped_api_result(
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
     assert saved["data"]["items"][0]["rows"][1]["text"] == '{"kind": "second"}'
+
+
+def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
+    """The submit YAML keeps the credential FlowMesh needs; the archived copy
+    replaces it."""
+    task_spec = {
+        "spec": {"blobs": [{"headers": {"Authorization": "Bearer sk-live-secret"}}]}
+    }
+
+    submit_yaml, archive_yaml = flowmesh_module._dump_task_spec_yaml(task_spec)
+
+    assert yaml.safe_load(submit_yaml) == task_spec
+    assert "sk-live-secret" not in archive_yaml
 
 
 def test_api_result_dump_keeps_json_row_key() -> None:

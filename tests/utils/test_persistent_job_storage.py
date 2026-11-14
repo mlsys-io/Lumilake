@@ -143,6 +143,18 @@ def test_get_artifact_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     assert ct == "application/json"
 
 
+def test_keyed_blob_round_trip_uses_archive_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage, backend = _make_storage("archive", monkeypatch)
+    key = "lambda-runtime/abc.py"
+
+    persisted = storage.save_blob(key, b"runtime", "text/x-python")
+
+    assert persisted == f"archive/{key}"
+    assert backend.store[persisted] == (b"runtime", "text/x-python")
+
+
 def test_reserve_output_location_raises_on_conflict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -84,6 +84,9 @@ class JobStorage:
     def get_artifact(self, job_id: str, filename: str) -> tuple[bytes, str]:
         raise NotImplementedError
 
+    def save_blob(self, key: str, data: bytes, content_type: str) -> str:
+        raise NotImplementedError
+
     def list_summaries(
         self,
         *,
@@ -181,6 +184,7 @@ class InMemoryJobStorage(JobStorage):
         self._result: dict[str, dict[str, Any]] = {}
         self._output_index: dict[str, str] = {}
         self._artifacts: dict[str, dict[str, tuple[bytes, str]]] = {}
+        self._blobs: dict[str, tuple[bytes, str]] = {}
         self._summaries: dict[str, JobSummary] = {}
 
     def _save_locked(self, record: Any) -> None:
@@ -235,6 +239,10 @@ class InMemoryJobStorage(JobStorage):
         if not job_artifacts or filename not in job_artifacts:
             raise KeyError(filename)
         return job_artifacts[filename]
+
+    def save_blob(self, key: str, data: bytes, content_type: str) -> str:
+        self._blobs[key] = (data, content_type)
+        return key
 
     def list_summaries(
         self,
@@ -410,6 +418,11 @@ class PersistentJobStorage(JobStorage):
             return self._get_blob(object_name)
         except ArchiveNotFound as exc:
             raise KeyError(filename) from exc
+
+    def save_blob(self, key: str, data: bytes, content_type: str) -> str:
+        object_name = f"{self.key_prefix}/{key}" if self.key_prefix else key
+        self._put_blob(object_name, data, content_type)
+        return object_name
 
     def _put_json(self, object_name: str, body: bytes) -> None:
         self._put_blob(object_name, body, "application/json")
