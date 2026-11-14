@@ -562,7 +562,7 @@ def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
         Rows=["PASS", "FAIL"]
     )
 
-    with pytest.raises(ValueError, match="only an OutputOp can read it"):
+    with pytest.raises(ValueError, match="read it through an OutputOp"):
         RuntimeGraphBuilder().build(compiled)
 
 
@@ -616,6 +616,23 @@ def test_row_gate_rejects_a_node_that_is_not_a_router() -> None:
 
     with pytest.raises(ValueError, match="must be a RouterOp"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_list_lambda_reads_a_gated_op_through_its_gated_call() -> None:
+    # A list-mode Lambda may read a gated op. The op has no runtime node of its
+    # own, so the Lambda binds the gated call with one value per routed row.
+    rows = input_placeholder("Rows")
+    router = _router_over(rows)
+    gated = _row_gate_over(rows, router)
+    reader = LambdaOp([gated], lambda columns: columns[0], mode="list")
+    compiled = Graph.from_ops(
+        [as_output("gated", gated), as_output("fixed", reader)]
+    ).compile(Rows=["FAIL", "PASS"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    _, _, selected, _ = graph.dsl_to_runtime[gated.id]
+    plan = graph.nodes[reader.id].data_spec["plan"]
+    assert plan == [{"kind": "stage", "node": selected, "flatten": True}]
 
 
 def _row_gate_over(

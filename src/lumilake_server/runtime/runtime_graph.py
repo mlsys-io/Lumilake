@@ -555,11 +555,22 @@ class RuntimeGraphBuilder:
                 continue
             for input_op in lambda_op.inputs:
                 visited_node_ids.add(input_op.id)
+            if any(
+                isinstance(inp, LLMChatOp) and inp.row_gate is not None
+                for inp in lambda_op.inputs
+            ):
+                # A gated op's merge stage is built with the LLM ops below, so
+                # this Lambda is built after them.
+                visited_node_ids.add(lambda_op_id)
+                for input_op in lambda_op.inputs:
+                    visited_node_ids.add(input_op.id)
+                continue
             runtime_op = self._build_node_from_list_lambda_op(
                 lambda_op_id,
                 lambda_op,
                 graph_dict,
                 inputs_dict,
+                dsl_to_runtime,
             )
             nodes[runtime_op.node_id] = runtime_op
             node_order.append(runtime_op.node_id)
@@ -663,7 +674,6 @@ class RuntimeGraphBuilder:
                     inputs_dict,
                     visited_node_ids,
                     dsl_to_runtime=dsl_to_runtime,
-                    runtime_nodes=nodes,
                     api_mode=True,
                 )
                 runtime_ops = self._build_api_llm_op(
@@ -715,6 +725,27 @@ class RuntimeGraphBuilder:
                         output_paths[output_node_id] = self._upstream_output_path(
                             llm_op
                         )
+
+        if task_type_override != "data_profile":
+            for lambda_op_id, lambda_op in list_lambda_ops.items():
+                if lambda_op_id in dsl_to_runtime:
+                    continue
+                runtime_op = self._build_node_from_list_lambda_op(
+                    lambda_op_id,
+                    lambda_op,
+                    graph_dict,
+                    inputs_dict,
+                    dsl_to_runtime,
+                )
+                nodes[runtime_op.node_id] = runtime_op
+                node_order.append(runtime_op.node_id)
+                dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
+                if lambda_op_id in output_source_to_outputop:
+                    ((output_name, path_override),) = output_source_to_outputop[
+                        lambda_op_id
+                    ]
+                    output_node_map[runtime_op.node_id] = output_name
+                    output_paths[runtime_op.node_id] = path_override or "items.output"
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).
@@ -839,14 +870,14 @@ class RuntimeGraphBuilder:
             row_counts.append(
                 (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
             )
-            entry: dict[str, Any] = {"kind": "stage", "node": dep}
-            if not isinstance(inp, LLMVisionOp) and self._is_rowwise_llm(inp):
-                # A rowwise LLM groups its per-row outputs back into one item;
-                # flatten it to one value per row for the python step. A VLM's
-                # regroup step already emits one list per symbol, so it is
-                # excluded.
-                entry["flatten"] = True
-            plan.append(entry)
+            plan.append(
+                self._python_plan_entry(
+                    dep,
+                    # A VLM's regroup step already emits one list per symbol.
+                    flatten=not isinstance(inp, LLMVisionOp)
+                    and self._is_rowwise_llm(inp),
+                )
+            )
             if dep not in dependencies:
                 dependencies.append(dep)
 
@@ -1061,7 +1092,6 @@ class RuntimeGraphBuilder:
                 inputs_dict,
                 visited_node_ids,
                 dsl_to_runtime=dsl_to_runtime,
-                runtime_nodes=runtime_nodes,
             )
             columns: list[dict[str, Any]] = []
             for col in llm_op.rowwise_columns or []:
@@ -1117,7 +1147,6 @@ class RuntimeGraphBuilder:
                 inputs_dict,
                 visited_node_ids,
                 dsl_to_runtime=dsl_to_runtime,
-                runtime_nodes=runtime_nodes,
             )
 
         image_source_id = llm_op.image_source
@@ -1653,6 +1682,7 @@ class RuntimeGraphBuilder:
         op: LambdaOp,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
+        dsl_to_runtime: dict[str, list[str]],
     ) -> RuntimeOp:
         """Compile a list-mode LambdaOp to one FlowMesh ``python`` task."""
         plan: python_step.ColumnPlan = []
@@ -1662,15 +1692,28 @@ class RuntimeGraphBuilder:
             if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
+            elif isinstance(inp, LLMChatOp) and inp.row_gate is not None:
+                # A gated op has no runtime node of its own. Its gated call
+                # answers one value per routed row, and flattening that call's
+                # items reads one value per row with ``None`` for a row the gate
+                # skipped, which is what a reader of the op expects.
+                gated_runtime = dsl_to_runtime.get(inp.id) or []
+                if len(gated_runtime) != 4:
+                    raise ValueError(
+                        f"LambdaOp '{op_id}' reads the row-gated LLMChatOp"
+                        f" '{inp.id}' before its stages are built"
+                    )
+                selected_id = gated_runtime[2]
+                plan.append({"kind": "stage", "node": selected_id, "flatten": True})
+                dependencies.append(selected_id)
             elif isinstance(inp, LLMOp):
-                entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
-                if not isinstance(inp, LLMVisionOp) and self._is_rowwise_llm(inp):
-                    # A rowwise LLM groups its per-row outputs back into one
-                    # item; the python step must flatten it to one value per
-                    # row before the list-mode Lambda sees it. A VLM's regroup
-                    # step already emits one list per symbol, so it is excluded.
-                    entry["flatten"] = True
-                plan.append(entry)
+                plan.append(
+                    self._python_plan_entry(
+                        inp.id,
+                        flatten=not isinstance(inp, LLMVisionOp)
+                        and self._is_rowwise_llm(inp),
+                    )
+                )
                 dependencies.append(inp.id)
             elif isinstance(inp, DataRetrievalOp):
                 plan.append({"kind": "stage", "node": inp.id})
@@ -2232,6 +2275,53 @@ class RuntimeGraphBuilder:
             )
         return condition
 
+    def _python_plan_entry(
+        self,
+        node_id: str,
+        *,
+        path: str | None = None,
+        flatten: bool = False,
+    ) -> dict[str, Any]:
+        """One python step plan entry for upstream ``node_id``.
+
+        ``path`` reads a field out of each item; ``flatten`` expands a row-wise
+        upstream's grouped answer to one value per row; otherwise the whole
+        item value is read.
+        """
+        entry: dict[str, Any] = {"kind": "stage", "node": node_id}
+        if flatten:
+            entry["flatten"] = True
+        elif path:
+            entry["path"] = path
+        return entry
+
+    def _python_step_op(
+        self,
+        node_id: str,
+        mode: str,
+        plan: python_step.ColumnPlan,
+        dependencies: tuple[str, ...],
+        **spec: Any,
+    ) -> RuntimeOp:
+        """A generated python step with its plan and mode-specific fields."""
+        return RuntimeOp(
+            node_id=node_id,
+            task_type=python_step.TASK_TYPE,
+            backend=python_step.BACKEND,
+            model="",
+            data_spec={
+                "code": "",
+                "fn_name": mode,
+                "plan": plan,
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+                "mode": mode,
+                **spec,
+            },
+            model_spec={},
+            inference_spec={},
+            dependencies=dependencies,
+        )
+
     def _row_gate(
         self,
         *,
@@ -2262,8 +2352,9 @@ class RuntimeGraphBuilder:
 
         A row gate compiles its LLM into status, selection, gated call and
         merge stages, so the op has no single runtime node a consumer could
-        bind to. A fused round reads each leaf through a render step, which
-        binds the merge stage. References declared on a column
+        bind to. A fused round reads each leaf through a render step, and a
+        list-mode Lambda takes the whole merge-stage item list, so both bind
+        the merge stage. References declared on a column
         (``rowwise_columns``, ``aggregate_table``), on a messages column or in
         a ``condition`` read the op without listing it as an input, so they are
         checked as well.
@@ -2288,13 +2379,16 @@ class RuntimeGraphBuilder:
                     and len(consumer.inputs) == 1
                 ):
                     continue
+                if isinstance(consumer, LambdaOp) and consumer.takes_whole_columns:
+                    # A list-mode Lambda reads the merge stage's whole item list,
+                    # so it takes the routed rows as one column.
+                    continue
                 raise ValueError(
                     f"Op '{consumer_id}' reads the row-gated LLMChatOp '{op_id}',"
                     " which compiles to status, selection, gated call and merge"
-                    " stages; a row gate produces one row per input row but not"
-                    " one item per row, so only an OutputOp can read it. Consume"
-                    " the pre-gate rows instead, or write the merged rows to an"
-                    " output; a fused round reads it through its render step."
+                    " stages; a row gate keeps one item per input row, so read it"
+                    " through an OutputOp, a list-mode Lambda, or a fused round's"
+                    " render step."
                 )
 
     @staticmethod
@@ -2514,7 +2608,6 @@ class RuntimeGraphBuilder:
                 inputs_dict,
                 visited_node_ids,
                 dsl_to_runtime=dsl_to_runtime,
-                runtime_nodes=runtime_nodes,
             )
 
         if task_type_override == "data_profile":
@@ -2690,19 +2783,12 @@ class RuntimeGraphBuilder:
     ) -> list[RuntimeOp]:
         """Build status, selection, gated LLM, and merge stages for a row gate."""
         router_id = row_gate.node
-        router = graph_dict.get(router_id)
-        if not isinstance(router, RouterOp):
-            raise ValueError(f"row gate node '{router_id}' is not a RouterOp")
+        router = graph_dict[router_id]
+        assert isinstance(router, RouterOp), "the gate was validated by the caller"
         source_runtime = dsl_to_runtime.get(router.source.id, [])
+        source_op = graph_dict.get(router.source.id)
         if not source_runtime:
-            source_op = graph_dict.get(router.source.id)
             if isinstance(source_op, InputOp):
-                values = inputs_dict.get(source_op.name)
-                if values is None:
-                    raise ValueError(
-                        f"RouterOp '{router_id}' source input '{source_op.name}' "
-                        "has no values supplied"
-                    )
                 source_runtime = [source_op.id]
             if isinstance(source_op, LambdaOp) and not source_op.takes_whole_columns:
                 source_runtime = [
@@ -2716,6 +2802,19 @@ class RuntimeGraphBuilder:
                         dsl_to_runtime,
                     )
                 ]
+            elif isinstance(source_op, LambdaOp):
+                # A list-mode Lambda that a router reads is built here when the
+                # pre-pass deferred it for reading a gated op.
+                runtime_op = self._build_node_from_list_lambda_op(
+                    router.source.id,
+                    source_op,
+                    graph_dict,
+                    inputs_dict,
+                    dsl_to_runtime,
+                )
+                nodes[runtime_op.node_id] = runtime_op
+                dsl_to_runtime[router.source.id] = [runtime_op.node_id]
+                source_runtime = [runtime_op.node_id]
         if len(source_runtime) != 1:
             raise ValueError(
                 f"RouterOp '{router_id}' source '{router.source.id}' must compile "
@@ -2734,7 +2833,6 @@ class RuntimeGraphBuilder:
             )
         # The python step reads the upstream's item list first, so the plan
         # path is relative to each item.
-        source_op = graph_dict.get(router.source.id)
         rowwise_source = not isinstance(
             source_op, LLMVisionOp
         ) and self._is_rowwise_llm(source_op)
@@ -2763,19 +2861,6 @@ class RuntimeGraphBuilder:
                 " exposes the target field, or drop the 'input_path' for scalar"
                 " inputs."
             )
-        source_columns: list[dict[str, Any]] = [
-            {
-                "kind": "stage",
-                "label": "source",
-                "node": source_runtime[0],
-            },
-        ]
-        if read_path == "output":
-            if rowwise_source:
-                source_columns[0]["flatten"] = True
-        else:
-            source_columns[0]["path"] = read_path
-        status_dependencies: tuple[str, ...] = (source_runtime[0],)
         if isinstance(source_op, InputOp):
             values = inputs_dict.get(source_op.name)
             if values is None:
@@ -2783,38 +2868,25 @@ class RuntimeGraphBuilder:
                     f"RouterOp '{router_id}' source input '{source_op.name}' "
                     "has no values supplied"
                 )
-            source_columns = [
-                {
-                    "kind": "literal",
-                    "label": "source",
-                    "values": values,
-                }
+            source_columns: python_step.ColumnPlan = [
+                {"kind": "literal", "label": "source", "values": values}
             ]
-            status_dependencies = ()
-        status = RuntimeOp(
-            node_id=status_id,
-            task_type=python_step.TASK_TYPE,
-            backend=python_step.BACKEND,
-            model="",
-            data_spec={
-                "code": "",
-                "fn_name": "row_status",
-                "plan": source_columns,
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-                "mode": "row_status",
-                "rules": [
-                    {
-                        "branch": rule.branch,
-                        "match": rule.match,
-                        "value": rule.value,
-                    }
-                    for rule in router.rules
-                ],
-                "default_branch": router.default_branch,
-            },
-            model_spec={},
-            inference_spec={},
-            dependencies=status_dependencies,
+            status_dependencies: tuple[str, ...] = ()
+        else:
+            source_entry = self._python_plan_entry(
+                source_runtime[0],
+                path=None if read_path == "output" else read_path,
+                flatten=read_path == "output" and rowwise_source,
+            )
+            source_columns = [{"label": "source", **source_entry}]
+            status_dependencies = (source_runtime[0],)
+        status = self._python_step_op(
+            status_id,
+            "row_status",
+            source_columns,
+            status_dependencies,
+            rules=[rule.to_dict() for rule in router.rules],
+            default_branch=router.default_branch,
         )
         # Mark the message chain as visited even though the gated model reads
         # its rows from the filtered selector below.
@@ -2824,7 +2896,6 @@ class RuntimeGraphBuilder:
             inputs_dict,
             visited_node_ids,
             dsl_to_runtime=dsl_to_runtime,
-            runtime_nodes=nodes,
             api_mode=llm_op.config.api is not None,
         )
         labels: list[str] = []
@@ -2913,23 +2984,13 @@ class RuntimeGraphBuilder:
             select_plan.append(entry)
             if runtime_ids[0] not in select_dependencies:
                 select_dependencies.append(runtime_ids[0])
-        selector = RuntimeOp(
-            node_id=select_id,
-            task_type=python_step.TASK_TYPE,
-            backend=python_step.BACKEND,
-            model="",
-            data_spec={
-                "code": "",
-                "fn_name": "row_select",
-                "plan": select_plan,
-                "labels": labels,
-                "branch": row_gate.branch,
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-                "mode": "row_select",
-            },
-            model_spec={},
-            inference_spec={},
-            dependencies=tuple(select_dependencies),
+        selector = self._python_step_op(
+            select_id,
+            "row_select",
+            select_plan,
+            tuple(select_dependencies),
+            labels=labels,
+            branch=row_gate.branch,
         )
         # The selector emits one flat ``{label: value}`` row per kept row, so
         # a gated column reads its label straight off each selected item.
@@ -2951,15 +3012,8 @@ class RuntimeGraphBuilder:
                 {"role": "user", "content": llm_op.rowwise_template},
             ],
         }
-        backend = "vllm"
-        task_type = task_type_override or "inference"
-        if llm_op.config.api is not None:
-            backend = "api"
-            task_type = "api"
-        if backend == "api":
-            api_config = llm_op.config.api
-            if api_config is None:
-                raise ValueError("API row gate requires config.api")
+        api_config = llm_op.config.api
+        if api_config is not None:
             selected = self._build_api_task(
                 llm_op_id=selected_id,
                 llm_op=llm_op,
@@ -2978,39 +3032,29 @@ class RuntimeGraphBuilder:
                 inference_spec["templates"] = llm_op.structural_outputs
             selected = RuntimeOp(
                 node_id=selected_id,
-                task_type=task_type,
-                backend=backend,
+                task_type=task_type_override or "inference",
+                backend="vllm",
                 model=llm_op.config.model,
                 data_spec=base_data_spec,
-                model_spec=self._build_model_spec(llm_op.config, backend),
+                model_spec=self._build_model_spec(llm_op.config, "vllm"),
                 inference_spec=inference_spec,
                 dependencies=(select_id,),
                 condition=None,
             )
-        merge = RuntimeOp(
-            node_id=merge_id,
-            task_type=python_step.TASK_TYPE,
-            backend=python_step.BACKEND,
-            model="",
-            data_spec={
-                "code": "",
-                "fn_name": "row_skip_merge",
-                "plan": [
-                    {"kind": "stage", "node": status_id},
-                    {
-                        "kind": "stage",
-                        "node": selected_id,
-                        "flatten": True,
-                        "allow_empty": True,
-                    },
-                ],
-                "branch": row_gate.branch,
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-                "mode": "row_skip_merge",
-            },
-            model_spec={},
-            inference_spec={},
-            dependencies=(status_id, selector.node_id, selected_id),
+        merge = self._python_step_op(
+            merge_id,
+            "row_skip_merge",
+            [
+                {"kind": "stage", "node": status_id},
+                {
+                    "kind": "stage",
+                    "node": selected_id,
+                    "flatten": True,
+                    "allow_empty": True,
+                },
+            ],
+            (status_id, selector.node_id, selected_id),
+            branch=row_gate.branch,
         )
         visited_node_ids.update({router_id, llm_op_id})
         return [status, selector, selected, merge]
@@ -3186,13 +3230,8 @@ class RuntimeGraphBuilder:
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None,
     ) -> tuple[dict[str, Any], list[str]]:
-        """Build the dataframe data_spec for a rowwise LLMChatOp, shared by the
-        local and API paths."""
-        if not self._is_rowwise_llm(llm_op):
-            raise ValueError(
-                f"LLMChatOp {llm_op_id} has no rowwise_template or "
-                "rowwise_messages_column"
-            )
+        """Build the dataframe data_spec for a rowwise LLMChatOp with a
+        ``rowwise_template``, shared by the local and API paths."""
         columns: list[dict[str, Any]] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for col in llm_op.rowwise_columns or []:
@@ -3236,17 +3275,10 @@ class RuntimeGraphBuilder:
             )
         if not columns:
             raise ValueError(f"LLMChatOp {llm_op_id} has empty rowwise_columns")
-        if llm_op.rowwise_messages_column is not None:
-            raise ValueError(
-                f"LLMChatOp {llm_op_id} rowwise_messages_column is lowered before "
-                "the dataframe builder"
-            )
         messages: list[dict[str, str]] = []
         for system_msg in llm_op.system_messages or []:
             messages.append({"role": "system", "content": system_msg})
-        if llm_op.rowwise_template is None:
-            raise ValueError(f"LLMChatOp {llm_op_id} has no rowwise_template")
-        messages.append({"role": "user", "content": llm_op.rowwise_template})
+        messages.append({"role": "user", "content": llm_op.rowwise_template or ""})
         return {
             "type": "dataframe",
             "columns": columns,
@@ -3672,7 +3704,6 @@ class RuntimeGraphBuilder:
         inputs_dict: dict[str, list[str]],
         visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None = None,
-        runtime_nodes: dict[str, RuntimeOp] | None = None,
         api_mode: bool = False,
     ) -> tuple[list[str], dict[str, Any]]:
         target_llm_op = graph_dict[llm_op_id]
@@ -3700,32 +3731,14 @@ class RuntimeGraphBuilder:
                     op.id != target_llm_op.id
                 ), "Encountered starting LLMOp again unexpectedly"
                 is_api_ancestor = self._is_api_task(op)
-                is_gated_ancestor = (
-                    isinstance(op, LLMChatOp) and op.row_gate is not None
-                )
-                bind_id = op.id
-                if is_gated_ancestor:
-                    gated_runtime = (dsl_to_runtime or {}).get(op.id) or []
-                    if not gated_runtime:
-                        raise ValueError(
-                            f"LLMOp '{llm_op_id}' reads the row-gated LLMChatOp"
-                            f" '{op.id}', which has no runtime stages in this"
-                            " build; a gated op is readable only through the"
-                            " rows its merge stage emits."
-                        )
-                    # A gated op has no runtime node of its own; its merged
-                    # rows are its last stage.
-                    bind_id = gated_runtime[-1]
-                if bind_id not in upstream_llm_ids:
-                    upstream_llm_ids.add(bind_id)
+                if op.id not in upstream_llm_ids:
+                    upstream_llm_ids.add(op.id)
                     if not is_api_ancestor:
                         row_count = self._static_output_row_count(
                             op, inputs_dict, graph_dict
                         )
                         if row_count is not None and row_count > 1:
-                            if api_mode or not (
-                                is_gated_ancestor or self._emits_one_item_per_row(op)
-                            ):
+                            if api_mode or not self._emits_one_item_per_row(op):
                                 raise ValueError(
                                     f"LLMOp '{llm_op_id}' consumes '{op.id}', which"
                                     " produces multiple rows; a message column"
@@ -3734,15 +3747,8 @@ class RuntimeGraphBuilder:
                                     " this node to the single unsuffixed output"
                                     " would silently drop every row but the first."
                                 )
-                            ancestor_row_counts[bind_id] = row_count
+                            ancestor_row_counts[op.id] = row_count
                     if isinstance(op, LLMChatOp) and op.return_history:
-                        if is_gated_ancestor:
-                            raise ValueError(
-                                f"LLMOp '{llm_op_id}' consumes the row-gated"
-                                f" LLMChatOp '{op.id}', which has return_history."
-                                " A gated op keeps no prompt history: its merge"
-                                " stage emits only the routed rows."
-                            )
                         if is_api_ancestor:
                             prior = self._api_prior_prompt(op, inputs_dict)
                             if prior is None:
@@ -3764,12 +3770,8 @@ class RuntimeGraphBuilder:
                                 "path": "items.metadata.prompt",
                             }
                     columns[f"{op.id}_output"] = {
-                        "node": bind_id,
-                        "path": (
-                            "value.items.output"
-                            if is_gated_ancestor
-                            else self._upstream_output_path(op)
-                        ),
+                        "node": op.id,
+                        "path": self._upstream_output_path(op),
                     }
 
                 if isinstance(op, LLMChatOp) and op.return_history:
