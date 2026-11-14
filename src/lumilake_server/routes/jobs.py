@@ -574,6 +574,7 @@ class JobRecord:
     clustering_seconds: float | None = None
     error: str | None = None
     progress: JobProgress = field(default_factory=JobProgress)
+    terminal_usage_finalized: bool = False
     result: LumilakeResponse | None = None
     folder_inputs: dict[str, str] = field(default_factory=dict)
     trace_ids: list[str] = field(default_factory=list)
@@ -1212,8 +1213,8 @@ async def recover_in_flight_jobs(
         if loaded is None:
             continue
         try:
-            record = JobRecord(**loaded)
-        except (ValueError, TypeError):
+            record = _record_from_payload(loaded)
+        except (KeyError, ValueError, TypeError):
             logger.exception(
                 "Failed to reconstruct job %s during startup recovery",
                 summary.job_id,
@@ -1299,6 +1300,13 @@ async def recover_in_flight_jobs_until_done(
     return False
 
 
+def _record_from_payload(loaded: dict[str, Any]) -> JobRecord:
+    """Rebuild a record from storage, treating a record already terminal as
+    usage-finalized since its stored usage is the whole story."""
+    finalized = loaded["status"] in TERMINAL_JOB_STATUSES
+    return JobRecord(**{"terminal_usage_finalized": finalized, **loaded})
+
+
 async def _load_job_record(job_id: str) -> JobRecord | None:
     record: JobRecord | None
     async with jobs_lock:
@@ -1310,7 +1318,7 @@ async def _load_job_record(job_id: str) -> JobRecord | None:
             loaded = None
         if loaded:
             try:
-                record = JobRecord(**loaded)
+                record = _record_from_payload(loaded)
             except ValueError:
                 record = None
             async with jobs_lock:
@@ -3628,24 +3636,52 @@ async def get_job_progress(
         if needs_save:
             await asyncio.to_thread(_job_storage.save, record)
 
-    if record.status not in TERMINAL_JOB_STATUSES:
-        fm = flowmesh_for(request)
+    if (
+        record.status not in TERMINAL_JOB_STATUSES
+        or not record.terminal_usage_finalized
+    ):
         # ``trace_ids`` and ``job_task_ids`` are persisted only once the job
-        # finishes.
+        # finishes, so a job failed by startup recovery has none to read.
         task_ids_by_workflow = record.job_task_ids or server.task_ids_for_request(
             job_id
         )
-        computed = await _compute_job_usage(
-            fm,
-            list(dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])),
-            hook_logger,
-            task_ids_by_workflow=task_ids_by_workflow or None,
+        workflow_ids = list(
+            dict.fromkeys([*_job_workflow_ids(record), *task_ids_by_workflow])
         )
+        terminal = record.status in TERMINAL_JOB_STATUSES
+        # A finished job is read only for its own tasks: without task
+        # attribution a workflow can hold other jobs' tasks, and a sum over
+        # them would be finalized as this job's usage.
+        recompute = not terminal or (bool(workflow_ids) and bool(task_ids_by_workflow))
+        finalize = terminal and recompute
+        if recompute:
+            fm = flowmesh_for(request)
+            try:
+                computed = await _compute_job_usage(
+                    fm,
+                    workflow_ids,
+                    hook_logger,
+                    task_ids_by_workflow=task_ids_by_workflow or None,
+                )
+            except HTTPException as exc:
+                if not terminal or exc.status_code != status.HTTP_502_BAD_GATEWAY:
+                    raise
+                hook_logger.warning(
+                    "Failed to read usage of a finished job; serving the stored usage",
+                    exc_info=True,
+                )
+                computed = None
+                finalize = False
         needs_save = False
         async with jobs_lock:
-            if record.progress.usage != computed:
-                record.progress.usage = computed
-                needs_save = True
+            if not record.terminal_usage_finalized:
+                if recompute and (not terminal or finalize):
+                    if record.progress.usage != computed:
+                        record.progress.usage = computed
+                        needs_save = True
+                if finalize:
+                    record.terminal_usage_finalized = True
+                    needs_save = True
         if needs_save:
             await asyncio.to_thread(_job_storage.save, record)
 
@@ -4110,7 +4146,8 @@ async def _persist_terminal_usage(
     record: JobRecord, fm: AsyncFlowMesh, logger: Logger
 ) -> None:
     """Persist the summed usage onto a terminal job's progress; ``None`` when
-    it cannot be read, never a partial sum."""
+    it cannot be read, never a partial sum. A record a progress read already
+    finalized keeps that usage if this read fails."""
     try:
         computed = await _compute_job_usage(
             fm,
@@ -4124,7 +4161,14 @@ async def _persist_terminal_usage(
         )
         computed = None
     async with jobs_lock:
+        if (
+            computed is None
+            and record.terminal_usage_finalized
+            and record.progress.usage is not None
+        ):
+            return
         record.progress.usage = computed
+        record.terminal_usage_finalized = True
 
 
 @router.get(

@@ -1050,9 +1050,15 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
     """Fakes FlowMesh dispatch but runs the real list-Lambda aggregation,
     proving the whole-list output satisfies `_process_batch`'s demux."""
 
-    def __init__(self, *, items: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        *,
+        items: list[dict[str, Any]],
+        history: list[dict[str, str]] | None = None,
+    ) -> None:
         super().__init__()
         self._items = items
+        self._history = history
 
     async def process_request(
         self,
@@ -1063,6 +1069,7 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
+        histories: dict[str, list[list[dict[str, str]]]] = {}
         for node_id in request_info.output_node_map:
             flat_outputs[node_id] = await flowmesh_manager._aggregate_output_node(
                 output_op_id=node_id,
@@ -1073,7 +1080,13 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
                 list_lambda=True,
                 list_lambda_cardinality=False,
             )
-        return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
+            if self._history is not None:
+                histories[node_id] = [self._history]
+        return {
+            "flat_outputs": flat_outputs,
+            "chat_histories": histories,
+            "task_node_map": {},
+        }
 
 
 class _RowwiseApiRuntimeManager(RecordingRuntimeManager):
@@ -1479,9 +1492,16 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
         {"fid": "f2", "statement": "s2", "quote": "q2"},
         {"fid": "f3", "statement": "s3", "quote": "q3"},
     ]
+    history = [
+        {"role": "user", "content": "Summarize the table."},
+        {"role": "assistant", "content": "one rule"},
+    ]
     server = server_factory()
     server.runtime_manager = cast(
-        Any, _ListLambdaRuntimeManager(items=[{"output": it} for it in whole_list])
+        Any,
+        _ListLambdaRuntimeManager(
+            items=[{"output": it} for it in whole_list], history=history
+        ),
     )
 
     workflows = [
@@ -1511,6 +1531,7 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
     observations = resp.outputs["shared"]["observations"]
     assert len(observations) == 1
     assert json.loads(observations[0]) == whole_list
+    assert resp.chat_histories["shared"]["observations"] == [history]
 
 
 @pytest.mark.asyncio

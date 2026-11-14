@@ -1,8 +1,16 @@
+import json
 import math
 import re
+import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from httpx2 import TransportError
+from huggingface_hub import get_safetensors_metadata, try_to_load_from_cache
+from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.utils import NotASafetensorsRepoError, SafetensorsParsingError
 
 from lumilake import envs
 from lumilake_server.data_profile_models import (
@@ -28,6 +36,9 @@ from .multimodal_cost import MultimodalCostCoefficients, compute_gpu_exec_cost
 from .schedule.halo_dp import DPSolver, QuerySignature, WorkerState
 from .schedule.model_size import MODEL_SIZE
 from .schedule.models import DBQuery, Edge, GraphSpec, Node, QueryPlanChoice, Worker
+
+_HF_SAFETENSORS_FILE = "model.safetensors"
+_HF_SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
 
 
 def _retrieval_is_data_profile_eligible(data_spec: Mapping[str, Any]) -> bool:
@@ -113,6 +124,7 @@ class HaloOptimizer(BaseOptimizer):
             key.lower(): float(value) for key, value in MODEL_SIZE.items()
         }
         self._default_model_size_b = 20.0
+        self._model_size_cache: dict[str, float] = {}
         self._model_init_sec_per_b = 0.75
         self._llm_base_sec_per_b = 0.25
         self._llm_input_sec = 0.15
@@ -945,7 +957,7 @@ class HaloOptimizer(BaseOptimizer):
 
     @staticmethod
     def _is_gpu_backend(backend: str) -> bool:
-        return str(backend).strip().lower() in {
+        return backend.strip().lower() in {
             "vllm",
             "transformers",
             "diffusers",
@@ -986,8 +998,8 @@ class HaloOptimizer(BaseOptimizer):
             )
 
     def _map_engine(self, backend: str, task_type: str) -> str:
-        normalized_backend = str(backend).strip().lower()
-        normalized_task_type = str(task_type).strip().lower()
+        normalized_backend = backend.strip().lower()
+        normalized_task_type = task_type.strip().lower()
         if self._is_gpu_backend(normalized_backend):
             return "vllm"
         if normalized_backend == "http":
@@ -1138,6 +1150,100 @@ class HaloOptimizer(BaseOptimizer):
     def _epoch_penalty(self, epoch: int) -> float:
         return self._epoch_penalty_weight * (1.0 + 0.1 * max(0, epoch))
 
+    @staticmethod
+    def _safetensors_parameter_count(path: Path) -> int:
+        """Return the exact tensor parameter count from one safetensors file."""
+        with path.open("rb") as handle:
+            size_bytes = handle.read(8)
+            if len(size_bytes) != 8:
+                raise ValueError(f"{path} is too small to be a safetensors file")
+            header_size = struct.unpack("<Q", size_bytes)[0]
+            header_bytes = handle.read(header_size)
+        if len(header_bytes) != header_size:
+            raise ValueError(f"{path} has a truncated safetensors header")
+        header = json.loads(header_bytes)
+        if not isinstance(header, dict):
+            raise ValueError(f"{path} has a non-object safetensors header")
+        parameter_count = 0
+        for name, tensor in header.items():
+            if name == "__metadata__":
+                continue
+            if not isinstance(tensor, dict):
+                raise ValueError(f"{path} has an invalid tensor entry {name!r}")
+            shape = tensor.get("shape")
+            if not isinstance(shape, list) or not all(
+                isinstance(dimension, int) and dimension >= 0 for dimension in shape
+            ):
+                raise ValueError(f"{path} has an invalid shape for tensor {name!r}")
+            parameter_count += math.prod(shape)
+        return parameter_count
+
+    def _cached_parameter_count(self, model_name: str) -> int:
+        """Read a model's exact parameter count from the local HF cache."""
+        cached_weight = try_to_load_from_cache(model_name, _HF_SAFETENSORS_FILE)
+        if isinstance(cached_weight, str):
+            parameter_count = self._safetensors_parameter_count(Path(cached_weight))
+        else:
+            cached_index = try_to_load_from_cache(
+                model_name, _HF_SAFETENSORS_INDEX_FILE
+            )
+            if not isinstance(cached_index, str):
+                raise ValueError("weights are not present in the local HF cache")
+            with Path(cached_index).open(encoding="utf-8") as handle:
+                index = json.load(handle)
+            if not isinstance(index, dict):
+                raise ValueError("the cached safetensors index is not an object")
+            raw_weight_map = index.get("weight_map")
+            if not isinstance(raw_weight_map, dict):
+                raise ValueError("the cached safetensors index has no weight_map")
+            filenames = sorted({str(filename) for filename in raw_weight_map.values()})
+            if not filenames:
+                raise ValueError("the cached safetensors index has no shards")
+            parameter_count = 0
+            for filename in filenames:
+                cached_shard = try_to_load_from_cache(model_name, filename)
+                if not isinstance(cached_shard, str):
+                    raise ValueError(
+                        f"cached safetensors shard {filename!r} is missing"
+                    )
+                parameter_count += self._safetensors_parameter_count(Path(cached_shard))
+        if parameter_count <= 0:
+            raise ValueError("local HF cache returned no safetensors parameters")
+        return parameter_count
+
+    def _remote_parameter_count(self, model_name: str) -> int:
+        """Read exact parameter counts from Hugging Face safetensors metadata."""
+        metadata = get_safetensors_metadata(model_name)
+        parameter_count = sum(int(count) for count in metadata.parameter_count.values())
+        if parameter_count <= 0:
+            raise ValueError("Hugging Face returned no safetensors parameters")
+        return parameter_count
+
+    def _safetensors_parameter_count_for_model(self, model_name: str) -> int:
+        """Resolve exact parameters from local cache, then Hugging Face."""
+        attempts: list[str] = []
+        for source, resolver in (
+            ("local HF cache", self._cached_parameter_count),
+            ("Hugging Face safetensors metadata", self._remote_parameter_count),
+        ):
+            try:
+                parameter_count = resolver(model_name)
+            except (
+                HfHubHTTPError,
+                NotASafetensorsRepoError,
+                SafetensorsParsingError,
+                TransportError,
+                OSError,
+                ValueError,
+            ) as exc:
+                attempts.append(f"{source}: {exc}")
+                continue
+            return parameter_count
+        raise ValueError(
+            "safetensors metadata failed for model "
+            f"{model_name!r}: {'; '.join(attempts)}"
+        )
+
     def _model_size_b(self, node: Node) -> float:
         model_name = node.model
         if not model_name:
@@ -1145,15 +1251,20 @@ class HaloOptimizer(BaseOptimizer):
                 "Halo model size resolution requires a non-empty model name. "
                 f"node_id={node.id!r}"
             )
-        normalized = str(model_name).strip()
+        normalized = model_name.strip()
         if not normalized:
             raise ValueError(
                 "Halo model size resolution requires a non-empty model name. "
                 f"node_id={node.id!r}"
             )
 
+        cached_size = self._model_size_cache.get(normalized)
+        if cached_size is not None:
+            return cached_size
+
         lookup_size = self._model_size_lookup.get(normalized.lower())
         if lookup_size is not None:
+            self._model_size_cache[normalized] = lookup_size
             return lookup_size
 
         suffix_match = self._model_suffix_pattern.search(normalized)
@@ -1164,15 +1275,21 @@ class HaloOptimizer(BaseOptimizer):
                 raw_size = None
             if raw_size is not None:
                 unit = suffix_match.group(2).lower()
-                if unit == "m":
-                    return raw_size / 1000.0
-                return raw_size
+                resolved_size = raw_size / 1000.0 if unit == "m" else raw_size
+                self._model_size_cache[normalized] = resolved_size
+                return resolved_size
 
-        raise ValueError(
-            "Halo model size is unknown; add it to MODEL_SIZE or provide an inferable "
-            "suffix (e.g. 7B, 1.5B, 560M). "
-            f"node_id={node.id!r} model={normalized!r}"
-        )
+        try:
+            parameter_count = self._safetensors_parameter_count_for_model(normalized)
+        except ValueError as exc:
+            raise ValueError(
+                "Halo model size is unknown after trying the MODEL_SIZE catalog, "
+                "the name suffix, and safetensors metadata. "
+                f"node_id={node.id!r} model={normalized!r}. {exc}"
+            ) from exc
+        safetensors_size = parameter_count / 1_000_000_000.0
+        self._model_size_cache[normalized] = safetensors_size
+        return safetensors_size
 
 
 __all__ = ["HaloOptimizer"]

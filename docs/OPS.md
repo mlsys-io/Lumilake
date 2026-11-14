@@ -10,6 +10,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
+| `LLMCompletionOp` | Run rendered string prompts through local generation without a chat template. |
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
@@ -132,6 +133,10 @@ overrides the executor's default; when unset, no timeout key is emitted and
 the executor's own default applies. Use it for long-running extractions over
 large documents, which can exceed the executor's default.
 
+`config.api.concurrency` sets the number of in-flight requests for the API
+task. It must be a positive integer no greater than 8, the cap FlowMesh
+sets; when unset, FlowMesh uses 8.
+
 The credential is resolved server-side, not supplied by the caller. If
 `config.api.url`'s origin is on the trusted-origin allowlist (the default
 `https://lum.id`, the origin of `LUMILAKE_API_DEFAULT_URL`, and everything
@@ -201,6 +206,27 @@ A local `LLMChatOp` with a `rowwise_template` runs one generation per input
 row. When it is the workflow output, its per-row results are returned as one
 output value per input row (FlowMesh groups them back into one item per table
 internally; the runtime flattens that back to per-row values at aggregation).
+
+### LLMCompletionOp
+
+`LLMCompletionOp` generates from rendered string prompts without the model
+chat template. `prompt` references a workflow input, a `LambdaOp`, or a local
+LLM op that produces one prompt string per row; render a templated prompt with
+a `LambdaOp`. Use it when the prompt already carries the model's own chat
+control tokens. Sampling fields are the same as `LLMChatOp`'s.
+`config.api` and `config.chat_template_kwargs` are not accepted: the task never
+applies a chat template, so both would have no effect.
+
+```yaml
+ops:
+  - id: Generate
+    op: LLMCompletionOp
+    inputs: [Prompt]
+    prompt: Prompt
+    config:
+      model: Qwen/Qwen3-8B
+      max_tokens: 3000
+```
 
 ### LLMVisionOp
 
@@ -286,6 +312,15 @@ emits one item per element in order, so each element is one group downstream,
 read at `value.items.output`. A list-mode `LambdaOp` is read through a node
 column (`rowwise_columns` / `aggregate_table`), not through an LLM message
 chain.
+
+An `LLMCompletionOp` prompt, an `EmbeddingOp` content or an
+`ImageGenerationOp` content whose list column binds a list-mode `LambdaOp`
+directly runs once per element, so it produces one whole-list value holding
+every answer, embedded row or image, not one value per row. A node that reads
+the whole column as one value, such as an `aggregate_table` chat, already
+answers once per run, so its answer is the output value as it is. A per-element
+node two or more hops from the list-mode `LambdaOp` is not folded, and its
+several values fail the run's slice merge.
 
 A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one
 value per input row: the row-wise LLM groups its per-row outputs back into one

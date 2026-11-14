@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from lumilake.envs import stack_name_requirement, valid_stack_name
+
+from .env import read_env_file
+
 type FindingLevel = Literal["note", "warning", "error"]
 
 
@@ -73,6 +77,7 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "LUMILAKE_OPTIMIZER_BATCH_SIZE",
     "LUMILAKE_STARVATION_LIMIT",
     "LUMILAKE_BATCH_ACCUMULATION_SECONDS",
+    "LUMILAKE_DISPATCH_QUEUE_DEPTH",
     "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS",
     "LUMILAKE_CPU_WORKER_GROUP_SIZE",
     "LUMILAKE_GPU_WORKER_GROUP_SIZE",
@@ -118,32 +123,13 @@ _OPTIONAL_KEYS: tuple[str, ...] = (
     "HARDWARE_GPU_REQUIREMENT",
     "HARDWARE_GPU_MEMORY_REQUIREMENT",
     "LUMILAKE_GPU_DEVICES",
-    "LUMILAKE_DEPLOY_SUFFIX",
+    "LUMILAKE_STACK_NAME",
     "LUMILAKE_LOCAL_DATA_PROFILE_PLAN_VARIANTS",
     "LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION",
     "LUMILAKE_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE",
     "LUMILAKE_VLLM_MAX_MODEL_LEN",
     "LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS",
-    "REDIS_TLS_DIR",
-    "SERVER_TLS_DIR",
-    "SERVER_WORKER_CONFIG",
 )
-
-
-def _parse_env_file(path: Path) -> dict[str, str]:
-    """Tolerant ``.env`` parser — accepts ``KEY=value`` or ``KEY="value"``."""
-    values: dict[str, str] = {}
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if value.startswith('"') and value.endswith('"'):
-            value = value[1:-1]
-        values[key] = value
-    return values
 
 
 def _check_required(values: dict[str, str], report: DoctorReport) -> None:
@@ -187,6 +173,13 @@ def _check_positive_floats(values: dict[str, str], report: DoctorReport) -> None
             )
 
 
+def _check_stack_name(values: dict[str, str], report: DoctorReport) -> None:
+    """A set ``LUMILAKE_STACK_NAME`` must name this deployment's own stack."""
+    name = values.get("LUMILAKE_STACK_NAME", "")
+    if name and not valid_stack_name(name):
+        report.error(stack_name_requirement(name))
+
+
 def run_env_checks(
     env_path: Path,
     callback: Callable[[DoctorFinding], Any] | None = None,
@@ -200,8 +193,9 @@ def run_env_checks(
             "``.env.example``)"
         )
         return report
-    values = _parse_env_file(env_path)
+    values = read_env_file(env_path)
     _check_required(values, report)
+    _check_stack_name(values, report)
     _check_data_plane(values, report)
     _check_positive_floats(values, report)
     if not report.errors:

@@ -49,7 +49,7 @@ def _model_size_b(model: str | None, default: float) -> float:
     """
     if not model:
         return default
-    normalized = str(model).strip().lower()
+    normalized = model.strip().lower()
     if not normalized:
         return default
     # Trailing size suffix, e.g. "llama-7b", "qwen-1.5b", "bge-560m".

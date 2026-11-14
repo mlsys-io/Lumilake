@@ -9,6 +9,7 @@ import multiprocessing as mp
 import queue
 import time
 import traceback
+from collections import defaultdict
 from collections.abc import Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
@@ -293,6 +294,7 @@ class LumilakeServerConfig:
         starvation_limit: int = envs.LUMILAKE_STARVATION_LIMIT,
         poll_interval_seconds: float = envs.LUMILAKE_POLL_INTERVAL_SECONDS,
         capacity_aware_selection: bool = envs.LUMILAKE_CAPACITY_AWARE_SELECTION,
+        dispatch_queue_depth: int = envs.LUMILAKE_DISPATCH_QUEUE_DEPTH,
     ) -> None:
         self.is_local = is_local
         """Whether to use a local Lumilake server."""
@@ -319,6 +321,8 @@ class LumilakeServerConfig:
         """Bounded wait for capacity release / error-retry backoff."""
         self.capacity_aware_selection = capacity_aware_selection
         """Whether selection filters by free capacity."""
+        self.dispatch_queue_depth = dispatch_queue_depth
+        """In-flight batches a worker may carry before it stops being offered."""
 
         if is_local:
             self._host = self._port = None
@@ -397,7 +401,7 @@ class LumilakeServer:
         self._scheduler_task: asyncio.Task[Any] | None = None
         self._inflight_tasks: set[asyncio.Task[Any]] = set()
         self._worker_lock = asyncio.Lock()
-        self._busy_workers: set[str] = set()
+        self._worker_reservations: defaultdict[str, int] = defaultdict(int)
         self._capacity_changed = asyncio.Event()
         self._optimizer_lock = asyncio.Lock()
 
@@ -413,6 +417,11 @@ class LumilakeServer:
     @property
     def is_started(self) -> bool:
         return self._event_loop is not None and self._event_loop.is_started()
+
+    @property
+    def busy_workers(self) -> set[str]:
+        """Workers carrying at least one in-flight batch."""
+        return set(self._worker_reservations)
 
     def start(self) -> None:
         async def inner(event_loop: AsyncEventLoop) -> None:
@@ -931,10 +940,28 @@ class LumilakeServer:
                 await asyncio.sleep(self.config.poll_interval_seconds)
 
     async def _snapshot_free_capacity(self) -> FreeCapacity:
-        """Snapshot currently idle workers, split by GPU class."""
-        workers = await self.runtime_manager.get_workers()
+        """Snapshot workers with dispatch depth left, split by GPU class.
+
+        Workers carrying no batch come before workers that already carry one,
+        so a batch lands on a free worker whenever one is eligible.
+        """
+        idle_workers = await self.runtime_manager.get_workers()
+        limit = self.config.dispatch_queue_depth
         async with self._worker_lock:
-            available = [w for w in workers if w not in self._busy_workers]
+            reservations = self._worker_reservations
+            available = [w for w in idle_workers if reservations.get(w, 0) < limit]
+            committed = [
+                worker
+                for worker, count in reservations.items()
+                if 0 < count < limit and worker not in available
+            ]
+            # Read the sort keys under the lock so releases cannot reorder it.
+            depth = {w: reservations.get(w, 0) for w in available + committed}
+        if committed:
+            # Offer a committed worker only where FlowMesh can take queued work.
+            dispatchable = set(await self.runtime_manager.get_dispatchable_workers())
+            available.extend(w for w in committed if w in dispatchable)
+        available.sort(key=depth.__getitem__)
         cpu_worker_ids: list[str] = []
         gpu_worker_ids: list[str] = []
         profiles: dict[str, dict[str, Any]] = {}
@@ -1076,15 +1103,26 @@ class LumilakeServer:
         if not selected_workers:
             return None
         async with self._worker_lock:
-            if any(worker in self._busy_workers for worker in selected_workers):
+            # A read that must not insert a zero-count key, hence .get.
+            if any(
+                self._worker_reservations.get(worker, 0)
+                >= self.config.dispatch_queue_depth
+                for worker in selected_workers
+            ):
                 return None
-            self._busy_workers.update(selected_workers)
+            for worker in selected_workers:
+                self._worker_reservations[worker] += 1
         return selected_workers
 
     async def _release_workers(self, workers: list[str]) -> None:
-        """Release claimed workers and wake any scheduler waiting on capacity."""
+        """Release one in-flight batch per claimed worker and wake capacity waiters."""
         async with self._worker_lock:
-            self._busy_workers.difference_update(workers)
+            for worker in workers:
+                depth = self._worker_reservations[worker] - 1
+                if depth > 0:
+                    self._worker_reservations[worker] = depth
+                else:
+                    del self._worker_reservations[worker]
         self._capacity_changed.set()
 
     async def _wait_capacity(self) -> None:
@@ -2381,7 +2419,7 @@ class LumilakeServer:
                     batch_id=batch_id,
                     execution_request_id=execution_request_id,
                     batch_workflow_ids=batch_workflow_ids,
-                    workers=list(workers),
+                    workers=workers,
                 )
             )
 
@@ -3161,7 +3199,7 @@ class LumilakeServer:
         grouped_outputs: dict[str, dict[str, list[Any]]] = {}
         grouped_histories: dict[str, dict[str, list[Any]]] = {}
         direct_outputs: dict[str, dict[str, list[Any]]] = {}
-        direct_histories: dict[str, dict[str, list[Any]]] = {}
+        direct_histories: defaultdict[str, dict[str, list[Any]]] = defaultdict(dict)
         group_workflow_prefixes: dict[str, list[tuple[str, Any]]] = {}
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(
@@ -3248,6 +3286,19 @@ class LumilakeServer:
                     f" {type(history).__name__}"
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
+            if (group_key, output_name) in list_lambda_outputs:
+                group_slices = grouped_workflows.get(group_key, [])
+                if len(group_slices) != 1:
+                    raise ValueError(
+                        "List-Lambda history cannot be split across slices: "
+                        f"{output_name} covers {len(group_slices)} slice(s) in "
+                        f"group {group_key}. A list-mode Lambda runs once per "
+                        "run and its single whole-list result cannot be "
+                        "partitioned per slice."
+                    )
+                (single_workflow,) = group_slices
+                direct_histories[single_workflow.workflow_id][output_name] = history
+                continue
             if matched_workflow is not None:
                 if len(history) != matched_workflow.slice_length:
                     raise ValueError(
@@ -3255,9 +3306,7 @@ class LumilakeServer:
                         f"{matched_workflow.workflow_id}:{output_name}. "
                         f"expected={matched_workflow.slice_length} got={len(history)}"
                     )
-                direct_histories.setdefault(matched_workflow.workflow_id, {})[
-                    output_name
-                ] = history
+                direct_histories[matched_workflow.workflow_id][output_name] = history
                 continue
             grouped_histories.setdefault(group_key, {}).setdefault(
                 output_name, []
