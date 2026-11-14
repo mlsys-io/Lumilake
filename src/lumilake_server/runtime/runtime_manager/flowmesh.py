@@ -21,8 +21,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
-from flowmesh.exceptions import APIError
+from flowmesh.exceptions import APIError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
@@ -205,25 +206,32 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
 
 _TRANSIENT_FLOWMESH_STATUS = frozenset({502, 503, 504})
 _FLOWMESH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+_DROPPED_CONNECTION_ERRORS = (
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+    httpx.ConnectTimeout,
+    FlowMeshConnectionError,
+)
 _SUBMIT_LOOKUP_SKEW = timedelta(minutes=2)
 _read_logger = init_child_logger("FlowmeshReadRetry")
 
 
 async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) -> T:
-    """Run a read-only FlowMesh call, retrying gateway 502/503/504 responses."""
+    """Retry a read-only FlowMesh call on gateway errors and dropped connections."""
     for delay in _FLOWMESH_RETRY_DELAYS_S:
         try:
             return await call()
         except APIError as e:
             if e.status_code not in _TRANSIENT_FLOWMESH_STATUS:
                 raise
-            _read_logger.warning(
-                "FlowMesh read %s returned %s; retrying in %.1fs: %s",
-                what,
-                e.status_code,
-                delay,
-                _sanitize_flowmesh_api_error(e),
+            failure = f"returned {e.status_code}: {_sanitize_flowmesh_api_error(e)}"
+        except _DROPPED_CONNECTION_ERRORS as e:
+            failure = (
+                f"failed with {type(e).__name__}: {redact_secrets_in_text(str(e))}"
             )
+        _read_logger.warning(
+            "FlowMesh read %s %s; retrying in %.1fs", what, failure, delay
+        )
         await asyncio.sleep(delay)
     return await call()
 
@@ -781,7 +789,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         list[str]
             List of worker IDs
         """
-        workers = await flowmesh_for_server().workers.list(status="IDLE")
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(status="IDLE"),
+            "idle worker list",
+        )
         return [w.id for w in workers if not w.stale]
 
     async def get_all_workers(self) -> list[str]:
@@ -791,7 +802,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         pool so the scheduler can tell a busy-but-existing worker from one
         that does not exist at all.
         """
-        workers = await flowmesh_for_server().workers.list()
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(), "worker list"
+        )
         return [w.id for w in workers if not w.stale]
 
     async def get_dispatchable_workers(self) -> list[str]:
@@ -802,7 +815,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         unavailable or cordoned worker the pin can be lifted and the task run
         on another worker, so the scheduler does not plan work onto it.
         """
-        workers = await flowmesh_for_server().workers.list()
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(), "worker list"
+        )
         return [
             w.id
             for w in workers
@@ -829,7 +844,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             The worker's hardware sections plus ``supported_task_types``, the
             sorted task types its executors advertise.
         """
-        worker = await flowmesh_for_server().workers.retrieve(worker_id)
+        worker = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.retrieve(worker_id),
+            f"worker {worker_id}",
+        )
         assert worker.id == worker_id
         profile = worker.hardware.model_dump() if worker.hardware else {}
         profile["supported_task_types"] = sorted(
@@ -1092,6 +1110,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         expected_row_count: int | None = None,
         list_lambda: bool,
         list_lambda_cardinality: bool,
+        list_lambda_direct_read: bool = False,
         rowwise_llm: bool = False,
     ) -> list[str]:
         if any(isinstance(it.get("image"), dict) for it in items):
@@ -1171,12 +1190,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             if list_lambda_cardinality:
                 return [_coerce_output_value(flattened)]
             return flattened
-        return [
-            _coerce_output_value(
-                _walk_output_path(item, output_field_parts, output_op_id)
-            )
-            for item in items
+        values: list[Any] = [
+            _walk_output_path(item, output_field_parts, output_op_id) for item in items
         ]
+        if list_lambda_direct_read:
+            return [_coerce_output_value(values)]
+        return [_coerce_output_value(value) for value in values]
 
     async def _archive_task_response(
         self,
@@ -1516,6 +1535,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         list_lambda_cardinality_nodes = (
             request_info.runtime_graph.list_lambda_cardinality_nodes()
         )
+        list_lambda_direct_read_nodes = (
+            request_info.runtime_graph.list_lambda_direct_read_nodes()
+        )
 
         for _, output_op_id in output_node_indices:
             output_task_id = node_task_map.get(output_op_id)
@@ -1548,6 +1570,17 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             )
 
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)
+            list_lambda = (
+                output_node is not None
+                and output_node.task_type == python_step.TASK_TYPE
+                and output_node.data_spec.get("mode") == "list"
+            )
+            list_lambda_cardinality = output_op_id in list_lambda_cardinality_nodes
+            list_lambda_direct_read = output_op_id in list_lambda_direct_read_nodes
+            rowwise_llm = (
+                output_node is not None
+                and output_node.data_spec.get("type") == "dataframe"
+            )
             outputs = await self._aggregate_output_node(
                 output_op_id=output_op_id,
                 output_task_id=output_task_id,
@@ -1557,21 +1590,24 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
                 expected_row_count=self._embedding_row_count(
                     request_info.runtime_graph, output_op_id
                 ),
-                list_lambda=output_node is not None
-                and output_node.task_type == python_step.TASK_TYPE
-                and output_node.data_spec.get("mode") == "list",
-                list_lambda_cardinality=output_op_id in list_lambda_cardinality_nodes,
-                rowwise_llm=output_node is not None
-                and output_node.data_spec.get("type") == "dataframe",
+                list_lambda=list_lambda,
+                list_lambda_cardinality=list_lambda_cardinality,
+                list_lambda_direct_read=list_lambda_direct_read,
+                rowwise_llm=rowwise_llm,
             )
             flat_outputs[output_op_id] = outputs
             output_prompts: list[list[dict[str, str]]] = []
             # A flattened rowwise/items.rows output has one grouped item per
             # table but one output value per row, so per-row prompts cannot be
             # recovered from the grouped item (FlowMesh keeps only the first
-            # row's prompt). Emit history only when there is exactly one item
-            # per output value; otherwise leave the node without history.
-            if len(items) == len(outputs):
+            # row's prompt). A value folded over a list-Lambda table covers its
+            # whole run the same way, even when the item and value counts
+            # happen to match. Emit history only for one unfolded value per
+            # item.
+            folded_list_lambda = list_lambda_direct_read or (
+                rowwise_llm and list_lambda_cardinality
+            )
+            if len(items) == len(outputs) and not (list_lambda or folded_list_lambda):
                 for item, text in zip(items, outputs):
                     try:
                         prompt = item["metadata"]["prompt"]

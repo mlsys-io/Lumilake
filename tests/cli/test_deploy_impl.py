@@ -7,8 +7,11 @@ pure-Python bits: ``.env`` helpers, setup layout, and FlowMesh teardown.
 
 import importlib
 import os
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -665,8 +668,6 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
     """``stack_down`` uses ``destroy_all_workers(ignore_unreachable=True)``
     so a failed bring-up can still tear down containers that did start.
     """
-    monkeypatch.setattr(fm, "_WORKDIR", tmp_path)
-
     destroy_kwargs: dict[str, object] = {}
 
     class _StubClient:
@@ -711,7 +712,7 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
 def test_flowmesh_workers_carry_the_stack_name_slug(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both worker calls name the stack, so two stacks on a host don't collide."""
+    """Both worker calls name the stack, and each created worker logs its alias."""
     (tmp_path / ".env").write_text('LUMILAKE_STACK_NAME="demo"\n')
     env_file = tmp_path / ".env.flowmesh"
     env_file.write_text(
@@ -720,30 +721,40 @@ def test_flowmesh_workers_carry_the_stack_name_slug(
     )
 
     created_calls: list[dict[str, object]] = []
+    logged: list[str] = []
 
     def _create(_client: object, **kwargs: object) -> list[tuple[str, dict[str, str]]]:
         created_calls.append(kwargs)
-        return []
-
-    class _StubContext:
-        def __enter__(self) -> "_StubContext":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
+        return [(str(kwargs["kind"]), {"id": "wkr-1", "alias": "demo_worker"})]
 
     monkeypatch.setattr(fm, "sdk_create_workers", _create)
-    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: _StubContext())
+    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: nullcontext())
     monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
-    monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: ["0", "1"])
+    monkeypatch.setattr(fm, "_resolve_gpu_device_ids", lambda _raw: (["0", "1"], ""))
+    monkeypatch.setattr(fm, "_info", logged.append)
 
     fm.create_workers(env_file, cpu_count=2, gpu_devices="all")
 
     assert [call["kind"] for call in created_calls] == ["cpu", "gpu"]
     assert all(call["slug"] == "demo" for call in created_calls)
-    assert created_calls[0]["count"] == 2
-    assert created_calls[1]["count"] == 2
     assert created_calls[1]["targets"] == "0,1"
+    assert created_calls[0]["count"] == created_calls[1]["count"] == 2
+    assert logged[1::2] == ["Created cpu: demo_worker", "Created gpu: demo_worker"]
+
+
+def test_stack_up_puts_the_workdir_beside_the_deployment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``up`` builds the workdir beside the deployment, not the caller's cwd."""
+    up = SimpleNamespace(returncode=0)
+    monkeypatch.setattr(fm._stack, "run", lambda *_a, **_k: up)
+    monkeypatch.setattr(fm, "check_ports", lambda _ports: [])
+    monkeypatch.chdir(tmp_path)
+    deploy_dir = tmp_path / "deployment"
+    fm.stack_up(deploy_dir / ".env.flowmesh")
+
+    assert (deploy_dir / fm.WORKDIR_NAME / "configs").is_dir()
+    assert not (tmp_path / fm.WORKDIR_NAME).exists()
 
 
 def test_server_container_defaults_to_bare_name(tmp_path: Path) -> None:
@@ -938,3 +949,18 @@ def test_run_setup_rejects_an_invalid_stack_name_before_flowmesh(
     finally:
         os.environ.pop("LUMILAKE_STACK_NAME", None)
         importlib.reload(envs)
+
+
+def test_blank_gpu_devices_create_only_cpu_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank ``LUMILAKE_GPU_DEVICES`` creates only CPU workers, never probing."""
+    create = Mock(return_value=[])
+    monkeypatch.setattr(fm, "sdk_create_workers", create)
+    monkeypatch.setattr(fm, "NodeClient", lambda **_kw: nullcontext())
+    monkeypatch.setattr(fm, "_pull_worker_image", lambda *_a, **_kw: None)
+    monkeypatch.setattr(fm.subprocess, "run", lambda *_a, **_k: pytest.fail("probed"))
+    env_file = tmp_path / ".env.flowmesh"
+    env_file.write_text("SERVER_HTTP_PORT=18000\nSERVER_TOKEN=t\n")
+    fm.create_workers(env_file, cpu_count=1, gpu_devices="")
+    assert [c.kwargs["kind"] for c in create.call_args_list] == ["cpu"]

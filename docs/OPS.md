@@ -367,6 +367,15 @@ read at `value.items.output`. A list-mode `LambdaOp` is read through a node
 column (`rowwise_columns` / `aggregate_table`), not through an LLM message
 chain.
 
+An `LLMCompletionOp` prompt, an `EmbeddingOp` content or an
+`ImageGenerationOp` content whose list column binds a list-mode `LambdaOp`
+directly runs once per element, so it produces one whole-list value holding
+every answer, embedded row or image, not one value per row. A node that reads
+the whole column as one value, such as an `aggregate_table` chat, already
+answers once per run, so its answer is the output value as it is. A per-element
+node two or more hops from the list-mode `LambdaOp` is not folded, and its
+several values fail the run's slice merge.
+
 A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one
 value per input row: the row-wise LLM groups its per-row outputs back into one
 item internally, and the standalone `python` step flattens that grouped item

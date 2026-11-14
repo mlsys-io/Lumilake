@@ -119,7 +119,7 @@ server-runtime = [
     # Security floors for transitive dependencies.
     "anyio==4.15.1",
     "certifi==2026.10.23",
-    "opentelemetry-api==1.45.1",
+    "opentelemetry-api==1.45.2",
 ]
 
 [tool.isort]

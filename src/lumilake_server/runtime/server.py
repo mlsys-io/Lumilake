@@ -3206,7 +3206,7 @@ class LumilakeServer:
         grouped_outputs: dict[str, dict[str, list[Any]]] = {}
         grouped_histories: dict[str, dict[str, list[Any]]] = {}
         direct_outputs: dict[str, dict[str, list[Any]]] = {}
-        direct_histories: dict[str, dict[str, list[Any]]] = {}
+        direct_histories: defaultdict[str, dict[str, list[Any]]] = defaultdict(dict)
         group_workflow_prefixes: dict[str, list[tuple[str, Any]]] = {}
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(
@@ -3324,6 +3324,19 @@ class LumilakeServer:
                     f" {type(history).__name__}"
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
+            if (group_key, output_name) in list_lambda_outputs:
+                group_slices = grouped_workflows.get(group_key, [])
+                if len(group_slices) != 1:
+                    raise ValueError(
+                        "List-Lambda history cannot be split across slices: "
+                        f"{output_name} covers {len(group_slices)} slice(s) in "
+                        f"group {group_key}. A list-mode Lambda runs once per "
+                        "run and its single whole-list result cannot be "
+                        "partitioned per slice."
+                    )
+                (single_workflow,) = group_slices
+                direct_histories[single_workflow.workflow_id][output_name] = history
+                continue
             if matched_workflow is not None:
                 if not matched_workflow.whole_set and (
                     len(history) != matched_workflow.slice_length
@@ -3333,9 +3346,7 @@ class LumilakeServer:
                         f"{matched_workflow.workflow_id}:{output_name}. "
                         f"expected={matched_workflow.slice_length} got={len(history)}"
                     )
-                direct_histories.setdefault(matched_workflow.workflow_id, {})[
-                    output_name
-                ] = history
+                direct_histories[matched_workflow.workflow_id][output_name] = history
                 continue
             grouped_histories.setdefault(group_key, {}).setdefault(
                 output_name, []
