@@ -3224,35 +3224,6 @@ class LumilakeServer:
                     return workflow
             return None
 
-        def assign_whole_set_values(
-            target: dict[str, dict[str, Any]],
-            workflows: list[Any],
-            output_name: str,
-            values: list[Any],
-            group_key: str,
-            *,
-            label: str,
-        ) -> None:
-            """Give a whole-set group's result to its single slice verbatim.
-
-            The group holds the whole input set of a round whose row count is
-            its own answer rather than the input accounting length, so the
-            result is taken verbatim instead of split across slices.
-            """
-            if len(workflows) != 1:
-                raise ValueError(
-                    "A whole-set round must run as exactly one slice, but "
-                    f"group {group_key} holds {len(workflows)}"
-                )
-            (workflow,) = workflows
-            workflow_values = target.setdefault(workflow.workflow_id, {})
-            if output_name in workflow_values:
-                raise ValueError(
-                    f"Duplicate {label} assignment for workflow "
-                    f"{workflow.workflow_id}:{output_name}"
-                )
-            workflow_values[output_name] = values
-
         runtime_graph = batch_request_info.runtime_graph
         list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()
         list_lambda_outputs = {
@@ -3362,20 +3333,26 @@ class LumilakeServer:
         }
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(workflows, key=lambda item: item.slice_index)
-            whole_set_group = any(item.whole_set for item in ordered)
+            # A whole-set group is one slice holding the whole input set of a
+            # round whose row count is its own answer, so its result is taken
+            # verbatim rather than split across slices.
+            if any(item.whole_set for item in ordered):
+                if len(ordered) != 1:
+                    raise ValueError(
+                        "A whole-set round must run as exactly one slice, but "
+                        f"group {group_key} holds {len(ordered)}"
+                    )
+                (workflow,) = ordered
+                remapped_outputs.setdefault(workflow.workflow_id, {}).update(
+                    grouped_outputs.get(group_key, {})
+                )
+                remapped_histories.setdefault(workflow.workflow_id, {}).update(
+                    grouped_histories.get(group_key, {})
+                )
+                continue
             total_slice_len = sum(item.slice_length for item in ordered)
             group_outputs = grouped_outputs.get(group_key, {})
             for output_name, values in group_outputs.items():
-                if whole_set_group:
-                    assign_whole_set_values(
-                        remapped_outputs,
-                        ordered,
-                        output_name,
-                        values,
-                        group_key,
-                        label="output",
-                    )
-                    continue
                 if len(values) != total_slice_len:
                     raise ValueError(
                         "Output length mismatch for merged workflow"
@@ -3397,16 +3374,6 @@ class LumilakeServer:
                     offset = next_offset
             group_histories = grouped_histories.get(group_key, {})
             for output_name, values in group_histories.items():
-                if whole_set_group:
-                    assign_whole_set_values(
-                        remapped_histories,
-                        ordered,
-                        output_name,
-                        values,
-                        group_key,
-                        label="history",
-                    )
-                    continue
                 if len(values) != total_slice_len:
                     raise ValueError(
                         "History length mismatch for merged workflow"

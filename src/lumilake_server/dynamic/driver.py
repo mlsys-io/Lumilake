@@ -174,20 +174,6 @@ def render_template_body(body: DriverRoundBody, round_number: int) -> SubgraphPl
     for op in ops:
         _render_node_refs(op, suffix)
     export = [_render_template_string(value, suffix) for value in body.export]
-    if not ops:
-        raise DriverProtocolError(f"template round {round_number} has no ops")
-    ids = [op.get("id") for op in ops]
-    if not all(isinstance(op_id, str) and op_id for op_id in ids):
-        raise DriverProtocolError(
-            f"template round {round_number} requires non-empty string ids"
-        )
-    if len(set(ids)) != len(ids):
-        raise DriverProtocolError(f"template round {round_number} has duplicate ids")
-    missing_exports = [value for value in export if value not in ids]
-    if missing_exports:
-        raise DriverProtocolError(
-            f"template round {round_number} exports unknown ids: {missing_exports}"
-        )
     return SubgraphPlan(ops=ops, export=export)
 
 
@@ -335,34 +321,18 @@ def _apply_column_bindings(
     bindings = template.get("column_bindings")
     if bindings is None:
         return None
-    if not isinstance(bindings, list):
-        raise DriverProtocolError(
-            f"library entry {ref!r} column_bindings must be a list"
-        )
-    columns = template.get("rowwise_columns")
-    if not isinstance(columns, list):
-        raise DriverProtocolError(
-            f"library entry {ref!r} has column_bindings but no rowwise_columns"
-        )
-    if not all(isinstance(column, dict) for column in columns):
-        raise DriverProtocolError(
-            f"library entry {ref!r} rowwise_columns entries must be mappings"
-        )
+    columns = template["rowwise_columns"]
     by_label = {column.get("label"): column.copy() for column in columns}
     used_slots: set[int] = set()
     for binding in bindings:
-        if not isinstance(binding, dict):
-            raise DriverProtocolError(
-                f"library entry {ref!r} column_bindings entries must be mappings"
-            )
-        label = binding.get("label")
-        slot = binding.get("input")
+        label = binding["label"]
+        slot = binding["input"]
         if label not in by_label:
             raise DriverProtocolError(
                 f"library entry {ref!r} column binding references unknown "
                 f"label {label!r}; columns: {sorted(by_label)}"
             )
-        if not isinstance(slot, int) or not 0 <= slot < len(inputs):
+        if not 0 <= slot < len(inputs):
             raise DriverProtocolError(
                 f"library entry {ref!r} column binding for {label!r} has "
                 f"invalid input slot {slot!r}"

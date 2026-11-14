@@ -114,7 +114,7 @@ def test_collected_export_forwards_one_item_per_row_to_the_next_round() -> None:
             "must be a LambdaOp",
         ),
         # Every export and every stop export names a node the body builds.
-        (_state_op("Other_r{{round}}", ["Symbols"]), None, "exports unknown ids"),
+        (_state_op("Other_r{{round}}", ["Symbols"]), None, "exported op id"),
         # A library ref resolves, and one nothing declares is rejected.
         (
             {"ref": "Missing", "id": "Live_r{{round}}", "inputs": []},

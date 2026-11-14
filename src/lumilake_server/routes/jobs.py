@@ -2938,32 +2938,19 @@ async def preview_job(
             )
         if is_dynamic:
             dynamic_spec = _decode_dynamic_spec(entry.workflow, idx)
-            if dynamic_spec.driver.api is not None:
+            if (
+                dynamic_spec.driver.api is not None
+                or dynamic_spec.driver.template is not None
+            ):
+                # Preview validates the spec, then refuses: a planner-driven
+                # round comes from the external planner and a template round is
+                # rendered when the job runs.
+                _render_dynamic_round0(dynamic_spec)
+                mode = "api" if dynamic_spec.driver.api is not None else "template"
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=(
-                        "preview is not available for an api-driven dynamic "
-                        "workflow: its rounds come from the external planner "
-                        "at run time"
-                    ),
-                )
-            if dynamic_spec.driver.template is not None:
-                try:
-                    validate_library(dynamic_spec.library)
-                    validate_template_spec(
-                        dynamic_spec.driver.template,
-                        dynamic_spec.library,
-                        max_nodes_per_round=(dynamic_spec.driver.max_nodes_per_round),
-                    )
-                except (DriverProtocolError, ValueError) as exc:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                        detail=f"Invalid dynamic workflow spec for index: {exc}",
-                    ) from exc
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=(
-                        "preview is not available for a template-driven dynamic "
+                        f"preview is not available for a {mode}-driven dynamic "
                         "workflow: its rounds are rendered when the job runs"
                     ),
                 )
