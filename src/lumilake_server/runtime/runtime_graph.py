@@ -340,11 +340,7 @@ class RuntimeGraph:
                 model_spec=remap(op.model_spec, rewritable),
                 inference_spec=remap(op.inference_spec, rewritable),
                 api_spec=remap(op.api_spec, rewritable),
-                output_enforcement=(
-                    remap(op.output_enforcement, rewritable)
-                    if op.output_enforcement is not None
-                    else None
-                ),
+                output_enforcement=op.output_enforcement,
                 dependencies=tuple(mapping.get(dep, dep) for dep in op.dependencies),
                 output_spec=(
                     remap(op.output_spec, rewritable)
@@ -461,9 +457,8 @@ class RuntimeGraphBuilder:
         for op_id, op in graph_dict.items():
             if isinstance(op, LLMOp):
                 if (
-                    not isinstance(op, LLMChatOp)
-                    and op.config.output_enforcement is not None
-                ):
+                    not isinstance(op, LLMChatOp) or isinstance(op, LLMVisionOp)
+                ) and op.config.output_enforcement is not None:
                     raise ValueError(
                         f"{type(op).__name__} '{op_id}' does not support "
                         "config.output_enforcement; use it only on LLMChatOp."
@@ -2410,7 +2405,6 @@ class RuntimeGraphBuilder:
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec={**inference_spec, "apply_chat_template": False},
-                output_enforcement=output_enforcement,
                 backend=backend,
                 model=llm_op.config.model,
                 dependencies=row_dependencies if row_dependencies else None,
