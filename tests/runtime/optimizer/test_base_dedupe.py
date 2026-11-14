@@ -298,9 +298,8 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
 def test_dedupe_keys_on_output_enforcement() -> None:
     """Ops differing only in ``output_enforcement`` must not be merged."""
-
-    def _op(node_id: str) -> RuntimeOp:
-        return RuntimeOp(
+    nodes = {
+        node_id: RuntimeOp(
             node_id=node_id,
             task_type="inference",
             backend="vllm",
@@ -310,9 +309,10 @@ def test_dedupe_keys_on_output_enforcement() -> None:
             inference_spec={},
             output_enforcement={"text_regex": node_id},
         )
-
+        for node_id in ("E", "F")
+    }
     graph = RuntimeGraph(
-        nodes={i: _op(i) for i in ("E", "F")},
+        nodes=nodes,
         node_order=["E", "F"],
         output_node_map={},
         dsl_to_runtime={},

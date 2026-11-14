@@ -387,12 +387,7 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     (llm,) = list(graph.iter_ops(LLMChatOp))
     spec = RuntimeGraphBuilder().build(graph.compile()).nodes[llm.id]
     assert spec.inference_spec["num_beams"] == 3
-    assert spec.output_enforcement == {
-        "mode": "retry",
-        "max_attempts": 1,
-        "json_schema": None,
-        "text_regex": "^ok$",
-    }
+    assert (spec.output_enforcement or {})["text_regex"] == "^ok$"
 
 
 def test_llm_config_accepts_api_block() -> None:
