@@ -1073,8 +1073,13 @@ def fake_planner(
     return _install
 
 
-async def _submit_and_run(app: FastAPI, job_routes: Any, yaml_text: str) -> Any:
-    job_id = await _submit(app, yaml_text)
+async def _submit_and_run(
+    app: FastAPI,
+    job_routes: Any,
+    yaml_text: str,
+    inputs: dict[str, Any] | None = None,
+) -> Any:
+    job_id = await _submit(app, yaml_text, inputs)
     await _run_background(app)
     return job_routes.jobs[job_id]
 
@@ -1175,6 +1180,36 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
         ("subgraph", 2, "template"),
         ("STOP", 3, "template"),
     ]
+
+
+@pytest.mark.anyio
+async def test_dynamic_template_round_binds_the_export_per_item(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A template round runs over four symbols but binds the previous round's
+    # list-mode export one value per archived item, so a two-element export
+    # reaches round 2 as two values rather than failing the symbol row count.
+    async def _no_planner(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("template mode must not call a planner")
+
+    monkeypatch.setattr(job_routes_module, "_call_api_planner", _no_planner)
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [{"next": "STOP"}]
+    fake_server.export_rows = [
+        [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
+        [{"case_id": "0", "turn": 1}],
+    ]
+    record = await _submit_and_run(
+        app,
+        job_routes,
+        _TEMPLATE_DYNAMIC_YAML,
+        inputs={"Symbols": ["a", "b", "c", "d"]},
+    )
+
+    assert record.status == "completed", record.error
+    (round_two,) = fake_server.executed_graphs[1].values()
+    bound = round_two.inputs["LiveState_r0"]
+    assert [json.loads(value) for value in bound] == fake_server.export_rows[0]
 
 
 @pytest.mark.anyio

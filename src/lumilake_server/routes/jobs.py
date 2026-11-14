@@ -2238,7 +2238,10 @@ async def _run_dynamic_job(
                     dtype=spec.driver.dtype,
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
-                    rows=len(symbols),
+                    # A template round binds an earlier round's results one
+                    # value per archived item, which is one row for a list-mode
+                    # export; a planner round binds one value per symbol.
+                    rows=1 if template is not None else len(symbols),
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
