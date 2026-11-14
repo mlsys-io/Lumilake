@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server import common
 from lumilake_server.common import ApiConfig, GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -151,10 +150,10 @@ def test_api_output_enforcement_reaches_task_spec() -> None:
 
 
 def test_output_enforcement_rejected_on_vision_op() -> None:
-    config = GenerationConfig(model="m")
-    config.output_enforcement = common.OutputEnforcement(text_regex="x")
+    kwargs: dict = {"output_enforcement": {"text_regex": "x"}}
+    config = GenerationConfig(model="m", **kwargs)
     vision = LLMVisionOp([OpMessage("user", "x")], "images", config=config)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not support"):
         RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", vision)]).compile())
 
 

@@ -299,9 +299,11 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
 
 def test_dedupe_keys_on_output_enforcement() -> None:
-    base = RuntimeOp("E", "inference", "vllm", "m", {}, {}, {})
-    ops = {
-        n: replace(base, node_id=n, output_enforcement={"text_regex": n}) for n in "EF"
+    base = RuntimeOp("A", "inference", "vllm", "m", {}, {}, {})
+    nodes = {
+        n: replace(base, node_id=n, output_enforcement={"text_regex": r})
+        for n, r in (("A", "a"), ("B", "a"), ("F", "F"))
     }
-    graph = RuntimeGraph(ops, ["E", "F"], {})
-    assert HaloOptimizer().optimize_graphs({"wf": graph})[0].node_count == 2
+    graph = RuntimeGraph(nodes, ["A", "B", "F"], {})
+    merged = HaloOptimizer().optimize_graphs({"wf": graph})[0]
+    assert merged.nodes["F"].output_enforcement == {"text_regex": "F"}

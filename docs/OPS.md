@@ -99,11 +99,11 @@ consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `config.output_enforcement` validates generated text for both API-backed and
 local `LLMChatOp` runs. Set exactly one of `json_schema` or `text_regex` and
 `max_attempts` (default `1`, maximum `10`). Retry mode leaves decoding untouched
-and re-asks only the rows that failed. A deterministic decode is not retried:
-beam search and `temperature: 0` produce the same text again, so the worker runs
-one attempt and still reports the outcome. Constrained mode asks local vLLM
-inference to constrain decoding to the requested format, so it is not available
-for API ops.
+and re-asks only the rows that failed. A local deterministic decode is not
+retried: beam search and `temperature: 0` produce the same text again, so the
+vLLM worker runs one attempt and still records the outcome. Constrained mode
+asks local vLLM inference to constrain decoding to the requested format, so it
+is not available for API ops.
 
 FlowMesh records each row's attempts and validation outcome in the task result;
 the Lumilake job output carries the final text only.

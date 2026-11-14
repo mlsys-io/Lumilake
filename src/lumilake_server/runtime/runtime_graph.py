@@ -2351,13 +2351,11 @@ class RuntimeGraphBuilder:
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
-        output_enforcement = None
-        if (
-            isinstance(llm_op, LLMChatOp)
-            and llm_op.config.api is None
-            and llm_op.config.output_enforcement is not None
-        ):
-            output_enforcement = asdict(llm_op.config.output_enforcement)
+        output_enforcement = (
+            asdict(llm_op.config.output_enforcement)
+            if llm_op.config.output_enforcement is not None
+            else None
+        )
 
         if isinstance(llm_op, LLMCompletionOp):
             prompt_op = llm_op.prompt
@@ -2637,12 +2635,11 @@ class RuntimeGraphBuilder:
                     "api mode takes structural_outputs as a JSON-schema object; "
                     f"got {type(llm_op.structural_outputs).__name__}"
                 )
-        output_enforcement = None
-        if (
-            isinstance(llm_op, LLMChatOp)
-            and llm_op.config.output_enforcement is not None
-        ):
-            output_enforcement = asdict(llm_op.config.output_enforcement)
+        output_enforcement = (
+            asdict(llm_op.config.output_enforcement)
+            if llm_op.config.output_enforcement is not None
+            else None
+        )
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,
