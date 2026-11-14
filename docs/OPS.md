@@ -159,9 +159,11 @@ its own `headers` object as data, scrubbed only for recognized token shapes
 a `config`, `api`, or `api_spec` key matches the same redaction rule, which
 keys on the parent name. Each input row produces one output row.
 `config.request_delay_sec` spaces actual request starts, including retries.
-With `config.fail_open: true`, a failed fetch yields an error row with null
-content instead of failing the task. A downstream op sees that row as an item
-whose `json` is null and whose `error` contains the failure text.
+
+`config.fail_open` is not available yet: with the pinned SDK a failed request
+would fail the whole job instead of yielding an error row, so setting
+`fail_open: true` is rejected. Once enabled it keeps a failed request as an
+error row with null content instead of failing the task.
 
 ### LLMChatOp via external API
 

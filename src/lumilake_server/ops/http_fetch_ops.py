@@ -41,6 +41,11 @@ class HttpFetchConfig:
             raise ValueError("HttpFetchOp max_concurrency must be between 1 and 8")
         if not isinstance(self.fail_open, bool):
             raise ValueError("HttpFetchOp fail_open must be a boolean")
+        if self.fail_open:
+            raise ValueError(
+                "HttpFetchOp fail_open needs a flowmesh-sdk that parses a failed"
+                " request's error row; the pinned SDK does not"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
