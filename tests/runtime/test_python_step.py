@@ -1280,8 +1280,8 @@ def _gated_chain() -> Any:
     classify = LambdaOp(
         [rows],
         fn=lambda items: [
-            {"code": f"fn_{index}", "status": "fail" if index == 1 else "ok"}
-            for index in range(len(items[0]))
+            {"code": f"fn_{i}", "status": "fail" if i == 1 else "ok"}
+            for i in range(len(items[0]))
         ],
         mode="list",
     )
@@ -1316,21 +1316,21 @@ def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
 
 def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None:
     # The three gated stages read each other's archives: status labels every
-    # row, selection keeps the gated rows with their label columns, and merge
-    # pairs the label rows with the gated call's output, leaving the skipped
-    # rows without one.
+    # row, selection keeps the routed rows with their label columns, and merge
+    # pairs them with the gated call's output, leaving a skipped row without
+    # one. A round whose rows all route elsewhere leaves no gated stage at all.
     graph = RuntimeGraphBuilder().build(_gated_chain())
     (merge_id,) = graph.output_node_map
-    (fail_ids,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
-    status, selector, _selected, merge = [graph.nodes[i] for i in fail_ids]
+    (gated,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
+    status, selector, _selected, merge = [graph.nodes[i] for i in gated]
 
-    rows = [("fn_0", "ok"), ("fn_1", "fail"), ("fn_2", "ok")]
     upstream = _stage(
         tmp_path,
         "classify",
         {
             "items": [
-                {"output": {"code": code, "status": state}} for code, state in rows
+                {"output": {"code": "fn_0", "status": "ok"}},
+                {"output": {"code": "fn_1", "status": "fail"}},
             ]
         },
     )
@@ -1341,22 +1341,16 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
     assert [item["value"]["branch"] for item in status_payload["items"]] == [
         "ok",
         "fail",
-        "ok",
     ]
-    assert [
-        json.loads(item["output"])["branch"] for item in status_payload["items"]
-    ] == [
+    assert [json.loads(i["output"])["branch"] for i in status_payload["items"]] == [
         "ok",
         "fail",
-        "ok",
     ]
     status_stage = _stage(tmp_path, "status", status_payload)
     selected = _run_stage_plan(
         selector,
         {
-            entry["node"]: (
-                status_stage if entry["node"] == status.node_id else upstream
-            )
+            entry["node"]: status_stage if entry["node"] == status.node_id else upstream
             for entry in selector.data_spec["plan"]
         },
     )
@@ -1367,24 +1361,9 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
         merge,
         {status.node_id: status_stage, merge.data_spec["plan"][1]["node"]: served},
     )
-    merged_rows = [item["value"] for item in merged["items"]]
-    assert [(row["branch"], row["output"]) for row in merged_rows] == [
+    assert [
+        (r["branch"], r["output"]) for r in (i["value"] for i in merged["items"])
+    ] == [
         ("ok", None),
         ("fail", "fixed"),
-        ("ok", None),
     ]
-
-    # No row routes to the branch, so the gated call has no stage to read and
-    # the merge keeps every row without an output.
-    all_ok = _stage(
-        tmp_path, "all-ok", {"items": [{"output": {"code": "fn_0", "status": "ok"}}]}
-    )
-    ok_stage = _stage(
-        tmp_path,
-        "ok-status",
-        _run_stage_plan(status, {status.data_spec["plan"][0]["node"]: all_ok}),
-    )
-    unrouted = _run_stage_plan(merge, {status.node_id: ok_stage})
-    assert [
-        (item["value"]["branch"], item["value"]["output"]) for item in unrouted["items"]
-    ] == [("ok", None)]

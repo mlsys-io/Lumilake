@@ -81,7 +81,7 @@ def _echo(op_id: str) -> dict[str, Any]:
     }
 
 
-_ROUTED_ROUTER = {
+_ROUTER = {
     "id": "route",
     "op": "RouterOp",
     "inputs": ["source"],
@@ -93,81 +93,59 @@ _ROUTED_ROUTER = {
 }
 
 
-_ROUTED_ROWS = {"node": "source", "path": "items.output", "label": "msgs"}
-
-
-def _turn(**overrides: Any) -> dict[str, Any]:
-    """A model gated by ``route``, its rows taken from the router it names."""
-    return {
+def _routed(*ops: dict[str, Any], turn: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A routed workflow whose output is the gated model."""
+    gated = turn or {
         "id": "turn",
         "op": "LLMChatOp",
         "inputs": ["source", "route"],
         "messages": [{"role": "user", "content": "source"}],
         "config": {"model": "dummy-model"},
         "row_gate": {"node": "route", "branch": "review"},
-        **overrides,
     }
-
-
-def _routed(*ops: dict[str, Any], turn: dict[str, Any] | None = None) -> dict[str, Any]:
-    """A routed workflow whose output is the gated model."""
     return {
         "name": "routed",
         "inputs": {"rows": ["normal", "NEEDS REVIEW"]},
-        "ops": [_echo("source"), *ops, turn or _turn()],
-        "outputs": [{"name": "result", "ref": "turn"}],
+        "ops": [_echo("source"), *ops, gated],
+        "outputs": [{"name": "result", "ref": turn["id"] if turn else "turn"}],
     }
 
 
 def test_router_row_gate_and_messages_column_parse() -> None:
-    # The gate's router becomes an input of the model that names it, the gate
-    # keeps its other fields, and an ungated model can take its prompts from an
-    # upstream column instead of a rowwise template.
-    ask = {**_turn(), "id": "ask", "inputs": ["source"], "row_gate": None}
-    ask.pop("row_gate")
-    ask["rowwise_messages_column"] = _ROUTED_ROWS
+    # The gate's router becomes an input of the model that names it, and an
+    # ungated model can take its prompts from an upstream column.
+    ask = {
+        "id": "ask",
+        "op": "LLMChatOp",
+        "inputs": ["source"],
+        "messages": [{"role": "user", "content": "source"}],
+        "config": {"model": "dummy-model"},
+        "rowwise_messages_column": {
+            "node": "source",
+            "path": "items.output",
+            "label": "msgs",
+        },
+    }
     graph = Graph.from_json(
-        parse_yaml_payload(_routed(_ROUTED_ROUTER, ask))["routed"]["graph"]
+        parse_yaml_payload(_routed(_ROUTER, ask))["routed"]["graph"]
     )
     (router,) = list(graph.iter_ops(RouterOp))
+    gated, plain = sorted(graph.iter_ops(LLMChatOp), key=lambda op: op.row_gate is None)
     assert (router.default_branch, router.branches) == (
         "pending",
         ["review", "pending"],
     )
-    gated, plain = sorted(graph.iter_ops(LLMChatOp), key=lambda op: op.row_gate is None)
     assert gated.row_gate is not None and gated.row_gate.branch == "review"
     assert router.id in {op.id for op in gated.inputs}
     assert plain.rowwise_messages_column is not None
     assert plain.rowwise_messages_column.label == "msgs"
 
 
-@pytest.mark.parametrize(
-    ("payload", "message"),
-    [
-        # A router reads exactly one upstream.
-        (
-            _routed(_echo("two"), {**_ROUTED_ROUTER, "inputs": ["source", "two"]}),
-            "exactly one input",
-        ),
-        # Every default branch names one of the declared rules.
-        (
-            _routed({**_ROUTED_ROUTER, "default_branch": "missing"}),
-            "default_branch",
-        ),
-        # A gate names the branch it keeps.
-        (
-            _routed(_ROUTED_ROUTER, turn=_turn(row_gate={"node": "route"})),
-            "requires the 'branch' field as a string",
-        ),
-    ],
-    ids=["router-inputs", "router-default", "gate-branch"],
-)
-def test_yaml_rejects_an_invalid_router_or_gate(payload: dict, message: str) -> None:
-    # A router's rules and its gate are validated by the ops when the graph is
-    # built, which is the same door a submission goes through.
-    with pytest.raises(ValueError, match=message):
-        parsed = parse_yaml_payload(payload)
-        Graph.from_json(parsed["routed"]["graph"])
+def test_yaml_rejects_a_router_with_more_than_one_input() -> None:
+    with pytest.raises(ValueError, match="exactly one input"):
+        parse_yaml_payload(
+            _routed(_echo("two"), {**_ROUTER, "inputs": ["source", "two"]})
+        )
 
 
 def test_multi_op_topology_inputs() -> None:

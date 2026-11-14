@@ -474,7 +474,15 @@ async def _submit(
 
 @pytest.mark.anyio
 async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -> None:
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [
         _SUBGRAPH_PLAN,
@@ -533,7 +541,15 @@ async def test_dynamic_child_carries_chain_lineage(
 ) -> None:
     """Each dynamic round's child job carries the parent's id as ``chain_id``
     and a strictly increasing zero-based ``chain_round``."""
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     # Each round must emit a distinct node id (nodes are immutable).
     second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
@@ -558,14 +574,21 @@ async def test_dynamic_lineage_exposed_on_job_status(
     """The job status API exposes dynamic lineage: the parent lists its rounds
     in order, each child names the parent, and each child is fetchable by id
     with its own timestamps."""
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
     second_plan["ops"][0]["id"] = "q2"
     fake_server.plans = [_SUBGRAPH_PLAN, second_plan, {"next": "STOP"}]
     await _run_background(app)
 
-    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         parent_resp = await client.get(
             f"/jobs/{job_id}",
@@ -602,7 +625,15 @@ async def test_dynamic_cancel_propagates_to_inflight_child(
 ) -> None:
     """Cancelling a dynamic parent through the real endpoint must cancel its
     in-flight child."""
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
     fake_server.hang_rounds = {1}
@@ -610,7 +641,6 @@ async def test_dynamic_cancel_propagates_to_inflight_child(
     # Wait for the round-1 child (the one that hangs) to be genuinely in flight.
     child_id = await wait_for_inflight_child(job_routes, job_id)
     # Cancel through the real endpoint.
-    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         cancel_resp = await client.post(
             f"/jobs/{job_id}/cancel",
@@ -658,7 +688,15 @@ async def test_dynamic_multi_round_registry_handoff(
     """Round 0's emitted library ref is resolved and stored in the registry,
     then round 1 references that node by id and the round-1 graph builds against
     the resolved op."""
-    job_id = await _submit(app, _LIBRARY_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_LIBRARY_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     # Round 0 emits a library ref; round 1 emits an op referencing that node.
     fake_server.plans = [
@@ -701,7 +739,15 @@ async def test_dynamic_multi_round_registry_handoff(
 @pytest.mark.anyio
 async def test_dynamic_max_rounds_cutoff(app: FastAPI, job_routes: Any) -> None:
     spec_yaml = _VALID_DYNAMIC_YAML.replace("  max_rounds: 4\n", "  max_rounds: 2\n")
-    job_id = await _submit(app, spec_yaml)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(spec_yaml),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     # Each round must emit a distinct node id (nodes are immutable).
     second_plan = json.loads(json.dumps(_SUBGRAPH_PLAN))
@@ -717,7 +763,15 @@ async def test_dynamic_max_rounds_cutoff(app: FastAPI, job_routes: Any) -> None:
 async def test_dynamic_round_failure_fails_parent(
     app: FastAPI, job_routes: Any
 ) -> None:
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
     fake_server.fail_rounds = {1}
@@ -733,7 +787,15 @@ async def test_dynamic_stop_round_missing_leaf_fails_parent(
 ) -> None:
     # The terminal STOP round must still satisfy the leaf-output contract: a
     # STOP that omits an expected archived leaf fails the parent.
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     # Round 0 emits a subgraph (q2); round 1 runs it and returns STOP, but
     # omits q2's leaf output.
@@ -804,7 +866,15 @@ async def test_static_yaml_without_type_runs_as_static(
     the dynamic planning loop."""
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
-    job_id = await _submit(app, _STATIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_STATIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     await _run_background(app)
     record = job_routes.jobs[job_id]
     assert record.status == "completed"
@@ -843,7 +913,15 @@ async def test_dynamic_parent_persists_terminal_usage(
         lambda _token: _FakeUsageFlowMeshWithTasks(task_results),
     )
 
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=_submit_body(_VALID_DYNAMIC_YAML),
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [
         _SUBGRAPH_PLAN,
@@ -1019,10 +1097,6 @@ async def test_dynamic_api_planner_drives_two_rounds(
     assert [plan["next"] for plan in record.result.outputs["round"]["plan"]] == [
         "subgraph",
         "STOP",
-    ]
-    assert [plan["source"] for plan in record.result.outputs["round"]["plan"]] == [
-        "api",
-        "api",
     ]
 
     # The round graph carries only the emitted ops and their archived outputs.

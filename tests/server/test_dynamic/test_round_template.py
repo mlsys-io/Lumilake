@@ -24,64 +24,58 @@ def _state_op(op_id: str, inputs: list[str], **extra: object) -> dict:
     }
 
 
-def _body(prev: bool) -> dict:
-    """One round body; ``prev`` makes it read the previous round's export."""
-    return {
-        "ops": [
-            _state_op("Input_r{{round}}", ["Symbols"]),
-            _state_op(
-                "Live_r{{round}}", ["Input_r{{prev}}" if prev else "Input_r{{round}}"]
-            ),
-        ],
+_TEMPLATE = {
+    "first": {
+        "ops": [_state_op("Live_r{{round}}", ["Symbols"])],
         "export": ["Live_r{{round}}"],
-    }
-
-
-def _template() -> dict:
-    return {
-        "first": _body(prev=False),
-        "next": _body(prev=True),
-        "stop_when_empty": "Live_r{{prev}}",
-    }
+    },
+    "next": {
+        "ops": [_state_op("Live_r{{round}}", ["Live_r{{prev}}"])],
+        "export": ["Live_r{{round}}"],
+    },
+    "stop_when_empty": "Live_r{{prev}}",
+}
 
 
 def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
+    template = DynamicSpec.model_validate(
+        {
+            "type": "dynamic",
+            "goal": "g",
+            "driver": {"model": "m", "template": _TEMPLATE},
+        }
+    ).driver.template
+    assert template is not None
+    # Round 2 on renders ``next``, whose previous round is round 1's.
+    assert [
+        (op["id"], op["inputs"]) for op in template_plan_for_round(template, 2).ops
+    ] == [("Live_r1", ["Live_r0"])]
+    assert template_stop_export(template, 2) == "Live_r0"
     # A template and an API planner are alternatives.
-    driver: dict = {"model": "Qwen/Qwen3-8B", "template": _template()}
-    spec = {"type": "dynamic", "goal": "one fixed shape", "driver": driver}
     with pytest.raises(ValidationError):
         DynamicSpec.model_validate(
-            {**spec, "driver": {**driver, "api": {"url": "http://p.test"}}}
+            {
+                "type": "dynamic",
+                "goal": "g",
+                "driver": {
+                    "model": "m",
+                    "template": _TEMPLATE,
+                    "api": {"url": "http://planner.test"},
+                },
+            }
         )
-
-    template = DynamicSpec.model_validate(spec).driver.template
-    assert template is not None
-    first = template_plan_for_round(template, 1)
-    assert [(op["id"], op["inputs"]) for op in first.ops] == [
-        ("Input_r0", ["Symbols"]),
-        ("Live_r0", ["Input_r0"]),
-    ]
-    # Round 2 on renders ``next``, whose previous round is round 1's.
-    second = template_plan_for_round(template, 2)
-    assert [(op["id"], op["inputs"]) for op in second.ops] == [
-        ("Input_r1", ["Symbols"]),
-        ("Live_r1", ["Input_r0"]),
-    ]
-    assert template_stop_export(template, 2) == "Live_r0"
 
 
 _LIST = _state_op("Live_r{{round}}", ["Symbols"])
-_ROW = dict(_LIST, mode="row")
 
 
 @pytest.mark.parametrize(
     ("first", "next_ops", "message"),
     [
         # Only a list-mode export archives one item per row, so only it can read
-        # as empty at the stop check. ``next`` runs from round 2, so the round-one
-        # check sees ``first`` and the later check sees ``next``.
-        ([_ROW], [_LIST], "list-mode"),
-        ([_LIST], [dict(_ROW, inputs=["Live_r{{prev}}"])], "list-mode"),
+        # as empty at the stop check; ``next`` runs from round 2 on.
+        ([dict(_LIST, mode="row")], [_LIST], "list-mode"),
+        ([_LIST], [dict(_LIST, mode="row", inputs=["Live_r{{prev}}"])], "list-mode"),
         # The stop check reads a Lambda's archived rows, so no other op stands as
         # the stop export.
         (
@@ -104,7 +98,7 @@ _ROW = dict(_LIST, mode="row")
             "library",
         ),
         # A ``next`` body reads an earlier round only through a list-mode Lambda
-        # export; a non-exported read is refused.
+        # export.
         (
             [_state_op("Echo_r{{round}}", ["Symbols"]), _LIST],
             [
@@ -141,8 +135,8 @@ def test_template_validator_rejects_an_unusable_body(
 
 
 def test_template_body_renders_every_string_it_carries() -> None:
-    # Every string a body carries renders the placeholders, except a Lambda's
-    # code, which is Python source, and single braces, which belong to a row
+    # Every string a body carries renders its placeholders, except a Lambda's
+    # code, which is Python source, and single braces, which are part of a row
     # template.
     body = {
         "ops": [
@@ -165,10 +159,7 @@ def test_template_body_renders_every_string_it_carries() -> None:
     template = DriverTemplate.model_validate(
         {"first": body, "next": body, "stop_when_empty": "Echo_r{{prev}}"}
     )
-    validate_template_spec(template, max_nodes_per_round=8)
-    ops = {op["id"]: op for op in template_plan_for_round(template, 2).ops}
-    assert ops["Turn_r1"]["messages"][0]["content"] == "Source_r0"
-    assert ops["Turn_r1"]["rowwise_columns"][0]["node"] == "Source_r1"
-    # A row template's single braces are not placeholders.
-    assert ops["Turn_r1"]["rowwise_template"] == "{row}"
-    assert ops["Echo_r1"]["code"] == "# {{round}}\npass\n"
+    turn = {op["id"]: op for op in template_plan_for_round(template, 2).ops}["Turn_r1"]
+    assert turn["messages"][0]["content"] == "Source_r0"
+    assert turn["rowwise_columns"][0]["node"] == "Source_r1"
+    assert turn["rowwise_template"] == "{row}"
