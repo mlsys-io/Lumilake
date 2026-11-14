@@ -363,6 +363,8 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
               presence_penalty: 1.5
               repetition_penalty: 1.0
               min_tokens: 4
+              num_beams: 3
+              output_enforcement: {text_regex: "^ok$"}
               chat_template_kwargs:
                 enable_thinking: false
               extra_sampling_params:
@@ -381,30 +383,16 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     assert cfg["min_tokens"] == 4
     assert cfg["chat_template_kwargs"] == {"enable_thinking": False}
     assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
-
-
-def test_llm_sampling_options_reach_the_flowmesh_spec() -> None:
-    yaml_text = textwrap.dedent("""
-        name: sampling_options
-        ops:
-          - id: ask
-            op: LLMChatOp
-            messages: [{role: user, content: "hello"}]
-            config:
-              model: dummy-model
-              num_beams: 3
-              output_enforcement: {max_attempts: 3, text_regex: "^ok$"}
-        outputs:
-          - name: out
-            ref: ask
-        """)
-    spec = parse_yaml_payload(yaml_text)["sampling_options"]
-    graph = Graph.from_json(spec["graph"])
+    graph = Graph.from_json(graph_dict)
     (llm,) = list(graph.iter_ops(LLMChatOp))
-    built = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))
-    flowmesh_spec = built.nodes[llm.id].to_flowmesh_node()["spec"]
-    assert flowmesh_spec["inference"]["num_beams"] == 3
-    assert flowmesh_spec["output_enforcement"]["text_regex"] == "^ok$"
+    spec = RuntimeGraphBuilder().build(graph.compile()).nodes[llm.id]
+    assert spec.inference_spec["num_beams"] == 3
+    assert spec.output_enforcement == {
+        "mode": "retry",
+        "max_attempts": 1,
+        "json_schema": None,
+        "text_regex": "^ok$",
+    }
 
 
 def test_llm_config_accepts_api_block() -> None:
