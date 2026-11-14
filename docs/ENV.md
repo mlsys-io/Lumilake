@@ -53,7 +53,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMILAKE_RECOVER_IN_FLIGHT_JOBS` | Whether server startup marks pending/running jobs as failed. Default `1` (recommended for single-instance deploys). Set to `0` in HA / multi-instance deploys so a starting standby doesn't clobber jobs the active instance is still running. A job whose own record is already terminal is left as it is (its index entry is rewritten); jobs submitted after startup are untouched; and if storage is unreachable at startup the pass retries in the background. |
 | `LUMILAKE_RUNTIME_MANAGER_TYPE` | Runtime dispatch backend. `default` or `flowmesh`. |
 | `LUMILAKE_JOB_MANAGER_TYPE` | Job manager implementation. Currently only `priority`. |
-| `LUMILAKE_HTTP_TIMEOUT_SECONDS` | Outbound HTTP timeout for server-side calls. Defaults to `300`. |
+| `LUMILAKE_HTTP_TIMEOUT_SECONDS` | Outbound HTTP timeout for server-side calls. FlowMesh calls give up connecting after 10 seconds, or the HTTP timeout when that is shorter. Defaults to `300`. |
 | `LUMILAKE_LOG_DOWNLOAD_SPOOL_MAX_MB` | Memory threshold (MiB) for the log-download spool. The tar is built in a `SpooledTemporaryFile`; if the archive exceeds this size the spool spills to disk before the response body is read. Defaults to `16`. |
 
 ## Scheduler and Runtime Tuning
@@ -95,7 +95,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 |-----|---------|
 | `LUMILAKE_CPU_WORKER_GROUP_SIZE` | Number of CPU workers FlowMesh provisions. |
 | `LUMILAKE_GPU_WORKER_GROUP_SIZE` | Number of GPU workers FlowMesh provisions. At least one of CPU / GPU size must be `> 0`. |
-| `LUMILAKE_GPU_DEVICES` | GPU device ids Lumilake assigns to FlowMesh workers (one per device). Specific index (`0`), comma-separated subset (`0,2`), or `all` to cover every `nvidia-smi` device. Leave blank to skip GPU worker creation. |
+| `LUMILAKE_GPU_DEVICES` | GPU device ids Lumilake assigns to FlowMesh workers (one per device). Specific index (`0`), comma-separated subset (`0,2`), or `all` to cover every `nvidia-smi` device. Blank or unset (the default) creates no GPU workers. |
 
 ## Plugins
 
@@ -166,9 +166,16 @@ Picked up by the bundled FlowMesh deploy helpers.
 | `REDIS_CONTROL_PORT` | FlowMesh control Redis port in `.env.flowmesh`. Change it when another stack already owns `6379`. |
 | `REDIS_TELEMETRY_PORT` | FlowMesh telemetry Redis port in `.env.flowmesh`. Change it when another stack already owns `6380`. |
 | `FLOWMESH_BASE_URL` | FlowMesh HTTP base URL consumed by FlowMesh workers; should point at `SERVER_HTTP_PORT`. |
-| `REDIS_TLS_DIR` | Directory holding Redis TLS certs. Empty disables TLS bind-mounts. |
-| `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs. Empty disables TLS. |
-| `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override. |
+| `REDIS_TLS_DIR` | Directory holding Redis TLS certs, in `.env.flowmesh`. Empty disables TLS bind-mounts. |
+| `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs, in `.env.flowmesh`. Empty disables TLS. |
+| `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override, in `.env.flowmesh`. |
+
+A relative path in `REDIS_TLS_DIR`, `SERVER_TLS_DIR`, `SERVER_WORKER_CONFIG`
+or `FLOWMESH_PLUGIN_DIR` resolves under the deployment's `.flowmesh`
+directory, beside its `.env.flowmesh`. `FLOWMESH_PLUGIN_DATA_DIR` does too,
+so each deployment mounts its own `.flowmesh/plugin-data` rather than the
+bundled stack's folder; a bare name there selects a named Docker volume
+instead.
 
 `lumilake deploy init --flowmesh` writes `.env.flowmesh`. On hosts that
 also run another FlowMesh stack, check the common defaults before

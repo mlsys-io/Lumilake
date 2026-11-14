@@ -1,5 +1,5 @@
 import textwrap
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -1504,6 +1504,31 @@ def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
     node = runtime_graph.nodes[img.id]
     assert node.data_spec["node"] == retrieval.id
     assert node.data_spec["path"] == "items.table"
+
+
+def _emit_column(items: tuple[list[Any], ...]) -> list[str]:
+    return [str(value) for value in items[0]]
+
+
+@pytest.mark.parametrize("mode", ["list", "aligned"])
+def test_embedding_op_consuming_list_lambda_uses_value_items_output(
+    mode: Literal["list", "aligned"],
+) -> None:
+    """An EmbeddingOp whose content is a LambdaOp binds ``value.items.output``,
+    the field of the python step's result holding the emitted column."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _emit_column, mode=mode)
+    emb = EmbeddingOp(content=explode, config=GenerationConfig(model="bge-small"))
+    compiled = Graph.from_ops([as_output("vectors", emb)]).compile(
+        Stock=["NVDA", "AAPL"]
+    )
+
+    node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
+
+    assert node.data_spec["node"] == explode.id
+    assert node.data_spec["path"] == "value.items.output"
+    result = {"value": {"items": [{"output": "NVDA"}, {"output": "AAPL"}]}}
+    assert _walk(result, node.data_spec["path"].split(".")) == ["NVDA", "AAPL"]
 
 
 def test_agent_retrieval_as_final_output_uses_table_path() -> None:
