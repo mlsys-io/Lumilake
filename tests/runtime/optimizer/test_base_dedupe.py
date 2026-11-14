@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -297,24 +299,9 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
 
 def test_dedupe_keys_on_output_enforcement() -> None:
-    """Ops differing only in ``output_enforcement`` must not be merged."""
-    nodes = {
-        node_id: RuntimeOp(
-            node_id=node_id,
-            task_type="inference",
-            backend="vllm",
-            model="m",
-            data_spec={},
-            model_spec={},
-            inference_spec={},
-            output_enforcement={"text_regex": node_id},
-        )
-        for node_id in ("E", "F")
+    base = RuntimeOp("E", "inference", "vllm", "m", {}, {}, {})
+    ops = {
+        n: replace(base, node_id=n, output_enforcement={"text_regex": n}) for n in "EF"
     }
-    graph = RuntimeGraph(
-        nodes=nodes,
-        node_order=["E", "F"],
-        output_node_map={},
-        dsl_to_runtime={},
-    )
+    graph = RuntimeGraph(ops, ["E", "F"], {})
     assert HaloOptimizer().optimize_graphs({"wf": graph})[0].node_count == 2

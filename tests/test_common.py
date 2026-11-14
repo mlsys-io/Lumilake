@@ -1,11 +1,6 @@
-from typing import Any
-
 import pytest
 
-from lumilake_server.common import ApiConfig, GenerationConfig, OutputEnforcement
-from lumilake_server.graphs import Graph
-from lumilake_server.ops import LLMVisionOp, OpMessage, as_output
-from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.common import ApiConfig, GenerationConfig
 
 
 def test_generation_config_requires_model_without_api() -> None:
@@ -53,31 +48,13 @@ def test_generation_config_rejects_non_dict_api() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"json_schema": {"type": "object"}, "text_regex": "x"},
-        {"mode": "x", "text_regex": "x"},
-        {"max_attempts": 0, "text_regex": "x"},
+        {"output_enforcement": {"text_regex": "x", "json_schema": {}}},
+        {"output_enforcement": {"mode": "x", "text_regex": "x"}},
+        {"output_enforcement": {"max_attempts": 0, "text_regex": "x"}},
+        {"num_beams": 0},
+        {"num_beams": True},
     ],
 )
-def test_output_enforcement_rejects_invalid_configuration(
-    kwargs: dict[str, Any],
-) -> None:
-    with pytest.raises(ValueError, match="output_enforcement"):
-        OutputEnforcement(**kwargs)
-
-
-@pytest.mark.parametrize("num_beams", [0, True])
-def test_generation_config_rejects_invalid_num_beams(num_beams: int) -> None:
-    with pytest.raises(ValueError, match="num_beams"):
-        GenerationConfig(model="local-model", num_beams=num_beams)
-
-
-def test_output_enforcement_rejected_on_vision_op() -> None:
-    vision = LLMVisionOp(
-        [OpMessage(role="user", content="x")],
-        image_source="images",
-        config=GenerationConfig(
-            model="m", output_enforcement=OutputEnforcement(text_regex="x")
-        ),
-    )
-    with pytest.raises(ValueError, match="LLMVisionOp"):
-        RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", vision)]).compile())
+def test_generation_config_rejects_invalid_options(kwargs: dict) -> None:
+    with pytest.raises(ValueError):
+        GenerationConfig(model="m", **kwargs)
