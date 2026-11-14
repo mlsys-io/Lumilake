@@ -504,12 +504,10 @@ def test_rowwise_messages_column_emits_list_message_array_spec() -> None:
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),
         rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
-        rowwise_messages_column=MessagesColumn(
-            node=rows.id, path="items", label="msgs"
-        ),
+        rowwise_messages_column=MessagesColumn(rows.id, "items", "msgs"),
     )
-    compiled = Graph.from_ops([as_output("result", llm)]).compile(Rows=['["msg"]'])
-    node = RuntimeGraphBuilder().build(compiled).nodes[llm.id]
+    built = Graph.from_ops([as_output("result", llm)]).compile(Rows=['["msg"]'])
+    node = RuntimeGraphBuilder().build(built).nodes[llm.id]
     assert node.data_spec["items"] == [["msg"]]
 
 

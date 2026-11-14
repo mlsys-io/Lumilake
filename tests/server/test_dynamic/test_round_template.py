@@ -84,29 +84,38 @@ _STATE_ECHO = _state("Echo_r{{round}}", ["Echo_r{{prev}}"])
     ("first", "next_ops", "message"),
     [
         # Only a list-mode export archives one item per row, so only it can read
-        # as empty at the stop check. A row-mode ``next`` export is refused at
-        # round 3's read of it.
+        # as empty at the stop check.
         ([dict(_LIST, mode="row")], [_LIST], "list-mode"),
-        ([_LIST], [_ROW_NEXT], "not available"),
+        ([_LIST], [_ROW_NEXT], "list-mode"),
         # No other op stands as the stop export.
         ([_RETRIEVAL], [_LIST], "must be a LambdaOp"),
         # Every export names a node its body builds, and a library ref resolves.
         ([_state("Other_r{{round}}", ["Symbols"])], [_LIST], "exported op id"),
         ([_MISSING], [_LIST], "library"),
-        # A ``next`` body reads an earlier round only through a list-mode export.
-        (
-            [_state("Echo_r{{round}}", ["Symbols"]), _LIST],
-            [dict(_STATE_ECHO), dict(_LIST, inputs=["Echo_r{{prev}}"])],
-            "result is not available",
-        ),
     ],
-    ids=["row-1", "row-2", "retrieval", "no-export", "no-ref", "no-nonexport"],
+    ids=["row-1", "row-2", "retrieval", "no-export", "no-ref"],
 )
 def test_template_validator_rejects_an_unusable_body(
     first: list[dict], next_ops: list[dict], message: str
 ) -> None:
     with pytest.raises(DriverProtocolError, match=message):
         _validate(first, next_ops)
+
+
+def test_template_validator_accepts_a_later_read_of_an_earlier_leaf() -> None:
+    # Round 1 archives a leaf T_r it does not export; round 2 reads it.
+    tally = _state("T_r{{round}}", ["Live_r{{round}}"])
+    reread = _state("T_r{{round}}", ["T_r{{prev}}"])
+    live = _state("Live_r{{round}}", ["Live_r{{prev}}"])
+    export = {"export": ["Live_r{{round}}"]}
+    template = DriverTemplate.model_validate(
+        {
+            "first": {**export, "ops": [_LIST, tally]},
+            "next": {**export, "ops": [live, reread]},
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    validate_template_spec(template, max_nodes_per_round=8)
 
 
 def test_template_validator_rejects_a_round_three_read() -> None:

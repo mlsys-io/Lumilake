@@ -1320,25 +1320,21 @@ def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
     status, selector, _selected, merge = [graph.nodes[i] for i in gated]
 
     items = [
-        {"output": {"code": "fn_0", "status": "ok"}},
-        {"output": {"code": "fn_1", "status": "fail"}},
+        {"output": {"code": f"fn_{i}", "status": s}}
+        for i, s in enumerate(("ok", "fail"))
     ]
     upstream = _stage(tmp_path, "classify", {"items": items})
     status_payload = _run_stage(status, {status.data_spec["plan"][0]["node"]: upstream})
     assert [i["value"]["branch"] for i in status_payload["items"]] == ["ok", "fail"]
 
     with_status = _stage(tmp_path, "status", status_payload)
-    selected = _run_stage(
-        selector,
-        {
-            e["node"]: with_status if e["node"] == status.node_id else upstream
-            for e in selector.data_spec["plan"]
-        },
-    )
-    assert selected["items"] == [{"code": "fn_1"}]
+    stages = {
+        e["node"]: with_status if e["node"] == status.node_id else upstream
+        for e in selector.data_spec["plan"]
+    }
+    assert _run_stage(selector, stages)["items"] == [{"code": "fn_1"}]
 
     served = _stage(tmp_path, "served", {"items": [{"output": ["fixed"]}]})
-    merged = _run_stage(
-        merge, {status.node_id: with_status, merge.data_spec["plan"][1]["node"]: served}
-    )
+    read = {status.node_id: with_status, merge.data_spec["plan"][1]["node"]: served}
+    merged = _run_stage(merge, read)
     assert [i["value"]["output"] for i in merged["items"]] == [None, "fixed"]

@@ -971,7 +971,7 @@ def validate_template_spec(
     """Validate the first/next template bodies and the stop export wiring.
 
     Round 3 renders ``next`` again, so validating it checks that every later
-    round reads what ``next`` itself exports.
+    round reads an op ``next`` itself archives.
     """
     plans = {
         round_number: template_plan_for_round(template, round_number)
@@ -994,11 +994,11 @@ def validate_template_spec(
             results={op_id: [] for op_id in results},
         )
         registry.update({op["id"]: op for op in resolve_subgraph(plan.ops, library)})
-        # A later body reads only list-mode Lambda exports: each element is one
-        # row, so one value per archived item is exact.
-        for exported in plan.export:
-            if registry[exported].get("mode") == "list":
-                results.add(exported)
+        # The route archives every leaf and every export of a round, and a later
+        # body binds one value per archived item, which is that op's own row
+        # count.
+        results.update(_current_leaves(plan.ops))
+        results.update(plan.export)
     # ``next`` runs every round from round 2 on, so its export decides every
     # stop from round 3 on.
     later_export = template_stop_export(template, 3)
