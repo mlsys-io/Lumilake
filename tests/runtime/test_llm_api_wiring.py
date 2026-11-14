@@ -6,12 +6,8 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.common import (
-    ApiConfig,
-    GenerationConfig,
-    Message,
-    OutputEnforcement,
-)
+from lumilake_server import common
+from lumilake_server.common import ApiConfig, GenerationConfig, Message
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -147,13 +143,19 @@ def test_api_samplers_flow_into_body() -> None:
     assert body["temperature"] == 0.5
 
 
-def test_api_output_enforcement_stays_out_of_request_body() -> None:
-    runtime_graph, llm_id = _build_api_graph(
-        output_enforcement=OutputEnforcement(max_attempts=3, text_regex="^ok$")
-    )
+def test_api_output_enforcement_reaches_task_spec() -> None:
+    enforced = {"max_attempts": 3, "text_regex": "^ok$"}
+    runtime_graph, llm_id = _build_api_graph(output_enforcement=enforced)
     node = runtime_graph.with_node_prefix("run").nodes[f"run__{llm_id}"]
-    assert (node.output_enforcement or {})["max_attempts"] == 3
-    assert "output_enforcement" not in node.api_spec["json"]
+    assert node.to_flowmesh_node()["spec"]["output_enforcement"]["max_attempts"] == 3
+
+
+def test_output_enforcement_rejected_on_vision_op() -> None:
+    config = GenerationConfig(model="m")
+    config.output_enforcement = common.OutputEnforcement(text_regex="x")
+    vision = LLMVisionOp([OpMessage("user", "x")], "images", config=config)
+    with pytest.raises(ValueError):
+        RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", vision)]).compile())
 
 
 def test_api_key_redacted_on_serialization() -> None:
