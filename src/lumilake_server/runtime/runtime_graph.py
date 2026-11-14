@@ -2899,7 +2899,11 @@ class RuntimeGraphBuilder:
             api_mode=llm_op.config.api is not None,
         )
         labels: list[str] = []
-        select_plan: python_step.ColumnPlan = [{"kind": "stage", "node": status_id}]
+        # The selector and the merge both read the status step's raw row, not
+        # its JSON text.
+        select_plan: python_step.ColumnPlan = [
+            {"kind": "stage", "node": status_id, "path": "value"}
+        ]
         select_dependencies: list[str] = [status_id]
         for index, column in enumerate(llm_op.rowwise_columns or []):
             label = column.get("label")
@@ -3045,7 +3049,7 @@ class RuntimeGraphBuilder:
             merge_id,
             "row_skip_merge",
             [
-                {"kind": "stage", "node": status_id},
+                {"kind": "stage", "node": status_id, "path": "value"},
                 {
                     "kind": "stage",
                     "node": selected_id,

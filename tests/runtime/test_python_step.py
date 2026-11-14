@@ -1371,6 +1371,14 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
         "fail",
         "ok",
     ]
+    # ``contains`` matches on the value's text and the first matching rule wins.
+    assert [
+        json.loads(item["output"])["branch"] for item in status_payload["items"]
+    ] == [
+        "ok",
+        "fail",
+        "ok",
+    ]
     status_stage = _stage(tmp_path, "status", status_payload)
     selected = _run_stage_plan(
         selector,
