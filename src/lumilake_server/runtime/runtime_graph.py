@@ -39,7 +39,7 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
-from lumilake_server.ops.score_ops import ScoreOp, _literal_pairs
+from lumilake_server.ops.score_ops import ScoreOp, literal_pairs
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -1691,13 +1691,13 @@ class RuntimeGraphBuilder:
                 raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
             data_spec: dict[str, Any] = {
                 "type": "list",
-                "items": list(query_values),
+                "items": query_values,
             }
             dependencies: list[str] = []
         elif isinstance(query_op, DataOp):
             if not query_op.data:
                 raise ValueError(f"HttpFetchOp '{op_id}' requires at least one query")
-            data_spec = {"type": "list", "items": list(query_op.data)}
+            data_spec = {"type": "list", "items": query_op.data}
             dependencies = []
         else:
             read = self._resolve_upstream_read(
@@ -1716,7 +1716,7 @@ class RuntimeGraphBuilder:
         api_spec: dict[str, Any] = {
             "method": op.method,
             "url": op.url.replace("{query}", "{{prompt}}"),
-            "headers": dict(op.config.headers),
+            "headers": op.config.headers,
             "timeout_sec": op.config.timeout_sec,
             "retries": op.config.retries,
             "concurrency": op.config.max_concurrency,
@@ -1766,11 +1766,11 @@ class RuntimeGraphBuilder:
                         f"ScoreOp '{op_id}' {op_ref.name!r} input has no values "
                         "supplied"
                     )
-                return list(values)
+                return values
             if isinstance(op_ref, DataOp):
                 if not op_ref.data:
                     raise ValueError(f"ScoreOp '{op_id}' has empty input")
-                return list(op_ref.data)
+                return op_ref.data
             return self._resolve_upstream_read(
                 f"ScoreOp '{op_id}'", op_ref, dsl_to_runtime
             )
@@ -1791,7 +1791,7 @@ class RuntimeGraphBuilder:
         if isinstance(candidate_values, list) and not candidate_values:
             raise ValueError(f"ScoreOp '{op_id}' has empty candidate list")
         if isinstance(query_values, list) and isinstance(candidate_values, list):
-            pairs = _literal_pairs(query_values, candidate_values, op_id=op_id)
+            pairs = literal_pairs(query_values, candidate_values, op_id=op_id)
             data_spec = {
                 "type": "list",
                 "items": [
@@ -1837,11 +1837,7 @@ class RuntimeGraphBuilder:
             if backend == "vllm"
             else {"device_map": "auto"}
         )
-        model_config = GenerationConfig(
-            model=op.config.model,
-            api=None,
-            extra_engine_kwargs=dict(op.config.vllm) if backend == "vllm" else None,
-        )
+        model_config = GenerationConfig(model=op.config.model, api=None)
         score_op = self._create_runtime_op(
             name=op_id,
             task_type="classification",

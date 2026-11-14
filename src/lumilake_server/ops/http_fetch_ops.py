@@ -27,17 +27,20 @@ class HttpFetchConfig:
             raise ValueError("HttpFetchOp headers must be a string-to-string mapping")
         if not isinstance(self.timeout_sec, int | float) or self.timeout_sec <= 0:
             raise ValueError("HttpFetchOp timeout_sec must be greater than zero")
-        if not isinstance(self.retries, int) or not 0 <= self.retries <= MAX_RETRIES:
+        if isinstance(self.retries, bool) or not isinstance(self.retries, int):
+            raise ValueError("HttpFetchOp retries must be an integer")
+        if not 0 <= self.retries <= MAX_RETRIES:
             raise ValueError(f"HttpFetchOp retries must be between 0 and {MAX_RETRIES}")
         if (
             not isinstance(self.request_delay_sec, int | float)
             or self.request_delay_sec < 0
         ):
             raise ValueError("HttpFetchOp request_delay_sec must be non-negative")
-        if (
-            not isinstance(self.max_concurrency, int)
-            or not 1 <= self.max_concurrency <= 8
+        if isinstance(self.max_concurrency, bool) or not isinstance(
+            self.max_concurrency, int
         ):
+            raise ValueError("HttpFetchOp max_concurrency must be an integer")
+        if not 1 <= self.max_concurrency <= 8:
             raise ValueError("HttpFetchOp max_concurrency must be between 1 and 8")
         if not isinstance(self.fail_open, bool):
             raise ValueError("HttpFetchOp fail_open must be a boolean")
@@ -49,7 +52,7 @@ class HttpFetchConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "headers": dict(self.headers),
+            "headers": self.headers.copy(),
             "timeout_sec": self.timeout_sec,
             "retries": self.retries,
             "max_concurrency": self.max_concurrency,
@@ -62,10 +65,10 @@ class HttpFetchConfig:
 class HttpFetchOp(FunctionalOp):
     """Fetch JSON over HTTP once per input row.
 
-    ``url``, optional ``params``, and optional ``body`` are Python format
-    templates rendered with each row's value as ``{query}``. The executor
-    issues one FlowMesh API request per input row and returns one result row
-    for each request.
+    ``url``, optional ``params``, and optional ``body`` are templates in which
+    ``{query}`` is replaced by each row's value; any other brace pair is sent
+    literally. The executor issues one FlowMesh API request per input row and
+    returns one result row for each request.
     """
 
     def __init__(
@@ -126,7 +129,7 @@ class HttpFetchOp(FunctionalOp):
 
 
 def _as_query_list(query: str | list[str]) -> list[str]:
-    values = [query] if isinstance(query, str) else list(query)
+    values = [query] if isinstance(query, str) else query
     if not values or not all(
         isinstance(value, str) and value.strip() for value in values
     ):

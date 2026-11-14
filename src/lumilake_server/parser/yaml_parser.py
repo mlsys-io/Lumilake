@@ -721,7 +721,7 @@ def _emit_score_op(
 
     op_dict["query"] = user_id_to_internal[query_ref]
     op_dict["candidates"] = user_id_to_internal[candidates_ref]
-    op_dict["config"] = dict(config)
+    op_dict["config"] = config
     op_dict["_inputs"] = [op_dict["query"], op_dict["candidates"]]
 
 

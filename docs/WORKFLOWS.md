@@ -100,10 +100,6 @@ For DataFrame-shaped fields (e.g. `items.table` from SQL retrievals which
 arrive as JSON-encoded DataFrames), the walker decodes the string once and
 continues traversal — so `items.table.symbol` projects the `symbol` column.
 
-Indexed path segments such as `choices[0]` are accepted by the output walker
-and by the internal `pairs` Python step. The pair step normalizes them to
-integer path segments before reading each upstream result item.
-
 The path `items` (exactly, with no field) selects the whole result item rather
 than one field of it. Dynamic workflows use it to archive each leaf and each
 `export`ed op so later rounds can read any field of the stored item; see

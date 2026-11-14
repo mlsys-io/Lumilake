@@ -100,7 +100,7 @@ consumer needing raw floats loads `embeddings.safetensors` and indexes by
 
 `ScoreOp` scores query/candidate pairs with a FlowMesh `classification` task
 and returns one `items[]` entry per pair, carrying `index` and `score`. It
-needs a FlowMesh release with the `classification` task type (FlowMesh #270).
+needs FlowMesh `main`'s `classification` task type.
 `config` is required and supplies `model` and `backend` (`vllm` or
 `transformers`); the optional `vllm` mapping is passed to the vLLM engine. A
 vLLM node uses `model.vllm.convert: classify` and reports the head's sigmoid
@@ -141,29 +141,23 @@ outputs:
 ### HttpFetchOp
 
 `HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
-input. It needs a FlowMesh release with FlowMesh #269 (`{{prompt}}` in a URL
-or params, request pacing, fail-open). The `{query}`
-placeholder must appear in `url`, `params`, or a POST `body`; the runtime
-converts it to FlowMesh's `{{prompt}}` placeholder. The API executor
-URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so query
-values in `params` use the same form encoding as `requests`.
+input. It needs FlowMesh `main`'s per-row URL and params rendering and
+request pacing. The `{query}` placeholder must appear in `url`, `params`,
+or a POST `body`; the runtime converts it to FlowMesh's `{{prompt}}`
+placeholder. The API executor URL-encodes a `{{prompt}}` in a URL and passes
+`params` to `httpx`, so query values in `params` use the same form encoding
+as `requests`.
 `config.headers` carries the request headers, including credentials such as
 an API key: keep credentials there rather than in `url`, `params`, or `body`,
 which are archived as written. `config.timeout_sec`, `config.retries` (at
-most 10), and `config.max_concurrency` bound the request. Headers are
-retained in the runtime spec for dispatch, and the archived graph redacts
-every value of a header mapping under `config`, `api`, or `api_spec`, so a
-request credential under any header name is removed. A response body keeps
-its own `headers` object as data, scrubbed only for recognized token shapes
-(`Authorization` values and bearer tokens); a body that nests headers under
-a `config`, `api`, or `api_spec` key matches the same redaction rule, which
-keys on the parent name. Each input row produces one output row.
-`config.request_delay_sec` spaces actual request starts, including retries.
+most 10), and `config.max_concurrency` bound the request. Headers are sent as
+written, and every header value is redacted in the archived graph. Each input
+row produces one output row. `config.request_delay_sec` spaces actual request
+starts, including retries.
 
 `config.fail_open` is not available yet: with the pinned SDK a failed request
-would fail the whole job instead of yielding an error row, so setting
-`fail_open: true` is rejected. Once enabled it keeps a failed request as an
-error row with null content instead of failing the task.
+would fail the whole job, so `fail_open: true` is rejected; once enabled it
+keeps a failed request as an error row instead of failing the task.
 
 ### LLMChatOp via external API
 

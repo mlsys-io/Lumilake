@@ -26,7 +26,7 @@ class ScoreConfig:
         return {
             "model": self.model,
             "backend": self.backend,
-            "vllm": dict(self.vllm),
+            "vllm": self.vllm.copy(),
         }
 
 
@@ -45,13 +45,13 @@ class ScorePair:
 
 
 def _as_values(value: str | list[str], name: str) -> list[str]:
-    values = [value] if isinstance(value, str) else list(value)
+    values = [value] if isinstance(value, str) else value
     if not values or not all(isinstance(item, str) and item.strip() for item in values):
         raise ValueError(f"ScoreOp requires non-empty {name} input")
     return values
 
 
-def _literal_pairs(
+def literal_pairs(
     query: list[str], candidates: list[str], *, op_id: str | None = None
 ) -> list[ScorePair]:
     """Validate and broadcast literal query and candidate lists. ``op_id``
@@ -89,7 +89,7 @@ class ScoreOp(Op):
             else DataOp(data=_as_values(candidates, "candidate"))
         )
         if isinstance(query_op, DataOp) and isinstance(candidates_op, DataOp):
-            _literal_pairs(query_op.data, candidates_op.data)
+            literal_pairs(query_op.data, candidates_op.data)
         super().__init__([query_op, candidates_op])
 
     @property
