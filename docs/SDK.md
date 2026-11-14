@@ -317,13 +317,12 @@ node references and its arguments, and the export list. A LambdaOp's `code`
 is left alone, because it is Python source rather than a node reference.
 `stop_when_empty` names the previous round's export, which must be a
 list-mode LambdaOp: each element it returns is one row, and the server stops
-before a round whose predecessor exported none. A round that declares a
-list-mode Lambda runs as a single slice over the whole input set, because its
-whole-list result cannot be partitioned per row, and a later round that reads
-any of its results runs as one slice too. The rule holds for every dynamic
-round, in template mode and in planner mode. Template mode calls no planner
-and is mutually exclusive with `api`; every rendered body passes the same
-checks as a planner plan, and each stored plan records `source: "template"`.
+before a round whose predecessor exported none. A template round runs as one
+slice over the whole input set, because a list-mode Lambda's whole-list result
+cannot be partitioned per row, and a `next` body reads earlier rounds only
+through list-mode Lambda exports. Template mode calls no planner and is
+mutually exclusive with `api`; every rendered body passes the same checks as a
+planner plan, and each stored plan records `source: "template"`.
 
 The `driver:` YAML settings the server accepts are:
 
@@ -371,10 +370,10 @@ authoritative for its config, so the planner may only override `id` and
 A dynamic round body may route rows with `RouterOp` and a rowwise
 `LLMChatOp` `row_gate` instead of several list-mode stages. The branch
 decision is a declared graph element, so it is validated like any other op,
-and a gated op keeps one row per input row. Both are described in
-[`docs/OPS.md`](OPS.md#routerop-and-row-gates). Rows that carry their own
-growing conversation use `rowwise_messages_column`, so the complete
-role/content sequence survives a round boundary.
+and a gated op keeps one row per input row. Rows that carry their own growing
+conversation use `rowwise_messages_column`, so the complete role/content
+sequence survives a round boundary. See
+[`docs/OPS.md`](OPS.md#routerop-and-row-gates).
 
 The parent job's result carries the per-round plans. Missing, malformed,
 unknown, or wrongly typed plan output fails the parent; it never becomes a
