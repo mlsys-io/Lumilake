@@ -43,12 +43,12 @@ Schema or regular expression. The default `mode: retry` re-asks only failed
 rows and leaves decoding untouched. `mode: constrained` asks local vLLM
 inference to constrain generation in one pass and is rejected for API ops.
 Results report attempts and a retry summary. See
-[`docs/OPS.md`](OPS.md#llmchatop-via-external-api) for the configuration and
+[`docs/OPS.md`](OPS.md#llmchatop-sampling-options) for the configuration and
 backend behavior.
 
 Local `LLMChatOp` configs may set `num_beams` to use vLLM offline beam search.
 The setting is local-only and returns the best beam. See
-[`docs/OPS.md`](OPS.md#llmchatop-via-external-api) for the supported sampling
+[`docs/OPS.md`](OPS.md#llmchatop-sampling-options) for the supported sampling
 behavior.
 
 ## n8n code-node notes

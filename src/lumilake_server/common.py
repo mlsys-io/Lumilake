@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, fields
 from typing import Any, ClassVar, TypedDict
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 RETRIEVAL_MODES = ("sql", "s3", "agent")
 
@@ -144,7 +145,7 @@ class OutputEnforcement:
         if self.json_schema is not None:
             try:
                 Draft202012Validator.check_schema(self.json_schema)
-            except Exception as exc:
+            except SchemaError as exc:
                 raise ValueError(
                     f"output_enforcement.json_schema is invalid: {exc}"
                 ) from exc

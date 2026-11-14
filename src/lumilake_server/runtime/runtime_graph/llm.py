@@ -497,12 +497,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                     "api mode takes structural_outputs as a JSON-schema object; "
                     f"got {type(llm_op.structural_outputs).__name__}"
                 )
-        api_spec_output_enforcement = (
-            asdict(llm_op.config.output_enforcement)
-            if isinstance(llm_op, LLMChatOp)
-            and llm_op.config.output_enforcement is not None
-            else None
-        )
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,
@@ -514,8 +508,11 @@ class _LLMBuilder(_EmbeddingBuilder):
                 "raise_for_status": True,
             },
         }
-        if api_spec_output_enforcement is not None:
-            api_spec["output_enforcement"] = api_spec_output_enforcement
+        if (
+            isinstance(llm_op, LLMChatOp)
+            and llm_op.config.output_enforcement is not None
+        ):
+            api_spec["output_enforcement"] = asdict(llm_op.config.output_enforcement)
         if api_config.timeout_sec is not None:
             api_spec["timeout_sec"] = api_config.timeout_sec
         if api_config.retries is not None:
