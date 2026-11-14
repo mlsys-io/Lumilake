@@ -1,5 +1,3 @@
-"""HALO places a node only on a GPU worker whose memory fraction can hold it."""
-
 import pytest
 
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
@@ -13,7 +11,6 @@ _BIG = {"has_gpu": True, "gpu_memory_fraction": 0.8}
 @pytest.mark.parametrize(
     ("profiles", "expected"),
     [
-        # The smaller fraction is listed first; the fraction alone decides.
         ({"gpu-small": _SMALL, "gpu-big": _BIG}, "gpu-big"),
         ({"gpu-whole": {"has_gpu": True}}, "gpu-whole"),
         ({"gpu-small": _SMALL}, None),
@@ -31,9 +28,7 @@ def test_a_node_lands_only_on_a_worker_whose_fraction_holds_it(
         model_spec={"vllm": {"gpu_memory_utilization": 0.8}},
         inference_spec={},
     )
-    graph = RuntimeGraph(
-        nodes={"n": op}, node_order=["n"], output_node_map={}, dsl_to_runtime={}
-    )
+    graph = RuntimeGraph(nodes={"n": op}, node_order=["n"], output_node_map={})
     optimizer = HaloOptimizer()
     if expected is None:
         with pytest.raises(RuntimeError) as raised:
