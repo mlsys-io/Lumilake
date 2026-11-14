@@ -104,7 +104,7 @@ def _turn(**overrides: Any) -> dict[str, Any]:
         "inputs": ["source", "route"],
         "messages": [{"role": "user", "content": "source"}],
         "config": {"model": "dummy-model"},
-        "row_gate": {"node": "route", "branch": "review", "terminal": True},
+        "row_gate": {"node": "route", "branch": "review"},
         **overrides,
     }
 
@@ -142,7 +142,7 @@ def test_router_row_gate_and_messages_column_parse() -> None:
     (gated,) = chats
     gate = gated.row_gate
     assert gate is not None
-    assert (gate.branch, gate.terminal) == ("review", True)
+    assert gate.branch == "review"
     assert router.id in {op.id for op in gated.inputs}
     (plain,) = [op for op in graph.iter_ops(LLMChatOp) if op.row_gate is None]
     assert plain.rowwise_messages_column is not None

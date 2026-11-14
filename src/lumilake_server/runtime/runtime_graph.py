@@ -2811,7 +2811,6 @@ class RuntimeGraphBuilder:
                     for rule in router.rules
                 ],
                 "default_branch": router.default_branch,
-                "terminal_branch": row_gate.branch if row_gate.terminal else None,
             },
             model_spec={},
             inference_spec={},

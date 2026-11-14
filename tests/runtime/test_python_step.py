@@ -1330,7 +1330,7 @@ def _gated_chain() -> Any:
         rowwise_columns=[
             {"label": "code", "node": classify.id, "path": "items.output.code"}
         ],
-        row_gate=RowGate(node=router.id, branch="fail", terminal=True),
+        row_gate=RowGate(node=router.id, branch="fail"),
         row_gate_op=router,
     )
     return Graph.from_ops([as_output("repair", llm)]).compile(Rows=["a", "b", "c"])
@@ -1346,8 +1346,8 @@ def _run_stage_plan(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
 def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None:
     # The three gated stages read each other's archives: status labels every
     # row, selection keeps the gated rows with their label columns, and merge
-    # pairs the label rows with the gated call's output, marking the skipped
-    # rows done without one.
+    # pairs the label rows with the gated call's output, leaving the skipped
+    # rows without one.
     graph = RuntimeGraphBuilder().build(_gated_chain())
     (merge_id,) = graph.output_node_map
     (fail_ids,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
@@ -1389,14 +1389,14 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
         {status.node_id: status_stage, merge.data_spec["plan"][1]["node"]: served},
     )
     merged_rows = [item["value"] for item in merged["items"]]
-    assert [(row["done"], row["output"]) for row in merged_rows] == [
-        (False, None),
-        (True, "fixed"),
-        (False, None),
+    assert [(row["branch"], row["output"]) for row in merged_rows] == [
+        ("ok", None),
+        ("fail", "fixed"),
+        ("ok", None),
     ]
 
     # No row routes to the branch, so the gated call has no stage to read and
-    # the merge keeps every row undone with no output.
+    # the merge keeps every row without an output.
     all_ok = _stage(
         tmp_path, "all-ok", {"items": [{"output": {"code": "fn_0", "status": "ok"}}]}
     )
@@ -1407,5 +1407,5 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
     )
     unrouted = _run_stage_plan(merge, {status.node_id: ok_stage})
     assert [
-        (item["value"]["done"], item["value"]["output"]) for item in unrouted["items"]
-    ] == [(False, None)]
+        (item["value"]["branch"], item["value"]["output"]) for item in unrouted["items"]
+    ] == [("ok", None)]

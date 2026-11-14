@@ -1184,11 +1184,7 @@ def _build_messages_column(
 
 def _build_row_gate(*, spec: dict[str, Any], node: str, error_prefix: str) -> RowGate:
     try:
-        return RowGate(
-            node=node,
-            branch=_field(spec, "branch"),
-            terminal=spec.get("terminal", False),
-        )
+        return RowGate(node=node, branch=_field(spec, "branch"))
     except ValueError as exc:
         raise ValueError(f"{error_prefix}: {exc}") from exc
 

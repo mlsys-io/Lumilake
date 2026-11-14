@@ -520,116 +520,25 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
     assert list(subgraph_leaf.values())[0] == [{"market_cap": 10}]
 
 
-_GATED_PLAN: dict[str, Any] = {
-    "next": "subgraph",
-    "ops": [
-        {
-            "id": "source",
-            "op": "LambdaOp",
-            "inputs": ["Symbols"],
-            "mode": "list",
-            "fn_name": "states",
-            "code": "def states(items):\n    return items[0]\n",
-        },
-        {
-            "id": "route",
-            "op": "RouterOp",
-            "inputs": ["source"],
-            "input_path": "items.output",
-            "rules": [
-                {"branch": "finish", "match": "contains", "value": "DONE"},
-                {"branch": "pending", "match": "equals", "value": "__never__"},
-            ],
-            "default_branch": "pending",
-        },
-        {
-            "id": "turn",
-            "op": "LLMChatOp",
-            "inputs": ["source", "route"],
-            "messages": [{"role": "user", "content": "Review the row."}],
-            "config": {"model": "Qwen/Qwen3-8B"},
-            "rowwise_template": "{row}",
-            "rowwise_columns": [
-                {"label": "row", "node": "source", "path": "items.output"}
-            ],
-            "row_gate": {"node": "route", "branch": "finish", "terminal": True},
-        },
-    ],
-}
-
-
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("leaf_item", "plans", "expected"),
-    [
-        # Only a row-gated leaf carries routing rows, so a leaf value that
-        # happens to hold ``done`` says nothing about the round's survivor set;
-        # the planner still makes the stop.
-        (
-            lambda row: {"done": True, "table": {"market_cap": 10 + row}},
-            [_SUBGRAPH_PLAN, {"next": "STOP"}],
-            ("STOP", "proposer"),
-        ),
-        # Every row of the gated leaf is done, so the round has no survivor to
-        # forward and the observation ends the loop before the planner runs.
-        (
-            lambda row: {
-                "output": json.dumps({"done": True, "branch": "finish"}),
-                "value": {"done": True, "branch": "finish"},
-            },
-            [_GATED_PLAN, _SUBGRAPH_PLAN],
-            ("STOP", "observation"),
-        ),
-    ],
-    ids=["leaf-value-holds-done", "gated-rows-terminal"],
-)
-async def test_dynamic_round_stops_on_the_planner_or_a_gated_observation(
-    app: FastAPI,
-    job_routes: Any,
-    leaf_item: Callable[[int], dict],
-    plans: list[dict[str, Any]],
-    expected: tuple[str, str],
+async def test_dynamic_round_stops_on_the_planner(
+    app: FastAPI, job_routes: Any
 ) -> None:
+    # A leaf value that holds routing fields says nothing about the round's
+    # survivor set, so only the planner's own STOP ends a planner round.
     job_id = await _submit(app, _VALID_DYNAMIC_YAML)
     fake_server = job_routes._fake_runtime_server
-    fake_server.leaf_item = leaf_item
-    fake_server.plans = plans
+    fake_server.leaf_item = lambda row: {
+        "done": True,
+        "table": {"market_cap": 10 + row},
+    }
+    fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
     await _run_background(app)
     record = job_routes.jobs[job_id]
     assert record.status == "completed", record.error
     assert len(record.child_job_ids) == 2
     plan = record.result.outputs["round"]["plan"][-1]
-    assert (plan["next"], plan["source"]) == expected
-
-
-def test_gated_round_binds_its_reader_to_the_merge_stage() -> None:
-    # A row-gated leaf has no runtime node of its own: it compiles to status,
-    # selection, gated call and merge stages, and the round's proposer reads the
-    # merge stage, which holds the routing row under ``value``.
-    ops = resolve_subgraph(copy.deepcopy(_GATED_PLAN["ops"]), None)
-    build = build_round(
-        ops,
-        node_registry={op["id"]: op for op in ops},
-        round_index=1,
-        goal="analyze market data",
-        observations=[],
-        topology=[op["id"] for op in ops],
-        preview_width=900,
-        model="Qwen/Qwen3-8B",
-        max_tokens=10,
-        temperature=0.1,
-        results={},
-        rows=2,
-    )
-    assert "proposer" in build.graph
-    (gated_id,) = build.gated_leaf_ids
-    compiled = Graph.from_json(build.graph).compile(
-        Symbols=["done", "pending"], **build.forwarded_inputs
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    (column,) = runtime_graph.nodes["proposer"].data_spec["template"]["columns"]
-    assert column["node"] == runtime_graph.dsl_to_runtime[gated_id][-1]
-    assert column["path"] == "value.items.output"
+    assert (plan["next"], plan["source"]) == ("STOP", "proposer")
 
 
 @pytest.mark.anyio

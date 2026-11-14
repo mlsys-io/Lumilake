@@ -261,20 +261,8 @@ def main(inputs):
                 break
         statuses.append(
             {
-                "output": json.dumps(
-                    {
-                        "selected": True,
-                        "done": {terminal} and branch == {terminal_branch},
-                        "branch": branch,
-                        "row": i,
-                    }
-                ),
-                "value": {
-                    "selected": True,
-                    "done": {terminal} and branch == {terminal_branch},
-                    "branch": branch,
-                    "row": i,
-                },
+                "output": json.dumps({"selected": True, "branch": branch, "row": i}),
+                "value": {"selected": True, "branch": branch, "row": i},
             }
         )
     return {"items": statuses}
@@ -428,7 +416,6 @@ def row_status_source(
     *,
     rules: list[dict[str, str]],
     default_branch: str,
-    terminal_branch: str | None = None,
 ) -> str:
     """Generated row-status step with the router rules rendered directly."""
     rendered_rules = ",\n        ".join(repr(rule) for rule in rules)
@@ -437,8 +424,6 @@ def row_status_source(
         f"rules = [\n        {rendered_rules},\n    ]",
     )
     main = main.replace("{default_branch}", repr(default_branch))
-    main = main.replace("{terminal_branch}", repr(terminal_branch or ""))
-    main = main.replace("{terminal}", "True" if terminal_branch else "False")
     return (
         _PRELUDE.format(
             op_id=node_id,
@@ -501,7 +486,6 @@ def flowmesh_spec(node_id: str, data_spec: dict[str, Any]) -> dict[str, Any]:
             plan,
             rules=data_spec["rules"],
             default_branch=data_spec["default_branch"],
-            terminal_branch=data_spec.get("terminal_branch"),
         )
     else:
         code = wrapper_source(

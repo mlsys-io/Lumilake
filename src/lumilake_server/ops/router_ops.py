@@ -32,18 +32,15 @@ class RowGate:
 
     node: str
     branch: str
-    terminal: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.node, str) or not self.node:
             raise ValueError("RowGate requires a node")
         if not isinstance(self.branch, str) or not self.branch:
             raise ValueError("RowGate requires a non-empty branch")
-        if not isinstance(self.terminal, bool):
-            raise ValueError("RowGate terminal must be a bool")
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"node": self.node, "branch": self.branch, "terminal": self.terminal}
+    def to_dict(self) -> dict[str, str]:
+        return {"node": self.node, "branch": self.branch}
 
 
 @dataclass(frozen=True)

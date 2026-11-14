@@ -254,7 +254,6 @@ class RoundBuild(BaseModel):
     graph: dict[str, Any]
     leaf_output_names: list[str]
     leaf_user_ids: list[str]
-    gated_leaf_ids: list[str] = []
     export_output_names: list[str] = []
     export_user_ids: list[str] = []
     forwarded_inputs: dict[str, list[str]] = {}
@@ -599,49 +598,6 @@ def walk_archived_items(
                 ) from exc
         walked[node_id] = _forward_values(items, parts, node_id)
     return walked
-
-
-def _routing_row(item: Any) -> dict[str, Any] | None:
-    """The routing row an archived leaf value carries, if it carries one.
-
-    A dynamic leaf archives the whole item its producer emitted. The row-gate
-    merge stage emits ``{"output": <row json>, "value": <row>}``, so the
-    routing flags sit under ``value``; a routing row stored on its own carries
-    them at the top level.
-    """
-    if not isinstance(item, dict):
-        return None
-    value = item.get("value")
-    if isinstance(value, dict):
-        return value if "done" in value else None
-    return item if "done" in item else None
-
-
-def has_live_rows(archived: dict[str, list[str]]) -> bool:
-    """Whether archived row-routing output contains a non-terminal row.
-
-    Rows emitted by a row gate carry a ``done`` flag. A gated leaf whose rows
-    are all terminal leaves no work for the next round, so the driver stops
-    instead of forwarding an empty row set. Values that are not routing rows,
-    an empty mapping, and a leaf that archived no rows count as live, because
-    none of them carries routing evidence.
-    """
-    if not archived:
-        return True
-    for values in archived.values():
-        if not values:
-            return True
-        for value in values:
-            try:
-                item = json.loads(value)
-            except (TypeError, ValueError):
-                return True
-            row = _routing_row(item)
-            if row is None:
-                return True
-            if not row["done"]:
-                return True
-    return False
 
 
 def forward_refs(
@@ -1398,12 +1354,6 @@ def build_round(
     )
     leaf_ids = [internal for internal, _ in leaf_pairs]
     leaf_user_ids = [user for _, user in leaf_pairs]
-    ops_by_id = {op["id"]: op for op in subgraph}
-    gated_leaf_ids = [
-        internal
-        for internal, user in leaf_pairs
-        if ops_by_id[user].get("row_gate") is not None
-    ]
     export_pairs = sorted(
         (_internal_id(graph_name, op["op"], op["id"]), op["id"])
         for op in subgraph
@@ -1440,7 +1390,6 @@ def build_round(
         graph=graph,
         leaf_output_names=[f"leaf_{leaf_id}" for leaf_id in leaf_ids],
         leaf_user_ids=leaf_user_ids,
-        gated_leaf_ids=gated_leaf_ids,
         export_output_names=[f"export_{export_id}" for export_id in export_ids],
         export_user_ids=export_user_ids,
         forwarded_inputs=inputs,
