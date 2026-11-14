@@ -24,6 +24,7 @@ class RuntimeOpSchema(BaseModel):
     model_spec: dict[str, Any] = Field(default_factory=dict)
     inference_spec: dict[str, Any] = Field(default_factory=dict)
     api_spec: dict[str, Any] = Field(default_factory=dict)
+    output_enforcement: dict[str, Any] | None = None
     dependencies: list[str] = Field(default_factory=list)
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
@@ -40,6 +41,7 @@ class RuntimeOp:
     model_spec: dict[str, Any]
     inference_spec: dict[str, Any]
     api_spec: dict[str, Any] = field(default_factory=dict)
+    output_enforcement: dict[str, Any] | None = None
     dependencies: tuple[str, ...] = ()
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
@@ -58,6 +60,7 @@ class RuntimeOp:
             model_spec=self.model_spec,
             inference_spec=self.inference_spec,
             api_spec=self.api_spec,
+            output_enforcement=self.output_enforcement,
             dependencies=list(self.dependencies),
             output_spec=self.output_spec,
             condition=self.condition,
@@ -75,6 +78,7 @@ class RuntimeOp:
             model_spec=schema.model_spec,
             inference_spec=schema.inference_spec,
             api_spec=schema.api_spec,
+            output_enforcement=schema.output_enforcement,
             dependencies=tuple(schema.dependencies),
             output_spec=schema.output_spec,
             condition=schema.condition,
@@ -102,6 +106,8 @@ class RuntimeOp:
             spec_payload["model"] = self.model_spec
         if self.task_type in {"inference", "diffusion", "omni_text2image"}:
             spec_payload["inference"] = self.inference_spec
+        if self.output_enforcement is not None:
+            spec_payload["output_enforcement"] = self.output_enforcement
         spec: dict[str, Any] = {
             "name": self.node_id,
             "spec": spec_payload,

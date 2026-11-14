@@ -857,6 +857,7 @@ class RuntimeGraphBuilder:
         condition: dict[str, str] | None = None,
         api_spec: dict[str, Any] | None = None,
         skip_when_all_inputs_empty: bool = False,
+        output_enforcement: dict[str, Any] | None = None,
     ) -> RuntimeOp:
         data_spec = self._attach_lumid_cfg(data_spec)
         return RuntimeOp(
@@ -868,6 +869,7 @@ class RuntimeGraphBuilder:
             model_spec=model_spec,
             inference_spec=inference_spec,
             api_spec=api_spec or {},
+            output_enforcement=output_enforcement,
             dependencies=tuple(dependencies or []),
             output_spec=output_spec,
             condition=condition,
@@ -2349,14 +2351,13 @@ class RuntimeGraphBuilder:
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
+        output_enforcement = None
         if (
             isinstance(llm_op, LLMChatOp)
             and llm_op.config.api is None
             and llm_op.config.output_enforcement is not None
         ):
-            inference_spec["output_enforcement"] = asdict(
-                llm_op.config.output_enforcement
-            )
+            output_enforcement = asdict(llm_op.config.output_enforcement)
 
         if isinstance(llm_op, LLMCompletionOp):
             prompt_op = llm_op.prompt
@@ -2404,6 +2405,7 @@ class RuntimeGraphBuilder:
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec={**inference_spec, "apply_chat_template": False},
+                output_enforcement=output_enforcement,
                 backend=backend,
                 model=llm_op.config.model,
                 dependencies=row_dependencies if row_dependencies else None,
@@ -2427,6 +2429,7 @@ class RuntimeGraphBuilder:
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec=inference_spec,
+                output_enforcement=output_enforcement,
                 backend=backend,
                 model=llm_op.config.model,
                 dependencies=row_dependencies if row_dependencies else None,
@@ -2457,6 +2460,7 @@ class RuntimeGraphBuilder:
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec=inference_spec,
+                output_enforcement=output_enforcement,
                 backend=backend,
                 model=llm_op.config.model,
                 dependencies=aggregate_dependencies if aggregate_dependencies else None,
@@ -2492,6 +2496,7 @@ class RuntimeGraphBuilder:
             },
             model_spec=self._build_model_spec(llm_op.config, backend),
             inference_spec=inference_spec,
+            output_enforcement=output_enforcement,
             backend=backend,
             model=llm_op.config.model,
             dependencies=default_dependencies,
@@ -2633,6 +2638,12 @@ class RuntimeGraphBuilder:
                     "api mode takes structural_outputs as a JSON-schema object; "
                     f"got {type(llm_op.structural_outputs).__name__}"
                 )
+        output_enforcement = None
+        if (
+            isinstance(llm_op, LLMChatOp)
+            and llm_op.config.output_enforcement is not None
+        ):
+            output_enforcement = asdict(llm_op.config.output_enforcement)
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,
@@ -2644,11 +2655,6 @@ class RuntimeGraphBuilder:
                 "raise_for_status": True,
             },
         }
-        if (
-            isinstance(llm_op, LLMChatOp)
-            and llm_op.config.output_enforcement is not None
-        ):
-            api_spec["output_enforcement"] = asdict(llm_op.config.output_enforcement)
         if api_config.timeout_sec is not None:
             api_spec["timeout_sec"] = api_config.timeout_sec
         if api_config.retries is not None:
@@ -2663,6 +2669,7 @@ class RuntimeGraphBuilder:
                 model_spec={},
                 inference_spec={},
                 api_spec=api_spec,
+                output_enforcement=output_enforcement,
                 backend="api",
                 model=model,
                 dependencies=dependencies,

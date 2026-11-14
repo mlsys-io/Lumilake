@@ -156,13 +156,13 @@ def test_api_mode_rejects_local_only_sampling_options() -> None:
         )
 
 
-def test_api_output_enforcement_stays_out_of_request_body() -> None:
+def test_api_output_enforcement_reaches_task_spec_not_request_body() -> None:
     runtime_graph, llm_id = _build_api_graph(
         output_enforcement=OutputEnforcement(max_attempts=3, text_regex="^ok$")
     )
-    api_spec = runtime_graph.nodes[llm_id].api_spec
-    assert api_spec["output_enforcement"]["max_attempts"] == 3
-    assert "output_enforcement" not in api_spec["json"]
+    node = runtime_graph.nodes[llm_id]
+    assert node.to_flowmesh_node()["spec"]["output_enforcement"]["max_attempts"] == 3
+    assert "output_enforcement" not in node.api_spec["json"]
 
 
 def test_api_key_redacted_on_serialization() -> None:
