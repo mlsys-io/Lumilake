@@ -79,6 +79,8 @@ _RETRIEVAL = {
 }
 _ROW_NEXT = dict(_LIST, mode="row", inputs=["Live_r{{prev}}"])
 _MISSING = {"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}
+_TALLY = _state("T_r{{round}}", ["Symbols"])
+_KEEP_NEXT = dict(_LIST, inputs=["Live_r{{prev}}"])
 
 
 @pytest.mark.parametrize(
@@ -93,41 +95,29 @@ _MISSING = {"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}
         # Every export names a node its body builds, and a library ref resolves.
         ([_state("Other_r{{round}}", ["Symbols"])], [_LIST], "exported op id"),
         ([_MISSING], [_LIST], "library"),
+        # A next body may read a list-mode Lambda the earlier round ran, which is
+        # how a tally carries across rounds; a row-wise one is misread.
+        (
+            [_LIST, _TALLY],
+            [_KEEP_NEXT, _state("T_r{{round}}", ["T_r{{prev}}"])],
+            None,
+        ),
+        (
+            [_LIST, _TALLY],
+            [_KEEP_NEXT, dict(_TALLY, mode="row", inputs=["T_r{{prev}}"])],
+            "'T_r1'",
+        ),
     ],
-    ids=["row-1", "row-2", "retrieval", "no-export", "no-ref"],
+    ids=["row-1", "row-2", "retrieval", "no-export", "no-ref", "leaf", "row-leaf"],
 )
-def test_template_validator_rejects_an_unusable_body(
-    first: list[dict], next_ops: list[dict], message: str
+def test_template_validator_checks_a_body(
+    first: list[dict], next_ops: list[dict], message: str | None
 ) -> None:
+    if message is None:
+        _validate(first, next_ops)
+        return
     with pytest.raises(DriverProtocolError, match=message):
         _validate(first, next_ops)
-
-
-def test_template_validator_checks_a_later_read_of_a_round_leaf() -> None:
-    # A next body may read a list-mode Lambda the earlier round ran, which is
-    # how a tally carries across rounds. Any other leaf, a row-wise chat among
-    # them, archives one grouped item per table and is refused.
-    live = _state("Live_r{{round}}", ["Symbols"])
-    leaf = _state("T_r{{round}}", ["Symbols"])
-    export = {"export": ["Live_r{{round}}"]}
-    read = _state("T_r{{round}}", ["T_r{{prev}}"])
-
-    def template(op: dict) -> DriverTemplate:
-        later = [dict(live, inputs=["Live_r{{prev}}"]), op]
-        return DriverTemplate.model_validate(
-            {
-                "first": {**export, "ops": [live, leaf]},
-                "next": {**export, "ops": later},
-                "stop_when_empty": "Live_r{{prev}}",
-            }
-        )
-
-    validate_template_spec(template(read), max_nodes_per_round=8)
-    with pytest.raises(DriverProtocolError, match="'T_r1'"):
-        validate_template_spec(
-            template(dict(leaf, mode="row", inputs=["T_r{{prev}}"])),
-            max_nodes_per_round=8,
-        )
 
 
 def test_template_validator_rejects_a_round_three_read() -> None:

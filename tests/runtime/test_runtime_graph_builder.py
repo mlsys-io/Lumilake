@@ -503,13 +503,11 @@ def test_rowwise_messages_column_emits_list_message_array_spec() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),
-        rowwise_columns=[],
         rowwise_messages_column=MessagesColumn(rows.id, "items", "msgs"),
     )
-    built = Graph.from_ops([as_output("result", llm)]).compile(Rows=['["msg"]'])
-    assert RuntimeGraphBuilder().build(built).nodes[llm.id].data_spec["items"] == [
-        ["msg"]
-    ]
+    graph = Graph.from_ops([as_output("result", llm)]).compile(Rows=['["msg"]'])
+    node = RuntimeGraphBuilder().build(graph).nodes[llm.id]
+    assert node.data_spec["items"] == [["msg"]]
 
 
 def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
@@ -518,14 +516,11 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     rows = input_placeholder("Rows")
     router = _router_over(rows)
     templates = [{"name": "verdict", "type": "string"}]
-    llm = _row_gate_over(
-        rows,
-        router,
-        structural_outputs=templates,
-        row_gate=RowGate(node=router.id, branch="ok"),
+    gate = RowGate(node=router.id, branch="ok")
+    llm = _row_gate_over(rows, router, structural_outputs=templates, row_gate=gate)
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("result", llm)]).compile(Rows=["a", "b"])
     )
-    compiled = Graph.from_ops([as_output("result", llm)]).compile(Rows=["a", "b"])
-    graph = RuntimeGraphBuilder().build(compiled)
     *_, selected, merge = [graph.nodes[i] for i in graph.dsl_to_runtime[llm.id]]
     assert selected.inference_spec["templates"] == templates
     assert graph.output_node_map == {merge.node_id: "result"}
@@ -612,11 +607,8 @@ def test_list_lambda_reads_a_gated_op_through_its_merge_stage() -> None:
     rows = input_placeholder("Rows")
     gated = _row_gate_over(rows, _router_over(rows))
     reader = LambdaOp([gated], lambda columns: columns[0], mode="list")
-    compiled = Graph.from_ops(
-        [as_output("gated", gated), as_output("fixed", reader)]
-    ).compile(Rows=["FAIL", "PASS"])
-    graph = RuntimeGraphBuilder().build(compiled)
-
+    outs = [as_output("gated", gated), as_output("fixed", reader)]
+    graph = RuntimeGraphBuilder().build(Graph.from_ops(outs).compile(Rows=["a", "b"]))
     (merge_id,) = [i for i in graph.dsl_to_runtime[gated.id] if i.endswith("__rows")]
     assert graph.nodes[reader.id].data_spec["plan"] == [
         {"kind": "stage", "node": merge_id, "path": "value.output"}
