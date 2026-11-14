@@ -26,6 +26,11 @@ _outgoing_token_var: contextvars.ContextVar[str | None] = contextvars.ContextVar
 _http_clients: dict[int, httpx.AsyncClient] = {}
 _http_clients_lock = threading.Lock()
 
+# A FlowMesh host that drops connection attempts is only abandoned once the OS
+# gives up, minutes later. A short connect timeout bounds each attempt, and the
+# retry helper repeats a connect that timed out, because the request never left.
+_CONNECT_TIMEOUT_SECONDS = 10.0
+
 
 async def _inject_auth_header(request: httpx.Request) -> None:
     token = _outgoing_token_var.get()
@@ -40,7 +45,12 @@ def _shared_http_client() -> httpx.AsyncClient:
         client = _http_clients.get(loop_id)
         if client is None:
             client = httpx.AsyncClient(
-                timeout=httpx.Timeout(envs.LUMILAKE_HTTP_TIMEOUT_SECONDS),
+                timeout=httpx.Timeout(
+                    envs.LUMILAKE_HTTP_TIMEOUT_SECONDS,
+                    connect=min(
+                        _CONNECT_TIMEOUT_SECONDS, envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
+                    ),
+                ),
                 limits=httpx.Limits(keepalive_expiry=0.0),
                 event_hooks={"request": [_inject_auth_header]},
             )

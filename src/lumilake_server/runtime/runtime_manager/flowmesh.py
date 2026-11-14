@@ -21,8 +21,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
-from flowmesh.exceptions import APIError
+from flowmesh.exceptions import APIError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
@@ -205,25 +206,32 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
 
 _TRANSIENT_FLOWMESH_STATUS = frozenset({502, 503, 504})
 _FLOWMESH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+_DROPPED_CONNECTION_ERRORS = (
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+    httpx.ConnectTimeout,
+    FlowMeshConnectionError,
+)
 _SUBMIT_LOOKUP_SKEW = timedelta(minutes=2)
 _read_logger = init_child_logger("FlowmeshReadRetry")
 
 
 async def _retry_transient_read[T](call: Callable[[], Awaitable[T]], what: str) -> T:
-    """Run a read-only FlowMesh call, retrying gateway 502/503/504 responses."""
+    """Retry a read-only FlowMesh call on gateway errors and dropped connections."""
     for delay in _FLOWMESH_RETRY_DELAYS_S:
         try:
             return await call()
         except APIError as e:
             if e.status_code not in _TRANSIENT_FLOWMESH_STATUS:
                 raise
-            _read_logger.warning(
-                "FlowMesh read %s returned %s; retrying in %.1fs: %s",
-                what,
-                e.status_code,
-                delay,
-                _sanitize_flowmesh_api_error(e),
+            failure = f"returned {e.status_code}: {_sanitize_flowmesh_api_error(e)}"
+        except _DROPPED_CONNECTION_ERRORS as e:
+            failure = (
+                f"failed with {type(e).__name__}: {redact_secrets_in_text(str(e))}"
             )
+        _read_logger.warning(
+            "FlowMesh read %s %s; retrying in %.1fs", what, failure, delay
+        )
         await asyncio.sleep(delay)
     return await call()
 
@@ -781,7 +789,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         list[str]
             List of worker IDs
         """
-        workers = await flowmesh_for_server().workers.list(status="IDLE")
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(status="IDLE"),
+            "idle worker list",
+        )
         return [w.id for w in workers if not w.stale]
 
     async def get_all_workers(self) -> list[str]:
@@ -791,7 +802,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         pool so the scheduler can tell a busy-but-existing worker from one
         that does not exist at all.
         """
-        workers = await flowmesh_for_server().workers.list()
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(), "worker list"
+        )
         return [w.id for w in workers if not w.stale]
 
     async def get_dispatchable_workers(self) -> list[str]:
@@ -802,7 +815,9 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         unavailable or cordoned worker the pin can be lifted and the task run
         on another worker, so the scheduler does not plan work onto it.
         """
-        workers = await flowmesh_for_server().workers.list()
+        workers = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.list(), "worker list"
+        )
         return [
             w.id
             for w in workers
@@ -829,7 +844,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             The worker's hardware sections plus ``supported_task_types``, the
             sorted task types its executors advertise.
         """
-        worker = await flowmesh_for_server().workers.retrieve(worker_id)
+        worker = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.retrieve(worker_id),
+            f"worker {worker_id}",
+        )
         assert worker.id == worker_id
         profile = worker.hardware.model_dump() if worker.hardware else {}
         profile["supported_task_types"] = sorted(
