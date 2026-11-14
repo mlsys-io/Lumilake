@@ -83,9 +83,6 @@ FIXED_ROUND_NODE_IDS: frozenset[str] = frozenset(
     }
 )
 
-MAX_ROUND_OP_EXPANSION = 4
-MAX_STATIC_ROUND_NODE_BOUND = 100
-
 _OP_CLASSES: dict[str, type] = {
     name: obj for name, obj in vars(ops_pkg).items() if isinstance(obj, type)
 }
@@ -144,29 +141,6 @@ def _render_node_refs(op: dict[str, Any], round_number: int) -> None:
         if is_lambda and key in {"code", "_code"}:
             continue
         op[key] = _render_op_strings(value, round_number)
-
-
-def _template_round_expansion(template: dict[str, Any]) -> int:
-    """Upper-bound runtime nodes one declared template can expand into."""
-    return MAX_ROUND_OP_EXPANSION if template.get("row_gate") is not None else 1
-
-
-def static_round_node_upper_bound(
-    library: dict[str, dict[str, Any]] | None,
-    *,
-    include_proposer: bool,
-) -> int:
-    """Conservative ceiling for the declared portion of one round.
-
-    The declared round body expands each library template at its maximum
-    runtime-node factor. The in-graph observation/proposer pair contributes two
-    fixed nodes. Admission independently enforces the planner-emitted cap.
-    """
-    declared_body = sum(
-        _template_round_expansion(template) for template in (library or {}).values()
-    )
-    fixed_nodes = 2 if include_proposer else 0
-    return declared_body + fixed_nodes
 
 
 class StopPlan(BaseModel):
@@ -1004,6 +978,8 @@ _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 def validate_template_spec(
     template: DriverTemplate,
     library: dict[str, dict[str, Any]] | None = None,
+    *,
+    max_nodes_per_round: int,
 ) -> None:
     """Validate the first/next template bodies and the stop export wiring."""
     plans = {
@@ -1022,7 +998,7 @@ def validate_template_spec(
         validate_emitted_subgraph(
             plan.ops,
             registry,
-            MAX_STATIC_ROUND_NODE_BOUND,
+            max_nodes_per_round,
             library,
             export=plan.export,
             results={op_id: [] for op_id in results},

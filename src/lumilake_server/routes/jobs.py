@@ -57,7 +57,6 @@ from lumilake.log import Logger, init_child_logger, set_trace_id
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
-    MAX_STATIC_ROUND_NODE_BOUND,
     STOP,
     DriverProtocolError,
     StopPlan,
@@ -69,7 +68,6 @@ from lumilake_server.dynamic.driver import (
     resolve_subgraph,
     result_outputs,
     round_output_location,
-    static_round_node_upper_bound,
     template_plan_for_round,
     template_stop_export,
     validate_emitted_subgraph,
@@ -349,17 +347,10 @@ def _render_dynamic_round0(
     try:
         validate_library(spec.library)
         if spec.driver.template is not None:
-            validate_template_spec(spec.driver.template, spec.library)
-        static_bound = static_round_node_upper_bound(
-            spec.library,
-            include_proposer=(spec.driver.api is None and spec.driver.template is None),
-        )
-        if static_bound > MAX_STATIC_ROUND_NODE_BOUND:
-            raise DriverProtocolError(
-                "declared round topology has a conservative node upper bound of "
-                f"{static_bound}, exceeding the hard ceiling "
-                f"{MAX_STATIC_ROUND_NODE_BOUND}; reduce the declared library"
-                " (the bound follows the library, not max_nodes_per_round)"
+            validate_template_spec(
+                spec.driver.template,
+                spec.library,
+                max_nodes_per_round=spec.driver.max_nodes_per_round,
             )
         if spec.driver.api is not None or spec.driver.template is not None:
             return None, declared_output_location
@@ -2960,7 +2951,9 @@ async def preview_job(
                 try:
                     validate_library(dynamic_spec.library)
                     validate_template_spec(
-                        dynamic_spec.driver.template, dynamic_spec.library
+                        dynamic_spec.driver.template,
+                        dynamic_spec.library,
+                        max_nodes_per_round=(dynamic_spec.driver.max_nodes_per_round),
                     )
                 except (DriverProtocolError, ValueError) as exc:
                     raise HTTPException(

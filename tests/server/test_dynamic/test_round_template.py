@@ -163,6 +163,7 @@ def test_template_validator_rejects_an_unusable_body(
                 }
             ),
             {"Known": _state_op("Known", [])},
+            max_nodes_per_round=8,
         )
 
 
@@ -199,7 +200,7 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
     template = DriverTemplate.model_validate(
         {"first": body, "next": body, "stop_when_empty": "Echo_r{{prev}}"}
     )
-    validate_template_spec(template)
+    validate_template_spec(template, max_nodes_per_round=8)
     ops = {op["id"]: op for op in template_plan_for_round(template, 2).ops}
     turn = ops["Turn_r1"]
     assert turn["row_gate"]["node"] == "Source_r1"

@@ -788,34 +788,6 @@ async def test_dynamic_submit_empty_symbol_returns_422(app: FastAPI) -> None:
     assert resp.status_code == 422
 
 
-@pytest.mark.anyio
-async def test_dynamic_submit_rejects_static_round_bound_above_ceiling(
-    app: FastAPI,
-) -> None:
-    # Each gated entry expands to four runtime nodes, so 25 entries plus the
-    # observation/proposer pair bound the declared round at 102, above the 100
-    # hard ceiling even though the entries themselves declare no ops.
-    library = "".join(
-        f"  r{i}: {{op: DataRetrievalOp, row_gate: {{node: r, branch: a}}}}\n"
-        for i in range(25)
-    )
-    spec = (
-        "name: dynamic\ntype: dynamic\ngoal: test static bound\n"
-        "driver:\n  model: Qwen/Qwen3-8B\n  max_nodes_per_round: 20\n"
-        "library:\n" + library
-    )
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=_submit_body(spec),
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 422
-    assert "hard ceiling" in resp.text
-    assert "reduce the declared library" in resp.text
-
-
 _STATIC_YAML = """
 name: static
 inputs:
