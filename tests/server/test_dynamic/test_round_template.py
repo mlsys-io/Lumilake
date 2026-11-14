@@ -86,7 +86,7 @@ _STATE_ECHO = _state("Echo_r{{round}}", ["Echo_r{{prev}}"])
         # Only a list-mode export archives one item per row, so only it can read
         # as empty at the stop check.
         ([dict(_LIST, mode="row")], [_LIST], "list-mode"),
-        ([_LIST], [_ROW_NEXT], "list-mode"),
+        ([_LIST], [_ROW_NEXT], "not available"),
         # No other op stands as the stop export.
         ([_RETRIEVAL], [_LIST], "must be a LambdaOp"),
         # Every export names a node its body builds, and a library ref resolves.
@@ -102,20 +102,40 @@ def test_template_validator_rejects_an_unusable_body(
         _validate(first, next_ops)
 
 
-def test_template_validator_accepts_a_later_read_of_an_earlier_leaf() -> None:
-    # Round 1 archives a leaf T_r it does not export; round 2 reads it.
-    tally = _state("T_r{{round}}", ["Live_r{{round}}"])
-    reread = _state("T_r{{round}}", ["T_r{{prev}}"])
-    live = _state("Live_r{{round}}", ["Live_r{{prev}}"])
+def _leaf_read(op: dict) -> DriverTemplate:
+    """A template whose next body reads a leaf of the round before it."""
+    later = [dict(_LIST, inputs=["Live_r{{prev}}"]), dict(op, inputs=["T_r{{prev}}"])]
     export = {"export": ["Live_r{{round}}"]}
-    template = DriverTemplate.model_validate(
+    return DriverTemplate.model_validate(
         {
-            "first": {**export, "ops": [_LIST, tally]},
-            "next": {**export, "ops": [live, reread]},
+            "first": {**export, "ops": [_LIST, op]},
+            "next": {**export, "ops": later},
             "stop_when_empty": "Live_r{{prev}}",
         }
     )
-    validate_template_spec(template, max_nodes_per_round=8)
+
+
+def test_template_validator_accepts_a_later_read_of_a_list_lambda_leaf() -> None:
+    # The route archives every leaf, so a next body may read a list-mode Lambda.
+    validate_template_spec(
+        _leaf_read(_state("T_r{{round}}", ["Symbols"])), max_nodes_per_round=8
+    )
+
+
+def test_template_validator_refuses_a_later_read_of_a_chat_leaf() -> None:
+    # A row-wise chat leaf archives one grouped item per table, so binding it
+    # per archived item would misread it.
+    chat = {
+        "id": "T_r{{round}}",
+        "op": "LLMChatOp",
+        "inputs": ["Symbols"],
+        "messages": [{"role": "user", "content": "x"}],
+        "config": {"model": "m"},
+        "rowwise_template": "{row}",
+        "rowwise_columns": [{"label": "r", "node": "Symbols", "path": "items.output"}],
+    }
+    with pytest.raises(DriverProtocolError, match="'T_r1'"):
+        validate_template_spec(_leaf_read(chat), max_nodes_per_round=8)
 
 
 def test_template_validator_rejects_a_round_three_read() -> None:

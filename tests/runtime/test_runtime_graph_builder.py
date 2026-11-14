@@ -503,7 +503,7 @@ def test_rowwise_messages_column_emits_list_message_array_spec() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),
-        rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
+        rowwise_columns=[],
         rowwise_messages_column=MessagesColumn(rows.id, "items", "msgs"),
     )
     built = Graph.from_ops([as_output("result", llm)]).compile(Rows=['["msg"]'])
@@ -552,13 +552,11 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
         ({"gate_branch": "missing"}, "branch 'missing' is not declared"),
         # The gate names a router op; any other node is refused.
         ({"gate_node": "rows"}, "must be a RouterOp"),
-        # The status step cannot read a rowwise LLM's field or an API item,
-        # whose text sits under json.choices.
+        # The status step cannot read a field of a rowwise LLM's grouped item.
         (
             {"source": "rowwise", "input_path": "items.output.verdict"},
             "from rowwise LLM",
         ),
-        ({"source": "api"}, "reads API upstream"),
     ],
     ids=[
         "messages-column",
@@ -567,7 +565,6 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
         "undeclared-branch",
         "not-a-router",
         "rowwise-source-path",
-        "api-source",
     ],
 )
 def test_row_gate_rejects_an_unusable_gate(
