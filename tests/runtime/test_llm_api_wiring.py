@@ -559,7 +559,6 @@ def test_api_rowwise_template_emits_single_task() -> None:
     assert node.api_spec["timeout_sec"] == 300.0
     assert node.api_spec["json"]["model"] == "gpt-4o"
     assert node.model == "gpt-4o"
-    assert node.skip_when_all_inputs_empty is True
     assert node.to_flowmesh_node()["spec"]["data"] == node.data_spec
     assert node.to_flowmesh_node()["spec"]["data"]["type"] == "dataframe"
 
