@@ -40,6 +40,7 @@ def test_completion_op_compiles_to_string_prompt_list_without_chat_template() ->
     assert node.inference_spec["temperature"] == 0.7
     assert node.inference_spec["max_tokens"] == 3000
     assert node.inference_spec["stop_token_ids"] == [151645]
+    assert node.skip_when_all_inputs_empty is False
 
 
 def test_completion_yaml_uses_string_prompt_and_no_chat_template() -> None:
@@ -97,6 +98,7 @@ def test_completion_prompt_from_upstream_lambda_binds_exact_runtime_path() -> No
     }
     assert render.id in node.dependencies
     assert node.inference_spec["apply_chat_template"] is False
+    assert node.skip_when_all_inputs_empty is True
 
 
 def test_completion_prompt_from_list_mode_lambda_skips_message_inference() -> None:

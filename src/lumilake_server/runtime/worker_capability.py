@@ -6,6 +6,7 @@ a CPU worker that advertises it; every other node is placed by engine alone.
 python runs only on Docker-backed workers, so it is the one gated type.
 """
 
+import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -24,9 +25,79 @@ def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
     )
 
 
+def gpu_memory_fraction(profile: Mapping[str, Any]) -> float | None:
+    """The fraction of its card's memory a GPU worker owns, or ``None``.
+
+    A normalized profile records the fraction under ``gpu_memory_fraction`` and a
+    raw FlowMesh profile under the first entry of ``gpu.devices[]``; both are
+    read here. A worker owns one fraction across its devices, and ``None`` means it
+    holds a whole device, so an engine of any size fits.
+    """
+    if "gpu_memory_fraction" in profile:
+        recorded = profile["gpu_memory_fraction"]
+        if isinstance(recorded, int | float) and not isinstance(recorded, bool):
+            return float(recorded)
+        return None
+    gpu_section = profile.get("gpu")
+    devices = gpu_section.get("devices") if isinstance(gpu_section, Mapping) else None
+    if not isinstance(devices, list) or not devices:
+        return None
+    device = devices[0]
+    if not isinstance(device, Mapping):
+        return None
+    fraction = device.get("memory_fraction")
+    if isinstance(fraction, int | float) and not isinstance(fraction, bool):
+        return float(fraction)
+    return None
+
+
 def required_task_types(task_types: Iterable[str]) -> frozenset[str]:
     """The gated task types among ``task_types``."""
     return CAPABILITY_GATED_TASK_TYPES.intersection(task_types)
+
+
+def model_spec_gpu_memory_utilization(model_spec: Any) -> float | None:
+    """The fraction of a card's memory a model spec reserves for its vLLM engine.
+
+    The value sits under ``vllm``; a spec that names none returns ``None``, and
+    a node carrying such a spec can run on any GPU worker.
+    """
+    if not isinstance(model_spec, Mapping):
+        return None
+    vllm = model_spec.get("vllm")
+    if not isinstance(vllm, Mapping):
+        return None
+    utilization = vllm.get("gpu_memory_utilization")
+    if isinstance(utilization, bool) or not isinstance(utilization, int | float):
+        return None
+    value = float(utilization)
+    if not math.isfinite(value):
+        return None
+    return value
+
+
+def fraction_holds_utilization(fraction: float | None, utilization: float) -> bool:
+    """True when a worker owning ``fraction`` of a card can reserve ``utilization``.
+
+    ``None`` is a whole device, which takes any utilization; a shared worker
+    takes one no larger than its fraction.
+    """
+    return fraction is None or utilization <= fraction
+
+
+def holds_gpu_utilizations(
+    profile: Mapping[str, Any], utilizations: Iterable[float]
+) -> bool:
+    """True when a worker profile can host an engine reserving each utilization.
+
+    A profile that records no fraction owns a whole device and holds every
+    utilization, as does a request naming none.
+    """
+    fraction = gpu_memory_fraction(profile)
+    return all(
+        fraction_holds_utilization(fraction, utilization)
+        for utilization in utilizations
+    )
 
 
 def requires_cpu_worker(task_types: Iterable[str]) -> bool:

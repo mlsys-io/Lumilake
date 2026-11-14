@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 import yaml
 from flowmesh.exceptions import APIError, FlowMeshConnectionError
-from flowmesh.models import WorkerStatus
+from flowmesh.models import WorkerInfo, WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
@@ -35,6 +35,7 @@ from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
+    flowmesh_get_for_server,
     is_api_origin_trusted,
     resolve_api_credential,
 )
@@ -248,6 +249,27 @@ def _with_auth_scheme(credential: str) -> str:
     if _AUTH_SCHEME_RE.match(credential):
         return credential
     return f"Bearer {credential}"
+
+
+def _raw_gpu_memory_fractions(raw_worker: Any) -> dict[Any, float]:
+    """Map each GPU device index in a raw worker payload to its memory fraction.
+
+    Devices without a numeric ``memory_fraction`` are left out; the payload is
+    read loosely because it is unvalidated FlowMesh JSON.
+    """
+    fractions: dict[Any, float] = {}
+    hardware = raw_worker.get("hardware") if isinstance(raw_worker, dict) else None
+    gpu = hardware.get("gpu") if isinstance(hardware, dict) else None
+    devices = gpu.get("devices") if isinstance(gpu, dict) else None
+    if not isinstance(devices, list):
+        return fractions
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        fraction = device.get("memory_fraction")
+        if isinstance(fraction, int | float) and not isinstance(fraction, bool):
+            fractions[device.get("index")] = float(fraction)
+    return fractions
 
 
 @dataclass(slots=True)
@@ -900,17 +922,27 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         -------
         dict[str, Any]
             The worker's hardware sections plus ``supported_task_types``, the
-            sorted task types its executors advertise.
+            sorted task types its executors advertise. Each GPU device also
+            carries ``memory_fraction``, the fraction of the card's memory the
+            worker owns, read from the same response and ``None`` for a whole
+            device, because the SDK model does not keep it.
         """
-        worker = await _retry_transient_read(
-            lambda: flowmesh_for_server().workers.retrieve(worker_id),
+        raw_worker = await _retry_transient_read(
+            lambda: flowmesh_get_for_server(f"/workers/{worker_id}"),
             f"worker {worker_id}",
         )
+        worker = WorkerInfo.model_validate(raw_worker)
         assert worker.id == worker_id
         profile = worker.hardware.model_dump() if worker.hardware else {}
         profile["supported_task_types"] = sorted(
             str(task_type) for task_type in worker.capabilities.supported_task_types
         )
+        gpu = profile.get("gpu")
+        if isinstance(gpu, dict) and isinstance(gpu.get("devices"), list):
+            raw_fractions = _raw_gpu_memory_fractions(raw_worker)
+            for device in gpu["devices"]:
+                if isinstance(device, dict):
+                    device["memory_fraction"] = raw_fractions.get(device.get("index"))
         return profile
 
     async def get_request_status(

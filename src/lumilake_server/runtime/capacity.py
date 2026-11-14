@@ -3,7 +3,10 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from lumilake_server.runtime.worker_capability import advertised_task_types
+from lumilake_server.runtime.worker_capability import (
+    advertised_task_types,
+    holds_gpu_utilizations,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +38,13 @@ class FreeCapacity:
         return any(
             task_types <= advertised_task_types(self.profiles.get(w, {}))
             for w in self.cpu_worker_ids
+        )
+
+    def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
+        """True when some GPU worker in this snapshot holds every utilization."""
+        return any(
+            holds_gpu_utilizations(self.profiles.get(w, {}), utilizations)
+            for w in self.gpu_worker_ids
         )
 
     def can_satisfy(self, *, cpu_group_size: int, gpu_group_size: int) -> bool:
@@ -136,6 +146,7 @@ class FreeCapacity:
         worker_meets_hardware: Any,
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
+        required_gpu_utilizations: frozenset[float] = frozenset(),
     ) -> tuple[list[str], list[str]] | None:
         """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``.
 
@@ -149,10 +160,22 @@ class FreeCapacity:
         selected CPU group must contain a worker that advertises all of them; the
         helper returns ``None`` when no free eligible CPU worker does, so the
         caller waits for one instead of claiming a group that cannot run the batch.
+
+        ``required_gpu_utilizations`` are the card fractions the batch's GPU
+        nodes reserve. A worker's memory fraction holds every utilization at or
+        below it, so the selected GPU group must contain a worker holding the
+        largest one;
+        the helper returns ``None`` when no free eligible GPU worker does, so the
+        caller waits instead of claiming a group the optimizer would reject. A
+        batch that claims no GPU worker is not gated on their fractions: it reaches
+        the optimizer, which reports the missing worker.
         """
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
+            return None
+        fraction_gate = required_gpu_utilizations if gpu_group_size > 0 else frozenset()
+        if fraction_gate and not self.profiles:
             return None
         if not self.profiles:
             return (
@@ -179,4 +202,18 @@ class FreeCapacity:
                 return None
             if not any(w in capable for w in selected_cpu):
                 selected_cpu[-1] = capable[0]
-        return (selected_cpu, eligible_gpu[:gpu_group_size])
+        selected_gpu = eligible_gpu[:gpu_group_size]
+        if fraction_gate:
+            # A worker's memory fraction holds every utilization at or below it, so a
+            # group covering the largest one covers them all.
+            largest = max(fraction_gate)
+            capable = [
+                w
+                for w in eligible_gpu
+                if holds_gpu_utilizations(self.profiles.get(w, {}), {largest})
+            ]
+            if not capable:
+                return None
+            if not any(w in capable for w in selected_gpu):
+                selected_gpu[-1] = capable[0]
+        return (selected_cpu, selected_gpu)
