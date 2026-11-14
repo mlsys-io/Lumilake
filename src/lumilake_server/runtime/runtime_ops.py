@@ -6,9 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.runtime import python_step
 
-# Task types whose FlowMesh spec declares ``skipWhenAllInputsEmpty``.
-_EMPTY_INPUT_SKIP_TASK_TYPES = frozenset({"inference", "api"})
-
 
 class RuntimeOpSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeOp``.
@@ -51,11 +48,6 @@ class RuntimeOp:
     @property
     def model_key(self) -> tuple[str, str, str]:
         return (self.task_type, self.backend, self.model)
-
-    @property
-    def _declares_empty_input_skip(self) -> bool:
-        """Whether this task's FlowMesh spec has ``skipWhenAllInputsEmpty``."""
-        return self.task_type in _EMPTY_INPUT_SKIP_TASK_TYPES
 
     def serialize(self) -> dict[str, Any]:
         return RuntimeOpSchema(
@@ -125,6 +117,6 @@ class RuntimeOp:
             spec["spec"]["output"] = self.output_spec
         if self.condition:
             spec["spec"]["condition"] = self.condition
-        if self.skip_when_all_inputs_empty and self._declares_empty_input_skip:
+        if self.skip_when_all_inputs_empty:
             spec["spec"]["skipWhenAllInputsEmpty"] = True
         return spec
