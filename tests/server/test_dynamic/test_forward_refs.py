@@ -343,6 +343,24 @@ def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
     ]
 
 
+def test_column_bindings_remap_a_messages_column() -> None:
+    # A template that reads its rows as one message array per row binds that
+    # column the same way a rowwise column binds.
+    library = {
+        "Turn": {
+            "op": "LLMChatOp",
+            "messages": [{"role": "user", "content": "x"}],
+            "rowwise_messages_column": {"label": "m", "node": "P", "path": "out"},
+            "column_bindings": [{"label": "m", "input": 0}],
+            "config": {"model": "m"},
+        }
+    }
+    resolved = resolve_subgraph(
+        [{"ref": "Turn", "id": "t1", "inputs": ["P1"]}], library
+    )
+    assert resolved[0]["rowwise_messages_column"]["node"] == "P1"
+
+
 def test_column_bindings_remap_independent_library_instances() -> None:
     library = _llm_column_library()
     subgraph = _llm_column_subgraph("first") + _llm_column_subgraph("second")
