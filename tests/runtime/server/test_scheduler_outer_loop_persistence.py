@@ -1143,8 +1143,8 @@ async def test_try_claim_workers_lets_the_optimizer_fail_when_no_worker_can_run_
     assert await server._try_claim_workers(_python_batch(), free) == ["cpu-plain"]
 
 
-_SMALL_GPU = {"has_gpu": True, "gpu_memory_share": 0.1}
-_BIG_GPU = {"has_gpu": True, "gpu_memory_share": 0.8}
+_SMALL_GPU = {"has_gpu": True, "gpu_memory_fraction": 0.1}
+_BIG_GPU = {"has_gpu": True, "gpu_memory_fraction": 0.8}
 
 
 def _op(task_type: str, backend: str, model_spec: dict[str, Any] | None = None) -> Any:
@@ -1182,11 +1182,11 @@ def _generation_batch(*utilizations: float) -> Any:
             ("gpu-small", "gpu-big"),
             ["gpu-big"],
         ),
-        # A batch claiming no GPU worker is not gated on the shares.
+        # A batch claiming no GPU worker is not gated on the fractions.
         ((0.8,), 0, ("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), None),
     ],
 )
-async def test_try_claim_workers_takes_only_a_worker_whose_share_fits(
+async def test_try_claim_workers_takes_only_a_worker_whose_fraction_fits(
     server_factory,
     utilizations: tuple[float, ...],
     gpu_group_size: int,
@@ -1194,9 +1194,9 @@ async def test_try_claim_workers_takes_only_a_worker_whose_share_fits(
     idle: tuple[str, ...],
     expected: list[str] | None,
 ) -> None:
-    """A worker whose share cannot hold the node is never claimed: the claim waits
+    """A worker whose fraction cannot hold the node is never claimed: the claim waits
     while a fitting one is busy, and proceeds when the cluster holds none."""
-    shares: dict[str, dict[str, Any]] = {
+    fractions: dict[str, dict[str, Any]] = {
         "gpu-small": _SMALL_GPU,
         "gpu-big": _BIG_GPU,
         "gpu-whole": {"has_gpu": True},
@@ -1209,14 +1209,14 @@ async def test_try_claim_workers_takes_only_a_worker_whose_share_fits(
         return FreeCapacity(
             cpu_worker_ids=(),
             gpu_worker_ids=cluster,
-            profiles={name: shares[name] for name in cluster},
+            profiles={name: fractions[name] for name in cluster},
         )
 
     server._snapshot_total_capacity = total
     free = FreeCapacity(
         cpu_worker_ids=(),
         gpu_worker_ids=idle,
-        profiles={name: shares[name] for name in idle},
+        profiles={name: fractions[name] for name in idle},
     )
 
     assert (

@@ -16,9 +16,9 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 def _profile(
     gpu_count: int,
     task_types: list[str] | None = None,
-    memory_share: float | None = None,
+    memory_fraction: float | None = None,
 ) -> dict[str, Any]:
-    devices = [{"memory_share": memory_share} for _ in range(gpu_count)]
+    devices = [{"memory_fraction": memory_fraction} for _ in range(gpu_count)]
     return {
         "cpu": {"logical_cores": 16},
         "memory": {"total_bytes": 64 * (1024**3)},
@@ -69,17 +69,17 @@ def _inference_op(node_id: str) -> RuntimeOp:
     ("profiles", "expected"),
     [
         ({"gpu-small": 0.1, "gpu-big": 0.8}, ["gpu-big"]),
-        ({"gpu-small": 0.1}, "memory share holds"),
+        ({"gpu-small": 0.1}, "memory fraction holds"),
     ],
 )
-async def test_preview_takes_a_worker_whose_share_holds_the_node(
+async def test_preview_takes_a_worker_whose_fraction_holds_the_node(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
     profiles: dict[str, float],
     expected: list[str] | str,
 ) -> None:
     server = server_factory()
-    manager = {n: _profile(1, memory_share=s) for n, s in profiles.items()}
+    manager = {n: _profile(1, memory_fraction=s) for n, s in profiles.items()}
     monkeypatch.setattr(server, "runtime_manager", _MultiWorkerRuntimeManager(manager))
     spec = {"vllm": {"gpu_memory_utilization": 0.8}}
     op = replace(_inference_op("llm"), model_spec=spec)

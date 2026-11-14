@@ -37,14 +37,14 @@ def _worker(
 def _serve(
     monkeypatch: pytest.MonkeyPatch,
     worker: WorkerInfo,
-    shares: list[float | None] | None = None,
+    fractions: list[float | None] | None = None,
 ) -> None:
     payload = worker.model_dump(mode="json")
-    if shares is not None:
+    if fractions is not None:
         payload["hardware"]["gpu"] = {
             "devices": [
-                {"index": index, "memory_share": share}
-                for index, share in enumerate(shares)
+                {"index": index, "memory_fraction": fraction}
+                for index, fraction in enumerate(fractions)
             ]
         }
 
@@ -84,7 +84,7 @@ async def test_profile_keeps_the_hardware_sections(
 
 
 @pytest.mark.asyncio
-async def test_profile_carries_the_devices_memory_shares(
+async def test_profile_carries_the_devices_memory_fractions(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -94,4 +94,4 @@ async def test_profile_carries_the_devices_memory_shares(
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 
-    assert [d["memory_share"] for d in profile["gpu"]["devices"]] == [0.3, None]
+    assert [d["memory_fraction"] for d in profile["gpu"]["devices"]] == [0.3, None]
