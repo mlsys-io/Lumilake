@@ -207,6 +207,11 @@ row. When it is the workflow output, its per-row results are returned as one
 output value per input row (FlowMesh groups them back into one item per table
 internally; the runtime flattens that back to per-row values at aggregation).
 
+A per-row inference or API task is marked empty-preserving: when every input
+column it reads is empty, FlowMesh completes the task with an empty result
+instead of dispatching a worker that would find no prompts. The marker reaches
+only those two task types; a `python` task never carries it.
+
 ### LLMCompletionOp
 
 `LLMCompletionOp` generates from rendered string prompts without the model
@@ -215,7 +220,11 @@ LLM op that produces one prompt string per row; render a templated prompt with
 a `LambdaOp`. Use it when the prompt already carries the model's own chat
 control tokens. Sampling fields are the same as `LLMChatOp`'s.
 `config.api` and `config.chat_template_kwargs` are not accepted: the task never
-applies a chat template, so both would have no effect.
+applies a chat template, so both would have no effect. A prompt read from an
+upstream op is empty-preserving: when that op's output column is empty the task
+completes with an empty result instead of dispatching a worker, because the
+row count is the prompt count. A prompt list authored inline keeps the flag off,
+since an authored list carrying no strings is not an empty upstream.
 
 ```yaml
 ops:

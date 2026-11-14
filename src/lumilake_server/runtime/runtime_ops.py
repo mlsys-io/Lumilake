@@ -6,6 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.runtime import python_step
 
+# Task types whose FlowMesh spec declares ``skipWhenAllInputsEmpty``.
+_EMPTY_INPUT_SKIP_TASK_TYPES = frozenset({"inference", "api"})
+
 
 class RuntimeOpSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeOp``.
@@ -27,6 +30,7 @@ class RuntimeOpSchema(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
+    skip_when_all_inputs_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,16 @@ class RuntimeOp:
     dependencies: tuple[str, ...] = ()
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
+    skip_when_all_inputs_empty: bool = False
 
     @property
     def model_key(self) -> tuple[str, str, str]:
         return (self.task_type, self.backend, self.model)
+
+    @property
+    def _declares_empty_input_skip(self) -> bool:
+        """Whether this task's FlowMesh spec has ``skipWhenAllInputsEmpty``."""
+        return self.task_type in _EMPTY_INPUT_SKIP_TASK_TYPES
 
     def serialize(self) -> dict[str, Any]:
         return RuntimeOpSchema(
@@ -59,6 +69,7 @@ class RuntimeOp:
             dependencies=list(self.dependencies),
             output_spec=self.output_spec,
             condition=self.condition,
+            skip_when_all_inputs_empty=self.skip_when_all_inputs_empty,
         ).model_dump(exclude_none=True)
 
     @classmethod
@@ -75,6 +86,7 @@ class RuntimeOp:
             dependencies=tuple(schema.dependencies),
             output_spec=schema.output_spec,
             condition=schema.condition,
+            skip_when_all_inputs_empty=schema.skip_when_all_inputs_empty,
         )
 
     @classmethod
@@ -113,4 +125,6 @@ class RuntimeOp:
             spec["spec"]["output"] = self.output_spec
         if self.condition:
             spec["spec"]["condition"] = self.condition
+        if self.skip_when_all_inputs_empty and self._declares_empty_input_skip:
+            spec["spec"]["skipWhenAllInputsEmpty"] = True
         return spec
