@@ -223,9 +223,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             inference_spec["templates"] = llm_op.structural_outputs
         output_enforcement = (
             asdict(llm_op.config.output_enforcement)
-            if isinstance(llm_op, LLMChatOp)
-            and llm_op.config.api is None
-            and llm_op.config.output_enforcement is not None
+            if llm_op.config.output_enforcement is not None
             else None
         )
 
@@ -502,8 +500,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 )
         api_output_enforcement = (
             asdict(llm_op.config.output_enforcement)
-            if isinstance(llm_op, LLMChatOp)
-            and llm_op.config.output_enforcement is not None
+            if llm_op.config.output_enforcement is not None
             else None
         )
         api_spec: dict[str, Any] = {
