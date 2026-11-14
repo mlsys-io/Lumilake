@@ -402,9 +402,9 @@ def test_llm_sampling_options_reach_the_flowmesh_spec() -> None:
     graph = Graph.from_json(spec["graph"])
     (llm,) = list(graph.iter_ops(LLMChatOp))
     built = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))
-    inference = built.nodes[llm.id].inference_spec
-    assert inference["num_beams"] == 3
-    assert inference["output_enforcement"]["text_regex"] == "^ok$"
+    flowmesh_spec = built.nodes[llm.id].to_flowmesh_node()["spec"]
+    assert flowmesh_spec["inference"]["num_beams"] == 3
+    assert flowmesh_spec["output_enforcement"]["text_regex"] == "^ok$"
 
 
 def test_llm_config_accepts_api_block() -> None:
