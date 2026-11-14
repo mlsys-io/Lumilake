@@ -304,6 +304,5 @@ def test_dedupe_keys_on_output_enforcement() -> None:
         n: replace(base, node_id=n, output_enforcement={"text_regex": r})
         for n, r in (("A", "a"), ("B", "a"), ("F", "F"))
     }
-    graph = RuntimeGraph(nodes, ["A", "B", "F"], {})
-    merged = HaloOptimizer().optimize_graphs({"wf": graph})[0]
-    assert merged.nodes["F"].output_enforcement == {"text_regex": "F"}
+    merged = HaloOptimizer().optimize_graphs({"wf": RuntimeGraph(nodes, [*nodes], {})})
+    assert merged[0].nodes["F"].output_enforcement == {"text_regex": "F"}
