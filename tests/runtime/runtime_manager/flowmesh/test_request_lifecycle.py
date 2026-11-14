@@ -4,14 +4,12 @@ fan-out contract.
 """
 
 import json
-import types
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import PythonResult
-from flowmesh.models.tasks import TaskStatusView
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -28,6 +26,7 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+from tests.runtime.runtime_manager.flowmesh.conftest import serve
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
@@ -162,24 +161,7 @@ async def test_api_backend_returns_chat_history_like_local_backend(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": row_id}
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result = await manager.process_request(
         request_info,
@@ -191,31 +173,6 @@ async def test_api_backend_returns_chat_history_like_local_backend(
     # rendered messages, so the runtime manager cannot reconstruct a chat
     # history from the api json; the prompt lives in the data_spec template.
     assert result["chat_histories"] == {}
-
-
-def _task_info(
-    task_id: str,
-    status: str,
-    *,
-    error: str | None = None,
-    last_error: str | None = None,
-    graph_node_name: str | None = None,
-) -> TaskStatusView:
-    """A real SDK ``TaskStatusView`` for a fake status fetch."""
-    return TaskStatusView(
-        task_id=task_id,
-        workflow_id="wf-1",
-        status=status,
-        submitted_at="2026-01-01T00:00:00Z",
-        submitted_ts=0.0,
-        attempts=1,
-        max_attempts=1,
-        completed=status == "DONE",
-        failed=status == "FAILED",
-        error=error,
-        last_error=last_error,
-        graph_node_name=graph_node_name,
-    )
 
 
 def _build_two_row_request() -> tuple[RequestInfo, str, str]:
@@ -301,32 +258,7 @@ async def _run_failing_request(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(
-            task_id,
-            status_by_task[task_id],
-            error=error_by_task.get(task_id),
-            graph_node_name=node_by_task[task_id],
-        )
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {
-            "graph_node_name": node_by_task[task_id],
-            "error": error_by_task.get(task_id),
-        }
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, status_by_task, node_by_task, error_by_task)
 
     with pytest.raises(RuntimeError) as excinfo:
         await manager.process_request(
@@ -348,7 +280,7 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     loop; without it a FAILED row would be silently ignored (or a partial
     result quietly returned) instead of aborting the request."""
     cancelled: list[str] = []
-    manager, _, row1_id, message = await _run_failing_request(
+    manager, row0_id, row1_id, message = await _run_failing_request(
         monkeypatch,
         {"task-row0": "PENDING", "task-row1": "FAILED"},
         {"task-row1": "python task failed: ImportError: boom"},
@@ -363,6 +295,27 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     batch_key = ("req-failfast", "batch-1")
     assert manager._execution_task_status[batch_key]["task-row0"] == "PENDING"
     assert manager._execution_task_status[batch_key]["task-row1"] == "FAILED"
+
+    # A released batch still polls its non-terminal task through its own id,
+    # and a second batch is polled through its own workflow too.
+    second_key = ("req-failfast", "batch-2")
+    manager._execution_task_status[second_key] = {"task-row2": "PENDING"}
+    manager._execution_workflow_id[second_key] = "wf-2"
+    manager._execution_output_tasks[second_key] = {"task-row2"}
+    manager._batch_status[second_key] = "RUNNING"
+    manager.release_executions({"req-failfast"})
+    polled = serve(
+        monkeypatch,
+        {},
+        by_workflow={
+            "wf-1": {"task-row0": "DONE", "task-row1": "FAILED"},
+            "wf-2": {"task-row2": "DONE"},
+        },
+    )
+    reported = await manager.get_request_status("req-failfast")
+
+    assert sorted(polled) == ["wf-1", "wf-2"]
+    assert reported["execution"]["completed"]
 
 
 def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, str]:
@@ -484,24 +437,7 @@ async def test_api_output_node_reads_content(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": row_id}
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result_ = await manager.process_request(
         request_info,
@@ -571,24 +507,7 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": row_id}
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result_ = await manager.process_request(
         request_info,
@@ -638,24 +557,7 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=row_id)
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": row_id}
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, {"task-row0": "DONE"}, {"task-row0": row_id})
 
     result_ = await manager.process_request(
         request_info,
@@ -735,7 +637,7 @@ async def test_failed_task_error_is_redacted_before_raise_and_record(
     echoes must be redacted in both the recorded error and the raised
     message."""
     error = "python task failed: ValueError: Authorization: Bearer supersecret"
-    manager, _, row1_id, message = await _run_failing_request(
+    manager, row0_id, row1_id, message = await _run_failing_request(
         monkeypatch,
         {"task-row0": "PENDING", "task-row1": "FAILED"},
         {"task-row1": error},
@@ -826,34 +728,11 @@ async def test_fail_fast_reports_every_failed_task_reason(
         "task-row1": "FAILED",
         "task-row2": "PENDING",
     }
-    error_by_task = {"task-row1": "python task failed: ValueError: bad input"}
+    error_by_task: dict[str, str | None] = {
+        "task-row1": "python task failed: ValueError: bad input"
+    }
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(
-            task_id,
-            status_by_task[task_id],
-            error=error_by_task.get(task_id),
-            graph_node_name=node_by_task[task_id],
-        )
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {
-            "graph_node_name": node_by_task[task_id],
-            "error": error_by_task.get(task_id),
-        }
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, status_by_task, node_by_task, error_by_task)
 
     with pytest.raises(RuntimeError) as excinfo:
         await manager.process_request(
@@ -968,24 +847,7 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
         "task-llm": llm_row_id,
     }
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": node_by_task[task_id]}
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, dict.fromkeys(node_by_task, "DONE"), node_by_task)
 
     result_ = await manager.process_request(
         request_info,
@@ -1066,24 +928,7 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
         "task-llm": llm_row_id,
     }
 
-    async def _fetch_task_status(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> TaskStatusView:
-        return _task_info(task_id, "DONE", graph_node_name=node_by_task[task_id])
-
-    async def _fetch_task_description(
-        _self: FlowmeshRuntimeManager, task_id: str
-    ) -> dict[str, Any]:
-        return {"graph_node_name": node_by_task[task_id]}
-
-    monkeypatch.setattr(
-        manager, "fetch_task_status", types.MethodType(_fetch_task_status, manager)
-    )
-    monkeypatch.setattr(
-        manager,
-        "fetch_task_description",
-        types.MethodType(_fetch_task_description, manager),
-    )
+    serve(monkeypatch, dict.fromkeys(node_by_task, "DONE"), node_by_task)
 
     result_ = await manager.process_request(
         request_info,
