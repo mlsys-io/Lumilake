@@ -73,9 +73,15 @@ _LIST = _state_op("Live_r{{round}}", ["Symbols"])
     ("first", "next_ops", "message"),
     [
         # Only a list-mode export archives one item per row, so only it can read
-        # as empty at the stop check; ``next`` runs from round 2 on.
+        # as empty at the stop check; ``next`` runs from round 2 on. Round 3
+        # renders ``next`` again, so a row-mode ``next`` export is refused at
+        # that read first.
         ([dict(_LIST, mode="row")], [_LIST], "list-mode"),
-        ([_LIST], [dict(_LIST, mode="row", inputs=["Live_r{{prev}}"])], "list-mode"),
+        (
+            [_LIST],
+            [dict(_LIST, mode="row", inputs=["Live_r{{prev}}"])],
+            "not available",
+        ),
         # The stop check reads a Lambda's archived rows, so no other op stands as
         # the stop export.
         (
@@ -132,6 +138,29 @@ def test_template_validator_rejects_an_unusable_body(
             {"Known": _state_op("Known", [])},
             max_nodes_per_round=8,
         )
+
+
+def test_template_validator_rejects_a_round_three_read() -> None:
+    # Round 2 reads an op round 1 exports, so it validates; round 3 reads the
+    # same op from round 2, which never produced it.
+    template = DriverTemplate.model_validate(
+        {
+            "first": {
+                "ops": [
+                    _state_op("Live_r{{round}}", ["Symbols"]),
+                    _state_op("Keep_r{{round}}", ["Live_r{{round}}"]),
+                ],
+                "export": ["Live_r{{round}}", "Keep_r{{round}}"],
+            },
+            "next": {
+                "ops": [_state_op("Live_r{{round}}", ["Keep_r{{prev}}"])],
+                "export": ["Live_r{{round}}"],
+            },
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    with pytest.raises(DriverProtocolError, match="unknown node id 'Keep_r1'"):
+        validate_template_spec(template, max_nodes_per_round=8)
 
 
 def test_template_body_renders_every_string_it_carries() -> None:

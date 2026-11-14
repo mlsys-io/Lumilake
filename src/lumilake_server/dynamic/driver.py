@@ -951,20 +951,23 @@ def validate_template_spec(
     *,
     max_nodes_per_round: int,
 ) -> None:
-    """Validate the first/next template bodies and the stop export wiring."""
+    """Validate the first/next template bodies and the stop export wiring.
+
+    Round 3 renders ``next`` again, so validating it checks that every later
+    round reads what ``next`` itself exports.
+    """
     plans = {
         round_number: template_plan_for_round(template, round_number)
-        for round_number in (1, 2)
+        for round_number in (1, 2, 3)
     }
-    first = plans[1]
     previous_export = template_stop_export(template, 2)
-    if previous_export not in first.export:
+    if previous_export not in plans[1].export:
         raise DriverProtocolError(
             f"stop_when_empty {previous_export!r} must be exported by round 1"
         )
     registry: dict[str, dict[str, Any]] = {}
     results: set[str] = set()
-    for round_number, plan in plans.items():
+    for plan in plans.values():
         validate_emitted_subgraph(
             plan.ops,
             registry,
@@ -979,16 +982,15 @@ def validate_template_spec(
         for exported in plan.export:
             if registry[exported].get("mode") == "list":
                 results.add(exported)
-    _validate_stop_export_is_list_lambda(registry[previous_export], previous_export)
     # ``next`` runs every round from round 2 on, so its export decides every
-    # stop from round 3 on. Round 3 is the first of those rounds: it stops on
-    # round 2's export, which ``next`` produces.
+    # stop from round 3 on.
     later_export = template_stop_export(template, 3)
     if later_export not in plans[2].export:
         raise DriverProtocolError(
             f"stop_when_empty {later_export!r} must be exported by round 2"
         )
-    _validate_stop_export_is_list_lambda(registry[later_export], later_export)
+    for export_id in (previous_export, later_export):
+        _validate_stop_export_is_list_lambda(registry[export_id], export_id)
 
 
 def _validate_stop_export_is_list_lambda(op: dict[str, Any], export_id: str) -> None:
