@@ -363,7 +363,6 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
               presence_penalty: 1.5
               repetition_penalty: 1.0
               min_tokens: 4
-              num_beams: 3
               chat_template_kwargs:
                 enable_thinking: false
               extra_sampling_params:
@@ -380,38 +379,32 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     assert cfg["min_p"] == 0.0
     assert cfg["repetition_penalty"] == 1.0
     assert cfg["min_tokens"] == 4
-    assert cfg["num_beams"] == 3
     assert cfg["chat_template_kwargs"] == {"enable_thinking": False}
     assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
 
 
-def test_llm_config_accepts_output_enforcement() -> None:
+def test_llm_sampling_options_reach_the_flowmesh_spec() -> None:
     yaml_text = textwrap.dedent("""
-        name: output_enforcement
+        name: sampling_options
         ops:
           - id: ask
             op: LLMChatOp
-            messages:
-              - role: user
-                content: "hello"
+            messages: [{role: user, content: "hello"}]
             config:
               model: dummy-model
-              output_enforcement:
-                mode: retry
-                max_attempts: 3
-                text_regex: "^ok$"
+              num_beams: 3
+              output_enforcement: {max_attempts: 3, text_regex: "^ok$"}
         outputs:
           - name: out
             ref: ask
         """)
-    specs = parse_yaml_payload(yaml_text)
-    graph_dict = specs["output_enforcement"]["graph"]
-    llm_op = next(op for op in graph_dict.values() if op["_op"] == "LLMChatOp")
-    assert llm_op["config"]["output_enforcement"] == {
-        "mode": "retry",
-        "max_attempts": 3,
-        "text_regex": "^ok$",
-    }
+    spec = parse_yaml_payload(yaml_text)["sampling_options"]
+    graph = Graph.from_json(spec["graph"])
+    (llm,) = list(graph.iter_ops(LLMChatOp))
+    built = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))
+    inference = built.nodes[llm.id].inference_spec
+    assert inference["num_beams"] == 3
+    assert inference["output_enforcement"]["text_regex"] == "^ok$"
 
 
 def test_llm_config_accepts_api_block() -> None:
