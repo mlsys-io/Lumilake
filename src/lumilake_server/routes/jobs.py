@@ -62,7 +62,6 @@ from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     StopPlan,
     SubgraphPlan,
-    archived_export_has_rows,
     build_round,
     compute_observation,
     has_live_rows,
@@ -1169,51 +1168,6 @@ def _validate_list_lambda_slice_span(
             )
 
 
-def _has_list_lambda(graph: dict[str, Any]) -> bool:
-    """True when ``graph`` declares a list-mode Lambda.
-
-    Such a Lambda runs once over the whole input lists of a run and emits one
-    whole-list result, which cannot be partitioned per slice, so a round that
-    holds one runs as a single slice whatever it outputs downstream of it.
-    """
-    graph_payload = graph["graph"] if "graph" in graph else graph
-    return any(
-        op.get("_op") == "LambdaOp" and op.get("mode") == "list"
-        for op in graph_payload.values()
-    )
-
-
-def _whole_input_length(inputs: dict[str, list[str]]) -> int:
-    """Length a single-slice input set is accounted at: its longest input.
-
-    A one-slice round carries the whole input set in one slice, so its keys may
-    disagree in length (a round that reads a shorter previous export alongside
-    the symbols). No input is split per slice, so none of them is a varying
-    input; the number of rows the round produces is set by its own list-mode
-    Lambda and accepted whole when its outputs come back.
-    """
-    lengths = [len(v) for v in inputs.values()]
-    return max(lengths) if lengths else 0
-
-
-def _rounds_as_one_slice(
-    graph: dict[str, Any],
-    forwarded_inputs: dict[str, list[str]],
-    whole_refs: set[str],
-) -> bool:
-    """True when a round must be dispatched as a single slice.
-
-    A round runs as one slice when it declares a list-mode Lambda, whose
-    whole-list result cannot be partitioned per slice, and when it reads a
-    result an earlier one-slice round produced. Those results are whole
-    results rather than one item per row, so their count can differ from the
-    symbols and the two can only be held together in one slice.
-    """
-    if _has_list_lambda(graph):
-        return True
-    return any(key.partition(" | ")[0] in whole_refs for key in forwarded_inputs)
-
-
 _GPU_ZERO_CONFLICT = (
     "hardware.gpu=0 conflicts with workflow: this graph contains "
     "ops that require a GPU worker (vLLM / transformers / "
@@ -1854,15 +1808,13 @@ async def _submit_dynamic_child(
     graph_name = f"round_{round_index}"
     inputs = {INPUT_NODE_ID: list(symbols)}
     inputs.update(forwarded_inputs)
-    # Slice the round exactly as a static submission with ``input_batch_size:
-    # 1`` does: one graph per row, merged back into one batch by the job
-    # manager. A round that declares a list-mode Lambda runs as a single slice
-    # instead, because that whole-list result cannot be partitioned per slice,
-    # and so does one that reads a whole result an earlier such round produced:
-    # the forwarded values of such a round are whole results the consumer may
-    # only be able to align with the symbols when both run in one slice.
+    # Planner rounds slice exactly as a static submission with
+    # ``input_batch_size: 1`` does: one graph per row, merged back into one
+    # batch by the job manager. A template round runs as one slice, because its
+    # body holds list-mode Lambdas whose whole-list results cannot be
+    # partitioned per row.
     if one_slice:
-        total_length = _whole_input_length(inputs)
+        total_length = max((len(values) for values in inputs.values()), default=0)
         varying_input_keys: tuple[str, ...] = ()
         input_batches = [inputs]
     else:
@@ -2156,14 +2108,6 @@ async def _run_dynamic_job(
         plans: list[dict[str, Any]] = []
         round_results: list[dict[str, list[str]]] = []
         all_results: dict[str, list[dict[str, Any]]] = {}
-        # Results a one-slice round produced. Their items are that round's
-        # whole results, so a later round binds them whole and runs as one
-        # slice itself.
-        whole_refs: set[str] = set()
-        # The grouping each round decided for its row-wise ops, when it built
-        # them and ``all_results`` held only earlier rounds. A later round
-        # binds a producer's rows by its recorded value.
-        grouped_sources: dict[str, bool | None] = {}
 
         async with jobs_lock:
             record.progress.execution = ProgressStep(
@@ -2248,11 +2192,7 @@ async def _run_dynamic_job(
                                 f"stop export {stop_export!r} is not in the node "
                                 "registry"
                             )
-                        if not archived_export_has_rows(
-                            all_results.get(stop_export, []),
-                            export_id=stop_export,
-                            op=stop_config,
-                        ):
+                        if not all_results.get(stop_export):
                             plans.append(
                                 {
                                     "next": STOP,
@@ -2309,8 +2249,6 @@ async def _run_dynamic_job(
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
                     rows=len(symbols),
-                    whole_refs=whole_refs,
-                    grouped_sources=grouped_sources,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2321,13 +2259,10 @@ async def _run_dynamic_job(
                     record.finished_at = _now()
                 await asyncio.to_thread(_job_storage.save, record)
                 return
-            # A round that declares a list-mode Lambda, or that reads a result
-            # an earlier one-slice round produced, runs as one slice: its row
-            # count is no longer the symbol count, and its results are whole
-            # results rather than one item per row.
-            one_slice = _rounds_as_one_slice(
-                round_build.graph, round_build.forwarded_inputs, whole_refs
-            )
+            # A template round runs as one slice: its body holds list-mode
+            # Lambdas whose whole-list results cannot be split per row, so the
+            # round's row count is no longer the symbol count.
+            one_slice = template is not None
             try:
                 child_job_id = await _submit_dynamic_child(
                     parent_job_id=parent_job_id,
@@ -2487,13 +2422,6 @@ async def _run_dynamic_job(
                     all_results[export_internal_to_user[internal_id]] = (
                         _decode_archived_items(values)
                     )
-                if one_slice:
-                    # This round's results are whole results, not one item per
-                    # row, so a later body that reads any of them binds them
-                    # whole and runs as one slice itself.
-                    whole_refs.update(round_build.leaf_user_ids)
-                    whole_refs.update(round_build.export_user_ids)
-                grouped_sources.update(round_build.grouped_sources)
                 if isinstance(next_plan, StopPlan):
                     stopped_by = STOP
                     break

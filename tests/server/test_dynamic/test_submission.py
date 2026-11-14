@@ -26,8 +26,6 @@ from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.graphs import Graph
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.ops import OutputOp
-from lumilake_server.parser.common import make_id
-from lumilake_server.parser.yaml_parser import _op_id_prefix
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -1231,109 +1229,6 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
         ("STOP", 3),
     ]
     assert [plan["source"] for plan in round_plans] == ["template"] * 3
-
-
-def _lambda_plan(op_id: str, inputs: list[str], mode: str, body: str) -> dict[str, Any]:
-    return {
-        "next": "subgraph",
-        "ops": [
-            {
-                "id": op_id,
-                "op": "LambdaOp",
-                "inputs": inputs,
-                "mode": mode,
-                "fn_name": op_id,
-                "code": f"def {op_id}(columns):\n    {body}\n",
-            }
-        ],
-    }
-
-
-@pytest.mark.anyio
-async def test_dynamic_one_slice_round_binds_a_whole_result_per_row(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # Round 2 declares no list Lambda and only reads round 1's whole result
-    # beside the symbols; its two inputs cannot agree in length, so it runs as
-    # one slice and the whole result binds one value per row.
-    symbols = ["NVDA", "MSFT", "AAPL"]
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML, {"Symbols": symbols})
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [
-        _lambda_plan("source", ["Symbols"], "list", "return columns[0]"),
-        _lambda_plan("score", ["source", "Symbols"], "row", "return columns[1]"),
-        {"next": "STOP"},
-    ]
-    fake_server.leaf_items[
-        f"leaf_{make_id('round_1', _op_id_prefix('LambdaOp'), 'source')}"
-    ] = [{"output": "A"}, {"output": "B"}]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-
-    assert record.status == "completed", record.error
-    # The round that produces the whole result and the one that reads it both
-    # run as one slice, marked whole-set with no input declared varying.
-    for slices in fake_server.workflow_slices_calls[-2:]:
-        (meta,) = slices.values()
-        assert (meta.slice_length, meta.total_length) == (len(symbols), len(symbols))
-        assert meta.varying_input_keys == ()
-        assert meta.whole_set is True
-    (round_two,) = fake_server.executed_graphs[-1].values()
-    assert round_two.inputs["source"] == ["A", "B"]
-
-
-@pytest.mark.anyio
-async def test_dynamic_rowwise_leaf_of_a_one_slice_round_binds_per_row(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # Round 1 is one slice and its row-wise chat archives one grouped item
-    # holding every row's answer. Round 2 reads that leaf whole beside the
-    # symbols, and the grouping round 1 recorded binds one value per row
-    # instead of one JSON blob.
-    answers = ["answer-1", "answer-2", "answer-3"]
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML, {"Symbols": ["NVDA"]})
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [
-        _lambda_plan("Source", ["Symbols"], "list", "return columns[0]"),
-        {
-            "next": "subgraph",
-            "ops": [
-                {
-                    "id": "Draft",
-                    "op": "LLMChatOp",
-                    "inputs": ["Source"],
-                    "messages": [{"role": "user", "content": "Draft this row."}],
-                    "config": {"model": "Qwen/Qwen3-8B"},
-                    "prompt": {
-                        "template": "Draft {row}.",
-                        "format_kwargs": {"row": "Source"},
-                    },
-                },
-                {
-                    "id": "Ask",
-                    "op": "LLMChatOp",
-                    "inputs": ["Draft"],
-                    "messages": [{"role": "user", "content": "Score this row."}],
-                    "config": {"model": "Qwen/Qwen3-8B"},
-                    "rowwise_template": "{row}",
-                    "rowwise_columns": [
-                        {"label": "row", "node": "Draft", "path": "items.output"}
-                    ],
-                },
-            ],
-        },
-        _lambda_plan("Score", ["Ask", "Symbols"], "row", "return columns[0]"),
-        {"next": "STOP"},
-    ]
-    fake_server.leaf_items[
-        f"leaf_{make_id('round_2', _op_id_prefix('LLMChatOp'), 'Ask')}"
-    ] = [{"output": answers}]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-
-    assert record.status == "completed", record.error
-    (round_three,) = fake_server.executed_graphs[-1].values()
-    assert round_three.inputs["Ask"] == answers
 
 
 @pytest.mark.anyio

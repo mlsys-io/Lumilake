@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
-    archived_export_has_rows,
     forward_refs,
     template_plan_for_round,
     template_stop_export,
@@ -77,22 +76,9 @@ def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
     assert template_stop_export(spec.driver.template, 2) == "Live_r0"
 
 
-def test_collected_export_counts_rows_and_forwards_them_to_the_next_round() -> None:
-    # A collected export holds one archived item per row, whatever the row's
-    # value holds, so only an empty item list stops the loop.
-    assert archived_export_has_rows(
-        [{"output": []}, {"output": [{"case_id": "0"}]}],
-        export_id="Live_r0",
-        op={"op": "LambdaOp"},
-    )
-    assert not archived_export_has_rows([], export_id="Live_r0", op={"op": "LambdaOp"})
-    with pytest.raises(DriverProtocolError, match="not a Lambda result item"):
-        archived_export_has_rows(
-            [{"value": {"items": [{"case_id": "0"}]}}],
-            export_id="Live_r0",
-            op={"op": "LambdaOp"},
-        )
-    # Round 2 reads each item as a forwarded input.
+def test_collected_export_forwards_one_item_per_row_to_the_next_round() -> None:
+    # Round 2 reads each archived item of a list-mode export as a forwarded
+    # input, so one item per row means one value per row.
     live_case = {"case_id": "0", "turn": 1, "completed": False}
     ops, inputs = forward_refs(
         [{"id": "CaseState_r1", "op": "LambdaOp", "inputs": ["Live_r0"]}],
@@ -135,6 +121,20 @@ def test_collected_export_counts_rows_and_forwards_them_to_the_next_round() -> N
             None,
             "library entry",
         ),
+        # A ``next`` body reads an earlier round only through a list-mode
+        # Lambda export. Round 1 exports two Lambdas; the next body's stop
+        # export is round 2's, so only the non-exported read is left to fail.
+        (
+            [
+                _state_op("Echo_r{{round}}", ["Symbols"]),
+                _state_op("Live_r{{round}}", ["Symbols"]),
+            ],
+            [
+                _state_op("Echo_r{{round}}", ["Echo_r{{prev}}"]),
+                _state_op("Live_r{{round}}", ["Echo_r{{prev}}"]),
+            ],
+            "result is not available",
+        ),
     ],
     ids=[
         "round-one-row",
@@ -142,21 +142,23 @@ def test_collected_export_counts_rows_and_forwards_them_to_the_next_round() -> N
         "retrieval-export",
         "not-exported",
         "missing-ref",
+        "reads-a-nonexport",
     ],
 )
 def test_template_validator_rejects_an_unusable_body(
-    first: dict | None, next_body: dict | None, message: str
+    first: dict | list[dict] | None,
+    next_body: dict | list[dict] | None,
+    message: str,
 ) -> None:
     list_op = _state_op("Live_r{{round}}", ["Symbols"])
+    first_ops = first if isinstance(first, list) else [first or list_op]
+    next_ops = next_body if isinstance(next_body, list) else [next_body or list_op]
     with pytest.raises(DriverProtocolError, match=message):
         validate_template_spec(
             DriverTemplate.model_validate(
                 {
-                    "first": {"ops": [first or list_op], "export": ["Live_r{{round}}"]},
-                    "next": {
-                        "ops": [next_body or list_op],
-                        "export": ["Live_r{{round}}"],
-                    },
+                    "first": {"ops": first_ops, "export": ["Live_r{{round}}"]},
+                    "next": {"ops": next_ops, "export": ["Live_r{{round}}"]},
                     "stop_when_empty": "Live_r{{prev}}",
                 }
             ),

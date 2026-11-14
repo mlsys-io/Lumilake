@@ -10,7 +10,7 @@ import ast
 import copy
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -262,7 +262,6 @@ class RoundBuild(BaseModel):
     export_output_names: list[str] = []
     export_user_ids: list[str] = []
     forwarded_inputs: dict[str, list[str]] = {}
-    grouped_sources: dict[str, bool | None] = {}
 
 
 def round_output_location(
@@ -537,238 +536,26 @@ def _default_forward_path(op_type: str, op: dict[str, Any]) -> str:
     return "items.output"
 
 
-def archived_export_has_rows(
-    archived: list[Any], *, export_id: str, op: dict[str, Any]
-) -> bool:
-    """Whether a previous round's exported Lambda output holds any rows.
-
-    ``all_results`` stores one decoded whole result item per row, each
-    ``{"output": <row value>}``; a Lambda that produced no rows archived no
-    items. A row value may itself be a list or an empty value, so the item
-    count is the row count. Unexpected values are errors, never evidence that
-    the loop should stop.
-    """
-    op_type = op.get("op", "")
-    if op_type != "LambdaOp":
-        raise DriverProtocolError(
-            f"stop_when_empty export {export_id!r} must be a LambdaOp, got {op_type!r}"
-        )
-    for index, item in enumerate(archived):
-        if not isinstance(item, dict) or "output" not in item:
-            raise DriverProtocolError(
-                f"archived export {export_id!r} item {index} is not a Lambda "
-                "result item with 'output': "
-                f"{item!r}"
-            )
-    return bool(archived)
-
-
 def _forward_values(
-    items: list[dict[str, Any]],
-    parts: tuple[str, ...],
-    ref: str,
+    items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
 ) -> list[str]:
     """Walk each stored whole item with the runtime walker and coerce to strings."""
     return [_coerce_output_value(_walk_output_path(item, parts, ref)) for item in items]
 
 
-def _explicit_forward_path(op_type: str, config: dict[str, Any], path: str) -> str:
-    """The path that walks a producer's archived item for a declared read.
-
-    An API leaf archives the raw response record, so a declared ``items.output``
-    — the read an in-graph column makes of an API upstream — walks the
-    record's own content path instead, exactly as the runtime maps it. A gated
-    API leaf keeps its row under ``output``, which the default path already
-    returns.
-    """
-    if path != "items.output" or not _is_api_leaf(op_type, config):
-        return path
-    return _default_forward_path(op_type, config)
-
-
-def _is_rowwise_leaf(op_type: str, config: dict[str, Any]) -> bool:
-    """Whether an op archives one grouped item per input table.
-
-    Mirrors the runtime's row-wise predicate: a chat op that builds one prompt
-    per row has its per-row answers grouped back into one item, so the leaf
-    holds every row's value inside one item while a consumer reads one value
-    per row. A row-gated op archives one item per row instead, holding its
-    merge record, and a per-row VLM's regroup step already emits one item per
-    group.
-    """
-    op_class = _OP_CLASSES.get(op_type)
-    if not isinstance(op_class, type) or issubclass(op_class, ops_pkg.LLMVisionOp):
-        return False
-    if not issubclass(op_class, ops_pkg.LLMChatOp):
-        return False
-    if config.get("row_gate") is not None:
-        return False
-    return bool(config.get("rowwise_template") or config.get("rowwise_messages_column"))
-
-
-def _retrieval_groups(path: Any) -> bool:
-    """Whether a column reading a retrieval at ``path`` yields a list per item.
-
-    A retrieval archives one item per input row. A column that projects into
-    that item's rows — ``items.table.<column>`` or the s3 ``items.content``
-    list — reads one list per item, which FlowMesh groups. A column reading the
-    whole item (``items.table``) reads one DataFrame per item, which FlowMesh
-    does not group, so it binds like a literal.
-    """
-    if not isinstance(path, str):
-        return False
-    parts = path.split(".")
-    if parts[:2] == ["items", "content"]:
-        return True
-    return len(parts) > 2 and parts[:2] == ["items", "table"]
-
-
-def _is_scalar_llm_source(op_type: str, config: dict[str, Any]) -> bool:
-    """Whether a chat op yields one value per item, which FlowMesh does not group.
-
-    A chat op that is not row-wise builds one scalar per item, so a column
-    reading it sees one value per item rather than a list per item.
-    """
-    op_class = _OP_CLASSES.get(op_type)
-    if not isinstance(op_class, type) or issubclass(op_class, ops_pkg.LLMVisionOp):
-        return False
-    if not issubclass(op_class, ops_pkg.LLMChatOp):
-        return False
-    return not _is_rowwise_leaf(op_type, config)
-
-
-def _source_grouped(
-    columns: Any,
-    results: dict[str, list[dict[str, Any]]],
-    same_round: Mapping[str, dict[str, Any]] | None = None,
-    peer: Callable[[str], bool | None] | None = None,
-) -> bool | None:
-    """Whether FlowMesh groups a leaf's rows from the columns it declares.
-
-    A column reading the input node or an earlier-round op becomes a literal
-    list input in the leaf's round, and FlowMesh reads a literal column
-    ungrouped, so the leaf builds one table of its own rows however many items
-    its source had. A column reading a same-round retrieval is grouped only
-    when its path projects into the retrieval's rows (``items.table.<column>``
-    or ``items.content``); a column reading the bare ``items.table`` binds one
-    table per item ungrouped, like a literal. A column reading a same-round
-    chat op that is not row-wise reads one scalar per item, so it is ungrouped
-    too. A column reading a same-round row-wise leaf takes that leaf's own
-    grouping, which ``peer`` answers. Any other same-round op leaves the answer
-    unknown, because the driver never holds that op's values or row count; an
-    earlier round's fan-out read through such an op then falls back to the
-    run's row count, which keeps the leaf's answers as one list at one symbol.
-
-    ``same_round`` holds the configs of the ops the leaf's own round declares,
-    so ``results`` — every earlier round's results — is never mistaken for it.
-    """
-    if not isinstance(columns, list) or not columns:
-        return None
-    same_round = same_round or {}
-    grouped = False
-    for column in columns:
-        if not isinstance(column, dict):
-            return None
-        node = column.get("node")
-        if node is None:
-            continue
-        if not isinstance(node, str):
-            return None
-        if node in same_round:
-            source = same_round[node]
-            op_type = str(source.get("op", ""))
-            if op_type == "DataRetrievalOp":
-                grouped = grouped or _retrieval_groups(column.get("path"))
-            elif _is_scalar_llm_source(op_type, source):
-                continue
-            elif _is_rowwise_leaf(op_type, source) and peer is not None:
-                decided = peer(node)
-                if decided is None:
-                    return None
-                grouped = grouped or decided
-            else:
-                return None
-        elif node != INPUT_NODE_ID and node not in results:
-            return None
-    return grouped
-
-
-def _decide_groupings(
-    subgraph: list[dict[str, Any]],
-    results: dict[str, list[dict[str, Any]]],
-    same_round: Mapping[str, dict[str, Any]],
-) -> dict[str, bool | None]:
-    """Decide each of a round's row-wise leaves' grouping, sources first.
-
-    A leaf reading another same-round row-wise leaf takes that leaf's own
-    decision, so a leaf is decided after the leaves it reads. A cycle leaves
-    both unknown.
-    """
-    decided: dict[str, bool | None] = {}
-
-    def decide(op_id: str, pending: frozenset[str]) -> bool | None:
-        if op_id in decided:
-            return decided[op_id]
-        if op_id in pending:
-            return None
-        op = same_round[op_id]
-        value = _source_grouped(
-            op.get("rowwise_columns"),
-            results,
-            same_round,
-            lambda ref: decide(ref, pending | {op_id}),
-        )
-        decided[op_id] = value
-        return value
-
-    for op in subgraph:
-        if _is_rowwise_leaf(str(op.get("op", "")), op):
-            decide(op["id"], frozenset())
-    return decided
-
-
-def _walk_each_item(
+def _forward_values_flattened(
     items: list[dict[str, Any]], parts: tuple[str, ...], ref: str
-) -> list[Any]:
-    """Walk each stored whole item to its raw value, uncoerced."""
-    return [_walk_output_path(item, parts, ref) for item in items]
-
-
-def _bind_whole(
-    walked: list[Any], *, rows: int, grouped: bool, grouped_source: bool | None
-) -> list[Any]:
-    """Bind a whole result one value per archived item, as the per-row path
-    does, expanding a row-wise leaf that archived the round's rows as one
-    table.
-
-    ``grouped`` marks a row-wise leaf, whose archive is one grouped item per
-    table, and ``grouped_source`` whether FlowMesh grouped that leaf's rows from
-    its source column: ``False`` when the driver bound the source as a literal
-    list input, which FlowMesh reads ungrouped and so builds one table of the
-    leaf's own rows; ``None`` when the source is a same-round op whose values
-    the driver never held. A row-wise leaf's single item is one table of its
-    rows when the source was ungrouped, so its list expands to one value per
-    row; otherwise the item is one table and stays one value.
-
-    A source of unknown grouping keeps the fallback of expanding over more than
-    one row. That covers any same-round op that is neither a retrieval, nor a
-    chat op, nor a row-wise leaf — a Lambda, a Format, or a chain ending in one
-    — so a list Lambda that fans one symbol out into several rows still binds
-    symbol-count-dependent there. Every other ref keeps one value per item,
-    unwrapping a one-element list only when every item holds one.
-    """
-    expand = grouped_source is False or (grouped_source is None and rows > 1)
-    if grouped and expand and len(walked) == 1 and isinstance(walked[0], list):
-        return walked[0]
-    one_element = bool(walked) and all(
-        isinstance(value, list) and len(value) == 1 for value in walked
-    )
-    return [value[0] if one_element else value for value in walked]
-
-
-def _coerce_values(values: list[Any]) -> list[str]:
-    """Coerce bound values to the strings a forwarded input carries."""
-    return [_coerce_output_value(value) for value in values]
+) -> list[str]:
+    """Walk each stored whole item and flatten the result to one string per
+    element (strings as-is, ``json.dumps`` otherwise)."""
+    values: list[str] = []
+    for item in items:
+        walked = _walk_output_path(item, parts, ref)
+        if isinstance(walked, list):
+            values.extend(_coerce_output_value(v) for v in walked)
+        else:
+            values.append(_coerce_output_value(walked))
+    return values
 
 
 def _forward_values_per_row(
@@ -906,34 +693,11 @@ def forward_refs(
     results: dict[str, list[dict[str, Any]]],
     configs: dict[str, dict[str, Any]],
     rows: int = 1,
-    whole_refs: set[str] | None = None,
-    grouped_sources: dict[str, bool | None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     """Rewrite a round's subgraph so references to earlier-round ops bind as
     workflow inputs carrying exactly the value the in-graph reference would
     have read. With ``rows > 1`` every bound input holds exactly one value per row.
-
-    ``whole_refs`` names results produced by a round that ran as one slice.
-    Their items are that round's whole results, not one per row, so every
-    stored item binds as ``rows == 1`` does, whatever ``rows`` says; the
-    consumer then carries a different item count from the symbols and runs as
-    one slice itself.
-
-    ``grouped_sources`` holds the grouping each round recorded for its row-wise
-    ops when it built them, where ``results`` still held only earlier rounds. A
-    producer with a recorded value is bound by it; one without is decided here
-    from ``results``, which is right only because every caller that keeps a
-    record covers every row-wise op of every earlier round.
     """
-    whole = whole_refs or set()
-    recorded = grouped_sources or {}
-
-    def grouped_source(ref: str) -> bool | None:
-        """The grouping ``ref``'s rows were produced with."""
-        if ref in recorded:
-            return recorded[ref]
-        return _source_grouped(configs[ref].get("rowwise_columns"), results)
-
     inputs: dict[str, list[str]] = {}
     ops: list[dict[str, Any]] = []
     materializers: list[dict[str, Any]] = []
@@ -962,25 +726,17 @@ def forward_refs(
         return f"{input_id} | rows"
 
     def bind_implicit(
-        ref: str,
-        consumer: str,
-        *,
-        image_source: bool = False,
+        ref: str, consumer: str, *, image_source: bool = False
     ) -> str | None:
         """Bind an implicit reference; returns the rewritten ref (a materializer
         id) when the per-row value is a grouped list, else None to leave it
-        unchanged.
-
-        A whole ref binds the values its producer archived, whichever op wrote
-        them; the archive shape says whether a row-wise leaf grouped the round's
-        rows into one item.
-        """
+        unchanged."""
         if ref not in results:
             return None
         op_type = configs[ref].get("op", "")
         default_path = _default_forward_path(op_type, configs[ref])
         parts = tuple(default_path[len("items.") :].split("."))
-        if rows > 1 and ref not in whole:
+        if rows > 1:
             walked = _walk_values_per_row(results[ref], parts, ref, consumer, rows)
             if any(isinstance(v, list) for v in walked):
                 if not all(isinstance(v, list) for v in walked):
@@ -997,33 +753,21 @@ def forward_refs(
                 return add_materializer(ref, default_path, walked)
             inputs[ref] = [_coerce_output_value(v) for v in walked]
         else:
-            walked = _walk_each_item(results[ref], parts, ref)
-            inputs[ref] = _coerce_values(
-                _bind_whole(
-                    walked,
-                    rows=rows,
-                    grouped=_is_rowwise_leaf(op_type, configs[ref]),
-                    grouped_source=grouped_source(ref),
-                )
-            )
+            inputs[ref] = _forward_values(results[ref], parts, ref)
         return None
 
     def bind_explicit(ref: str, path: str, consumer: str) -> tuple[str, str]:
         """Forward an explicit ``(node, path)`` reference, returning the
         ``(node, path)`` the consumer should read.
 
-        The declared path is the read an in-graph column makes of the
-        producer, which need not be the shape the producer archived; the walk
-        follows the archive instead. A grouped reference binds a JSON input per
-        row plus a materializer.
+        A grouped reference binds a JSON input per row plus a materializer.
         """
-        path = _explicit_forward_path(configs[ref].get("op", ""), configs[ref], path)
         input_id = f"{ref} | {path}"
         if input_id in materialized:
             return f"{input_id} | rows", "items.output"
         if input_id not in inputs:
             parts = tuple(path[len("items.") :].split("."))
-            if rows > 1 and ref not in whole:
+            if rows > 1:
                 walked = _walk_values_per_row(results[ref], parts, ref, consumer, rows)
                 if any(isinstance(v, list) for v in walked):
                     if not all(isinstance(v, list) for v in walked):
@@ -1035,17 +779,7 @@ def forward_refs(
                     return add_materializer(ref, path, walked), "items.output"
                 inputs[input_id] = [_coerce_output_value(v) for v in walked]
             else:
-                walked = _walk_each_item(results[ref], parts, ref)
-                inputs[input_id] = _coerce_values(
-                    _bind_whole(
-                        walked,
-                        rows=rows,
-                        grouped=_is_rowwise_leaf(
-                            configs[ref].get("op", ""), configs[ref]
-                        ),
-                        grouped_source=grouped_source(ref),
-                    )
-                )
+                inputs[input_id] = _forward_values_flattened(results[ref], parts, ref)
         return input_id, ""
 
     for op in subgraph:
@@ -1371,20 +1105,22 @@ def validate_template_spec(
             f"stop_when_empty {previous_export!r} must be exported by round 1"
         )
     registry: dict[str, dict[str, Any]] = {}
-    available_results: dict[str, list[dict[str, Any]]] = {}
+    results: set[str] = set()
     for round_number, plan in plans.items():
         validate_emitted_subgraph(
             plan.ops,
-            registry if round_number > 1 else {},
+            registry,
             MAX_STATIC_ROUND_NODE_BOUND,
             library,
             export=plan.export,
-            results=available_results,
+            results={op_id: [] for op_id in results},
         )
-        resolved = resolve_subgraph(plan.ops, library)
-        registry.update({op["id"]: op for op in resolved})
-        for op_id in [*_current_leaves(plan.ops), *plan.export]:
-            available_results.setdefault(op_id, [])
+        registry.update({op["id"]: op for op in resolve_subgraph(plan.ops, library)})
+        # A later body reads only list-mode Lambda exports: each element is one
+        # row, so one value per archived item is exact.
+        for exported in plan.export:
+            if registry[exported].get("mode") == "list":
+                results.add(exported)
     _validate_stop_export_is_list_lambda(registry[previous_export], previous_export)
     # ``next`` runs every round from round 2 on, so its export decides every
     # stop from round 3 on. Round 3 is the first of those rounds: it stops on
@@ -1674,31 +1410,18 @@ def build_round(
     extra_engine_kwargs: dict[str, Any] | None = None,
     include_proposer: bool = True,
     rows: int = 1,
-    whole_refs: set[str] | None = None,
-    grouped_sources: dict[str, bool | None] | None = None,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
-    ``whole_refs`` names earlier results that a one-slice round produced, and
-    ``grouped_sources`` the grouping each earlier round recorded for its
-    row-wise leaves. This round's own grouping is decided here, where
-    ``results`` holds only earlier rounds, and returned for later rounds; an
-    undecided grouping is recorded too, so no later round re-decides it against
-    a ``results`` that then holds the producer's own round.
     """
     subgraph = resolve_subgraph(subgraph, library)
-    same_round = {op["id"]: op for op in subgraph}
-    decided = _decide_groupings(subgraph, results or {}, same_round)
-    recorded = {**(grouped_sources or {}), **decided}
     forwarded, inputs = forward_refs(
         subgraph,
         results if results is not None else {},
         node_registry,
         rows,
-        whole_refs=whole_refs,
-        grouped_sources=recorded,
     )
     workflow_inputs: dict[str, list[str]] = {INPUT_NODE_ID: []}
     workflow_inputs.update(inputs)
@@ -1765,7 +1488,6 @@ def build_round(
         export_output_names=[f"export_{export_id}" for export_id in export_ids],
         export_user_ids=export_user_ids,
         forwarded_inputs=inputs,
-        grouped_sources=decided,
     )
 
 

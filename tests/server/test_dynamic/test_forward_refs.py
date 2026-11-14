@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
+    SubgraphPlan,
     build_round,
     compute_observation,
     forward_refs,
@@ -16,27 +16,22 @@ from lumilake_server.dynamic.driver import (
     validate_emitted_subgraph,
     walk_archived_items,
 )
-from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_parser import _op_id_prefix, parse_yaml_payload
-from lumilake_server.runtime.runtime_graph import (
-    RuntimeGraphBuilder,
-)
+from lumilake_server.routes.jobs import _admit_subgraph
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
     return make_id(scope, _op_id_prefix(op_type), user_id)
 
 
-def _llm_config(op_id: str, **overrides: Any) -> dict:
-    config = {
+def _llm_config(op_id: str) -> dict:
+    return {
         "id": op_id,
         "op": "LLMChatOp",
         "inputs": [],
         "prompt": {"template": "x", "format_kwargs": {}},
     }
-    config.update(overrides)
-    return config
 
 
 def _sql_config(op_id: str) -> dict:
@@ -45,21 +40,6 @@ def _sql_config(op_id: str) -> dict:
         "op": "DataRetrievalOp",
         "inputs": [],
         "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
-    }
-
-
-def _chat_consumer(*columns: tuple[str, str, str], op_id: str = "q4") -> dict:
-    return {
-        "id": op_id,
-        "op": "LLMChatOp",
-        "inputs": [],
-        "prompt": {"template": "x", "format_kwargs": {}},
-        "config": {"model": "Qwen/Qwen3-8B"},
-        "messages": [{"role": "user", "content": "x"}],
-        "aggregate_table": [
-            {"label": label, "node": node, "path": path}
-            for label, node, path in columns
-        ],
     }
 
 
@@ -142,7 +122,17 @@ def test_forward_aggregate_table_column_reference():
     sql_id = "s1"
     results = {sql_id: [{"table": json.dumps({"close": {"0": 107.5}})}]}
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [
+                {"label": "close", "node": sql_id, "path": "items.table.close"}
+            ],
+        }
+    ]
     ops, inputs = forward_refs(subgraph, results, configs)
     row = ops[0]["aggregate_table"][0]
     input_id = f"{sql_id} | items.table.close"
@@ -180,41 +170,137 @@ def test_forward_does_not_mutate_input_subgraph():
     sql_id = "s1"
     results = {sql_id: [{"table": json.dumps({"close": {"0": 107.5}})}]}
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [
+                {"label": "close", "node": sql_id, "path": "items.table.close"}
+            ],
+        }
+    ]
     original = copy.deepcopy(subgraph)
     forward_refs(subgraph, results, configs)
     assert subgraph == original
 
 
-def _referencing_op() -> dict[str, Any]:
-    """A chat op that reads an earlier-round op's column."""
-    op = _chat_consumer(("close", "s0", "items.table.close"), op_id="q1")
-    op["inputs"] = ["s0"]
-    return op
+def test_forward_rewritten_ops_parse_through_yaml_parser():
+    # The rewritten op (with a per-(node, path) input id and path "") must
+    # still parse through the YAML parser as a valid workflow, with the input
+    # id resolvable from the workflow inputs block.
+    sql_id = "s1"
+    results = {sql_id: [{"table": json.dumps({"close": {"0": 107.5}})}]}
+    configs = {sql_id: _sql_config(sql_id)}
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "DataRetrievalOp",
+            "inputs": [],
+            "data_spec": {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE c = {p}",
+                "params": [{"label": "p", "node": sql_id, "path": "items.table.close"}],
+            },
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs)
+    input_id = f"{sql_id} | items.table.close"
+    workflow = {
+        "name": "round_1",
+        "inputs": {input_id: inputs[input_id]},
+        "ops": ops,
+        "outputs": [],
+    }
+    parsed = parse_yaml_payload(workflow)
+    assert parsed
 
 
-@pytest.mark.parametrize(
-    ("results", "export", "message"),
-    [
-        # A reference to an earlier op whose result is not available (neither a
-        # leaf nor exported) is rejected, never recomputed; ``export`` must name
-        # ops of the same subgraph.
-        ({}, [], "s0"),
-        ({"s0": [{"table": "x"}]}, ["nope"], "exported op id 'nope'"),
-    ],
-    ids=["unavailable", "unknown-export"],
-)
-def test_validate_checks_the_earlier_ops_and_the_export(
-    results: dict, export: list[str], message: str
-) -> None:
-    with pytest.raises(DriverProtocolError, match=message):
-        validate_emitted_subgraph(
-            [_referencing_op()],
-            {"s0": _sql_config("s0")},
-            max_nodes=4,
-            results=results,
-            export=export,
-        )
+def test_validate_rejects_reference_to_unavailable_earlier_op():
+    # A reference to an earlier op whose result is not available (neither a
+    # leaf nor exported) must be rejected, never recomputed.
+    node_registry = {"s0": _sql_config("s0")}
+    subgraph = [
+        {
+            "id": "q1",
+            "op": "DataRetrievalOp",
+            "inputs": ["s0"],
+            "data_spec": {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE id = {p}",
+                "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
+            },
+        }
+    ]
+    with pytest.raises(DriverProtocolError, match="s0"):
+        validate_emitted_subgraph(subgraph, node_registry, max_nodes=4, results={})
+
+
+def test_validate_accepts_reference_to_available_earlier_op():
+    # A reference to an earlier op whose result IS available (a leaf or
+    # exported) is accepted.
+    node_registry = {"s0": _sql_config("s0")}
+    subgraph = [
+        {
+            "id": "q1",
+            "op": "DataRetrievalOp",
+            "inputs": ["s0"],
+            "data_spec": {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE id = {p}",
+                "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
+            },
+        }
+    ]
+    validate_emitted_subgraph(
+        subgraph, node_registry, max_nodes=4, results={"s0": [{"table": "x"}]}
+    )
+
+
+def test_validate_rejects_export_not_in_subgraph():
+    # ``export`` must name ops of the same subgraph.
+    subgraph = [
+        {
+            "id": "q1",
+            "op": "DataRetrievalOp",
+            "inputs": [],
+            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+        }
+    ]
+    with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
+        validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["nope"])
+
+
+def test_validate_accepts_export_in_subgraph():
+    subgraph = [
+        {
+            "id": "q1",
+            "op": "DataRetrievalOp",
+            "inputs": [],
+            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+        }
+    ]
+    validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
+
+
+def test_admit_subgraph_forwards_export_to_validation():
+    # ``_admit_subgraph`` must pass the plan's ``export`` through to
+    # ``validate_emitted_subgraph``; a plan naming an op that is not in its own
+    # subgraph is rejected, and a valid export is admitted and registered.
+    op = {
+        "id": "q1",
+        "op": "DataRetrievalOp",
+        "inputs": [],
+        "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+    }
+    with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
+        _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
+    resolved = _admit_subgraph(SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {})
+    assert [r["id"] for r in resolved] == ["q1"]
 
 
 def _llm_column_library() -> dict[str, dict[str, Any]]:
@@ -346,24 +432,39 @@ def test_build_round_round2_graph_has_no_round1_op():
 
 
 def test_walk_archived_items_preserves_observation_for_llm_leaf():
-    # Leaf outputs archive the whole result item (path: items). Walking each
-    # stored item with the producer's default path recovers the same text value
-    # the observation lambda saw before forwarding, so the planner's preview is
-    # unchanged, and a row-wise producer's items each keep a row.
+    # Leaf outputs now archive the whole result item (path: items). Walking each
+    # stored item with the producer's default path must recover the same text
+    # value the observation lambda saw before forwarding, so the observation the
+    # planner sees is unchanged.
     llm_id = "s0"
     configs = {llm_id: _llm_config(llm_id)}
-    walked = walk_archived_items({llm_id: [json.dumps({"output": "hello"})]}, configs)
+    # The archived whole item for an LLM leaf; its default path is items.output.
+    archived = {llm_id: [json.dumps({"output": "hello", "extra": 1})]}
+    walked = walk_archived_items(archived, configs)
     assert walked == {llm_id: ["hello"]}
-    assert "hello" in compute_observation(walked, preview_width=100)
-    rows = {llm_id: [json.dumps({"output": v}) for v in ("a", "b", "c")]}
-    assert walk_archived_items(rows, configs) == {llm_id: ["a", "b", "c"]}
-    # A Lambda leaf's default path keeps its archived output as one JSON item.
-    lambda_op = {"id": "l0", "op": "LambdaOp", "mode": "list", "fn_name": "f"}
-    lambda_op["code"] = "def f(items):\n    return items[0]\n"
-    archived = {"l0": [json.dumps({"output": json.dumps([{"done": False}])})]}
-    assert walk_archived_items(archived, {"l0": lambda_op}) == {
-        "l0": [json.dumps([{"done": False}])]
+    # The observation computed from the walked leaves matches the pre-forwarding
+    # text value (a single string row).
+    obs = compute_observation(walked, preview_width=100)
+    assert "rows=1" in obs
+    assert "hello" in obs
+
+
+def test_walk_archived_items_handles_multiple_rows():
+    # A row-wise producer emits one archived item per row (path: items). Walking
+    # must keep every item and the observation must count all rows.
+    llm_id = "s0"
+    configs = {llm_id: _llm_config(llm_id)}
+    archived = {
+        llm_id: [
+            json.dumps({"output": "a"}),
+            json.dumps({"output": "b"}),
+            json.dumps({"output": "c"}),
+        ]
     }
+    walked = walk_archived_items(archived, configs)
+    assert walked == {llm_id: ["a", "b", "c"]}
+    obs = compute_observation(walked, preview_width=100)
+    assert "rows=3" in obs
 
 
 def test_walk_archived_items_rejects_non_json():
@@ -388,200 +489,6 @@ def _three_row_subgraph(ref: str) -> list[dict]:
     ]
 
 
-_ROW_LAMBDA_SOURCE: dict[str, Any] = {
-    "id": "L",
-    "op": "LambdaOp",
-    "mode": "row",
-    "inputs": [],
-    "fn_name": "row",
-    "code": "def row(columns):\n    return columns[0]\n",
-}
-_TABLE_ROWS = ["r1", "r2", "r3", "r4", "r5"]
-_ONE_TABLE_ITEM = [json.dumps(_TABLE_ROWS)]
-
-
-def _same_round_source_leaf(op_id: str, node: str, path: str) -> dict[str, Any]:
-    return _llm_config(
-        op_id,
-        config={"model": "m"},
-        messages=[{"role": "user", "content": "{c0}"}],
-        rowwise_template="{c0}",
-        rowwise_columns=[{"label": "c0", "node": node, "path": path}],
-    )
-
-
-def _s3_config(op_id: str) -> dict:
-    return {
-        "id": op_id,
-        "op": "DataRetrievalOp",
-        "inputs": [],
-        "data_spec": {
-            "type": "s3",
-            "connection_string": "s3://bucket",
-            "template": "k",
-        },
-    }
-
-
-def _plain_chat(op_id: str, source: str) -> dict[str, Any]:
-    return _llm_config(
-        op_id,
-        config={"model": "m"},
-        messages=[{"role": "user", "content": "{c0}"}],
-        prompt={"template": "x", "format_kwargs": {"c0": source}},
-    )
-
-
-@pytest.mark.parametrize(
-    ("source", "rows", "node", "path", "expected", "source_in_round"),
-    [
-        # A row-mode Lambda's column yields one row per item; a retrieval column
-        # projects into rows only when its path reaches into them, so a column
-        # over the whole table is ungrouped and the consumer builds one row per
-        # retrieval item instead. A chat op that is not row-wise yields one
-        # scalar per item, so a leaf reading it is ungrouped even at one symbol,
-        # where the fallback would bind its answers as one blob.
-        (_ROW_LAMBDA_SOURCE, 1, "L", "items.output", _ONE_TABLE_ITEM, True),
-        (_sql_config("t1"), 3, "t1", "items.table.symbol", _ONE_TABLE_ITEM, True),
-        (_s3_config("t1"), 3, "t1", "items.content", _ONE_TABLE_ITEM, True),
-        (_sql_config("t1"), 3, "t1", "items.table", _TABLE_ROWS, True),
-        (_plain_chat("c0", INPUT_NODE_ID), 1, "c0", "items.output", _TABLE_ROWS, True),
-        # A column reading an earlier round's op becomes a literal list input,
-        # which FlowMesh reads ungrouped. The decision needs that round's
-        # results: against an empty history the source is unknown, not literal.
-        (_sql_config("c0"), 1, "c0", "items.output", _TABLE_ROWS, False),
-        # A row-wise leaf reading another same-round row-wise leaf takes that
-        # leaf's grouping, so a leaf chain over the input node stays ungrouped.
-        (
-            _same_round_source_leaf("L", INPUT_NODE_ID, ""),
-            1,
-            "L",
-            "items.output",
-            _TABLE_ROWS,
-            True,
-        ),
-    ],
-    ids=[
-        "row-lambda-column",
-        "retrieval-table-column",
-        "retrieval-content-column",
-        "whole-table",
-        "scalar-chat",
-        "earlier-round-source",
-        "rowwise-leaf-chain",
-    ],
-)
-def test_build_round_records_a_same_round_source_grouping(
-    source: dict[str, Any],
-    rows: int,
-    node: str,
-    path: str,
-    expected: list[str],
-    source_in_round: bool,
-) -> None:
-    # The producer's round records the grouping, because the consuming round
-    # would otherwise decide it against a ``results`` already holding the
-    # producer's own round.
-    leaf = _same_round_source_leaf("s0", node, path)
-    ops = [source, leaf] if source_in_round else [leaf]
-    registry = {op["id"]: op for op in (ops if source_in_round else [leaf, source])}
-    producing = _build(
-        ops,
-        round_index=0,
-        node_registry=registry,
-        results={} if source_in_round else {source["id"]: [{"output": _TABLE_ROWS}]},
-    )
-    archived = {"output": _TABLE_ROWS}
-    consuming = _build(
-        _three_row_subgraph("s0"),
-        results={"s0": [archived], source["id"]: [archived]},
-        rows=rows,
-        whole_refs={"s0"} if rows > 1 else set(),
-        grouped_sources=producing.grouped_sources,
-        node_registry=registry,
-    )
-    assert consuming.forwarded_inputs["s0"] == expected
-
-
-def _build(ops: list[dict[str, Any]], **overrides: Any) -> Any:
-    overrides.setdefault("node_registry", {op["id"]: op for op in ops})
-    overrides.setdefault("round_index", 1)
-    return build_round(
-        ops,
-        goal="g",
-        observations=[],
-        topology=[],
-        preview_width=100,
-        model="m",
-        max_tokens=10,
-        temperature=0.0,
-        include_proposer=False,
-        **overrides,
-    )
-
-
-def _api_llm_config(op_id: str, **overrides: Any) -> dict:
-    return _llm_config(
-        op_id,
-        config={
-            "model": "qwen3.8-27b",
-            "api": {"url": "https://lum.id/llm/v1", "timeout_sec": 300},
-        },
-        **overrides,
-    )
-
-
-def _api_record(content: str) -> dict:
-    return {"json": {"choices": [{"message": {"content": content}}]}}
-
-
-@pytest.mark.parametrize(
-    ("config", "archived", "expected"),
-    [
-        # An API leaf archives the raw response record, read at
-        # ``json.choices[0].message.content`` rather than ``output``.
-        (
-            _api_llm_config("s0"),
-            [_api_record("first"), _api_record("second")],
-            ["first", "second"],
-        ),
-        # A row-wise API task groups one response per input row under ``rows``;
-        # the item itself stays whole, as for a local row-wise leaf.
-        (
-            _api_llm_config("s0", rowwise_template="{row}"),
-            [{"rows": [_api_record("a"), _api_record("b")]}],
-            [json.dumps(["a", "b"])],
-        ),
-        # Any LLMOp with ``config.api`` dispatches as an API task, so an
-        # image-generation leaf reads the record too.
-        (
-            _llm_config(
-                "s0", op="ImageGenerationOp", config={"model": "m", "api": {"url": "u"}}
-            ),
-            [_api_record("a picture")],
-            ["a picture"],
-        ),
-        # A gated chat op archives the row-gate merge record, whose per-row
-        # value stays under ``output`` even when the gated call itself runs
-        # through the API executor.
-        (
-            _api_llm_config(
-                "s0", rowwise_template="{row}", row_gate={"node": "r0", "branch": "x"}
-            ),
-            [{"output": json.dumps({"row": 0, "output": "done"}), "value": {"row": 0}}],
-            [json.dumps({"row": 0, "output": "done"})],
-        ),
-    ],
-    ids=["chat", "rowwise", "image_leaf", "gated"],
-)
-def test_walk_archived_items_reads_an_api_record(
-    config: dict, archived: list[dict], expected: list[str]
-) -> None:
-    assert walk_archived_items(
-        {"s0": [json.dumps(item) for item in archived]}, {"s0": config}
-    ) == {"s0": expected}
-
-
 def test_forward_per_row_implicit_reference_aligns_items_to_rows():
     llm_id = "s0"
     results = {llm_id: [{"output": "a"}, {"output": "b"}, {"output": "c"}]}
@@ -591,22 +498,26 @@ def test_forward_per_row_implicit_reference_aligns_items_to_rows():
 
 
 def test_forward_per_row_explicit_reference_aligns_items_to_rows():
-    # A scalar per row binds one value per row and keeps the rewritten
-    # ``path: ""``, with no materializer.
     sql_id = "s1"
     results = {
         sql_id: [{"table": json.dumps({"close": {"0": float(i)}})} for i in range(3)]
     }
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [_chat_consumer(("close", sql_id, "items.table.close"))]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=3)
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [
+                {"label": "close", "node": sql_id, "path": "items.table.close"}
+            ],
+        }
+    ]
+    _, inputs = forward_refs(subgraph, results, configs, rows=3)
     assert inputs[f"{sql_id} | items.table.close"] == [
         json.dumps({"0": float(i)}) for i in range(3)
     ]
-    assert len(ops) == 1
-    row = ops[0]["aggregate_table"][0]
-    assert row["node"] == f"{sql_id} | items.table.close"
-    assert row["path"] == ""
 
 
 def test_forward_per_row_rejects_item_count_that_is_not_the_row_count():
@@ -643,7 +554,17 @@ def test_forward_grouped_list_aggregate_column_materializes():
         ]
     }
     configs = {sql_id: _sql_config(sql_id)}
-    subgraph = [_chat_consumer(("summary", sql_id, "items.output"))]
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [
+                {"label": "summary", "node": sql_id, "path": "items.output"}
+            ],
+        }
+    ]
     ops, inputs = forward_refs(subgraph, results, configs, rows=3)
     input_id = f"{sql_id} | items.output"
     materializer_id = f"{input_id} | rows"
@@ -664,10 +585,66 @@ def test_forward_grouped_list_aggregate_column_materializes():
     assert materializer["inputs"] == [input_id]
     assert materializer["mode"] == "aligned"
     assert "json.loads" in materializer["code"]
-    # The rewritten ops plus the materializer parse as a valid workflow.
-    assert parse_yaml_payload(
-        {"name": "round_1", "inputs": inputs, "ops": ops, "outputs": []}
-    )
+
+
+def test_forward_grouped_list_materializer_parses_through_yaml_parser():
+    # The rewritten op plus the appended materializer must parse as a valid
+    # workflow, with the materializer's input resolvable from the inputs block.
+    sql_id = "s1"
+    results = {
+        sql_id: [
+            {"output": ["a", "b"]},
+            {"output": ["c", "d"]},
+        ]
+    }
+    configs = {sql_id: _sql_config(sql_id)}
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "config": {"model": "Qwen/Qwen3-8B"},
+            "messages": [{"role": "user", "content": "x"}],
+            "aggregate_table": [
+                {"label": "summary", "node": sql_id, "path": "items.output"}
+            ],
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
+    workflow = {
+        "name": "round_1",
+        "inputs": inputs,
+        "ops": ops,
+        "outputs": [],
+    }
+    parsed = parse_yaml_payload(workflow)
+    assert parsed
+
+
+def test_forward_scalar_per_row_keeps_today_path():
+    # A scalar per row keeps today's path ("" after rewrite) and no materializer.
+    sql_id = "s1"
+    results = {
+        sql_id: [{"table": json.dumps({"close": {"0": float(i)}})} for i in range(3)]
+    }
+    configs = {sql_id: _sql_config(sql_id)}
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [
+                {"label": "close", "node": sql_id, "path": "items.table.close"}
+            ],
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=3)
+    assert len(ops) == 1
+    row = ops[0]["aggregate_table"][0]
+    assert row["node"] == f"{sql_id} | items.table.close"
+    assert row["path"] == ""
 
 
 def test_forward_rowwise_columns_reference():
@@ -789,6 +766,27 @@ def _df_item(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"table": {"df": json.dumps(columns)}}
 
 
+def test_walk_serialized_dataframe_column_returns_list():
+    # Walking ``table.<col>`` on a real stored item (a serialized DataFrame)
+    # returns the column as a list in row order, not a dict or an error.
+    from lumilake_server.runtime.runtime_manager.flowmesh import _walk_output_path
+
+    item = _df_item(
+        [
+            {"title": "a0", "publisheddate": "2024-01-01", "category": "x"},
+            {"title": "a1", "publisheddate": "2024-01-02", "category": "y"},
+            {"title": "a2", "publisheddate": "2024-01-03", "category": "z"},
+        ]
+    )
+    assert _walk_output_path(item, ("table", "title"), "nq") == ["a0", "a1", "a2"]
+    assert _walk_output_path(item, ("table", "publisheddate"), "nq") == [
+        "2024-01-01",
+        "2024-01-02",
+        "2024-01-03",
+    ]
+    assert _walk_output_path(item, ("table", "category"), "nq") == ["x", "y", "z"]
+
+
 def test_forward_serialized_dataframe_columns_materialize():
     # A 2-symbol News Query -> News Report cut forwards table columns
     # (title/publisheddate/category) through materializers: each walked per-row
@@ -813,11 +811,21 @@ def test_forward_serialized_dataframe_columns_materialize():
     }
     configs = {sql_id: _sql_config(sql_id)}
     subgraph = [
-        _chat_consumer(
-            ("title", sql_id, "items.table.title"),
-            ("publisheddate", sql_id, "items.table.publisheddate"),
-            ("category", sql_id, "items.table.category"),
-        )
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "aggregate_table": [
+                {"label": "title", "node": sql_id, "path": "items.table.title"},
+                {
+                    "label": "publisheddate",
+                    "node": sql_id,
+                    "path": "items.table.publisheddate",
+                },
+                {"label": "category", "node": sql_id, "path": "items.table.category"},
+            ],
+        }
     ]
     ops, inputs = forward_refs(subgraph, results, configs, rows=2)
     # One materializer per (ref, path), plus the consumer op.
@@ -840,10 +848,13 @@ def test_forward_serialized_dataframe_columns_materialize():
 
 
 def test_forward_aligned_materializers_are_row_cardinality():
-    # A forwarded round whose report reads two materializers compiles as a
+    # A forwarded round where News Report reads two materializers compiles as a
     # multi-row group: the materializer runtime nodes are aligned (not list),
-    # so neither they nor the report are whole-list-per-run, and the report's
+    # so neither they nor News Report are whole-list-per-run, and News Report's
     # columns still read the materializers at value.items.output.
+    from lumilake_server.graphs import Graph
+    from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+
     sql_id = "s1"
     sql_id2 = "s2"
     results = {
@@ -860,10 +871,18 @@ def test_forward_aligned_materializers_are_row_cardinality():
     }
     configs = {sql_id: _sql_config(sql_id), sql_id2: _sql_config(sql_id2)}
     subgraph = [
-        _chat_consumer(
-            ("title", sql_id, "items.output"),
-            ("summary", sql_id2, "items.output"),
-        )
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "config": {"model": "Qwen/Qwen3-8B"},
+            "messages": [{"role": "user", "content": "x"}],
+            "aggregate_table": [
+                {"label": "title", "node": sql_id, "path": "items.output"},
+                {"label": "summary", "node": sql_id2, "path": "items.output"},
+            ],
+        }
     ]
     ops, inputs = forward_refs(subgraph, results, configs, rows=3)
     inputs["Symbols"] = ["AAA", "BBB", "CCC"]
@@ -898,60 +917,3 @@ def test_forward_aligned_materializers_are_row_cardinality():
     assert [c["label"] for c in df_columns] == ["title", "summary"]
     for column in df_columns:
         assert column["path"] == "value.items.output"
-
-
-def _rowwise_llm_config(op_id: str, **overrides: Any) -> dict:
-    return _llm_config(
-        op_id,
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": INPUT_NODE_ID}],
-        **overrides,
-    )
-
-
-@pytest.mark.parametrize("leaf_op", ["LLMChatOp", "LLMVisionOp"])
-def test_forwarded_literal_input_binds_as_a_data_column(leaf_op: str) -> None:
-    # A forwarded reference becomes a workflow input that only a rowwise column
-    # names, so no op takes an edge from it. The runtime graph must still
-    # resolve the id to the graph's input op and bind its values as a literal
-    # data column, on a row-wise chat and on a row-wise VLM alike.
-    values = ["v0", "v1", "v2"]
-    leaf = _llm_config(
-        "C_r1",
-        op=leaf_op,
-        config={"model": "m"},
-        messages=[{"role": "user", "content": "grade {row}"}],
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": "C_r0", "path": "items.output"}],
-    )
-    if leaf_op == "LLMVisionOp":
-        leaf["image_source"] = "C_r0"
-    ops, inputs = forward_refs(
-        [leaf],
-        {"C_r0": [{"output": values}]},
-        {"C_r0": _rowwise_llm_config("C_r0")},
-        rows=3,
-        whole_refs={"C_r0"},
-    )
-    inputs["Symbols"] = ["NVDA", "AAPL", "MSFT"]
-    spec = next(
-        iter(
-            parse_yaml_payload(
-                {"name": "r2", "inputs": inputs, "ops": ops, "outputs": []}
-            ).values()
-        )
-    )
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    node = next(
-        n
-        for n in graph.nodes.values()
-        if "C_r1" in n.node_id and n.data_spec.get("type") != "list"
-    )
-    columns = (
-        node.data_spec["template"]["columns"]
-        if leaf_op == "LLMVisionOp"
-        else node.data_spec["columns"]
-    )
-    assert columns[0] == {"label": "row", "data": {"type": "list", "items": values}}
