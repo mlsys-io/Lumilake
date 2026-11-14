@@ -809,8 +809,12 @@ def _emit_llm_like_op(
             )
         op_dict["rowwise_messages_column"] = MessagesColumn(
             node=user_id_to_internal[node],
-            path=_require_str(rowwise_messages_column, "path"),
-            label=_require_str(rowwise_messages_column, "label"),
+            path=_require_str(
+                rowwise_messages_column, "path", f"{op_kind} '{entry.id}'"
+            ),
+            label=_require_str(
+                rowwise_messages_column, "label", f"{op_kind} '{entry.id}'"
+            ),
         ).to_dict()
     row_gate = entry.fields.get("row_gate")
     if row_gate is not None:
@@ -820,7 +824,8 @@ def _emit_llm_like_op(
         if not isinstance(node, str) or node not in user_id_to_internal:
             raise ValueError(f"{op_kind} '{entry.id}' row_gate requires a known node")
         gate = RowGate(
-            node=user_id_to_internal[node], branch=_require_str(row_gate, "branch")
+            node=user_id_to_internal[node],
+            branch=_require_str(row_gate, "branch", f"{op_kind} '{entry.id}' row_gate"),
         )
         if "rowwise_messages_column" in op_dict:
             raise ValueError(
@@ -1125,22 +1130,24 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         op_dict["cache"] = cache
 
 
-def _require_str(spec: dict[str, Any], key: str) -> str:
+def _require_str(spec: dict[str, Any], key: str, where: str) -> str:
     """A field's value, typed for the op whose constructor validates it."""
     value = spec.get(key)
     if not isinstance(value, str):
-        raise ValueError(f"requires the {key!r} field as a string")
+        raise ValueError(f"{where}: requires the {key!r} field as a string")
     return value
 
 
-def _require_match(rule: dict[str, Any]) -> RouterMatch:
+def _require_match(rule: dict[str, Any], where: str) -> RouterMatch:
     """A rule's match mode, typed for the rule that validates it."""
-    match = _require_str(rule, "match")
+    match = _require_str(rule, "match", where)
     if match == "equals":
         return "equals"
     if match == "contains":
         return "contains"
-    raise ValueError("requires the 'match' field to be 'equals' or 'contains'")
+    raise ValueError(
+        f"{where}: requires the 'match' field to be 'equals' or 'contains'"
+    )
 
 
 def _emit_router_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
@@ -1155,11 +1162,15 @@ def _emit_router_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
     op_dict.update(
         rules=[
             RouterRule(
-                branch=_require_str(rule, "branch"),
-                match=_require_match(rule),
-                value=_require_str(rule, "value"),
+                branch=_require_str(
+                    rule, "branch", f"RouterOp '{entry.id}' rules[{index}]"
+                ),
+                match=_require_match(rule, f"RouterOp '{entry.id}' rules[{index}]"),
+                value=_require_str(
+                    rule, "value", f"RouterOp '{entry.id}' rules[{index}]"
+                ),
             ).to_dict()
-            for rule in rules
+            for index, rule in enumerate(rules)
         ],
         default_branch=entry.fields.get("default_branch"),
         input_path=entry.fields.get("input_path", "items.output"),

@@ -1301,3 +1301,44 @@ def _gated_chain() -> Any:
         row_gate_op=router,
     )
     return Graph.from_ops([as_output("repair", llm)]).compile(Rows=["a", "b", "c"])
+
+
+def _run_stage(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
+    """Run the code a built python step emits, over staged upstream results."""
+    namespace: dict[str, Any] = {}
+    exec(node.to_flowmesh_node()["spec"]["code"], namespace)
+    return namespace["main"](inputs)
+
+
+def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
+    # The three generated steps read each other's archives: status labels every
+    # row, selection keeps the routed rows, and merge gives one value per input
+    # row at ``value.output``, ``None`` for a row the gate skipped.
+    graph = RuntimeGraphBuilder().build(_gated_chain())
+    (merge_id,) = graph.output_node_map
+    (gated,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
+    status, selector, _selected, merge = [graph.nodes[i] for i in gated]
+
+    items = [
+        {"output": {"code": "fn_0", "status": "ok"}},
+        {"output": {"code": "fn_1", "status": "fail"}},
+    ]
+    upstream = _stage(tmp_path, "classify", {"items": items})
+    status_payload = _run_stage(status, {status.data_spec["plan"][0]["node"]: upstream})
+    assert [i["value"]["branch"] for i in status_payload["items"]] == ["ok", "fail"]
+
+    with_status = _stage(tmp_path, "status", status_payload)
+    selected = _run_stage(
+        selector,
+        {
+            e["node"]: with_status if e["node"] == status.node_id else upstream
+            for e in selector.data_spec["plan"]
+        },
+    )
+    assert selected["items"] == [{"code": "fn_1"}]
+
+    served = _stage(tmp_path, "served", {"items": [{"output": ["fixed"]}]})
+    merged = _run_stage(
+        merge, {status.node_id: with_status, merge.data_spec["plan"][1]["node"]: served}
+    )
+    assert [i["value"]["output"] for i in merged["items"]] == [None, "fixed"]

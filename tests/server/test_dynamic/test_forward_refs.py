@@ -367,8 +367,9 @@ def test_column_bindings_remap_independent_library_instances() -> None:
         ([{"label": "prompt", "input": 0}], ["review_prompt_1"], "review_system"),
         ([{"label": "missing", "input": 0}], ["review_prompt_1"], "unknown label"),
         ([{"label": "prompt", "input": -1}], ["review_prompt_1"], "invalid input slot"),
+        ([{"label": "prompt", "input": "0"}], ["review_prompt_1"], "non-integer"),
     ],
-    ids=["unused-input", "unbound-column", "unknown-label", "bad-slot"],
+    ids=["unused-input", "unbound-column", "unknown-label", "bad-slot", "str-slot"],
 )
 def test_column_bindings_reject_an_inconsistent_round(
     bindings: list[dict[str, Any]] | None, inputs: list[str], message: str
