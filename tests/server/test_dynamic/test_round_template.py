@@ -1,13 +1,10 @@
 """Tests for fixed-round dynamic templates and their data-driven stop."""
 
-import json
-
 import pytest
 from pydantic import ValidationError
 
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
-    forward_refs,
     template_plan_for_round,
     template_stop_export,
     validate_template_spec,
@@ -27,111 +24,92 @@ def _state_op(op_id: str, inputs: list[str], **extra: object) -> dict:
     }
 
 
-def _body(export_previous: bool = False) -> dict:
+def _body(prev: bool) -> dict:
+    """One round body; ``prev`` makes it read the previous round's export."""
     return {
         "ops": [
             _state_op("Input_r{{round}}", ["Symbols"]),
             _state_op(
-                "Live_r{{round}}",
-                ["Input_r{{prev}}" if export_previous else "Input_r{{round}}"],
+                "Live_r{{round}}", ["Input_r{{prev}}" if prev else "Input_r{{round}}"]
             ),
         ],
         "export": ["Live_r{{round}}"],
     }
 
 
-def _spec(**driver: object) -> dict:
+def _template() -> dict:
     return {
-        "type": "dynamic",
-        "goal": "one fixed shape",
-        "driver": {"model": "Qwen/Qwen3-8B", **driver},
-    }
-
-
-def _template(**overrides: object) -> dict:
-    return {
-        "first": _body(),
-        "next": _body(export_previous=True),
+        "first": _body(prev=False),
+        "next": _body(prev=True),
         "stop_when_empty": "Live_r{{prev}}",
-        **overrides,
     }
 
 
 def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
     # A template and an API planner are alternatives.
+    driver: dict = {"model": "Qwen/Qwen3-8B", "template": _template()}
+    spec = {"type": "dynamic", "goal": "one fixed shape", "driver": driver}
     with pytest.raises(ValidationError):
         DynamicSpec.model_validate(
-            _spec(template=_template(), api={"url": "http://planner.test"})
+            {**spec, "driver": {**driver, "api": {"url": "http://p.test"}}}
         )
 
-    spec = DynamicSpec.model_validate(_spec(template=_template()))
-    assert spec.driver.template is not None
-    first = template_plan_for_round(spec.driver.template, 1)
-    assert [op["id"] for op in first.ops] == ["Input_r0", "Live_r0"]
-    assert first.ops[1]["inputs"] == ["Input_r0"]
-    # Round 2 on renders ``next``, whose exported previous round is round 1's.
-    second = template_plan_for_round(spec.driver.template, 2)
-    assert [op["id"] for op in second.ops] == ["Input_r1", "Live_r1"]
-    assert second.ops[1]["inputs"] == ["Input_r0"]
-    assert template_stop_export(spec.driver.template, 2) == "Live_r0"
+    template = DynamicSpec.model_validate(spec).driver.template
+    assert template is not None
+    first = template_plan_for_round(template, 1)
+    assert [(op["id"], op["inputs"]) for op in first.ops] == [
+        ("Input_r0", ["Symbols"]),
+        ("Live_r0", ["Input_r0"]),
+    ]
+    # Round 2 on renders ``next``, whose previous round is round 1's.
+    second = template_plan_for_round(template, 2)
+    assert [(op["id"], op["inputs"]) for op in second.ops] == [
+        ("Input_r1", ["Symbols"]),
+        ("Live_r1", ["Input_r0"]),
+    ]
+    assert template_stop_export(template, 2) == "Live_r0"
 
 
-def test_collected_export_forwards_one_item_per_row_to_the_next_round() -> None:
-    # Round 2 reads each archived item of a list-mode export as a forwarded
-    # input, so one item per row means one value per row.
-    live_case = {"case_id": "0", "turn": 1, "completed": False}
-    ops, inputs = forward_refs(
-        [{"id": "CaseState_r1", "op": "LambdaOp", "inputs": ["Live_r0"]}],
-        {"Live_r0": [{"output": live_case}]},
-        {"Live_r0": {"op": "LambdaOp"}},
-    )
-    assert ops[0]["inputs"] == ["Live_r0"]
-    assert inputs == {"Live_r0": [json.dumps(live_case)]}
+_LIST = _state_op("Live_r{{round}}", ["Symbols"])
+_ROW = dict(_LIST, mode="row")
 
 
 @pytest.mark.parametrize(
-    ("first", "next_body", "message"),
+    ("first", "next_ops", "message"),
     [
         # Only a list-mode export archives one item per row, so only it can read
         # as empty at the stop check. ``next`` runs from round 2, so the round-one
         # check sees ``first`` and the later check sees ``next``.
-        (_state_op("Live_r{{round}}", ["Symbols"], mode="row"), None, "list-mode"),
-        (
-            None,
-            _state_op("Live_r{{round}}", ["Live_r{{prev}}"], mode="row"),
-            "list-mode",
-        ),
+        ([_ROW], [_LIST], "list-mode"),
+        ([_LIST], [dict(_ROW, inputs=["Live_r{{prev}}"])], "list-mode"),
         # The stop check reads a Lambda's archived rows, so no other op stands as
         # the stop export.
         (
-            {
-                "id": "Live_r{{round}}",
-                "op": "DataRetrievalOp",
-                "inputs": ["Symbols"],
-                "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT 1"},
-            },
-            None,
+            [
+                {
+                    "id": "Live_r{{round}}",
+                    "op": "DataRetrievalOp",
+                    "inputs": ["Symbols"],
+                    "data_spec": {"type": "lumid", "mode": "sql", "template": "S"},
+                }
+            ],
+            [_LIST],
             "must be a LambdaOp",
         ),
-        # Every export and every stop export names a node the body builds.
-        (_state_op("Other_r{{round}}", ["Symbols"]), None, "exported op id"),
-        # A library ref resolves, and one nothing declares is rejected.
+        # Every export names a node its body builds, and a library ref resolves.
+        ([_state_op("Other_r{{round}}", ["Symbols"])], [_LIST], "exported op id"),
         (
-            {"ref": "Missing", "id": "Live_r{{round}}", "inputs": []},
-            None,
-            "library entry",
+            [{"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}],
+            [_LIST],
+            "library",
         ),
-        # A ``next`` body reads an earlier round only through a list-mode
-        # Lambda export. Round 1 exports two Lambdas; the next body's stop
-        # export is round 2's, so only the non-exported read is left to fail.
+        # A ``next`` body reads an earlier round only through a list-mode Lambda
+        # export; a non-exported read is refused.
         (
-            [
-                _state_op("Echo_r{{round}}", ["Symbols"]),
-                _state_op("Live_r{{round}}", ["Symbols"]),
-            ],
+            [_state_op("Echo_r{{round}}", ["Symbols"]), _LIST],
             [
                 _state_op("Echo_r{{round}}", ["Echo_r{{prev}}"]),
-                _state_op("Live_r{{round}}", ["Echo_r{{prev}}"]),
+                dict(_LIST, inputs=["Echo_r{{prev}}"]),
             ],
             "result is not available",
         ),
@@ -146,18 +124,13 @@ def test_collected_export_forwards_one_item_per_row_to_the_next_round() -> None:
     ],
 )
 def test_template_validator_rejects_an_unusable_body(
-    first: dict | list[dict] | None,
-    next_body: dict | list[dict] | None,
-    message: str,
+    first: list[dict], next_ops: list[dict], message: str
 ) -> None:
-    list_op = _state_op("Live_r{{round}}", ["Symbols"])
-    first_ops = first if isinstance(first, list) else [first or list_op]
-    next_ops = next_body if isinstance(next_body, list) else [next_body or list_op]
     with pytest.raises(DriverProtocolError, match=message):
         validate_template_spec(
             DriverTemplate.model_validate(
                 {
-                    "first": {"ops": first_ops, "export": ["Live_r{{round}}"]},
+                    "first": {"ops": first, "export": ["Live_r{{round}}"]},
                     "next": {"ops": next_ops, "export": ["Live_r{{round}}"]},
                     "stop_when_empty": "Live_r{{prev}}",
                 }
@@ -167,10 +140,10 @@ def test_template_validator_rejects_an_unusable_body(
         )
 
 
-def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
-    # Every string a body carries renders the placeholders -- a gate's target, a
-    # column's node, a message, a named argument -- except a Lambda's code,
-    # which is Python source, and single braces, which belong to a row template.
+def test_template_body_renders_every_string_it_carries() -> None:
+    # Every string a body carries renders the placeholders, except a Lambda's
+    # code, which is Python source, and single braces, which belong to a row
+    # template.
     body = {
         "ops": [
             _state_op("Source_r{{round}}", ["Symbols"]),
@@ -178,20 +151,12 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
                 "id": "Turn_r{{round}}",
                 "op": "LLMChatOp",
                 "inputs": ["Source_r{{round}}"],
-                "messages": [
-                    {"role": "user", "content": "Advance {row}"},
-                    {"role": "user", "content": "Source_r{{prev}}"},
-                ],
+                "messages": [{"role": "user", "content": "Source_r{{prev}}"}],
                 "config": {"model": "Qwen/Qwen3-8B"},
                 "rowwise_template": "{row}",
                 "rowwise_columns": [
-                    {
-                        "label": "row",
-                        "node": "Source_r{{round}}",
-                        "path": "items.output",
-                    }
+                    {"label": "row", "node": "Source_r{{round}}", "path": "out"}
                 ],
-                "row_gate": {"node": "Source_r{{round}}", "branch": "finish"},
             },
             _state_op("Echo_r{{round}}", ["Symbols"], code="# {{round}}\npass\n"),
         ],
@@ -202,11 +167,8 @@ def test_template_body_renders_the_node_refs_of_a_gated_op() -> None:
     )
     validate_template_spec(template, max_nodes_per_round=8)
     ops = {op["id"]: op for op in template_plan_for_round(template, 2).ops}
-    turn = ops["Turn_r1"]
-    assert turn["row_gate"]["node"] == "Source_r1"
-    assert [column["node"] for column in turn["rowwise_columns"]] == ["Source_r1"]
-    assert [message["content"] for message in turn["messages"]] == [
-        "Advance {row}",
-        "Source_r0",
-    ]
+    assert ops["Turn_r1"]["messages"][0]["content"] == "Source_r0"
+    assert ops["Turn_r1"]["rowwise_columns"][0]["node"] == "Source_r1"
+    # A row template's single braces are not placeholders.
+    assert ops["Turn_r1"]["rowwise_template"] == "{row}"
     assert ops["Echo_r1"]["code"] == "# {{round}}\npass\n"

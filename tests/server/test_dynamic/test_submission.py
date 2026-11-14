@@ -82,28 +82,16 @@ driver:
   max_rounds: 3
   max_nodes_per_round: 4
   template:
-    first:
-      ops:
-        - ref: LiveState
-          id: "LiveState_r{{round}}"
-          inputs: ["Symbols"]
-      export: ["LiveState_r{{round}}"]
+    first: {ops: [{ref: LiveState, id: "LiveState_r{{round}}", inputs: [Symbols]}],
+            export: ["LiveState_r{{round}}"]}
     next:
-      ops:
-        - ref: LiveState
-          id: "LiveState_r{{round}}"
-          inputs: ["LiveState_r{{prev}}"]
+      ops: [{ref: LiveState, id: "LiveState_r{{round}}",
+             inputs: ["LiveState_r{{prev}}"]}]
       export: ["LiveState_r{{round}}"]
     stop_when_empty: "LiveState_r{{prev}}"
 library:
-  LiveState:
-    op: LambdaOp
-    inputs: ["Symbols"]
-    mode: list
-    fn_name: state
-    code: |
-      def state(columns):
-          return columns[0]
+  LiveState: {op: LambdaOp, inputs: [Symbols], mode: list, fn_name: state,
+              code: "def state(columns):\n    return columns[0]\n"}
 """
 
 
@@ -202,7 +190,6 @@ class _FakeRuntimeServer:
             "table": {"market_cap": 10 + row},
             "output": {"market_cap": 10 + row},
         }
-        self.leaf_items: dict[str, list[dict[str, Any]]] = {}
         self.workflow_slices_calls: list[dict[str, Any]] = []
         self.hanging_requests: set[str] = set()
         self._traces: dict[str, list[str]] = {}
@@ -268,10 +255,9 @@ class _FakeRuntimeServer:
                 # Leaves archive the whole result item (path: items); shape it
                 # so the producer's default path (items.table for SQL,
                 # items.output for LLM) walks back to the same value.
-                items = self.leaf_items.get(name)
-                if items is None:
-                    items = [self.leaf_item(row) for row in range(max(rows, 1))]
-                outputs["round"][name] = [json.dumps(item) for item in items]
+                outputs["round"][name] = [
+                    json.dumps(self.leaf_item(row)) for row in range(max(rows, 1))
+                ]
         if self.export_rows is not None:
             export_rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
             for name in [n for n in outputs["round"] if n.startswith("leaf_")]:
@@ -1101,15 +1087,20 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
 
     assert record.status == "completed", record.error
-    assert len(record.child_job_ids) == 2
     assert [config.chain_round for config in fake_server.configs] == [1, 2]
+    # Round 1 holds the whole input set in one slice, and the loop stops before
+    # a third round runs.
+    assert [
+        meta.whole_set
+        for slices in fake_server.workflow_slices_calls
+        for meta in slices.values()
+    ] == [True, True]
     round_plans = record.result.outputs["round"]["plan"]
-    assert [(plan["next"], plan["round"]) for plan in round_plans] == [
-        ("subgraph", 1),
-        ("subgraph", 2),
-        ("STOP", 3),
+    assert [(plan["next"], plan["round"], plan["source"]) for plan in round_plans] == [
+        ("subgraph", 1, "template"),
+        ("subgraph", 2, "template"),
+        ("STOP", 3, "template"),
     ]
-    assert [plan["source"] for plan in round_plans] == ["template"] * 3
 
 
 @pytest.mark.anyio

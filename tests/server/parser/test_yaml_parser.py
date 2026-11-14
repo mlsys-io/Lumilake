@@ -123,28 +123,20 @@ def test_router_row_gate_and_messages_column_parse() -> None:
     # The gate's router becomes an input of the model that names it, the gate
     # keeps its other fields, and an ungated model can take its prompts from an
     # upstream column instead of a rowwise template.
-    ask = {
-        "id": "ask",
-        "op": "LLMChatOp",
-        "inputs": ["source"],
-        "messages": [{"role": "user", "content": "source"}],
-        "config": {"model": "dummy-model"},
-        "rowwise_messages_column": _ROUTED_ROWS,
-    }
-    spec = parse_yaml_payload(_routed(_ROUTED_ROUTER, ask))["routed"]
-    graph = Graph.from_json(spec["graph"])
-    router = next(iter(graph.iter_ops(RouterOp)))
+    ask = {**_turn(), "id": "ask", "inputs": ["source"], "row_gate": None}
+    ask.pop("row_gate")
+    ask["rowwise_messages_column"] = _ROUTED_ROWS
+    graph = Graph.from_json(
+        parse_yaml_payload(_routed(_ROUTED_ROUTER, ask))["routed"]["graph"]
+    )
+    (router,) = list(graph.iter_ops(RouterOp))
     assert (router.default_branch, router.branches) == (
         "pending",
         ["review", "pending"],
     )
-    chats = [op for op in graph.iter_ops(LLMChatOp) if op.row_gate is not None]
-    (gated,) = chats
-    gate = gated.row_gate
-    assert gate is not None
-    assert gate.branch == "review"
+    gated, plain = sorted(graph.iter_ops(LLMChatOp), key=lambda op: op.row_gate is None)
+    assert gated.row_gate is not None and gated.row_gate.branch == "review"
     assert router.id in {op.id for op in gated.inputs}
-    (plain,) = [op for op in graph.iter_ops(LLMChatOp) if op.row_gate is None]
     assert plain.rowwise_messages_column is not None
     assert plain.rowwise_messages_column.label == "msgs"
 

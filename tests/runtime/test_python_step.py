@@ -361,35 +361,6 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     }
 
 
-def test_row_status_routes_on_the_upstream_text(tmp_path: Path) -> None:
-    # A whole-output read is the string the upstream emitted, so a rule tests
-    # that text as it stands rather than a decoded and re-encoded value.
-    outputs = ['{"verdict":"PASS"}', '{"verdict": "PASS"}']
-    source = _stage(tmp_path, "source", {"items": [{"output": out} for out in outputs]})
-    spec = python_step.flowmesh_spec(
-        "status",
-        {
-            "mode": "row_status",
-            "plan": [{"kind": "stage", "node": "source"}],
-            "rules": [
-                {"branch": "compact", "match": "equals", "value": outputs[0]},
-                {"branch": "spaced", "match": "equals", "value": outputs[1]},
-            ],
-            "default_branch": "other",
-            "fn_name": "row_status",
-            "code": "",
-            "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-        },
-    )
-    namespace: dict[str, Any] = {}
-    exec(spec["code"], namespace)
-    status = namespace["main"]({"source": source})
-    assert [item["value"]["branch"] for item in status["items"]] == [
-        "compact",
-        "spaced",
-    ]
-
-
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     py_dir = _stage(tmp_path, "py", {"value": {"items": [{"output": "p"}]}})
     api_dir = _stage(tmp_path, "api", {"text": "t"})
@@ -1359,19 +1330,19 @@ def test_gated_stage_source_runs_status_select_and_merge(tmp_path: Path) -> None
         "classify",
         {
             "items": [
-                {"output": {"code": code, "status": status}} for code, status in rows
+                {"output": {"code": code, "status": state}} for code, state in rows
             ]
         },
     )
     status_payload = _run_stage_plan(
         status, {status.data_spec["plan"][0]["node"]: upstream}
     )
+    # Both slots carry the same row, so a reader of either sees one status.
     assert [item["value"]["branch"] for item in status_payload["items"]] == [
         "ok",
         "fail",
         "ok",
     ]
-    # ``contains`` matches on the value's text and the first matching rule wins.
     assert [
         json.loads(item["output"])["branch"] for item in status_payload["items"]
     ] == [

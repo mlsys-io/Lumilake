@@ -304,6 +304,7 @@ def test_admit_subgraph_forwards_export_to_validation():
 
 
 def _llm_column_library() -> dict[str, dict[str, Any]]:
+    labels = ("prompt", "review_system")
     return {
         "ReviewTurn": {
             "op": "LLMChatOp",
@@ -316,11 +317,9 @@ def _llm_column_library() -> dict[str, dict[str, Any]]:
                     "node": "ReviewPrompt",
                     "path": f"items.output.{label}",
                 }
-                for label in ("prompt", "review_system")
+                for label in labels
             ],
-            "column_bindings": [
-                {"label": label, "input": 0} for label in ("prompt", "review_system")
-            ],
+            "column_bindings": [{"label": label, "input": 0} for label in labels],
             "config": {"model": "m"},
         }
     }

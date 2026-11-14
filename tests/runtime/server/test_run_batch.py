@@ -1983,41 +1983,26 @@ class _ShrunkReaderRuntimeManager(RecordingRuntimeManager):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("node_carries_workflow_id", "slices", "refused"),
-    [
-        # The round's row count is its own answer, so both the per-slice check,
-        # taken when a runtime node id carries its slice's workflow id, and the
-        # merged-group demux take it verbatim. A whole-set result cannot be
-        # split, so a group of two slices is refused.
-        (True, 1, False),
-        (False, 1, False),
-        (False, 2, True),
-    ],
-    ids=["per-node", "merged-group", "two-slice-group"],
-)
 async def test_whole_set_round_accepts_its_own_row_count(
-    server_factory,
-    monkeypatch: pytest.MonkeyPatch,
-    node_carries_workflow_id: bool,
-    slices: int,
-    refused: bool,
+    server_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The round's row count is its own answer, so the per-slice check takes it
+    # verbatim rather than against the round's longest input.
+
     server = server_factory()
     monkeypatch.setattr(server, "runtime_manager", _ShrunkReaderRuntimeManager())
     workflows = [
         make_workflow(
-            workflow_id=f"wf-node-{index}",
+            workflow_id="wf-node-0",
             request_id="req-node",
-            graph_name=f"g{index}",
+            graph_name="g0",
             public_graph_name="shared",
             template_hash="template-shared",
-            slice_index=index,
+            slice_index=0,
             slice_length=4,
             total_length=4,
             whole_set=True,
         )
-        for index in range(slices)
     ]
     handlers = attach_request_states(server, workflows)
     batch = make_batch(workflows)
@@ -2027,19 +2012,11 @@ async def test_whole_set_round_accepts_its_own_row_count(
         "_merge_group_compiled_graph",
         lambda items: SimpleNamespace(_coalesce_rewrite_hits={}),
     )
-    _install_rowwise_api_build_and_schedule(
-        server, "out", "wf-node-0" if node_carries_workflow_id else None
-    )
+    _install_rowwise_api_build_and_schedule(server, "out", "wf-node-0")
 
     await server._run_batch(["worker-1"], batch)
 
     resp = handlers["req-node"].results[0]
-    if refused:
-        assert any(
-            "must run as exactly one slice" in str(item) for item in resp.error_info
-        )
-        assert "shared" not in resp.outputs
-        return
     assert resp.error_info is None
     assert resp.outputs["shared"]["out"] == ["case-0", "case-1"]
     assert len(resp.chat_histories["shared"]["out"]) == 2

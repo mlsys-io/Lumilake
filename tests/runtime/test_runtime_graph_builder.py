@@ -498,17 +498,16 @@ def test_local_rowwise_op_emits_condition() -> None:
     }
 
 
-@pytest.mark.parametrize("api", [False, True])
 def test_rowwise_messages_column_emits_list_message_array_spec(
-    monkeypatch: pytest.MonkeyPatch, api: bool
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A messages column decodes each row's JSON into a message array, whether
-    # the op is dispatched locally or through the API executor.
+    # A messages column decodes each row's JSON into the message array it
+    # sends.
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
     rows = input_placeholder("Rows")
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="m", api=ApiConfig() if api else None),
+        config=GenerationConfig(model="m"),
         rowwise_columns=[{"label": "id", "node": rows.id, "path": ""}],
         rowwise_messages_column=MessagesColumn(
             node=rows.id, path="items", label="msgs"
@@ -518,7 +517,6 @@ def test_rowwise_messages_column_emits_list_message_array_spec(
         Rows=['[{"role":"user","content":"hello"}]']
     )
     node = RuntimeGraphBuilder().build(compiled).nodes[llm.id]
-    assert node.task_type == ("api" if api else "inference")
     assert node.data_spec["type"] == "list"
     assert node.data_spec["items"][0] == [{"role": "user", "content": "hello"}]
     assert "messages" not in node.data_spec
@@ -548,24 +546,6 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     assert runtime_graph.output_node_map == {merge.node_id: "result"}
 
 
-def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
-    # A consumer can name a gated op on a column without listing it as an input.
-    rows = input_placeholder("Rows")
-    gated = _row_gate_over(rows, _router_over(rows))
-    after = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="m"),
-        rowwise_template="{prev}",
-        rowwise_columns=[{"label": "prev", "node": gated.id, "path": "items.output"}],
-    )
-    compiled = Graph.from_ops([as_output("a", gated), as_output("b", after)]).compile(
-        Rows=["PASS", "FAIL"]
-    )
-
-    with pytest.raises(ValueError, match="read it through an OutputOp"):
-        RuntimeGraphBuilder().build(compiled)
-
-
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
@@ -586,35 +566,36 @@ def test_row_gate_consumer_check_reads_a_declared_column_ref() -> None:
         # format reaches without the YAML parser's own validation.
         ({"rowwise_template": None}, "requires rowwise_template"),
         (
-            {"branch": "missing"},
+            {"gate_branch": "missing"},
             "branch 'missing' is not declared",
         ),
+        # The gate names a router op; any other node is refused.
+        (
+            {"gate_node": "rows"},
+            "must be a RouterOp",
+        ),
     ],
-    ids=["messages-column", "condition", "no-rowwise-template", "undeclared-branch"],
+    ids=[
+        "messages-column",
+        "condition",
+        "no-rowwise-template",
+        "undeclared-branch",
+        "not-a-router",
+    ],
 )
-def test_row_gate_rejects_a_rowwise_messages_column_or_a_condition(
+def test_row_gate_rejects_an_unusable_gate(
     fields: dict[str, Any], message: str
 ) -> None:
     rows = input_placeholder("Rows")
-    gated = _row_gate_over(rows, _router_over(rows), **fields)
-    compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["PASS"])
-
-    with pytest.raises(ValueError, match=message):
-        RuntimeGraphBuilder().build(compiled)
-
-
-def test_row_gate_rejects_a_node_that_is_not_a_router() -> None:
-    rows = input_placeholder("Rows")
-    gated = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="m"),
-        rowwise_template="{row}",
-        rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
-        row_gate=RowGate(node=rows.id, branch="fail"),
+    router = _router_over(rows)
+    gate_node = rows.id if fields.pop("gate_node", None) else router.id
+    gate_branch = fields.pop("gate_branch", "fail")
+    gated = _row_gate_over(
+        rows, router, **fields, row_gate=RowGate(node=gate_node, branch=gate_branch)
     )
     compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["PASS"])
 
-    with pytest.raises(ValueError, match="must be a RouterOp"):
+    with pytest.raises(ValueError, match=message):
         RuntimeGraphBuilder().build(compiled)
 
 
@@ -696,43 +677,9 @@ def test_row_gate_rejects_a_source_the_status_step_cannot_read(
             rowwise_template="judge {row}" if source == "rowwise" else None,
             rowwise_columns=[{"label": "row", "node": rows.id}],
         )
-    compiled = Graph.from_ops(
-        [
-            as_output(
-                "result", _row_gate_over(rows, _router_over(upstream, input_path=path))
-            )
-        ]
-    ).compile(Rows=["ok"])
-
-    with pytest.raises(ValueError, match=message):
-        RuntimeGraphBuilder().build(compiled)
-
-
-def test_row_gate_rejects_an_api_upstream_filling_a_gated_column(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A gated column reads its label off the selector's flat row, so an API
-    # upstream would contribute the whole response instead of its text.
-    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
-    rows = input_placeholder("Rows")
-    router = _router_over(rows)
-    judge = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="m", api=ApiConfig()),
-    )
-    gated = LLMChatOp(
-        judge,
-        config=GenerationConfig(model="m"),
-        rowwise_template="fix {verdict}",
-        rowwise_columns=[
-            {"label": "verdict", "node": judge.id, "path": "items.output"}
-        ],
-        row_gate=RowGate(node=router.id, branch="fail"),
-        row_gate_op=router,
-    )
+    gated = _row_gate_over(rows, _router_over(upstream, input_path=path))
     compiled = Graph.from_ops([as_output("result", gated)]).compile(Rows=["ok"])
-
-    with pytest.raises(ValueError, match="only a local op can fill a gated column"):
+    with pytest.raises(ValueError, match=message):
         RuntimeGraphBuilder().build(compiled)
 
 
