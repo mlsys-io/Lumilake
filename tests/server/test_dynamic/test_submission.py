@@ -84,10 +84,9 @@ driver:
   template:
     first: {ops: [{ref: LiveState, id: "LiveState_r{{round}}", inputs: [Symbols]}],
             export: ["LiveState_r{{round}}"]}
-    next:
-      ops: [{ref: LiveState, id: "LiveState_r{{round}}",
-             inputs: ["LiveState_r{{prev}}"]}]
-      export: ["LiveState_r{{round}}"]
+    next: {ops: [{ref: LiveState, id: "LiveState_r{{round}}",
+                  inputs: ["LiveState_r{{prev}}"]}],
+           export: ["LiveState_r{{round}}"]}
     stop_when_empty: "LiveState_r{{prev}}"
 library:
   LiveState: {op: LambdaOp, inputs: [Symbols], mode: list, fn_name: state,
@@ -241,13 +240,8 @@ class _FakeRuntimeServer:
         # returned plan); emit one value per leaf OutputOp so the loop can
         # validate and accumulate an observation (unless the test asks to omit
         # them).
-        export_names = set(self._output_names(graphs, "export_"))
         if not self.omit_leaf_outputs:
-            leaf_names = [
-                name
-                for name in self._output_names(graphs, "leaf_")
-                if name not in export_names
-            ]
+            leaf_names = self._leaf_output_names(graphs)
             # The job manager merges a round's per-row slices into one batch,
             # so each leaf holds one item per merged row.
             rows = sum(meta.slice_length for meta in (workflow_slices or {}).values())
@@ -259,21 +253,22 @@ class _FakeRuntimeServer:
                     json.dumps(self.leaf_item(row)) for row in range(max(rows, 1))
                 ]
         if self.export_rows is not None:
-            export_rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
-            for name in [n for n in outputs["round"] if n.startswith("leaf_")]:
+            # A template export archives one item per element, wrapped as the
+            # reader's `value.output`.
+            rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
+            for name in leaf_names:
                 outputs["round"][name] = [
-                    json.dumps({"output": row, "value": {"items": row}})
-                    for row in export_rows
+                    json.dumps({"output": row, "value": {"items": row}}) for row in rows
                 ]
         return LumilakeResponse(outputs=outputs)
 
-    def _output_names(self, graphs: dict[str, Any], prefix: str) -> list[str]:
-        names: list[str] = []
-        for graph in graphs.values():
-            for name in graph.graph.output_ops:
-                if str(name).startswith(prefix) and str(name) not in names:
-                    names.append(str(name))
-        return names
+    def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
+        return [
+            name
+            for graph in graphs.values()
+            for name in graph.graph.output_ops
+            if str(name).startswith("leaf_")
+        ]
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
         return list(self._traces.get(job_id, []))

@@ -81,53 +81,57 @@ def _echo(op_id: str) -> dict[str, Any]:
     }
 
 
-_ROUTER = {
-    "id": "route",
-    "op": "RouterOp",
-    "inputs": ["source"],
-    "rules": [
-        {"branch": "review", "match": "contains", "value": "NEEDS REVIEW"},
-        {"branch": "pending", "match": "equals", "value": "__never__"},
-    ],
-    "default_branch": "pending",
-}
-
-
-def _routed(*ops: dict[str, Any], turn: dict[str, Any] | None = None) -> dict[str, Any]:
-    """A routed workflow whose output is the gated model."""
-    gated = turn or {
-        "id": "turn",
-        "op": "LLMChatOp",
-        "inputs": ["source", "route"],
-        "messages": [{"role": "user", "content": "source"}],
-        "config": {"model": "dummy-model"},
-        "row_gate": {"node": "route", "branch": "review"},
-    }
+def _routed(*ops: dict[str, Any]) -> dict[str, Any]:
+    """A routed workflow: an echo, the given ops, and a gated model output."""
     return {
         "name": "routed",
         "inputs": {"rows": ["normal", "NEEDS REVIEW"]},
-        "ops": [_echo("source"), *ops, gated],
-        "outputs": [{"name": "result", "ref": turn["id"] if turn else "turn"}],
+        "ops": [
+            _echo("source"),
+            {
+                "id": "route",
+                "op": "RouterOp",
+                "inputs": ["source"],
+                "rules": [
+                    {"branch": "review", "match": "contains", "value": "NEEDS REVIEW"},
+                    {"branch": "pending", "match": "equals", "value": "__never__"},
+                ],
+                "default_branch": "pending",
+            },
+            *ops,
+            {
+                "id": "turn",
+                "op": "LLMChatOp",
+                "inputs": ["source", "route"],
+                "messages": [{"role": "user", "content": "source"}],
+                "config": {"model": "dummy-model"},
+                "row_gate": {"node": "route", "branch": "review"},
+            },
+        ],
+        "outputs": [{"name": "result", "ref": "turn"}],
     }
 
 
 def test_router_row_gate_and_messages_column_parse() -> None:
     # The gate's router becomes an input of the model that names it, and an
     # ungated model can take its prompts from an upstream column.
-    ask = {
-        "id": "ask",
-        "op": "LLMChatOp",
-        "inputs": ["source"],
-        "messages": [{"role": "user", "content": "source"}],
-        "config": {"model": "dummy-model"},
-        "rowwise_messages_column": {
-            "node": "source",
-            "path": "items.output",
-            "label": "msgs",
-        },
-    }
     graph = Graph.from_json(
-        parse_yaml_payload(_routed(_ROUTER, ask))["routed"]["graph"]
+        parse_yaml_payload(
+            _routed(
+                {
+                    "id": "ask",
+                    "op": "LLMChatOp",
+                    "inputs": ["source"],
+                    "messages": [{"role": "user", "content": "source"}],
+                    "config": {"model": "dummy-model"},
+                    "rowwise_messages_column": {
+                        "node": "source",
+                        "path": "items.output",
+                        "label": "msgs",
+                    },
+                }
+            )
+        )["routed"]["graph"]
     )
     (router,) = list(graph.iter_ops(RouterOp))
     gated, plain = sorted(graph.iter_ops(LLMChatOp), key=lambda op: op.row_gate is None)
@@ -139,13 +143,11 @@ def test_router_row_gate_and_messages_column_parse() -> None:
     assert router.id in {op.id for op in gated.inputs}
     assert plain.rowwise_messages_column is not None
     assert plain.rowwise_messages_column.label == "msgs"
-
-
-def test_yaml_rejects_a_router_with_more_than_one_input() -> None:
+    # A router reads exactly one upstream, which the parser checks itself.
     with pytest.raises(ValueError, match="exactly one input"):
-        parse_yaml_payload(
-            _routed(_echo("two"), {**_ROUTER, "inputs": ["source", "two"]})
-        )
+        payload = _routed()
+        payload["ops"][1]["inputs"] = ["source", "source"]
+        parse_yaml_payload(payload)
 
 
 def test_multi_op_topology_inputs() -> None:

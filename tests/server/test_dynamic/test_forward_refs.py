@@ -363,7 +363,7 @@ def test_column_bindings_remap_independent_library_instances() -> None:
     [
         # The bindings must fill every column, name every input the round
         # passes, and stay inside the op's columns and inputs.
-        (None, ["review_prompt_1", "unused_prompt"], "unused"),
+        (None, ["review_prompt_1", "unused"], "unused"),
         ([{"label": "prompt", "input": 0}], ["review_prompt_1"], "review_system"),
         ([{"label": "missing", "input": 0}], ["review_prompt_1"], "unknown label"),
         ([{"label": "prompt", "input": -1}], ["review_prompt_1"], "invalid input slot"),

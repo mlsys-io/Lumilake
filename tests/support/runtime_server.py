@@ -42,7 +42,9 @@ class RecordingRuntimeManager:
         *,
         cancelled: set[str] | None = None,
         status_by_request: dict[str, dict[str, Any]] | None = None,
+        output_values: list[str] | None = None,
     ) -> None:
+        self.output_values = output_values
         self.cancelled = set() if cancelled is None else set(cancelled)
         self.status_by_request = {} if status_by_request is None else status_by_request
         self._dispatch_tokens: dict[str, str | None] = {}
@@ -107,7 +109,21 @@ class RecordingRuntimeManager:
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
-        return {"flat_outputs": {}, "chat_histories": {}, "task_node_map": {}}
+        if self.output_values is None:
+            return {"flat_outputs": {}, "chat_histories": {}, "task_node_map": {}}
+        return {
+            "flat_outputs": dict.fromkeys(
+                request_info.output_node_map, self.output_values
+            ),
+            "chat_histories": {
+                node_id: [
+                    [{"role": "assistant", "content": value}]
+                    for value in self.output_values
+                ]
+                for node_id in request_info.output_node_map
+            },
+            "task_node_map": {},
+        }
 
     async def get_request_status(self, request_id: str) -> dict[str, Any]:
         return self.status_by_request.get(request_id, {"error": "Request ID not found"})

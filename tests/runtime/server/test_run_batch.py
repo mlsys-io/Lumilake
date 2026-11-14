@@ -1956,32 +1956,6 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
     assert out == ["tagged:NVDA", "tagged:AAPL"]
 
 
-class _ShrunkReaderRuntimeManager(RecordingRuntimeManager):
-    """Fakes FlowMesh dispatch for a one-slice round whose own list-mode reader
-    answers with fewer rows than the round's longest input holds."""
-
-    async def process_request(
-        self,
-        request_info: Any,
-        schedule: Schedule,
-        worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
-    ) -> dict[str, Any]:
-        values = ["case-0", "case-1"]
-        flat_outputs: dict[str, list[str]] = {}
-        histories: dict[str, list[list[dict[str, str]]]] = {}
-        for node_id in request_info.output_node_map:
-            flat_outputs[node_id] = values
-            histories[node_id] = [
-                [{"role": "assistant", "content": value}] for value in values
-            ]
-        return {
-            "flat_outputs": flat_outputs,
-            "chat_histories": histories,
-            "task_node_map": {},
-        }
-
-
 @pytest.mark.asyncio
 async def test_whole_set_round_accepts_its_own_row_count(
     server_factory, monkeypatch: pytest.MonkeyPatch
@@ -1990,7 +1964,11 @@ async def test_whole_set_round_accepts_its_own_row_count(
     # verbatim rather than against the round's longest input.
 
     server = server_factory()
-    monkeypatch.setattr(server, "runtime_manager", _ShrunkReaderRuntimeManager())
+    monkeypatch.setattr(
+        server,
+        "runtime_manager",
+        RecordingRuntimeManager(output_values=["case-0", "case-1"]),
+    )
     workflows = [
         make_workflow(
             workflow_id="wf-node-0",
