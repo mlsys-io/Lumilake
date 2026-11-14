@@ -3995,9 +3995,8 @@ def _task_usage_from_result(
 def _is_classification_result(result: AnyExecutorResult) -> bool:
     """Whether a result is a batched pooling classification pass.
 
-    The SDK the server pins has no classification result type, so the payload
-    arrives as a bare executor result carrying the classification fields in
-    its extra mapping."""
+    An unparsed classification result carries its fields as extras, so the
+    task type and usage are read from there."""
     return (result.__pydantic_extra__ or {}).get(
         "task_type"
     ) == _CLASSIFICATION_TASK_TYPE
