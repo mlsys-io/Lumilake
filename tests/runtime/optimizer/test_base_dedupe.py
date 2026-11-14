@@ -294,3 +294,27 @@ def test_dedupe_remaps_condition_node_reference() -> None:
     assert optimized.node_count == 2
     assert optimized.nodes["C"].dependencies == ("A",)
     assert optimized.nodes["C"].condition == {"node": "A", "expr": "B == 'ok'"}
+
+
+def test_dedupe_keys_on_output_enforcement() -> None:
+    """Ops differing only in ``output_enforcement`` must not be merged."""
+
+    def _op(node_id: str) -> RuntimeOp:
+        return RuntimeOp(
+            node_id=node_id,
+            task_type="inference",
+            backend="vllm",
+            model="m",
+            data_spec={},
+            model_spec={},
+            inference_spec={},
+            output_enforcement={"text_regex": node_id},
+        )
+
+    graph = RuntimeGraph(
+        nodes={i: _op(i) for i in ("E", "F")},
+        node_order=["E", "F"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+    assert HaloOptimizer().optimize_graphs({"wf": graph})[0].node_count == 2
