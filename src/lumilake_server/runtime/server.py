@@ -80,7 +80,7 @@ from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
-    gpu_memory_share,
+    gpu_memory_fraction,
     holds_gpu_utilizations,
     model_spec_gpu_memory_utilization,
     required_task_types,
@@ -1234,7 +1234,7 @@ class LumilakeServer:
             ]
             if not holding:
                 raise RuntimeError(
-                    "No GPU worker's memory share holds the "
+                    "No GPU worker's memory fraction holds the "
                     f"{max(gpu_utilizations):g} gpu_memory_utilization the graph "
                     "requests for schedule preview"
                 )
@@ -1436,7 +1436,7 @@ class LumilakeServer:
             "supported_task_types": list(
                 worker_profile.get("supported_task_types", ())
             ),
-            "gpu_memory_share": gpu_memory_share(worker_profile),
+            "gpu_memory_fraction": gpu_memory_fraction(worker_profile),
         }
 
     @staticmethod

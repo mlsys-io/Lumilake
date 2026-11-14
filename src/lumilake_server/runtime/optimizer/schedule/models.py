@@ -68,7 +68,7 @@ class Worker:
 
     ``task_types`` holds the FlowMesh task types its executors advertise; a node
     whose task type needs an executor only some workers run is placed on a
-    worker that lists it. ``gpu_memory_share`` is the fraction of its card's
+    worker that lists it. ``gpu_memory_fraction`` is the fraction of its card's
     memory the worker owns while sharing the card with other workers, and
     ``None`` for a whole device.
     """
@@ -78,4 +78,4 @@ class Worker:
     device: str
     capacity: float = 1.0
     task_types: frozenset[str] = frozenset()
-    gpu_memory_share: float | None = None
+    gpu_memory_fraction: float | None = None

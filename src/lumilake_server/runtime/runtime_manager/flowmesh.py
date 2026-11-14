@@ -251,25 +251,25 @@ def _with_auth_scheme(credential: str) -> str:
     return f"Bearer {credential}"
 
 
-def _raw_gpu_memory_shares(raw_worker: Any) -> dict[Any, float]:
-    """Map each GPU device index in a raw worker payload to its memory share.
+def _raw_gpu_memory_fractions(raw_worker: Any) -> dict[Any, float]:
+    """Map each GPU device index in a raw worker payload to its memory fraction.
 
-    Devices without a numeric ``memory_share`` are left out; the payload is
+    Devices without a numeric ``memory_fraction`` are left out; the payload is
     read loosely because it is unvalidated FlowMesh JSON.
     """
-    shares: dict[Any, float] = {}
+    fractions: dict[Any, float] = {}
     hardware = raw_worker.get("hardware") if isinstance(raw_worker, dict) else None
     gpu = hardware.get("gpu") if isinstance(hardware, dict) else None
     devices = gpu.get("devices") if isinstance(gpu, dict) else None
     if not isinstance(devices, list):
-        return shares
+        return fractions
     for device in devices:
         if not isinstance(device, dict):
             continue
-        share = device.get("memory_share")
-        if isinstance(share, int | float) and not isinstance(share, bool):
-            shares[device.get("index")] = float(share)
-    return shares
+        fraction = device.get("memory_fraction")
+        if isinstance(fraction, int | float) and not isinstance(fraction, bool):
+            fractions[device.get("index")] = float(fraction)
+    return fractions
 
 
 @dataclass(slots=True)
@@ -923,7 +923,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         dict[str, Any]
             The worker's hardware sections plus ``supported_task_types``, the
             sorted task types its executors advertise. Each GPU device also
-            carries ``memory_share``, the fraction of the card's memory the
+            carries ``memory_fraction``, the fraction of the card's memory the
             worker owns, read from the same response and ``None`` for a whole
             device, because the SDK model does not keep it.
         """
@@ -939,10 +939,10 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         )
         gpu = profile.get("gpu")
         if isinstance(gpu, dict) and isinstance(gpu.get("devices"), list):
-            raw_shares = _raw_gpu_memory_shares(raw_worker)
+            raw_fractions = _raw_gpu_memory_fractions(raw_worker)
             for device in gpu["devices"]:
                 if isinstance(device, dict):
-                    device["memory_share"] = raw_shares.get(device.get("index"))
+                    device["memory_fraction"] = raw_fractions.get(device.get("index"))
         return profile
 
     async def get_request_status(

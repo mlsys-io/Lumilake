@@ -379,13 +379,13 @@ catalog, then the model-name suffix (`7B`, `560M`), then the model's
 safetensors headers (local Hugging Face cache, else the Hub). If none gives a
 size, planning fails with an error naming the model.
 
-### HALO GPU memory shares
+### HALO GPU memory fractions
 
-A GPU worker's profile carries `gpu_memory_share`: the fraction of a card's memory the worker owns, and `None` when it owns a whole device. Two FlowMesh workers on one card each hold a share, so the same card appears twice in HALO's worker pool and the workers are not interchangeable.
+A GPU worker's profile carries `gpu_memory_fraction`: the fraction of a card's memory the worker owns, and `None` when it owns a whole device. Two FlowMesh workers on one card each hold a fraction, so the same card appears twice in HALO's worker pool and the workers are not interchangeable.
 
-A node whose engine reserves `gpu_memory_utilization` of a card is offered only to GPU workers whose share is at least that, so a vLLM op runs on a shared card only when its utilization fits the share it lands on — the default `0.9` does not fit a worker holding `0.1`. On a cluster without shared workers nothing changes, because every worker holds a whole device. A node built without its own backend config names no utilization and is offered every GPU worker; the default backend config gives every vLLM op the `LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION` value, so a graph that never sets the field still names `0.9`.
+A node whose engine reserves `gpu_memory_utilization` of a card is offered only to GPU workers whose fraction is at least that, so a vLLM op runs on a shared card only when its utilization fits the fraction it lands on — the default `0.9` does not fit a worker holding `0.1`. On a cluster without shared workers nothing changes, because every worker holds a whole device. A node built without its own backend config names no utilization and is offered every GPU worker; the default backend config gives every vLLM op the `LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION` value, so a graph that never sets the field still names `0.9`.
 
-The scheduler claims and previews workers by the same rule, so the batch is handed a group that holds the largest utilization its GPU nodes name; while no free worker does, the batch waits for one, and it is sent to the optimizer only when no GPU worker in the cluster holds that utilization, where planning fails with an error naming the node's requested utilization and each GPU worker's share. A deployment configured to claim no GPU worker skips the claim rule and reaches the optimizer, which reports the missing worker. Workers are held in name order, so two workers with the same share are interchangeable and the tie between them falls the same way on every run.
+The scheduler claims and previews workers by the same rule, so the batch is handed a group that holds the largest utilization its GPU nodes name; while no free worker does, the batch waits for one, and it is sent to the optimizer only when no GPU worker in the cluster holds that utilization, where planning fails with an error naming the node's requested utilization and each GPU worker's fraction. A deployment configured to claim no GPU worker skips the claim rule and reaches the optimizer, which reports the missing worker. Workers are held in name order, so two workers with the same fraction are interchangeable and the tie between them falls the same way on every run.
 
 ## 8. Scheduling under unknown chain length
 
