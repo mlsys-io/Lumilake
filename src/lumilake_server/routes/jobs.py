@@ -2146,7 +2146,7 @@ async def _run_dynamic_job(
                             chat_template_kwargs=spec.driver.chat_template_kwargs,
                         )
                     )
-                    plans.append({**plan_to_dict(initial_plan), "source": "api"})
+                    plans.append(plan_to_dict(initial_plan))
                     if isinstance(initial_plan, StopPlan):
                         stopped_by = STOP
                         break
@@ -2176,8 +2176,7 @@ async def _run_dynamic_job(
                 try:
                     if round_index > 1:
                         stop_export = template_stop_export(template, round_index)
-                        stop_config = node_registry.get(stop_export)
-                        if stop_config is None:
+                        if stop_export not in node_registry:
                             raise DriverProtocolError(
                                 f"stop export {stop_export!r} is not in the node "
                                 "registry"
@@ -2350,7 +2349,7 @@ async def _run_dynamic_job(
                     next_plan = None
                 elif api is None:
                     next_plan = validate_plan(outputs)
-                    plans.append({**plan_to_dict(next_plan), "source": "proposer"})
+                    plans.append(plan_to_dict(next_plan))
                 else:
                     system, user = planner_messages(
                         goal=spec.goal,
@@ -2374,7 +2373,7 @@ async def _run_dynamic_job(
                             chat_template_kwargs=spec.driver.chat_template_kwargs,
                         )
                     )
-                    plans.append({**plan_to_dict(next_plan), "source": "api"})
+                    plans.append(plan_to_dict(next_plan))
                 observations.append(observation)
                 # Decode one whole item per archive value into results keyed by
                 # user id so later rounds and the stop check see the same flat

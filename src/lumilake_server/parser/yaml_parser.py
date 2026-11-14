@@ -90,7 +90,12 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
-from lumilake_server.ops.router_ops import MessagesColumn, RowGate
+from lumilake_server.ops.router_ops import (
+    MessagesColumn,
+    RouterMatch,
+    RouterRule,
+    RowGate,
+)
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -1128,14 +1133,34 @@ def _require_str(spec: dict[str, Any], key: str) -> str:
     return value
 
 
+def _require_match(rule: dict[str, Any]) -> RouterMatch:
+    """A rule's match mode, typed for the rule that validates it."""
+    match = _require_str(rule, "match")
+    if match == "equals":
+        return "equals"
+    if match == "contains":
+        return "contains"
+    raise ValueError("requires the 'match' field to be 'equals' or 'contains'")
+
+
 def _emit_router_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
     """Emit a router's raw fields; the op constructor validates them."""
     if len(op_dict["_inputs"]) != 1:
         raise ValueError(
             f"RouterOp '{entry.id}' requires exactly one input, the source node"
         )
+    rules = entry.fields.get("rules")
+    if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
+        raise ValueError(f"RouterOp '{entry.id}' rules must be a list of mappings")
     op_dict.update(
-        rules=entry.fields.get("rules"),
+        rules=[
+            RouterRule(
+                branch=_require_str(rule, "branch"),
+                match=_require_match(rule),
+                value=_require_str(rule, "value"),
+            ).to_dict()
+            for rule in rules
+        ],
         default_branch=entry.fields.get("default_branch"),
         input_path=entry.fields.get("input_path", "items.output"),
     )

@@ -85,17 +85,10 @@ class RouterOp(FunctionalOp):
     ) -> None:
         if not rules:
             raise ValueError("RouterOp rules must not be empty")
-        parsed = [
-            (
-                rule
-                if isinstance(rule, RouterRule)
-                else RouterRule(
-                    rule.get("branch"), rule.get("match"), rule.get("value")
-                )
-            )
-            for rule in rules
-        ]
-        branches = [rule.branch for rule in parsed]
+        for rule in rules:
+            if not isinstance(rule, RouterRule):
+                raise ValueError("RouterOp rules must be RouterRule entries")
+        branches = [rule.branch for rule in rules]
         if len(set(branches)) != len(branches):
             raise ValueError("RouterOp rule branches must be unique")
         if default_branch not in branches:
@@ -103,7 +96,7 @@ class RouterOp(FunctionalOp):
         if not input_path:
             raise ValueError("RouterOp input_path must be a non-empty string")
         super().__init__([source])
-        self.rules = parsed
+        self.rules = rules
         self.default_branch = default_branch
         self.input_path = input_path
 
@@ -129,7 +122,7 @@ class RouterOp(FunctionalOp):
             raise ValueError("RouterOp must have exactly one input")
         return cls(
             other_ops[source_ids[0]],
-            rules=data["rules"],
+            rules=[RouterRule(**rule) for rule in data["rules"]],
             default_branch=data["default_branch"],
             input_path=data["input_path"],
         )

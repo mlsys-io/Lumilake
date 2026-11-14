@@ -321,12 +321,29 @@ def _apply_column_bindings(
     bindings = template.get("column_bindings")
     if bindings is None:
         return None
-    columns = template["rowwise_columns"]
+    columns = template.get("rowwise_columns")
+    if not isinstance(bindings, list) or not all(
+        isinstance(binding, dict) for binding in bindings
+    ):
+        raise DriverProtocolError(
+            f"library entry {ref!r} column_bindings must be a list of mappings"
+        )
+    if not isinstance(columns, list) or not all(
+        isinstance(column, dict) for column in columns
+    ):
+        raise DriverProtocolError(
+            f"library entry {ref!r} has column_bindings but no rowwise_columns"
+        )
     by_label = {column.get("label"): column.copy() for column in columns}
     used_slots: set[int] = set()
     for binding in bindings:
-        label = binding["label"]
-        slot = binding["input"]
+        label = binding.get("label")
+        slot = binding.get("input")
+        if not isinstance(slot, int) or isinstance(slot, bool):
+            raise DriverProtocolError(
+                f"library entry {ref!r} column binding for {label!r} has a "
+                f"non-integer input slot {slot!r}"
+            )
         if label not in by_label:
             raise DriverProtocolError(
                 f"library entry {ref!r} column binding references unknown "
@@ -339,7 +356,7 @@ def _apply_column_bindings(
             )
         by_label[label]["node"] = inputs[slot]
         used_slots.add(slot)
-    unbound_labels = set(by_label) - {binding["label"] for binding in bindings}
+    unbound_labels = set(by_label) - {binding.get("label") for binding in bindings}
     if unbound_labels:
         raise DriverProtocolError(
             f"library entry {ref!r} column_bindings leave column(s) "
@@ -996,12 +1013,12 @@ def validate_template_spec(
 def _validate_stop_export_is_list_lambda(op: dict[str, Any], export_id: str) -> None:
     """Require the stop export to count one archived item per Lambda element.
 
-    ``archived_export_has_rows`` counts one row per archived item, which is
-    what a list-mode Lambda produces: its python step emits one item per
-    element of the list it returns. A row- or aligned-mode export archives one
-    item per input row instead, so it reads as non-empty whatever its rows
-    hold, and the job would silently spend every remaining round. Refusing it
-    at submission turns that into a spec error.
+    The stop check counts one row per archived item, which is what a list-mode
+    Lambda produces: its python step emits one item per element of the list it
+    returns. A row- or aligned-mode export archives one item per input row
+    instead, so it reads as non-empty whatever its rows hold, and the job would
+    silently spend every remaining round. Refusing it at submission turns that
+    into a spec error.
     """
     op_type = op.get("op", "")
     if op_type != "LambdaOp":

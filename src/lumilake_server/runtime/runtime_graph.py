@@ -662,7 +662,6 @@ class RuntimeGraphBuilder:
                     inputs_dict,
                     visited_node_ids,
                     dsl_to_runtime=dsl_to_runtime,
-                    runtime_nodes=nodes,
                 )
             elif task_type_override != "data_profile" and llm_op.config.api is not None:
                 upstream_llm_ids, template_spec = self._infer_structural_messages(
@@ -699,7 +698,6 @@ class RuntimeGraphBuilder:
                         visited_node_ids,
                         task_type_override=task_type_override,
                         dsl_to_runtime=dsl_to_runtime,
-                        runtime_nodes=nodes,
                     )
                 ]
                 mapping = [llm_op_id]
@@ -1080,7 +1078,6 @@ class RuntimeGraphBuilder:
         inputs_dict: dict[str, list[str]],
         visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None = None,
-        runtime_nodes: dict[str, RuntimeOp] | None = None,
     ) -> tuple[list[RuntimeOp], list[str]]:
         if llm_op.rowwise_template:
             upstream_llm_ids, _ = self._infer_structural_messages(
@@ -2513,7 +2510,6 @@ class RuntimeGraphBuilder:
         visited_node_ids: set[str],
         task_type_override: str | None = None,
         dsl_to_runtime: dict[str, list[str]] | None = None,
-        runtime_nodes: dict[str, RuntimeOp] | None = None,
     ) -> RuntimeOp:
         if isinstance(llm_op, EmbeddingOp):
             return self._build_node_from_embedding_op(
@@ -2618,34 +2614,6 @@ class RuntimeGraphBuilder:
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
 
-        if self._is_rowwise_llm(llm_op):
-            data_spec, row_dependencies = self._rowwise_data_spec(
-                llm_op_id=llm_op_id,
-                llm_op=llm_op,
-                upstream_llm_ids=upstream_llm_ids,
-                graph_dict=graph_dict,
-                inputs_dict=inputs_dict,
-                dsl_to_runtime=dsl_to_runtime,
-            )
-            return self._create_runtime_op(
-                name=llm_op_id,
-                task_type=task_type,
-                data_spec=data_spec,
-                model_spec=self._build_model_spec(llm_op.config, backend),
-                inference_spec=inference_spec,
-                backend=backend,
-                model=llm_op.config.model,
-                dependencies=row_dependencies if row_dependencies else None,
-                output_spec=output_spec,
-                condition=self._row_condition(
-                    llm_op.condition,
-                    self._static_output_row_count(llm_op, inputs_dict, graph_dict) or 1,
-                    graph_dict,
-                    inputs_dict,
-                    dsl_to_runtime,
-                ),
-            )
-
         if isinstance(llm_op, LLMCompletionOp):
             prompt_op = llm_op.prompt
             visited_node_ids.add(prompt_op.id)
@@ -2657,7 +2625,7 @@ class RuntimeGraphBuilder:
                         f"{prompt_op.name!r} has no values supplied"
                     )
                 data_spec = {"type": "list", "items": list(prompt_values)}
-                row_dependencies = []
+                row_dependencies: list[str] = []
             elif isinstance(prompt_op, DataOp):
                 data_spec = {"type": "list", "items": list(prompt_op.data)}
                 row_dependencies = []
@@ -2697,6 +2665,34 @@ class RuntimeGraphBuilder:
                 dependencies=row_dependencies if row_dependencies else None,
                 output_spec=output_spec,
                 condition=None,
+            )
+
+        if self._is_rowwise_llm(llm_op):
+            data_spec, row_dependencies = self._rowwise_data_spec(
+                llm_op_id=llm_op_id,
+                llm_op=llm_op,
+                upstream_llm_ids=upstream_llm_ids,
+                graph_dict=graph_dict,
+                inputs_dict=inputs_dict,
+                dsl_to_runtime=dsl_to_runtime,
+            )
+            return self._create_runtime_op(
+                name=llm_op_id,
+                task_type=task_type,
+                data_spec=data_spec,
+                model_spec=self._build_model_spec(llm_op.config, backend),
+                inference_spec=inference_spec,
+                backend=backend,
+                model=llm_op.config.model,
+                dependencies=row_dependencies if row_dependencies else None,
+                output_spec=output_spec,
+                condition=self._row_condition(
+                    llm_op.condition,
+                    self._static_output_row_count(llm_op, inputs_dict, graph_dict) or 1,
+                    graph_dict,
+                    inputs_dict,
+                    dsl_to_runtime,
+                ),
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
@@ -2957,30 +2953,32 @@ class RuntimeGraphBuilder:
                     f"LLMChatOp '{llm_op_id}' row gate column {label!r} node "
                     f"{node_ref!r} must compile to one runtime node"
                 )
-            entry: dict[str, Any] = {"kind": "stage", "node": runtime_ids[0]}
-            column_path = column.get("path")
-            if column_path is None:
-                column_path = ""
+            column_path = column.get("path") or ""
             if not isinstance(column_path, str):
                 raise ValueError(
                     f"LLMChatOp '{llm_op_id}' row gate column {label!r} path "
                     "must be a string"
                 )
-            if rowwise_upstream:
-                if column_path not in ("", "items.output"):
-                    raise ValueError(
-                        f"LLMChatOp '{llm_op_id}' row gate column {label!r} reads"
-                        f" {column_path!r} from rowwise LLM '{node_ref}'; only"
-                        " 'items.output' (the whole output) is supported."
-                    )
-                entry["flatten"] = True
-            elif column_path not in ("", "items.output"):
-                entry["path"] = self._row_gate_item_path(
-                    llm_op_id=llm_op_id,
-                    label=label,
-                    path=column_path,
+            if column_path not in ("", "items.output") and rowwise_upstream:
+                raise ValueError(
+                    f"LLMChatOp '{llm_op_id}' row gate column {label!r} reads"
+                    f" {column_path!r} from rowwise LLM '{node_ref}'; only"
+                    " 'items.output' (the whole output) is supported."
                 )
-            select_plan.append(entry)
+            select_plan.append(
+                self._python_plan_entry(
+                    runtime_ids[0],
+                    path=(
+                        self._row_gate_item_path(
+                            llm_op_id=llm_op_id, label=label, path=column_path
+                        )
+                        if column_path not in ("", "items.output")
+                        and not rowwise_upstream
+                        else None
+                    ),
+                    flatten=rowwise_upstream,
+                )
+            )
             if runtime_ids[0] not in select_dependencies:
                 select_dependencies.append(runtime_ids[0])
         selector = self._python_step_op(
@@ -3277,7 +3275,10 @@ class RuntimeGraphBuilder:
         messages: list[dict[str, str]] = []
         for system_msg in llm_op.system_messages or []:
             messages.append({"role": "system", "content": system_msg})
-        messages.append({"role": "user", "content": llm_op.rowwise_template or ""})
+        assert (
+            llm_op.rowwise_template is not None
+        ), "a rowwise op without a messages column declares rowwise_template"
+        messages.append({"role": "user", "content": llm_op.rowwise_template})
         return {
             "type": "dataframe",
             "columns": columns,

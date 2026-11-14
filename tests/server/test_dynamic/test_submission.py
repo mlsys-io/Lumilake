@@ -515,27 +515,6 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
 
 
 @pytest.mark.anyio
-async def test_dynamic_round_stops_on_the_planner(
-    app: FastAPI, job_routes: Any
-) -> None:
-    # A leaf value that holds routing fields says nothing about the round's
-    # survivor set, so only the planner's own STOP ends a planner round.
-    job_id = await _submit(app, _VALID_DYNAMIC_YAML)
-    fake_server = job_routes._fake_runtime_server
-    fake_server.leaf_item = lambda row: {
-        "done": True,
-        "table": {"market_cap": 10 + row},
-    }
-    fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
-    await _run_background(app)
-    record = job_routes.jobs[job_id]
-    assert record.status == "completed", record.error
-    assert len(record.child_job_ids) == 2
-    plan = record.result.outputs["round"]["plan"][-1]
-    assert (plan["next"], plan["source"]) == ("STOP", "proposer")
-
-
-@pytest.mark.anyio
 async def test_dynamic_child_carries_chain_lineage(
     app: FastAPI, job_routes: Any
 ) -> None:
