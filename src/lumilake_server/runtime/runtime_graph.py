@@ -340,6 +340,11 @@ class RuntimeGraph:
                 model_spec=remap(op.model_spec, rewritable),
                 inference_spec=remap(op.inference_spec, rewritable),
                 api_spec=remap(op.api_spec, rewritable),
+                output_enforcement=(
+                    remap(op.output_enforcement, rewritable)
+                    if op.output_enforcement is not None
+                    else None
+                ),
                 dependencies=tuple(mapping.get(dep, dep) for dep in op.dependencies),
                 output_spec=(
                     remap(op.output_spec, rewritable)
