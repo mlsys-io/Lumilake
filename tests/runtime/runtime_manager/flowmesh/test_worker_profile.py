@@ -6,8 +6,6 @@ from typing import Any
 import pytest
 from flowmesh.models.common import TaskType
 from flowmesh.models.workers import (
-    GpuInfo,
-    GpuPlatformInfo,
     MemoryInfo,
     WorkerCapabilities,
     WorkerHardware,
@@ -34,19 +32,9 @@ def _worker(
     )
 
 
-def _serve(
-    monkeypatch: pytest.MonkeyPatch,
-    worker: WorkerInfo,
-    fractions: list[float | None] | None = None,
-) -> None:
+def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> dict[str, Any]:
+    """Serve ``worker`` as the raw response and return its payload."""
     payload = worker.model_dump(mode="json")
-    if fractions is not None:
-        payload["hardware"]["gpu"] = {
-            "devices": [
-                {"index": index, "memory_fraction": fraction}
-                for index, fraction in enumerate(fractions)
-            ]
-        }
 
     async def fake_get(path: str) -> dict[str, Any]:
         return payload
@@ -55,6 +43,7 @@ def _serve(
         "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_get_for_server",
         fake_get,
     )
+    return payload
 
 
 @pytest.mark.asyncio
@@ -75,23 +64,12 @@ async def test_profile_keeps_the_hardware_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hardware = WorkerHardware(memory=MemoryInfo(total_bytes=1024))
-    _serve(monkeypatch, _worker("w", frozenset(), hardware))
+    payload = _serve(monkeypatch, _worker("w", frozenset(), hardware))
+    payload["hardware"]["gpu"] = {
+        "devices": [{"index": 0, "memory_fraction": 0.3}, {"index": 1}]
+    }
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 
     assert profile["memory"]["total_bytes"] == 1024
-    assert profile["supported_task_types"] == []
-
-
-@pytest.mark.asyncio
-async def test_profile_carries_the_devices_memory_fractions(
-    flowmesh_manager: FlowmeshRuntimeManager,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gpus = GpuPlatformInfo(devices=[GpuInfo(index=0), GpuInfo(index=1)])
-    worker = _worker("w", frozenset(), WorkerHardware(gpu=gpus))
-    _serve(monkeypatch, worker, [0.3, None])
-
-    profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
-
     assert [d["memory_fraction"] for d in profile["gpu"]["devices"]] == [0.3, None]

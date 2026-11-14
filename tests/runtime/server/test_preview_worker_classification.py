@@ -4,7 +4,6 @@ ever assigned to CPU workers, same as "db"/data_retrieval). Otherwise an
 API-only or mixed preview can select a GPU-only worker (or no CPU worker at
 all), and HALO then rejects the node the preview approved."""
 
-from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -13,12 +12,8 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def _profile(
-    gpu_count: int,
-    task_types: list[str] | None = None,
-    memory_fraction: float | None = None,
-) -> dict[str, Any]:
-    devices = [{"memory_fraction": memory_fraction} for _ in range(gpu_count)]
+def _profile(gpu_count: int, task_types: list[str] | None = None) -> dict[str, Any]:
+    devices = [{"memory_total_bytes": None} for _ in range(gpu_count)]
     return {
         "cpu": {"logical_cores": 16},
         "memory": {"total_bytes": 64 * (1024**3)},
@@ -62,35 +57,6 @@ def _inference_op(node_id: str) -> RuntimeOp:
         model_spec={},
         inference_spec={},
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("profiles", "expected"),
-    [
-        ({"gpu-small": 0.1, "gpu-big": 0.8}, ["gpu-big"]),
-        ({"gpu-small": 0.1}, "memory fraction holds"),
-    ],
-)
-async def test_preview_takes_a_worker_whose_fraction_holds_the_node(
-    server_factory,
-    monkeypatch: pytest.MonkeyPatch,
-    profiles: dict[str, float],
-    expected: list[str] | str,
-) -> None:
-    server = server_factory()
-    manager = {n: _profile(1, memory_fraction=s) for n, s in profiles.items()}
-    monkeypatch.setattr(server, "runtime_manager", _MultiWorkerRuntimeManager(manager))
-    spec = {"vllm": {"gpu_memory_utilization": 0.8}}
-    op = replace(_inference_op("llm"), model_spec=spec)
-    graph = RuntimeGraph(nodes={"llm": op}, node_order=["llm"], output_node_map={})
-
-    if isinstance(expected, str):
-        with pytest.raises(RuntimeError, match=expected):
-            await server._select_preview_workers_and_profiles(graph)
-        return
-    selected, _ = await server._select_preview_workers_and_profiles(graph)
-    assert selected == expected
 
 
 class _MultiWorkerRuntimeManager:

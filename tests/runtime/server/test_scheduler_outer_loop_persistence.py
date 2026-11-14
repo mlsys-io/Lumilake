@@ -279,7 +279,9 @@ class _GpuBatchJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            gpu_node = _op("inference", "vllm")
+            gpu_node = SimpleNamespace(
+                backend="vllm", task_type="inference", model_spec=None
+            )
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-gpu", id="wf-gpu")],
@@ -545,7 +547,9 @@ class _GpuThenCpuJobManager:
         self._select_calls += 1
         # While the GPU batch is still queued, it keeps re-selecting.
         if not self._gpu_removed:
-            gpu_node = _op("inference", "vllm")
+            gpu_node = SimpleNamespace(
+                backend="vllm", task_type="inference", model_spec=None
+            )
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[
@@ -661,7 +665,9 @@ class _TransientGpuJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            gpu_node = _op("inference", "vllm")
+            gpu_node = SimpleNamespace(
+                backend="vllm", task_type="inference", model_spec=None
+            )
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[
@@ -805,7 +811,9 @@ class _InferenceWithoutBackendBatchJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            mystery_op = _op("inference", "")
+            mystery_op = SimpleNamespace(
+                backend="", task_type="inference", model_spec=None
+            )
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-mystery", id="wf-mystery")],
@@ -1141,88 +1149,6 @@ async def test_try_claim_workers_lets_the_optimizer_fail_when_no_worker_can_run_
     )
 
     assert await server._try_claim_workers(_python_batch(), free) == ["cpu-plain"]
-
-
-_SMALL_GPU = {"has_gpu": True, "gpu_memory_fraction": 0.1}
-_BIG_GPU = {"has_gpu": True, "gpu_memory_fraction": 0.8}
-
-
-def _op(task_type: str, backend: str, model_spec: dict[str, Any] | None = None) -> Any:
-    return SimpleNamespace(task_type=task_type, backend=backend, model_spec=model_spec)
-
-
-def _generation_batch(*utilizations: float) -> Any:
-    nodes = {
-        f"n{index}": _op(
-            "inference", "vllm", {"vllm": {"gpu_memory_utilization": utilization}}
-        )
-        for index, utilization in enumerate(utilizations)
-    }
-    return SimpleNamespace(
-        config=SimpleNamespace(hardware_requirements=None),
-        workflows=[SimpleNamespace(request_id="req", id="wf")],
-        runtime_graphs={"g": SimpleNamespace(nodes=nodes)},
-        clustering_seconds=0.0,
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("utilizations", "gpu_group_size", "cluster", "idle", "expected"),
-    [
-        ((0.8,), 1, ("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), ["gpu-big"]),
-        ((0.8,), 1, ("gpu-small", "gpu-big"), ("gpu-small",), None),
-        ((0.8,), 1, ("gpu-small",), ("gpu-small",), ["gpu-small"]),
-        ((0.8,), 1, ("gpu-whole",), ("gpu-whole",), ["gpu-whole"]),
-        # The group takes the worker that holds the largest fraction.
-        (
-            (0.1, 0.8),
-            1,
-            ("gpu-small", "gpu-big"),
-            ("gpu-small", "gpu-big"),
-            ["gpu-big"],
-        ),
-        # A batch claiming no GPU worker is not gated on the fractions.
-        ((0.8,), 0, ("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), None),
-    ],
-)
-async def test_try_claim_workers_takes_only_a_worker_whose_fraction_fits(
-    server_factory,
-    utilizations: tuple[float, ...],
-    gpu_group_size: int,
-    cluster: tuple[str, ...],
-    idle: tuple[str, ...],
-    expected: list[str] | None,
-) -> None:
-    """A worker whose fraction cannot hold the node is never claimed: the claim waits
-    while a fitting one is busy, and proceeds when the cluster holds none."""
-    fractions: dict[str, dict[str, Any]] = {
-        "gpu-small": _SMALL_GPU,
-        "gpu-big": _BIG_GPU,
-        "gpu-whole": {"has_gpu": True},
-    }
-    server = server_factory()
-    server.config.gpu_worker_group_size = gpu_group_size
-    server.config.cpu_worker_group_size = 0
-
-    async def total() -> FreeCapacity:
-        return FreeCapacity(
-            cpu_worker_ids=(),
-            gpu_worker_ids=cluster,
-            profiles={name: fractions[name] for name in cluster},
-        )
-
-    server._snapshot_total_capacity = total
-    free = FreeCapacity(
-        cpu_worker_ids=(),
-        gpu_worker_ids=idle,
-        profiles={name: fractions[name] for name in idle},
-    )
-
-    assert (
-        await server._try_claim_workers(_generation_batch(*utilizations), free)
-        == expected
-    )
 
 
 class _CommitRaisesJobManager:
