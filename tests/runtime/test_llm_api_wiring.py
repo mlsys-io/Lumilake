@@ -143,10 +143,9 @@ def test_api_samplers_flow_into_body() -> None:
 
 
 def test_api_output_enforcement_reaches_task_spec() -> None:
-    enforced = {"max_attempts": 3, "text_regex": "^ok$"}
-    runtime_graph, llm_id = _build_api_graph(output_enforcement=enforced)
+    runtime_graph, llm_id = _build_api_graph(output_enforcement={"text_regex": "x"})
     node = runtime_graph.with_node_prefix("run").nodes[f"run__{llm_id}"]
-    assert node.to_flowmesh_node()["spec"]["output_enforcement"]["max_attempts"] == 3
+    assert node.to_flowmesh_node()["spec"]["output_enforcement"]["text_regex"] == "x"
 
 
 def test_output_enforcement_rejected_on_vision_op() -> None:
