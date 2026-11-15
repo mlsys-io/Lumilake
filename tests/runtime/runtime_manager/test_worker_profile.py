@@ -63,4 +63,5 @@ async def test_profile_keeps_the_hardware_sections(
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 
+    assert profile["memory"]["total_bytes"] == 1024
     assert profile["gpu_memory_fraction"] == 0.3

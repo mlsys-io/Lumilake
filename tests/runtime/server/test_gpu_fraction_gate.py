@@ -9,7 +9,6 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 _OP = replace(
     make_runtime_op("n"),
-    backend="vllm",
     model_spec={"vllm": {"gpu_memory_utilization": 0.8}},
 )
 
@@ -25,6 +24,7 @@ def _capacity(*names: str) -> FreeCapacity:
     ("idle", "cluster", "expected"),
     [
         (("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), ["gpu-big"]),
+        (("gpu-small",), ("gpu-small", "gpu-big"), None),
         (("gpu-small",), ("gpu-small",), ["gpu-small"]),
     ],
 )
