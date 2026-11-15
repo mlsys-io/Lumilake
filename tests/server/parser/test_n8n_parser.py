@@ -239,9 +239,33 @@ def _code_node_workflow(notes: str) -> dict:
     }
 
 
-def test_n8n_code_node_keeps_an_agent_upstream_as_input() -> None:
-    """An agent node feeds a code node like any other upstream: the code node
-    takes it as an input and depends on it, so the two are ordered."""
+_SQL_UPSTREAM = {
+    "parameters": {"operation": "executeQuery", "query": "SELECT 1"},
+    "type": N8N_POSTGRES_NODE,
+    "name": "SQL",
+    "id": "sql-node",
+    "typeVersion": 1,
+}
+_AGENT_UPSTREAM = {
+    "parameters": {"text": "Find the profile for {{ $('Input') }}."},
+    "type": N8N_AGENT_NODE,
+    "name": "Agent",
+    "id": "agent-node",
+    "typeVersion": 1,
+    "notes": json.dumps({"schema-scope": "s.t"}),
+}
+
+
+@pytest.mark.parametrize(
+    ("upstream", "kept"),
+    [(_SQL_UPSTREAM, False), (_AGENT_UPSTREAM, True)],
+    ids=["postgres-fed-code-node", "agent-fed-code-node"],
+)
+def test_n8n_code_node_inputs_follow_the_upstream_type(
+    upstream: dict, kept: bool
+) -> None:
+    """A code node takes an ordinary upstream as its input and dependency, and
+    skips a data source, which answers references with its own rows."""
     workflow = {
         "nodes": [
             {
@@ -251,17 +275,7 @@ def test_n8n_code_node_keeps_an_agent_upstream_as_input() -> None:
                 "id": "input-node",
                 "typeVersion": 1,
             },
-            {
-                "parameters": {
-                    "text": "Find the profile for {{ $('Input') }}.",
-                    "options": {},
-                },
-                "type": N8N_AGENT_NODE,
-                "name": "Agent",
-                "id": "agent-node",
-                "typeVersion": 1,
-                "notes": json.dumps({"schema-scope": "s.t"}),
-            },
+            upstream,
             {
                 "parameters": {"pythonCode": "return 'hi'"},
                 "type": "n8n-nodes-base.code",
@@ -273,36 +287,36 @@ def test_n8n_code_node_keeps_an_agent_upstream_as_input() -> None:
         ],
         "connections": {
             "Input": {
-                "main": [
-                    [
-                        {"node": "Agent", "type": "main", "index": 0},
-                        {"node": "Code", "type": "main", "index": 0},
-                    ]
-                ]
+                "main": [[{"node": upstream["name"], "type": "main", "index": 0}]]
             },
-            "Agent": {"main": [[{"node": "Code", "type": "main", "index": 0}]]},
+            upstream["name"]: {
+                "main": [[{"node": "Code", "type": "main", "index": 0}]]
+            },
         },
     }
-    graph_specs = parse_n8n_payload(
-        {
-            "graphs": [
-                {"name": "g0", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
-            ]
-        }
-    )
-    parsed = graph_specs["g0"]["graph"]
+    payload = {
+        "graphs": [{"name": "g0", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}]
+    }
+    if not kept:
+        # A data source is no input at all, so a code node that has only one
+        # fails the way it does when it has none.
+        with pytest.raises(ValueError, match="Code node 'Code' missing inputs"):
+            parse_n8n_payload(payload)
+        return
+
+    parsed = parse_n8n_payload(payload)["g0"]["graph"]
     code_id = next(op_id for op_id, op in parsed.items() if op["_op"] == "LambdaOp")
-    agent_id = next(
+    upstream_id = next(
         op_id
         for op_id, op in parsed.items()
-        if op["_op"] == "DataRetrievalOp" and op["data_spec"]["mode"] == "agent"
+        if op["_op"] == "DataRetrievalOp" and op["data_spec"]["mode"] != "sql"
     )
-    assert agent_id in parsed[code_id]["_inputs"]
+    assert upstream_id in parsed[code_id]["_inputs"]
 
     graph = Graph.from_json(parsed)
     lambdas = list(graph.iter_ops(LambdaOp))
     assert len(lambdas) == 1
-    assert agent_id in {op.id for op in lambdas[0].inputs}
+    assert upstream_id in {op.id for op in lambdas[0].inputs}
 
 
 def test_n8n_code_node_image_reaches_the_op() -> None:
