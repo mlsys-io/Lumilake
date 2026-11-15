@@ -1217,13 +1217,11 @@ def _lower_llm(
         mapping = [op_id]
         output_nodes = [op_id]
 
-    result = LoweringResult(
+    return LoweringResult(
         nodes=runtime_ops,
         dsl_to_runtime=mapping,
         output_nodes=output_nodes,
     )
-    builder._record_output(op_id, op, result, ctx)
-    return result
 
 
 @register(ImageGenerationOp, Phase.LLM)
@@ -1246,10 +1244,8 @@ def _lower_image_generation(
         dsl_to_runtime=ctx.dsl_to_runtime,
         runtime_nodes=ctx.nodes,
     )
-    result = LoweringResult(
+    return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
         output_nodes=[runtime_op.node_id],
     )
-    builder._record_output(op_id, op, result, ctx)
-    return result

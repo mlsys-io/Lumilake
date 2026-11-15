@@ -302,14 +302,12 @@ def _lower_list_lambda(
         ctx.graph_dict,
         ctx.inputs_dict,
     )
-    result = LoweringResult(
+    return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
         output_nodes=[runtime_op.node_id],
         visited=[input_op.id for input_op in op.inputs],
     )
-    builder._record_output(op_id, op, result, ctx)
-    return result
 
 
 @register(LambdaOp, Phase.ROW_LAMBDA)
@@ -341,10 +339,8 @@ def _lower_standalone_row_lambda(
         ctx.node_order,
         ctx.dsl_to_runtime,
     )
-    result = LoweringResult(
+    return LoweringResult(
         nodes=[ctx.nodes[op_id]],
         dsl_to_runtime=[op_id],
         output_nodes=[op_id],
     )
-    builder._record_output(op_id, op, result, ctx)
-    return result

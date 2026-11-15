@@ -92,3 +92,8 @@ def lookup(op: Op, phase: Phase) -> LoweringFn | None:
             if entry_phase is phase:
                 return fn
     return None
+
+
+def has_lowering(op: Op) -> bool:
+    """Whether any lowering is registered for the op's class or an ancestor."""
+    return any(cls in _LOWERINGS for cls in type(op).__mro__)

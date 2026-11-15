@@ -968,11 +968,9 @@ def _lower_data_retrieval(
             ctx.inputs_dict,
             ctx.input_ops_by_id,
         )
-    result = LoweringResult(
+    return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
         output_nodes=[runtime_op.node_id],
         visited=upstreams,
     )
-    builder._record_output(op_id, op, result, ctx)
-    return result

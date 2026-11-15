@@ -107,10 +107,8 @@ def _lower_embedding(
         graph_dict=ctx.graph_dict,
         dsl_to_runtime=ctx.dsl_to_runtime,
     )
-    result = LoweringResult(
+    return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
         output_nodes=[runtime_op.node_id],
     )
-    builder._record_output(op_id, op, result, ctx)
-    return result

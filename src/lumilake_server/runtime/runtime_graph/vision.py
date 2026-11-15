@@ -403,10 +403,8 @@ def _lower_vision(
         dsl_to_runtime=ctx.dsl_to_runtime,
         runtime_nodes=ctx.nodes,
     )
-    result = LoweringResult(
+    return LoweringResult(
         nodes=runtime_ops,
         dsl_to_runtime=mapping,
         output_nodes=[op_id],
     )
-    builder._record_output(op_id, op, result, ctx)
-    return result
