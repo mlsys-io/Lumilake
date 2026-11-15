@@ -224,9 +224,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
                     if path_override:
                         output_paths[output_node_id] = path_override
                     elif self._is_api_task(llm_op):
-                        output_paths[output_node_id] = self._upstream_output_path(
-                            llm_op
-                        )
+                        output_paths[output_node_id] = self._op_output(llm_op).path
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).

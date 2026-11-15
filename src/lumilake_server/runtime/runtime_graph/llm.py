@@ -169,11 +169,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     dsl_to_runtime=dsl_to_runtime,
                     kind="content",
                 )
-                content_path = (
-                    retrieval_items_path(content_op.data_spec["mode"])
-                    if isinstance(content_op, DataRetrievalOp)
-                    else self._upstream_output_path(content_op)
-                )
+                content_path = self._op_output(content_op).path
                 content_data_spec = {
                     "type": "list",
                     "node": content_op.id,
@@ -256,7 +252,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         prompt_op,
                     )
                 else:
-                    prompt_path = self._upstream_output_path(prompt_op)
+                    prompt_path = self._op_output(prompt_op).path
                 data_spec = {
                     "type": "list",
                     "node": prompt_op.id,
@@ -880,7 +876,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                             }
                     columns[f"{op.id}_output"] = {
                         "node": op.id,
-                        "path": self._upstream_output_path(op),
+                        "path": self._op_output(op).path,
                     }
 
                 if isinstance(op, LLMChatOp) and op.return_history:

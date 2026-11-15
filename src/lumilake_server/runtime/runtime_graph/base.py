@@ -28,10 +28,6 @@ def _default_output_destination() -> dict[str, Any]:
     return {"type": "local"}
 
 
-_API_ROW_PATH = "items.rows.json.choices[0].message.content"
-_API_ITEM_PATH = "items.json.choices[0].message.content"
-
-
 class _RuntimeGraphBuilderBase:
     """Shared builder state and read-path helpers for the op-family mixins."""
 
@@ -252,7 +248,7 @@ class _RuntimeGraphBuilderBase:
                     f" '{path}' from API upstream '{node_ref}'; only"
                     " 'items.output' (the whole output) is supported."
                 )
-            path = self._upstream_output_path(upstream)
+            path = self._op_output(upstream).path
         elif isinstance(upstream, LambdaOp):
             path = self._lambda_read_path(
                 consumer=f"Column '{label}' of consumer '{consumer_id}'",
@@ -485,18 +481,6 @@ class _RuntimeGraphBuilderBase:
             and isinstance(op, LLMChatOp)
             and op.rowwise_template is not None
         )
-
-    def _upstream_output_path(self, op: Op) -> str:
-        """Result path for an upstream op's text output."""
-        if op.id in self._flattened_vlm_ids:
-            return "value.items.output"
-        if _RuntimeGraphBuilderBase._is_api_task(op):
-            if _RuntimeGraphBuilderBase._is_rowwise_api_task(op):
-                return _API_ROW_PATH
-            return _API_ITEM_PATH
-        if isinstance(op, LambdaOp):
-            return _RuntimeGraphBuilderBase._lambda_result_path(op, "items.output")
-        return "items.output"
 
     def _op_output(self, op: Op) -> OpOutput:
         """How a consumer reads the op's values."""
