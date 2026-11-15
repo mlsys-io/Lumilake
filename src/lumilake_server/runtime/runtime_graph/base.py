@@ -179,29 +179,6 @@ class _RuntimeGraphBuilderBase:
         )
         return updated
 
-    @staticmethod
-    def _lambda_result_path(upstream: LambdaOp, path: str) -> str:
-        """Map a LambdaOp ``items.output`` read to its path in the step result;
-        a row-mode field read sits under ``value.items.value``."""
-        if not upstream.takes_whole_columns and path != "items.output":
-            return "value.items.value." + path[len("items.output.") :]
-        return "value." + path
-
-    def _lambda_read_path(
-        self,
-        consumer: str,
-        node_ref: str,
-        path: str,
-        upstream: LambdaOp,
-    ) -> str:
-        """Map a read of a LambdaOp's output to the python step's read path."""
-        if not path.startswith("items.output"):
-            raise ValueError(
-                f"{consumer} reads '{path}' from Lambda '{node_ref}'; only"
-                " 'items.output' (the whole output) is supported."
-            )
-        return _RuntimeGraphBuilderBase._lambda_result_path(upstream, path)
-
     def _node_ref_column(
         self,
         *,
@@ -250,11 +227,8 @@ class _RuntimeGraphBuilderBase:
                 )
             path = self._op_output(upstream).path
         elif isinstance(upstream, LambdaOp):
-            path = self._lambda_read_path(
-                consumer=f"Column '{label}' of consumer '{consumer_id}'",
-                node_ref=node_ref,
-                path=path,
-                upstream=upstream,
+            path = self._op_output(upstream).read(
+                path, f"Column '{label}' of consumer '{consumer_id}'"
             )
         elif upstream is not None and upstream.id in self._flattened_vlm_ids:
             if not path.startswith("items.output"):

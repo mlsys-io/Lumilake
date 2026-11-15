@@ -253,14 +253,12 @@ class _RetrievalBuilder(_LLMBuilder):
                 if isinstance(upstream, LambdaOp):
                     param = {
                         **param,
-                        "path": self._lambda_read_path(
-                            consumer=(
+                        "path": self._op_output(upstream).read(
+                            param.get("path", ""),
+                            (
                                 f"DataRetrievalOp '{op_id}' template param "
                                 f"{param.get('label')!r}"
                             ),
-                            node_ref=node,
-                            path=param.get("path", ""),
-                            upstream=upstream,
                         ),
                     }
                 if node not in seen:

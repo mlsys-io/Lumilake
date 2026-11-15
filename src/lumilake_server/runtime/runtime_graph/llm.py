@@ -244,15 +244,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         f" '{prompt_op.id}' ({type(prompt_op).__name__}) does"
                         " not produce one prompt string per row"
                     )
-                if isinstance(prompt_op, LambdaOp):
-                    prompt_path = self._lambda_read_path(
-                        f"LLMCompletionOp '{llm_op_id}'",
-                        prompt_op.id,
-                        "items.output",
-                        prompt_op,
-                    )
-                else:
-                    prompt_path = self._op_output(prompt_op).path
+                prompt_path = self._op_output(prompt_op).path
                 data_spec = {
                     "type": "list",
                     "node": prompt_op.id,
