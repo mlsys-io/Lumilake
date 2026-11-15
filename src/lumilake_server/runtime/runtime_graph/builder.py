@@ -13,11 +13,37 @@ from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
 )
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    Phase,
+    lookup,
+)
 from lumilake_server.runtime.runtime_graph.vision import _VisionBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 class RuntimeGraphBuilder(_VisionBuilder):
+    def _lower_ops(self, ctx: LoweringContext) -> None:
+        """Run every registered lowering, one phase at a time, recording the
+        nodes, their emission order, the DSL-to-runtime map and the visited
+        ops."""
+        for phase in Phase:
+            for op_id, op in ctx.graph_dict.items():
+                found = lookup(op)
+                if found is None or found[0] is not phase:
+                    continue
+                result = found[1](self, op_id, op, ctx)
+                if result is None:
+                    continue
+                for node in result.nodes:
+                    if node.node_id in ctx.nodes:
+                        continue
+                    ctx.nodes[node.node_id] = node
+                    ctx.node_order.append(node.node_id)
+                ctx.dsl_to_runtime[op_id] = list(result.dsl_to_runtime)
+                ctx.visited.update(result.visited)
+                ctx.visited.add(op_id)
+
     def build(
         self,
         compiled_graph: CompiledGraph,
