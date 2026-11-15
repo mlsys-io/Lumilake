@@ -11,9 +11,6 @@ from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.graph import topological_sort
-from lumilake_server.utils.lumid_data_client import (
-    retrieve_sample as lumid_retrieve_sample,
-)
 
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
 _API_CREDENTIAL_PLACEHOLDER = "${credential}"
@@ -51,61 +48,6 @@ def make_node_prefix(name: str) -> str:
     safe = _sanitize_node_prefix(name)
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
     return f"{safe}_{digest}"
-
-
-def _default_sql_sampler(query: str) -> list[Any]:
-    return lumid_retrieve_sample(query)
-
-
-def _default_s3_sampler(prefix: str) -> list[str]:
-    # The default sampler intentionally rejects so the caller raises the
-    # sample-value error. Live S3 sampling is opt-in via a test or deploy
-    # override of ``_RuntimeProfileSamplers.s3``.
-    raise NotImplementedError(
-        "S3 upstream sample requires 'sample_value' in the upstream data_spec"
-    )
-
-
-@dataclass
-class _RuntimeProfileSamplerRegistry:
-    sql: Any = field(default=_default_sql_sampler)
-    s3: Any = field(default=_default_s3_sampler)
-
-
-_RuntimeProfileSamplers = _RuntimeProfileSamplerRegistry()
-
-
-def _inline_single_value_list_params(
-    template: str,
-    params: list[Any],
-) -> tuple[str, list[Any]]:
-    """Render single-element list params directly into the SQL/S3 template."""
-    rendered = template
-    remaining: list[Any] = []
-    for param in params:
-        if not isinstance(param, dict):
-            remaining.append(param)
-            continue
-        label = param.get("label")
-        data = param.get("data")
-        if (
-            not isinstance(label, str)
-            or not isinstance(data, dict)
-            or data.get("type") != "list"
-        ):
-            remaining.append(param)
-            continue
-        items = data.get("items")
-        if not isinstance(items, list) or len(items) != 1:
-            remaining.append(param)
-            continue
-        placeholder = "{" + label + "}"
-        if placeholder not in rendered:
-            remaining.append(param)
-            continue
-        value = str(items[0]).replace("'", "''")
-        rendered = rendered.replace(placeholder, value)
-    return rendered, remaining
 
 
 @dataclass
