@@ -118,6 +118,10 @@ def test_lambda_built_by_recursion_keeps_its_own_mapping() -> None:
     assert graph.dsl_to_runtime[inlined.id] == [inlined.id]
     assert graph.dsl_to_runtime[reader.id] == [reader.id]
     assert graph.dsl_to_runtime[llm.id] == [llm.id]
+    # A step built by recursion is recorded before the op that built it.
+    assert list(graph.dsl_to_runtime).index(inlined.id) < list(
+        graph.dsl_to_runtime
+    ).index(reader.id)
 
 
 def test_lambda_chain_compiles_both_steps() -> None:

@@ -132,12 +132,12 @@ class RuntimeGraphBuilder(_VisionBuilder):
                         continue
                     ctx.nodes[node.node_id] = node
                     node_order.append(node.node_id)
+                ctx.dsl_to_runtime.update(result.built)
                 ctx.dsl_to_runtime[op.id] = [
                     node.node_id
                     for node in result.nodes
                     if node.node_id not in result.built
                 ]
-                ctx.dsl_to_runtime.update(result.built)
                 ctx.visited.add(op.id)
                 self._record_output(op, ctx)
             after = phase_hook(phase)
