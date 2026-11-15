@@ -84,18 +84,24 @@ Users with an existing n8n workflow should submit it as
 YAML equivalent of the n8n wire format exists in this parser.
 """
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass
 from typing import Any
 
 import yaml
 
-from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
-
-_GENERATION_CONFIG_FIELDS: frozenset[str] = frozenset(
-    f.name for f in fields(GenerationConfig)
+from .yaml_ops.common import (
+    EmitContext,
+    OpEntry,
+    build_generation_config,
+)
+from .yaml_ops.data import (
+    emit_data_op,
+    emit_data_retrieval_op,
+    emit_format_op,
+    emit_message_op,
 )
 
 SUPPORTED_OPS: frozenset[str] = frozenset(
@@ -118,15 +124,6 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
 class _YamlGraphSpec:
     graph: dict[str, dict[str, Any]]
     inputs: dict[str, list[str]]
-
-
-@dataclass
-class _OpEntry:
-    id: str
-    op: str
-    inputs: list[str] = field(default_factory=list)
-    fields: dict[str, Any] = field(default_factory=dict)
-    max_iter: int | None = None
 
 
 @dataclass
@@ -322,7 +319,7 @@ def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:
     return inputs
 
 
-def _parse_op_entry(entry: Any, idx: int) -> _OpEntry:
+def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
     if not isinstance(entry, dict):
         raise ValueError(f"op entry at index {idx} must be a mapping")
     reserved = {"id", "op", "inputs", "max_iter"}
@@ -344,7 +341,7 @@ def _parse_op_entry(entry: Any, idx: int) -> _OpEntry:
     if max_iter is not None and not isinstance(max_iter, int):
         raise ValueError(f"op '{user_id}' max_iter must be int or null")
 
-    return _OpEntry(
+    return OpEntry(
         id=user_id.strip(),
         op=op_type.strip(),
         inputs=list(raw_inputs),
@@ -373,7 +370,7 @@ def _parse_output_entry(entry: Any, idx: int) -> _OutputEntry:
 
 
 def _build_op_dict(
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
@@ -388,12 +385,18 @@ def _build_op_dict(
         "_inputs": input_ids,
     }
 
+    ctx = EmitContext(
+        entry=entry,
+        user_id_to_internal=user_id_to_internal,
+        scope=scope,
+        graph_ops=graph_ops,
+    )
     if entry.op == "DataOp":
-        _emit_data_op(op_dict, entry)
+        emit_data_op(op_dict, ctx)
     elif entry.op == "DataRetrievalOp":
-        _emit_data_retrieval_op(op_dict, entry, user_id_to_internal)
+        emit_data_retrieval_op(op_dict, ctx)
     elif entry.op == "MessageOp":
-        _emit_message_op(op_dict, entry, user_id_to_internal)
+        emit_message_op(op_dict, ctx)
     elif entry.op == "LLMChatOp":
         _emit_llm_chat_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
     elif entry.op == "LLMCompletionOp":
@@ -405,7 +408,7 @@ def _build_op_dict(
     elif entry.op == "EmbeddingOp":
         _emit_embedding_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "FormatOp":
-        _emit_format_op(op_dict, entry, user_id_to_internal)
+        emit_format_op(op_dict, ctx)
     elif entry.op == "LambdaOp":
         _emit_lambda_op(op_dict, entry)
     else:  # pragma: no cover - guarded upstream
@@ -414,93 +417,9 @@ def _build_op_dict(
     return op_dict
 
 
-def _emit_data_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
-    data = entry.fields.get("data")
-    if not isinstance(data, list) or not all(isinstance(v, str) for v in data):
-        raise ValueError(f"DataOp '{entry.id}' requires 'data: list[str]'")
-    op_dict["data"] = list(data)
-    op_dict["_inputs"] = []  # DataOps have no inputs
-
-
-def _emit_data_retrieval_op(
-    op_dict: dict[str, Any], entry: _OpEntry, user_id_to_internal: dict[str, str]
-) -> None:
-    data_spec = entry.fields.get("data_spec")
-    if not isinstance(data_spec, dict):
-        raise ValueError(f"DataRetrievalOp '{entry.id}' requires 'data_spec'")
-    op_dict["data_spec"] = _resolve_data_spec(data_spec, entry.id, user_id_to_internal)
-
-
-def _resolve_data_spec(
-    data_spec: dict[str, Any],
-    entry_id: str,
-    user_id_to_internal: dict[str, str],
-    *,
-    op_label: str = "DataRetrievalOp",
-    field_label: str = "data_spec",
-) -> dict[str, Any]:
-    """Resolve ``params[*].node`` refs in a spec.
-
-    ``op_label`` and ``field_label`` are threaded through every error
-    message so the caller sees the op and field they actually authored.
-    """
-    resolved = dict(data_spec)
-    params = resolved.get("params")
-    if params is None:
-        return resolved
-    if not isinstance(params, list):
-        raise ValueError(f"{op_label} '{entry_id}' {field_label}.params must be a list")
-    new_params: list[dict[str, Any]] = []
-    for i, param in enumerate(params):
-        if not isinstance(param, dict):
-            raise ValueError(
-                f"{op_label} '{entry_id}' {field_label}.params[{i}] must be a mapping"
-            )
-        resolved_param = dict(param)
-        if "node" in resolved_param:
-            node_ref = resolved_param["node"]
-            if not isinstance(node_ref, str):
-                raise ValueError(
-                    f"{op_label} '{entry_id}' {field_label}.params[{i}].node "
-                    "must be a string"
-                )
-            if node_ref not in user_id_to_internal:
-                raise ValueError(
-                    f"{op_label} '{entry_id}' {field_label}.params[{i}].node "
-                    f"references unknown input/op id '{node_ref}'"
-                )
-            resolved_param["node"] = user_id_to_internal[node_ref]
-        new_params.append(resolved_param)
-    resolved["params"] = new_params
-    return resolved
-
-
-def _emit_message_op(
-    op_dict: dict[str, Any], entry: _OpEntry, user_id_to_internal: dict[str, str]
-) -> None:
-    messages = entry.fields.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise ValueError(f"MessageOp '{entry.id}' requires non-empty 'messages'")
-    serialized: list[dict[str, str]] = []
-    for i, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            raise ValueError(f"MessageOp '{entry.id}' messages[{i}] must be a mapping")
-        role = msg.get("role")
-        content = msg.get("content")
-        if not isinstance(role, str) or not isinstance(content, str):
-            raise ValueError(
-                f"MessageOp '{entry.id}' messages[{i}] requires string role + content"
-            )
-        # Allow referencing an upstream op by id in `content` — mirror n8n parser
-        # behaviour, which stores the op id directly in the serialized message.
-        resolved_content = user_id_to_internal.get(content, content)
-        serialized.append({"role": role, "content": resolved_content})
-    op_dict["messages"] = serialized
-
-
 def _emit_llm_chat_op(
     op_dict: dict[str, Any],
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
@@ -517,7 +436,7 @@ def _emit_llm_chat_op(
 
 def _emit_llm_completion_op(
     op_dict: dict[str, Any],
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
 ) -> None:
     config = entry.fields.get("config")
@@ -530,7 +449,7 @@ def _emit_llm_completion_op(
             "or input"
         )
     op_dict["prompt"] = user_id_to_internal[prompt_ref]
-    op_dict["config"] = _build_generation_config(
+    op_dict["config"] = build_generation_config(
         config, entry.id, op_kind="LLMCompletionOp"
     )
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
@@ -539,7 +458,7 @@ def _emit_llm_completion_op(
 
 def _emit_llm_vision_op(
     op_dict: dict[str, Any],
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
@@ -573,7 +492,7 @@ def _emit_llm_vision_op(
 
 def _emit_image_generation_op(
     op_dict: dict[str, Any],
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
@@ -619,7 +538,7 @@ def _emit_image_generation_op(
         )
 
     op_dict["content"] = content_id
-    op_dict["config"] = _build_generation_config(
+    op_dict["config"] = build_generation_config(
         config, entry.id, op_kind="ImageGenerationOp"
     )
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
@@ -628,7 +547,7 @@ def _emit_image_generation_op(
 
 def _emit_embedding_op(
     op_dict: dict[str, Any],
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
 ) -> None:
     config = entry.fields.get("config")
@@ -651,16 +570,14 @@ def _emit_embedding_op(
     content_id = user_id_to_internal[target]
 
     op_dict["content"] = content_id
-    op_dict["config"] = _build_generation_config(
-        config, entry.id, op_kind="EmbeddingOp"
-    )
+    op_dict["config"] = build_generation_config(config, entry.id, op_kind="EmbeddingOp")
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
     op_dict["_inputs"] = [content_id]
 
 
 def _emit_llm_like_op(
     op_dict: dict[str, Any],
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
@@ -730,7 +647,7 @@ def _emit_llm_like_op(
         # Create an implicit MessageOp that the LLM depends on. Derive its
         # internal id from the LLM op's user id — matching n8n's
         # `_make_id(scope, "message", node_name)`.
-        msg_entry = _OpEntry(
+        msg_entry = OpEntry(
             id=entry.id,
             op="MessageOp",
             inputs=[],
@@ -762,7 +679,15 @@ def _emit_llm_like_op(
             "_max_iter": None,
             "_inputs": msg_inputs,
         }
-        _emit_message_op(msg_dict, msg_entry, user_id_to_internal)
+        emit_message_op(
+            msg_dict,
+            EmitContext(
+                entry=msg_entry,
+                user_id_to_internal=user_id_to_internal,
+                scope=scope,
+                graph_ops=graph_ops,
+            ),
+        )
         op_dict.setdefault("__implicit_ops__", []).append(msg_dict)
     else:
         raise ValueError(
@@ -770,7 +695,7 @@ def _emit_llm_like_op(
         )
 
     op_dict["messages"] = msg_internal_id
-    op_dict["config"] = _build_generation_config(config, entry.id, op_kind=op_kind)
+    op_dict["config"] = build_generation_config(config, entry.id, op_kind=op_kind)
     op_dict["return_history"] = bool(entry.fields.get("return_history", False))
     op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
 
@@ -846,7 +771,7 @@ def _build_inline_messages(
     messages: list[Any],
     *,
     prompt_spec: Any,
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
@@ -927,7 +852,7 @@ def _build_inline_messages(
 def _wrap_user_content_refs(
     messages: list[Any],
     *,
-    entry: _OpEntry,
+    entry: OpEntry,
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
@@ -1002,32 +927,7 @@ def _wrap_user_content_refs(
     return prepared, [format_op]
 
 
-def _emit_format_op(
-    op_dict: dict[str, Any], entry: _OpEntry, user_id_to_internal: dict[str, str]
-) -> None:
-    template = entry.fields.get("template")
-    if not isinstance(template, str):
-        raise ValueError(f"FormatOp '{entry.id}' requires 'template: str'")
-
-    fmt_args = entry.fields.get("format_args", []) or []
-    fmt_kwargs = entry.fields.get("format_kwargs", {}) or {}
-
-    if not isinstance(fmt_args, list) or not all(isinstance(a, str) for a in fmt_args):
-        raise ValueError(f"FormatOp '{entry.id}' format_args must be list[str]")
-    if not isinstance(fmt_kwargs, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in fmt_kwargs.items()
-    ):
-        raise ValueError(f"FormatOp '{entry.id}' format_kwargs must be dict[str, str]")
-
-    resolved_args = [user_id_to_internal.get(a, a) for a in fmt_args]
-    resolved_kwargs = {k: user_id_to_internal.get(v, v) for k, v in fmt_kwargs.items()}
-
-    op_dict["template"] = template
-    op_dict["format_args"] = resolved_args
-    op_dict["format_kwargs"] = resolved_kwargs
-
-
-def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
+def _emit_lambda_op(op_dict: dict[str, Any], entry: OpEntry) -> None:
     fn_name = entry.fields.get("fn_name")
     code = entry.fields.get("code") or entry.fields.get("_code")
     if not isinstance(fn_name, str):
@@ -1073,18 +973,6 @@ def _emit_lambda_op(op_dict: dict[str, Any], entry: _OpEntry) -> None:
         if not isinstance(cache, bool):
             raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a bool")
         op_dict["cache"] = cache
-
-
-def _build_generation_config(
-    config: dict[str, Any], entry_id: str, op_kind: str = "LLMChatOp"
-) -> dict[str, Any]:
-    unknown = set(config) - _GENERATION_CONFIG_FIELDS
-    if unknown:
-        raise ValueError(
-            f"{op_kind} '{entry_id}' config has unknown fields: {sorted(unknown)}. "
-            "Use 'extra_sampling_params' for keys not on GenerationConfig."
-        )
-    return dict(config)
 
 
 def _op_id_prefix(op_type: str) -> str:
