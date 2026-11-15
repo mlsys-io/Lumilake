@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 from lumilake_server.common import Message
-from lumilake_server.ops.ops import FunctionalOp, Op
+from lumilake_server.ops.ops import FunctionalOp, GraphRole, Op
 from lumilake_server.utils.utils import check_and_cast_list
 
 
@@ -22,6 +22,8 @@ class OpMessage:
 class DataOp(FunctionalOp):
     data: list[str]
 
+    graph_role = GraphRole.SOURCE
+
     def __init__(self, data: list[str]) -> None:
         super().__init__()
         self.data = data
@@ -37,6 +39,8 @@ class DataOp(FunctionalOp):
 @Op.registry.register("DataRetrievalOp")
 class DataRetrievalOp(FunctionalOp):
     data_spec: dict[str, Any]
+
+    profilable = True
 
     def __init__(
         self, data_spec: dict[str, Any], inputs: list[Op] | None = None
@@ -57,6 +61,8 @@ class DataRetrievalOp(FunctionalOp):
 
 @Op.registry.register("MessageOp")
 class MessageOp(FunctionalOp):
+    graph_role = GraphRole.STRUCTURE
+
     def __init__(self, messages: list[OpMessage]) -> None:
         inputs: list[Op] = []
         message_refs: list[int | str] = []
@@ -132,6 +138,8 @@ def message_data(data: Sequence[Message | OpMessage]) -> MessageOp:
 class InputOp(FunctionalOp):
     name: str
 
+    graph_role = GraphRole.SOURCE
+
     def __init__(self, name: str) -> None:
         super().__init__()
         self.name = name
@@ -152,6 +160,7 @@ def input_placeholder(name: str) -> InputOp:
 class OutputOp(FunctionalOp):
     name: str
     path: str | None
+    graph_role = GraphRole.SINK
 
     def __init__(
         self,

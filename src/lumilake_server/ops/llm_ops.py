@@ -2,7 +2,7 @@ from typing import Any
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
-from lumilake_server.ops.ops import Op
+from lumilake_server.ops.ops import Op, RowShape
 
 
 class LLMOp(Op):
@@ -64,6 +64,14 @@ class LLMChatOp(LLMOp):
     @property
     def messages(self) -> Op:
         return self.inputs[0]
+
+    @property
+    def row_shape(self) -> RowShape | None:
+        if self.rowwise_template is not None:
+            return RowShape.GROUPED
+        if self.aggregate_table is not None:
+            return RowShape.WHOLE_LIST
+        return RowShape.PER_ROW
 
     def _serialize(self) -> dict[str, Any]:
         payload: dict[str, Any] = dict(

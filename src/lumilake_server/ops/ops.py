@@ -1,6 +1,7 @@
 import copy
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from enum import Enum
 from typing import Any, Self, TypeVar
 
 from lumilake_server.common import Message
@@ -8,6 +9,31 @@ from lumilake_server.utils.utils import unique_id
 
 T = TypeVar("T")
 SingleDtype = str | list[Message]
+
+
+class GraphRole(Enum):
+    """Where an op sits in the workflow graph.
+
+    ``SOURCE`` supplies values, ``STRUCTURE`` folds into its consumer,
+    ``PRODUCER`` becomes work that emits rows, and ``SINK`` archives results.
+    """
+
+    SOURCE = "source"
+    STRUCTURE = "structure"
+    PRODUCER = "producer"
+    SINK = "sink"
+
+
+class RowShape(Enum):
+    """How a producer's output rows relate to its input rows.
+
+    ``PER_ROW`` is one value per input row, ``GROUPED`` one group per input
+    row, and ``WHOLE_LIST`` a single list over the whole input.
+    """
+
+    PER_ROW = "per_row"
+    GROUPED = "grouped"
+    WHOLE_LIST = "whole_list"
 
 
 class OpRegistry:
@@ -35,12 +61,31 @@ class OpRegistry:
 class Op(ABC):
     id: str
     inputs: list["Op"]
+    # Sources and sinks carry a workflow-level name; other ops do not.
+    name: str
     registry: OpRegistry = OpRegistry()
 
     def __init__(self, inputs: list["Op"] | None = None) -> None:
         self.id = unique_id()
         self.inputs = [] if inputs is None else inputs
         self._max_iter: int | None = None
+
+    @property
+    def graph_role(self) -> GraphRole:
+        """Where this op sits in the workflow graph."""
+        return GraphRole.PRODUCER
+
+    @property
+    def row_shape(self) -> RowShape | None:
+        """The row shape a producer emits, or ``None`` for any other role."""
+        if self.graph_role is not GraphRole.PRODUCER:
+            return None
+        return RowShape.PER_ROW
+
+    @property
+    def profilable(self) -> bool:
+        """Whether the op takes part in data profiling."""
+        return False
 
     @property
     def looping(self) -> bool:
