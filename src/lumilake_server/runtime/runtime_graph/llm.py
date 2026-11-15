@@ -1213,25 +1213,3 @@ def _lower_llm(
     return LoweringResult(
         nodes=runtime_ops,
     )
-
-
-@register(ImageGenerationOp, Phase.LLM)
-def _lower_image_generation(
-    builder: Any,
-    op: ImageGenerationOp,
-    ctx: LoweringContext,
-) -> LoweringResult | None:
-    """Lower one ImageGenerationOp to its text-to-image task."""
-    runtime_op = builder._build_node_from_llm_op(
-        op.id,
-        op,
-        ctx.graph_dict,
-        ctx.inputs_dict,
-        ctx.visited,
-        task_type_override=ctx.task_type_override,
-        dsl_to_runtime=ctx.dsl_to_runtime,
-        runtime_nodes=ctx.nodes,
-    )
-    return LoweringResult(
-        nodes=[runtime_op],
-    )
