@@ -98,12 +98,7 @@ def flowmesh_for_server() -> AsyncFlowMesh:
 
 
 async def flowmesh_get_for_server(path: str) -> Any:
-    """``GET`` a FlowMesh endpoint as the scheduler credential, unvalidated.
-
-    The response body is returned as decoded JSON rather than through the
-    SDK's typed models, so a field the installed SDK does not model yet is
-    still visible to its caller.
-    """
+    """``GET`` a FlowMesh endpoint as the scheduler credential, as decoded JSON."""
     client = flowmesh_for_server()
     return await client._request("GET", path)
 

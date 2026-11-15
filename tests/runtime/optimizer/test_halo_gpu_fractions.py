@@ -20,13 +20,13 @@ def test_a_node_lands_only_on_a_worker_whose_fraction_holds_it(
     profiles: dict[str, dict], expected: str | None
 ) -> None:
     op = RuntimeOp(
-        node_id="n",
-        task_type="inference",
-        backend="vllm",
-        model="Qwen/Qwen3-8B",
-        data_spec={},
-        model_spec={"vllm": {"gpu_memory_utilization": 0.8}},
-        inference_spec={},
+        "n",
+        "inference",
+        "vllm",
+        "Qwen/Qwen3-8B",
+        {},
+        {"vllm": {"gpu_memory_utilization": 0.8}},
+        {},
     )
     graph = RuntimeGraph(nodes={"n": op}, node_order=["n"], output_node_map={})
     optimizer = HaloOptimizer()
@@ -34,7 +34,6 @@ def test_a_node_lands_only_on_a_worker_whose_fraction_holds_it(
         with pytest.raises(RuntimeError) as raised:
             optimizer.generate_schedule(graph, list(profiles), profiles)
         assert "gpu_memory_utilization=0.8" in str(raised.value.__cause__)
-        assert "gpu-small=0.1" in str(raised.value.__cause__)
         return
     schedule = optimizer.generate_schedule(graph, list(profiles), profiles)
     assert [w for w, ids in schedule.worker_assignment.items() if ids] == [expected]

@@ -33,7 +33,6 @@ def _worker(
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> dict[str, Any]:
-    """Serve ``worker`` as the raw response and return its payload."""
     payload = worker.model_dump(mode="json")
 
     async def fake_get(path: str) -> dict[str, Any]:

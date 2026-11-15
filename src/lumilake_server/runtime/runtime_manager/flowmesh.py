@@ -252,11 +252,7 @@ def _with_auth_scheme(credential: str) -> str:
 
 
 def _raw_gpu_memory_fractions(raw_worker: Any) -> dict[Any, float]:
-    """Map each GPU device index in a raw worker payload to its memory fraction.
-
-    Devices without a numeric ``memory_fraction`` are left out; the payload is
-    read loosely because it is unvalidated FlowMesh JSON.
-    """
+    """Map each GPU device index in a raw worker payload to its memory fraction."""
     fractions: dict[Any, float] = {}
     hardware = raw_worker.get("hardware") if isinstance(raw_worker, dict) else None
     gpu = hardware.get("gpu") if isinstance(hardware, dict) else None
@@ -910,23 +906,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         return sum(graph.node_count for graph in graphs.values())
 
     async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
-        """
-        Fetch the profile of a given worker.
-
-        Parameters
-        ----------
-        worker_id : str
-            The ID of the worker.
-
-        Returns
-        -------
-        dict[str, Any]
-            The worker's hardware sections plus ``supported_task_types``, the
-            sorted task types its executors advertise. Each GPU device also
-            carries ``memory_fraction``, the fraction of the card's memory the
-            worker owns, read from the same response and ``None`` for a whole
-            device, because the SDK model does not keep it.
-        """
+        """The worker's hardware sections, task types and per-device GPU fractions."""
         raw_worker = await _retry_transient_read(
             lambda: flowmesh_get_for_server(f"/workers/{worker_id}"),
             f"worker {worker_id}",
