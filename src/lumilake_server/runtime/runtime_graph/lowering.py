@@ -44,6 +44,9 @@ class LoweringContext:
         node_order: list[str],
         dsl_to_runtime: dict[str, list[str]],
         visited: set[str],
+        outputs_by_source: dict[str, list[tuple[str, str | None]]],
+        output_node_map: dict[str, str],
+        output_paths: dict[str, str],
     ) -> None:
         self.builder = builder
         self.graph_dict = graph_dict
@@ -54,6 +57,9 @@ class LoweringContext:
         self.node_order = node_order
         self.dsl_to_runtime = dsl_to_runtime
         self.visited = visited
+        self.outputs_by_source = outputs_by_source
+        self.output_node_map = output_node_map
+        self.output_paths = output_paths
 
     def op_output(self, op: Op) -> OpOutput:
         return self.builder._op_output(op)
@@ -63,7 +69,7 @@ class LoweringContext:
         return self.task_type_override == "data_profile"
 
 
-LoweringFn = Callable[[Any, str, Op, LoweringContext], LoweringResult | None]
+LoweringFn = Callable[[Any, str, Any, LoweringContext], LoweringResult | None]
 
 _LOWERINGS: dict[type[Op], tuple[Phase, LoweringFn]] = {}
 

@@ -9,6 +9,12 @@ from sqlparse.tokens import Keyword
 from lumilake import envs
 from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, LLMChatOp, LLMOp, Op
 from lumilake_server.runtime.runtime_graph.llm import _LLMBuilder
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
@@ -919,3 +925,60 @@ class _RetrievalBuilder(_LLMBuilder):
             seen.add(label)
 
         return constraints
+
+
+@register(DataRetrievalOp, Phase.RETRIEVAL)
+def _lower_data_retrieval(
+    builder: Any,
+    op_id: str,
+    op: DataRetrievalOp,
+    ctx: LoweringContext,
+) -> LoweringResult | None:
+    """Lower one DataRetrievalOp, or to its data-profile node in profile mode."""
+    builder._mark_retrieval_upstream_nodes_visited(
+        op=op,
+        graph_dict=ctx.graph_dict,
+        visited_node_ids=ctx.visited,
+    )
+    upstreams = [input_op.id for input_op in op.inputs]
+    params = (op.data_spec or {}).get("params")
+    if isinstance(params, list):
+        for param in params:
+            if not isinstance(param, dict):
+                continue
+            node = param.get("node")
+            if isinstance(node, str) and node in ctx.graph_dict:
+                upstreams.append(node)
+
+    if ctx.task_type_override == "data_profile":
+        runtime_op = builder._build_data_profile_node_from_data_retrieval_op(
+            op_id,
+            op,
+            ctx.graph_dict,
+            ctx.inputs_dict,
+            ctx.input_ops_by_id,
+        )
+        if runtime_op is None:
+            return None
+    else:
+        runtime_op = builder._build_node_from_data_retrieval_op(
+            op_id,
+            op,
+            ctx.graph_dict,
+            ctx.inputs_dict,
+            ctx.input_ops_by_id,
+        )
+    result = LoweringResult(
+        nodes=[runtime_op],
+        dsl_to_runtime=[runtime_op.node_id],
+        output_nodes=[runtime_op.node_id],
+        visited=upstreams,
+    )
+    outputs = ctx.outputs_by_source.get(op_id)
+    if outputs is not None:
+        ((output_name, path_override),) = outputs
+        ctx.output_node_map[runtime_op.node_id] = output_name
+        default_path = ctx.op_output(op).default_output_path
+        assert default_path is not None
+        ctx.output_paths[runtime_op.node_id] = path_override or default_path
+    return result

@@ -69,15 +69,19 @@ class RuntimeGraphBuilder(_VisionBuilder):
         list_lambda_ops: dict[str, LambdaOp] = {}
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
+            registered = lookup(op)
             if isinstance(op, LLMOp):
                 llm_ops[op_id] = op
-                visited_node_ids.add(op_id)
+                if registered is None:
+                    visited_node_ids.add(op_id)
             elif isinstance(op, DataRetrievalOp):
                 retrieval_ops[op_id] = op
-                visited_node_ids.add(op_id)
+                if registered is None:
+                    visited_node_ids.add(op_id)
             elif isinstance(op, LambdaOp) and op.takes_whole_columns:
                 list_lambda_ops[op_id] = op
-                visited_node_ids.add(op_id)
+                if registered is None:
+                    visited_node_ids.add(op_id)
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
@@ -113,7 +117,31 @@ class RuntimeGraphBuilder(_VisionBuilder):
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
 
+        lowered: set[str] = set()
+        for phase_op_id, phase_op in graph_dict.items():
+            if lookup(phase_op) is None:
+                continue
+            lowered.add(phase_op_id)
+
+        ctx = LoweringContext(
+            builder=self,
+            graph_dict=graph_dict,
+            inputs_dict=inputs_dict,
+            input_ops_by_id=input_ops_by_id,
+            task_type_override=task_type_override,
+            nodes=nodes,
+            node_order=node_order,
+            dsl_to_runtime=dsl_to_runtime,
+            visited=visited_node_ids,
+            outputs_by_source=output_source_to_outputop,
+            output_node_map=output_node_map,
+            output_paths=output_paths,
+        )
+        self._lower_ops(ctx)
+
         for retrieval_op_id, retrieval_op in retrieval_ops.items():
+            if retrieval_op_id in lowered:
+                continue
             self._mark_retrieval_upstream_nodes_visited(
                 op=retrieval_op,
                 graph_dict=graph_dict,
