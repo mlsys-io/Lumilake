@@ -164,6 +164,7 @@ Picked up by the bundled FlowMesh deploy helpers.
 | `REDIS_CONTROL_PORT` | FlowMesh control Redis port in `.env.flowmesh`. Change it when another stack already owns `6379`. |
 | `REDIS_TELEMETRY_PORT` | FlowMesh telemetry Redis port in `.env.flowmesh`. Change it when another stack already owns `6380`. |
 | `FLOWMESH_BASE_URL` | FlowMesh HTTP base URL consumed by FlowMesh workers; should point at `SERVER_HTTP_PORT`. |
+| `FLOWMESH_VERSION` | FlowMesh release tag in `.env.flowmesh`. Set it to the FlowMesh release Lumilake pins; the bundled stack's example sets `dev`, a moving tag that need not match the pinned release. |
 | `REDIS_TLS_DIR` | Directory holding Redis TLS certs, in `.env.flowmesh`. Empty disables TLS bind-mounts. |
 | `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs, in `.env.flowmesh`. Empty disables TLS. |
 | `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override, in `.env.flowmesh`. |
@@ -179,6 +180,10 @@ instead.
 also run another FlowMesh stack, check the common defaults before
 `deploy up`: HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis
 telemetry `6380`.
+
+In a `.env.flowmesh` written before FlowMesh 0.1.14, also clear
+`REDIS_CONTROL_URL` and `REDIS_TELEMETRY_URL` so the server follows the
+ports.
 
 ## SDK / CLI Client
 
