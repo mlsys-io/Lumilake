@@ -134,7 +134,7 @@ When live sampling is enabled, preflight routes a bounded `LIMIT N` query throug
 
 ## FlowMesh Version Pairing
 
-When a workflow uses `type: list` data with `s3://` items (typical for VLM / image-generation paths that funnel S3 URLs through a list), Lumilake stamps a `lumid_cfg` field onto the data spec so the FlowMesh worker can retrieve the blobs through lumid-data-app. The FlowMesh worker's `data` mixin must support `lumid_cfg` for this path to function; older workers that only read `s3_cfg` will fail at retrieval. Lumilake logs a warning at stamp time naming this gap. Pair Lumilake with a FlowMesh release that supports `lumid_cfg` on `type: list` items, or restructure the workflow to use a `DataRetrievalOp` (`mode: s3`) which is always routed through the dedicated `type: lumid` connector.
+When a workflow uses `type: list` data with `s3://` items (typical for VLM / image-generation paths that funnel S3 URLs through a list), Lumilake stamps a `lumid_cfg` field onto the data spec so the FlowMesh worker can retrieve the blobs through lumid-data-app. The pinned FlowMesh release reads `lumid_cfg` on `type: list` items. A worker whose image predates that support reads only `s3_cfg` and fails at retrieval, so keep worker images on the release Lumilake pins; Lumilake logs a warning at stamp time naming the requirement. Alternatively, restructure the workflow to use a `DataRetrievalOp` (`mode: s3`) which is always routed through the dedicated `type: lumid` connector.
 
 ## Examples
 
