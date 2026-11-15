@@ -724,6 +724,7 @@ class FlowmeshRuntimeManager:
             metadata["end_time"] = time.time()
 
     def get_task_node_map(self, request_id: str, batch_id: str) -> dict[str, str]:
+        """Return the task-id to node-id mapping for a batch."""
         batch_key = (request_id, batch_id)
         return dict(self._task_node_map.get(batch_key, {}))
 
@@ -931,6 +932,7 @@ class FlowmeshRuntimeManager:
         self,
         request_id: str,
     ) -> dict[str, Any]:
+        """Return the request status from FlowMesh."""
         # Find all batch keys for this request_id from all tracking dictionaries
         data_profile_batch_keys = [
             k for k in self._data_profile_task_status.keys() if k[0] == request_id
