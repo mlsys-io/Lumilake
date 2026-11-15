@@ -1,3 +1,6 @@
+"""``get_worker_profile`` carries the task types a worker's executors advertise,
+so the scheduler can place a node only on a worker that can run it."""
+
 from typing import Any
 
 import pytest
@@ -25,7 +28,7 @@ def _worker(
     )
 
 
-def _serve(monkeypatch: pytest.MonkeyPatch, worker: w.WorkerInfo) -> dict[str, Any]:
+def _serve(monkeypatch: pytest.MonkeyPatch, worker: w.WorkerInfo) -> None:
     payload = worker.model_dump(mode="json")
 
     async def fake_get(path: str) -> dict[str, Any]:
@@ -35,7 +38,6 @@ def _serve(monkeypatch: pytest.MonkeyPatch, worker: w.WorkerInfo) -> dict[str, A
         "lumilake_server.runtime.runtime_manager.flowmesh_get_for_server",
         fake_get,
     )
-    return payload
 
 
 @pytest.mark.asyncio
