@@ -1,6 +1,6 @@
 import pytest
 
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from tests.runtime.runtime_manager.flowmesh.conftest import serve
 
 

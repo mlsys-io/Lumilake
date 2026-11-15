@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 import pytest
 
-import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
+import lumilake_server.runtime.runtime_manager as fm_mod
 
 
 @pytest.mark.asyncio

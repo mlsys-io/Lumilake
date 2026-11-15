@@ -68,7 +68,7 @@ from lumilake_server.runtime.runtime_graph import (
     RuntimeGraphBuilder,
     RuntimeOp,
 )
-from lumilake_server.runtime.runtime_manager.flowmesh import (
+from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )

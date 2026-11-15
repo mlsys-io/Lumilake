@@ -12,7 +12,7 @@ from flowmesh.models.workers import (
     WorkerInfo,
 )
 
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
 def _worker(
@@ -47,7 +47,7 @@ class _FakeFlowMesh:
 
 def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_server",
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_server",
         lambda: _FakeFlowMesh(worker),
     )
 
