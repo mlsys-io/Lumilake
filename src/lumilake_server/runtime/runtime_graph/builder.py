@@ -6,10 +6,7 @@ from lumilake_server.ops import (
     Op,
     OutputOp,
 )
-from lumilake_server.ops.llm_ops import (
-    LLMChatOp,
-    LLMVisionOp,
-)
+from lumilake_server.ops.llm_ops import LLMVisionOp
 from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
@@ -85,24 +82,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
         }
 
         visited_node_ids: set[str] = set()
-        llm_ops: dict[str, LLMOp] = {}
-        retrieval_ops: dict[str, DataRetrievalOp] = {}
-        list_lambda_ops: dict[str, LambdaOp] = {}
         output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
         for op_id, op in graph_dict.items():
-            registered = lookup(op)
-            if isinstance(op, LLMOp):
-                llm_ops[op_id] = op
-                if registered is None:
-                    visited_node_ids.add(op_id)
-            elif isinstance(op, DataRetrievalOp):
-                retrieval_ops[op_id] = op
-                if registered is None:
-                    visited_node_ids.add(op_id)
-            elif isinstance(op, LambdaOp) and op.takes_whole_columns:
-                list_lambda_ops[op_id] = op
-                if registered is None:
-                    visited_node_ids.add(op_id)
             if isinstance(op, OutputOp):
                 assert len(op.inputs) == 1, "OutputOp should have exactly one input"
                 source = op.inputs[0]
@@ -126,8 +107,11 @@ class RuntimeGraphBuilder(_VisionBuilder):
                     "intermediate LambdaOp instead."
                 )
 
-        has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
-        if not llm_ops and not retrieval_ops and not has_lambda:
+        has_runtime_op = any(
+            isinstance(op, (LLMOp, DataRetrievalOp, LambdaOp))
+            for op in graph_dict.values()
+        )
+        if not has_runtime_op:
             raise ValueError(
                 "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
             )
@@ -137,12 +121,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
         output_node_map: dict[str, str] = {}
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
-
-        lowered: set[str] = set()
-        for phase_op_id, phase_op in graph_dict.items():
-            if lookup(phase_op) is None:
-                continue
-            lowered.add(phase_op_id)
 
         ctx = LoweringContext(
             builder=self,
@@ -159,81 +137,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
             output_paths=output_paths,
         )
         self._lower_ops(ctx)
-
-        for llm_op_id, llm_op in llm_ops.items():
-            if task_type_override == "data_profile":
-                continue
-
-            runtime_ops: list[RuntimeOp] = []
-            mapping: list[str] = []
-            output_node_ids: list[str] = [llm_op_id]
-            if isinstance(llm_op, LLMVisionOp):
-                runtime_ops, mapping = self._build_vlm_nodes_from_image_op(
-                    llm_op_id,
-                    llm_op,
-                    graph_dict,
-                    inputs_dict,
-                    visited_node_ids,
-                    dsl_to_runtime=dsl_to_runtime,
-                    runtime_nodes=nodes,
-                )
-            elif task_type_override != "data_profile" and llm_op.config.api is not None:
-                upstream_llm_ids, template_spec = self._infer_structural_messages(
-                    llm_op_id,
-                    graph_dict,
-                    inputs_dict,
-                    visited_node_ids,
-                    dsl_to_runtime=dsl_to_runtime,
-                    runtime_nodes=nodes,
-                    api_mode=True,
-                )
-                runtime_ops = self._build_api_llm_op(
-                    llm_op_id=llm_op_id,
-                    llm_op=llm_op,
-                    api_config=llm_op.config.api,
-                    template_spec=template_spec,
-                    upstream_llm_ids=upstream_llm_ids,
-                    output_spec=None,
-                    condition=(
-                        llm_op.condition if isinstance(llm_op, LLMChatOp) else None
-                    ),
-                    graph_dict=graph_dict,
-                    inputs_dict=inputs_dict,
-                    dsl_to_runtime=dsl_to_runtime,
-                )
-                mapping = [runtime_op.node_id for runtime_op in runtime_ops]
-                output_node_ids = mapping
-            else:
-                runtime_ops = [
-                    self._build_node_from_llm_op(
-                        llm_op_id,
-                        llm_op,
-                        graph_dict,
-                        inputs_dict,
-                        visited_node_ids,
-                        task_type_override=task_type_override,
-                        dsl_to_runtime=dsl_to_runtime,
-                        runtime_nodes=nodes,
-                    )
-                ]
-                mapping = [llm_op_id]
-
-            for runtime_op in runtime_ops:
-                if runtime_op.node_id in nodes:
-                    continue
-                nodes[runtime_op.node_id] = runtime_op
-                node_order.append(runtime_op.node_id)
-
-            dsl_to_runtime[llm_op_id] = mapping
-
-            if llm_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[llm_op_id]
-                for output_node_id in output_node_ids:
-                    output_node_map[output_node_id] = output_name
-                    if path_override:
-                        output_paths[output_node_id] = path_override
-                    elif default_path := self._op_output(llm_op).default_output_path:
-                        output_paths[output_node_id] = default_path
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).

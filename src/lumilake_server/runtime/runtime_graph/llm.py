@@ -33,6 +33,12 @@ from lumilake_server.runtime.runtime_graph.graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
 )
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_graph.outputs import (
     is_api_task,
     output_row_count,
@@ -1157,3 +1163,64 @@ class _LLMBuilder(_EmbeddingBuilder):
         }
 
         return list(upstream_llm_ids), step_config
+
+
+@register(LLMOp, Phase.LLM)
+def _lower_llm(
+    builder: Any,
+    op_id: str,
+    op: LLMOp,
+    ctx: LoweringContext,
+) -> LoweringResult | None:
+    """Lower one LLM op, through the API task when it targets an external
+    endpoint and through the local inference task otherwise."""
+    if ctx.task_type_override == "data_profile":
+        return None
+
+    if op.config.api is not None:
+        upstream_llm_ids, template_spec = builder._infer_structural_messages(
+            op_id,
+            ctx.graph_dict,
+            ctx.inputs_dict,
+            ctx.visited,
+            dsl_to_runtime=ctx.dsl_to_runtime,
+            runtime_nodes=ctx.nodes,
+            api_mode=True,
+        )
+        runtime_ops = builder._build_api_llm_op(
+            llm_op_id=op_id,
+            llm_op=op,
+            api_config=op.config.api,
+            template_spec=template_spec,
+            upstream_llm_ids=upstream_llm_ids,
+            output_spec=None,
+            condition=op.condition if isinstance(op, LLMChatOp) else None,
+            graph_dict=ctx.graph_dict,
+            inputs_dict=ctx.inputs_dict,
+            dsl_to_runtime=ctx.dsl_to_runtime,
+        )
+        mapping = [runtime_op.node_id for runtime_op in runtime_ops]
+        output_nodes = list(mapping)
+    else:
+        runtime_ops = [
+            builder._build_node_from_llm_op(
+                op_id,
+                op,
+                ctx.graph_dict,
+                ctx.inputs_dict,
+                ctx.visited,
+                task_type_override=ctx.task_type_override,
+                dsl_to_runtime=ctx.dsl_to_runtime,
+                runtime_nodes=ctx.nodes,
+            )
+        ]
+        mapping = [op_id]
+        output_nodes = [op_id]
+
+    result = LoweringResult(
+        nodes=runtime_ops,
+        dsl_to_runtime=mapping,
+        output_nodes=output_nodes,
+    )
+    builder._record_output(op_id, op, result, ctx)
+    return result

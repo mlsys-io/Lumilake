@@ -6,6 +6,12 @@ from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import (
     _default_output_destination,
 )
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_graph.retrieval import _RetrievalBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
@@ -375,3 +381,32 @@ class _VisionBuilder(_RetrievalBuilder):
             "or DataRetrievalOp "
             f"(got {type(image_source_op).__name__})."
         )
+
+
+@register(LLMVisionOp, Phase.LLM)
+def _lower_vision(
+    builder: Any,
+    op_id: str,
+    op: LLMVisionOp,
+    ctx: LoweringContext,
+) -> LoweringResult | None:
+    """Lower a VLM to its embedding node and inference node, or to the four
+    nodes a flattened per-row VLM runs as."""
+    if ctx.task_type_override == "data_profile":
+        return None
+    runtime_ops, mapping = builder._build_vlm_nodes_from_image_op(
+        op_id,
+        op,
+        ctx.graph_dict,
+        ctx.inputs_dict,
+        ctx.visited,
+        dsl_to_runtime=ctx.dsl_to_runtime,
+        runtime_nodes=ctx.nodes,
+    )
+    result = LoweringResult(
+        nodes=runtime_ops,
+        dsl_to_runtime=mapping,
+        output_nodes=[op_id],
+    )
+    builder._record_output(op_id, op, result, ctx)
+    return result
