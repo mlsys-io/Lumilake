@@ -5,13 +5,7 @@ from typing import Any, Literal, overload
 import dill
 
 from lumilake_server.ops.data_ops import DataOp
-from lumilake_server.ops.ops import (
-    FunctionalOp,
-    GraphRole,
-    Op,
-    RowShape,
-    SingleDtype,
-)
+from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.utils.lambda_runtime import validate_source
 
 MAX_TIMEOUT_S = 600.0
@@ -83,8 +77,6 @@ class SubmittedFunction:
 
 @Op.registry.register("FormatOp")
 class FormatOp(FunctionalOp):
-    graph_role = GraphRole.STRUCTURE
-
     template: str
     format_paths: dict[str, str]
 
@@ -281,10 +273,6 @@ class LambdaOp(Op):
     def takes_whole_columns(self) -> bool:
         """List and aligned Lambdas receive whole columns and return a list."""
         return self.mode in ("list", "aligned")
-
-    @property
-    def row_shape(self) -> RowShape:
-        return RowShape.WHOLE_LIST if self.mode == "list" else RowShape.PER_ROW
 
     def _serialize(self) -> dict[str, Any]:
         data: dict[str, Any] = {

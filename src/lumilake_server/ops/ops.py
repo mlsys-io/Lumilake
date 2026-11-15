@@ -33,17 +33,6 @@ class OpRegistry:
         return self._registry[key]
 
 
-class GraphRole(Enum):
-    """Where an op sits in the workflow graph: a source supplies values, a
-    structure op is folded into its consumer, a sink archives a result, and
-    every other op produces rows."""
-
-    SOURCE = "source"
-    STRUCTURE = "structure"
-    SINK = "sink"
-    PRODUCER = "producer"
-
-
 class RowShape(Enum):
     """How many values one item of an op's output holds, which decides whether a
     consumer reads it per row, per group, or as one whole list."""
@@ -57,7 +46,6 @@ class Op(ABC):
     id: str
     inputs: list["Op"]
     registry: OpRegistry = OpRegistry()
-    graph_role: GraphRole = GraphRole.PRODUCER
 
     @property
     def row_shape(self) -> RowShape:

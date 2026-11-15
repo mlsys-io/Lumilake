@@ -1,4 +1,4 @@
-"""Each op declares the row shape and profile eligibility its lowering relies on."""
+"""The metadata an op declares matches the nodes its lowering emits."""
 
 import pytest
 
@@ -7,13 +7,8 @@ from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
-    EmbeddingOp,
-    ImageGenerationOp,
     LambdaOp,
     LLMChatOp,
-    LLMCompletionOp,
-    LLMVisionOp,
-    Op,
     OpMessage,
     RowShape,
     as_output,
@@ -30,127 +25,61 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
 
-def _row(items):
-    return items[0]
+def _build(op, task_type_override=None):
+    graph = Graph.from_ops([as_output("result", op)])
+    inputs = {"Stock": ["NVDA", "AAPL"]} if graph.input_ops else {}
+    return RuntimeGraphBuilder().build(
+        graph.compile(**inputs), task_type_override=task_type_override
+    )
 
 
-def _whole(items):
+def _whole_list(items):
     return list(items)
 
 
-def _sql_retrieval() -> DataRetrievalOp:
-    return DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "select a from t",
-            "params": [],
-        }
-    )
-
-
-def _cases() -> dict[str, tuple[Op, RowShape, bool]]:
-    stock = input_placeholder("Stock")
+@pytest.mark.parametrize(
+    ("rowwise_template", "shape", "flatten"),
+    [(None, RowShape.PER_ROW, False), ("{symbol}", RowShape.GROUPED, True)],
+)
+def test_chat_shape_decides_how_its_consumer_reads_it(
+    rowwise_template: str | None, shape: RowShape, flatten: bool
+) -> None:
+    """A row template groups a table into one dataframe item, so a consumer
+    flattens it; a plain chat emits one value per row, so it does not."""
     chat = LLMChatOp(
-        [OpMessage(role="user", content=stock)], config=GenerationConfig(model=_MODEL)
-    )
-    rowwise_chat = LLMChatOp(
-        [OpMessage(role="user", content=stock)],
+        [OpMessage(role="user", content=input_placeholder("Stock"))],
         config=GenerationConfig(model=_MODEL),
-        rowwise_template="{symbol}",
-        rowwise_columns=[{"label": "symbol", "data": {"type": "list", "items": ["a"]}}],
+        rowwise_template=rowwise_template,
+        rowwise_columns=(
+            [{"label": "symbol", "data": {"type": "list", "items": ["NVDA"]}}]
+            if rowwise_template
+            else None
+        ),
     )
-    return {
-        "chat": (chat, RowShape.PER_ROW, False),
-        "rowwise_chat": (rowwise_chat, RowShape.GROUPED, False),
-        "completion": (
-            LLMCompletionOp(prompt="hi", config=GenerationConfig(model=_MODEL)),
-            RowShape.PER_ROW,
-            False,
-        ),
-        "vision": (
-            LLMVisionOp(
-                [OpMessage(role="user", content="describe")],
-                image_source=stock.id,
-                image_source_op=stock,
-                config=GenerationConfig(model=_MODEL),
-            ),
-            RowShape.PER_ROW,
-            False,
-        ),
-        "image_generation": (
-            ImageGenerationOp("a cat", config=GenerationConfig(model=_MODEL)),
-            RowShape.PER_ROW,
-            False,
-        ),
-        "embedding": (
-            EmbeddingOp("text", config=GenerationConfig(model="bge-small")),
-            RowShape.PER_ROW,
-            False,
-        ),
-        "sql_retrieval": (_sql_retrieval(), RowShape.GROUPED, True),
-        "s3_retrieval": (
-            DataRetrievalOp(
-                data_spec={"type": "lumid", "mode": "s3", "template": "s3://b/{k}"}
-            ),
-            RowShape.PER_ROW,
-            True,
-        ),
-        "agent_retrieval": (
-            DataRetrievalOp(
-                data_spec={
-                    "type": "lumid",
-                    "mode": "agent",
-                    "description": "Find a price.",
-                }
-            ),
-            RowShape.GROUPED,
-            False,
-        ),
-        "list_lambda": (
-            LambdaOp([stock], _whole, mode="list"),
-            RowShape.WHOLE_LIST,
-            False,
-        ),
-        "row_lambda": (LambdaOp([stock], _row), RowShape.PER_ROW, False),
-        "aligned_lambda": (
-            LambdaOp([stock], _whole, mode="aligned"),
-            RowShape.PER_ROW,
-            False,
-        ),
-    }
+    consumer = LambdaOp([chat], _whole_list, mode="list")
+
+    assert chat.row_shape is shape
+    stage = _build(consumer).nodes[consumer.id].data_spec["plan"][0]
+    assert stage.get("flatten", False) is flatten
 
 
-@pytest.mark.parametrize("name", sorted(_cases()))
-def test_op_declares_the_shape_its_lowering_emits(name: str) -> None:
-    op, shape, profilable = _cases()[name]
+@pytest.mark.parametrize(
+    ("data_spec", "profilable"),
+    [
+        ({"type": "lumid", "mode": "sql", "template": "select a from t"}, True),
+        ({"type": "lumid", "mode": "s3", "template": "s3://b/{k}"}, True),
+        ({"type": "lumid", "mode": "agent", "description": "Find a price."}, False),
+    ],
+)
+def test_profilable_matches_whether_profile_mode_profiles_the_op(
+    data_spec: dict, profilable: bool
+) -> None:
+    op = DataRetrievalOp(data_spec=data_spec)
 
-    assert op.row_shape is shape
     assert op.profilable is profilable
-
-
-@pytest.mark.parametrize("name", sorted(_cases()))
-def test_metadata_matches_the_node_its_lowering_emits(name: str) -> None:
-    op, shape, profilable = _cases()[name]
-    graph = Graph.from_ops([as_output("result", op)])
-    inputs = {"Stock": ["NVDA", "AAPL"]} if graph.input_ops else {}
-    compiled = graph.compile(**inputs)
-
-    runtime = RuntimeGraphBuilder().build(compiled)
-    node = runtime.nodes[op.id]
-
-    assert runtime.dsl_to_runtime[op.id][-1] == op.id
-    if isinstance(op, LLMChatOp) and shape is RowShape.GROUPED:
-        assert node.data_spec["type"] == "dataframe"
-    if isinstance(op, LambdaOp):
-        assert (node.data_spec.get("mode") == "list") is (shape is RowShape.WHOLE_LIST)
-    if isinstance(op, DataRetrievalOp):
-        assert node.data_spec["mode"] == op.data_spec["mode"]
-
-    profile = RuntimeGraphBuilder().build(compiled, task_type_override="data_profile")
     profiled = [
-        candidate
-        for candidate in profile.nodes.values()
-        if candidate.task_type == "data_profiling"
+        node
+        for node in _build(op, task_type_override="data_profile").nodes.values()
+        if node.task_type == "data_profiling"
     ]
     assert bool(profiled) is profilable

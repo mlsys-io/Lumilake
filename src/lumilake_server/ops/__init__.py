@@ -28,7 +28,6 @@ from lumilake_server.ops.llm_ops import (
 )
 from lumilake_server.ops.ops import (
     FunctionalOp,
-    GraphRole,
     Op,
     RowShape,
     SingleDtype,
@@ -47,7 +46,6 @@ __all__ = [
     "EmbeddingOp",
     "FormatOp",
     "FunctionalOp",
-    "GraphRole",
     "ImageGenerationOp",
     "InputOp",
     "LLMChatOp",

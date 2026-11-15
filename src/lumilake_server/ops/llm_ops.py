@@ -67,8 +67,8 @@ class LLMChatOp(LLMOp):
 
     @property
     def row_shape(self) -> RowShape:
-        """A row template groups all rows of a table into one item; every other
-        chat chat emits one value per row."""
+        """A row template groups a table's rows into one item; any other chat
+        emits one value per row."""
         return RowShape.GROUPED if self.rowwise_template else RowShape.PER_ROW
 
     def _serialize(self) -> dict[str, Any]:
