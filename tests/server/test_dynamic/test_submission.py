@@ -27,7 +27,7 @@ from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.ops import OutputOp
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage

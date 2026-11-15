@@ -22,7 +22,7 @@ from lumilake_server.parser.n8n_nodes.llm import (
 )
 from lumilake_server.parser.n8n_nodes.references import items_path
 from lumilake_server.parser.n8n_nodes.tables import make_chain_node
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "examples" / "templates" / "n8n"
 

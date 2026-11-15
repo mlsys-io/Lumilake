@@ -15,7 +15,7 @@ from lumilake_server.ops import (
     input_placeholder,
 )
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
 def test_completion_op_compiles_to_string_prompt_list_without_chat_template() -> None:

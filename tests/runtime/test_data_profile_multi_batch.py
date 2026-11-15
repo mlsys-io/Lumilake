@@ -19,7 +19,7 @@ from lumilake_server.runtime.data_profile_utils import (
     collect_data_profile,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.server import LumilakeServer
 from lumilake_server.utils import data_profile_offload
 

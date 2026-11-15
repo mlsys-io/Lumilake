@@ -22,8 +22,8 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     RuntimeGraph,
+    RuntimeGraphBuilder,
 )
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
 )

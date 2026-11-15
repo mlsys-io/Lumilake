@@ -25,9 +25,9 @@ from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     RuntimeGraph,
+    RuntimeGraphBuilder,
     make_node_prefix,
 )
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 _LUMID_URL = "http://lumid-data"

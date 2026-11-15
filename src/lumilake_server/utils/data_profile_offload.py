@@ -105,7 +105,7 @@ def build_request_data_profile_tasks(
 
     global RuntimeGraphBuilder
     if RuntimeGraphBuilder is None:
-        from lumilake_server.runtime.runtime_graph.builder import (
+        from lumilake_server.runtime.runtime_graph import (
             RuntimeGraphBuilder as _Builder,
         )
 

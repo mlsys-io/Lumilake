@@ -393,7 +393,7 @@ def _rowwise_columns(compiled_graph: Graph) -> list[dict]:
 
 
 def _runtime_columns(graph: Graph, inputs: dict[str, list[str]]) -> list[dict]:
-    from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+    from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
     runtime_graph = RuntimeGraphBuilder().build(graph.compile(**inputs))
     for node in runtime_graph.nodes.values():

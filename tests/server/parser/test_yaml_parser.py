@@ -8,7 +8,7 @@ from lumilake_server.common import ApiConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import InputOp, LambdaOp, LLMChatOp, MessageOp, OutputOp
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
 def _ensure_envs() -> None:

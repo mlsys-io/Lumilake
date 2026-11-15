@@ -198,7 +198,7 @@ def _workflow(workflow_id: str, request_id: str, graph_name: str) -> WorkflowIte
 
 
 def server_runtime_builder():
-    from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+    from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
     return RuntimeGraphBuilder()
 

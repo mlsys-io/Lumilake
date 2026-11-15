@@ -18,11 +18,8 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_graph.retrieval import (
-    _default_sql_sampler,
-    _RuntimeProfileSamplers,
-)
+from lumilake_server.runtime import runtime_graph as rg
+from lumilake_server.runtime.runtime_graph import _default_sql_sampler
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _collect_data_profile_param_candidates,
@@ -30,7 +27,7 @@ from lumilake_server.utils.data_profile_offload import (
 
 
 def _build_profile_node(compiled: Any, op_id: str) -> Any:
-    builder = RuntimeGraphBuilder()
+    builder = rg.RuntimeGraphBuilder()
     runtime = builder.build(compiled, task_type_override="data_profile")
     return runtime.nodes[op_id]
 
@@ -239,7 +236,7 @@ class TestLiveSqlSampler:
             calls.append(query)
             return [{"key": "fetched-key"}]
 
-        monkeypatch.setattr(_RuntimeProfileSamplers, "sql", fake_sampler)
+        monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", fake_sampler)
 
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
@@ -285,7 +282,7 @@ class TestLiveSqlSampler:
         monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data-test")
         monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
         monkeypatch.setattr(
-            _RuntimeProfileSamplers,
+            rg._RuntimeProfileSamplers,
             "sql",
             lambda *_a, **_kw: [],
         )
@@ -384,7 +381,7 @@ class TestDefaultDenyLiveSampling:
             sample_calls.append(query)
             return [{"key": "live-key"}]
 
-        monkeypatch.setattr(_RuntimeProfileSamplers, "sql", fake_sampler)
+        monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", fake_sampler)
 
         stock, upstream, downstream = self._make_upstream_downstream()
         llm = LLMChatOp(
@@ -515,7 +512,7 @@ class TestRecursiveResolverAndCycleGuard:
             op_a.id: op_a,
             "OP_B": op_b,
         }
-        builder = RuntimeGraphBuilder()
+        builder = rg.RuntimeGraphBuilder()
         with pytest.raises(ValueError, match="cycle"):
             builder._resolve_profile_param(
                 owner_node_id=op_a.id,
@@ -619,57 +616,61 @@ class TestLambdaOpUpstreamSampleValue:
 class TestApplyLimitToSampleSql:
     def test_for_update_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="sample_value"):
-            RuntimeGraphBuilder._apply_limit_to_sample_sql(
+            rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
                 "SELECT id FROM t FOR UPDATE", 5
             )
 
     def test_for_share_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="sample_value"):
-            RuntimeGraphBuilder._apply_limit_to_sample_sql(
+            rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
                 "SELECT id FROM t FOR SHARE", 5
             )
 
     def test_for_update_lowercase_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="sample_value"):
-            RuntimeGraphBuilder._apply_limit_to_sample_sql(
+            rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
                 "select id from t for update", 5
             )
 
     def test_normal_query_gets_outer_wrap(self) -> None:
-        result = RuntimeGraphBuilder._apply_limit_to_sample_sql("SELECT id FROM t", 5)
+        result = rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
+            "SELECT id FROM t", 5
+        )
         assert result.startswith("SELECT * FROM (")
         assert result.endswith(") AS _lumilake_sample LIMIT 5")
 
     def test_query_with_existing_limit_is_wrapped(self) -> None:
-        result = RuntimeGraphBuilder._apply_limit_to_sample_sql(
+        result = rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
             "SELECT id FROM t LIMIT 10", 5
         )
         assert result.startswith("SELECT * FROM (")
         assert result.endswith(") AS _lumilake_sample LIMIT 5")
 
     def test_limit_inside_string_literal_does_not_bypass_wrap(self) -> None:
-        result = RuntimeGraphBuilder._apply_limit_to_sample_sql(
+        result = rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
             "SELECT * FROM t WHERE note = 'LIMIT 100'", 5
         )
         assert result.startswith("SELECT * FROM (")
         assert result.endswith(") AS _lumilake_sample LIMIT 5")
 
     def test_limit_inside_comment_does_not_bypass_wrap(self) -> None:
-        result = RuntimeGraphBuilder._apply_limit_to_sample_sql(
+        result = rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
             "SELECT * FROM t -- LIMIT 100", 5
         )
         assert result.startswith("SELECT * FROM (")
         assert result.endswith(") AS _lumilake_sample LIMIT 5")
 
     def test_large_inner_limit_is_capped_by_outer_wrap(self) -> None:
-        result = RuntimeGraphBuilder._apply_limit_to_sample_sql(
+        result = rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
             "SELECT * FROM t LIMIT 1000000", 5
         )
         assert result.startswith("SELECT * FROM (")
         assert result.endswith(") AS _lumilake_sample LIMIT 5")
 
     def test_trailing_semicolon_is_stripped_before_wrap(self) -> None:
-        result = RuntimeGraphBuilder._apply_limit_to_sample_sql("SELECT * FROM t;", 5)
+        result = rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
+            "SELECT * FROM t;", 5
+        )
         assert result.startswith("SELECT * FROM (")
         assert result.endswith(") AS _lumilake_sample LIMIT 5")
         assert ";)" not in result
@@ -678,7 +679,7 @@ class TestApplyLimitToSampleSql:
 class TestSampleQueryReadonlyValidation:
     def test_sample_query_with_cte_dml_is_rejected_statically(self) -> None:
         with pytest.raises(ValueError) as excinfo:
-            RuntimeGraphBuilder._apply_limit_to_sample_sql(
+            rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
                 "WITH x AS (DELETE FROM t RETURNING id) SELECT id FROM x", 5
             )
         msg = str(excinfo.value)
@@ -687,7 +688,7 @@ class TestSampleQueryReadonlyValidation:
 
     def test_sample_query_with_top_level_dml_is_rejected_statically(self) -> None:
         with pytest.raises(ValueError) as excinfo:
-            RuntimeGraphBuilder._apply_limit_to_sample_sql(
+            rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
                 "DELETE FROM t WHERE id < 5", 5
             )
         msg = str(excinfo.value)
@@ -696,11 +697,13 @@ class TestSampleQueryReadonlyValidation:
 
     def test_sample_query_with_multistatement_is_rejected_statically(self) -> None:
         with pytest.raises(ValueError) as excinfo:
-            RuntimeGraphBuilder._apply_limit_to_sample_sql("SELECT 1; DELETE FROM t", 5)
+            rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
+                "SELECT 1; DELETE FROM t", 5
+            )
         assert "sample_value" in str(excinfo.value)
 
     def test_sample_query_plain_select_passes_static_check(self) -> None:
-        result = RuntimeGraphBuilder._apply_limit_to_sample_sql(
+        result = rg.RuntimeGraphBuilder._apply_limit_to_sample_sql(
             "SELECT id FROM t WHERE id = 1", 5
         )
         assert "LIMIT" in result.upper()
@@ -828,7 +831,7 @@ class TestSqlSamplerTimeouts:
         def failing_sampler(query: str) -> list[Any]:
             raise RuntimeError("HTTP 504: Gateway Timeout")
 
-        monkeypatch.setattr(_RuntimeProfileSamplers, "sql", failing_sampler)
+        monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", failing_sampler)
 
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
