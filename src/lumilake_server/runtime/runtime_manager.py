@@ -23,9 +23,9 @@ from typing import Any
 
 import httpx
 import yaml
-from flowmesh.exceptions import APIError, FlowMeshConnectionError
+from flowmesh.exceptions import APIError, CursorExpiredError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
-from flowmesh.models.tasks import TaskStatusPage
+from flowmesh.models.tasks import TaskStatusPage, TaskStatusRow
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
@@ -53,22 +53,6 @@ from lumilake_server.utils.job_storage import get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS = ("status", "error", "last_error")
-
-
-class _TaskStatusRow(BaseModel):
-    """One row of the status feed, projected to ``_STATUS_POLL_FIELDS``."""
-
-    task_id: str
-    status: str
-    error: str | None = None
-    last_error: str | None = None
-
-
-class _TaskNodeRow(BaseModel):
-    """One row of the status feed, projected to the task's graph node name."""
-
-    task_id: str
-    graph_node_name: str | None = None
 
 
 @dataclass
@@ -435,21 +419,24 @@ class FlowmeshRuntimeManager:
         fields: Sequence[str] = _STATUS_POLL_FIELDS,
         cursor: str | None = None,
     ) -> TaskStatusPage:
-        """List a workflow's task status rows, projected to ``fields``.
+        """Read one page of a workflow's task status change feed.
 
-        ``cursor`` keeps only tasks whose status changed after the cursor an
-        earlier page returned, so a poller reads each transition once; the page
-        carries the cursor for the next call.
+        Without ``cursor`` the call is a snapshot of every matching task and
+        returns the position to continue from; with one it reads only the
+        changes after it. ``CursorExpiredError`` means the position cannot be
+        resumed, and the caller starts again from a snapshot.
         """
         try:
             return await _retry_transient_read(
-                lambda: self.fm.tasks.list_statuses(
+                lambda: self.fm.tasks.changes(
                     workflow_id=workflow_id,
                     fields=list(fields),
                     cursor=cursor,
                 ),
                 f"workflow {workflow_id} task statuses",
             )
+        except CursorExpiredError:
+            raise
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
 
@@ -540,7 +527,7 @@ class FlowmeshRuntimeManager:
             raise RuntimeError(
                 f"Failed to list FlowMesh tasks for workflow_id={workflow_id}"
             ) from e
-        rows = [_TaskNodeRow.model_validate(row) for row in page.rows]
+        rows = page.rows
         tasks_by_id = {row.task_id: row for row in rows}
         for task_id in task_ids:
             row = tasks_by_id.get(task_id)
@@ -629,13 +616,14 @@ class FlowmeshRuntimeManager:
     ) -> bool:
         """Advance ``task_status`` from the workflow's task status feed.
 
-        The first poll of a workflow lists every task; each later poll asks
-        only for the tasks whose status changed since the previous one, so an
-        unchanged task is not read again. Only the execution loop advances the
-        per-workflow feed cursor, as the only reader of a workflow it runs; a
-        caller for a workflow nobody is polling (``advance_cursor=False``) lists
-        every task and stores no cursor, so the rows FlowMesh filters to that
-        caller's view never move a cursor another reader depends on.
+        The first poll of a workflow takes a snapshot of every task; each later
+        poll asks only for the tasks whose status changed since the previous
+        one, so an unchanged task is not read again. Only the execution loop
+        advances the per-workflow feed cursor, as the only reader of a workflow
+        it runs; a caller for a workflow nobody is polling
+        (``advance_cursor=False``) takes a snapshot and stores no cursor, so the
+        rows FlowMesh filters to that caller's view never move a cursor another
+        reader depends on.
         """
         pending_task_ids = {
             task_id
@@ -645,22 +633,20 @@ class FlowmeshRuntimeManager:
         if not pending_task_ids:
             return True
 
-        page = await self.fetch_workflow_task_statuses(
-            workflow_id,
-            cursor=(
-                self._workflow_status_cursors.get(workflow_id)
-                if advance_cursor
-                else None
-            ),
+        cursor = (
+            self._workflow_status_cursors.get(workflow_id) if advance_cursor else None
         )
-        rows = [_TaskStatusRow.model_validate(row) for row in page.rows]
-        for row in rows:
-            task_id = row.task_id
-            if task_id not in pending_task_ids:
-                continue
-            task_status[task_id] = row.status
-            if row.status == "FAILED":
-                self._record_task_error(task_id, row)
+        try:
+            reached = await self._drain_task_status(
+                task_status, workflow_id, pending_task_ids, cursor
+            )
+        except CursorExpiredError:
+            if cursor is None:
+                raise
+            self._workflow_status_cursors.pop(workflow_id, None)
+            reached = await self._drain_task_status(
+                task_status, workflow_id, pending_task_ids, None
+            )
         if not advance_cursor:
             return all(
                 task_status[task_id] in TERMINAL_STATUSES
@@ -671,11 +657,35 @@ class FlowmeshRuntimeManager:
         )
         if completed:
             self._workflow_status_cursors.pop(workflow_id, None)
-        elif page.cursor:
-            self._workflow_status_cursors[workflow_id] = page.cursor
+        else:
+            self._workflow_status_cursors[workflow_id] = reached
         return completed
 
-    def _record_task_error(self, task_id: str, row: _TaskStatusRow) -> None:
+    async def _drain_task_status(
+        self,
+        task_status: dict[str, str],
+        workflow_id: str,
+        pending_task_ids: set[str],
+        cursor: str | None,
+    ) -> str:
+        """Apply every page the feed holds for these pending tasks, from ``cursor``.
+
+        A page carries only part of the changes after a cursor, so pages are
+        read until ``has_more`` is false. Returns the position reached.
+        """
+        while True:
+            page = await self.fetch_workflow_task_statuses(workflow_id, cursor=cursor)
+            for row in page.rows:
+                if row.task_id not in pending_task_ids or row.status is None:
+                    continue
+                task_status[row.task_id] = row.status
+                if row.status == "FAILED":
+                    self._record_task_error(row.task_id, row)
+            cursor = page.next_cursor
+            if not page.has_more:
+                return cursor
+
+    def _record_task_error(self, task_id: str, row: TaskStatusRow) -> None:
         """Record the FlowMesh error of a failed task, if it has one.
 
         The error is read from the same status row the poll retrieved. A task

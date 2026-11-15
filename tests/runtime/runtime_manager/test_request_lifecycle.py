@@ -316,21 +316,7 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
 
     assert sorted(polled) == ["wf-1", "wf-2"]
     assert reported["execution"]["completed"]
-
-
-@pytest.mark.asyncio
-async def test_an_ending_loop_leaves_no_cursor_behind(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A loop that ends before the feed reports every task terminal (fail-fast,
-    cancellation, timeout) drops its cursor, so a later progress read never
-    resumes from a position no loop will advance."""
-    manager, _, _, _ = await _run_failing_request(
-        monkeypatch,
-        {"task-row0": "PENDING", "task-row1": "FAILED"},
-        {"task-row1": "python task failed: ImportError: boom"},
-    )
-
+    # The loop ended before every task was terminal, so it left no cursor.
     assert manager._workflow_status_cursors == {}
 
 
