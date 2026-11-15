@@ -14,7 +14,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
-| `ScoreOp` | Score query/candidate pairs with a FlowMesh cross-encoder and return one score per pair. |
+| `ClassificationOp` | Classify query/candidate pairs with a FlowMesh classification task and return the classifier's output per pair. |
 | `HttpFetchOp` | Fetch JSON over HTTP once per query row, with bounded timeout, retries, concurrency, and headers. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
@@ -96,11 +96,12 @@ is the embedding of input text `i`. A downstream op therefore receives
 consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `row`.
 
-### ScoreOp
+### ClassificationOp
 
-`ScoreOp` scores query/candidate pairs with a FlowMesh `classification` task
-and returns one `items[]` entry per pair, carrying `index` and `score`. It
-needs FlowMesh `main`'s `classification` task type.
+`ClassificationOp` classifies query/candidate pairs with a FlowMesh
+`classification` task and returns one `items[]` entry per pair, carrying the
+pair's `index` and the classifier's output. It needs FlowMesh `main`'s
+`classification` task type.
 `config` is required and supplies `model` and `backend` (`vllm` or
 `transformers`); the optional `vllm` mapping is passed to the vLLM engine. A
 vLLM node uses `model.vllm.convert: classify` and reports the head's sigmoid
@@ -115,8 +116,9 @@ lengths. When either side comes from an upstream op, Lumilake first runs the
 internal `pairs` Python step, which broadcasts a single query or rejects
 unequal lengths, then passes its `value.items` list to the classification
 task. Empty query or candidate inputs, empty candidate lists, and mismatched
-literal pair counts of a graph built from YAML raise with the ScoreOp id in
-the message; the Python constructor raises before an id exists.
+literal pair counts of a graph built from YAML raise with the
+`ClassificationOp` id in the message; the Python constructor raises before an
+id exists.
 
 ```yaml
 inputs:
@@ -125,7 +127,7 @@ inputs:
 
 ops:
   - id: "Rerank"
-    op: ScoreOp
+    op: ClassificationOp
     inputs: [Query, Candidates]
     query: Query
     candidates: Candidates
@@ -134,7 +136,7 @@ ops:
       backend: vllm
 
 outputs:
-  - name: scores
+  - name: labels
     ref: "Rerank"
 ```
 

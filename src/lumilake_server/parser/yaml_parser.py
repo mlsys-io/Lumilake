@@ -90,11 +90,11 @@ from typing import Any
 import yaml
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.ops.classification_ops import ClassificationConfig
 from lumilake_server.ops.http_fetch_ops import (
     HttpFetchConfig,
     validate_fetch_request,
 )
-from lumilake_server.ops.score_ops import ScoreConfig
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import make_id as _make_id
@@ -114,7 +114,7 @@ SUPPORTED_OPS: frozenset[str] = frozenset(
         "ImageGenerationOp",
         "EmbeddingOp",
         "HttpFetchOp",
-        "ScoreOp",
+        "ClassificationOp",
         "FormatOp",
         "LambdaOp",
     }
@@ -413,8 +413,8 @@ def _build_op_dict(
         _emit_embedding_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "HttpFetchOp":
         _emit_http_fetch_op(op_dict, entry, user_id_to_internal)
-    elif entry.op == "ScoreOp":
-        _emit_score_op(op_dict, entry, user_id_to_internal)
+    elif entry.op == "ClassificationOp":
+        _emit_classification_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "FormatOp":
         _emit_format_op(op_dict, entry, user_id_to_internal)
     elif entry.op == "LambdaOp":
@@ -703,7 +703,7 @@ def _emit_http_fetch_op(
     op_dict["_inputs"] = [user_id_to_internal[query_ref]]
 
 
-def _emit_score_op(
+def _emit_classification_op(
     op_dict: dict[str, Any],
     entry: _OpEntry,
     user_id_to_internal: dict[str, str],
@@ -712,12 +712,14 @@ def _emit_score_op(
     candidates_ref = entry.fields.get("candidates")
     config = entry.fields.get("config")
     if not isinstance(config, dict) or not config.get("model"):
-        raise ValueError(f"ScoreOp '{entry.id}' requires config.model")
+        raise ValueError(f"ClassificationOp '{entry.id}' requires config.model")
     if not isinstance(query_ref, str) or query_ref not in user_id_to_internal:
-        raise ValueError(f"ScoreOp '{entry.id}' requires a 'query' reference")
+        raise ValueError(f"ClassificationOp '{entry.id}' requires a 'query' reference")
     if not isinstance(candidates_ref, str) or candidates_ref not in user_id_to_internal:
-        raise ValueError(f"ScoreOp '{entry.id}' requires a 'candidates' reference")
-    _validate_op_config(ScoreConfig, config, entry.id, "ScoreOp")
+        raise ValueError(
+            f"ClassificationOp '{entry.id}' requires a 'candidates' reference"
+        )
+    _validate_op_config(ClassificationConfig, config, entry.id, "ClassificationOp")
 
     op_dict["query"] = user_id_to_internal[query_ref]
     op_dict["candidates"] = user_id_to_internal[candidates_ref]
@@ -1182,7 +1184,7 @@ def _op_id_prefix(op_type: str) -> str:
         "ImageGenerationOp": "imagegen",
         "EmbeddingOp": "embedding",
         "HttpFetchOp": "httpfetch",
-        "ScoreOp": "score",
+        "ClassificationOp": "classification",
         "FormatOp": "format",
         "LambdaOp": "lambda",
     }

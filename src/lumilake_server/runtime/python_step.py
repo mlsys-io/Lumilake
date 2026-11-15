@@ -222,7 +222,7 @@ def main(inputs):
     for name, values in (("query", queries), ("candidate", candidates)):
         if not values:
             raise ValueError(
-                "%s: %s column is empty; a score op needs at least one pair"
+                "%s: %s column is empty; classification needs at least one pair"
                 % (_NODE, name)
             )
     if len(queries) == 1:

@@ -1,3 +1,9 @@
+from lumilake_server.ops.classification_ops import (
+    ClassificationConfig,
+    ClassificationOp,
+    ClassificationPair,
+    classify,
+)
 from lumilake_server.ops.data_ops import (
     DataOp,
     DataRetrievalOp,
@@ -28,7 +34,6 @@ from lumilake_server.ops.llm_ops import (
     llm_vision,
 )
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
-from lumilake_server.ops.score_ops import ScoreConfig, ScoreOp, ScorePair, score
 from lumilake_server.ops.util_ops import (
     FormatOp,
     LambdaOp,
@@ -37,6 +42,9 @@ from lumilake_server.ops.util_ops import (
 )
 
 __all__ = [
+    "ClassificationConfig",
+    "ClassificationOp",
+    "ClassificationPair",
     "DataOp",
     "DataRetrievalOp",
     "EmbeddingArtifact",
@@ -56,11 +64,9 @@ __all__ = [
     "Op",
     "OpMessage",
     "OutputOp",
-    "ScoreConfig",
-    "ScoreOp",
-    "ScorePair",
     "SingleDtype",
     "as_output",
+    "classify",
     "data",
     "embedding",
     "format_op",
@@ -72,5 +78,4 @@ __all__ = [
     "llm_completion",
     "llm_vision",
     "message_data",
-    "score",
 ]

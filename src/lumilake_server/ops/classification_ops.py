@@ -7,7 +7,7 @@ from lumilake_server.ops.ops import Op
 
 
 @dataclass(frozen=True)
-class ScoreConfig:
+class ClassificationConfig:
     """Model and backend settings for a FlowMesh classification task."""
 
     model: str
@@ -16,11 +16,13 @@ class ScoreConfig:
 
     def __post_init__(self) -> None:
         if not isinstance(self.model, str) or not self.model.strip():
-            raise ValueError("ScoreOp config.model must be a non-empty string")
+            raise ValueError("ClassificationOp config.model must be a non-empty string")
         if self.backend not in {"vllm", "transformers"}:
-            raise ValueError("ScoreOp config.backend must be vllm or transformers")
+            raise ValueError(
+                "ClassificationOp config.backend must be vllm or transformers"
+            )
         if not isinstance(self.vllm, dict):
-            raise ValueError("ScoreOp config.vllm must be a mapping")
+            raise ValueError("ClassificationOp config.vllm must be a mapping")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -31,7 +33,7 @@ class ScoreConfig:
 
 
 @dataclass(frozen=True)
-class ScorePair:
+class ClassificationPair:
     """One cross-encoder query/candidate pair."""
 
     query: str
@@ -39,21 +41,21 @@ class ScorePair:
 
     def __post_init__(self) -> None:
         if not self.query.strip():
-            raise ValueError("ScoreOp query must be a non-empty string")
+            raise ValueError("ClassificationOp query must be a non-empty string")
         if not self.candidate.strip():
-            raise ValueError("ScoreOp candidate must be a non-empty string")
+            raise ValueError("ClassificationOp candidate must be a non-empty string")
 
 
 def _as_values(value: str | list[str], name: str) -> list[str]:
     values = [value] if isinstance(value, str) else value
     if not values or not all(isinstance(item, str) and item.strip() for item in values):
-        raise ValueError(f"ScoreOp requires non-empty {name} input")
+        raise ValueError(f"ClassificationOp requires non-empty {name} input")
     return values
 
 
 def literal_pairs(
     query: list[str], candidates: list[str], *, op_id: str | None = None
-) -> list[ScorePair]:
+) -> list[ClassificationPair]:
     """Validate and broadcast literal query and candidate lists. ``op_id``
     names the op in the error once it has one; construction has no id yet."""
     if len(query) == 1:
@@ -61,23 +63,27 @@ def literal_pairs(
     elif len(query) == len(candidates):
         queries = query
     else:
-        where = "ScoreOp" if op_id is None else f"ScoreOp '{op_id}'"
+        where = "ClassificationOp" if op_id is None else f"ClassificationOp '{op_id}'"
         raise ValueError(f"{where} query and candidates must have equal lengths")
     return [
-        ScorePair(query=query_value, candidate=candidate)
+        ClassificationPair(query=query_value, candidate=candidate)
         for query_value, candidate in zip(queries, candidates)
     ]
 
 
-@Op.registry.register("ScoreOp")
-class ScoreOp(Op):
-    """Cross-encoder scoring of query/candidate pairs on FlowMesh."""
+@Op.registry.register("ClassificationOp")
+class ClassificationOp(Op):
+    """Classify query/candidate pairs with a FlowMesh classification task.
+
+    The classification task returns the classifier's output for each pair, the
+    cross-encoder label probability unless ``config.vllm.apply_sigmoid`` is
+    disabled."""
 
     def __init__(
         self,
         query: str | list[str] | Op,
         candidates: str | list[str] | Op,
-        config: ScoreConfig,
+        config: ClassificationConfig,
     ) -> None:
         self.config = config
         query_op = (
@@ -114,17 +120,19 @@ class ScoreOp(Op):
         }
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> "ScoreOp":
+    def _from_json(
+        cls, data: dict[str, Any], other_ops: dict[str, Op]
+    ) -> "ClassificationOp":
         return cls(
             query=other_ops[data["query"]],
             candidates=other_ops[data["candidates"]],
-            config=ScoreConfig(**data["config"]),
+            config=ClassificationConfig(**data["config"]),
         )
 
 
-def score(
+def classify(
     query: str | list[str] | Op,
     candidates: str | list[str] | Op,
-    config: ScoreConfig,
-) -> ScoreOp:
-    return ScoreOp(query, candidates, config)
+    config: ClassificationConfig,
+) -> ClassificationOp:
+    return ClassificationOp(query, candidates, config)

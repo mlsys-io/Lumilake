@@ -32,6 +32,7 @@ from lumilake_server.ops import (
     Op,
     OutputOp,
 )
+from lumilake_server.ops.classification_ops import ClassificationOp, literal_pairs
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
@@ -39,7 +40,6 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
-from lumilake_server.ops.score_ops import ScoreOp, literal_pairs
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -479,7 +479,7 @@ class RuntimeGraphBuilder:
         for op_id, op in graph_dict.items():
             if isinstance(
                 op,
-                (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp),
+                (LLMOp, DataRetrievalOp, HttpFetchOp, ClassificationOp),
             ) or (isinstance(op, LambdaOp) and op.takes_whole_columns):
                 visited_node_ids.add(op_id)
                 if isinstance(op, LLMOp):
@@ -491,11 +491,11 @@ class RuntimeGraphBuilder:
                 source = op.inputs[0]
                 if not isinstance(
                     source,
-                    (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp, LambdaOp),
+                    (LLMOp, DataRetrievalOp, HttpFetchOp, ClassificationOp, LambdaOp),
                 ):
                     raise ValueError(
                         f"OutputOp '{op.name}' input must be an LLMOp, "
-                        "DataRetrievalOp, HttpFetchOp, ScoreOp or LambdaOp "
+                        "DataRetrievalOp, HttpFetchOp, ClassificationOp or LambdaOp "
                         f"(got {type(source).__name__})"
                     )
                 visited_node_ids.add(op_id)
@@ -514,12 +514,14 @@ class RuntimeGraphBuilder:
                 )
 
         if not any(
-            isinstance(op, (LLMOp, DataRetrievalOp, HttpFetchOp, ScoreOp, LambdaOp))
+            isinstance(
+                op, (LLMOp, DataRetrievalOp, HttpFetchOp, ClassificationOp, LambdaOp)
+            )
             for op in graph_dict.values()
         ):
             raise ValueError(
                 "Graph must contain at least one LLMOp, DataRetrievalOp, "
-                "HttpFetchOp, ScoreOp or LambdaOp"
+                "HttpFetchOp, ClassificationOp or LambdaOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
@@ -542,22 +544,26 @@ class RuntimeGraphBuilder:
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items.json"
 
-        def build_score(score_op_id: str, score_op: ScoreOp) -> None:
-            score_nodes = self._build_node_from_score_op(
-                score_op_id,
-                score_op,
+        def build_classification(
+            classification_op_id: str, classification_op: ClassificationOp
+        ) -> None:
+            classification_nodes = self._build_node_from_classification_op(
+                classification_op_id,
+                classification_op,
                 graph_dict,
                 inputs_dict,
                 visited_node_ids,
                 dsl_to_runtime,
             )
-            for runtime_op in score_nodes:
+            for runtime_op in classification_nodes:
                 nodes[runtime_op.node_id] = runtime_op
                 node_order.append(runtime_op.node_id)
-            runtime_op = score_nodes[-1]
-            dsl_to_runtime[score_op_id] = [runtime_op.node_id]
-            if score_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[score_op_id]
+            runtime_op = classification_nodes[-1]
+            dsl_to_runtime[classification_op_id] = [runtime_op.node_id]
+            if classification_op_id in output_source_to_outputop:
+                ((output_name, path_override),) = output_source_to_outputop[
+                    classification_op_id
+                ]
                 output_node_map[runtime_op.node_id] = output_name
                 output_paths[runtime_op.node_id] = path_override or "items"
 
@@ -587,11 +593,11 @@ class RuntimeGraphBuilder:
                 output_paths[runtime_op.node_id] = path_override or "items.output"
 
         def build_derived(op_ref: Op) -> None:
-            """Build a fetch, score or Lambda node after the fetch, score and
-            Lambda ops it reads, so a consumer never resolves before its
-            upstream runtime node. LLMOps and DataRetrievalOps are built by
-            their own loops."""
-            if not isinstance(op_ref, (HttpFetchOp, ScoreOp, LambdaOp)):
+            """Build a fetch, classification or Lambda node after the fetch,
+            classification and Lambda ops it reads, so a consumer never resolves
+            before its upstream runtime node. LLMOps and DataRetrievalOps are
+            built by their own loops."""
+            if not isinstance(op_ref, (HttpFetchOp, ClassificationOp, LambdaOp)):
                 return
             if op_ref.id in dsl_to_runtime:
                 return
@@ -599,8 +605,8 @@ class RuntimeGraphBuilder:
                 build_derived(source)
             if isinstance(op_ref, HttpFetchOp):
                 build_fetch(op_ref.id, op_ref)
-            elif isinstance(op_ref, ScoreOp):
-                build_score(op_ref.id, op_ref)
+            elif isinstance(op_ref, ClassificationOp):
+                build_classification(op_ref.id, op_ref)
             elif op_ref.takes_whole_columns:
                 build_list_lambda(op_ref.id, op_ref)
             else:
@@ -731,7 +737,8 @@ class RuntimeGraphBuilder:
                         )
 
         if task_type_override != "data_profile":
-            # Every fetch, score and list Lambda node builds here, after the LLM
+            # Every fetch, classification and list Lambda node builds here,
+            # after the LLM
             # pass: their references resolve through ``dsl_to_runtime``, and the
             # LLM builders name their derived inputs by DSL op id, so nothing
             # reads these nodes earlier. ``build_derived`` walks each chain's
@@ -739,7 +746,7 @@ class RuntimeGraphBuilder:
             # members are reached. A row-mode Lambda stays in the standalone
             # pass below, which decides whether an LLM inlined it.
             for op in graph_dict.values():
-                if isinstance(op, (HttpFetchOp, ScoreOp)) or (
+                if isinstance(op, (HttpFetchOp, ClassificationOp)) or (
                     isinstance(op, LambdaOp) and op.takes_whole_columns
                 ):
                     build_derived(op)
@@ -1745,10 +1752,10 @@ class RuntimeGraphBuilder:
             dependencies=dependencies if dependencies else None,
         )
 
-    def _build_node_from_score_op(
+    def _build_node_from_classification_op(
         self,
         op_id: str,
-        op: ScoreOp,
+        op: ClassificationOp,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         visited_node_ids: set[str],
@@ -1763,16 +1770,17 @@ class RuntimeGraphBuilder:
                 values = inputs_dict.get(op_ref.name)
                 if not values:
                     raise ValueError(
-                        f"ScoreOp '{op_id}' {op_ref.name!r} input has no values "
+                        f"ClassificationOp '{op_id}' {op_ref.name!r} input has "
+                        "no values "
                         "supplied"
                     )
                 return values
             if isinstance(op_ref, DataOp):
                 if not op_ref.data:
-                    raise ValueError(f"ScoreOp '{op_id}' has empty input")
+                    raise ValueError(f"ClassificationOp '{op_id}' has empty input")
                 return op_ref.data
             return self._resolve_upstream_read(
-                f"ScoreOp '{op_id}'", op_ref, dsl_to_runtime
+                f"ClassificationOp '{op_id}'", op_ref, dsl_to_runtime
             )
 
         def _stage_plan(values: Any) -> dict[str, Any]:
@@ -1789,7 +1797,7 @@ class RuntimeGraphBuilder:
         query_values = _source(op.query)
         candidate_values = _source(op.candidates)
         if isinstance(candidate_values, list) and not candidate_values:
-            raise ValueError(f"ScoreOp '{op_id}' has empty candidate list")
+            raise ValueError(f"ClassificationOp '{op_id}' has empty candidate list")
         if isinstance(query_values, list) and isinstance(candidate_values, list):
             pairs = literal_pairs(query_values, candidate_values, op_id=op_id)
             data_spec = {
@@ -1838,7 +1846,7 @@ class RuntimeGraphBuilder:
             else {"device_map": "auto"}
         )
         model_config = GenerationConfig(model=op.config.model, api=None)
-        score_op = self._create_runtime_op(
+        classification_op = self._create_runtime_op(
             name=op_id,
             task_type="classification",
             data_spec=data_spec,
@@ -1848,7 +1856,7 @@ class RuntimeGraphBuilder:
             model=op.config.model,
             dependencies=dependencies or None,
         )
-        return [*extra_ops, score_op]
+        return [*extra_ops, classification_op]
 
     def _build_node_from_list_lambda_op(
         self,
@@ -2220,7 +2228,7 @@ class RuntimeGraphBuilder:
         op_ref: Op,
         dsl_to_runtime: dict[str, list[str]],
     ) -> _UpstreamRead:
-        """Where a fetch or score op reads one upstream op's values.
+        """Where a fetch or classification op reads one upstream op's values.
 
         The runtime node is the upstream op's final node, which emits its
         output; a vision LLM and an API LLM compile to several nodes each.
