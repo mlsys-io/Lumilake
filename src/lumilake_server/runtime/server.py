@@ -1088,7 +1088,16 @@ class LumilakeServer:
             required_task_types=required,
             required_gpu_utilizations=required_gpu_utilizations,
         )
-        if selected is None and (required or required_gpu_utilizations):
+        enough_by_count = (
+            free.gpu_count >= gpu_group_size and free.cpu_count >= cpu_group_size
+        )
+        if (
+            selected is None
+            and enough_by_count
+            and (required or required_gpu_utilizations)
+        ):
+            # Only a refusal from a gate can be permanent; too few idle workers
+            # is capacity, so the batch just waits without a cluster read.
             total = await self._snapshot_total_capacity()
             if not (
                 (not required or total.has_cpu_worker_advertising(required))

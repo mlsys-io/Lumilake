@@ -150,10 +150,9 @@ class FreeCapacity:
     ) -> tuple[list[str], list[str]] | None:
         """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``.
 
-        Returns ``None`` while the free set cannot serve the batch: too few idle
-        workers, no CPU worker advertising a required task type, or no GPU worker
-        whose memory fraction holds the largest utilization the batch names.
-        Selection and claim share this helper so they cannot drift apart.
+        ``None`` while the free set cannot serve the batch: too few idle workers,
+        no CPU worker advertising a required task type, or no GPU worker whose
+        memory fraction holds the batch's largest utilization.
         """
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
