@@ -139,7 +139,11 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 lowering = lookup(op, phase)
                 if lowering is None:
                     continue
-                result = lowering(self, op_id, op, ctx)
+                if ctx.task_type_override == "data_profile" and (
+                    phase is not Phase.RETRIEVAL
+                ):
+                    continue
+                result = lowering(self, op, ctx)
                 if result is None:
                     continue
                 for node in result.nodes:
@@ -165,7 +169,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
         ((output_name, path_override),) = outputs
         default_path = ctx.op_output(op).default_output_path
         path = path_override or default_path
-        for node_id in result.output_nodes:
-            ctx.output_node_map[node_id] = output_name
-            if path is not None:
-                ctx.output_paths[node_id] = path
+        ctx.output_node_map[result.dsl_to_runtime[-1]] = output_name
+        if path is not None:
+            ctx.output_paths[result.dsl_to_runtime[-1]] = path

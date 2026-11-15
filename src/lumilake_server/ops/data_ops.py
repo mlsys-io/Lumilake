@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 from lumilake_server.common import Message
-from lumilake_server.ops.ops import FunctionalOp, Op
+from lumilake_server.ops.ops import FunctionalOp, GraphRole, Op, RowShape
 from lumilake_server.utils.utils import check_and_cast_list
 
 
@@ -20,6 +20,8 @@ class OpMessage:
 
 @Op.registry.register("DataOp")
 class DataOp(FunctionalOp):
+    graph_role = GraphRole.SOURCE
+
     data: list[str]
 
     def __init__(self, data: list[str]) -> None:
@@ -44,6 +46,16 @@ class DataRetrievalOp(FunctionalOp):
         super().__init__(inputs or [])
         self.data_spec = data_spec
 
+    @property
+    def row_shape(self) -> RowShape:
+        return (
+            RowShape.PER_ROW if self.data_spec.get("mode") == "s3" else RowShape.GROUPED
+        )
+
+    @property
+    def profilable(self) -> bool:
+        return self.data_spec.get("mode") in {"sql", "s3"}
+
     def _serialize(self) -> dict[str, Any]:
         return {"data_spec": self.data_spec}
 
@@ -57,6 +69,8 @@ class DataRetrievalOp(FunctionalOp):
 
 @Op.registry.register("MessageOp")
 class MessageOp(FunctionalOp):
+    graph_role = GraphRole.STRUCTURE
+
     def __init__(self, messages: list[OpMessage]) -> None:
         inputs: list[Op] = []
         message_refs: list[int | str] = []
@@ -130,6 +144,8 @@ def message_data(data: Sequence[Message | OpMessage]) -> MessageOp:
 
 @Op.registry.register("InputOp")
 class InputOp(FunctionalOp):
+    graph_role = GraphRole.SOURCE
+
     name: str
 
     def __init__(self, name: str) -> None:
@@ -150,6 +166,8 @@ def input_placeholder(name: str) -> InputOp:
 
 @Op.registry.register("OutputOp")
 class OutputOp(FunctionalOp):
+    graph_role = GraphRole.SINK
+
     name: str
     path: str | None
 

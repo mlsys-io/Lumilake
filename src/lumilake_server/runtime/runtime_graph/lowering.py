@@ -21,12 +21,10 @@ class Phase(IntEnum):
 @dataclass
 class LoweringResult:
     """What one op lowers to: its runtime nodes in emission order, its
-    DSL-to-runtime ids, the nodes an OutputOp archives from, and the upstream
-    ops the lowering absorbed."""
+    DSL-to-runtime ids, and the upstream ops the lowering absorbed."""
 
     nodes: list[RuntimeOp] = field(default_factory=list)
     dsl_to_runtime: list[str] = field(default_factory=list)
-    output_nodes: list[str] = field(default_factory=list)
     visited: list[str] = field(default_factory=list)
 
 
@@ -64,12 +62,8 @@ class LoweringContext:
     def op_output(self, op: Op) -> OpOutput:
         return self.builder._op_output(op)
 
-    @property
-    def profiling(self) -> bool:
-        return self.task_type_override == "data_profile"
 
-
-LoweringFn = Callable[[Any, str, Any, LoweringContext], LoweringResult | None]
+LoweringFn = Callable[[Any, Any, LoweringContext], LoweringResult | None]
 
 _LOWERINGS: dict[type[Op], list[tuple[Phase, LoweringFn]]] = {}
 

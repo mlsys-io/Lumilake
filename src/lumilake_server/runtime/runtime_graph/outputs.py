@@ -19,6 +19,7 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
+from lumilake_server.ops.ops import RowShape
 
 _WHOLE = "items.output"
 _VALUE_ROOT = "value.items.output"
@@ -99,7 +100,7 @@ def emits_one_item_per_row(op: Op) -> bool:
         return True
     return (
         isinstance(op, LLMChatOp)
-        and op.rowwise_template is None
+        and op.row_shape is RowShape.PER_ROW
         and not is_api_task(op)
     )
 
@@ -110,7 +111,7 @@ def needs_flatten(op: Op) -> bool:
     return (
         isinstance(op, LLMChatOp)
         and not isinstance(op, LLMVisionOp)
-        and bool(op.rowwise_template)
+        and op.row_shape is RowShape.GROUPED
     )
 
 

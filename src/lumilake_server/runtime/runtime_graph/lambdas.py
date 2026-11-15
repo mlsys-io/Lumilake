@@ -286,7 +286,6 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
 @register(LambdaOp, Phase.LIST_LAMBDA)
 def _lower_list_lambda(
     builder: Any,
-    op_id: str,
     op: LambdaOp,
     ctx: LoweringContext,
 ) -> LoweringResult | None:
@@ -294,10 +293,8 @@ def _lower_list_lambda(
     by the standalone pass."""
     if not op.takes_whole_columns:
         return None
-    if ctx.task_type_override == "data_profile":
-        return None
     runtime_op = builder._build_node_from_list_lambda_op(
-        op_id,
+        op.id,
         op,
         ctx.graph_dict,
         ctx.inputs_dict,
@@ -305,7 +302,6 @@ def _lower_list_lambda(
     return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
-        output_nodes=[runtime_op.node_id],
         visited=[input_op.id for input_op in op.inputs],
     )
 
@@ -313,25 +309,24 @@ def _lower_list_lambda(
 @register(LambdaOp, Phase.ROW_LAMBDA)
 def _lower_standalone_row_lambda(
     builder: Any,
-    op_id: str,
     op: LambdaOp,
     ctx: LoweringContext,
 ) -> LoweringResult | None:
     """Lower a row-mode LambdaOp to its own python step when no LLM inlined it:
     one that is an output, that nothing reached, that has an image, or that a
     runtime node references."""
-    if op.takes_whole_columns or ctx.task_type_override == "data_profile":
+    if op.takes_whole_columns:
         return None
     referenced = builder._referenced_row_lambdas(ctx.nodes, ctx.graph_dict)
     if (
-        op_id in ctx.visited
-        and op_id not in ctx.outputs_by_source
+        op.id in ctx.visited
+        and op.id not in ctx.outputs_by_source
         and op.image is None
-        and op_id not in referenced
+        and op.id not in referenced
     ):
         return None
     builder._build_python_step(
-        op_id,
+        op.id,
         ctx.graph_dict,
         ctx.inputs_dict,
         ctx.visited,
@@ -340,7 +335,6 @@ def _lower_standalone_row_lambda(
         ctx.dsl_to_runtime,
     )
     return LoweringResult(
-        nodes=[ctx.nodes[op_id]],
-        dsl_to_runtime=[op_id],
-        output_nodes=[op_id],
+        nodes=[ctx.nodes[op.id]],
+        dsl_to_runtime=[op.id],
     )

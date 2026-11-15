@@ -1,6 +1,7 @@
 import copy
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from enum import Enum
 from typing import Any, Self, TypeVar
 
 from lumilake_server.common import Message
@@ -32,10 +33,42 @@ class OpRegistry:
         return self._registry[key]
 
 
+class GraphRole(Enum):
+    """Where an op sits in the workflow graph: a source supplies values, a
+    structure op is folded into its consumer, a sink archives a result, and
+    every other op produces rows."""
+
+    SOURCE = "source"
+    STRUCTURE = "structure"
+    SINK = "sink"
+    PRODUCER = "producer"
+
+
+class RowShape(Enum):
+    """How many values one item of an op's output holds, which decides whether a
+    consumer reads it per row, per group, or as one whole list."""
+
+    PER_ROW = "per_row"
+    GROUPED = "grouped"
+    WHOLE_LIST = "whole_list"
+
+
 class Op(ABC):
     id: str
     inputs: list["Op"]
     registry: OpRegistry = OpRegistry()
+    graph_role: GraphRole = GraphRole.PRODUCER
+
+    @property
+    def row_shape(self) -> RowShape:
+        """The shape of one output item: a consumer of a row-wise op reads one
+        value per input row."""
+        return RowShape.PER_ROW
+
+    @property
+    def profilable(self) -> bool:
+        """Whether a preflight may profile the op with the data profiler."""
+        return False
 
     def __init__(self, inputs: list["Op"] | None = None) -> None:
         self.id = unique_id()

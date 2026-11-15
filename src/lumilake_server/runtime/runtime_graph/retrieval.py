@@ -421,7 +421,7 @@ class _RetrievalBuilder(_LLMBuilder):
     ) -> RuntimeOp | None:
         spec = op.data_spec or {}
         mode = spec["mode"]
-        if mode not in {"sql", "s3"}:
+        if not op.profilable:
             return None
         template = spec.get("template")
         params = spec.get("params") or []
@@ -930,7 +930,6 @@ class _RetrievalBuilder(_LLMBuilder):
 @register(DataRetrievalOp, Phase.RETRIEVAL)
 def _lower_data_retrieval(
     builder: Any,
-    op_id: str,
     op: DataRetrievalOp,
     ctx: LoweringContext,
 ) -> LoweringResult | None:
@@ -952,7 +951,7 @@ def _lower_data_retrieval(
 
     if ctx.task_type_override == "data_profile":
         runtime_op = builder._build_data_profile_node_from_data_retrieval_op(
-            op_id,
+            op.id,
             op,
             ctx.graph_dict,
             ctx.inputs_dict,
@@ -962,7 +961,7 @@ def _lower_data_retrieval(
             return None
     else:
         runtime_op = builder._build_node_from_data_retrieval_op(
-            op_id,
+            op.id,
             op,
             ctx.graph_dict,
             ctx.inputs_dict,
@@ -971,6 +970,5 @@ def _lower_data_retrieval(
     return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
-        output_nodes=[runtime_op.node_id],
         visited=upstreams,
     )

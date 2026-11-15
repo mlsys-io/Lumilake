@@ -92,15 +92,12 @@ class _EmbeddingBuilder(_LambdaBuilder):
 @register(EmbeddingOp, Phase.LLM)
 def _lower_embedding(
     builder: Any,
-    op_id: str,
     op: EmbeddingOp,
     ctx: LoweringContext,
 ) -> LoweringResult | None:
     """Lower one EmbeddingOp to its embedding task."""
-    if ctx.task_type_override == "data_profile":
-        return None
     runtime_op = builder._build_node_from_embedding_op(
-        op_id,
+        op.id,
         op,
         ctx.inputs_dict,
         ctx.visited,
@@ -110,5 +107,4 @@ def _lower_embedding(
     return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
-        output_nodes=[runtime_op.node_id],
     )

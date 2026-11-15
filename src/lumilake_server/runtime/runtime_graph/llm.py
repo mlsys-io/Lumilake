@@ -1168,18 +1168,15 @@ class _LLMBuilder(_EmbeddingBuilder):
 @register(LLMOp, Phase.LLM)
 def _lower_llm(
     builder: Any,
-    op_id: str,
     op: LLMOp,
     ctx: LoweringContext,
 ) -> LoweringResult | None:
     """Lower one LLM op, through the API task when it targets an external
     endpoint and through the local inference task otherwise."""
-    if ctx.task_type_override == "data_profile":
-        return None
 
     if op.config.api is not None:
         upstream_llm_ids, template_spec = builder._infer_structural_messages(
-            op_id,
+            op.id,
             ctx.graph_dict,
             ctx.inputs_dict,
             ctx.visited,
@@ -1188,7 +1185,7 @@ def _lower_llm(
             api_mode=True,
         )
         runtime_ops = builder._build_api_llm_op(
-            llm_op_id=op_id,
+            llm_op_id=op.id,
             llm_op=op,
             api_config=op.config.api,
             template_spec=template_spec,
@@ -1200,11 +1197,10 @@ def _lower_llm(
             dsl_to_runtime=ctx.dsl_to_runtime,
         )
         mapping = [runtime_op.node_id for runtime_op in runtime_ops]
-        output_nodes = list(mapping)
     else:
         runtime_ops = [
             builder._build_node_from_llm_op(
-                op_id,
+                op.id,
                 op,
                 ctx.graph_dict,
                 ctx.inputs_dict,
@@ -1214,28 +1210,23 @@ def _lower_llm(
                 runtime_nodes=ctx.nodes,
             )
         ]
-        mapping = [op_id]
-        output_nodes = [op_id]
+        mapping = [op.id]
 
     return LoweringResult(
         nodes=runtime_ops,
         dsl_to_runtime=mapping,
-        output_nodes=output_nodes,
     )
 
 
 @register(ImageGenerationOp, Phase.LLM)
 def _lower_image_generation(
     builder: Any,
-    op_id: str,
     op: ImageGenerationOp,
     ctx: LoweringContext,
 ) -> LoweringResult | None:
     """Lower one ImageGenerationOp to its text-to-image task."""
-    if ctx.task_type_override == "data_profile":
-        return None
     runtime_op = builder._build_node_from_llm_op(
-        op_id,
+        op.id,
         op,
         ctx.graph_dict,
         ctx.inputs_dict,
@@ -1247,5 +1238,4 @@ def _lower_image_generation(
     return LoweringResult(
         nodes=[runtime_op],
         dsl_to_runtime=[runtime_op.node_id],
-        output_nodes=[runtime_op.node_id],
     )

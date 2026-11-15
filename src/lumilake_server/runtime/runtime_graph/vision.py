@@ -386,16 +386,13 @@ class _VisionBuilder(_RetrievalBuilder):
 @register(LLMVisionOp, Phase.LLM)
 def _lower_vision(
     builder: Any,
-    op_id: str,
     op: LLMVisionOp,
     ctx: LoweringContext,
 ) -> LoweringResult | None:
     """Lower a VLM to its embedding node and inference node, or to the four
     nodes a flattened per-row VLM runs as."""
-    if ctx.task_type_override == "data_profile":
-        return None
     runtime_ops, mapping = builder._build_vlm_nodes_from_image_op(
-        op_id,
+        op.id,
         op,
         ctx.graph_dict,
         ctx.inputs_dict,
@@ -406,5 +403,4 @@ def _lower_vision(
     return LoweringResult(
         nodes=runtime_ops,
         dsl_to_runtime=mapping,
-        output_nodes=[op_id],
     )
