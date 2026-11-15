@@ -19,7 +19,7 @@ from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes import trace as trace_routes
 from lumilake_server.runtime.optimizer import create_optimizer
 from lumilake_server.runtime.protocol import LumilakeResponse
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage

@@ -10,7 +10,7 @@ from lumilake import envs as envs_mod
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 

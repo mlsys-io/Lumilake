@@ -1,4 +1,4 @@
-from lumilake_server.runtime.runtime_graph.graph import (
+from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     merge_runtime_graphs,
 )

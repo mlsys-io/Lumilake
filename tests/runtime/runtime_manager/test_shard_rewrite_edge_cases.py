@@ -1,6 +1,6 @@
 import pytest
 
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 

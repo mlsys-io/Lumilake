@@ -63,8 +63,8 @@ from lumilake_server.runtime.request import (
     RequestInfo,
     WorkflowSliceMeta,
 )
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,

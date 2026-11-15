@@ -8,7 +8,7 @@ goes to the first CPU worker that advertises it. It uses no cost model.
 from typing import Any
 
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,

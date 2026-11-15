@@ -41,12 +41,12 @@ from lumilake_server.runtime.flowmesh_client import (
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_graph.graph import (
+from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
     RuntimeGraph,
 )
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage

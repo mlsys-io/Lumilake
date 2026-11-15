@@ -18,7 +18,7 @@ from lumilake_server.utils.lumid_data_client import profile as lumid_profile
 
 if TYPE_CHECKING:
     from lumilake_server.runtime.request import WorkflowSliceMeta
-    from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+    from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 RuntimeGraphBuilder = None
 

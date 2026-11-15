@@ -21,7 +21,7 @@ from lumilake_server.runtime.optimizer.schemas import (
     ScheduleRequest,
     ScheduleResponse,
 )
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 router = APIRouter(prefix="/optimizer", tags=["Optimizer"])
 

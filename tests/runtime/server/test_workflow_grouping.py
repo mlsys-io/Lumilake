@@ -12,7 +12,7 @@ from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.job_manager.base import WorkflowItem
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
 

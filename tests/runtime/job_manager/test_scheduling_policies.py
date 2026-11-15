@@ -19,7 +19,7 @@ from lumilake_server.runtime.job_manager.priority_queue import PriorityJobManage
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 

@@ -24,7 +24,7 @@ from lumilake_server.runtime.data_profile_utils import (
     normalize_table_name,
 )
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,

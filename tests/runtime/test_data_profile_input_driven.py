@@ -9,7 +9,7 @@ minimum the op is guaranteed to fetch per invocation.
 """
 
 from lumilake_server.runtime.data_profile_utils import _derive_s3_profile_for_graph
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 

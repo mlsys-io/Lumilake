@@ -10,7 +10,7 @@ from lumilake_server.graphs import CompiledGraph
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.protocol import LumilakeRequestConfig
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 
 class AbortReason(StrEnum):

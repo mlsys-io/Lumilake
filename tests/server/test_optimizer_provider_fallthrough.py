@@ -10,7 +10,7 @@ from lumilake_server.runtime.optimizer import (
     create_optimizer,
 )
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 
 class _StubOptimizer(BaseOptimizer):

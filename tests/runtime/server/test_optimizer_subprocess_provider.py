@@ -21,7 +21,7 @@ from lumilake_hook import BaseBindings
 from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.runtime.optimizer import OPTIMIZER_PROVIDERS, OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
-from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import (
     _install_plugins_sync,

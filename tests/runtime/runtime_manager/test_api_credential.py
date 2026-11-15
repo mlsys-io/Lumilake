@@ -19,11 +19,11 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placeholder
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.request import RequestInfo
-from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_graph.graph import (
+from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     RuntimeGraph,
 )
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
 )
