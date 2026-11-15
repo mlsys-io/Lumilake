@@ -218,26 +218,10 @@ class _RuntimeGraphBuilderBase:
                 "label": label,
                 "data": {"type": "list", "items": list(values)},
             }
-        if upstream is not None and self._is_api_task(upstream):
-            if path != "items.output":
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from API upstream '{node_ref}'; only"
-                    " 'items.output' (the whole output) is supported."
-                )
-            path = self._op_output(upstream).path
-        elif isinstance(upstream, LambdaOp):
+        if upstream is not None:
             path = self._op_output(upstream).read(
                 path, f"Column '{label}' of consumer '{consumer_id}'"
             )
-        elif upstream is not None and upstream.id in self._flattened_vlm_ids:
-            if not path.startswith("items.output"):
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from per-row VLM '{node_ref}'; only"
-                    " 'items.output' is supported."
-                )
-            path = "value." + path
         return {"label": label, "node": node_ref, "path": path}
 
     def _project_input_field(
