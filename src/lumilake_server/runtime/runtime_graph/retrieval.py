@@ -969,6 +969,5 @@ def _lower_data_retrieval(
         )
     return LoweringResult(
         nodes=[runtime_op],
-        dsl_to_runtime=[runtime_op.node_id],
         visited=upstreams,
     )

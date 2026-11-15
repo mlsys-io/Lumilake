@@ -151,7 +151,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
                         continue
                     ctx.nodes[node.node_id] = node
                     ctx.node_order.append(node.node_id)
-                ctx.dsl_to_runtime[op_id] = list(result.dsl_to_runtime)
+                ctx.dsl_to_runtime[op_id] = [node.node_id for node in result.nodes]
                 ctx.visited.update(result.visited)
                 ctx.visited.add(op_id)
                 self._record_output(op, result, ctx)
@@ -169,6 +169,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
         ((output_name, path_override),) = outputs
         default_path = ctx.op_output(op).default_output_path
         path = path_override or default_path
-        ctx.output_node_map[result.dsl_to_runtime[-1]] = output_name
+        node_id = result.nodes[-1].node_id
+        ctx.output_node_map[node_id] = output_name
         if path is not None:
-            ctx.output_paths[result.dsl_to_runtime[-1]] = path
+            ctx.output_paths[node_id] = path

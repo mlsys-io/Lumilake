@@ -106,5 +106,4 @@ def _lower_embedding(
     )
     return LoweringResult(
         nodes=[runtime_op],
-        dsl_to_runtime=[runtime_op.node_id],
     )

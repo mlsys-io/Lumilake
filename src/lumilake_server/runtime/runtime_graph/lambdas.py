@@ -301,7 +301,6 @@ def _lower_list_lambda(
     )
     return LoweringResult(
         nodes=[runtime_op],
-        dsl_to_runtime=[runtime_op.node_id],
         visited=[input_op.id for input_op in op.inputs],
     )
 
@@ -336,5 +335,4 @@ def _lower_standalone_row_lambda(
     )
     return LoweringResult(
         nodes=[ctx.nodes[op.id]],
-        dsl_to_runtime=[op.id],
     )

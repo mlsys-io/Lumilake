@@ -1196,7 +1196,6 @@ def _lower_llm(
             inputs_dict=ctx.inputs_dict,
             dsl_to_runtime=ctx.dsl_to_runtime,
         )
-        mapping = [runtime_op.node_id for runtime_op in runtime_ops]
     else:
         runtime_ops = [
             builder._build_node_from_llm_op(
@@ -1210,11 +1209,9 @@ def _lower_llm(
                 runtime_nodes=ctx.nodes,
             )
         ]
-        mapping = [op.id]
 
     return LoweringResult(
         nodes=runtime_ops,
-        dsl_to_runtime=mapping,
     )
 
 
@@ -1237,5 +1234,4 @@ def _lower_image_generation(
     )
     return LoweringResult(
         nodes=[runtime_op],
-        dsl_to_runtime=[runtime_op.node_id],
     )

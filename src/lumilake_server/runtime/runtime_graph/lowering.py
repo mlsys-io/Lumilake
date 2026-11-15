@@ -20,11 +20,10 @@ class Phase(IntEnum):
 
 @dataclass
 class LoweringResult:
-    """What one op lowers to: its runtime nodes in emission order, its
-    DSL-to-runtime ids, and the upstream ops the lowering absorbed."""
+    """What one op lowers to: its runtime nodes in emission order and the
+    upstream ops the lowering absorbed."""
 
     nodes: list[RuntimeOp] = field(default_factory=list)
-    dsl_to_runtime: list[str] = field(default_factory=list)
     visited: list[str] = field(default_factory=list)
 
 
