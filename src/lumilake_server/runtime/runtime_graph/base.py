@@ -18,6 +18,7 @@ from lumilake_server.ops import (
     Op,
 )
 from lumilake_server.ops.llm_ops import LLMChatOp, LLMVisionOp
+from lumilake_server.runtime.runtime_graph.outputs import OpOutput, op_output
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
@@ -45,6 +46,9 @@ class _RuntimeGraphBuilderBase:
         # Per-row VLMs over a retrieval, flattened to one embedding + one
         # inference + a regroup step; readers bind to the regrouped output.
         self._flattened_vlm_ids: set[str] = set()
+        # The workflow being built, so every read site describes the same one.
+        self._inputs_dict: dict[str, list[str]] = {}
+        self._graph_dict: dict[str, Op] = {}
 
     def _create_runtime_op(
         self,
@@ -493,3 +497,11 @@ class _RuntimeGraphBuilderBase:
         if isinstance(op, LambdaOp):
             return _RuntimeGraphBuilderBase._lambda_result_path(op, "items.output")
         return "items.output"
+
+    def _op_output(self, op: Op) -> OpOutput:
+        """How a consumer reads the op's values."""
+        return op_output(
+            op,
+            self._flattened_vlm_ids,
+            self._static_output_row_count(op, self._inputs_dict, self._graph_dict),
+        )

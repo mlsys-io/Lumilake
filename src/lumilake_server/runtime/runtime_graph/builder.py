@@ -30,6 +30,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
         graph_dict = compiled_graph.graph.as_dict()
         inputs_dict = compiled_graph.inputs
         input_ops_by_id = {op.id: op for op in compiled_graph.graph.input_ops.values()}
+        self._inputs_dict = inputs_dict
+        self._graph_dict = graph_dict
         self._flattened_vlm_ids = {
             op_id
             for op_id, op in graph_dict.items()
