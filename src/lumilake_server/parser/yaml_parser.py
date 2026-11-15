@@ -91,35 +91,9 @@ import yaml
 
 from .common import make_id as _make_id
 from .yaml_ops.common import EmitContext, OpEntry
-from .yaml_ops.data import (
-    emit_data_op,
-    emit_data_retrieval_op,
-    emit_format_op,
-    emit_message_op,
-)
-from .yaml_ops.embedding import emit_embedding_op
-from .yaml_ops.image import emit_image_generation_op
-from .yaml_ops.lambdas import emit_lambda_op
-from .yaml_ops.llm import (
-    emit_llm_chat_op,
-    emit_llm_completion_op,
-    emit_llm_vision_op,
-)
+from .yaml_ops.emitters import EMITTERS, op_id_prefix
 
-SUPPORTED_OPS: frozenset[str] = frozenset(
-    {
-        "DataOp",
-        "DataRetrievalOp",
-        "MessageOp",
-        "LLMChatOp",
-        "LLMCompletionOp",
-        "LLMVisionOp",
-        "ImageGenerationOp",
-        "EmbeddingOp",
-        "FormatOp",
-        "LambdaOp",
-    }
-)
+SUPPORTED_OPS: frozenset[str] = frozenset(EMITTERS)
 
 
 @dataclass
@@ -261,7 +235,7 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
                 f"Supported: {sorted(SUPPORTED_OPS)}"
             )
         user_id_to_internal[entry.id] = _make_id(
-            scope, _op_id_prefix(entry.op), entry.id
+            scope, op_id_prefix(entry.op), entry.id
         )
 
     # Topological order: emit ops whose dependencies are already resolved.
@@ -393,43 +367,5 @@ def _build_op_dict(
         scope=scope,
         graph_ops=graph_ops,
     )
-    if entry.op == "DataOp":
-        emit_data_op(op_dict, ctx)
-    elif entry.op == "DataRetrievalOp":
-        emit_data_retrieval_op(op_dict, ctx)
-    elif entry.op == "MessageOp":
-        emit_message_op(op_dict, ctx)
-    elif entry.op == "LLMChatOp":
-        emit_llm_chat_op(op_dict, ctx)
-    elif entry.op == "LLMCompletionOp":
-        emit_llm_completion_op(op_dict, ctx)
-    elif entry.op == "LLMVisionOp":
-        emit_llm_vision_op(op_dict, ctx)
-    elif entry.op == "ImageGenerationOp":
-        emit_image_generation_op(op_dict, ctx)
-    elif entry.op == "EmbeddingOp":
-        emit_embedding_op(op_dict, ctx)
-    elif entry.op == "FormatOp":
-        emit_format_op(op_dict, ctx)
-    elif entry.op == "LambdaOp":
-        emit_lambda_op(op_dict, ctx)
-    else:  # pragma: no cover - guarded upstream
-        raise ValueError(f"unsupported op type '{entry.op}'")
-
+    EMITTERS[entry.op].emit(op_dict, ctx)
     return op_dict
-
-
-def _op_id_prefix(op_type: str) -> str:
-    mapping = {
-        "DataOp": "data",
-        "DataRetrievalOp": "retrieval",
-        "MessageOp": "message",
-        "LLMChatOp": "llm",
-        "LLMCompletionOp": "llmcompletion",
-        "LLMVisionOp": "llmvision",
-        "ImageGenerationOp": "imagegen",
-        "EmbeddingOp": "embedding",
-        "FormatOp": "format",
-        "LambdaOp": "lambda",
-    }
-    return mapping.get(op_type, op_type.lower())
