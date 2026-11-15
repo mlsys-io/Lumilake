@@ -66,7 +66,7 @@ def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:
         for worker in workers.values()
         if worker.kind == "gpu"
     )
-    return f"GPU worker fractions: {listed}"
+    return f"Claimed GPU worker fractions: {listed}"
 
 
 @dataclass(frozen=True, slots=True)
