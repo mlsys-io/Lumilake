@@ -29,8 +29,6 @@ class LoweringContext:
     nodes: dict[str, RuntimeOp]
     dsl_to_runtime: dict[str, list[str]]
     visited: set[str]
-    output_node_map: dict[str, str]
-    output_paths: dict[str, str]
 
 
 @dataclass

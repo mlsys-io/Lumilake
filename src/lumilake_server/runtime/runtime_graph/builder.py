@@ -50,10 +50,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
             nodes=nodes,
             dsl_to_runtime=dsl_to_runtime,
             visited=visited,
-            output_node_map=output_node_map,
-            output_paths=output_paths,
         )
-        node_order = self._lower_ops(ctx)
+        node_order = self._lower_ops(ctx, output_node_map, output_paths)
 
         if task_type_override != "data_profile":
             unvisited_node_ids = set(graph_dict) - visited
@@ -111,7 +109,12 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 )
         return outputs_by_source
 
-    def _lower_ops(self, ctx: LoweringContext) -> list[str]:
+    def _lower_ops(
+        self,
+        ctx: LoweringContext,
+        output_node_map: dict[str, str],
+        output_paths: dict[str, str],
+    ) -> list[str]:
         """Run every registered lowering, one phase at a time, adding each
         result's nodes to the graph in emission order and recording the output
         each op archives at as it lowers."""
@@ -139,13 +142,19 @@ class RuntimeGraphBuilder(_VisionBuilder):
                     if node.node_id not in result.built
                 ]
                 ctx.visited.add(op.id)
-                self._record_output(op, ctx)
+                self._record_output(op, ctx, output_node_map, output_paths)
             after = phase_hook(phase)
             if after is not None:
                 after(self, ctx)
         return node_order
 
-    def _record_output(self, op: Op, ctx: LoweringContext) -> None:
+    def _record_output(
+        self,
+        op: Op,
+        ctx: LoweringContext,
+        output_node_map: dict[str, str],
+        output_paths: dict[str, str],
+    ) -> None:
         """Record the output an op archives at, if an OutputOp reads it."""
         outputs = ctx.outputs_by_source.get(op.id)
         runtime_ids = ctx.dsl_to_runtime.get(op.id)
@@ -153,7 +162,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
             return
         ((output_name, path_override),) = outputs
         node_id = runtime_ids[-1]
-        ctx.output_node_map[node_id] = output_name
+        output_node_map[node_id] = output_name
         path = path_override or self._op_output(op).default_output_path
         if path is not None:
-            ctx.output_paths[node_id] = path
+            output_paths[node_id] = path
