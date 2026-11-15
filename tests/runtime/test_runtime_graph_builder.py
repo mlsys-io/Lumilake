@@ -20,7 +20,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
-from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from lumilake_server.runtime.runtime_graph import RuntimeGraphSchema
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraphSchema
 
 
 class ScheduleRequest(BaseModel):

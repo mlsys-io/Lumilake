@@ -7,7 +7,7 @@ from lumilake_server.runtime.protocol import (
     LumilakeRequestConfig,
     LumilakeResponse,
 )
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.utils.queue import TSQueue
 
 

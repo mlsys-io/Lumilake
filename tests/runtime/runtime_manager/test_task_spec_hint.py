@@ -4,7 +4,7 @@ from typing import Any, cast
 import pytest
 
 from lumilake_server.runtime.optimizer.base import Schedule
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 

@@ -9,7 +9,7 @@ from lumilake_server.routes.jobs import (
     _validate_runtime_graphs,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
 

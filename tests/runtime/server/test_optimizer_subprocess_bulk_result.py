@@ -11,7 +11,7 @@ from support.optimizer_bulk_schedule_plugin import OPTIMIZER_TYPE, PAYLOAD_BYTES
 from support.runtime_server import RecordingRuntimeManager
 
 from lumilake import envs
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 _BULK_PLUGIN = "support.optimizer_bulk_schedule_plugin"

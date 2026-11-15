@@ -1,5 +1,5 @@
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 

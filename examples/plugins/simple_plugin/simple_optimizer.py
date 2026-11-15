@@ -2,7 +2,7 @@ from typing import Any
 
 from lumilake_server.runtime.optimizer import OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 
 
 class SimpleRoundRobinOptimizer(BaseOptimizer):

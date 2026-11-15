@@ -31,7 +31,7 @@ from lumilake_server.runtime.job_manager.priority_queue import (
     _hardware_signature,
 )
 from lumilake_server.runtime.protocol import HardwareRequirements
-from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import (
     _resolve_cpu,
     _resolve_gpu_count,

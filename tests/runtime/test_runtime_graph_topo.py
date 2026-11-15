@@ -8,7 +8,7 @@ edges to preserve ordering, but the returned list must only contain
 real node ids.
 """
 
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 

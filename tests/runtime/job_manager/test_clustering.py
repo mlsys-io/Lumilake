@@ -1,7 +1,7 @@
 from lumilake_server.runtime.job_manager.cluster_algo.clustering import (
     select_affinity_batch_ids,
 )
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 

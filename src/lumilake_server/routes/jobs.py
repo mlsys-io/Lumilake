@@ -100,7 +100,7 @@ from lumilake_server.runtime.protocol import (
     RequestCancelledError,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph import (
+from lumilake_server.runtime.runtime_graph.graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     RuntimeGraph,
 )

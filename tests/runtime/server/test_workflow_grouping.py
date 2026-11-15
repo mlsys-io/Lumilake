@@ -12,7 +12,7 @@ from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.job_manager.base import WorkflowItem
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
 
@@ -393,7 +393,7 @@ def _rowwise_columns(compiled_graph: Graph) -> list[dict]:
 
 
 def _runtime_columns(graph: Graph, inputs: dict[str, list[str]]) -> list[dict]:
-    from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+    from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 
     runtime_graph = RuntimeGraphBuilder().build(graph.compile(**inputs))
     for node in runtime_graph.nodes.values():

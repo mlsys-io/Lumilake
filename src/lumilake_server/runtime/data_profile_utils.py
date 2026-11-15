@@ -15,7 +15,7 @@ from lumilake_server.data_profile_models import (
     DataProfileResultRow,
 )
 from lumilake_server.runtime.protocol import RequestCancelledError
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.utils.data_profile_offload import (
     data_profile_registry,
     normalize_data_profile_result,

@@ -10,7 +10,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, as_output
 from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
 _SHOUT = "def shout(inputs):\n    (text,) = inputs\n    return text.upper()"

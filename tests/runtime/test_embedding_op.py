@@ -17,7 +17,7 @@ from lumilake_server.ops import (
     input_placeholder,
 )
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 _MODEL = "BAAI/bge-small-en-v1.5"

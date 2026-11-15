@@ -15,7 +15,10 @@ from lumilake_hook import validate_remote_url
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse
-from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphSchema
+from lumilake_server.runtime.runtime_graph.graph import (
+    RuntimeGraph,
+    RuntimeGraphSchema,
+)
 
 
 class RemoteOptimizer(BaseOptimizer):

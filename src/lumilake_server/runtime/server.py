@@ -63,15 +63,13 @@ from lumilake_server.runtime.request import (
     RequestInfo,
     WorkflowSliceMeta,
 )
-from lumilake_server.runtime.runtime_graph import (
-    RuntimeGraph,
-    RuntimeGraphBuilder,
-    RuntimeOp,
-)
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue

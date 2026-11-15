@@ -22,7 +22,7 @@ from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import RequestCancelledError
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import RuntimeExecutionError

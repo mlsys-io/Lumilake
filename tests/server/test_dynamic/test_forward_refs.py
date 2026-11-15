@@ -772,7 +772,7 @@ def test_forward_aligned_materializers_are_row_cardinality():
     # so neither they nor News Report are whole-list-per-run, and News Report's
     # columns still read the materializers at value.items.output.
     from lumilake_server.graphs import Graph
-    from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+    from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
 
     sql_id = "s1"
     sql_id2 = "s2"

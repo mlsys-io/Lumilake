@@ -1,21 +1,14 @@
-import hashlib
-import json
 import re
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Self, cast
+from collections.abc import Sequence
+from typing import Any, cast
 
 import sqlparse
-from pydantic import BaseModel, ConfigDict, Field
 from sqlparse.sql import TokenList
 from sqlparse.tokens import Keyword
 
 from lumilake import envs
-from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import (
     ApiConfig,
-    project_input_keys,
     retrieval_items_path,
 )
 from lumilake_server.graphs import CompiledGraph
@@ -43,393 +36,27 @@ from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
     resolve_api_credential,
 )
-from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
-from lumilake_server.runtime.sensitive import redact_sensitive
+from lumilake_server.runtime.runtime_graph.base import (
+    _default_output_destination,
+    _RuntimeGraphBuilderBase,
+)
+from lumilake_server.runtime.runtime_graph.graph import (
+    _API_CREDENTIAL_PLACEHOLDER,
+    Roles,
+    RuntimeGraph,
+    _inline_single_value_list_params,
+    _RuntimeProfileSamplers,
+    make_node_prefix,
+)
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _type_default_sample,
 )
-from lumilake_server.utils.graph import topological_sort
-from lumilake_server.utils.lumid_data_client import (
-    retrieve_sample as lumid_retrieve_sample,
-)
-
-_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
-_API_CREDENTIAL_PLACEHOLDER = "${credential}"
 
 
-class RuntimeGraphSchema(BaseModel):
-    """Pydantic schema for a serialized ``RuntimeGraph``.
-
-    The dataclass below stays the in-process representation. This model
-    is used at boundaries (HTTP, IPC) to enforce field shape, types,
-    required fields, and reject unknown keys.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    nodes: dict[str, RuntimeOpSchema]
-    node_order: list[str]
-    output_node_map: dict[str, str] = Field(default_factory=dict)
-    output_paths: dict[str, str] = Field(default_factory=dict)
-    dsl_to_runtime: dict[str, list[str]] = Field(default_factory=dict)
-
-
-class Roles(Enum):
-    SYSTEM = "system"
-    USER = "user"
-    ASSISTANT = "assistant"
-
-
-def _default_output_destination() -> dict[str, Any]:
-    if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
-        return {"type": "http", "timeoutSec": 3600}
-    return {"type": "local"}
-
-
-def _sanitize_node_prefix(prefix: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", prefix).strip("_")
-    return safe or "graph"
-
-
-_API_ROW_PATH = "items.rows.json.choices[0].message.content"
-_API_ITEM_PATH = "items.json.choices[0].message.content"
-
-
-def make_node_prefix(name: str) -> str:
-    safe = _sanitize_node_prefix(name)
-    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
-    return f"{safe}_{digest}"
-
-
-def _default_sql_sampler(query: str) -> list[Any]:
-    return lumid_retrieve_sample(query)
-
-
-def _default_s3_sampler(prefix: str) -> list[str]:
-    # The default sampler intentionally rejects so the caller raises the
-    # sample-value error. Live S3 sampling is opt-in via a test or deploy
-    # override of ``_RuntimeProfileSamplers.s3``.
-    raise NotImplementedError(
-        "S3 upstream sample requires 'sample_value' in the upstream data_spec"
-    )
-
-
-@dataclass
-class _RuntimeProfileSamplerRegistry:
-    sql: Any = field(default=_default_sql_sampler)
-    s3: Any = field(default=_default_s3_sampler)
-
-
-_RuntimeProfileSamplers = _RuntimeProfileSamplerRegistry()
-
-
-def _inline_single_value_list_params(
-    template: str,
-    params: list[Any],
-) -> tuple[str, list[Any]]:
-    """Render single-element list params directly into the SQL/S3 template."""
-    rendered = template
-    remaining: list[Any] = []
-    for param in params:
-        if not isinstance(param, dict):
-            remaining.append(param)
-            continue
-        label = param.get("label")
-        data = param.get("data")
-        if (
-            not isinstance(label, str)
-            or not isinstance(data, dict)
-            or data.get("type") != "list"
-        ):
-            remaining.append(param)
-            continue
-        items = data.get("items")
-        if not isinstance(items, list) or len(items) != 1:
-            remaining.append(param)
-            continue
-        placeholder = "{" + label + "}"
-        if placeholder not in rendered:
-            remaining.append(param)
-            continue
-        value = str(items[0]).replace("'", "''")
-        rendered = rendered.replace(placeholder, value)
-    return rendered, remaining
-
-
-@dataclass
-class RuntimeGraph:
-    nodes: dict[str, RuntimeOp]
-    node_order: list[str]
-    output_node_map: dict[str, str]
-    output_paths: dict[str, str] = field(default_factory=dict)
-    dsl_to_runtime: dict[str, list[str]] = field(default_factory=dict)
-
-    @property
-    def node_count(self) -> int:
-        return len(self.nodes)
-
-    def serialize(self) -> dict[str, Any]:
-        payload = RuntimeGraphSchema(
-            nodes={
-                nid: RuntimeOpSchema.model_validate(op.serialize())
-                for nid, op in self.nodes.items()
-            },
-            node_order=self.node_order,
-            output_node_map=self.output_node_map,
-            output_paths=self.output_paths,
-            dsl_to_runtime=self.dsl_to_runtime,
-        ).model_dump(exclude_none=True)
-        return redact_sensitive(payload)
-
-    @classmethod
-    def from_schema(cls, schema: "RuntimeGraphSchema") -> "RuntimeGraph":
-        nodes = {
-            nid: RuntimeOp.from_schema(nid, op_schema)
-            for nid, op_schema in schema.nodes.items()
-        }
-        missing = [nid for nid in schema.node_order if nid not in nodes]
-        if missing:
-            raise ValueError(f"node_order references unknown nodes: {missing}")
-        return cls(
-            nodes=nodes,
-            node_order=schema.node_order,
-            output_node_map=schema.output_node_map,
-            output_paths=schema.output_paths,
-            dsl_to_runtime=schema.dsl_to_runtime,
-        )
-
-    @classmethod
-    def deserialize(cls, payload: Mapping[str, Any]) -> "RuntimeGraph":
-        return cls.from_schema(RuntimeGraphSchema.model_validate(payload))
-
-    def to_flowmesh_nodes(self) -> list[dict[str, Any]]:
-        # ``RuntimeOp.dependencies`` may reference DSL op ids that aren't
-        # materialized as runtime/FlowMesh nodes (e.g. an ``InputOp``
-        # consumed only as a retrieval param). FlowMesh schedules tasks
-        # whose deps it can resolve — including a non-FlowMesh id in
-        # ``dependsOn`` pins the task in PENDING forever. Filter the
-        # exported deps to real runtime nodes here. ``topological_order``
-        # already preserves ordering across these deps.
-        valid_node_ids = set(self.nodes)
-        exported: list[dict[str, Any]] = []
-        for node_id in self.node_order:
-            node_payload = self.nodes[node_id].to_flowmesh_node()
-            if "dependsOn" in node_payload:
-                filtered = [
-                    dep for dep in node_payload["dependsOn"] if dep in valid_node_ids
-                ]
-                if filtered:
-                    node_payload["dependsOn"] = filtered
-                else:
-                    node_payload.pop("dependsOn", None)
-            exported.append(node_payload)
-        return exported
-
-    def topological_order(self) -> list[str]:
-        # A runtime node's ``dependencies`` may reference DSL-layer op ids
-        # that never materialized as runtime nodes (e.g. an ``InputOp``
-        # consumed as a retrieval param). We include those in the
-        # topological-sort graph so their ordering constraints are
-        # respected, then filter the result back down to ids that
-        # actually exist in ``self.nodes`` — callers iterate the result
-        # expecting to index into ``self.nodes``.
-        graph: dict[str, set[str]] = {node_id: set() for node_id in self.nodes}
-        for node_id, node in self.nodes.items():
-            for dep in node.dependencies:
-                if dep not in graph:
-                    graph[dep] = set()
-                graph[dep].add(node_id)
-        order_index = {node_id: idx for idx, node_id in enumerate(self.node_order)}
-        return [
-            node_id
-            for node_id in topological_sort(
-                graph,
-                secondary_key=lambda node_id: order_index.get(
-                    node_id,
-                    len(order_index),
-                ),
-            )
-            if node_id in self.nodes
-        ]
-
-    def list_lambda_cardinality_nodes(self) -> set[str]:
-        """Node ids that emit one whole-list value per run: list-mode Lambdas and
-        their dependents, up to a row-mode python step. Aligned-mode Lambdas are
-        row-cardinality, so they are neither seeds nor barriers here."""
-        list_lambda_nodes = {
-            node_id
-            for node_id, node in self.nodes.items()
-            if node.task_type == python_step.TASK_TYPE
-            and node.data_spec.get("mode") == "list"
-        }
-        list_lambda_dependent: set[str] = set()
-        for node_id in self.node_order:
-            node = self.nodes[node_id]
-            if node_id in list_lambda_nodes:
-                list_lambda_dependent.add(node_id)
-                continue
-            if (
-                node.task_type == python_step.TASK_TYPE
-                and node.data_spec.get("mode") != "list"
-            ):
-                continue
-            if any(dep in list_lambda_dependent for dep in node.dependencies):
-                list_lambda_dependent.add(node_id)
-        return list_lambda_dependent
-
-    def list_lambda_direct_read_nodes(self) -> set[str]:
-        """Node ids whose list column binds a list-mode ``LambdaOp`` one hop
-        away. FlowMesh runs such a task once per element, so the task's items
-        are the whole list and the aggregator folds them into one value."""
-        return {
-            node_id
-            for node_id, node in self.nodes.items()
-            if node.data_spec.get("type") == "list"
-            and (upstream := self.nodes.get(node.data_spec.get("node", ""))) is not None
-            and upstream.task_type == python_step.TASK_TYPE
-            and upstream.data_spec.get("mode") == "list"
-        }
-
-    def with_node_prefix(self, prefix: str, separator: str = "__") -> Self:
-        if not prefix:
-            return self
-
-        mapping = {node_id: f"{prefix}{separator}{node_id}" for node_id in self.nodes}
-
-        def _remap_placeholder(text: str, rewritable: dict[str, str]) -> str:
-            def _sub(match: re.Match[str]) -> str:
-                node = match.group(1)
-                prefixed = rewritable.get(node)
-                if prefixed is None:
-                    return match.group(0)
-                return f"${{{prefixed}.{match.group(2)}}}"
-
-            return _PLACEHOLDER_RE.sub(_sub, text)
-
-        def remap(value: Any, rewritable: dict[str, str]) -> Any:
-            if isinstance(value, dict):
-                updated: dict[str, Any] = {}
-                for key, item in value.items():
-                    if key == "node" and isinstance(item, str) and item in mapping:
-                        updated[key] = mapping[item]
-                    else:
-                        updated[key] = remap(item, rewritable)
-                return updated
-            if isinstance(value, list):
-                return [remap(item, rewritable) for item in value]
-            if isinstance(value, tuple):
-                return tuple(remap(item, rewritable) for item in value)
-            if isinstance(value, str):
-                return _remap_placeholder(value, rewritable)
-            return value
-
-        nodes: dict[str, RuntimeOp] = {}
-        for old_id, op in self.nodes.items():
-            new_id = mapping[old_id]
-            rewritable = {
-                dep: mapping[dep] for dep in op.dependencies if dep in mapping
-            }
-            nodes[new_id] = RuntimeOp(
-                node_id=new_id,
-                task_type=op.task_type,
-                backend=op.backend,
-                model=op.model,
-                data_spec=remap(op.data_spec, rewritable),
-                model_spec=remap(op.model_spec, rewritable),
-                inference_spec=remap(op.inference_spec, rewritable),
-                api_spec=remap(op.api_spec, rewritable),
-                dependencies=tuple(mapping.get(dep, dep) for dep in op.dependencies),
-                output_spec=(
-                    remap(op.output_spec, rewritable)
-                    if op.output_spec is not None
-                    else None
-                ),
-                condition=(
-                    remap(op.condition, rewritable)
-                    if op.condition is not None
-                    else None
-                ),
-            )
-
-        node_order = [mapping[node_id] for node_id in self.node_order]
-        output_node_map = {
-            mapping[node_id]: output_name
-            for node_id, output_name in self.output_node_map.items()
-        }
-        output_paths = {
-            mapping[node_id]: path for node_id, path in self.output_paths.items()
-        }
-        dsl_to_runtime = {
-            op_id: [mapping.get(node_id, node_id) for node_id in runtime_ids]
-            for op_id, runtime_ids in self.dsl_to_runtime.items()
-        }
-
-        return type(self)(
-            nodes=nodes,
-            node_order=node_order,
-            output_node_map=output_node_map,
-            output_paths=output_paths,
-            dsl_to_runtime=dsl_to_runtime,
-        )
-
-
-def merge_runtime_graphs(
-    graphs: dict[str, RuntimeGraph],
-) -> tuple[RuntimeGraph, dict[str, tuple[str, str]]]:
-    nodes: dict[str, RuntimeOp] = {}
-    node_order: list[str] = []
-    output_node_map: dict[str, str] = {}
-    output_paths: dict[str, str] = {}
-    dsl_to_runtime: dict[str, list[str]] = {}
-    output_mapping: dict[str, tuple[str, str]] = {}
-
-    for graph_name, graph in graphs.items():
-        for node_id in graph.node_order:
-            if node_id in nodes:
-                raise ValueError(f"Duplicate runtime node id across graphs: {node_id}")
-            nodes[node_id] = graph.nodes[node_id]
-            node_order.append(node_id)
-        for op_id, runtime_ids in graph.dsl_to_runtime.items():
-            existing = dsl_to_runtime.get(op_id)
-            if existing is None:
-                dsl_to_runtime[op_id] = list(runtime_ids)
-                continue
-            for runtime_id in runtime_ids:
-                if runtime_id not in existing:
-                    existing.append(runtime_id)
-        for node_id, output_name in graph.output_node_map.items():
-            output_node_map[node_id] = output_name
-            output_mapping[node_id] = (graph_name, output_name)
-        for node_id, path in graph.output_paths.items():
-            output_paths[node_id] = path
-
-    return (
-        RuntimeGraph(
-            nodes=nodes,
-            node_order=node_order,
-            output_node_map=output_node_map,
-            output_paths=output_paths,
-            dsl_to_runtime=dsl_to_runtime,
-        ),
-        output_mapping,
-    )
-
-
-class RuntimeGraphBuilder:
-    def __init__(
-        self,
-        logger: Logger | None = None,
-        log_level: LogLevel | None = None,
-        schema_cache: dict[str, list[dict[str, Any]]] | None = None,
-    ) -> None:
-        self.logger = init_child_logger("RuntimeGraphBuilder", logger, log_level)
-        self._schema_cache = schema_cache if schema_cache is not None else {}
-        # Per-row VLMs over a retrieval, flattened to one embedding + one
-        # inference + a regroup step; readers bind to the regrouped output.
-        self._flattened_vlm_ids: set[str] = set()
-
+class RuntimeGraphBuilder(_RuntimeGraphBuilderBase):
     def build(
         self,
         compiled_graph: CompiledGraph,
@@ -698,118 +325,6 @@ class RuntimeGraphBuilder:
             )
         return runtime_graph
 
-    def _build_python_step(
-        self,
-        op_id: str,
-        graph_dict: dict[str, Op],
-        inputs_dict: dict[str, list[str]],
-        visited_node_ids: set[str],
-        nodes: dict[str, RuntimeOp],
-        node_order: list[str],
-        dsl_to_runtime: dict[str, list[str]],
-    ) -> str:
-        """Compile one standalone LambdaOp (and any LambdaOp it reads) into a
-        FlowMesh python task. Returns its runtime node id."""
-        if op_id in nodes:
-            return op_id
-        op = graph_dict[op_id]
-        assert isinstance(op, LambdaOp)
-        visited_node_ids.add(op_id)
-
-        plan: python_step.ColumnPlan = []
-        dependencies: list[str] = []
-        row_counts: list[tuple[str, int | None]] = []
-        for inp in op.inputs:
-            if isinstance(inp, LambdaOp):
-                dep = self._build_python_step(
-                    inp.id,
-                    graph_dict,
-                    inputs_dict,
-                    visited_node_ids,
-                    nodes,
-                    node_order,
-                    dsl_to_runtime,
-                )
-            elif isinstance(inp, (LLMOp, DataRetrievalOp)):
-                runtime_ids = dsl_to_runtime.get(inp.id, [])
-                if len(runtime_ids) != 1:
-                    raise ValueError(
-                        f"LambdaOp '{op_id}' reads '{inp.id}', which compiled to"
-                        f" {len(runtime_ids)} runtime nodes; a standalone Python"
-                        " step can read one upstream node per input"
-                    )
-                dep = runtime_ids[0]
-            elif isinstance(inp, InputOp):
-                visited_node_ids.add(inp.id)
-                plan.append({"kind": "literal", "values": inputs_dict[inp.name]})
-                row_counts.append((inp.id, len(inputs_dict[inp.name])))
-                continue
-            elif isinstance(inp, DataOp):
-                visited_node_ids.add(inp.id)
-                plan.append({"kind": "literal", "values": list(inp.data)})
-                row_counts.append((inp.id, len(inp.data)))
-                continue
-            else:
-                raise ValueError(
-                    f"LambdaOp '{op_id}' reads a {type(inp).__name__}; a standalone"
-                    " Python step reads LLM, data-retrieval, Lambda, input or data"
-                    " ops"
-                )
-            row_counts.append(
-                (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
-            )
-            entry: dict[str, Any] = {"kind": "stage", "node": dep}
-            if (
-                isinstance(inp, LLMChatOp)
-                and not isinstance(inp, LLMVisionOp)
-                and inp.rowwise_template
-            ):
-                # A rowwise LLM groups its per-row outputs back into one item;
-                # flatten it to one value per row for the python step. A VLM's
-                # regroup step already emits one list per symbol, so it is
-                # excluded.
-                entry["flatten"] = True
-            plan.append(entry)
-            if dep not in dependencies:
-                dependencies.append(dep)
-
-        row_count = self._python_step_row_count(op_id, row_counts, combines_rows=True)
-
-        data_spec: dict[str, Any] = {
-            "code": op.code,
-            "fn_name": op.fn.__name__,
-            "plan": plan,
-            "timeout_s": (
-                python_step.DEFAULT_TIMEOUT_SECONDS
-                if op.timeout_s is None
-                else op.timeout_s
-            ),
-        }
-        if op.memory_mb is not None:
-            data_spec["memory_mb"] = op.memory_mb
-        if op.image is not None:
-            data_spec["image"] = op.image
-        if op.expected_runtime_s is not None:
-            data_spec["expected_runtime_s"] = op.expected_runtime_s
-            if row_count is not None:
-                data_spec["row_count"] = row_count
-        if op.cache is not None:
-            data_spec["cache"] = op.cache
-        runtime_op = self._create_runtime_op(
-            name=op_id,
-            task_type=python_step.TASK_TYPE,
-            data_spec=data_spec,
-            model_spec={},
-            inference_spec={},
-            backend=python_step.BACKEND,
-            model="",
-            dependencies=dependencies,
-        )
-        nodes[op_id] = runtime_op
-        node_order.append(op_id)
-        dsl_to_runtime[op_id] = [op_id]
-        return op_id
-
     def _mark_retrieval_upstream_nodes_visited(
         self,
         *,
@@ -833,507 +348,6 @@ class RuntimeGraphBuilder:
             node = param.get("node")
             if isinstance(node, str) and node in graph_dict:
                 visited_node_ids.add(node)
-
-    def _create_runtime_op(
-        self,
-        name: str,
-        task_type: str,
-        data_spec: dict[str, Any],
-        model_spec: dict[str, Any],
-        inference_spec: dict[str, Any],
-        backend: str,
-        model: str,
-        dependencies: list[str] | None = None,
-        output_spec: dict[str, Any] | None = None,
-        condition: dict[str, str] | None = None,
-        api_spec: dict[str, Any] | None = None,
-    ) -> RuntimeOp:
-        data_spec = self._attach_lumid_cfg(data_spec)
-        return RuntimeOp(
-            node_id=name,
-            task_type=task_type,
-            backend=backend,
-            model=model,
-            data_spec=data_spec,
-            model_spec=model_spec,
-            inference_spec=inference_spec,
-            api_spec=api_spec or {},
-            dependencies=tuple(dependencies or []),
-            output_spec=output_spec,
-            condition=condition,
-        )
-
-    def _build_model_spec(
-        self,
-        config: Any,
-        backend: str = "vllm",
-        backend_config: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        spec = {
-            "source": {
-                "type": "huggingface",
-                "identifier": config.model,
-                "revision": "main",
-            }
-        }
-        overlay = config.engine_overlay()
-        if backend == "vllm":
-            vllm_cfg = backend_config or self._build_default_vllm_backend_config()
-            vllm_cfg.update(overlay)
-            spec["vllm"] = vllm_cfg
-        elif backend == "transformers":
-            spec["transformers"] = backend_config or {
-                "mode": "visual-embedding",
-                "device_map": "auto",
-                "trust_remote_code": True,
-            }
-        elif backend == "diffusers":
-            diffusers_cfg = backend_config or {"dtype": "bf16", "use_safetensors": True}
-            # Only dtype is a typed engine field meaningful for diffusers;
-            # the rest are vLLM-only and would be silently dropped here.
-            invalid = sorted(
-                name
-                for name in (
-                    "max_model_len",
-                    "gpu_memory_utilization",
-                    "tensor_parallel_size",
-                )
-                if getattr(config, name) is not None
-            )
-            if invalid:
-                raise ValueError(
-                    f"diffusers backend does not accept typed engine fields: {invalid}"
-                )
-            diffusers_cfg.update(overlay)
-            spec["diffusers"] = diffusers_cfg
-        return spec
-
-    def _build_default_vllm_backend_config(
-        self, enable_mm_embeds: bool = False
-    ) -> dict[str, Any]:
-        cfg: dict[str, Any] = {
-            "max_num_batched_tokens": envs.LUMILAKE_VLLM_MAX_NUM_BATCHED_TOKENS,
-            "max_cudagraph_capture_size": envs.LUMILAKE_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE,
-            "gpu_memory_utilization": envs.LUMILAKE_VLLM_GPU_MEMORY_UTILIZATION,
-            "trust_remote_code": True,
-            "env_vars": {"VLLM_ATTENTION_BACKEND": "FLASHINFER"},
-        }
-        if envs.LUMILAKE_VLLM_MAX_MODEL_LEN > 0:
-            cfg["max_model_len"] = envs.LUMILAKE_VLLM_MAX_MODEL_LEN
-        if enable_mm_embeds:
-            cfg["enable_mm_embeds"] = True
-            cfg["limit_mm_per_prompt"] = {"image": 1}
-        return cfg
-
-    def _build_output_spec(
-        self,
-        destination: dict[str, Any] | None = None,
-        artifacts: list[str] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "destination": destination or _default_output_destination(),
-            "artifacts": artifacts or ["results.json", "logs"],
-        }
-
-    def _attach_lumid_cfg(self, data_spec: dict[str, Any]) -> dict[str, Any]:
-        if data_spec.get("type") != "list" or "lumid_cfg" in data_spec:
-            return data_spec
-        items = data_spec.get("items")
-        if not isinstance(items, list):
-            return data_spec
-        has_s3 = any(
-            isinstance(item, str) and item.startswith("s3://") for item in items
-        )
-        if not has_s3:
-            return data_spec
-        if not envs.LUMID_DATA_URL:
-            raise ValueError(
-                "LUMID_DATA_URL is required for s3:// list inputs (see .env.example)"
-            )
-        if not envs.LUMID_DATA_TOKEN:
-            raise ValueError(
-                "LUMID_DATA_TOKEN is required for s3:// list inputs (see .env.example)"
-            )
-        updated = dict(data_spec)
-        updated["lumid_cfg"] = {
-            "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
-            "lumid_data_token": envs.LUMID_DATA_TOKEN,
-        }
-        self.logger.warning(
-            "Workflow uses 'type: list' with s3:// items; this path requires the "
-            "FlowMesh worker to support lumid_cfg. If your FlowMesh worker does not "
-            "yet support lumid_cfg, the workflow will fail at retrieval. "
-            "See docs/WORKFLOWS.md."
-        )
-        return updated
-
-    def _build_vlm_nodes_from_image_op(
-        self,
-        llm_op_id: str,
-        llm_op: LLMVisionOp,
-        graph_dict: dict[str, Op],
-        inputs_dict: dict[str, list[str]],
-        visited_node_ids: set[str],
-        dsl_to_runtime: dict[str, list[str]] | None = None,
-        runtime_nodes: dict[str, RuntimeOp] | None = None,
-    ) -> tuple[list[RuntimeOp], list[str]]:
-        if llm_op.rowwise_template:
-            upstream_llm_ids, _ = self._infer_structural_messages(
-                llm_op_id,
-                graph_dict,
-                inputs_dict,
-                visited_node_ids,
-                dsl_to_runtime=dsl_to_runtime,
-                runtime_nodes=runtime_nodes,
-            )
-            columns: list[dict[str, Any]] = []
-            for col in llm_op.rowwise_columns or []:
-                label = col.get("label")
-                data = col.get("data")
-                node_ref = col.get("node")
-                path = col.get("path")
-                if isinstance(label, str) and isinstance(data, dict):
-                    columns.append({"label": label, "data": data})
-                    continue
-                if isinstance(label, str) and isinstance(node_ref, str):
-                    if path is None and not isinstance(
-                        graph_dict.get(node_ref), InputOp
-                    ):
-                        raise ValueError(
-                            f"Column '{label}' of consumer '{llm_op_id}'"
-                            f" references node '{node_ref}' without a path;"
-                            " only InputOp refs may omit it."
-                        )
-                    columns.append(
-                        self._node_ref_column(
-                            consumer_id=llm_op_id,
-                            label=label,
-                            node_ref=node_ref,
-                            path=path if isinstance(path, str) else "",
-                            upstream=graph_dict.get(node_ref),
-                            inputs_dict=inputs_dict,
-                            graph_dict=graph_dict,
-                            dsl_to_runtime=dsl_to_runtime,
-                            kind="rowwise column",
-                        )
-                    )
-                    continue
-                raise ValueError(
-                    f"Column '{label}' of consumer '{llm_op_id}' has neither"
-                    " data nor node+path"
-                )
-            if not columns:
-                raise ValueError(f"LLMVisionOp {llm_op_id} has empty rowwise_columns")
-
-            messages: list[dict[str, str]] = []
-            for system_msg in llm_op.system_messages or []:
-                messages.append({"role": "system", "content": system_msg})
-            messages.append({"role": "user", "content": llm_op.rowwise_template})
-            template_spec: dict[str, Any] = {
-                "name": "format",
-                "columns": columns,
-                "options": {"format": {"messages": messages}},
-            }
-        else:
-            upstream_llm_ids, template_spec = self._infer_structural_messages(
-                llm_op_id,
-                graph_dict,
-                inputs_dict,
-                visited_node_ids,
-                dsl_to_runtime=dsl_to_runtime,
-                runtime_nodes=runtime_nodes,
-            )
-
-        image_source_id = llm_op.image_source
-        visited_node_ids.add(image_source_id)
-        (
-            embedding_data_spec,
-            batch_column,
-            source_dependencies,
-        ) = self._resolve_vlm_image_source(
-            llm_op=llm_op,
-            graph_dict=graph_dict,
-            inputs_dict=inputs_dict,
-        )
-
-        embedding_node_id = f"{llm_op_id}_embedding"
-        model_spec = self._build_model_spec(llm_op.config, "transformers")
-        embedding_node = self._create_runtime_op(
-            name=embedding_node_id,
-            task_type="embedding",
-            data_spec=embedding_data_spec,
-            model_spec=model_spec,
-            inference_spec={},
-            backend="transformers",
-            model=llm_op.config.model,
-            dependencies=source_dependencies,
-            output_spec={
-                "destination": _default_output_destination(),
-                "artifacts": ["results.json", "visual_embeddings.pt"],
-            },
-        )
-
-        inference_spec = llm_op.config.inference_spec()
-        backend_config = self._build_default_vllm_backend_config(enable_mm_embeds=True)
-
-        if llm_op_id not in self._flattened_vlm_ids:
-            template_spec["columns"] = list(template_spec.get("columns") or []) + [
-                batch_column
-            ]
-            template_dependencies = self._collect_graph_template_dependencies(
-                template_spec
-            )
-            dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
-            dependencies.extend(template_dependencies)
-            dependencies.append(embedding_node_id)
-            deduped_deps = []
-            seen = set()
-            for dep in dependencies:
-                if dep in seen:
-                    continue
-                seen.add(dep)
-                deduped_deps.append(dep)
-
-            vlm_node = self._create_runtime_op(
-                name=llm_op_id,
-                task_type="inference",
-                data_spec={
-                    "type": "graph_template",
-                    "template": template_spec,
-                    "image_embedding": {
-                        "node": embedding_node_id,
-                        "path": "embedding_file",
-                    },
-                },
-                model_spec=self._build_model_spec(
-                    llm_op.config, "vllm", backend_config
-                ),
-                inference_spec=inference_spec,
-                backend="vllm",
-                model=llm_op.config.model,
-                dependencies=deduped_deps,
-            )
-            return [embedding_node, vlm_node], [embedding_node_id, llm_op_id]
-
-        # Flattened per-row VLM: one embedding + one inference over the flat
-        # prompts, plus a flatten python step (renders one prompt per image)
-        # and a regroup python step (back to one item per symbol). The image
-        # source is the group boundary: it defines the per-symbol image counts,
-        # and every other grouped column must match them.
-        image_path = embedding_data_spec["path"]
-        if not image_path.startswith("items."):
-            raise ValueError(
-                f"Per-row VLM '{llm_op_id}' image path '{image_path}' must"
-                " start with 'items.'"
-            )
-        image_entry = {
-            "kind": "stage",
-            "node": embedding_data_spec["node"],
-            "path": image_path[len("items.") :],
-            "label": batch_column["label"],
-            "grouped": True,
-        }
-        plan: list[dict[str, Any]] = [image_entry]
-        for c in columns:
-            if "data" in c:
-                plan.append(
-                    {
-                        "kind": "literal",
-                        "values": c["data"]["items"],
-                        "label": c["label"],
-                        "grouped": False,
-                    }
-                )
-                continue
-            up = graph_dict.get(c["node"])
-            if up is None:
-                raise ValueError(
-                    f"Per-row VLM '{llm_op_id}' column '{c['label']}' reads node"
-                    f" '{c['node']}', which is not reachable in the graph."
-                )
-            if isinstance(up, LambdaOp) and up.takes_whole_columns:
-                raise ValueError(
-                    f"Column '{c['label']}' of consumer '{llm_op_id}' references"
-                    f" list-mode Lambda '{c['node']}'; a flattened per-row VLM"
-                    " cannot read a whole-column Lambda."
-                )
-            if not c["path"].startswith("items."):
-                raise ValueError(
-                    f"Column '{c['label']}' of consumer '{llm_op_id}' reads"
-                    f" '{c['path']}' from '{c['node']}'; only 'items.*' paths"
-                    " are supported in a flattened per-row VLM."
-                )
-            plan.append(
-                {
-                    "kind": "stage",
-                    "node": c["node"],
-                    "path": c["path"][len("items.") :],
-                    "label": c["label"],
-                    "grouped": isinstance(up, DataRetrievalOp),
-                }
-            )
-
-        flatten_id = f"{llm_op_id}_flatten"
-        flatten_deps = list(
-            dict.fromkeys(e["node"] for e in plan if e["kind"] == "stage")
-        )
-        flatten = self._create_runtime_op(
-            name=flatten_id,
-            task_type=python_step.TASK_TYPE,
-            data_spec={
-                "mode": "flatten",
-                "plan": plan,
-                "template": llm_op.rowwise_template,
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-            },
-            model_spec={},
-            inference_spec={},
-            backend=python_step.BACKEND,
-            model="",
-            dependencies=flatten_deps,
-        )
-
-        infer_id = f"{llm_op_id}_infer"
-        infer_template: dict[str, Any] = {
-            "name": "format",
-            "columns": [
-                {"label": "prompt", "node": flatten_id, "path": "value.items.output"},
-                {
-                    "label": batch_column["label"],
-                    "node": flatten_id,
-                    "path": "value.items.output",
-                },
-            ],
-            "options": {
-                "format": {
-                    "messages": messages + [{"role": "user", "content": "{prompt}"}]
-                }
-            },
-        }
-        infer = self._create_runtime_op(
-            name=infer_id,
-            task_type="inference",
-            data_spec={
-                "type": "graph_template",
-                "template": infer_template,
-                "image_embedding": {
-                    "node": embedding_node_id,
-                    "path": "embedding_file",
-                },
-            },
-            model_spec=self._build_model_spec(llm_op.config, "vllm", backend_config),
-            inference_spec=inference_spec,
-            backend="vllm",
-            model=llm_op.config.model,
-            dependencies=[flatten_id, embedding_node_id],
-        )
-
-        regroup_deps = list(dict.fromkeys([infer_id, flatten_id, image_entry["node"]]))
-        regroup = self._create_runtime_op(
-            name=llm_op_id,
-            task_type=python_step.TASK_TYPE,
-            data_spec={
-                "mode": "regroup",
-                "plan": [
-                    {"kind": "stage", "node": infer_id, "label": "outputs"},
-                    {
-                        "kind": "stage",
-                        "node": flatten_id,
-                        "path": "row",
-                        "label": "rows",
-                    },
-                    {**image_entry, "label": "groups"},
-                ],
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-            },
-            model_spec={},
-            inference_spec={},
-            backend=python_step.BACKEND,
-            model="",
-            dependencies=regroup_deps,
-        )
-
-        return (
-            [flatten, embedding_node, infer, regroup],
-            [flatten_id, embedding_node_id, infer_id, llm_op_id],
-        )
-
-    def _resolve_vlm_image_source(
-        self,
-        llm_op: LLMVisionOp,
-        graph_dict: dict[str, Op],
-        inputs_dict: dict[str, list[str]],
-    ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-        image_source_id = llm_op.image_source
-        if image_source_id not in graph_dict:
-            raise ValueError(
-                f"LLMVisionOp {llm_op.id} references unknown image source"
-                f" '{image_source_id}'."
-            )
-        image_source_op = graph_dict[image_source_id]
-        if isinstance(image_source_op, InputOp):
-            if image_source_op.name not in inputs_dict:
-                raise ValueError(
-                    f"Missing inputs for image source '{image_source_op.name}'."
-                )
-            image_items = inputs_dict[image_source_op.name]
-            if not isinstance(image_items, list):
-                raise ValueError(
-                    f"Image inputs for '{image_source_op.name}' must be a list."
-                )
-            embedding_data_spec: dict[str, Any] = {
-                "type": "list",
-                "items": image_items,
-            }
-            batch_column: dict[str, Any] = {
-                "label": f"{image_source_op.id}_batch",
-                "data": {
-                    "type": "list",
-                    "items": ["" for _ in range(len(image_items))],
-                },
-            }
-            return embedding_data_spec, batch_column, []
-
-        if isinstance(image_source_op, ImageGenerationOp):
-            resolved_path = (
-                "items.image" if llm_op.image_path == "images" else llm_op.image_path
-            )
-            embedding_data_spec = {
-                "type": "list",
-                "node": image_source_id,
-                "path": resolved_path,
-            }
-            batch_column = {
-                "label": f"{image_source_id}_batch",
-                "node": image_source_id,
-                "path": resolved_path,
-            }
-            return embedding_data_spec, batch_column, [image_source_id]
-
-        if isinstance(image_source_op, DataRetrievalOp):
-            image_path = (
-                llm_op.image_path
-                if llm_op.image_path != "images"
-                else retrieval_items_path(image_source_op.data_spec["mode"])
-            )
-            embedding_data_spec = {
-                "type": "list",
-                "node": image_source_id,
-                "path": image_path,
-            }
-            batch_column = {
-                "label": f"{image_source_id}_batch",
-                "node": image_source_id,
-                "path": image_path,
-            }
-            return embedding_data_spec, batch_column, [image_source_id]
-
-        raise ValueError(
-            "LLMVisionOp "
-            f"{llm_op.id} image source must be an InputOp, ImageGenerationOp, "
-            "or DataRetrievalOp "
-            f"(got {type(image_source_op).__name__})."
-        )
 
     def _resolve_param_upstream(
         self,
@@ -1817,275 +831,6 @@ class RuntimeGraphBuilder:
             dependencies=None,
         )
 
-    def _validate_embedding_texts(self, op_id: str, items: Sequence[Any]) -> None:
-        for idx, text in enumerate(items):
-            if not isinstance(text, str) or not text.strip():
-                raise ValueError(
-                    f"EmbeddingOp '{op_id}' text input[{idx}] must be a non-empty "
-                    f"string (got {text!r})"
-                )
-
-    def _guard_single_row_node_ref(
-        self,
-        *,
-        consumer_id: str,
-        upstream_id: str,
-        upstream: Op | None,
-        inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op],
-        dsl_to_runtime: dict[str, list[str]] | None,
-        kind: str,
-    ) -> None:
-        """Fail closed when a consumer binds a single ``${node.path}`` reference
-        to a multi-row upstream."""
-        if not isinstance(upstream, LLMOp):
-            return
-        row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
-        if row_count is not None and row_count > 1:
-            raise ValueError(
-                f"Op '{consumer_id}' {kind} references '{upstream_id}',"
-                " which produces multiple rows; a single node reference can"
-                " only carry one row, so wiring this to the single unsuffixed"
-                " output would silently drop every row but the first."
-            )
-
-    @staticmethod
-    def _emits_one_item_per_row(op: Op) -> bool:
-        """Whether a multi-row op's result holds one scalar-per-row item per
-        input row, so a ``node``/``path`` reference resolves to one value per
-        row."""
-        if isinstance(op, LLMCompletionOp):
-            return True
-        return (
-            isinstance(op, LLMChatOp)
-            and op.rowwise_template is None
-            and not RuntimeGraphBuilder._is_api_task(op)
-        )
-
-    @staticmethod
-    def _is_api_task(op: Op) -> bool:
-        """Whether an LLMOp dispatches as an API task (not a VLM)."""
-        return (
-            isinstance(op, LLMOp)
-            and not isinstance(op, LLMVisionOp)
-            and (op.config.api is not None)
-        )
-
-    @staticmethod
-    def _is_rowwise_api_task(op: Op) -> bool:
-        """Whether an API task is row-wise (dataframe)."""
-        return (
-            RuntimeGraphBuilder._is_api_task(op)
-            and isinstance(op, LLMChatOp)
-            and op.rowwise_template is not None
-        )
-
-    def _upstream_output_path(self, op: Op) -> str:
-        """Result path for an upstream op's text output."""
-        if op.id in self._flattened_vlm_ids:
-            return "value.items.output"
-        if RuntimeGraphBuilder._is_api_task(op):
-            if RuntimeGraphBuilder._is_rowwise_api_task(op):
-                return _API_ROW_PATH
-            return _API_ITEM_PATH
-        if isinstance(op, LambdaOp):
-            return RuntimeGraphBuilder._lambda_result_path(op, "items.output")
-        return "items.output"
-
-    @staticmethod
-    def _lambda_result_path(upstream: LambdaOp, path: str) -> str:
-        """Map a LambdaOp ``items.output`` read to its path in the step result;
-        a row-mode field read sits under ``value.items.value``."""
-        if not upstream.takes_whole_columns and path != "items.output":
-            return "value.items.value." + path[len("items.output.") :]
-        return "value." + path
-
-    def _lambda_read_path(
-        self,
-        consumer: str,
-        node_ref: str,
-        path: str,
-        upstream: LambdaOp,
-    ) -> str:
-        """Map a read of a LambdaOp's output to the python step's read path."""
-        if not path.startswith("items.output"):
-            raise ValueError(
-                f"{consumer} reads '{path}' from Lambda '{node_ref}'; only"
-                " 'items.output' (the whole output) is supported."
-            )
-        return RuntimeGraphBuilder._lambda_result_path(upstream, path)
-
-    def _node_ref_column(
-        self,
-        *,
-        consumer_id: str,
-        label: str,
-        node_ref: str,
-        path: str,
-        upstream: Op | None,
-        inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op],
-        dsl_to_runtime: dict[str, list[str]] | None,
-        kind: str,
-    ) -> dict[str, Any]:
-        """Bind a ``node:`` reference into a spec column, mapping the declared
-        path to the upstream's read path."""
-        if isinstance(upstream, InputOp):
-            values = inputs_dict.get(upstream.name)
-            if values is None:
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" InputOp '{node_ref}' but no values were supplied for"
-                    " that input."
-                )
-            # InputOps never materialize a runtime envelope, so a non-empty
-            # ``path`` (which would drill into the envelope) is meaningless
-            # here. The scalar value is inlined verbatim; ``path`` must be
-            # absent / empty.
-            if path not in (None, ""):
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" InputOp '{node_ref}' with drill path {path!r}; "
-                    "InputOp-derived columns cannot be drilled — wrap "
-                    "record-shaped inputs in an upstream op that exposes the "
-                    "target field, or drop the ``path`` for scalar inputs."
-                )
-            return {
-                "label": label,
-                "data": {"type": "list", "items": list(values)},
-            }
-        if upstream is not None and self._is_api_task(upstream):
-            if path != "items.output":
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from API upstream '{node_ref}'; only"
-                    " 'items.output' (the whole output) is supported."
-                )
-            path = self._upstream_output_path(upstream)
-        elif isinstance(upstream, LambdaOp):
-            path = self._lambda_read_path(
-                consumer=f"Column '{label}' of consumer '{consumer_id}'",
-                node_ref=node_ref,
-                path=path,
-                upstream=upstream,
-            )
-        elif upstream is not None and upstream.id in self._flattened_vlm_ids:
-            if not path.startswith("items.output"):
-                raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' reads"
-                    f" '{path}' from per-row VLM '{node_ref}'; only"
-                    " 'items.output' is supported."
-                )
-            path = "value." + path
-        return {"label": label, "node": node_ref, "path": path}
-
-    def _project_input_field(
-        self, values: list[str], path: str, input_name: str
-    ) -> list[str]:
-        """Project a field path out of literal input values (JSON object
-        strings) server-side, so an InputOp field ref binds a literal list."""
-        if path != "items.output" and not path.startswith("items.output."):
-            raise ValueError(
-                f"InputOp '{input_name}' field path must start with"
-                f" 'items.output', got '{path}'"
-            )
-        if path == "items.output":
-            return list(values)
-        keys = path[len("items.output.") :].split(".")
-        projected = project_input_keys(values, keys, path, input_name)
-        return [
-            value if isinstance(value, str) else json.dumps(value)
-            for value in projected
-        ]
-
-    def _referenced_row_lambdas(
-        self,
-        nodes: dict[str, RuntimeOp],
-        graph_dict: dict[str, Op],
-    ) -> set[str]:
-        """Row-mode LambdaOps referenced by any built runtime node, either in
-        its data_spec/condition or as a runtime dependency."""
-        refs: set[str] = set()
-        for node in nodes.values():
-            for ref in RuntimeGraphBuilder._iter_runtime_refs(node):
-                op = graph_dict.get(ref)
-                if isinstance(op, LambdaOp) and not op.takes_whole_columns:
-                    refs.add(ref)
-            for dep in node.dependencies:
-                op = graph_dict.get(dep)
-                if isinstance(op, LambdaOp) and not op.takes_whole_columns:
-                    refs.add(dep)
-        return refs
-
-    def _check_inlined_lambda_refs(
-        self,
-        nodes: dict[str, RuntimeOp],
-        graph_dict: dict[str, Op],
-    ) -> None:
-        """Reject runtime references to a row-mode LambdaOp that was inlined
-        into its consuming LLM and therefore has no runtime python task."""
-        materialized = set(nodes.keys())
-        inlined = {
-            op_id
-            for op_id, op in graph_dict.items()
-            if isinstance(op, LambdaOp)
-            and not op.takes_whole_columns
-            and op_id not in materialized
-        }
-        if not inlined:
-            return
-        for node in nodes.values():
-            for ref in RuntimeGraphBuilder._iter_runtime_refs(node):
-                if ref in inlined:
-                    raise ValueError(
-                        f"Runtime node '{node.node_id}' references LambdaOp"
-                        f" '{ref}', which is inlined into the LLM that consumes"
-                        " it and has no runtime output."
-                    )
-
-    @staticmethod
-    def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
-        """Yield every runtime node reference in a RuntimeOp: data_spec
-        column/data-source/list-item refs (a mapping with ``node`` plus
-        ``path``, or ``expr`` outside literal list items), python plan stage
-        entries, and the condition node. Literal payloads (``node`` without
-        ``path``/``expr``) are data, not references."""
-        yield from RuntimeGraphBuilder._iter_spec_refs(node.data_spec)
-        condition = node.condition
-        if condition is not None:
-            cond_node = condition.get("node")
-            if isinstance(cond_node, str):
-                yield cond_node
-
-    @staticmethod
-    def _iter_spec_refs(value: Any, allow_expr: bool = True) -> Iterator[str]:
-        """Yield node references from a data_spec, schema-aware: a mapping
-        with a string ``node`` and a ``path`` key is a reference; ``expr``
-        counts only outside literal list items. Recurse into nested mappings
-        and lists, disabling ``expr`` below a ``type: list`` payload."""
-        if isinstance(value, dict):
-            node = value.get("node")
-            if isinstance(node, str) and (
-                "path" in value or (allow_expr and "expr" in value)
-            ):
-                yield node
-                return
-            if value.get("type") == "list":
-                yield from RuntimeGraphBuilder._iter_spec_refs(
-                    value.get("items"), allow_expr=False
-                )
-                return
-            if value.get("kind") == "stage":
-                stage_node = value.get("node")
-                if isinstance(stage_node, str):
-                    yield stage_node
-                    return
-            for v in value.values():
-                yield from RuntimeGraphBuilder._iter_spec_refs(v, allow_expr)
-        elif isinstance(value, list):
-            for v in value:
-                yield from RuntimeGraphBuilder._iter_spec_refs(v, allow_expr)
-
     def _row_condition(
         self,
         condition: dict[str, str] | None,
@@ -2151,78 +896,6 @@ class RuntimeGraphBuilder:
         if isinstance(content, DataOp):
             return list(content.data)
         return None
-
-    def _build_node_from_embedding_op(
-        self,
-        llm_op_id: str,
-        llm_op: EmbeddingOp,
-        inputs_dict: dict[str, list[str]],
-        visited_node_ids: set[str],
-        graph_dict: dict[str, Op] | None = None,
-        dsl_to_runtime: dict[str, list[str]] | None = None,
-    ) -> RuntimeOp:
-        visited_node_ids.add(llm_op_id)
-        content_op = llm_op.content
-        visited_node_ids.add(content_op.id)
-
-        if isinstance(content_op, InputOp):
-            items = inputs_dict.get(content_op.name)
-            if not items:
-                raise ValueError(
-                    f"EmbeddingOp '{llm_op_id}' content references InputOp "
-                    f"{content_op.name!r} with no values supplied."
-                )
-            self._validate_embedding_texts(llm_op_id, items)
-            data_spec: dict[str, Any] = {"type": "list", "items": list(items)}
-            dependencies: list[str] = []
-        elif isinstance(content_op, DataOp):
-            if not content_op.data:
-                raise ValueError(f"EmbeddingOp '{llm_op_id}' has empty text input")
-            self._validate_embedding_texts(llm_op_id, content_op.data)
-            data_spec = {"type": "list", "items": list(content_op.data)}
-            dependencies = []
-        else:
-            if graph_dict is not None:
-                self._guard_single_row_node_ref(
-                    consumer_id=llm_op_id,
-                    upstream_id=content_op.id,
-                    upstream=content_op,
-                    inputs_dict=inputs_dict,
-                    graph_dict=graph_dict,
-                    dsl_to_runtime=dsl_to_runtime,
-                    kind="content",
-                )
-            content_path = (
-                retrieval_items_path(content_op.data_spec["mode"])
-                if isinstance(content_op, DataRetrievalOp)
-                else self._upstream_output_path(content_op)
-            )
-            data_spec = {
-                "type": "list",
-                "node": content_op.id,
-                "path": content_path,
-            }
-            dependencies = [content_op.id]
-
-        # ``model.vllm`` presence routes to the vLLM embedding executor; the
-        # executor sets ``runner`` internally, so it is intentionally omitted.
-        model_spec = self._build_model_spec(llm_op.config, "vllm", {"convert": "embed"})
-        return self._create_runtime_op(
-            name=llm_op_id,
-            task_type="embedding",
-            data_spec=data_spec,
-            model_spec=model_spec,
-            inference_spec={},
-            backend="vllm",
-            model=llm_op.config.model,
-            dependencies=dependencies or None,
-            # Vectors are returned as a safetensors artifact, not inline; the
-            # tensor is row-aligned to the input texts.
-            output_spec=self._build_output_spec(
-                _default_output_destination(),
-                ["results.json", "embeddings.safetensors"],
-            ),
-        )
 
     def _build_node_from_llm_op(
         self,
@@ -2920,130 +1593,6 @@ class RuntimeGraphBuilder:
             inputs_dict=inputs_dict,
             dsl_to_runtime=dsl_to_runtime,
         )
-
-    def _collect_graph_template_dependencies(
-        self, template_spec: dict[str, Any]
-    ) -> list[str]:
-        deps: list[str] = []
-        seen: set[str] = set()
-
-        def add_dep(node_id: Any) -> None:
-            if not isinstance(node_id, str) or node_id in seen:
-                return
-            seen.add(node_id)
-            deps.append(node_id)
-
-        def visit_column(column: Any) -> None:
-            if not isinstance(column, dict):
-                return
-            add_dep(column.get("node"))
-            data = column.get("data")
-            if not isinstance(data, dict):
-                return
-            if data.get("type") == "dataframe":
-                for nested in data.get("columns", []) or []:
-                    visit_column(nested)
-            elif data.get("type") == "graph_template":
-                nested_template = data.get("template")
-                if isinstance(nested_template, dict):
-                    for nested in nested_template.get("columns", []) or []:
-                        visit_column(nested)
-
-        for column in template_spec.get("columns", []) or []:
-            visit_column(column)
-        return deps
-
-    def _python_step_row_count(
-        self,
-        op_id: str,
-        row_counts: Sequence[tuple[str, int | None]],
-        combines_rows: bool,
-    ) -> int | None:
-        """The rows a python step processes, or ``None`` when an input's count
-        is unknown at build time. A step that combines its inputs row by row
-        needs every multi-row input to carry the same count."""
-        if combines_rows:
-            multi = {
-                count for _, count in row_counts if count is not None and count > 1
-            }
-            if len(multi) > 1:
-                counts = ", ".join(f"{name}={count}" for name, count in row_counts)
-                raise ValueError(
-                    f"LambdaOp '{op_id}' combines inputs of different row counts"
-                    f" ({counts}); every multi-row input must carry the same number"
-                    " of rows"
-                )
-        known = [count for _, count in row_counts if count is not None]
-        if len(known) != len(row_counts):
-            return None
-        return max([1, *known])
-
-    def _static_output_row_count(
-        self,
-        op: Op,
-        inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op] | None = None,
-    ) -> int | None:
-        """Static row count of an op's output, or ``None`` when not knowable at
-        build time. A rowwise op's count comes from its ``rowwise_columns``."""
-        if isinstance(op, InputOp):
-            values = inputs_dict.get(op.name)
-            return len(values) if values is not None else None
-        if isinstance(op, DataOp):
-            return len(op.data)
-        if isinstance(op, LLMCompletionOp):
-            return self._static_output_row_count(op.prompt, inputs_dict, graph_dict)
-        if isinstance(op, LLMChatOp):
-            if op.rowwise_columns:
-                counts: list[int] = []
-                for col in op.rowwise_columns:
-                    data = col.get("data")
-                    if isinstance(data, dict):
-                        items = data.get("items")
-                        if isinstance(items, list):
-                            counts.append(len(items))
-                            continue
-                    node_ref = col.get("node")
-                    if isinstance(node_ref, str) and graph_dict is not None:
-                        upstream = graph_dict.get(node_ref)
-                        if upstream is not None:
-                            count = self._static_output_row_count(
-                                upstream, inputs_dict, graph_dict
-                            )
-                            if count is not None:
-                                counts.append(count)
-                return max(counts) if counts else None
-            messages = (
-                op.messages.messages if isinstance(op.messages, MessageOp) else []
-            )
-            op_counts: list[int] = []
-            for message in messages:
-                if isinstance(message.content, Op):
-                    count = self._static_output_row_count(
-                        message.content, inputs_dict, graph_dict
-                    )
-                    if count is not None:
-                        op_counts.append(count)
-            return max(op_counts) if op_counts else None
-        if isinstance(op, (EmbeddingOp, ImageGenerationOp)):
-            return self._static_output_row_count(op.content, inputs_dict, graph_dict)
-        if isinstance(op, FormatOp):
-            format_counts = [
-                self._static_output_row_count(inp, inputs_dict, graph_dict)
-                for inp in op.inputs
-            ]
-            known = [c for c in format_counts if c is not None]
-            return max(known) if known else None
-        if isinstance(op, LambdaOp):
-            if op.mode == "list":
-                return None
-            lambda_counts = [
-                self._static_output_row_count(inp, inputs_dict, graph_dict)
-                for inp in op.inputs
-            ]
-            known = [c for c in lambda_counts if c is not None]
-            return max(known) if known else None
-        return None
 
     def _infer_structural_messages(
         self,
@@ -3857,3 +2406,633 @@ class RuntimeGraphBuilder:
             seen.add(label)
 
         return constraints
+
+    def _build_python_step(
+        self,
+        op_id: str,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
+        nodes: dict[str, RuntimeOp],
+        node_order: list[str],
+        dsl_to_runtime: dict[str, list[str]],
+    ) -> str:
+        """Compile one standalone LambdaOp (and any LambdaOp it reads) into a
+        FlowMesh python task. Returns its runtime node id."""
+        if op_id in nodes:
+            return op_id
+        op = graph_dict[op_id]
+        assert isinstance(op, LambdaOp)
+        visited_node_ids.add(op_id)
+
+        plan: python_step.ColumnPlan = []
+        dependencies: list[str] = []
+        row_counts: list[tuple[str, int | None]] = []
+        for inp in op.inputs:
+            if isinstance(inp, LambdaOp):
+                dep = self._build_python_step(
+                    inp.id,
+                    graph_dict,
+                    inputs_dict,
+                    visited_node_ids,
+                    nodes,
+                    node_order,
+                    dsl_to_runtime,
+                )
+            elif isinstance(inp, (LLMOp, DataRetrievalOp)):
+                runtime_ids = dsl_to_runtime.get(inp.id, [])
+                if len(runtime_ids) != 1:
+                    raise ValueError(
+                        f"LambdaOp '{op_id}' reads '{inp.id}', which compiled to"
+                        f" {len(runtime_ids)} runtime nodes; a standalone Python"
+                        " step can read one upstream node per input"
+                    )
+                dep = runtime_ids[0]
+            elif isinstance(inp, InputOp):
+                visited_node_ids.add(inp.id)
+                plan.append({"kind": "literal", "values": inputs_dict[inp.name]})
+                row_counts.append((inp.id, len(inputs_dict[inp.name])))
+                continue
+            elif isinstance(inp, DataOp):
+                visited_node_ids.add(inp.id)
+                plan.append({"kind": "literal", "values": list(inp.data)})
+                row_counts.append((inp.id, len(inp.data)))
+                continue
+            else:
+                raise ValueError(
+                    f"LambdaOp '{op_id}' reads a {type(inp).__name__}; a standalone"
+                    " Python step reads LLM, data-retrieval, Lambda, input or data"
+                    " ops"
+                )
+            row_counts.append(
+                (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
+            )
+            entry: dict[str, Any] = {"kind": "stage", "node": dep}
+            if (
+                isinstance(inp, LLMChatOp)
+                and not isinstance(inp, LLMVisionOp)
+                and inp.rowwise_template
+            ):
+                # A rowwise LLM groups its per-row outputs back into one item;
+                # flatten it to one value per row for the python step. A VLM's
+                # regroup step already emits one list per symbol, so it is
+                # excluded.
+                entry["flatten"] = True
+            plan.append(entry)
+            if dep not in dependencies:
+                dependencies.append(dep)
+
+        row_count = self._python_step_row_count(op_id, row_counts, combines_rows=True)
+
+        data_spec: dict[str, Any] = {
+            "code": op.code,
+            "fn_name": op.fn.__name__,
+            "plan": plan,
+            "timeout_s": (
+                python_step.DEFAULT_TIMEOUT_SECONDS
+                if op.timeout_s is None
+                else op.timeout_s
+            ),
+        }
+        if op.memory_mb is not None:
+            data_spec["memory_mb"] = op.memory_mb
+        if op.image is not None:
+            data_spec["image"] = op.image
+        if op.expected_runtime_s is not None:
+            data_spec["expected_runtime_s"] = op.expected_runtime_s
+            if row_count is not None:
+                data_spec["row_count"] = row_count
+        if op.cache is not None:
+            data_spec["cache"] = op.cache
+        runtime_op = self._create_runtime_op(
+            name=op_id,
+            task_type=python_step.TASK_TYPE,
+            data_spec=data_spec,
+            model_spec={},
+            inference_spec={},
+            backend=python_step.BACKEND,
+            model="",
+            dependencies=dependencies,
+        )
+        nodes[op_id] = runtime_op
+        node_order.append(op_id)
+        dsl_to_runtime[op_id] = [op_id]
+        return op_id
+
+    def _build_vlm_nodes_from_image_op(
+        self,
+        llm_op_id: str,
+        llm_op: LLMVisionOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
+        dsl_to_runtime: dict[str, list[str]] | None = None,
+        runtime_nodes: dict[str, RuntimeOp] | None = None,
+    ) -> tuple[list[RuntimeOp], list[str]]:
+        if llm_op.rowwise_template:
+            upstream_llm_ids, _ = self._infer_structural_messages(
+                llm_op_id,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime=dsl_to_runtime,
+                runtime_nodes=runtime_nodes,
+            )
+            columns: list[dict[str, Any]] = []
+            for col in llm_op.rowwise_columns or []:
+                label = col.get("label")
+                data = col.get("data")
+                node_ref = col.get("node")
+                path = col.get("path")
+                if isinstance(label, str) and isinstance(data, dict):
+                    columns.append({"label": label, "data": data})
+                    continue
+                if isinstance(label, str) and isinstance(node_ref, str):
+                    if path is None and not isinstance(
+                        graph_dict.get(node_ref), InputOp
+                    ):
+                        raise ValueError(
+                            f"Column '{label}' of consumer '{llm_op_id}'"
+                            f" references node '{node_ref}' without a path;"
+                            " only InputOp refs may omit it."
+                        )
+                    columns.append(
+                        self._node_ref_column(
+                            consumer_id=llm_op_id,
+                            label=label,
+                            node_ref=node_ref,
+                            path=path if isinstance(path, str) else "",
+                            upstream=graph_dict.get(node_ref),
+                            inputs_dict=inputs_dict,
+                            graph_dict=graph_dict,
+                            dsl_to_runtime=dsl_to_runtime,
+                            kind="rowwise column",
+                        )
+                    )
+                    continue
+                raise ValueError(
+                    f"Column '{label}' of consumer '{llm_op_id}' has neither"
+                    " data nor node+path"
+                )
+            if not columns:
+                raise ValueError(f"LLMVisionOp {llm_op_id} has empty rowwise_columns")
+
+            messages: list[dict[str, str]] = []
+            for system_msg in llm_op.system_messages or []:
+                messages.append({"role": "system", "content": system_msg})
+            messages.append({"role": "user", "content": llm_op.rowwise_template})
+            template_spec: dict[str, Any] = {
+                "name": "format",
+                "columns": columns,
+                "options": {"format": {"messages": messages}},
+            }
+        else:
+            upstream_llm_ids, template_spec = self._infer_structural_messages(
+                llm_op_id,
+                graph_dict,
+                inputs_dict,
+                visited_node_ids,
+                dsl_to_runtime=dsl_to_runtime,
+                runtime_nodes=runtime_nodes,
+            )
+
+        image_source_id = llm_op.image_source
+        visited_node_ids.add(image_source_id)
+        (
+            embedding_data_spec,
+            batch_column,
+            source_dependencies,
+        ) = self._resolve_vlm_image_source(
+            llm_op=llm_op,
+            graph_dict=graph_dict,
+            inputs_dict=inputs_dict,
+        )
+
+        embedding_node_id = f"{llm_op_id}_embedding"
+        model_spec = self._build_model_spec(llm_op.config, "transformers")
+        embedding_node = self._create_runtime_op(
+            name=embedding_node_id,
+            task_type="embedding",
+            data_spec=embedding_data_spec,
+            model_spec=model_spec,
+            inference_spec={},
+            backend="transformers",
+            model=llm_op.config.model,
+            dependencies=source_dependencies,
+            output_spec={
+                "destination": _default_output_destination(),
+                "artifacts": ["results.json", "visual_embeddings.pt"],
+            },
+        )
+
+        inference_spec = llm_op.config.inference_spec()
+        backend_config = self._build_default_vllm_backend_config(enable_mm_embeds=True)
+
+        if llm_op_id not in self._flattened_vlm_ids:
+            template_spec["columns"] = list(template_spec.get("columns") or []) + [
+                batch_column
+            ]
+            template_dependencies = self._collect_graph_template_dependencies(
+                template_spec
+            )
+            dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
+            dependencies.extend(template_dependencies)
+            dependencies.append(embedding_node_id)
+            deduped_deps = []
+            seen = set()
+            for dep in dependencies:
+                if dep in seen:
+                    continue
+                seen.add(dep)
+                deduped_deps.append(dep)
+
+            vlm_node = self._create_runtime_op(
+                name=llm_op_id,
+                task_type="inference",
+                data_spec={
+                    "type": "graph_template",
+                    "template": template_spec,
+                    "image_embedding": {
+                        "node": embedding_node_id,
+                        "path": "embedding_file",
+                    },
+                },
+                model_spec=self._build_model_spec(
+                    llm_op.config, "vllm", backend_config
+                ),
+                inference_spec=inference_spec,
+                backend="vllm",
+                model=llm_op.config.model,
+                dependencies=deduped_deps,
+            )
+            return [embedding_node, vlm_node], [embedding_node_id, llm_op_id]
+
+        # Flattened per-row VLM: one embedding + one inference over the flat
+        # prompts, plus a flatten python step (renders one prompt per image)
+        # and a regroup python step (back to one item per symbol). The image
+        # source is the group boundary: it defines the per-symbol image counts,
+        # and every other grouped column must match them.
+        image_path = embedding_data_spec["path"]
+        if not image_path.startswith("items."):
+            raise ValueError(
+                f"Per-row VLM '{llm_op_id}' image path '{image_path}' must"
+                " start with 'items.'"
+            )
+        image_entry = {
+            "kind": "stage",
+            "node": embedding_data_spec["node"],
+            "path": image_path[len("items.") :],
+            "label": batch_column["label"],
+            "grouped": True,
+        }
+        plan: list[dict[str, Any]] = [image_entry]
+        for c in columns:
+            if "data" in c:
+                plan.append(
+                    {
+                        "kind": "literal",
+                        "values": c["data"]["items"],
+                        "label": c["label"],
+                        "grouped": False,
+                    }
+                )
+                continue
+            up = graph_dict.get(c["node"])
+            if up is None:
+                raise ValueError(
+                    f"Per-row VLM '{llm_op_id}' column '{c['label']}' reads node"
+                    f" '{c['node']}', which is not reachable in the graph."
+                )
+            if isinstance(up, LambdaOp) and up.takes_whole_columns:
+                raise ValueError(
+                    f"Column '{c['label']}' of consumer '{llm_op_id}' references"
+                    f" list-mode Lambda '{c['node']}'; a flattened per-row VLM"
+                    " cannot read a whole-column Lambda."
+                )
+            if not c["path"].startswith("items."):
+                raise ValueError(
+                    f"Column '{c['label']}' of consumer '{llm_op_id}' reads"
+                    f" '{c['path']}' from '{c['node']}'; only 'items.*' paths"
+                    " are supported in a flattened per-row VLM."
+                )
+            plan.append(
+                {
+                    "kind": "stage",
+                    "node": c["node"],
+                    "path": c["path"][len("items.") :],
+                    "label": c["label"],
+                    "grouped": isinstance(up, DataRetrievalOp),
+                }
+            )
+
+        flatten_id = f"{llm_op_id}_flatten"
+        flatten_deps = list(
+            dict.fromkeys(e["node"] for e in plan if e["kind"] == "stage")
+        )
+        flatten = self._create_runtime_op(
+            name=flatten_id,
+            task_type=python_step.TASK_TYPE,
+            data_spec={
+                "mode": "flatten",
+                "plan": plan,
+                "template": llm_op.rowwise_template,
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+            },
+            model_spec={},
+            inference_spec={},
+            backend=python_step.BACKEND,
+            model="",
+            dependencies=flatten_deps,
+        )
+
+        infer_id = f"{llm_op_id}_infer"
+        infer_template: dict[str, Any] = {
+            "name": "format",
+            "columns": [
+                {"label": "prompt", "node": flatten_id, "path": "value.items.output"},
+                {
+                    "label": batch_column["label"],
+                    "node": flatten_id,
+                    "path": "value.items.output",
+                },
+            ],
+            "options": {
+                "format": {
+                    "messages": messages + [{"role": "user", "content": "{prompt}"}]
+                }
+            },
+        }
+        infer = self._create_runtime_op(
+            name=infer_id,
+            task_type="inference",
+            data_spec={
+                "type": "graph_template",
+                "template": infer_template,
+                "image_embedding": {
+                    "node": embedding_node_id,
+                    "path": "embedding_file",
+                },
+            },
+            model_spec=self._build_model_spec(llm_op.config, "vllm", backend_config),
+            inference_spec=inference_spec,
+            backend="vllm",
+            model=llm_op.config.model,
+            dependencies=[flatten_id, embedding_node_id],
+        )
+
+        regroup_deps = list(dict.fromkeys([infer_id, flatten_id, image_entry["node"]]))
+        regroup = self._create_runtime_op(
+            name=llm_op_id,
+            task_type=python_step.TASK_TYPE,
+            data_spec={
+                "mode": "regroup",
+                "plan": [
+                    {"kind": "stage", "node": infer_id, "label": "outputs"},
+                    {
+                        "kind": "stage",
+                        "node": flatten_id,
+                        "path": "row",
+                        "label": "rows",
+                    },
+                    {**image_entry, "label": "groups"},
+                ],
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+            },
+            model_spec={},
+            inference_spec={},
+            backend=python_step.BACKEND,
+            model="",
+            dependencies=regroup_deps,
+        )
+
+        return (
+            [flatten, embedding_node, infer, regroup],
+            [flatten_id, embedding_node_id, infer_id, llm_op_id],
+        )
+
+    def _resolve_vlm_image_source(
+        self,
+        llm_op: LLMVisionOp,
+        graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+    ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+        image_source_id = llm_op.image_source
+        if image_source_id not in graph_dict:
+            raise ValueError(
+                f"LLMVisionOp {llm_op.id} references unknown image source"
+                f" '{image_source_id}'."
+            )
+        image_source_op = graph_dict[image_source_id]
+        if isinstance(image_source_op, InputOp):
+            if image_source_op.name not in inputs_dict:
+                raise ValueError(
+                    f"Missing inputs for image source '{image_source_op.name}'."
+                )
+            image_items = inputs_dict[image_source_op.name]
+            if not isinstance(image_items, list):
+                raise ValueError(
+                    f"Image inputs for '{image_source_op.name}' must be a list."
+                )
+            embedding_data_spec: dict[str, Any] = {
+                "type": "list",
+                "items": image_items,
+            }
+            batch_column: dict[str, Any] = {
+                "label": f"{image_source_op.id}_batch",
+                "data": {
+                    "type": "list",
+                    "items": ["" for _ in range(len(image_items))],
+                },
+            }
+            return embedding_data_spec, batch_column, []
+
+        if isinstance(image_source_op, ImageGenerationOp):
+            resolved_path = (
+                "items.image" if llm_op.image_path == "images" else llm_op.image_path
+            )
+            embedding_data_spec = {
+                "type": "list",
+                "node": image_source_id,
+                "path": resolved_path,
+            }
+            batch_column = {
+                "label": f"{image_source_id}_batch",
+                "node": image_source_id,
+                "path": resolved_path,
+            }
+            return embedding_data_spec, batch_column, [image_source_id]
+
+        if isinstance(image_source_op, DataRetrievalOp):
+            image_path = (
+                llm_op.image_path
+                if llm_op.image_path != "images"
+                else retrieval_items_path(image_source_op.data_spec["mode"])
+            )
+            embedding_data_spec = {
+                "type": "list",
+                "node": image_source_id,
+                "path": image_path,
+            }
+            batch_column = {
+                "label": f"{image_source_id}_batch",
+                "node": image_source_id,
+                "path": image_path,
+            }
+            return embedding_data_spec, batch_column, [image_source_id]
+
+        raise ValueError(
+            "LLMVisionOp "
+            f"{llm_op.id} image source must be an InputOp, ImageGenerationOp, "
+            "or DataRetrievalOp "
+            f"(got {type(image_source_op).__name__})."
+        )
+
+    def _validate_embedding_texts(self, op_id: str, items: Sequence[Any]) -> None:
+        for idx, text in enumerate(items):
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(
+                    f"EmbeddingOp '{op_id}' text input[{idx}] must be a non-empty "
+                    f"string (got {text!r})"
+                )
+
+    def _referenced_row_lambdas(
+        self,
+        nodes: dict[str, RuntimeOp],
+        graph_dict: dict[str, Op],
+    ) -> set[str]:
+        """Row-mode LambdaOps referenced by any built runtime node, either in
+        its data_spec/condition or as a runtime dependency."""
+        refs: set[str] = set()
+        for node in nodes.values():
+            for ref in _RuntimeGraphBuilderBase._iter_runtime_refs(node):
+                op = graph_dict.get(ref)
+                if isinstance(op, LambdaOp) and not op.takes_whole_columns:
+                    refs.add(ref)
+            for dep in node.dependencies:
+                op = graph_dict.get(dep)
+                if isinstance(op, LambdaOp) and not op.takes_whole_columns:
+                    refs.add(dep)
+        return refs
+
+    def _check_inlined_lambda_refs(
+        self,
+        nodes: dict[str, RuntimeOp],
+        graph_dict: dict[str, Op],
+    ) -> None:
+        """Reject runtime references to a row-mode LambdaOp that was inlined
+        into its consuming LLM and therefore has no runtime python task."""
+        materialized = set(nodes.keys())
+        inlined = {
+            op_id
+            for op_id, op in graph_dict.items()
+            if isinstance(op, LambdaOp)
+            and not op.takes_whole_columns
+            and op_id not in materialized
+        }
+        if not inlined:
+            return
+        for node in nodes.values():
+            for ref in _RuntimeGraphBuilderBase._iter_runtime_refs(node):
+                if ref in inlined:
+                    raise ValueError(
+                        f"Runtime node '{node.node_id}' references LambdaOp"
+                        f" '{ref}', which is inlined into the LLM that consumes"
+                        " it and has no runtime output."
+                    )
+
+    def _build_node_from_embedding_op(
+        self,
+        llm_op_id: str,
+        llm_op: EmbeddingOp,
+        inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
+        graph_dict: dict[str, Op] | None = None,
+        dsl_to_runtime: dict[str, list[str]] | None = None,
+    ) -> RuntimeOp:
+        visited_node_ids.add(llm_op_id)
+        content_op = llm_op.content
+        visited_node_ids.add(content_op.id)
+
+        if isinstance(content_op, InputOp):
+            items = inputs_dict.get(content_op.name)
+            if not items:
+                raise ValueError(
+                    f"EmbeddingOp '{llm_op_id}' content references InputOp "
+                    f"{content_op.name!r} with no values supplied."
+                )
+            self._validate_embedding_texts(llm_op_id, items)
+            data_spec: dict[str, Any] = {"type": "list", "items": list(items)}
+            dependencies: list[str] = []
+        elif isinstance(content_op, DataOp):
+            if not content_op.data:
+                raise ValueError(f"EmbeddingOp '{llm_op_id}' has empty text input")
+            self._validate_embedding_texts(llm_op_id, content_op.data)
+            data_spec = {"type": "list", "items": list(content_op.data)}
+            dependencies = []
+        else:
+            if graph_dict is not None:
+                self._guard_single_row_node_ref(
+                    consumer_id=llm_op_id,
+                    upstream_id=content_op.id,
+                    upstream=content_op,
+                    inputs_dict=inputs_dict,
+                    graph_dict=graph_dict,
+                    dsl_to_runtime=dsl_to_runtime,
+                    kind="content",
+                )
+            content_path = (
+                retrieval_items_path(content_op.data_spec["mode"])
+                if isinstance(content_op, DataRetrievalOp)
+                else self._upstream_output_path(content_op)
+            )
+            data_spec = {
+                "type": "list",
+                "node": content_op.id,
+                "path": content_path,
+            }
+            dependencies = [content_op.id]
+
+        # ``model.vllm`` presence routes to the vLLM embedding executor; the
+        # executor sets ``runner`` internally, so it is intentionally omitted.
+        model_spec = self._build_model_spec(llm_op.config, "vllm", {"convert": "embed"})
+        return self._create_runtime_op(
+            name=llm_op_id,
+            task_type="embedding",
+            data_spec=data_spec,
+            model_spec=model_spec,
+            inference_spec={},
+            backend="vllm",
+            model=llm_op.config.model,
+            dependencies=dependencies or None,
+            # Vectors are returned as a safetensors artifact, not inline; the
+            # tensor is row-aligned to the input texts.
+            output_spec=self._build_output_spec(
+                _default_output_destination(),
+                ["results.json", "embeddings.safetensors"],
+            ),
+        )
+
+    def _python_step_row_count(
+        self,
+        op_id: str,
+        row_counts: Sequence[tuple[str, int | None]],
+        combines_rows: bool,
+    ) -> int | None:
+        """The rows a python step processes, or ``None`` when an input's count
+        is unknown at build time. A step that combines its inputs row by row
+        needs every multi-row input to carry the same count."""
+        if combines_rows:
+            multi = {
+                count for _, count in row_counts if count is not None and count > 1
+            }
+            if len(multi) > 1:
+                counts = ", ".join(f"{name}={count}" for name, count in row_counts)
+                raise ValueError(
+                    f"LambdaOp '{op_id}' combines inputs of different row counts"
+                    f" ({counts}); every multi-row input must carry the same number"
+                    " of rows"
+                )
+        known = [count for _, count in row_counts if count is not None]
+        if len(known) != len(row_counts):
+            return None
+        return max([1, *known])

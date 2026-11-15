@@ -5,7 +5,7 @@ import pytest
 from lumilake_server.data_profile_models import DataProfileCostEstimate
 from lumilake_server.graphs.graph import CompiledGraph
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import data_profile_offload
 

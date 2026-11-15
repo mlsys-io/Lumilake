@@ -17,7 +17,8 @@ from lumilake_server.ops import (
     input_placeholder,
 )
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
-from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph.builder import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
