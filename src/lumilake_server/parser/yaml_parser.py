@@ -89,20 +89,17 @@ from typing import Any
 
 import yaml
 
-from lumilake_server.ops.util_ops import LambdaOp
-
 from .common import make_id as _make_id
-from .yaml_ops.common import (
-    EmitContext,
-    OpEntry,
-    build_generation_config,
-)
+from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.data import (
     emit_data_op,
     emit_data_retrieval_op,
     emit_format_op,
     emit_message_op,
 )
+from .yaml_ops.embedding import emit_embedding_op
+from .yaml_ops.image import emit_image_generation_op
+from .yaml_ops.lambdas import emit_lambda_op
 from .yaml_ops.llm import (
     emit_llm_chat_op,
     emit_llm_completion_op,
@@ -409,150 +406,17 @@ def _build_op_dict(
     elif entry.op == "LLMVisionOp":
         emit_llm_vision_op(op_dict, ctx)
     elif entry.op == "ImageGenerationOp":
-        _emit_image_generation_op(op_dict, entry, user_id_to_internal, scope, graph_ops)
+        emit_image_generation_op(op_dict, ctx)
     elif entry.op == "EmbeddingOp":
-        _emit_embedding_op(op_dict, entry, user_id_to_internal)
+        emit_embedding_op(op_dict, ctx)
     elif entry.op == "FormatOp":
         emit_format_op(op_dict, ctx)
     elif entry.op == "LambdaOp":
-        _emit_lambda_op(op_dict, entry)
+        emit_lambda_op(op_dict, ctx)
     else:  # pragma: no cover - guarded upstream
         raise ValueError(f"unsupported op type '{entry.op}'")
 
     return op_dict
-
-
-def _emit_image_generation_op(
-    op_dict: dict[str, Any],
-    entry: OpEntry,
-    user_id_to_internal: dict[str, str],
-    scope: str,
-    graph_ops: dict[str, dict[str, Any]],
-) -> None:
-    config = entry.fields.get("config")
-    if not isinstance(config, dict) or "model" not in config:
-        raise ValueError(
-            f"ImageGenerationOp '{entry.id}' requires 'config' with a 'model' field"
-        )
-
-    # Either reference an existing FormatOp/content op directly, or provide an
-    # inline `content` string that is a bare user-facing id (mirroring how n8n
-    # wraps `{{ $('Some Node') }}` prompts through an implicit FormatOp).
-    content_ref = entry.fields.get("content")
-    content_id: str | None = None
-    if isinstance(content_ref, str) and content_ref.strip():
-        target = content_ref.strip()
-        if target not in user_id_to_internal:
-            raise ValueError(
-                f"ImageGenerationOp '{entry.id}' content references unknown id "
-                f"'{target}'"
-            )
-        target_internal = user_id_to_internal[target]
-        referenced = graph_ops.get(target_internal)
-        if referenced and referenced.get("_op") == "FormatOp":
-            content_id = target_internal
-        else:
-            fmt_id = _make_id(scope, "format", entry.id)
-            fmt_op = {
-                "_id": fmt_id,
-                "_op": "FormatOp",
-                "_max_iter": None,
-                "_inputs": [target_internal],
-                "template": "{ref0}",
-                "format_args": [],
-                "format_kwargs": {"ref0": target_internal},
-            }
-            op_dict.setdefault("__implicit_ops__", []).append(fmt_op)
-            content_id = fmt_id
-    else:
-        raise ValueError(
-            f"ImageGenerationOp '{entry.id}' requires a 'content' user-id reference"
-        )
-
-    op_dict["content"] = content_id
-    op_dict["config"] = build_generation_config(
-        config, entry.id, op_kind="ImageGenerationOp"
-    )
-    op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
-    op_dict["_inputs"] = [content_id]
-
-
-def _emit_embedding_op(
-    op_dict: dict[str, Any],
-    entry: OpEntry,
-    user_id_to_internal: dict[str, str],
-) -> None:
-    config = entry.fields.get("config")
-    if not isinstance(config, dict) or "model" not in config:
-        raise ValueError(
-            f"EmbeddingOp '{entry.id}' requires 'config' with a 'model' field"
-        )
-
-    content_ref = entry.fields.get("input")
-    if not isinstance(content_ref, str) or not content_ref.strip():
-        raise ValueError(
-            f"EmbeddingOp '{entry.id}' requires an 'input' reference to a text op "
-            "or workflow input id"
-        )
-    target = content_ref.strip()
-    if target not in user_id_to_internal:
-        raise ValueError(
-            f"EmbeddingOp '{entry.id}' input references unknown id '{target}'"
-        )
-    content_id = user_id_to_internal[target]
-
-    op_dict["content"] = content_id
-    op_dict["config"] = build_generation_config(config, entry.id, op_kind="EmbeddingOp")
-    op_dict["cacheable"] = bool(entry.fields.get("cacheable", False))
-    op_dict["_inputs"] = [content_id]
-
-
-def _emit_lambda_op(op_dict: dict[str, Any], entry: OpEntry) -> None:
-    fn_name = entry.fields.get("fn_name")
-    code = entry.fields.get("code") or entry.fields.get("_code")
-    if not isinstance(fn_name, str):
-        raise ValueError(f"LambdaOp '{entry.id}' requires 'fn_name: str'")
-    if not isinstance(code, str):
-        raise ValueError(f"LambdaOp '{entry.id}' requires 'code: str'")
-    mode = entry.fields.get("mode", "row")
-    if mode not in LambdaOp.LAMBDA_MODES:
-        raise ValueError(
-            f"LambdaOp '{entry.id}' mode must be one of {LambdaOp.LAMBDA_MODES} "
-            f"(got {mode!r})"
-        )
-    op_dict["fn_name"] = fn_name
-    op_dict["_code"] = code
-    op_dict["mode"] = mode
-    # Optional limits for the FlowMesh python task the op compiles to; bounds
-    # are checked when the op is built.
-    for key, kind in (("timeout_s", (int, float)), ("memory_mb", int)):
-        value = entry.fields.get(key)
-        if value is None:
-            continue
-        if isinstance(value, bool) or not isinstance(value, kind):
-            raise ValueError(f"LambdaOp '{entry.id}' '{key}' must be a number")
-        op_dict[key] = value
-    image = entry.fields.get("image")
-    if image is not None:
-        if not isinstance(image, str) or not image.strip():
-            raise ValueError(
-                f"LambdaOp '{entry.id}' 'image' must be a non-empty string"
-            )
-        op_dict["image"] = image
-    expected_runtime_s = entry.fields.get("expected_runtime_s")
-    if expected_runtime_s is not None:
-        if isinstance(expected_runtime_s, bool) or not isinstance(
-            expected_runtime_s, (int, float)
-        ):
-            raise ValueError(
-                f"LambdaOp '{entry.id}' 'expected_runtime_s' must be a number"
-            )
-        op_dict["expected_runtime_s"] = expected_runtime_s
-    cache = entry.fields.get("cache")
-    if cache is not None:
-        if not isinstance(cache, bool):
-            raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a bool")
-        op_dict["cache"] = cache
 
 
 def _op_id_prefix(op_type: str) -> str:
