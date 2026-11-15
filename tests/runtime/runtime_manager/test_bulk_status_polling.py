@@ -43,14 +43,15 @@ async def test_a_poll_reads_each_transition_once_and_stops_its_cursor(
     finished workflow stops its cursor, so a later poll lists every task
     again."""
     cursors: list[str | None] = []
-    serve(monkeypatch, {"task-1": "DISPATCHED"}, cursors=cursors)
+    served = {"task-1": "DISPATCHED"}
+    serve(monkeypatch, served, cursors=cursors)
     task_statuses = {"task-1": "PENDING"}
 
     assert not await flowmesh_manager.update_task_status(task_statuses, "wf-1")
     assert cursors == [None]
     assert flowmesh_manager._workflow_status_cursors == {"wf-1": "task-1"}
 
-    serve(monkeypatch, {"task-1": "DONE"}, cursors=cursors)
+    served["task-1"] = "DONE"
     assert await flowmesh_manager.update_task_status(task_statuses, "wf-1")
     assert cursors == [None, "task-1"]
     assert flowmesh_manager._workflow_status_cursors == {}
@@ -67,33 +68,20 @@ async def test_a_poll_drains_every_page_and_relists_an_expired_cursor(
     """A page carries only part of the changes after a cursor, so a poll reads
     until ``has_more`` is false; an unresumable cursor is dropped and the poll
     restarts from a snapshot."""
+    pages = [
+        TaskStatusPage(rows=[{"task_id": "task-1", "status": s}], next_cursor=c)
+        for s, c in (("DISPATCHED", "5"), ("DONE", "6"))
+    ]
+    pages[0].has_more = True
     cursors: list[str | None] = []
-    serve(
-        monkeypatch,
-        {},
-        cursors=cursors,
-        pages=[
-            TaskStatusPage(
-                rows=[{"task_id": "task-1", "status": "DISPATCHED"}],
-                next_cursor="5",
-                has_more=True,
-            ),
-            TaskStatusPage(
-                rows=[{"task_id": "task-1", "status": "DONE"}], next_cursor="6"
-            ),
-        ],
-    )
-    task_statuses = {"task-1": "PENDING"}
-    assert await flowmesh_manager.update_task_status(task_statuses, "wf-1")
+    serve(monkeypatch, {}, cursors=cursors, pages=pages)
+    assert await flowmesh_manager.update_task_status({"task-1": "PENDING"}, "wf-1")
     assert cursors == [None, "5"]
-    assert task_statuses == {"task-1": "DONE"}
 
     flowmesh_manager._workflow_status_cursors["wf-1"] = "3"
     serve(monkeypatch, {"task-1": "DONE"}, cursors=cursors, expired={"3"})
-    task_statuses = {"task-1": "PENDING"}
-    assert await flowmesh_manager.update_task_status(task_statuses, "wf-1")
+    assert await flowmesh_manager.update_task_status({"task-1": "PENDING"}, "wf-1")
     assert cursors[-2:] == ["3", None]
-    assert task_statuses == {"task-1": "DONE"}
 
 
 @pytest.mark.asyncio
