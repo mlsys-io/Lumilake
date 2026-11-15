@@ -123,7 +123,7 @@ async def test_api_backend_returns_chat_history_like_local_backend(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -221,7 +221,7 @@ async def _run_failing_request(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -414,7 +414,7 @@ async def test_api_output_node_reads_content(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -478,7 +478,7 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -534,7 +534,7 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -657,7 +657,7 @@ async def test_fail_fast_reports_every_failed_task_reason(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -794,7 +794,7 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -874,7 +874,7 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 

@@ -97,7 +97,7 @@ async def test_dispatched_request_carries_resolved_caller_credential(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 

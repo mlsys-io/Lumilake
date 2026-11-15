@@ -234,7 +234,7 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -309,7 +309,7 @@ async def test_workflow_submit_sanitizes_api_error_before_reraising(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
