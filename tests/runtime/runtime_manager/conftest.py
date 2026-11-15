@@ -31,7 +31,7 @@ def serve(
     async def _list(
         self: FlowmeshRuntimeManager,
         workflow_id: str,
-        fields: tuple[str, ...] | None = None,
+        fields: list[str] | None = None,
         cursor: str | None = None,
     ) -> TaskStatusPage:
         polled.append(workflow_id)

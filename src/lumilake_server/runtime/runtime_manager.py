@@ -57,7 +57,7 @@ from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sen
 from lumilake_server.utils.job_storage import get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
-_STATUS_POLL_FIELDS = ("status", "error", "last_error")
+_STATUS_POLL_FIELDS = ["status", "error", "last_error"]
 
 
 @dataclass
@@ -421,21 +421,17 @@ class FlowmeshRuntimeManager:
     async def fetch_workflow_task_statuses(
         self,
         workflow_id: str,
-        fields: Sequence[str] = _STATUS_POLL_FIELDS,
+        fields: list[str] | None = None,
         cursor: str | None = None,
     ) -> TaskStatusPage:
-        """Read one page of a workflow's task status change feed.
-
-        Without ``cursor`` the call is a snapshot of every matching task and
-        returns the position to continue from; with one it reads only the
-        changes after it. ``CursorExpiredError`` means the position cannot be
-        resumed, and the caller starts again from a snapshot.
-        """
+        """Read one page of a workflow's task status change feed, a snapshot of
+        every matching task without ``cursor`` or only the changes after it,
+        where an unresumable cursor is the caller's to replace."""
         try:
             return await _retry_transient_read(
                 lambda: self.fm.tasks.changes(
                     workflow_id=workflow_id,
-                    fields=list(fields),
+                    fields=fields if fields is not None else _STATUS_POLL_FIELDS,
                     cursor=cursor,
                 ),
                 f"workflow {workflow_id} task statuses",
@@ -531,7 +527,7 @@ class FlowmeshRuntimeManager:
 
         try:
             page = await self.fetch_workflow_task_statuses(
-                workflow_id, fields=("graph_node_name",)
+                workflow_id, fields=["graph_node_name"]
             )
         except Exception as e:
             raise RuntimeError(
@@ -581,15 +577,9 @@ class FlowmeshRuntimeManager:
         batch_keys: Sequence[tuple[str, str]],
         workflow_ids: Mapping[tuple[str, str], str],
     ) -> bool:
-        """Refresh each batch's pending tasks from its workflow's status feed.
-
-        A batch whose execution loop is running is left as the loop reports it:
-        the loop owns that map while it runs, and a page applied from another
-        read could put a task the loop already read as terminal back to a
-        running status, or mark one terminal after the loop's download pass
-        had skipped it, so the loop would wait out its poll timeout on a task
-        that had finished or exit before that task's response was archived.
-        """
+        """Refresh each batch's pending tasks from its workflow's status feed,
+        leaving a batch whose execution loop is running exactly as that loop
+        reports it, because only the loop may write its map while it runs."""
         completed = True
         for batch_key in batch_keys:
             batch_status = statuses_by_batch[batch_key]
@@ -624,17 +614,10 @@ class FlowmeshRuntimeManager:
         *,
         advance_cursor: bool = True,
     ) -> bool:
-        """Advance ``task_status`` from the workflow's task status feed.
-
-        The first poll of a workflow takes a snapshot of every task; each later
-        poll asks only for the tasks whose status changed since the previous
-        one, so an unchanged task is not read again. Only the execution loop
-        advances the per-workflow feed cursor, as the only reader of a workflow
-        it runs; a caller for a workflow nobody is polling
-        (``advance_cursor=False``) takes a snapshot and stores no cursor, so the
-        rows FlowMesh filters to that caller's view never move a cursor another
-        reader depends on.
-        """
+        """Advance ``task_status`` from the workflow's status feed, taking a snapshot
+        on the first poll and only the changes after its cursor on each later one,
+        where only the execution loop advances that cursor as the sole reader of a
+        workflow it runs and every other caller takes a snapshot it never stores."""
         pending_task_ids = {
             task_id
             for task_id, status in task_status.items()
@@ -678,11 +661,9 @@ class FlowmeshRuntimeManager:
         pending_task_ids: set[str],
         cursor: str | None,
     ) -> str:
-        """Apply every page the feed holds for these pending tasks, from ``cursor``.
-
-        A page may hold only part of the changes after a cursor (``has_more``),
-        so pages are read until it is false. Returns the position reached.
-        """
+        """Apply the feed's pages for these pending tasks from ``cursor``, reading
+        on while ``has_more`` says a page may hold only part of the changes after
+        it, and return the position reached."""
         while True:
             page = await self.fetch_workflow_task_statuses(workflow_id, cursor=cursor)
             for row in page.rows:
