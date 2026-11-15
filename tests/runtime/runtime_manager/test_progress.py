@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
 def _manager() -> FlowmeshRuntimeManager:
@@ -27,7 +27,7 @@ def test_batch_progress_elapsed_and_node_totals(
 ) -> None:
     manager = _manager()
     with patch(
-        "lumilake_server.runtime.runtime_manager.flowmesh.time.time",
+        "lumilake_server.runtime.runtime_manager.time.time",
         return_value=start_t,
     ):
         manager.mark_batch_pending(
@@ -39,12 +39,12 @@ def test_batch_progress_elapsed_and_node_totals(
         manager.mark_batch_running(request_id, batch_id)
     if end_t is not None:
         with patch(
-            "lumilake_server.runtime.runtime_manager.flowmesh.time.time",
+            "lumilake_server.runtime.runtime_manager.time.time",
             return_value=end_t,
         ):
             manager.mark_batch_completed(request_id, batch_id)
     with patch(
-        "lumilake_server.runtime.runtime_manager.flowmesh.time.time",
+        "lumilake_server.runtime.runtime_manager.time.time",
         return_value=final_t,
     ):
         progress = manager._build_batch_progress([(request_id, batch_id)])

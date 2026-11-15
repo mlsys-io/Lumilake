@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from flowmesh.models.workers import WorkerInfo
 
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
 def _worker_info(
@@ -46,7 +46,7 @@ async def test_get_workers_excludes_stale_worker_from_candidates(
     live = _worker_info("wkr-live", stale=False)
     stale = _worker_info("wkr-16", stale=True)
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_server",
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_server",
         lambda: _FakeFlowMesh([stale, live]),
     )
 
@@ -63,7 +63,7 @@ async def test_get_workers_returns_empty_when_all_candidates_are_stale(
     stale_a = _worker_info("wkr-16", stale=True)
     stale_b = _worker_info("wkr-17", stale=True)
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_server",
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_server",
         lambda: _FakeFlowMesh([stale_a, stale_b]),
     )
 
@@ -89,7 +89,7 @@ async def test_get_dispatchable_workers_keeps_only_idle_and_busy_uncordoned(
         _worker_info("wkr-idle-stale", stale=True),
     ]
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_server",
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_server",
         lambda: _FakeFlowMesh(listed),
     )
 
@@ -110,7 +110,7 @@ async def test_get_all_workers_still_lists_non_dispatchable_workers(
         _worker_info("wkr-stopping", stale=False, status="STOPPING"),
     ]
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_server",
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_server",
         lambda: _FakeFlowMesh(listed),
     )
 

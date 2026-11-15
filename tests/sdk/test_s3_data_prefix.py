@@ -71,7 +71,6 @@ def test_validate_passes_without_s3_data_prefix(
     monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://localhost:18000")
     monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
     monkeypatch.setattr(envs, "LUMILAKE_JOB_MANAGER_TYPE", "priority")
-    monkeypatch.setattr(envs, "LUMILAKE_RUNTIME_MANAGER_TYPE", "default")
     monkeypatch.setattr(envs, "LUMILAKE_STARVATION_LIMIT", 3)
     monkeypatch.setattr(envs, "LUMILAKE_BATCH_ACCUMULATION_SECONDS", 0.0)
     monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)

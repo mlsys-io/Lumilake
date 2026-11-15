@@ -53,8 +53,6 @@ from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sen
 from lumilake_server.schemas.worker import WorkerInfo
 from lumilake_server.utils.job_storage import get_job_storage
 
-from .base import BaseRuntimeManager
-
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 
 
@@ -259,10 +257,8 @@ class ShardRewriteResult:
     flowmesh_to_raw: dict[str, str]
 
 
-class FlowmeshRuntimeManager(BaseRuntimeManager):
-    """
-    Submits Lumilake logical plans to Flowmesh orchestrator.
-    """
+class FlowmeshRuntimeManager:
+    """Submits Lumilake logical plans to the FlowMesh orchestrator."""
 
     def __init__(
         self,
@@ -347,11 +343,28 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             self._dispatch_tokens.pop(request_id, None)
 
     async def is_request_cancelled(self, request_id: str) -> bool:
+        """Return whether a request has been cancelled."""
         async with self._task_status_lock:
             return request_id in self._cancelled_requests
 
     def result_dir(self, request_info: RequestInfo) -> Path:
+        """Return the per-batch artifact directory for a request."""
         return Path(request_info.request_id) / request_info.batch_id
+
+    def save_runtime_artifact(
+        self,
+        request_info: RequestInfo,
+        filename: str,
+        data: bytes,
+        content_type: str,
+    ) -> str:
+        """Save a runtime artifact of a batch through the archive layer."""
+        return get_job_storage().save_artifact(
+            request_info.request_id,
+            f"runtime/{request_info.batch_id}/{filename}",
+            data,
+            content_type,
+        )
 
     def _save_yaml_artifact(
         self,
@@ -713,6 +726,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
             metadata["end_time"] = time.time()
 
     def get_task_node_map(self, request_id: str, batch_id: str) -> dict[str, str]:
+        """Return the task-id to node-id mapping for a batch."""
         batch_key = (request_id, batch_id)
         return dict(self._task_node_map.get(batch_key, {}))
 
@@ -887,6 +901,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         ]
 
     def count_runtime_nodes(self, graphs: dict[str, RuntimeGraph]) -> int:
+        """Return the number of runtime nodes that will be submitted."""
         return sum(graph.node_count for graph in graphs.values())
 
     async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
@@ -913,6 +928,7 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         self,
         request_id: str,
     ) -> dict[str, Any]:
+        """Return the request status from FlowMesh."""
         # Find all batch keys for this request_id from all tracking dictionaries
         data_profile_batch_keys = [
             k for k in self._data_profile_task_status.keys() if k[0] == request_id

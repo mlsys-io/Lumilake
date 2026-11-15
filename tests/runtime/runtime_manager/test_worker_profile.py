@@ -4,7 +4,7 @@ import pytest
 from flowmesh.models.common import TaskType
 from flowmesh.models.workers import MemoryInfo, WorkerCapabilities
 
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.schemas import worker as w
 
 
@@ -32,7 +32,7 @@ def _serve(monkeypatch: pytest.MonkeyPatch, worker: w.WorkerInfo) -> dict[str, A
         return payload
 
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_get_for_server",
+        "lumilake_server.runtime.runtime_manager.flowmesh_get_for_server",
         fake_get,
     )
     return payload
