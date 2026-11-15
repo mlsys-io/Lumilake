@@ -1,8 +1,5 @@
-"""Shared types for the YAML op emitters.
-
-An emitter fills in one op entry's op-specific fields on the skeleton op
-dict the parser builds, and may queue implicit upstream ops on it.
-"""
+"""Shared types for the YAML op emitters, which fill in one entry's op-specific
+fields and may queue implicit upstream ops."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields

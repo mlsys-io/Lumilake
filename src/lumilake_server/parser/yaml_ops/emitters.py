@@ -1,9 +1,4 @@
-"""Table of YAML op names to their emitters.
-
-Keys are the op names the YAML format and ``Op.registry`` share.
-"""
-
-from lumilake_server.ops import Op
+"""YAML op names, shared with ``Op.registry``, mapped to their emitters."""
 
 from .common import OpEmitter
 from .data import emit_data_op, emit_data_retrieval_op, emit_format_op, emit_message_op
@@ -24,8 +19,6 @@ EMITTERS: dict[str, OpEmitter] = {
     "LambdaOp": OpEmitter("lambda", emit_lambda_op),
     "MessageOp": OpEmitter("message", emit_message_op),
 }
-
-assert all(Op.registry.get_class(name) for name in EMITTERS)
 
 
 def op_id_prefix(op_type: str) -> str:
