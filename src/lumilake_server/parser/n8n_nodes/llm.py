@@ -9,6 +9,7 @@ from lumilake_server.common import retrieval_items_path
 
 from ..common import make_id as _make_id
 from . import references, shared
+from .constants import TABLE_BLOCK_PATTERN
 from .entries import ChainPlan, NodeDict, OpContext
 
 
@@ -34,18 +35,24 @@ def chain_plan(node: NodeDict, ctx: OpContext, node_name: str) -> ChainPlan:
         prompt_text=params.get("text", ""),
         system_messages=[m.get("message") for m in messages if m.get("message")],
         notes=notes,
-        upstream_main=shared.find_main_upstream(node_name, ctx.incoming, ctx.node_map),
+        upstream_main=references.find_main_upstream(
+            node_name, ctx.incoming, ctx.node_map
+        ),
         model_config=model_config,
         vlm_config=vlm_config,
         return_history=bool(notes.get("return-history")),
     )
 
 
-def build_text_generation(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
+def build_text_generation(plan: ChainPlan) -> tuple[list[NodeDict], str]:
     return _build_chat_chain(plan)
 
 
-def build_rowwise(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
+def build_aggregate(plan: ChainPlan) -> tuple[list[NodeDict], str]:
+    return _build_chat_chain(plan)
+
+
+def build_rowwise(plan: ChainPlan) -> tuple[list[NodeDict], str]:
     ctx = plan.ctx
     msg_content = _build_rowwise_prompt_content(plan.prompt_text)
     rowwise_columns = _extract_rowwise_columns(
@@ -67,7 +74,7 @@ def build_rowwise(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
     return [msg_op, llm_op], llm_op["_id"]
 
 
-def build_image_generation(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
+def build_image_generation(plan: ChainPlan) -> tuple[list[NodeDict], str]:
     ctx = plan.ctx
     prompt_text = plan.prompt_text
     if plan.system_messages:
@@ -98,7 +105,7 @@ def build_image_generation(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
     return ops, llm_op["_id"]
 
 
-def build_image_understanding(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
+def build_image_understanding(plan: ChainPlan) -> tuple[list[NodeDict], str]:
     ctx = plan.ctx
     image_ref = plan.notes.get("image-input")
     if not image_ref:
@@ -147,30 +154,25 @@ def build_image_understanding(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
     return ops, llm_op["_id"]
 
 
-def _build_chat_chain(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
+def _build_chat_chain(
+    plan: ChainPlan, aggregate_table: list[dict[str, Any]] | None = None
+) -> tuple[list[NodeDict], str]:
     ctx = plan.ctx
-    mode = plan.notes.get("mode")
-    aggregate_table = None
-    if plan.notes.get("op-type") == "text-generation" and mode == "aggregate":
-        aggregate_prompt, aggregate_table = _build_aggregate_prompt_content(
+    prompt_text = plan.prompt_text
+    already_escaped = False
+    if plan.notes.get("mode") == "aggregate":
+        prompt_text, aggregate_table = _build_aggregate_prompt_content(
             plan.prompt_text, ctx.op_ids, plan.upstream_main, ctx.node_map
         )
-        msg_content, extra_ops = _build_prompt_content(
-            aggregate_prompt,
-            plan.node_name,
-            ctx.op_ids,
-            plan.upstream_main,
-            ctx.scope,
-            already_escaped=True,
-        )
-    else:
-        msg_content, extra_ops = _build_prompt_content(
-            plan.prompt_text,
-            plan.node_name,
-            ctx.op_ids,
-            plan.upstream_main,
-            ctx.scope,
-        )
+        already_escaped = True
+    msg_content, extra_ops = _build_prompt_content(
+        prompt_text,
+        plan.node_name,
+        ctx.op_ids,
+        plan.upstream_main,
+        ctx.scope,
+        already_escaped=already_escaped,
+    )
     ops = list(extra_ops)
     msg_op = _build_message_op(
         ctx.scope, plan.node_name, plan.system_messages, msg_content
@@ -191,7 +193,7 @@ def _build_chat_chain(plan: ChainPlan) -> "tuple[list[NodeDict], str]":
 
 def make_agent(
     node: NodeDict, ctx: OpContext, node_name: str
-) -> "tuple[list[NodeDict], str]":
+) -> tuple[list[NodeDict], str]:
     params = node.get("parameters", {})
     text = params.get("text")
     if not isinstance(text, str) or not text.strip():
@@ -255,7 +257,7 @@ def make_agent(
 
     main_inputs = [
         ctx.op_ids[dep]
-        for dep in shared.main_incoming(node_name, ctx.incoming, ctx.node_map)
+        for dep in references.main_incoming(node_name, ctx.incoming, ctx.node_map)
         if dep in ctx.op_ids
     ]
     dep_inputs = [
@@ -289,7 +291,7 @@ def make_agent(
 def chain_dependencies(node_name: str, ctx: OpContext) -> list[str]:
     node = ctx.node_map[node_name]
     deps: list[str] = []
-    upstream_main = shared.find_main_upstream(node_name, ctx.incoming, ctx.node_map)
+    upstream_main = references.find_main_upstream(node_name, ctx.incoming, ctx.node_map)
     if upstream_main:
         deps.append(upstream_main)
     params = node.get("parameters", {})
@@ -301,11 +303,13 @@ def chain_dependencies(node_name: str, ctx: OpContext) -> list[str]:
         deps.extend(ref for _, ref in refs)
     else:
         deps.extend(
-            ref for _, ref in refs if not shared.is_data_source_node(ctx.node_map, ref)
+            ref
+            for _, ref in refs
+            if not references.is_data_source_node(ctx.node_map, ref)
         )
     if notes.get("op-type") == "text-generation" and notes.get("mode") == "rowwise":
         try:
-            postgres_node, _ = shared.resolve_data_nodes(
+            postgres_node, _ = references.resolve_data_nodes(
                 node_name, ctx.incoming, ctx.node_map
             )
             pg_params = postgres_node.get("parameters", {})
@@ -377,7 +381,7 @@ def _build_prompt_content(
             format_kwargs[key] = op_ids[ref_name]
             detail_matches = shared.extract_ref_details(full)
             ref_path = detail_matches[0][1] if detail_matches else None
-            runtime_path = shared.to_runtime_output_path(ref_path)
+            runtime_path = references.to_runtime_output_path(ref_path)
             if runtime_path and runtime_path != "items.output":
                 format_paths[key] = runtime_path
         fmt_op = _build_format_op(
@@ -622,7 +626,7 @@ def _extract_rowwise_ref_bindings(
         key = (node_name, path)
         label = label_by_ref.get(key)
         if label is None:
-            base_label = shared.path_to_label(path)
+            base_label = references.path_to_label(path)
             if not base_label:
                 base_label = (
                     re.sub(r"[^A-Za-z0-9_]+", "_", node_name).strip("_") or "value"
@@ -641,7 +645,7 @@ def _build_aggregate_prompt_content(
 ) -> tuple[str, list[dict[str, Any]]]:
     stripped = shared.strip_expr(prompt_text or "")
     table_spec: list[dict[str, Any]] = []
-    table_match = shared.TABLE_BLOCK_PATTERN.search(stripped)
+    table_match = TABLE_BLOCK_PATTERN.search(stripped)
     if not table_match:
         return _escape_literal_braces(stripped), table_spec
 
@@ -667,7 +671,7 @@ def _build_aggregate_prompt_content(
             upstream_id = op_ids.get(upstream_main)
             reference = references.retrieval_mode(node_map, ref_node_name)
             if upstream_id and reference == "sql":
-                suffix = shared.path_to_label(path) or column
+                suffix = references.path_to_label(path) or column
                 table_spec.append(
                     {
                         "label": column,
@@ -677,7 +681,7 @@ def _build_aggregate_prompt_content(
                 )
 
     escaped = _escape_literal_braces(stripped)
-    rewritten = shared.TABLE_BLOCK_PATTERN.sub("{df}", escaped)
+    rewritten = TABLE_BLOCK_PATTERN.sub("{df}", escaped)
     return rewritten, table_spec
 
 

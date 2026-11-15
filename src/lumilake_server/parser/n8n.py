@@ -11,6 +11,7 @@ from typing import Any
 
 from .common import make_id as _make_id
 from .n8n_nodes import shared
+from .n8n_nodes.constants import N8N_CHAT_TRIGGER, N8N_MODEL_SPEC
 from .n8n_nodes.entries import OpContext
 from .n8n_nodes.tables import (
     INPUT_TYPES,
@@ -37,7 +38,7 @@ def extract_chat_trigger_inputs(workflow: dict[str, Any]) -> dict[str, list[str]
     for node in workflow.get("nodes", []):
         if not isinstance(node, dict):
             continue
-        if node.get("type") != shared.N8N_CHAT_TRIGGER:
+        if node.get("type") != N8N_CHAT_TRIGGER:
             continue
         name = node.get("name")
         if isinstance(name, str) and name:
@@ -155,11 +156,15 @@ def _parse_n8n_workflow(
             missing = ", ".join(sorted(pending))
             raise ValueError(f"Unresolved n8n dependencies: {missing}")
 
-    # Outputs last
+    # Outputs last, type by type in table order, so chain outputs come
+    # before code outputs whatever order the nodes are declared in.
     output_owners: dict[str, str] = {}
-    for node_name, node in node_map.items():
-        if node["type"] not in OUTPUT_TYPES:
-            continue
+    for node_name, node in (
+        (name, node)
+        for node_type in OUTPUT_TYPES
+        for name, node in node_map.items()
+        if node["type"] == node_type
+    ):
         notes = shared.parse_notes(node.get("notes", ""))
         if not notes.get("is-output", False):
             continue
@@ -257,7 +262,7 @@ def _index_model_specs(
 ) -> dict[str, dict[str, Any]]:
     specs: dict[str, dict[str, Any]] = {}
     for name, node in node_map.items():
-        if node.get("type") != shared.N8N_MODEL_SPEC:
+        if node.get("type") != N8N_MODEL_SPEC:
             continue
         params = node.get("parameters", {})
         model = params.get("model")

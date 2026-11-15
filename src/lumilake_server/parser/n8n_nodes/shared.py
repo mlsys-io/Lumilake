@@ -8,27 +8,13 @@ import json
 import re
 from typing import Any
 
-N8N_CHAIN_TYPE = "@n8n/n8n-nodes-langchain.chainLlm"
-N8N_CHAT_TRIGGER = "@n8n/n8n-nodes-langchain.chatTrigger"
-N8N_MODEL_SPEC = "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference"
-N8N_MODEL_NODE_TYPES = {
-    N8N_MODEL_SPEC,
-    "@n8n/n8n-nodes-langchain.lmChatAnthropic",
-    "@n8n/n8n-nodes-langchain.lmChatOpenAi",
-}
-N8N_CODE_NODE = "n8n-nodes-base.code"
-N8N_POSTGRES_NODE = "n8n-nodes-base.postgres"
-N8N_S3_NODE = "n8n-nodes-base.s3"
-N8N_AGENT_NODE = "@n8n/n8n-nodes-langchain.agent"
-DATA_SOURCE_TYPES = frozenset({N8N_POSTGRES_NODE, N8N_S3_NODE})
-
-REF_PATTERN = re.compile(
-    r"\{\{\s*\$\('([^']+)'\)(?:\.[^}]*)?\s*\}\}|\$\('([^']+)'\)(?:\.[\w\.\[\]]+)?"
+from . import references
+from .constants import (
+    QUERY_EXPR_PATTERN,
+    REF_DETAIL_PATTERN,
+    REF_PATTERN,
+    REF_TOKEN_PREFIX,
 )
-REF_DETAIL_PATTERN = re.compile(r"\$\('([^']+)'\)(?:\.([\w\.\[\]]+))?")
-QUERY_EXPR_PATTERN = re.compile(r"\{\{\s*(.*?)\s*\}\}")
-REF_TOKEN_PREFIX = "__lumilake_ref__:"
-TABLE_BLOCK_PATTERN = re.compile(r"```table\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 
 
 def parse_notes(notes: Any) -> dict[str, Any]:
@@ -102,26 +88,6 @@ def is_op_id(value: Any) -> bool:
     )
 
 
-def to_runtime_output_path(path: str | None) -> str | None:
-    if not path:
-        return None
-    normalized = path.strip()
-    if not normalized:
-        return None
-    if normalized in {"item", "item.output"}:
-        return "items.output"
-    if normalized.startswith("item.output."):
-        suffix = normalized[len("item.output.") :]
-        return f"items.output.{suffix}" if suffix else "items.output"
-    if normalized.startswith("item.json."):
-        suffix = normalized[len("item.json.") :]
-        return f"items.output.{suffix}" if suffix else "items.output"
-    if normalized.startswith("item."):
-        suffix = normalized[len("item.") :]
-        return f"items.output.{suffix}" if suffix else "items.output"
-    return f"items.output.{normalized}"
-
-
 def encode_ref_token(node_id: str, path: str) -> str:
     return f"{REF_TOKEN_PREFIX}{node_id}:{path}"
 
@@ -141,27 +107,12 @@ def resolve_value(value: Any, op_ids: dict[str, str]) -> Any:
             name, path = refs[0]
             if name in op_ids:
                 op_id = op_ids[name]
-                runtime_path = to_runtime_output_path(path)
+                runtime_path = references.to_runtime_output_path(path)
                 if runtime_path:
                     return encode_ref_token(op_id, runtime_path)
                 return op_id
             raise ValueError(f"Unknown reference '{name}' in filters")
     return value
-
-
-def path_to_label(path: str | None) -> str | None:
-    if not path:
-        return None
-    normalized = path.strip()
-    if normalized in {"item", "item.output", "item.json"}:
-        return "output"
-    if normalized.startswith("item.json."):
-        normalized = normalized[len("item.json.") :]
-    elif normalized.startswith("item."):
-        normalized = normalized[len("item.") :]
-    if not normalized:
-        return None
-    return normalized.split(".")[-1]
 
 
 def ensure_unique_label(label: str, seen: set[str]) -> str:
@@ -185,98 +136,6 @@ def resolve_input_key(node_name: str, inputs: dict[str, list[str]]) -> str:
         if key.lower() == lower:
             return key
     raise ValueError(f"Missing input for '{node_name}'")
-
-
-def is_data_source_node(node_map: dict[str, dict[str, Any]], name: str) -> bool:
-    node = node_map.get(name)
-    if not node:
-        return False
-    return node.get("type") in DATA_SOURCE_TYPES
-
-
-def find_main_upstream(
-    node_name: str,
-    incoming: dict[str, list[dict[str, str]]],
-    node_map: dict[str, dict[str, Any]],
-) -> str | None:
-    for edge in incoming.get(node_name, []):
-        if edge.get("type") != "main":
-            continue
-        upstream = edge.get("node")
-        if not upstream:
-            continue
-        if is_data_source_node(node_map, upstream):
-            continue
-        return upstream
-    return None
-
-
-def main_incoming(
-    node_name: str,
-    incoming: dict[str, list[dict[str, str]]],
-    node_map: dict[str, dict[str, Any]],
-) -> list[str]:
-    return [
-        edge["node"]
-        for edge in incoming.get(node_name, [])
-        if edge.get("type") == "main"
-        and edge.get("node")
-        and not is_data_source_node(node_map, edge["node"])
-    ]
-
-
-def resolve_data_nodes(
-    node_name: str,
-    incoming: dict[str, list[dict[str, str]]],
-    node_map: dict[str, dict[str, Any]],
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    postgres_nodes: list[dict[str, Any]] = []
-    s3_nodes: list[dict[str, Any]] = []
-    visited: set[str] = set()
-    queue = [node_name]
-    while queue:
-        target = queue.pop(0)
-        for edge in incoming.get(target, []):
-            if edge.get("type") != "main":
-                continue
-            src = edge.get("node")
-            if not src or src in visited:
-                continue
-            visited.add(src)
-            src_node = node_map.get(src)
-            if not src_node:
-                continue
-            mode = data_source_kind(src_node)
-            if mode == "sql":
-                postgres_nodes.append(src_node)
-            else:
-                if mode == "s3":
-                    s3_nodes.append(src_node)
-                queue.append(src)
-    if len(postgres_nodes) != 1:
-        raise ValueError(
-            f"n8n data-retrieval node '{node_name}' must have exactly one postgres"
-            " input"
-        )
-    if len(s3_nodes) > 1:
-        raise ValueError(
-            f"n8n data-retrieval node '{node_name}' has multiple s3 inputs"
-        )
-    return postgres_nodes[0], s3_nodes[0] if s3_nodes else None
-
-
-def data_source_kind(node: dict[str, Any]) -> str | None:
-    """Return ``"sql"`` or ``"s3"`` when *node* is a data source, else ``None``."""
-    from .references import retrieval_mode_for_type
-
-    return retrieval_mode_for_type(node.get("type"))
-
-
-def referenced_op_path(node_type: Any, ref_path: str | None) -> str:
-    """Resolve the items path for a node referenced as a query parameter."""
-    from .references import items_path
-
-    return items_path(node_type, ref_path)
 
 
 def sql_literal(value: Any) -> str:
@@ -381,7 +240,9 @@ def build_execute_query_template_and_params(
                     label,
                     {
                         "node": resolved,
-                        "path": referenced_op_path(op_type_by_id.get(resolved), None),
+                        "path": references.items_path(
+                            op_type_by_id.get(resolved), None
+                        ),
                     },
                 )
                 dependencies.append(resolved)

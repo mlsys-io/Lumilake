@@ -7,24 +7,21 @@ from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import OutputOp
 from lumilake_server.parser import parse_n8n_payload
+from lumilake_server.parser.n8n_nodes.constants import (
+    N8N_AGENT_NODE,
+    N8N_CHAT_TRIGGER,
+    N8N_POSTGRES_NODE,
+    N8N_S3_NODE,
+)
 from lumilake_server.parser.n8n_nodes.entries import OpContext
 from lumilake_server.parser.n8n_nodes.llm import (
     _build_aggregate_prompt_content,
     _build_prompt_content,
     _build_rowwise_prompt_content,
     _extract_rowwise_columns,
-    build_text_generation,
 )
-from lumilake_server.parser.n8n_nodes.llm import chain_plan as llm_chain_plan
-from lumilake_server.parser.n8n_nodes.shared import (
-    N8N_AGENT_NODE,
-    N8N_CHAT_TRIGGER,
-    N8N_POSTGRES_NODE,
-    N8N_S3_NODE,
-)
-from lumilake_server.parser.n8n_nodes.shared import (
-    referenced_op_path as _referenced_op_path,
-)
+from lumilake_server.parser.n8n_nodes.references import items_path
+from lumilake_server.parser.n8n_nodes.tables import make_chain_node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "examples" / "templates" / "n8n"
@@ -211,10 +208,10 @@ def test_image_generation_digest_uses_row_summary_aggregate_table(
 
 
 def test_referenced_op_path_agent_uses_table() -> None:
-    assert _referenced_op_path(N8N_AGENT_NODE, None) == "items.table"
-    assert _referenced_op_path(N8N_POSTGRES_NODE, "symbol") == "items.table.symbol"
-    assert _referenced_op_path(N8N_S3_NODE, None) == "items.content"
-    assert _referenced_op_path(None, None) == "items.output"
+    assert items_path(N8N_AGENT_NODE, None) == "items.table"
+    assert items_path(N8N_POSTGRES_NODE, "symbol") == "items.table.symbol"
+    assert items_path(N8N_S3_NODE, None) == "items.content"
+    assert items_path(None, None) == "items.output"
 
 
 def _code_node_workflow(notes: str) -> dict:
@@ -721,7 +718,7 @@ def test_prompt_content_whole_item_ref_has_no_path() -> None:
     assert fmt_op.get("format_paths") in (None, {})
 
 
-def _chain_plan(
+def _chain_context(
     node: dict,
     node_name: str,
     incoming: dict,
@@ -730,8 +727,8 @@ def _chain_plan(
     inputs: dict,
     model_specs: dict,
     scope: str,
-):
-    ctx = OpContext(
+) -> OpContext:
+    return OpContext(
         scope=scope,
         inputs=inputs,
         incoming=incoming,
@@ -739,7 +736,6 @@ def _chain_plan(
         op_ids=op_ids,
         model_specs=model_specs,
     )
-    return llm_chain_plan(node, ctx, node_name)
 
 
 def _aggregate_chain_node(text: str) -> dict:
@@ -789,8 +785,9 @@ def test_aggregate_chain_no_ref_escapes_once() -> None:
     node = _aggregate_chain_node(
         'Return JSON {"a": 1}.\n```table\nx: {{ $json.x }}\n```'
     )
-    ops, _ = build_text_generation(
-        _chain_plan(
+    ops, _ = make_chain_node(
+        node,
+        _chain_context(
             node=node,
             node_name="Digest",
             incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
@@ -799,7 +796,8 @@ def test_aggregate_chain_no_ref_escapes_once() -> None:
             inputs={},
             model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
             scope="g0",
-        )
+        ),
+        "Digest",
     )
     content = _aggregate_message_content(ops)
     assert content == 'Return JSON {{"a": 1}}.\n{df}'
@@ -815,8 +813,9 @@ def test_aggregate_chain_with_ref_escapes_once() -> None:
         "Return JSON {\"a\": 1} for {{ $('Stock') }}.\n"
         "```table\nx: {{ $('SQL').item.x }}\n```"
     )
-    ops, _ = build_text_generation(
-        _chain_plan(
+    ops, _ = make_chain_node(
+        node,
+        _chain_context(
             node=node,
             node_name="Digest",
             incoming={
@@ -827,7 +826,8 @@ def test_aggregate_chain_with_ref_escapes_once() -> None:
             inputs={},
             model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
             scope="g0",
-        )
+        ),
+        "Digest",
     )
     rendered = _render_aggregate_format_ops(
         ops, df_value='{"x": "v"}', ref_values={"ref0": "NVDA"}

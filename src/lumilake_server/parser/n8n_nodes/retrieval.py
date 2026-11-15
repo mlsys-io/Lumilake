@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from ..common import make_id as _make_id
-from . import shared
+from . import references, shared
 from .entries import NodeDict, OpContext
 
 _BINARY_EXTENSIONS = (
@@ -187,7 +187,7 @@ def _build_sql_template_and_params(
                     clause_label,
                     {
                         "node": resolved_val,
-                        "path": shared.referenced_op_path(
+                        "path": references.items_path(
                             op_type_by_id.get(resolved_val), None
                         ),
                     },
@@ -224,7 +224,7 @@ def _build_sql_template_and_params(
                 "limit",
                 {
                     "node": limit,
-                    "path": shared.referenced_op_path(op_type_by_id.get(limit), None),
+                    "path": references.items_path(op_type_by_id.get(limit), None),
                 },
             )
         query += " LIMIT {limit}"
@@ -246,7 +246,7 @@ def make_postgres(
     operation = params.get("operation")
     main_inputs = [
         ctx.op_ids[dep]
-        for dep in shared.main_incoming(node_name, ctx.incoming, ctx.node_map)
+        for dep in references.main_incoming(node_name, ctx.incoming, ctx.node_map)
         if dep in ctx.op_ids
     ]
 
@@ -503,7 +503,7 @@ def _parse_s3_folder_key(
             )
         detail_matches = shared.extract_ref_details(full_literal)
         ref_path = detail_matches[0][1] if detail_matches else None
-        base_label = shared.path_to_label(ref_path) or f"value{idx}"
+        base_label = references.path_to_label(ref_path) or f"value{idx}"
         label = shared.ensure_unique_label(base_label, seen_labels)
         template = template.replace(full_literal, f"{{{label}}}", 1)
 
@@ -519,7 +519,7 @@ def _parse_s3_folder_key(
             continue
 
         node_type = (node_map.get(ref_name) or {}).get("type")
-        path = shared.referenced_op_path(node_type, ref_path)
+        path = references.items_path(node_type, ref_path)
         key_params.append({"label": label, "node": node_id, "path": path})
         dependencies.append(node_id)
 
@@ -535,7 +535,7 @@ def postgres_dependencies(node_name: str, ctx: OpContext) -> list[str]:
     if isinstance(where, dict):
         deps.extend(shared.extract_ref_names(where))
     deps.extend(shared.extract_ref_names(params.get("query")))
-    upstream_main = shared.find_main_upstream(node_name, ctx.incoming, ctx.node_map)
+    upstream_main = references.find_main_upstream(node_name, ctx.incoming, ctx.node_map)
     if upstream_main:
         deps.append(upstream_main)
     return [dep for dep in deps if isinstance(dep, str)]

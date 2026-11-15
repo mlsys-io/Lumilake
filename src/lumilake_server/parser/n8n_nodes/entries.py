@@ -61,7 +61,7 @@ class NodeReference:
 class NodeTranslator:
     """How one n8n node type is turned into Lumilake ops."""
 
-    make: Callable[..., tuple[list[NodeDict], str]]
+    make: Callable[[NodeDict, "OpContext", str], tuple[list[NodeDict], str]]
     dependencies: Callable[[str, OpContext], list[str]]
     is_data_source: bool = False
     is_input: bool = False

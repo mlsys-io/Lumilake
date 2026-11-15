@@ -6,7 +6,7 @@ from typing import Any
 from lumilake_server.ops.util_ops import LambdaOp
 
 from ..common import make_id as _make_id
-from . import shared
+from . import references, shared
 from .entries import NodeDict, OpContext
 
 
@@ -17,7 +17,7 @@ def make_code(
 
     input_names = notes.get("inputs")
     if input_names is None or input_names == []:
-        input_names = shared.main_incoming(node_name, ctx.incoming, ctx.node_map)
+        input_names = references.main_incoming(node_name, ctx.incoming, ctx.node_map)
     if not isinstance(input_names, list) or not input_names:
         raise ValueError(f"Code node '{node_name}' missing inputs")
 
@@ -123,7 +123,7 @@ def code_dependencies(node_name: str, ctx: OpContext) -> list[str]:
     notes = shared.parse_notes(node.get("notes", ""))
     deps = notes.get("inputs")
     if deps is None or deps == []:
-        deps = shared.main_incoming(node_name, ctx.incoming, ctx.node_map)
+        deps = references.main_incoming(node_name, ctx.incoming, ctx.node_map)
     return [dep for dep in deps if isinstance(dep, str)]
 
 
