@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from support.runtime_server import attach_request_states
+from support.runtime_server import attach_request_states, make_runtime_op
 
 from lumilake_server.runtime.capacity import FreeCapacity
 
@@ -279,9 +279,7 @@ class _GpuBatchJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            gpu_node = SimpleNamespace(
-                backend="vllm", task_type="inference", gpu_memory_utilization=None
-            )
+            gpu_node = make_runtime_op("gpu_node")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-gpu", id="wf-gpu")],
@@ -547,9 +545,7 @@ class _GpuThenCpuJobManager:
         self._select_calls += 1
         # While the GPU batch is still queued, it keeps re-selecting.
         if not self._gpu_removed:
-            gpu_node = SimpleNamespace(
-                backend="vllm", task_type="inference", gpu_memory_utilization=None
-            )
+            gpu_node = make_runtime_op("gpu_node")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[
@@ -665,9 +661,7 @@ class _TransientGpuJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            gpu_node = SimpleNamespace(
-                backend="vllm", task_type="inference", gpu_memory_utilization=None
-            )
+            gpu_node = make_runtime_op("gpu_node")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[
@@ -811,9 +805,7 @@ class _InferenceWithoutBackendBatchJobManager:
     async def reserve_batch(self, batch_size: int, *, capacity: Any = None) -> Any:
         self._select_calls += 1
         if self._select_calls == 1:
-            mystery_op = SimpleNamespace(
-                backend="", task_type="inference", gpu_memory_utilization=None
-            )
+            mystery_op = make_runtime_op("mystery")
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
                 workflows=[SimpleNamespace(request_id="req-mystery", id="wf-mystery")],

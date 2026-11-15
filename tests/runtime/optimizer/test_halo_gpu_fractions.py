@@ -1,11 +1,19 @@
+from dataclasses import replace
+
 import pytest
+from support.runtime_server import make_runtime_op
 
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 _SMALL = {"has_gpu": True, "gpu_memory_fraction": 0.1}
 _BIG = {"has_gpu": True, "gpu_memory_fraction": 0.8}
+_OP = replace(
+    make_runtime_op("n"),
+    backend="vllm",
+    model="Qwen/Qwen3-8B",
+    model_spec={"vllm": {"gpu_memory_utilization": 0.8}},
+)
 
 
 @pytest.mark.parametrize(
@@ -19,16 +27,7 @@ _BIG = {"has_gpu": True, "gpu_memory_fraction": 0.8}
 def test_a_node_lands_only_on_a_worker_whose_fraction_holds_it(
     profiles: dict[str, dict], expected: str | None
 ) -> None:
-    op = RuntimeOp(
-        "n",
-        "inference",
-        "vllm",
-        "Qwen/Qwen3-8B",
-        {},
-        {"vllm": {"gpu_memory_utilization": 0.8}},
-        {},
-    )
-    graph = RuntimeGraph(nodes={"n": op}, node_order=["n"], output_node_map={})
+    graph = RuntimeGraph(nodes={"n": _OP}, node_order=["n"], output_node_map={})
     optimizer = HaloOptimizer()
     if expected is None:
         with pytest.raises(RuntimeError) as raised:
