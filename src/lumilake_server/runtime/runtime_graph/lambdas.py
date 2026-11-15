@@ -11,6 +11,12 @@ from lumilake_server.ops import (
 )
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import _RuntimeGraphBuilderBase
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
@@ -275,3 +281,32 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         if len(known) != len(row_counts):
             return None
         return max([1, *known])
+
+
+@register(LambdaOp, Phase.LIST_LAMBDA)
+def _lower_list_lambda(
+    builder: Any,
+    op_id: str,
+    op: LambdaOp,
+    ctx: LoweringContext,
+) -> LoweringResult | None:
+    """Lower a list-mode LambdaOp; a row-mode one is lowered by its consumer or
+    by the standalone pass."""
+    if not op.takes_whole_columns:
+        return None
+    if ctx.task_type_override == "data_profile":
+        return None
+    runtime_op = builder._build_node_from_list_lambda_op(
+        op_id,
+        op,
+        ctx.graph_dict,
+        ctx.inputs_dict,
+    )
+    result = LoweringResult(
+        nodes=[runtime_op],
+        dsl_to_runtime=[runtime_op.node_id],
+        output_nodes=[runtime_op.node_id],
+        visited=[input_op.id for input_op in op.inputs],
+    )
+    builder._record_output(op_id, op, result, ctx)
+    return result

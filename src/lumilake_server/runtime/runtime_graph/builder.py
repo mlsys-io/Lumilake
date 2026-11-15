@@ -3,6 +3,7 @@ from lumilake_server.ops import (
     DataRetrievalOp,
     LambdaOp,
     LLMOp,
+    Op,
     OutputOp,
 )
 from lumilake_server.ops.llm_ops import (
@@ -15,6 +16,7 @@ from lumilake_server.runtime.runtime_graph.graph import (
 )
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
+    LoweringResult,
     Phase,
     lookup,
 )
@@ -43,6 +45,25 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 ctx.dsl_to_runtime[op_id] = list(result.dsl_to_runtime)
                 ctx.visited.update(result.visited)
                 ctx.visited.add(op_id)
+
+    def _record_output(
+        self,
+        op_id: str,
+        op: Op,
+        result: LoweringResult,
+        ctx: LoweringContext,
+    ) -> None:
+        """Record the path an OutputOp archives ``result``'s nodes at."""
+        outputs = ctx.outputs_by_source.get(op_id)
+        if outputs is None:
+            return
+        ((output_name, path_override),) = outputs
+        for node_id in result.output_nodes:
+            ctx.output_node_map[node_id] = output_name
+            if path_override:
+                ctx.output_paths[node_id] = path_override
+            elif default_path := ctx.op_output(op).default_output_path:
+                ctx.output_paths[node_id] = default_path
 
     def build(
         self,
@@ -138,69 +159,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
             output_paths=output_paths,
         )
         self._lower_ops(ctx)
-
-        for retrieval_op_id, retrieval_op in retrieval_ops.items():
-            if retrieval_op_id in lowered:
-                continue
-            self._mark_retrieval_upstream_nodes_visited(
-                op=retrieval_op,
-                graph_dict=graph_dict,
-                visited_node_ids=visited_node_ids,
-            )
-            if task_type_override == "data_profile":
-                runtime_op = self._build_data_profile_node_from_data_retrieval_op(
-                    retrieval_op_id,
-                    retrieval_op,
-                    graph_dict,
-                    inputs_dict,
-                    input_ops_by_id,
-                )
-                if runtime_op is None:
-                    continue
-            else:
-                runtime_op = self._build_node_from_data_retrieval_op(
-                    retrieval_op_id,
-                    retrieval_op,
-                    graph_dict,
-                    inputs_dict,
-                    input_ops_by_id,
-                )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[retrieval_op_id] = [runtime_op.node_id]
-
-            if retrieval_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[
-                    retrieval_op_id
-                ]
-                output_node_map[runtime_op.node_id] = output_name
-                default_path = self._op_output(retrieval_op).default_output_path
-                assert default_path is not None
-                output_paths[runtime_op.node_id] = path_override or default_path
-
-        for lambda_op_id, lambda_op in list_lambda_ops.items():
-            if task_type_override == "data_profile":
-                continue
-            for input_op in lambda_op.inputs:
-                visited_node_ids.add(input_op.id)
-            runtime_op = self._build_node_from_list_lambda_op(
-                lambda_op_id,
-                lambda_op,
-                graph_dict,
-                inputs_dict,
-            )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
-
-            if lambda_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[
-                    lambda_op_id
-                ]
-                output_node_map[runtime_op.node_id] = output_name
-                default_path = self._op_output(lambda_op).default_output_path
-                assert default_path is not None
-                output_paths[runtime_op.node_id] = path_override or default_path
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":

@@ -974,11 +974,5 @@ def _lower_data_retrieval(
         output_nodes=[runtime_op.node_id],
         visited=upstreams,
     )
-    outputs = ctx.outputs_by_source.get(op_id)
-    if outputs is not None:
-        ((output_name, path_override),) = outputs
-        ctx.output_node_map[runtime_op.node_id] = output_name
-        default_path = ctx.op_output(op).default_output_path
-        assert default_path is not None
-        ctx.output_paths[runtime_op.node_id] = path_override or default_path
+    builder._record_output(op_id, op, result, ctx)
     return result
