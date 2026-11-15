@@ -202,9 +202,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             model="",
             dependencies=dependencies if dependencies else None,
         )
-        return LoweringResult(
-            nodes=[node], visited=[input_op.id for input_op in op.inputs]
-        )
+        ctx.visited.update(input_op.id for input_op in op.inputs)
+        return LoweringResult(nodes=[node])
 
     @register(LambdaOp, Phase.ROW_LAMBDA)
     def _lower_row_lambda(

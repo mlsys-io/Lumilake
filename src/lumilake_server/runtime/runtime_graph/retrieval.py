@@ -105,7 +105,6 @@ class _RetrievalBuilder(_LLMBuilder):
         # runtime dependencies. Mark those upstream op ids as visited so strict
         # traversal validation does not flag legitimate input-only branches.
         ctx.visited.update(input_op.id for input_op in op.inputs)
-        upstreams = [input_op.id for input_op in op.inputs]
         spec = op.data_spec or {}
         params = spec.get("params")
         if isinstance(params, list):
@@ -114,15 +113,11 @@ class _RetrievalBuilder(_LLMBuilder):
                     continue
                 node = param.get("node")
                 if isinstance(node, str) and node in ctx.graph_dict:
-                    upstreams.append(node)
+                    ctx.visited.add(node)
 
         if ctx.task_type_override == "data_profile":
             profile = self._data_profile_node(op, ctx)
-            return (
-                None
-                if profile is None
-                else LoweringResult(nodes=[profile], visited=upstreams)
-            )
+            return None if profile is None else LoweringResult(nodes=[profile])
         graph_dict = ctx.graph_dict
         inputs_dict = ctx.inputs_dict
         input_ops_by_id = ctx.input_ops_by_id
@@ -319,7 +314,7 @@ class _RetrievalBuilder(_LLMBuilder):
             model="data_retrieval",
             dependencies=dependencies if dependencies else None,
         )
-        return LoweringResult(nodes=[node], visited=upstreams)
+        return LoweringResult(nodes=[node])
 
     def _resolve_profile_param(
         self,

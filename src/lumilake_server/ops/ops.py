@@ -34,12 +34,11 @@ class OpRegistry:
 
 
 class RowShape(Enum):
-    """How many values one item of an op's output holds, which decides whether a
-    consumer reads it per row, per group, or as one whole list."""
+    """How many values one item of an op's output holds: a per-row item holds
+    one value, and a grouped item holds a table's values."""
 
     PER_ROW = "per_row"
     GROUPED = "grouped"
-    WHOLE_LIST = "whole_list"
 
 
 class Op(ABC):

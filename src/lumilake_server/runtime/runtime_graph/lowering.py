@@ -35,12 +35,11 @@ class LoweringContext:
 
 @dataclass
 class LoweringResult:
-    """The runtime nodes one op lowers to, in emission order; the upstream ops
-    the lowering absorbed; and the mapping of any other op whose nodes the
-    lowering also built, such as a Lambda step built by recursion."""
+    """The runtime nodes one op lowers to, in emission order, and the mapping
+    of any other op whose nodes the lowering also built, such as a Lambda step
+    built by recursion."""
 
     nodes: list[RuntimeOp] = field(default_factory=list)
-    visited: list[str] = field(default_factory=list)
     built: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -48,7 +47,7 @@ LoweringFn = Callable[[Any, Any, LoweringContext], LoweringResult | None]
 AfterPhaseFn = Callable[[Any, LoweringContext], None]
 
 _LOWERINGS: dict[type[Op], list[tuple[Phase, LoweringFn]]] = {}
-_AFTER_PHASE: dict[Phase, Callable[[Any, LoweringContext], None]] = {}
+_AFTER_PHASE: dict[Phase, AfterPhaseFn] = {}
 
 
 def after_phase(phase: Phase) -> Callable[[AfterPhaseFn], AfterPhaseFn]:
@@ -56,13 +55,16 @@ def after_phase(phase: Phase) -> Callable[[AfterPhaseFn], AfterPhaseFn]:
     every lowering in that phase has built."""
 
     def _register(fn: AfterPhaseFn) -> AfterPhaseFn:
+        if phase in _AFTER_PHASE:
+            raise ValueError(f"phase {phase.name} already has an after-phase hook")
         _AFTER_PHASE[phase] = fn
         return fn
 
     return _register
 
 
-def phase_hook(phase: Phase) -> Callable[[Any, LoweringContext], None] | None:
+def phase_hook(phase: Phase) -> AfterPhaseFn | None:
+    """The hook registered for ``phase``, if any."""
     return _AFTER_PHASE.get(phase)
 
 
