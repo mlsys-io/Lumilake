@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 import yaml
 from flowmesh.exceptions import APIError, FlowMeshConnectionError
-from flowmesh.models import WorkerInfo, WorkerStatus
+from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
@@ -50,6 +50,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
+from lumilake_server.schemas.worker import WorkerInfo
 from lumilake_server.utils.job_storage import get_job_storage
 
 from .base import BaseRuntimeManager
@@ -249,23 +250,6 @@ def _with_auth_scheme(credential: str) -> str:
     if _AUTH_SCHEME_RE.match(credential):
         return credential
     return f"Bearer {credential}"
-
-
-def _raw_gpu_memory_fractions(raw_worker: Any) -> dict[Any, float]:
-    """Map each GPU device index in a raw worker payload to its memory fraction."""
-    fractions: dict[Any, float] = {}
-    hardware = raw_worker.get("hardware") if isinstance(raw_worker, dict) else None
-    gpu = hardware.get("gpu") if isinstance(hardware, dict) else None
-    devices = gpu.get("devices") if isinstance(gpu, dict) else None
-    if not isinstance(devices, list):
-        return fractions
-    for device in devices:
-        if not isinstance(device, dict):
-            continue
-        fraction = device.get("memory_fraction")
-        if isinstance(fraction, int | float) and not isinstance(fraction, bool):
-            fractions[device.get("index")] = float(fraction)
-    return fractions
 
 
 @dataclass(slots=True)
@@ -917,12 +901,12 @@ class FlowmeshRuntimeManager(BaseRuntimeManager):
         profile["supported_task_types"] = sorted(
             str(task_type) for task_type in worker.capabilities.supported_task_types
         )
-        gpu = profile.get("gpu")
-        if isinstance(gpu, dict) and isinstance(gpu.get("devices"), list):
-            raw_fractions = _raw_gpu_memory_fractions(raw_worker)
-            for device in gpu["devices"]:
-                if isinstance(device, dict):
-                    device["memory_fraction"] = raw_fractions.get(device.get("index"))
+        devices = (
+            worker.hardware.gpu.devices
+            if worker.hardware and worker.hardware.gpu
+            else []
+        )
+        profile["gpu_memory_fraction"] = devices[0].memory_fraction if devices else None
         return profile
 
     async def get_request_status(

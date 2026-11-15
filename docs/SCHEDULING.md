@@ -199,16 +199,9 @@ Pinning an item that cannot run would produce an undispatchable anchor.
 
 ### GPU memory fractions
 
-Two facts decide whether an engine fits a worker: the fraction of a card the
-worker owns (`gpu_memory_fraction` in its profile, `null` when it owns a whole
-device), and the fraction its engine reserves (`gpu_memory_utilization` on the
-runtime node). A node is offered only to GPU workers whose fraction is at least
-the utilization it names, and a whole-device worker takes any value.
-
-The scheduler claims and previews by the same rule: the claimed group holds the
-largest utilization the batch's GPU nodes name, the batch waits while no free
-worker holds it, and it reaches the optimizer only when no GPU worker in the
-cluster does. HALO filters a node's workers by it; other optimizers ignore it.
+A node runs only on a GPU worker whose owned memory fraction
+(`gpu_memory_fraction`) is at least the fraction its engine reserves
+(`gpu_memory_utilization`); a whole-device worker takes any value.
 
 ## 5. What still causes idle workers
 

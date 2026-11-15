@@ -26,19 +26,7 @@ def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
 
 def gpu_memory_fraction(profile: Mapping[str, Any]) -> float | None:
     """The fraction of its card a GPU worker owns, ``None`` for a whole device."""
-    if "gpu_memory_fraction" in profile:
-        recorded = profile["gpu_memory_fraction"]
-        if isinstance(recorded, int | float) and not isinstance(recorded, bool):
-            return float(recorded)
-        return None
-    gpu_section = profile.get("gpu")
-    devices = gpu_section.get("devices") if isinstance(gpu_section, Mapping) else None
-    if not isinstance(devices, list) or not devices:
-        return None
-    device = devices[0]
-    if not isinstance(device, Mapping):
-        return None
-    fraction = device.get("memory_fraction")
+    fraction = profile.get("gpu_memory_fraction")
     if isinstance(fraction, int | float) and not isinstance(fraction, bool):
         return float(fraction)
     return None

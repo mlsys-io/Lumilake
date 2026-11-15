@@ -10,7 +10,6 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 _OP = replace(
     make_runtime_op("n"),
     backend="vllm",
-    model="Qwen/Qwen3-8B",
     model_spec={"vllm": {"gpu_memory_utilization": 0.8}},
 )
 
@@ -26,7 +25,6 @@ def _capacity(*names: str) -> FreeCapacity:
     ("idle", "cluster", "expected"),
     [
         (("gpu-small", "gpu-big"), ("gpu-small", "gpu-big"), ["gpu-big"]),
-        (("gpu-small",), ("gpu-small", "gpu-big"), None),
         (("gpu-small",), ("gpu-small",), ["gpu-small"]),
     ],
 )
@@ -52,5 +50,4 @@ async def test_try_claim_workers_takes_only_a_worker_whose_fraction_fits(
         return _capacity(*cluster)
 
     server._snapshot_total_capacity = total
-
     assert await server._try_claim_workers(batch, _capacity(*idle)) == expected

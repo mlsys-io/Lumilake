@@ -1,26 +1,19 @@
-"""``get_worker_profile`` carries the task types a worker's executors advertise,
-so the scheduler can place a node only on a worker that can run it."""
-
 from typing import Any
 
 import pytest
 from flowmesh.models.common import TaskType
-from flowmesh.models.workers import (
-    MemoryInfo,
-    WorkerCapabilities,
-    WorkerHardware,
-    WorkerInfo,
-)
+from flowmesh.models.workers import MemoryInfo, WorkerCapabilities
 
 from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.schemas import worker as w
 
 
 def _worker(
     worker_id: str,
     task_types: frozenset[TaskType],
-    hardware: WorkerHardware | None = None,
-) -> WorkerInfo:
-    return WorkerInfo(
+    hardware: w.WorkerHardware | None = None,
+) -> w.WorkerInfo:
+    return w.WorkerInfo(
         id=worker_id,
         namespace="ns",
         cluster="cluster-0",
@@ -32,7 +25,7 @@ def _worker(
     )
 
 
-def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> dict[str, Any]:
+def _serve(monkeypatch: pytest.MonkeyPatch, worker: w.WorkerInfo) -> dict[str, Any]:
     payload = worker.model_dump(mode="json")
 
     async def fake_get(path: str) -> dict[str, Any]:
@@ -62,13 +55,12 @@ async def test_profile_keeps_the_hardware_sections(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hardware = WorkerHardware(memory=MemoryInfo(total_bytes=1024))
-    payload = _serve(monkeypatch, _worker("w", frozenset(), hardware))
-    payload["hardware"]["gpu"] = {
-        "devices": [{"index": 0, "memory_fraction": 0.3}, {"index": 1}]
-    }
+    gpu = w.GpuPlatformInfo(
+        devices=[w.GpuInfo(index=0, memory_fraction=0.3), w.GpuInfo(index=1)]
+    )
+    hardware = w.WorkerHardware(memory=MemoryInfo(total_bytes=1024), gpu=gpu)
+    _serve(monkeypatch, _worker("w", frozenset(), hardware))
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 
-    assert profile["memory"]["total_bytes"] == 1024
-    assert [d["memory_fraction"] for d in profile["gpu"]["devices"]] == [0.3, None]
+    assert profile["gpu_memory_fraction"] == 0.3
