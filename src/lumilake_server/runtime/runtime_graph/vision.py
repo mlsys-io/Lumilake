@@ -37,7 +37,7 @@ class _VisionBuilder(_RetrievalBuilder):
         nodes a flattened per-row VLM runs as."""
         ctx.visited.add(op.id)
         ctx.visited.add(op.image_source)
-        runtime_ops, _ = self._build_vlm_nodes_from_image_op(
+        runtime_ops = self._build_vlm_nodes_from_image_op(
             op.id,
             op,
             ctx.graph_dict,
@@ -57,7 +57,7 @@ class _VisionBuilder(_RetrievalBuilder):
         visited_node_ids: set[str],
         dsl_to_runtime: dict[str, list[str]] | None = None,
         runtime_nodes: dict[str, RuntimeOp] | None = None,
-    ) -> tuple[list[RuntimeOp], list[str]]:
+    ) -> list[RuntimeOp]:
         if llm_op.rowwise_template:
             upstream_llm_ids, _ = self._infer_structural_messages(
                 llm_op_id,
@@ -191,7 +191,7 @@ class _VisionBuilder(_RetrievalBuilder):
                 model=llm_op.config.model,
                 dependencies=deduped_deps,
             )
-            return [embedding_node, vlm_node], [embedding_node_id, llm_op_id]
+            return [embedding_node, vlm_node]
 
         # Flattened per-row VLM: one embedding + one inference over the flat
         # prompts, plus a flatten python step (renders one prompt per image)
@@ -331,10 +331,7 @@ class _VisionBuilder(_RetrievalBuilder):
             dependencies=regroup_deps,
         )
 
-        return (
-            [flatten, embedding_node, infer, regroup],
-            [flatten_id, embedding_node_id, infer_id, llm_op_id],
-        )
+        return [flatten, embedding_node, infer, regroup]
 
     def _resolve_vlm_image_source(
         self,
