@@ -1,6 +1,5 @@
-"""How one n8n node type answers a reference from another node.
-
-References are keyed by the same type strings the walk uses.
+"""How each n8n node type answers a reference from another node, keyed
+by the type strings the walk uses.
 """
 
 from typing import Any

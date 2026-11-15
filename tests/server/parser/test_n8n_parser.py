@@ -785,8 +785,6 @@ def test_prompt_content_whole_item_ref_has_no_path() -> None:
 
 
 def _chain_context(
-    node: dict,
-    node_name: str,
     incoming: dict,
     node_map: dict,
     op_ids: dict,
@@ -854,8 +852,6 @@ def test_aggregate_chain_no_ref_escapes_once() -> None:
     ops, _ = make_chain_node(
         node,
         _chain_context(
-            node=node,
-            node_name="Digest",
             incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
             node_map={},
             op_ids={},
@@ -882,8 +878,6 @@ def test_aggregate_chain_with_ref_escapes_once() -> None:
     ops, _ = make_chain_node(
         node,
         _chain_context(
-            node=node,
-            node_name="Digest",
             incoming={
                 "Digest": [{"type": "ai_languageModel", "node": "Model"}],
             },

@@ -1,8 +1,5 @@
-"""The records the n8n parser dispatches on.
-
-``OpContext`` is what the walk knows when it reaches one node,
-``NodeTranslator`` is the entry one node type maps to, and ``ChainPlan`` is
-the chain node prepared for its notes builder.
+"""The records the n8n parser dispatches on: what the walk knows at
+one node, what a node type maps to, and a chain prepared for its builder.
 """
 
 from collections.abc import Callable

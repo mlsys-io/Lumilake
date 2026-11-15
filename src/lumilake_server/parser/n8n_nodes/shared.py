@@ -1,6 +1,5 @@
-"""The helpers more than one node family uses.
-
-Anything specific to one family lives in that family's module.
+"""The helpers more than one node family uses, with each family's own
+code in its own module.
 """
 
 import json
