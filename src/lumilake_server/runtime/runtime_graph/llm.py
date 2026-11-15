@@ -3,10 +3,7 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 from lumilake import envs
-from lumilake_server.common import (
-    ApiConfig,
-    retrieval_items_path,
-)
+from lumilake_server.common import ApiConfig
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -36,6 +33,10 @@ from lumilake_server.runtime.runtime_graph.graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
 )
+from lumilake_server.runtime.runtime_graph.outputs import (
+    is_api_task,
+    output_row_count,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import lambda_runtime
 
@@ -61,9 +62,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         source = graph_dict.get(node)
         if source is None:
             return condition
-        source_row_count = self._static_output_row_count(
-            source, inputs_dict, graph_dict
-        )
+        source_row_count = output_row_count(source, inputs_dict, graph_dict)
         if (
             source_row_count is not None
             and source_row_count > 1
@@ -164,9 +163,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                     consumer_id=llm_op_id,
                     upstream_id=content_op.id,
                     upstream=content_op,
-                    inputs_dict=inputs_dict,
-                    graph_dict=graph_dict,
-                    dsl_to_runtime=dsl_to_runtime,
                     kind="content",
                 )
                 content_path = self._op_output(content_op).path
@@ -237,7 +233,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             else:
                 if not (
                     isinstance(prompt_op, LambdaOp)
-                    or self._emits_one_item_per_row(prompt_op)
+                    or self._op_output(prompt_op).one_item_per_row
                 ):
                     raise ValueError(
                         f"LLMCompletionOp '{llm_op_id}' prompt upstream"
@@ -285,7 +281,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 output_spec=output_spec,
                 condition=self._row_condition(
                     llm_op.condition,
-                    self._static_output_row_count(llm_op, inputs_dict, graph_dict) or 1,
+                    output_row_count(llm_op, inputs_dict, graph_dict) or 1,
                     graph_dict,
                     inputs_dict,
                     dsl_to_runtime,
@@ -314,7 +310,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 output_spec=output_spec,
                 condition=self._row_condition(
                     llm_op.condition,
-                    self._static_output_row_count(llm_op, inputs_dict, graph_dict) or 1,
+                    output_row_count(llm_op, inputs_dict, graph_dict) or 1,
                     graph_dict,
                     inputs_dict,
                     dsl_to_runtime,
@@ -349,7 +345,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             output_spec=output_spec,
             condition=self._row_condition(
                 llm_op.condition if isinstance(llm_op, LLMChatOp) else None,
-                self._static_output_row_count(llm_op, inputs_dict, graph_dict) or 1,
+                output_row_count(llm_op, inputs_dict, graph_dict) or 1,
                 graph_dict,
                 inputs_dict,
                 dsl_to_runtime,
@@ -509,7 +505,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 output_spec=output_spec,
                 condition=self._row_condition(
                     condition,
-                    self._static_output_row_count(llm_op, inputs_dict, graph_dict) or 1,
+                    output_row_count(llm_op, inputs_dict, graph_dict) or 1,
                     graph_dict,
                     inputs_dict,
                     dsl_to_runtime,
@@ -556,9 +552,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                         path=path if isinstance(path, str) else "",
                         upstream=graph_dict.get(node_ref),
                         inputs_dict=inputs_dict,
-                        graph_dict=graph_dict,
-                        dsl_to_runtime=dsl_to_runtime,
-                        kind="rowwise column",
                     )
                 )
                 # An InputOp ref is bound as a literal column (no runtime node),
@@ -639,9 +632,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                     path=path,
                     upstream=graph_dict.get(node_ref),
                     inputs_dict=inputs_dict,
-                    graph_dict=graph_dict,
-                    dsl_to_runtime=dsl_to_runtime,
-                    kind="aggregate column",
                 )
             )
             # An InputOp ref is bound as a literal column (no runtime node), so
@@ -827,7 +817,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 assert (
                     op.id != target_llm_op.id
                 ), "Encountered starting LLMOp again unexpectedly"
-                is_api_ancestor = self._is_api_task(op)
+                is_api_ancestor = is_api_task(op)
                 output = self._op_output(op)
                 if op.id not in upstream_llm_ids:
                     upstream_llm_ids.add(op.id)
@@ -894,8 +884,7 @@ class _LLMBuilder(_EmbeddingBuilder):
 
             elif isinstance(op, DataRetrievalOp):
                 if op.id not in columns:
-                    path = retrieval_items_path(op.data_spec["mode"])
-                    columns[op.id] = {"node": op.id, "path": path}
+                    columns[op.id] = {"node": op.id, "path": self._op_output(op).path}
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, MessageOp):
@@ -998,9 +987,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                                 path=field_path,
                                 upstream=upstream,
                                 inputs_dict=inputs_dict,
-                                graph_dict=graph_dict,
-                                dsl_to_runtime=dsl_to_runtime,
-                                kind="prompt field",
                             )
                         format_kwargs.append({"label": k, "value": label})
                     else:

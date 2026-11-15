@@ -117,7 +117,8 @@ def needs_flatten(op: Op) -> bool:
 def op_output(
     op: Op,
     flattened_vlm_ids: set[str],
-    row_count: int | None,
+    inputs_dict: dict[str, list[str]],
+    graph_dict: dict[str, Op],
 ) -> OpOutput:
     """Describe how a consumer reads ``op``'s values: the emitting node, the
     envelope path, the row count, and what an OutputOp archives."""
@@ -145,7 +146,7 @@ def op_output(
     return OpOutput(
         node=op.id,
         path=path,
-        row_count=row_count,
+        row_count=output_row_count(op, inputs_dict, graph_dict),
         default_output_path=default_path,
         kind=kind,
         one_item_per_row=emits_one_item_per_row(op),

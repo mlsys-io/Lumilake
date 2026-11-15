@@ -52,9 +52,6 @@ class _EmbeddingBuilder(_LambdaBuilder):
                     consumer_id=llm_op_id,
                     upstream_id=content_op.id,
                     upstream=content_op,
-                    inputs_dict=inputs_dict,
-                    graph_dict=graph_dict,
-                    dsl_to_runtime=dsl_to_runtime,
                     kind="content",
                 )
             content_path = self._op_output(content_op).path

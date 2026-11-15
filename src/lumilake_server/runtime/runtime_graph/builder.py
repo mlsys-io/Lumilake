@@ -1,6 +1,3 @@
-from lumilake_server.common import (
-    retrieval_items_path,
-)
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -123,10 +120,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
                     retrieval_op_id
                 ]
                 output_node_map[runtime_op.node_id] = output_name
-                mode = retrieval_op.data_spec["mode"]
-                # Mode-derived defaults match the FlowMesh executor's item
-                # shape; agent replays a SQL plan so it emits ``table`` too.
-                default_path = retrieval_items_path(mode)
+                default_path = self._op_output(retrieval_op).default_output_path
+                assert default_path is not None
                 output_paths[runtime_op.node_id] = path_override or default_path
 
         for lambda_op_id, lambda_op in list_lambda_ops.items():
@@ -149,7 +144,9 @@ class RuntimeGraphBuilder(_VisionBuilder):
                     lambda_op_id
                 ]
                 output_node_map[runtime_op.node_id] = output_name
-                output_paths[runtime_op.node_id] = path_override or "items.output"
+                default_path = self._op_output(lambda_op).default_output_path
+                assert default_path is not None
+                output_paths[runtime_op.node_id] = path_override or default_path
 
         for llm_op_id, llm_op in llm_ops.items():
             if task_type_override == "data_profile":
@@ -223,8 +220,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
                     output_node_map[output_node_id] = output_name
                     if path_override:
                         output_paths[output_node_id] = path_override
-                    elif self._is_api_task(llm_op):
-                        output_paths[output_node_id] = self._op_output(llm_op).path
+                    elif default_path := self._op_output(llm_op).default_output_path:
+                        output_paths[output_node_id] = default_path
 
         if task_type_override != "data_profile":
             # A LambdaOp is inlined into the LLM that consumes it (traced above).

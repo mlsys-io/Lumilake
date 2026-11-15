@@ -6,19 +6,14 @@ from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
 from lumilake_server.ops import (
-    DataOp,
-    EmbeddingOp,
-    FormatOp,
-    ImageGenerationOp,
     InputOp,
-    LambdaOp,
-    LLMCompletionOp,
     LLMOp,
-    MessageOp,
     Op,
 )
-from lumilake_server.ops.llm_ops import LLMChatOp, LLMVisionOp
-from lumilake_server.runtime.runtime_graph.outputs import OpOutput, op_output
+from lumilake_server.runtime.runtime_graph.outputs import (
+    OpOutput,
+    op_output,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
@@ -188,9 +183,6 @@ class _RuntimeGraphBuilderBase:
         path: str,
         upstream: Op | None,
         inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op],
-        dsl_to_runtime: dict[str, list[str]] | None,
-        kind: str,
     ) -> dict[str, Any]:
         """Bind a ``node:`` reference into a spec column, mapping the declared
         path to the upstream's read path."""
@@ -275,73 +267,6 @@ class _RuntimeGraphBuilderBase:
             visit_column(column)
         return deps
 
-    def _static_output_row_count(
-        self,
-        op: Op,
-        inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op] | None = None,
-    ) -> int | None:
-        """Static row count of an op's output, or ``None`` when not knowable at
-        build time. A rowwise op's count comes from its ``rowwise_columns``."""
-        if isinstance(op, InputOp):
-            values = inputs_dict.get(op.name)
-            return len(values) if values is not None else None
-        if isinstance(op, DataOp):
-            return len(op.data)
-        if isinstance(op, LLMCompletionOp):
-            return self._static_output_row_count(op.prompt, inputs_dict, graph_dict)
-        if isinstance(op, LLMChatOp):
-            if op.rowwise_columns:
-                counts: list[int] = []
-                for col in op.rowwise_columns:
-                    data = col.get("data")
-                    if isinstance(data, dict):
-                        items = data.get("items")
-                        if isinstance(items, list):
-                            counts.append(len(items))
-                            continue
-                    node_ref = col.get("node")
-                    if isinstance(node_ref, str) and graph_dict is not None:
-                        upstream = graph_dict.get(node_ref)
-                        if upstream is not None:
-                            count = self._static_output_row_count(
-                                upstream, inputs_dict, graph_dict
-                            )
-                            if count is not None:
-                                counts.append(count)
-                return max(counts) if counts else None
-            messages = (
-                op.messages.messages if isinstance(op.messages, MessageOp) else []
-            )
-            op_counts: list[int] = []
-            for message in messages:
-                if isinstance(message.content, Op):
-                    count = self._static_output_row_count(
-                        message.content, inputs_dict, graph_dict
-                    )
-                    if count is not None:
-                        op_counts.append(count)
-            return max(op_counts) if op_counts else None
-        if isinstance(op, (EmbeddingOp, ImageGenerationOp)):
-            return self._static_output_row_count(op.content, inputs_dict, graph_dict)
-        if isinstance(op, FormatOp):
-            format_counts = [
-                self._static_output_row_count(inp, inputs_dict, graph_dict)
-                for inp in op.inputs
-            ]
-            known = [c for c in format_counts if c is not None]
-            return max(known) if known else None
-        if isinstance(op, LambdaOp):
-            if op.mode == "list":
-                return None
-            lambda_counts = [
-                self._static_output_row_count(inp, inputs_dict, graph_dict)
-                for inp in op.inputs
-            ]
-            known = [c for c in lambda_counts if c is not None]
-            return max(known) if known else None
-        return None
-
     @staticmethod
     def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
         """Yield every runtime node reference in a RuntimeOp: data_spec
@@ -391,16 +316,13 @@ class _RuntimeGraphBuilderBase:
         consumer_id: str,
         upstream_id: str,
         upstream: Op | None,
-        inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op],
-        dsl_to_runtime: dict[str, list[str]] | None,
         kind: str,
     ) -> None:
         """Fail closed when a consumer binds a single ``${node.path}`` reference
         to a multi-row upstream."""
         if not isinstance(upstream, LLMOp):
             return
-        row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
+        row_count = self._op_output(upstream).row_count
         if row_count is not None and row_count > 1:
             raise ValueError(
                 f"Op '{consumer_id}' {kind} references '{upstream_id}',"
@@ -409,41 +331,8 @@ class _RuntimeGraphBuilderBase:
                 " output would silently drop every row but the first."
             )
 
-    @staticmethod
-    def _emits_one_item_per_row(op: Op) -> bool:
-        """Whether a multi-row op's result holds one scalar-per-row item per
-        input row, so a ``node``/``path`` reference resolves to one value per
-        row."""
-        if isinstance(op, LLMCompletionOp):
-            return True
-        return (
-            isinstance(op, LLMChatOp)
-            and op.rowwise_template is None
-            and not _RuntimeGraphBuilderBase._is_api_task(op)
-        )
-
-    @staticmethod
-    def _is_api_task(op: Op) -> bool:
-        """Whether an LLMOp dispatches as an API task (not a VLM)."""
-        return (
-            isinstance(op, LLMOp)
-            and not isinstance(op, LLMVisionOp)
-            and (op.config.api is not None)
-        )
-
-    @staticmethod
-    def _is_rowwise_api_task(op: Op) -> bool:
-        """Whether an API task is row-wise (dataframe)."""
-        return (
-            _RuntimeGraphBuilderBase._is_api_task(op)
-            and isinstance(op, LLMChatOp)
-            and op.rowwise_template is not None
-        )
-
     def _op_output(self, op: Op) -> OpOutput:
         """How a consumer reads the op's values."""
         return op_output(
-            op,
-            self._flattened_vlm_ids,
-            self._static_output_row_count(op, self._inputs_dict, self._graph_dict),
+            op, self._flattened_vlm_ids, self._inputs_dict, self._graph_dict
         )

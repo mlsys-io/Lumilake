@@ -235,9 +235,10 @@ class _RetrievalBuilder(_LLMBuilder):
                     resolved_params.append(literal_param)
                     continue
                 if isinstance(upstream, LLMOp):
-                    row_count = self._op_output(upstream).row_count
+                    output = self._op_output(upstream)
+                    row_count = output.row_count
                     if row_count is not None and row_count > 1:
-                        if not self._op_output(upstream).one_item_per_row:
+                        if not output.one_item_per_row:
                             raise ValueError(
                                 f"DataRetrievalOp '{op_id}' template param "
                                 f"{param.get('label')!r} references '{node}', which"
