@@ -37,7 +37,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
             )
 
         nodes: dict[str, RuntimeOp] = {}
-        node_order: list[str] = []
+        output_node_map: dict[str, str] = {}
+        output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
 
         ctx = LoweringContext(
@@ -49,11 +50,10 @@ class RuntimeGraphBuilder(_VisionBuilder):
             nodes=nodes,
             dsl_to_runtime=dsl_to_runtime,
             visited=visited,
+            output_node_map=output_node_map,
+            output_paths=output_paths,
         )
         node_order = self._lower_ops(ctx)
-        output_node_map, output_paths = self._output_targets(
-            ctx, output_source_to_outputop
-        )
 
         if task_type_override != "data_profile":
             unvisited_node_ids = set(graph_dict) - visited
@@ -113,7 +113,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
 
     def _lower_ops(self, ctx: LoweringContext) -> list[str]:
         """Run every registered lowering, one phase at a time, adding each
-        result's nodes to the graph and returning them in emission order."""
+        result's nodes to the graph in emission order and recording the output
+        each op archives at as it lowers."""
         node_order: list[str] = []
         profile = ctx.task_type_override == "data_profile"
         for phase in Phase:
@@ -139,30 +140,21 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 ctx.dsl_to_runtime.update(result.built)
                 ctx.visited.update(result.visited)
                 ctx.visited.add(op.id)
+                self._record_output(op, ctx)
             after = phase_hook(phase)
             if after is not None:
                 after(self, ctx)
         return node_order
 
-    def _output_targets(
-        self,
-        ctx: LoweringContext,
-        outputs_by_source: dict[str, list[tuple[str, str | None]]],
-    ) -> tuple[dict[str, str], dict[str, str]]:
-        """The node each OutputOp archives from, and the path it archives at."""
-        output_node_map: dict[str, str] = {}
-        output_paths: dict[str, str] = {}
-        for op_id, outputs in outputs_by_source.items():
-            runtime_ids = ctx.dsl_to_runtime.get(op_id)
-            if not runtime_ids:
-                continue
-            ((output_name, path_override),) = outputs
-            node_id = runtime_ids[-1]
-            output_node_map[node_id] = output_name
-            path = (
-                path_override
-                or self._op_output(ctx.graph_dict[op_id]).default_output_path
-            )
-            if path is not None:
-                output_paths[node_id] = path
-        return output_node_map, output_paths
+    def _record_output(self, op: Op, ctx: LoweringContext) -> None:
+        """Record the output an op archives at, if an OutputOp reads it."""
+        outputs = ctx.outputs_by_source.get(op.id)
+        runtime_ids = ctx.dsl_to_runtime.get(op.id)
+        if outputs is None or not runtime_ids:
+            return
+        ((output_name, path_override),) = outputs
+        node_id = runtime_ids[-1]
+        ctx.output_node_map[node_id] = output_name
+        path = path_override or self._op_output(op).default_output_path
+        if path is not None:
+            ctx.output_paths[node_id] = path
