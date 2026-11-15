@@ -1,8 +1,8 @@
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any, TypeVar, overload
 
-from lumilake_server.ops import InputOp, Op, OutputOp
+from lumilake_server.ops import GraphRole, InputOp, Op
 from lumilake_server.utils.graph import topological_sort
 
 OpType = TypeVar("OpType", bound=Op)
@@ -52,13 +52,13 @@ class Graph:
 
         # Build input and output op mappings.
         self._input_ops: dict[str, InputOp] = {}
-        self._output_ops: dict[str, OutputOp] = {}
+        self._output_ops: dict[str, Op] = {}
         for op in self._graph.values():
             if isinstance(op, InputOp):
                 if op.name in self._input_ops:
                     raise ValueError(f"Duplicate input name: {op.name}")
                 self._input_ops[op.name] = op
-            elif isinstance(op, OutputOp):
+            elif op.graph_role is GraphRole.SINK:
                 if op.name in self._output_ops:
                     raise ValueError(f"Duplicate output name: {op.name}")
                 self._output_ops[op.name] = op
@@ -76,7 +76,7 @@ class Graph:
         return self._input_ops
 
     @property
-    def output_ops(self) -> dict[str, OutputOp]:
+    def output_ops(self) -> dict[str, Op]:
         """Mapping from output name to output op"""
         return self._output_ops
 
@@ -123,7 +123,7 @@ class Graph:
         return serialized_graph
 
     @classmethod
-    def from_ops(cls, ops: list[OutputOp]) -> "Graph":
+    def from_ops(cls, ops: Sequence[Op]) -> "Graph":
         graph: dict[str, Op] = {}
         for op in ops:
             op.traverse_graph(graph)
@@ -142,10 +142,10 @@ class Graph:
         node_map = {op: op.copy(new_ids) for op in self.iter_ops()}
 
         # Update op dependencies
-        output_ops: list[OutputOp] = []
+        output_ops: list[Op] = []
         for new_op in node_map.values():
             new_op.inputs = [node_map[inp] for inp in new_op.inputs]
-            if isinstance(new_op, OutputOp):
+            if new_op.graph_role is GraphRole.SINK:
                 output_ops.append(new_op)
 
         return Graph.from_ops(output_ops)
