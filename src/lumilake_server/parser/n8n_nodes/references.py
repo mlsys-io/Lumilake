@@ -130,9 +130,13 @@ NODE_REFERENCES: dict[str, NodeReference] = {
         column=_postgres_column,
         table_column=_postgres_table_column,
         retrieval_mode="sql",
+        data_source=True,
     ),
     N8N_S3_NODE: NodeReference(
-        items_path=_s3_items_path, column=_s3_column, retrieval_mode="s3"
+        items_path=_s3_items_path,
+        column=_s3_column,
+        retrieval_mode="s3",
+        data_source=True,
     ),
     N8N_AGENT_NODE: NodeReference(
         items_path=_agent_items_path,
