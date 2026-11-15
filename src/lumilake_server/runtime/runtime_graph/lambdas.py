@@ -73,19 +73,11 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                     " Python step reads LLM, data-retrieval, Lambda, input or data"
                     " ops"
                 )
-            row_counts.append(
-                (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
-            )
+            row_counts.append((inp.id, self._op_output(inp).row_count))
             entry: dict[str, Any] = {"kind": "stage", "node": dep}
-            if (
-                isinstance(inp, LLMChatOp)
-                and not isinstance(inp, LLMVisionOp)
-                and inp.rowwise_template
-            ):
+            if self._op_output(inp).needs_flatten:
                 # A rowwise LLM groups its per-row outputs back into one item;
-                # flatten it to one value per row for the python step. A VLM's
-                # regroup step already emits one list per symbol, so it is
-                # excluded.
+                # flatten it to one value per row for the python step.
                 entry["flatten"] = True
             plan.append(entry)
             if dep not in dependencies:
