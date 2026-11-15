@@ -43,7 +43,7 @@ def _postgres_column(ref: ColumnRef) -> NodeDict:
         )
     return {
         "label": ref.label,
-        "node": ref.ctx.op_ids[ref.node_name],
+        "node": ref.op_ids[ref.node_name],
         "path": f"{retrieval_items_path('sql')}.{column}",
     }
 
@@ -51,7 +51,7 @@ def _postgres_column(ref: ColumnRef) -> NodeDict:
 def _s3_column(ref: ColumnRef) -> NodeDict:
     return {
         "label": ref.label,
-        "node": ref.ctx.op_ids[ref.node_name],
+        "node": ref.op_ids[ref.node_name],
         "path": retrieval_items_path("s3"),
     }
 
@@ -59,7 +59,7 @@ def _s3_column(ref: ColumnRef) -> NodeDict:
 def _agent_column(ref: ColumnRef) -> NodeDict:
     return {
         "label": ref.label,
-        "node": ref.ctx.op_ids[ref.node_name],
+        "node": ref.op_ids[ref.node_name],
         "path": retrieval_items_path("agent"),
     }
 
@@ -68,7 +68,7 @@ def _postgres_table_column(ref: ColumnRef) -> NodeDict:
     suffix = shared.path_to_label(ref.path) or ref.label
     return {
         "label": ref.label,
-        "node": ref.ctx.op_ids[ref.node_name],
+        "node": ref.op_ids[ref.node_name],
         "path": f"{retrieval_items_path('sql')}.{suffix}",
     }
 
@@ -76,13 +76,13 @@ def _postgres_table_column(ref: ColumnRef) -> NodeDict:
 def _agent_table_column(ref: ColumnRef) -> NodeDict:
     return {
         "label": ref.label,
-        "node": ref.ctx.op_ids[ref.node_name],
+        "node": ref.op_ids[ref.node_name],
         "path": retrieval_items_path("agent"),
     }
 
 
 def _trigger_column(ref: ColumnRef) -> NodeDict:
-    values = ref.ctx.inputs.get(ref.node_name)
+    values = ref.inputs.get(ref.node_name)
     if values is None:
         raise ValueError(
             f"Rowwise reference to input '{ref.node_name}' has no provided values"

@@ -599,21 +599,15 @@ def _extract_rowwise_columns(
     inputs: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
     stripped = shared.strip_expr(prompt_text or "")
-    ctx = OpContext(
-        scope="",
-        inputs=inputs,
-        incoming={},
-        node_map=node_map,
-        op_ids=op_ids,
-        model_specs={},
-    )
     columns: list[dict[str, Any]] = []
     for node_name, path, label in _extract_rowwise_ref_bindings(stripped):
         if node_name not in op_ids:
             continue
         if not node_map.get(node_name):
             continue
-        columns.append(references.column(ctx, node_name, label, path))
+        columns.append(
+            references.column(node_map, op_ids, inputs, node_name, label, path)
+        )
     return columns
 
 
@@ -646,14 +640,6 @@ def _build_aggregate_prompt_content(
     node_map: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]]]:
     stripped = shared.strip_expr(prompt_text or "")
-    ctx = OpContext(
-        scope="",
-        inputs={},
-        incoming={},
-        node_map=node_map,
-        op_ids=op_ids,
-        model_specs={},
-    )
     table_spec: list[dict[str, Any]] = []
     table_match = shared.TABLE_BLOCK_PATTERN.search(stripped)
     if not table_match:
@@ -672,12 +658,14 @@ def _build_aggregate_prompt_content(
             continue
         ref_node_name, path = ref_detail[0]
         if ref_node_name in op_ids:
-            table_spec.append(references.table_column(ctx, ref_node_name, column, path))
+            table_spec.append(
+                references.table_column(node_map, op_ids, ref_node_name, column, path)
+            )
             continue
 
         if upstream_main and ref_node_name in node_map:
             upstream_id = op_ids.get(upstream_main)
-            reference = references.retrieval_mode(ctx, ref_node_name)
+            reference = references.retrieval_mode(node_map, ref_node_name)
             if upstream_id and reference == "sql":
                 suffix = shared.path_to_label(path) or column
                 table_spec.append(

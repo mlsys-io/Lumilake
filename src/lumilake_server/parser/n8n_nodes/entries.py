@@ -34,7 +34,8 @@ class ColumnRef:
     node_name: str
     label: str
     path: str | None
-    ctx: OpContext
+    op_ids: dict[str, str]
+    inputs: dict[str, list[str]]
 
 
 @dataclass(frozen=True)
