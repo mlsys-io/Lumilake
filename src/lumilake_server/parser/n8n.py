@@ -12,7 +12,13 @@ from typing import Any
 from .common import make_id as _make_id
 from .n8n_nodes import shared
 from .n8n_nodes.entries import OpContext
-from .n8n_nodes.tables import NODE_TRANSLATORS, NODE_TYPES
+from .n8n_nodes.tables import (
+    INPUT_TYPES,
+    NODE_TRANSLATORS,
+    NODE_TYPES,
+    OUTPUT_TYPES,
+    WORK_TYPES,
+)
 
 
 @dataclass
@@ -121,20 +127,14 @@ def _parse_n8n_workflow(
 
     # Inputs first
     for node_name, node in node_map.items():
-        if node["type"] != shared.N8N_CHAT_TRIGGER:
+        if node["type"] not in INPUT_TYPES:
             continue
-        ops, op_id = NODE_TRANSLATORS[shared.N8N_CHAT_TRIGGER].make(
-            node, ctx, node_name
-        )
+        ops, op_id = NODE_TRANSLATORS[node["type"]].make(node, ctx, node_name)
         for op in ops:
             add_op(op)
         op_ids[node_name] = op_id
 
-    pending = {
-        name
-        for name, node in node_map.items()
-        if node["type"] in NODE_TRANSLATORS and node["type"] != shared.N8N_CHAT_TRIGGER
-    }
+    pending = {name for name, node in node_map.items() if node["type"] in WORK_TYPES}
     while pending:
         progress = False
         for node_name in list(pending):
@@ -158,7 +158,7 @@ def _parse_n8n_workflow(
     # Outputs last
     output_owners: dict[str, str] = {}
     for node_name, node in node_map.items():
-        if node["type"] not in (shared.N8N_CHAIN_TYPE, shared.N8N_CODE_NODE):
+        if node["type"] not in OUTPUT_TYPES:
             continue
         notes = shared.parse_notes(node.get("notes", ""))
         if not notes.get("is-output", False):

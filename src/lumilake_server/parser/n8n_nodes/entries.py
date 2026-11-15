@@ -64,6 +64,8 @@ class NodeTranslator:
     make: Callable[..., tuple[list[NodeDict], str]]
     dependencies: Callable[[str, OpContext], list[str]]
     is_data_source: bool = False
+    is_input: bool = False
+    can_be_output: bool = False
     reference: NodeReference | None = None
 
 

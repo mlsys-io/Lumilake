@@ -107,15 +107,20 @@ def make_chain_node(
 
 NODE_TRANSLATORS: dict[str, NodeTranslator] = {
     shared.N8N_CHAIN_TYPE: NodeTranslator(
-        make=make_chain_node, dependencies=llm.chain_dependencies
+        make=make_chain_node,
+        dependencies=llm.chain_dependencies,
+        can_be_output=True,
     ),
     shared.N8N_CHAT_TRIGGER: NodeTranslator(
         make=code.make_trigger,
         dependencies=code.trigger_dependencies,
+        is_input=True,
         reference=NodeReference(column=_trigger_column),
     ),
     shared.N8N_CODE_NODE: NodeTranslator(
-        make=code.make_code, dependencies=code.code_dependencies
+        make=code.make_code,
+        dependencies=code.code_dependencies,
+        can_be_output=True,
     ),
     shared.N8N_POSTGRES_NODE: NodeTranslator(
         make=retrieval.make_postgres,
@@ -158,4 +163,17 @@ CHAIN_BUILDERS: dict[tuple[str, str | None], ChainBuilder] = {
 
 NODE_TYPES: frozenset[str] = frozenset(
     {*NODE_TRANSLATORS, *shared.N8N_MODEL_NODE_TYPES}
+)
+
+# The node types the walk turns into ops, in the two roles it needs.
+INPUT_TYPES: frozenset[str] = frozenset(
+    node_type
+    for node_type, translator in NODE_TRANSLATORS.items()
+    if translator.is_input
+)
+WORK_TYPES: frozenset[str] = INPUT_TYPES.symmetric_difference(NODE_TRANSLATORS)
+OUTPUT_TYPES: frozenset[str] = frozenset(
+    node_type
+    for node_type, translator in NODE_TRANSLATORS.items()
+    if translator.can_be_output
 )
