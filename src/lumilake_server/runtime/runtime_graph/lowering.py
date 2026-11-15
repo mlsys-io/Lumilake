@@ -4,13 +4,12 @@ from enum import IntEnum
 from typing import Any
 
 from lumilake_server.ops import InputOp, Op
-from lumilake_server.runtime.runtime_graph.outputs import OpOutput
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 class Phase(IntEnum):
-    """One lowering pass; iterating the phases in this order emits runtime
-    nodes in the same order as the per-type passes it replaces."""
+    """Runtime nodes are emitted phase by phase in this order, which
+    ``topological_order`` uses to break ties between ready nodes."""
 
     RETRIEVAL = 0
     LIST_LAMBDA = 1
@@ -18,59 +17,59 @@ class Phase(IntEnum):
     ROW_LAMBDA = 3
 
 
+@dataclass(frozen=True)
+class LoweringContext:
+    """The build state a lowering reads besides its own op."""
+
+    graph_dict: dict[str, Op]
+    inputs_dict: dict[str, list[str]]
+    input_ops_by_id: dict[str, InputOp]
+    task_type_override: str | None
+    outputs_by_source: dict[str, list[tuple[str, str | None]]]
+    nodes: dict[str, RuntimeOp]
+    dsl_to_runtime: dict[str, list[str]]
+    visited: set[str]
+
+
 @dataclass
 class LoweringResult:
-    """What one op lowers to: its runtime nodes in emission order and the
-    upstream ops the lowering absorbed."""
+    """The runtime nodes one op lowers to, in emission order, and the upstream
+    ops the lowering absorbed."""
 
     nodes: list[RuntimeOp] = field(default_factory=list)
     visited: list[str] = field(default_factory=list)
 
 
-class LoweringContext:
-    """The build state a lowering reads besides its own op."""
-
-    def __init__(
-        self,
-        builder: Any,
-        graph_dict: dict[str, Op],
-        inputs_dict: dict[str, list[str]],
-        input_ops_by_id: dict[str, InputOp],
-        task_type_override: str | None,
-        nodes: dict[str, RuntimeOp],
-        node_order: list[str],
-        dsl_to_runtime: dict[str, list[str]],
-        visited: set[str],
-        outputs_by_source: dict[str, list[tuple[str, str | None]]],
-        output_node_map: dict[str, str],
-        output_paths: dict[str, str],
-    ) -> None:
-        self.builder = builder
-        self.graph_dict = graph_dict
-        self.inputs_dict = inputs_dict
-        self.input_ops_by_id = input_ops_by_id
-        self.task_type_override = task_type_override
-        self.nodes = nodes
-        self.node_order = node_order
-        self.dsl_to_runtime = dsl_to_runtime
-        self.visited = visited
-        self.outputs_by_source = outputs_by_source
-        self.output_node_map = output_node_map
-        self.output_paths = output_paths
-
-    def op_output(self, op: Op) -> OpOutput:
-        return self.builder._op_output(op)
-
-
 LoweringFn = Callable[[Any, Any, LoweringContext], LoweringResult | None]
+AfterPhaseFn = Callable[[Any, LoweringContext], None]
 
 _LOWERINGS: dict[type[Op], list[tuple[Phase, LoweringFn]]] = {}
+_AFTER_PHASE: dict[Phase, Callable[[Any, LoweringContext], None]] = {}
+
+
+def after_phase(phase: Phase) -> Callable[[AfterPhaseFn], AfterPhaseFn]:
+    """Register work that runs once after ``phase``, for a rule over the nodes
+    every lowering in that phase has built."""
+
+    def _register(fn: AfterPhaseFn) -> AfterPhaseFn:
+        _AFTER_PHASE[phase] = fn
+        return fn
+
+    return _register
+
+
+def phase_hook(phase: Phase) -> Callable[[Any, LoweringContext], None] | None:
+    return _AFTER_PHASE.get(phase)
 
 
 def register(op_cls: type[Op], phase: Phase) -> Callable[[LoweringFn], LoweringFn]:
-    """Register ``op_cls``'s lowering in ``phase``; a subclass inherits its
-    nearest ancestor's entries unless it registers its own. One class may
-    register in more than one phase, e.g. the two Lambda modes."""
+    """Register ``op_cls``'s lowering in ``phase``.
+
+    The lookup is per phase: a subclass inherits an ancestor's lowering for a
+    phase it does not register in itself. A lowering module must be in
+    ``RuntimeGraphBuilder``'s bases, because registration happens at import
+    time and only those modules are imported.
+    """
 
     def _register(fn: LoweringFn) -> LoweringFn:
         _LOWERINGS.setdefault(op_cls, []).append((phase, fn))

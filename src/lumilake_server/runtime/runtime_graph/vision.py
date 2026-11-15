@@ -17,6 +17,37 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 class _VisionBuilder(_RetrievalBuilder):
+    @staticmethod
+    def _flattened_vision_ids(graph_dict: dict[str, Op]) -> set[str]:
+        """The per-row VLMs over a retrieval, flattened to one embedding, one
+        inference and a regroup step; readers bind to the regrouped output."""
+        return {
+            op_id
+            for op_id, op in graph_dict.items()
+            if isinstance(op, LLMVisionOp)
+            and op.rowwise_template
+            and isinstance(graph_dict.get(op.image_source), DataRetrievalOp)
+        }
+
+    @register(LLMVisionOp, Phase.LLM)
+    def _lower_vision(
+        self, op: LLMVisionOp, ctx: LoweringContext
+    ) -> LoweringResult | None:
+        """Lower a VLM to its embedding node and inference node, or to the four
+        nodes a flattened per-row VLM runs as."""
+        ctx.visited.add(op.id)
+        ctx.visited.add(op.image_source)
+        runtime_ops, _ = self._build_vlm_nodes_from_image_op(
+            op.id,
+            op,
+            ctx.graph_dict,
+            ctx.inputs_dict,
+            ctx.visited,
+            dsl_to_runtime=ctx.dsl_to_runtime,
+            runtime_nodes=ctx.nodes,
+        )
+        return LoweringResult(nodes=runtime_ops)
+
     def _build_vlm_nodes_from_image_op(
         self,
         llm_op_id: str,
@@ -381,25 +412,3 @@ class _VisionBuilder(_RetrievalBuilder):
             "or DataRetrievalOp "
             f"(got {type(image_source_op).__name__})."
         )
-
-
-@register(LLMVisionOp, Phase.LLM)
-def _lower_vision(
-    builder: Any,
-    op: LLMVisionOp,
-    ctx: LoweringContext,
-) -> LoweringResult | None:
-    """Lower a VLM to its embedding node and inference node, or to the four
-    nodes a flattened per-row VLM runs as."""
-    runtime_ops, _ = builder._build_vlm_nodes_from_image_op(
-        op.id,
-        op,
-        ctx.graph_dict,
-        ctx.inputs_dict,
-        ctx.visited,
-        dsl_to_runtime=ctx.dsl_to_runtime,
-        runtime_nodes=ctx.nodes,
-    )
-    return LoweringResult(
-        nodes=runtime_ops,
-    )

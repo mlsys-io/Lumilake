@@ -1,16 +1,15 @@
 from lumilake_server.graphs import CompiledGraph
-from lumilake_server.ops import DataRetrievalOp, Op, OutputOp
-from lumilake_server.ops.llm_ops import LLMVisionOp
+from lumilake_server.ops import Op, OutputOp
 from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
 )
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
-    LoweringResult,
     Phase,
     has_lowering,
     lookup,
+    phase_hook,
 )
 from lumilake_server.runtime.runtime_graph.vision import _VisionBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -30,8 +29,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
         self._graph_dict = graph_dict
         self._flattened_vlm_ids = self._flattened_vision_ids(graph_dict)
 
-        visited_node_ids: set[str] = set()
-        output_source_to_outputop = self._collect_outputs(graph_dict, visited_node_ids)
+        visited: set[str] = set()
+        output_source_to_outputop = self._collect_outputs(graph_dict, visited)
         if not any(has_lowering(op) for op in graph_dict.values()):
             raise ValueError(
                 "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
@@ -39,31 +38,25 @@ class RuntimeGraphBuilder(_VisionBuilder):
 
         nodes: dict[str, RuntimeOp] = {}
         node_order: list[str] = []
-        output_node_map: dict[str, str] = {}
-        output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
 
         ctx = LoweringContext(
-            builder=self,
             graph_dict=graph_dict,
             inputs_dict=inputs_dict,
             input_ops_by_id=input_ops_by_id,
             task_type_override=task_type_override,
-            nodes=nodes,
-            node_order=node_order,
-            dsl_to_runtime=dsl_to_runtime,
-            visited=visited_node_ids,
             outputs_by_source=output_source_to_outputop,
-            output_node_map=output_node_map,
-            output_paths=output_paths,
+            nodes=nodes,
+            dsl_to_runtime=dsl_to_runtime,
+            visited=visited,
         )
-        self._lower_ops(ctx)
+        node_order = self._lower_ops(ctx)
+        output_node_map, output_paths = self._output_targets(
+            ctx, output_source_to_outputop
+        )
 
         if task_type_override != "data_profile":
-            self._check_inlined_lambda_refs(nodes, graph_dict)
-
-        if task_type_override != "data_profile":
-            unvisited_node_ids = set(graph_dict) - visited_node_ids
+            unvisited_node_ids = set(graph_dict) - visited
             if unvisited_node_ids:
                 raise ValueError(
                     f"Graph transformation failed: {len(unvisited_node_ids)} node(s)"
@@ -85,18 +78,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 make_node_prefix(node_prefix)
             )
         return runtime_graph
-
-    @staticmethod
-    def _flattened_vision_ids(graph_dict: dict[str, Op]) -> set[str]:
-        """The per-row VLMs over a retrieval, flattened to one embedding, one
-        inference and a regroup step; readers bind to the regrouped output."""
-        return {
-            op_id
-            for op_id, op in graph_dict.items()
-            if isinstance(op, LLMVisionOp)
-            and op.rowwise_template
-            and isinstance(graph_dict.get(op.image_source), DataRetrievalOp)
-        }
 
     def _collect_outputs(
         self,
@@ -130,18 +111,17 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 )
         return outputs_by_source
 
-    def _lower_ops(self, ctx: LoweringContext) -> None:
-        """Run every registered lowering, one phase at a time, recording the
-        nodes, their emission order, the DSL-to-runtime map, the visited ops
-        and the outputs archiving from each op's nodes."""
+    def _lower_ops(self, ctx: LoweringContext) -> list[str]:
+        """Run every registered lowering, one phase at a time, adding each
+        result's nodes to the graph and returning them in emission order."""
+        node_order: list[str] = []
+        profile = ctx.task_type_override == "data_profile"
         for phase in Phase:
-            for op_id, op in ctx.graph_dict.items():
+            if profile and phase is not Phase.RETRIEVAL:
+                continue
+            for op in ctx.graph_dict.values():
                 lowering = lookup(op, phase)
                 if lowering is None:
-                    continue
-                if ctx.task_type_override == "data_profile" and (
-                    phase is not Phase.RETRIEVAL
-                ):
                     continue
                 result = lowering(self, op, ctx)
                 if result is None:
@@ -150,26 +130,34 @@ class RuntimeGraphBuilder(_VisionBuilder):
                     if node.node_id in ctx.nodes:
                         continue
                     ctx.nodes[node.node_id] = node
-                    ctx.node_order.append(node.node_id)
-                ctx.dsl_to_runtime[op_id] = [node.node_id for node in result.nodes]
+                    node_order.append(node.node_id)
+                ctx.dsl_to_runtime[op.id] = [node.node_id for node in result.nodes]
                 ctx.visited.update(result.visited)
-                ctx.visited.add(op_id)
-                self._record_output(op, result, ctx)
+                ctx.visited.add(op.id)
+            after = phase_hook(phase)
+            if after is not None:
+                after(self, ctx)
+        return node_order
 
-    def _record_output(
+    def _output_targets(
         self,
-        op: Op,
-        result: LoweringResult,
         ctx: LoweringContext,
-    ) -> None:
-        """Record the path an OutputOp archives ``result``'s nodes at."""
-        outputs = ctx.outputs_by_source.get(op.id)
-        if outputs is None:
-            return
-        ((output_name, path_override),) = outputs
-        default_path = ctx.op_output(op).default_output_path
-        path = path_override or default_path
-        node_id = result.nodes[-1].node_id
-        ctx.output_node_map[node_id] = output_name
-        if path is not None:
-            ctx.output_paths[node_id] = path
+        outputs_by_source: dict[str, list[tuple[str, str | None]]],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """The node each OutputOp archives from, and the path it archives at."""
+        output_node_map: dict[str, str] = {}
+        output_paths: dict[str, str] = {}
+        for op_id, outputs in outputs_by_source.items():
+            runtime_ids = ctx.dsl_to_runtime.get(op_id)
+            if not runtime_ids:
+                continue
+            ((output_name, path_override),) = outputs
+            node_id = runtime_ids[-1]
+            output_node_map[node_id] = output_name
+            path = (
+                path_override
+                or self._op_output(ctx.graph_dict[op_id]).default_output_path
+            )
+            if path is not None:
+                output_paths[node_id] = path
+        return output_node_map, output_paths
