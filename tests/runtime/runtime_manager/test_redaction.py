@@ -24,12 +24,12 @@ from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placehold
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_manager.flowmesh import (
+from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.flowmesh.conftest import serve
+from tests.runtime.runtime_manager.conftest import serve
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
@@ -234,7 +234,7 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -309,7 +309,7 @@ async def test_workflow_submit_sanitizes_api_error_before_reraising(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 
@@ -374,7 +374,7 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
         text="call failed: Authorization: Bearer sk-live-leaked-secret",
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_context",
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_context",
         lambda: _FakeFlowMeshClient(leaking_payload),
     )
     saved: dict[str, Any] = {}
@@ -450,7 +450,7 @@ async def test_archive_task_response_archives_grouped_api_result(
     validated = _RESULT_ADAPTER.validate_python(grouped_payload)
 
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.flowmesh_for_context",
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_context",
         lambda: _FakeFlowMeshClient(validated),
     )
     saved: dict[str, Any] = {}

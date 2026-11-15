@@ -23,7 +23,7 @@ from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"

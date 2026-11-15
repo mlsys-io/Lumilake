@@ -24,11 +24,11 @@ from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     RuntimeGraphBuilder,
 )
-from lumilake_server.runtime.runtime_manager.flowmesh import (
+from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.flowmesh.conftest import serve
+from tests.runtime.runtime_manager.conftest import serve
 
 _TRUSTED_URL = "https://lum.id/llm/v1/chat/completions"
 _UNTRUSTED_URL = "https://api.example.com/v1/chat/completions"
@@ -97,7 +97,7 @@ async def test_dispatched_request_carries_resolved_caller_credential(
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.base.get_job_storage",
+        "lumilake_server.runtime.runtime_manager.get_job_storage",
         lambda: InMemoryJobStorage(),
     )
 

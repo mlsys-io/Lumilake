@@ -28,7 +28,7 @@ from lumilake_server.ops.llm_ops import LLMOp
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import SUPPORTED_OPS, parse_yaml_payload
-from lumilake_server.runtime.runtime_manager.flowmesh import (
+from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
 )

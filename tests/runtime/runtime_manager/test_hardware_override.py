@@ -41,19 +41,19 @@ async def test_task_spec_uses_full_hardware_override(
 ) -> None:
     # Env defaults that would be visible if the override leaked.
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_CPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         8,
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_MEMORY_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_MEMORY_REQUIREMENT",
         "16Gi",
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_GPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_GPU_REQUIREMENT",
         1,
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_GPU_MEMORY_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_GPU_MEMORY_REQUIREMENT",
         "8Gi",
     )
 
@@ -88,19 +88,19 @@ async def test_task_spec_partial_override_falls_back_to_env_per_field(
 ) -> None:
     """Only ``memory`` set on the override: cpu/gpu/gpu_memory must come from env."""
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_CPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         4,
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_MEMORY_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_MEMORY_REQUIREMENT",
         "16Gi",
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_GPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_GPU_REQUIREMENT",
         1,
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_GPU_MEMORY_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_GPU_MEMORY_REQUIREMENT",
         "8Gi",
     )
 
@@ -131,11 +131,11 @@ async def test_task_spec_no_override_uses_env_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_CPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         12,
     )
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_MEMORY_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_MEMORY_REQUIREMENT",
         "24Gi",
     )
 
