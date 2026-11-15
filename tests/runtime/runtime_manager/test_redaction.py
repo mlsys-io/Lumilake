@@ -29,7 +29,7 @@ from lumilake_server.runtime.runtime_manager import (
     _sanitize_flowmesh_api_error,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.flowmesh.conftest import serve
+from tests.runtime.runtime_manager.conftest import serve
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:

@@ -1,6 +1,6 @@
 import pytest
 
-from tests.runtime.runtime_manager.flowmesh.flowmesh_mocker import (
+from tests.runtime.runtime_manager.flowmesh_mocker import (
     FlowmeshJobMocker,
     FlowmeshMockShapeError,
 )

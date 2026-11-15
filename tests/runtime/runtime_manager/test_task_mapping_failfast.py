@@ -3,7 +3,7 @@ import types
 import pytest
 
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
-from tests.runtime.runtime_manager.flowmesh.conftest import serve
+from tests.runtime.runtime_manager.conftest import serve
 
 
 @pytest.mark.asyncio

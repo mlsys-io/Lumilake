@@ -28,7 +28,7 @@ from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
 )
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.flowmesh.conftest import serve
+from tests.runtime.runtime_manager.conftest import serve
 
 _TRUSTED_URL = "https://lum.id/llm/v1/chat/completions"
 _UNTRUSTED_URL = "https://api.example.com/v1/chat/completions"

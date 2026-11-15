@@ -26,7 +26,7 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.flowmesh.conftest import serve
+from tests.runtime.runtime_manager.conftest import serve
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
