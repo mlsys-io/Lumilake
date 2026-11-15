@@ -33,11 +33,13 @@ class LoweringContext:
 
 @dataclass
 class LoweringResult:
-    """The runtime nodes one op lowers to, in emission order, and the upstream
-    ops the lowering absorbed."""
+    """The runtime nodes one op lowers to, in emission order; the upstream ops
+    the lowering absorbed; and the mapping of any other op whose nodes the
+    lowering also built, such as a Lambda step built by recursion."""
 
     nodes: list[RuntimeOp] = field(default_factory=list)
     visited: list[str] = field(default_factory=list)
+    built: dict[str, list[str]] = field(default_factory=dict)
 
 
 LoweringFn = Callable[[Any, Any, LoweringContext], LoweringResult | None]

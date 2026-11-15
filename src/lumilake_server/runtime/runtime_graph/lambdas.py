@@ -224,7 +224,13 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             and op.id not in referenced
         ):
             return None
-        return LoweringResult(nodes=self._build_python_step(op, ctx))
+        steps = self._build_python_step(op, ctx)
+        return LoweringResult(
+            nodes=steps,
+            built={
+                step.node_id: [step.node_id] for step in steps if step.node_id != op.id
+            },
+        )
 
     def _referenced_row_lambdas(self, ctx: LoweringContext) -> set[str]:
         """Row-mode LambdaOps referenced by any built runtime node, either in
