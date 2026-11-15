@@ -212,10 +212,12 @@ def retrieval_mode_for_type(node_type: str | None) -> str | None:
 
 
 def is_data_source_node(node_map: NodeMap, name: str) -> bool:
+    """Whether the named node is a data source rather than an upstream op."""
     node = node_map.get(name)
     if not node:
         return False
-    return retrieval_mode_for_type(node.get("type")) is not None
+    reference = NODE_REFERENCES.get(node.get("type") or "")
+    return reference is not None and reference.data_source
 
 
 def find_main_upstream(

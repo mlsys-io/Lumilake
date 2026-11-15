@@ -49,13 +49,11 @@ NODE_TRANSLATORS: dict[str, NodeTranslator] = {
     N8N_POSTGRES_NODE: NodeTranslator(
         make=retrieval.make_postgres,
         dependencies=retrieval.postgres_dependencies,
-        is_data_source=True,
         reference=references.NODE_REFERENCES[N8N_POSTGRES_NODE],
     ),
     N8N_S3_NODE: NodeTranslator(
         make=retrieval.make_s3,
         dependencies=retrieval.s3_dependencies,
-        is_data_source=True,
         reference=references.NODE_REFERENCES[N8N_S3_NODE],
     ),
     N8N_AGENT_NODE: NodeTranslator(
@@ -88,11 +86,4 @@ OUTPUT_TYPES: tuple[str, ...] = tuple(
     node_type
     for node_type, translator in NODE_TRANSLATORS.items()
     if translator.can_be_output
-)
-
-
-DATA_SOURCE_TYPES: frozenset[str] = frozenset(
-    node_type
-    for node_type, translator in NODE_TRANSLATORS.items()
-    if translator.is_data_source
 )

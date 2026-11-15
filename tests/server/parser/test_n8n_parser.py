@@ -5,7 +5,7 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import OutputOp
+from lumilake_server.ops import LambdaOp, OutputOp
 from lumilake_server.parser import parse_n8n_payload
 from lumilake_server.parser.n8n_nodes.constants import (
     N8N_AGENT_NODE,
@@ -237,6 +237,72 @@ def _code_node_workflow(notes: str) -> dict:
             "Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}
         },
     }
+
+
+def test_n8n_code_node_keeps_an_agent_upstream_as_input() -> None:
+    """An agent node feeds a code node like any other upstream: the code node
+    takes it as an input and depends on it, so the two are ordered."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": N8N_CHAT_TRIGGER,
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": "Find the profile for {{ $('Input') }}.",
+                    "options": {},
+                },
+                "type": N8N_AGENT_NODE,
+                "name": "Agent",
+                "id": "agent-node",
+                "typeVersion": 1,
+                "notes": json.dumps({"schema-scope": "s.t"}),
+            },
+            {
+                "parameters": {"pythonCode": "return 'hi'"},
+                "type": "n8n-nodes-base.code",
+                "name": "Code",
+                "id": "code-node",
+                "typeVersion": 1,
+                "notes": json.dumps({"is-output": True}),
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [
+                    [
+                        {"node": "Agent", "type": "main", "index": 0},
+                        {"node": "Code", "type": "main", "index": 0},
+                    ]
+                ]
+            },
+            "Agent": {"main": [[{"node": "Code", "type": "main", "index": 0}]]},
+        },
+    }
+    graph_specs = parse_n8n_payload(
+        {
+            "graphs": [
+                {"name": "g0", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
+            ]
+        }
+    )
+    parsed = graph_specs["g0"]["graph"]
+    code_id = next(op_id for op_id, op in parsed.items() if op["_op"] == "LambdaOp")
+    agent_id = next(
+        op_id
+        for op_id, op in parsed.items()
+        if op["_op"] == "DataRetrievalOp" and op["data_spec"]["mode"] == "agent"
+    )
+    assert agent_id in parsed[code_id]["_inputs"]
+
+    graph = Graph.from_json(parsed)
+    lambdas = list(graph.iter_ops(LambdaOp))
+    assert len(lambdas) == 1
+    assert agent_id in {op.id for op in lambdas[0].inputs}
 
 
 def test_n8n_code_node_image_reaches_the_op() -> None:

@@ -54,15 +54,17 @@ class NodeReference:
     # The retrieval mode whose rows this node type carries, when it is a
     # retrieval source that depends on a database or bucket.
     retrieval_mode: str | None = None
+    # Whether other nodes treat this type as a data source rather than as an
+    # upstream whose output feeds them, which skips it in their input lists.
+    data_source: bool = False
 
 
 @dataclass(frozen=True)
 class NodeTranslator:
     """How one n8n node type is turned into Lumilake ops."""
 
-    make: Callable[[NodeDict, "OpContext", str], tuple[list[NodeDict], str]]
+    make: Callable[[NodeDict, OpContext, str], tuple[list[NodeDict], str]]
     dependencies: Callable[[str, OpContext], list[str]]
-    is_data_source: bool = False
     is_input: bool = False
     can_be_output: bool = False
     reference: NodeReference | None = None
