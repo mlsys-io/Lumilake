@@ -28,10 +28,10 @@ class RuntimeGraphBuilder(_VisionBuilder):
         ops."""
         for phase in Phase:
             for op_id, op in ctx.graph_dict.items():
-                found = lookup(op)
-                if found is None or found[0] is not phase:
+                lowering = lookup(op, phase)
+                if lowering is None:
                     continue
-                result = found[1](self, op_id, op, ctx)
+                result = lowering(self, op_id, op, ctx)
                 if result is None:
                     continue
                 for node in result.nodes:
@@ -137,42 +137,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
             output_paths=output_paths,
         )
         self._lower_ops(ctx)
-
-        if task_type_override != "data_profile":
-            # A LambdaOp is inlined into the LLM that consumes it (traced above).
-            # One that is an output, that no LLM reached, that has an image, or
-            # that a runtime node references runs on its own as a python step —
-            # see runtime/python_step.py.
-            referenced = self._referenced_row_lambdas(nodes, graph_dict)
-            standalone = [
-                op_id
-                for op_id, op in graph_dict.items()
-                if isinstance(op, LambdaOp)
-                and not op.takes_whole_columns
-                and (
-                    op_id not in visited_node_ids
-                    or op_id in output_source_to_outputop
-                    or op.image is not None
-                    or op_id in referenced
-                )
-            ]
-            for lambda_id in standalone:
-                self._build_python_step(
-                    lambda_id,
-                    graph_dict,
-                    inputs_dict,
-                    visited_node_ids,
-                    nodes,
-                    node_order,
-                    dsl_to_runtime,
-                )
-                if lambda_id in output_source_to_outputop:
-                    ((output_name, path_override),) = output_source_to_outputop[
-                        lambda_id
-                    ]
-                    output_node_map[lambda_id] = output_name
-                    if path_override:
-                        output_paths[lambda_id] = path_override
 
         if task_type_override != "data_profile":
             self._check_inlined_lambda_refs(nodes, graph_dict)

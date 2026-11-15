@@ -71,23 +71,24 @@ class LoweringContext:
 
 LoweringFn = Callable[[Any, str, Any, LoweringContext], LoweringResult | None]
 
-_LOWERINGS: dict[type[Op], tuple[Phase, LoweringFn]] = {}
+_LOWERINGS: dict[type[Op], list[tuple[Phase, LoweringFn]]] = {}
 
 
 def register(op_cls: type[Op], phase: Phase) -> Callable[[LoweringFn], LoweringFn]:
-    """Register ``op_cls``'s lowering; a subclass inherits it through the MRO
-    unless it registers its own."""
+    """Register ``op_cls``'s lowering in ``phase``; a subclass inherits its
+    nearest ancestor's entries unless it registers its own. One class may
+    register in more than one phase, e.g. the two Lambda modes."""
 
     def _register(fn: LoweringFn) -> LoweringFn:
-        _LOWERINGS[op_cls] = (phase, fn)
+        _LOWERINGS.setdefault(op_cls, []).append((phase, fn))
         return fn
 
     return _register
 
 
-def lookup(op: Op) -> tuple[Phase, LoweringFn] | None:
+def lookup(op: Op, phase: Phase) -> LoweringFn | None:
     for cls in type(op).__mro__:
-        found = _LOWERINGS.get(cls)
-        if found is not None:
-            return found
+        for entry_phase, fn in _LOWERINGS.get(cls, ()):
+            if entry_phase is phase:
+                return fn
     return None

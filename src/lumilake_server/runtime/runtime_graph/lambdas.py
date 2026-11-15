@@ -310,3 +310,41 @@ def _lower_list_lambda(
     )
     builder._record_output(op_id, op, result, ctx)
     return result
+
+
+@register(LambdaOp, Phase.ROW_LAMBDA)
+def _lower_standalone_row_lambda(
+    builder: Any,
+    op_id: str,
+    op: LambdaOp,
+    ctx: LoweringContext,
+) -> LoweringResult | None:
+    """Lower a row-mode LambdaOp to its own python step when no LLM inlined it:
+    one that is an output, that nothing reached, that has an image, or that a
+    runtime node references."""
+    if op.takes_whole_columns or ctx.task_type_override == "data_profile":
+        return None
+    referenced = builder._referenced_row_lambdas(ctx.nodes, ctx.graph_dict)
+    if (
+        op_id in ctx.visited
+        and op_id not in ctx.outputs_by_source
+        and op.image is None
+        and op_id not in referenced
+    ):
+        return None
+    builder._build_python_step(
+        op_id,
+        ctx.graph_dict,
+        ctx.inputs_dict,
+        ctx.visited,
+        ctx.nodes,
+        ctx.node_order,
+        ctx.dsl_to_runtime,
+    )
+    result = LoweringResult(
+        nodes=[ctx.nodes[op_id]],
+        dsl_to_runtime=[op_id],
+        output_nodes=[op_id],
+    )
+    builder._record_output(op_id, op, result, ctx)
+    return result
