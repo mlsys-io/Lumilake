@@ -4,8 +4,8 @@ import pytest
 from flowmesh.models.common import TaskType
 from flowmesh.models.workers import MemoryInfo, WorkerCapabilities
 
+from lumilake_server.runtime import _worker_fraction as w
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
-from lumilake_server.schemas import worker as w
 
 
 def _worker(
