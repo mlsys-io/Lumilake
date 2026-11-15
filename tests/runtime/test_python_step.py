@@ -33,9 +33,16 @@ _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
 
 @pytest.fixture(autouse=True)
-def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
+def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> InMemoryJobStorage:
+    """Point blob publishing at an in-memory store and return that store."""
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    storage = InMemoryJobStorage()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
+        lambda: storage,
+    )
+    return storage
 
 
 def _python_nodes(graph: Any) -> dict[str, Any]:
@@ -53,16 +60,6 @@ def _spec(node: Any) -> dict[str, Any]:
     return python_step.flowmesh_spec(
         node.node_id, node.data_spec, _published_blobs(node.data_spec["plan"])
     )
-
-
-@pytest.fixture
-def blob_storage(monkeypatch: pytest.MonkeyPatch) -> InMemoryJobStorage:
-    storage = InMemoryJobStorage()
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.get_job_storage",
-        lambda: storage,
-    )
-    return storage
 
 
 def test_lambda_over_input_is_a_standalone_python_task() -> None:
@@ -895,7 +892,7 @@ def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> No
 
 @pytest.mark.asyncio
 async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
-    blob_storage: InMemoryJobStorage,
+    _lumid_envs: InMemoryJobStorage,
 ) -> None:
     shared = ["x" * 2000]
     graph = RuntimeGraphBuilder().build(
@@ -916,7 +913,7 @@ async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
     )
 
     runtime_key = python_step.runtime_blob().key
-    (literal_key,) = [key for key in blob_storage._blobs if key != runtime_key]
+    (literal_key,) = [key for key in _lumid_envs._blobs if key != runtime_key]
     specs = [node["spec"] for node in spec["spec"]["graph"]["nodes"]]
     mounted = [blob["mountPath"] for blob in specs[0]["blobs"]]
     assert mounted == [
@@ -928,23 +925,15 @@ async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
     assert specs[2]["blobs"] == [specs[0]["blobs"][0]]
     assert "def materialize(" not in specs[0]["code"]
 
-
-def test_flowmesh_spec_rejects_more_blobs_than_flowmesh_accepts() -> None:
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": [f"literal-{index}"] * 200}
-        for index in range(python_step.MAX_BLOBS_PER_TASK)
+    too_many: python_step.ColumnPlan = [
+        {"kind": "literal", "values": [f"literal-{i}"] * 200}
+        for i in range(python_step.MAX_BLOBS_PER_TASK)
     ]
-
     with pytest.raises(ValueError, match="limit of 16 per task"):
         python_step.flowmesh_spec(
             "task",
-            {
-                "code": "def f(i):\n    return i\n",
-                "fn_name": "f",
-                "plan": plan,
-                "timeout_s": 10,
-            },
-            _published_blobs(plan),
+            {"code": "def f(i):\n    return i\n", "fn_name": "f", "plan": too_many},
+            _published_blobs(too_many),
         )
 
 
