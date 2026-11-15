@@ -8,8 +8,6 @@ import json
 import re
 from typing import Any
 
-from lumilake_server.common import retrieval_items_path
-
 N8N_CHAIN_TYPE = "@n8n/n8n-nodes-langchain.chainLlm"
 N8N_CHAT_TRIGGER = "@n8n/n8n-nodes-langchain.chatTrigger"
 N8N_MODEL_SPEC = "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference"
@@ -248,13 +246,12 @@ def resolve_data_nodes(
             src_node = node_map.get(src)
             if not src_node:
                 continue
-            node_type = src_node.get("type")
-            if node_type == N8N_POSTGRES_NODE:
+            mode = data_source_kind(src_node)
+            if mode == "sql":
                 postgres_nodes.append(src_node)
-            elif node_type == N8N_S3_NODE:
-                s3_nodes.append(src_node)
-                queue.append(src)
             else:
+                if mode == "s3":
+                    s3_nodes.append(src_node)
                 queue.append(src)
     if len(postgres_nodes) != 1:
         raise ValueError(
@@ -268,27 +265,18 @@ def resolve_data_nodes(
     return postgres_nodes[0], s3_nodes[0] if s3_nodes else None
 
 
-def referenced_op_path(node_type: Any, ref_path: str | None) -> str:
-    """Resolve the items path for a node referenced as a query parameter.
+def data_source_kind(node: dict[str, Any]) -> str | None:
+    """Return ``"sql"`` or ``"s3"`` when *node* is a data source, else ``None``."""
+    from .references import retrieval_mode_for_type
 
-    A retrieval node (postgres, s3, or agent) carries its rows on a
-    mode-derived path; any other node type is an LLM-style output.
-    """
-    if node_type == N8N_POSTGRES_NODE:
-        column = path_to_label(ref_path)
-        if not column:
-            raise ValueError(
-                "Query parameter references a SQL node without a field path"
-            )
-        return f"{retrieval_items_path('sql')}.{column}"
-    if node_type == N8N_S3_NODE:
-        label = path_to_label(ref_path)
-        if label in {None, "content"}:
-            return retrieval_items_path("s3")
-    if node_type == N8N_AGENT_NODE:
-        return retrieval_items_path("agent")
-    runtime_path = to_runtime_output_path(ref_path)
-    return runtime_path or "items.output"
+    return retrieval_mode_for_type(node.get("type"))
+
+
+def referenced_op_path(node_type: Any, ref_path: str | None) -> str:
+    """Resolve the items path for a node referenced as a query parameter."""
+    from .references import items_path
+
+    return items_path(node_type, ref_path)
 
 
 def sql_literal(value: Any) -> str:

@@ -28,12 +28,42 @@ class OpContext:
 
 
 @dataclass(frozen=True)
+class ColumnRef:
+    """One column a prompt builder wants from a referenced node."""
+
+    node_name: str
+    label: str
+    path: str | None
+    ctx: OpContext
+
+
+@dataclass(frozen=True)
+class NodeReference:
+    """How one node type answers a reference from another node."""
+
+    # The items path carrying this node type's rows, with the reference's
+    # field path applied. ``None`` falls through to the generic output path.
+    items_path: Callable[[str | None], str | None] | None = None
+    # How this node type contributes one column to a rowwise or aggregate
+    # column list. ``None`` means the generic LLM-style output path.
+    column: Callable[[ColumnRef], NodeDict] | None = None
+    # How this node type contributes a column to an aggregate table block,
+    # where ``ref.label`` is the block's own column name and serves as the
+    # field fallback.
+    table_column: Callable[[ColumnRef], NodeDict] | None = None
+    # The retrieval mode whose rows this node type carries, when it is a
+    # retrieval source that depends on a database or bucket.
+    retrieval_mode: str | None = None
+
+
+@dataclass(frozen=True)
 class NodeTranslator:
     """How one n8n node type is turned into Lumilake ops."""
 
     make: Callable[..., tuple[list[NodeDict], str]]
     dependencies: Callable[[str, OpContext], list[str]]
     is_data_source: bool = False
+    reference: NodeReference | None = None
 
 
 @dataclass(frozen=True)

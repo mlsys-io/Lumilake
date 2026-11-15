@@ -5,10 +5,10 @@ and model-config helpers they use.
 import re
 from typing import Any
 
-from lumilake_server.common import InputRef, project_input_values, retrieval_items_path
+from lumilake_server.common import retrieval_items_path
 
 from ..common import make_id as _make_id
-from . import shared
+from . import references, shared
 from .entries import ChainPlan, NodeDict, OpContext
 
 
@@ -599,71 +599,21 @@ def _extract_rowwise_columns(
     inputs: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
     stripped = shared.strip_expr(prompt_text or "")
+    ctx = OpContext(
+        scope="",
+        inputs=inputs,
+        incoming={},
+        node_map=node_map,
+        op_ids=op_ids,
+        model_specs={},
+    )
     columns: list[dict[str, Any]] = []
     for node_name, path, label in _extract_rowwise_ref_bindings(stripped):
         if node_name not in op_ids:
             continue
-        node = node_map.get(node_name)
-        if not node:
+        if not node_map.get(node_name):
             continue
-        node_type = node.get("type")
-        if node_type == shared.N8N_POSTGRES_NODE:
-            column = shared.path_to_label(path)
-            if not column:
-                raise ValueError(
-                    f"Rowwise reference to SQL node '{node_name}' requires a field path"
-                )
-            columns.append(
-                {
-                    "label": label,
-                    "node": op_ids[node_name],
-                    "path": f"{retrieval_items_path('sql')}.{column}",
-                }
-            )
-        elif node_type == shared.N8N_S3_NODE:
-            columns.append(
-                {
-                    "label": label,
-                    "node": op_ids[node_name],
-                    "path": retrieval_items_path("s3"),
-                }
-            )
-        elif node_type == shared.N8N_CHAT_TRIGGER:
-            if node_name not in inputs:
-                raise ValueError(
-                    f"Rowwise reference to input '{node_name}' has no provided values"
-                )
-            values = inputs[node_name]
-            projected = project_input_values(values, path, node_name)
-            input_ref: InputRef = {"key": node_name, "path": path}
-            data: dict[str, Any] = {"type": "list", "items": projected}
-            # A multi-row input ref groups one projected value per input row.
-            if len(values) > 1:
-                data["grouped"] = True
-            columns.append(
-                {
-                    "label": label,
-                    "data": data,
-                    "input_ref": input_ref,
-                }
-            )
-        elif node_type == shared.N8N_AGENT_NODE:
-            columns.append(
-                {
-                    "label": label,
-                    "node": op_ids[node_name],
-                    "path": retrieval_items_path("agent"),
-                }
-            )
-        else:
-            runtime_path = shared.to_runtime_output_path(path) or "items.output"
-            columns.append(
-                {
-                    "label": label,
-                    "node": op_ids[node_name],
-                    "path": runtime_path,
-                }
-            )
+        columns.append(references.column(ctx, node_name, label, path))
     return columns
 
 
@@ -696,6 +646,14 @@ def _build_aggregate_prompt_content(
     node_map: dict[str, Any],
 ) -> tuple[str, list[dict[str, Any]]]:
     stripped = shared.strip_expr(prompt_text or "")
+    ctx = OpContext(
+        scope="",
+        inputs={},
+        incoming={},
+        node_map=node_map,
+        op_ids=op_ids,
+        model_specs={},
+    )
     table_spec: list[dict[str, Any]] = []
     table_match = shared.TABLE_BLOCK_PATTERN.search(stripped)
     if not table_match:
@@ -714,34 +672,13 @@ def _build_aggregate_prompt_content(
             continue
         ref_node_name, path = ref_detail[0]
         if ref_node_name in op_ids:
-            ref_node = node_map.get(ref_node_name)
-            ref_type = ref_node.get("type") if isinstance(ref_node, dict) else None
-            if ref_type == shared.N8N_POSTGRES_NODE:
-                item_path = (
-                    f"{retrieval_items_path('sql')}"
-                    f".{shared.path_to_label(path) or column}"
-                )
-            elif ref_type == shared.N8N_AGENT_NODE:
-                item_path = retrieval_items_path("agent")
-            else:
-                item_path = shared.to_runtime_output_path(path) or "items.output"
-            table_spec.append(
-                {
-                    "label": column,
-                    "node": op_ids[ref_node_name],
-                    "path": item_path,
-                }
-            )
+            table_spec.append(references.table_column(ctx, ref_node_name, column, path))
             continue
 
-        ref_node = node_map.get(ref_node_name)
-        if (
-            ref_node
-            and ref_node.get("type") == shared.N8N_POSTGRES_NODE
-            and upstream_main
-        ):
+        if upstream_main and ref_node_name in node_map:
             upstream_id = op_ids.get(upstream_main)
-            if upstream_id:
+            reference = references.retrieval_mode(ctx, ref_node_name)
+            if upstream_id and reference == "sql":
                 suffix = shared.path_to_label(path) or column
                 table_spec.append(
                     {
