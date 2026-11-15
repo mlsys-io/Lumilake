@@ -5,6 +5,12 @@ from lumilake_server.ops import DataOp, InputOp, Op
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.runtime.runtime_graph.base import _default_output_destination
 from lumilake_server.runtime.runtime_graph.lambdas import _LambdaBuilder
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
@@ -81,3 +87,30 @@ class _EmbeddingBuilder(_LambdaBuilder):
                 ["results.json", "embeddings.safetensors"],
             ),
         )
+
+
+@register(EmbeddingOp, Phase.LLM)
+def _lower_embedding(
+    builder: Any,
+    op_id: str,
+    op: EmbeddingOp,
+    ctx: LoweringContext,
+) -> LoweringResult | None:
+    """Lower one EmbeddingOp to its embedding task."""
+    if ctx.task_type_override == "data_profile":
+        return None
+    runtime_op = builder._build_node_from_embedding_op(
+        op_id,
+        op,
+        ctx.inputs_dict,
+        ctx.visited,
+        graph_dict=ctx.graph_dict,
+        dsl_to_runtime=ctx.dsl_to_runtime,
+    )
+    result = LoweringResult(
+        nodes=[runtime_op],
+        dsl_to_runtime=[runtime_op.node_id],
+        output_nodes=[runtime_op.node_id],
+    )
+    builder._record_output(op_id, op, result, ctx)
+    return result
