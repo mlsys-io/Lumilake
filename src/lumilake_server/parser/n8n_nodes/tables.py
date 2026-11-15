@@ -98,11 +98,14 @@ def _trigger_column(ref: ColumnRef) -> NodeDict:
 
 def make_chain_node(
     node: NodeDict, ctx: OpContext, node_name: str
-) -> "tuple[list[NodeDict], str]":
+) -> tuple[list[NodeDict], str]:
     """Dispatch a chain node to the builder its notes select."""
     plan = llm.chain_plan(node, ctx, node_name)
-    key = (plan.notes["op-type"], plan.notes.get("mode"))
-    return CHAIN_BUILDERS.get(key, CHAIN_BUILDERS[(plan.notes["op-type"], None)])(plan)
+    op_type = plan.notes["op-type"]
+    builder = CHAIN_BUILDERS.get((op_type, plan.notes.get("mode")))
+    if builder is None:
+        builder = CHAIN_BUILDERS.get((op_type, None), llm.build_text_generation)
+    return builder(plan)
 
 
 NODE_TRANSLATORS: dict[str, NodeTranslator] = {

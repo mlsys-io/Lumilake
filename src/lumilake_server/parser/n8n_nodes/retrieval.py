@@ -343,6 +343,8 @@ def is_lake_retrieval_node(node: dict[str, Any]) -> bool:
 def make_s3(
     node: NodeDict, ctx: OpContext, node_name: str
 ) -> tuple[list[NodeDict], str]:
+    if is_lake_retrieval_node(node):
+        return make_lake_retrieval(node, ctx, node_name)
     params = node.get("parameters", {})
     if not params:
         raise ValueError(
