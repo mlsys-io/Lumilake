@@ -7,17 +7,23 @@ from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import OutputOp
 from lumilake_server.parser import parse_n8n_payload
-from lumilake_server.parser.n8n import (
-    N8N_AGENT_NODE,
-    N8N_CHAT_TRIGGER,
-    N8N_POSTGRES_NODE,
-    N8N_S3_NODE,
+from lumilake_server.parser.n8n_nodes.entries import OpContext
+from lumilake_server.parser.n8n_nodes.llm import (
     _build_aggregate_prompt_content,
     _build_prompt_content,
     _build_rowwise_prompt_content,
     _extract_rowwise_columns,
-    _make_chain_ops,
-    _referenced_op_path,
+    build_text_generation,
+)
+from lumilake_server.parser.n8n_nodes.llm import chain_plan as llm_chain_plan
+from lumilake_server.parser.n8n_nodes.shared import (
+    N8N_AGENT_NODE,
+    N8N_CHAT_TRIGGER,
+    N8N_POSTGRES_NODE,
+    N8N_S3_NODE,
+)
+from lumilake_server.parser.n8n_nodes.shared import (
+    referenced_op_path as _referenced_op_path,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
@@ -715,6 +721,27 @@ def test_prompt_content_whole_item_ref_has_no_path() -> None:
     assert fmt_op.get("format_paths") in (None, {})
 
 
+def _chain_plan(
+    node: dict,
+    node_name: str,
+    incoming: dict,
+    node_map: dict,
+    op_ids: dict,
+    inputs: dict,
+    model_specs: dict,
+    scope: str,
+):
+    ctx = OpContext(
+        scope=scope,
+        inputs=inputs,
+        incoming=incoming,
+        node_map=node_map,
+        op_ids=op_ids,
+        model_specs=model_specs,
+    )
+    return llm_chain_plan(node, ctx, node_name)
+
+
 def _aggregate_chain_node(text: str) -> dict:
     return {
         "parameters": {
@@ -762,15 +789,17 @@ def test_aggregate_chain_no_ref_escapes_once() -> None:
     node = _aggregate_chain_node(
         'Return JSON {"a": 1}.\n```table\nx: {{ $json.x }}\n```'
     )
-    ops, _ = _make_chain_ops(
-        node=node,
-        node_name="Digest",
-        incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
-        node_map={},
-        op_ids={},
-        inputs={},
-        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
-        scope="g0",
+    ops, _ = build_text_generation(
+        _chain_plan(
+            node=node,
+            node_name="Digest",
+            incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
+            node_map={},
+            op_ids={},
+            inputs={},
+            model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+            scope="g0",
+        )
     )
     content = _aggregate_message_content(ops)
     assert content == 'Return JSON {{"a": 1}}.\n{df}'
@@ -786,17 +815,19 @@ def test_aggregate_chain_with_ref_escapes_once() -> None:
         "Return JSON {\"a\": 1} for {{ $('Stock') }}.\n"
         "```table\nx: {{ $('SQL').item.x }}\n```"
     )
-    ops, _ = _make_chain_ops(
-        node=node,
-        node_name="Digest",
-        incoming={
-            "Digest": [{"type": "ai_languageModel", "node": "Model"}],
-        },
-        node_map={"SQL": {"type": N8N_POSTGRES_NODE}},
-        op_ids={"Stock": "op_stock", "SQL": "op_sql"},
-        inputs={},
-        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
-        scope="g0",
+    ops, _ = build_text_generation(
+        _chain_plan(
+            node=node,
+            node_name="Digest",
+            incoming={
+                "Digest": [{"type": "ai_languageModel", "node": "Model"}],
+            },
+            node_map={"SQL": {"type": N8N_POSTGRES_NODE}},
+            op_ids={"Stock": "op_stock", "SQL": "op_sql"},
+            inputs={},
+            model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+            scope="g0",
+        )
     )
     rendered = _render_aggregate_format_ops(
         ops, df_value='{"x": "v"}', ref_values={"ref0": "NVDA"}
