@@ -45,11 +45,15 @@ def chain_plan(node: NodeDict, ctx: OpContext, node_name: str) -> ChainPlan:
 
 
 def build_text_generation(plan: ChainPlan) -> tuple[list[NodeDict], str]:
-    return _build_chat_chain(plan)
+    return _build_chat_chain(plan, plan.prompt_text, None)
 
 
 def build_aggregate(plan: ChainPlan) -> tuple[list[NodeDict], str]:
-    return _build_chat_chain(plan)
+    ctx = plan.ctx
+    prompt_text, aggregate_table = _build_aggregate_prompt_content(
+        plan.prompt_text, ctx.op_ids, plan.upstream_main, ctx.node_map
+    )
+    return _build_chat_chain(plan, prompt_text, aggregate_table)
 
 
 def build_rowwise(plan: ChainPlan) -> tuple[list[NodeDict], str]:
@@ -155,23 +159,18 @@ def build_image_understanding(plan: ChainPlan) -> tuple[list[NodeDict], str]:
 
 
 def _build_chat_chain(
-    plan: ChainPlan, aggregate_table: list[dict[str, Any]] | None = None
+    plan: ChainPlan,
+    prompt_text: str,
+    aggregate_table: list[dict[str, Any]] | None,
 ) -> tuple[list[NodeDict], str]:
     ctx = plan.ctx
-    prompt_text = plan.prompt_text
-    already_escaped = False
-    if plan.notes.get("mode") == "aggregate":
-        prompt_text, aggregate_table = _build_aggregate_prompt_content(
-            plan.prompt_text, ctx.op_ids, plan.upstream_main, ctx.node_map
-        )
-        already_escaped = True
     msg_content, extra_ops = _build_prompt_content(
         prompt_text,
         plan.node_name,
         ctx.op_ids,
         plan.upstream_main,
         ctx.scope,
-        already_escaped=already_escaped,
+        already_escaped=aggregate_table is not None,
     )
     ops = list(extra_ops)
     msg_op = _build_message_op(
