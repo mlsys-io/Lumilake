@@ -200,7 +200,7 @@ Pinning an item that cannot run would produce an undispatchable anchor.
 ### GPU memory fractions
 
 Two facts decide whether an engine fits a worker: the fraction of a card the
-worker owns (`gpu_memory_fraction` in its profile, absent when it owns a whole
+worker owns (`gpu_memory_fraction` in its profile, `null` when it owns a whole
 device), and the fraction its engine reserves (`gpu_memory_utilization` on the
 runtime node). A node is offered only to GPU workers whose fraction is at least
 the utilization it names, and a whole-device worker takes any value.

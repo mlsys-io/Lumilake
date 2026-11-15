@@ -148,12 +148,10 @@ class FreeCapacity:
         required_task_types: frozenset[str] = frozenset(),
         required_gpu_utilizations: frozenset[float] = frozenset(),
     ) -> tuple[list[str], list[str]] | None:
-        """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``.
-
-        ``None`` while the free set cannot serve the batch: too few idle workers,
-        no CPU worker advertising a required task type, or no GPU worker whose
-        memory fraction holds the batch's largest utilization.
-        """
+        """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``, or
+        ``None`` while the free set cannot serve the batch: too few idle workers, no CPU
+        worker advertising a required task type, or no GPU worker whose memory fraction
+        holds the batch's largest utilization."""
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
