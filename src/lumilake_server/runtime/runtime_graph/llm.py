@@ -828,14 +828,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                     op.id != target_llm_op.id
                 ), "Encountered starting LLMOp again unexpectedly"
                 is_api_ancestor = self._is_api_task(op)
+                output = self._op_output(op)
                 if op.id not in upstream_llm_ids:
                     upstream_llm_ids.add(op.id)
                     if not is_api_ancestor:
-                        row_count = self._static_output_row_count(
-                            op, inputs_dict, graph_dict
-                        )
+                        row_count = output.row_count
                         if row_count is not None and row_count > 1:
-                            if api_mode or not self._emits_one_item_per_row(op):
+                            if api_mode or not output.one_item_per_row:
                                 raise ValueError(
                                     f"LLMOp '{llm_op_id}' consumes '{op.id}', which"
                                     " produces multiple rows; a message column"
@@ -868,7 +867,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                             }
                     columns[f"{op.id}_output"] = {
                         "node": op.id,
-                        "path": self._op_output(op).path,
+                        "path": output.path,
                     }
 
                 if isinstance(op, LLMChatOp) and op.return_history:
