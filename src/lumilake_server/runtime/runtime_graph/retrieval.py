@@ -8,7 +8,7 @@ from sqlparse.tokens import Keyword
 
 from lumilake import envs
 from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, LLMChatOp, LLMOp, Op
-from lumilake_server.runtime.runtime_graph.embedding import _EmbeddingBuilder
+from lumilake_server.runtime.runtime_graph.llm import _LLMBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
@@ -74,7 +74,7 @@ def _inline_single_value_list_params(
     return rendered, remaining
 
 
-class _RetrievalBuilder(_EmbeddingBuilder):
+class _RetrievalBuilder(_LLMBuilder):
     def _mark_retrieval_upstream_nodes_visited(
         self,
         *,

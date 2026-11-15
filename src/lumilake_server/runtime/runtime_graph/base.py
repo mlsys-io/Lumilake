@@ -179,73 +179,6 @@ class _RuntimeGraphBuilderBase:
         )
         return updated
 
-    def _guard_single_row_node_ref(
-        self,
-        *,
-        consumer_id: str,
-        upstream_id: str,
-        upstream: Op | None,
-        inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op],
-        dsl_to_runtime: dict[str, list[str]] | None,
-        kind: str,
-    ) -> None:
-        """Fail closed when a consumer binds a single ``${node.path}`` reference
-        to a multi-row upstream."""
-        if not isinstance(upstream, LLMOp):
-            return
-        row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
-        if row_count is not None and row_count > 1:
-            raise ValueError(
-                f"Op '{consumer_id}' {kind} references '{upstream_id}',"
-                " which produces multiple rows; a single node reference can"
-                " only carry one row, so wiring this to the single unsuffixed"
-                " output would silently drop every row but the first."
-            )
-
-    @staticmethod
-    def _emits_one_item_per_row(op: Op) -> bool:
-        """Whether a multi-row op's result holds one scalar-per-row item per
-        input row, so a ``node``/``path`` reference resolves to one value per
-        row."""
-        if isinstance(op, LLMCompletionOp):
-            return True
-        return (
-            isinstance(op, LLMChatOp)
-            and op.rowwise_template is None
-            and not _RuntimeGraphBuilderBase._is_api_task(op)
-        )
-
-    @staticmethod
-    def _is_api_task(op: Op) -> bool:
-        """Whether an LLMOp dispatches as an API task (not a VLM)."""
-        return (
-            isinstance(op, LLMOp)
-            and not isinstance(op, LLMVisionOp)
-            and (op.config.api is not None)
-        )
-
-    @staticmethod
-    def _is_rowwise_api_task(op: Op) -> bool:
-        """Whether an API task is row-wise (dataframe)."""
-        return (
-            _RuntimeGraphBuilderBase._is_api_task(op)
-            and isinstance(op, LLMChatOp)
-            and op.rowwise_template is not None
-        )
-
-    def _upstream_output_path(self, op: Op) -> str:
-        """Result path for an upstream op's text output."""
-        if op.id in self._flattened_vlm_ids:
-            return "value.items.output"
-        if _RuntimeGraphBuilderBase._is_api_task(op):
-            if _RuntimeGraphBuilderBase._is_rowwise_api_task(op):
-                return _API_ROW_PATH
-            return _API_ITEM_PATH
-        if isinstance(op, LambdaOp):
-            return _RuntimeGraphBuilderBase._lambda_result_path(op, "items.output")
-        return "items.output"
-
     @staticmethod
     def _lambda_result_path(upstream: LambdaOp, path: str) -> str:
         """Map a LambdaOp ``items.output`` read to its path in the step result;
@@ -352,49 +285,6 @@ class _RuntimeGraphBuilderBase:
             for value in projected
         ]
 
-    @staticmethod
-    def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
-        """Yield every runtime node reference in a RuntimeOp: data_spec
-        column/data-source/list-item refs (a mapping with ``node`` plus
-        ``path``, or ``expr`` outside literal list items), python plan stage
-        entries, and the condition node. Literal payloads (``node`` without
-        ``path``/``expr``) are data, not references."""
-        yield from _RuntimeGraphBuilderBase._iter_spec_refs(node.data_spec)
-        condition = node.condition
-        if condition is not None:
-            cond_node = condition.get("node")
-            if isinstance(cond_node, str):
-                yield cond_node
-
-    @staticmethod
-    def _iter_spec_refs(value: Any, allow_expr: bool = True) -> Iterator[str]:
-        """Yield node references from a data_spec, schema-aware: a mapping
-        with a string ``node`` and a ``path`` key is a reference; ``expr``
-        counts only outside literal list items. Recurse into nested mappings
-        and lists, disabling ``expr`` below a ``type: list`` payload."""
-        if isinstance(value, dict):
-            node = value.get("node")
-            if isinstance(node, str) and (
-                "path" in value or (allow_expr and "expr" in value)
-            ):
-                yield node
-                return
-            if value.get("type") == "list":
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-                    value.get("items"), allow_expr=False
-                )
-                return
-            if value.get("kind") == "stage":
-                stage_node = value.get("node")
-                if isinstance(stage_node, str):
-                    yield stage_node
-                    return
-            for v in value.values():
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
-        elif isinstance(value, list):
-            for v in value:
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
-
     def _collect_graph_template_dependencies(
         self, template_spec: dict[str, Any]
     ) -> list[str]:
@@ -493,3 +383,113 @@ class _RuntimeGraphBuilderBase:
             known = [c for c in lambda_counts if c is not None]
             return max(known) if known else None
         return None
+
+    @staticmethod
+    def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
+        """Yield every runtime node reference in a RuntimeOp: data_spec
+        column/data-source/list-item refs (a mapping with ``node`` plus
+        ``path``, or ``expr`` outside literal list items), python plan stage
+        entries, and the condition node. Literal payloads (``node`` without
+        ``path``/``expr``) are data, not references."""
+        yield from _RuntimeGraphBuilderBase._iter_spec_refs(node.data_spec)
+        condition = node.condition
+        if condition is not None:
+            cond_node = condition.get("node")
+            if isinstance(cond_node, str):
+                yield cond_node
+
+    @staticmethod
+    def _iter_spec_refs(value: Any, allow_expr: bool = True) -> Iterator[str]:
+        """Yield node references from a data_spec, schema-aware: a mapping
+        with a string ``node`` and a ``path`` key is a reference; ``expr``
+        counts only outside literal list items. Recurse into nested mappings
+        and lists, disabling ``expr`` below a ``type: list`` payload."""
+        if isinstance(value, dict):
+            node = value.get("node")
+            if isinstance(node, str) and (
+                "path" in value or (allow_expr and "expr" in value)
+            ):
+                yield node
+                return
+            if value.get("type") == "list":
+                yield from _RuntimeGraphBuilderBase._iter_spec_refs(
+                    value.get("items"), allow_expr=False
+                )
+                return
+            if value.get("kind") == "stage":
+                stage_node = value.get("node")
+                if isinstance(stage_node, str):
+                    yield stage_node
+                    return
+            for v in value.values():
+                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
+        elif isinstance(value, list):
+            for v in value:
+                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
+
+    def _guard_single_row_node_ref(
+        self,
+        *,
+        consumer_id: str,
+        upstream_id: str,
+        upstream: Op | None,
+        inputs_dict: dict[str, list[str]],
+        graph_dict: dict[str, Op],
+        dsl_to_runtime: dict[str, list[str]] | None,
+        kind: str,
+    ) -> None:
+        """Fail closed when a consumer binds a single ``${node.path}`` reference
+        to a multi-row upstream."""
+        if not isinstance(upstream, LLMOp):
+            return
+        row_count = self._static_output_row_count(upstream, inputs_dict, graph_dict)
+        if row_count is not None and row_count > 1:
+            raise ValueError(
+                f"Op '{consumer_id}' {kind} references '{upstream_id}',"
+                " which produces multiple rows; a single node reference can"
+                " only carry one row, so wiring this to the single unsuffixed"
+                " output would silently drop every row but the first."
+            )
+
+    @staticmethod
+    def _emits_one_item_per_row(op: Op) -> bool:
+        """Whether a multi-row op's result holds one scalar-per-row item per
+        input row, so a ``node``/``path`` reference resolves to one value per
+        row."""
+        if isinstance(op, LLMCompletionOp):
+            return True
+        return (
+            isinstance(op, LLMChatOp)
+            and op.rowwise_template is None
+            and not _RuntimeGraphBuilderBase._is_api_task(op)
+        )
+
+    @staticmethod
+    def _is_api_task(op: Op) -> bool:
+        """Whether an LLMOp dispatches as an API task (not a VLM)."""
+        return (
+            isinstance(op, LLMOp)
+            and not isinstance(op, LLMVisionOp)
+            and (op.config.api is not None)
+        )
+
+    @staticmethod
+    def _is_rowwise_api_task(op: Op) -> bool:
+        """Whether an API task is row-wise (dataframe)."""
+        return (
+            _RuntimeGraphBuilderBase._is_api_task(op)
+            and isinstance(op, LLMChatOp)
+            and op.rowwise_template is not None
+        )
+
+    def _upstream_output_path(self, op: Op) -> str:
+        """Result path for an upstream op's text output."""
+        if op.id in self._flattened_vlm_ids:
+            return "value.items.output"
+        if _RuntimeGraphBuilderBase._is_api_task(op):
+            if _RuntimeGraphBuilderBase._is_rowwise_api_task(op):
+                return _API_ROW_PATH
+            return _API_ITEM_PATH
+        if isinstance(op, LambdaOp):
+            return _RuntimeGraphBuilderBase._lambda_result_path(op, "items.output")
+        return "items.output"
