@@ -13,8 +13,8 @@ from flowmesh.models.workflows import (
     WorkflowSubmitTaskEntry,
 )
 
-import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+import lumilake_server.runtime.runtime_manager as fm_mod
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
 def _api_error(status_code: int) -> APIError:

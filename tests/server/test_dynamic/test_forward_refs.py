@@ -688,7 +688,7 @@ def _df_item(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def test_walk_serialized_dataframe_column_returns_list():
     # Walking ``table.<col>`` on a real stored item (a serialized DataFrame)
     # returns the column as a list in row order, not a dict or an error.
-    from lumilake_server.runtime.runtime_manager.flowmesh import _walk_output_path
+    from lumilake_server.runtime.runtime_manager import _walk_output_path
 
     item = _df_item(
         [

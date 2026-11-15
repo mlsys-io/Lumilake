@@ -1,7 +1,7 @@
 import pytest
 from flowmesh.models.tasks import TaskStatusView
 
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
 @pytest.fixture

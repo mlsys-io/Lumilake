@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
 async def _aggregate(output_path: str | None) -> list[str]:
