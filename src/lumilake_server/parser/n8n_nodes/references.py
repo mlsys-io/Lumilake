@@ -1,7 +1,6 @@
 """How one n8n node type answers a reference from another node.
 
-A prompt or query that names another node resolves through that type's
-:class:`NodeReference`, keyed here by the same type strings the walk uses.
+References are keyed by the same type strings the walk uses.
 """
 
 from typing import Any

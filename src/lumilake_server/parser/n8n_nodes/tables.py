@@ -1,8 +1,7 @@
-"""The two dispatch tables: n8n node types and chain notes ``(op-type,
-mode)`` pairs.
+"""The two dispatch tables: n8n node types and chain notes pairs.
 
-Every key is the value the walk already dispatches on, so adding a node
-type or a chain op-type is a table entry, not an edit to the walk.
+Each is keyed by the value the walk dispatches on, so adding a node type or
+a chain mode is a table entry.
 """
 
 from . import code, llm, references, retrieval

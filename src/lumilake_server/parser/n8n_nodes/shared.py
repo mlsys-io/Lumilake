@@ -1,7 +1,6 @@
-"""n8n wire-format constants and the helpers several node families share.
+"""The helpers more than one node family uses.
 
-Anything specific to one family lives in that family's module; this module
-holds only what more than one of them needs.
+Anything specific to one family lives in that family's module.
 """
 
 import json
