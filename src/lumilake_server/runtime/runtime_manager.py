@@ -670,8 +670,8 @@ class FlowmeshRuntimeManager:
     ) -> str:
         """Apply every page the feed holds for these pending tasks, from ``cursor``.
 
-        A page carries only part of the changes after a cursor, so pages are
-        read until ``has_more`` is false. Returns the position reached.
+        A page may hold only part of the changes after a cursor (``has_more``),
+        so pages are read until it is false. Returns the position reached.
         """
         while True:
             page = await self.fetch_workflow_task_statuses(workflow_id, cursor=cursor)
