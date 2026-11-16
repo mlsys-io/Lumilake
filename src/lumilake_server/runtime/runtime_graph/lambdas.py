@@ -40,10 +40,11 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dep = inp.id
             elif isinstance(inp, (LLMOp, DataRetrievalOp)) or has_lowering(inp):
                 runtime_ids = ctx.dsl_to_runtime.get(inp.id, [])
-                if not runtime_ids and has_lowering(inp):
+                derived_lowering = None if runtime_ids else lookup(inp, Phase.DERIVED)
+                if derived_lowering is not None:
                     # A derived op this step reads lowers in its own phase, so
                     # run that lowering now to get its final node.
-                    result = lookup(inp, Phase.DERIVED)(self, inp, ctx)
+                    result = derived_lowering(self, inp, ctx)
                     if result is not None:
                         for lowered in result.nodes:
                             ctx.nodes.setdefault(lowered.node_id, lowered)

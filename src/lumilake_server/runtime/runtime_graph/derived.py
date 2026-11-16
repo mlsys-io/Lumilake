@@ -43,7 +43,7 @@ def _item_relative_path(path: str) -> str:
 class _DerivedBuilder(_VisionBuilder):
     def _read_source(
         self, consumer: str, op_ref: Op, ctx: LoweringContext
-    ) -> list[str] | OpOutput | None:
+    ) -> list[str] | OpOutput:
         """The literal values, or how an upstream op's values are read."""
         ctx.visited.add(op_ref.id)
         if isinstance(op_ref, InputOp):
