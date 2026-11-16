@@ -287,13 +287,12 @@ Where the function runs depends on what reads it:
   per digest as mounted JSON. Smaller literals stay inline. The generated stub
   holds only the op id, user code, function name, and plan; the worker fetches
   blobs through `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`).
-  The code may `import` any module the task
-  image provides (the default image carries the standard library, numpy and
-  pandas), at module level or in the function body; only relative imports are
-  rejected at submit. A `LambdaOp` with an `image` always runs as its own
-  standalone `python` task. If the function raises, the job's error names the
-  step and the exception, for example `Output task <id> failed (node <op>):
-  python task failed: ValueError: ...`.
+  The code may `import` any module the task image provides (the default image
+  carries the standard library, numpy and pandas), at module level or in the
+  function body; only relative imports are rejected at submit. A `LambdaOp` with
+  an `image` always runs as its own standalone `python` task. If the function
+  raises, the job's error names the step and the exception, for example `Output
+  task <id> failed (node <op>): python task failed: ValueError: ...`.
 - **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the
