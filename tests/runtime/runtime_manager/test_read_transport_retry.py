@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 import pytest
+from flowmesh.models.tasks import TaskStatusPage
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 
@@ -17,11 +18,11 @@ async def test_a_read_repeats_a_dropped_connection_but_a_submit_does_not(
     calls = {"status": 0, "submit": 0}
     delays: list[float] = []
 
-    async def _list_statuses(**_: Any) -> list[Any]:
+    async def _changes(**_: Any) -> TaskStatusPage:
         calls["status"] += 1
         if calls["status"] < 3:
             raise httpx.ConnectError("refused")
-        return []
+        return TaskStatusPage(rows=[], next_cursor="")
 
     async def _submit(*_: Any) -> Any:
         calls["submit"] += 1
@@ -34,14 +35,16 @@ async def test_a_read_repeats_a_dropped_connection_but_a_submit_does_not(
         "Fm",
         (),
         {
-            "tasks": type("T", (), {"list_statuses": staticmethod(_list_statuses)}),
+            "tasks": type("T", (), {"changes": staticmethod(_changes)}),
             "workflows": type("W", (), {"submit": staticmethod(_submit)}),
         },
     )()
     monkeypatch.setattr(fm_mod.asyncio, "sleep", _sleep)
     monkeypatch.setattr(fm_mod.FlowmeshRuntimeManager, "fm", property(lambda self: fm))
 
-    assert await flowmesh_manager.fetch_workflow_task_statuses("wf-1") == []
+    assert (
+        await flowmesh_manager.fetch_workflow_task_statuses("wf-1")
+    ) == TaskStatusPage(rows=[], next_cursor="")
     with pytest.raises(httpx.ConnectError):
         await flowmesh_manager._submit_workflow("yaml", "sid-1")
     assert calls == {"status": 3, "submit": 1}
