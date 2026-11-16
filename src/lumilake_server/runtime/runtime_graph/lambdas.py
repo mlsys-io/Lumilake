@@ -9,7 +9,6 @@ from lumilake_server.ops import (
     LLMOp,
     Op,
 )
-from lumilake_server.ops.llm_ops import LLMChatOp, LLMVisionOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import _RuntimeGraphBuilderBase
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -73,19 +72,12 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                     " Python step reads LLM, data-retrieval, Lambda, input or data"
                     " ops"
                 )
-            row_counts.append(
-                (inp.id, self._static_output_row_count(inp, inputs_dict, graph_dict))
-            )
+            output = self._op_output(inp)
+            row_counts.append((inp.id, output.row_count))
             entry: dict[str, Any] = {"kind": "stage", "node": dep}
-            if (
-                isinstance(inp, LLMChatOp)
-                and not isinstance(inp, LLMVisionOp)
-                and inp.rowwise_template
-            ):
+            if output.needs_flatten:
                 # A rowwise LLM groups its per-row outputs back into one item;
-                # flatten it to one value per row for the python step. A VLM's
-                # regroup step already emits one list per symbol, so it is
-                # excluded.
+                # flatten it to one value per row for the python step.
                 entry["flatten"] = True
             plan.append(entry)
             if dep not in dependencies:
@@ -145,15 +137,10 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
                 entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
-                if (
-                    isinstance(inp, LLMChatOp)
-                    and not isinstance(inp, LLMVisionOp)
-                    and inp.rowwise_template
-                ):
+                if self._op_output(inp).needs_flatten:
                     # A rowwise LLM groups its per-row outputs back into one
                     # item; the python step must flatten it to one value per
-                    # row before the list-mode Lambda sees it. A VLM's regroup
-                    # step already emits one list per symbol, so it is excluded.
+                    # row before the list-mode Lambda sees it.
                     entry["flatten"] = True
                 plan.append(entry)
                 dependencies.append(inp.id)
@@ -181,7 +168,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 row_counts.append(
                     (
                         inp.id,
-                        self._static_output_row_count(inp, inputs_dict, graph_dict),
+                        self._op_output(inp).row_count,
                     )
                 )
         row_count = self._python_step_row_count(

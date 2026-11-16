@@ -235,11 +235,10 @@ class _RetrievalBuilder(_LLMBuilder):
                     resolved_params.append(literal_param)
                     continue
                 if isinstance(upstream, LLMOp):
-                    row_count = self._static_output_row_count(
-                        upstream, inputs_dict, graph_dict
-                    )
+                    output = self._op_output(upstream)
+                    row_count = output.row_count
                     if row_count is not None and row_count > 1:
-                        if not self._emits_one_item_per_row(upstream):
+                        if not output.one_item_per_row:
                             raise ValueError(
                                 f"DataRetrievalOp '{op_id}' template param "
                                 f"{param.get('label')!r} references '{node}', which"
@@ -253,14 +252,12 @@ class _RetrievalBuilder(_LLMBuilder):
                 if isinstance(upstream, LambdaOp):
                     param = {
                         **param,
-                        "path": self._lambda_read_path(
-                            consumer=(
+                        "path": self._op_output(upstream).read(
+                            param.get("path", ""),
+                            (
                                 f"DataRetrievalOp '{op_id}' template param "
                                 f"{param.get('label')!r}"
                             ),
-                            node_ref=node,
-                            path=param.get("path", ""),
-                            upstream=upstream,
                         ),
                     }
                 if node not in seen:

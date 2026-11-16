@@ -1,6 +1,5 @@
 from typing import Any
 
-from lumilake_server.common import retrieval_items_path
 from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMVisionOp
 from lumilake_server.runtime import python_step
@@ -57,9 +56,6 @@ class _VisionBuilder(_RetrievalBuilder):
                             path=path if isinstance(path, str) else "",
                             upstream=graph_dict.get(node_ref),
                             inputs_dict=inputs_dict,
-                            graph_dict=graph_dict,
-                            dsl_to_runtime=dsl_to_runtime,
-                            kind="rowwise column",
                         )
                     )
                     continue
@@ -359,7 +355,7 @@ class _VisionBuilder(_RetrievalBuilder):
             image_path = (
                 llm_op.image_path
                 if llm_op.image_path != "images"
-                else retrieval_items_path(image_source_op.data_spec["mode"])
+                else self._op_output(image_source_op).path
             )
             embedding_data_spec = {
                 "type": "list",

@@ -1,8 +1,7 @@
 from collections.abc import Sequence
 from typing import Any
 
-from lumilake_server.common import retrieval_items_path
-from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, Op
+from lumilake_server.ops import DataOp, InputOp, Op
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.runtime.runtime_graph.base import _default_output_destination
 from lumilake_server.runtime.runtime_graph.lambdas import _LambdaBuilder
@@ -53,16 +52,9 @@ class _EmbeddingBuilder(_LambdaBuilder):
                     consumer_id=llm_op_id,
                     upstream_id=content_op.id,
                     upstream=content_op,
-                    inputs_dict=inputs_dict,
-                    graph_dict=graph_dict,
-                    dsl_to_runtime=dsl_to_runtime,
                     kind="content",
                 )
-            content_path = (
-                retrieval_items_path(content_op.data_spec["mode"])
-                if isinstance(content_op, DataRetrievalOp)
-                else self._upstream_output_path(content_op)
-            )
+            content_path = self._op_output(content_op).path
             data_spec = {
                 "type": "list",
                 "node": content_op.id,
