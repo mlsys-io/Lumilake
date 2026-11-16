@@ -103,38 +103,6 @@ def test_classification_yaml_errors_name_the_op() -> None:
         parse_yaml_payload(_classification_yaml(fields))
 
 
-def test_upstream_classification_routes_through_a_pairs_step() -> None:
-    """An upstream candidate op feeds the pairs step at its item-relative
-    ``output`` path, and the classification node consumes that step alone."""
-
-    def prepare(items):
-        return [str(item) for item in items]
-
-    prepare_op = LambdaOp([input_placeholder("Texts")], prepare, mode="list")
-    classification = ClassificationOp(
-        query="question",
-        candidates=prepare_op,
-        config=ClassificationConfig(model="org/reranker"),
-    )
-    compiled = Graph.from_ops([as_output("labels", classification)]).compile(
-        Texts=["first", "second"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    pairs = runtime_graph.nodes[f"{classification.id}__pairs"]
-    classification_node = runtime_graph.nodes[classification.id]
-
-    assert pairs.data_spec["plan"][1] == {
-        "kind": "stage",
-        "node": prepare_op.id,
-        "path": "output",
-    }
-    assert classification_node.dependencies == (pairs.node_id,)
-    assert classification_node.data_spec == {
-        "type": "list",
-        "items": f"${{{pairs.node_id}.value.items}}",
-    }
-
-
 def test_mixed_derived_chain_builds_in_dependency_order() -> None:
     """A chain that mixes an LLM, a fetch, a row Lambda, a classification and
     list Lambdas lowers in dependency order, with no reference to a missing
@@ -163,10 +131,15 @@ def test_mixed_derived_chain_builds_in_dependency_order() -> None:
     runtime_graph: RuntimeGraph = RuntimeGraphBuilder().build(compiled)
 
     order = {node_id: i for i, node_id in enumerate(runtime_graph.node_order)}
+    pairs_id = f"{classification.id}__pairs"
+    pairs = runtime_graph.nodes[pairs_id]
+    # The pairs step reads its upstream at the item-relative stage path.
+    candidate_stage = pairs.data_spec["plan"][1]
+    assert candidate_stage["kind"] == "stage" and candidate_stage["path"] == "output"
+    assert runtime_graph.nodes[classification.id].dependencies == (pairs_id,)
     for node in runtime_graph.nodes.values():
         for dependency in node.dependencies:
             assert dependency in runtime_graph.nodes
-    pairs_id = f"{classification.id}__pairs"
     chain = [llm.id, fetch.id, pairs_id]
     chain += [runtime_graph.dsl_to_runtime[classification.id][0], head.id]
     assert [order[node_id] for node_id in chain] == sorted(order[n] for n in chain)

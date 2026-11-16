@@ -254,12 +254,9 @@ def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
 _FLATTEN_STEP_MAIN = """\
 
 def main(inputs):
-    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    columns = [_column(entry, inputs, _text) for entry in _PLAN]
     (values,) = columns
-    rows = []
-    for value in values:
-        rows.extend(value if isinstance(value, list) else [value])
-    return {{"items": [{{"output": row}} for row in rows]}}
+    return {{"items": [_text(value) for value in values]}}
 """
 
 

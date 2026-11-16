@@ -87,14 +87,9 @@ class _DerivedBuilder(_VisionBuilder):
             task_type=python_step.TASK_TYPE,
             data_spec={
                 "mode": "flatten_step",
-                "plan": [
-                    {
-                        "kind": "stage",
-                        "node": upstream.node,
-                        "path": item_relative_path(upstream.path),
-                        "flatten": True,
-                    }
-                ],
+                # No path: the worker's flatten branch expands both shapes —
+                # a local group's ``output`` list and API ``rows``.
+                "plan": [{"kind": "stage", "node": upstream.node, "flatten": True}],
                 "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
             },
             model_spec={},

@@ -2,12 +2,14 @@
 
 import json
 import textwrap
+from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
 from lumilake import envs
-from lumilake_server.common import GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -18,11 +20,13 @@ from lumilake_server.ops import (
     input_placeholder,
 )
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
 @pytest.fixture(autouse=True)
 def _envs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test" + "-token")
 
@@ -129,13 +133,18 @@ def test_http_fetch_op_reads_its_upstream_result_path() -> None:
     assert runtime_graph.output_paths[fetch.id] == "items.json"
 
 
-def test_http_fetch_op_reads_a_grouped_upstream_through_a_flatten_step() -> None:
-    """A rowwise LLM groups its output per table, so the fetch reads a python
-    step's per-row items and issues one request per row."""
+@pytest.mark.parametrize("upstream", ["local", "api"])
+def test_fetch_flattens_a_grouped_upstream_to_one_query_per_row(
+    upstream: str, tmp_path: Path
+) -> None:
+    """A rowwise chat groups one item per table; the fetch reads a python
+    step's per-row strings, so it issues one request per row."""
     prompt = input_placeholder("Prompt")
     rowwise = LLMChatOp(
         [OpMessage(role="user", content=prompt)],
-        config=GenerationConfig(model="org/llm"),
+        config=GenerationConfig(
+            model="org/llm", api=ApiConfig() if upstream == "api" else None
+        ),
         rowwise_template="{prompt}",
         rowwise_columns=[{"label": "prompt", "node": prompt.id, "path": ""}],
     )
@@ -143,12 +152,22 @@ def test_http_fetch_op_reads_a_grouped_upstream_through_a_flatten_step() -> None
     compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(
         Prompt=["one", "two"]
     )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-    node = runtime_graph.nodes[fetch.id]
-    step = runtime_graph.nodes[f"{fetch.id}__flatten"]
+    step = RuntimeGraphBuilder().build(compiled).nodes[f"{fetch.id}__flatten"]
+    result: dict[str, Any]
+    if upstream == "api":
+        rows = [{"json": {"choices": [{"message": {"content": q}}]}} for q in "ab"]
+        result = {"items": [{"rows": rows}]}
+    else:
+        result = {"value": {"items": [{"output": ["a", "b"]}]}}
+    stage = tmp_path / "llm"
+    stage.mkdir()
+    (stage / "results.json").write_text(json.dumps({"result": result}))
+    runtime = tmp_path / "runtime.py"
+    runtime.write_bytes(python_step.runtime_blob().body)
+    code = python_step.flatten_step_source(
+        step.node_id, step.data_spec["plan"]
+    ).replace(python_step.TASK_RUNTIME_MOUNT, str(runtime))
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
 
-    assert node.data_spec["items"] == f"${{{step.node_id}.value.items}}"
-    assert node.dependencies == (step.node_id,)
-    assert step.data_spec["plan"] == [
-        {"kind": "stage", "node": rowwise.id, "path": "output", "flatten": True}
-    ]
+    assert namespace["main"]({rowwise.id: str(stage)}) == {"items": ["a", "b"]}
