@@ -23,7 +23,7 @@ from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
@@ -100,6 +100,30 @@ def test_standalone_lambda_over_rowwise_llm_flattens_plan_entry() -> None:
     assert reply_plan == {"kind": "stage", "node": reply.id, "flatten": True}
 
 
+def test_lambda_built_by_recursion_keeps_its_own_mapping() -> None:
+    """An upstream Lambda inlined into an LLM is skipped at its own turn, so a
+    later Lambda reading it builds it by recursion; each step keeps its own
+    runtime id, as it does when it lowers on its own."""
+    stock = input_placeholder("Stock")
+    inlined = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=inlined)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    reader = LambdaOp([inlined, llm], fn=lambda inputs: str(inputs[0]))
+    compiled = Graph.from_ops([as_output("out", reader)]).compile(Stock=["NVDA"])
+
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    assert graph.dsl_to_runtime[inlined.id] == [inlined.id]
+    assert graph.dsl_to_runtime[reader.id] == [reader.id]
+    assert graph.dsl_to_runtime[llm.id] == [llm.id]
+    # A step built by recursion is recorded before the op that built it.
+    assert list(graph.dsl_to_runtime).index(inlined.id) < list(
+        graph.dsl_to_runtime
+    ).index(reader.id)
+
+
 def test_lambda_chain_compiles_both_steps() -> None:
     stock = input_placeholder("Stock")
     first = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).lower())
@@ -110,6 +134,7 @@ def test_lambda_chain_compiles_both_steps() -> None:
     nodes = _python_nodes(graph)
     assert set(nodes) == {first.id, second.id}
     assert nodes[second.id].dependencies == (first.id,)
+    assert graph.dsl_to_runtime == {first.id: [first.id], second.id: [second.id]}
 
 
 def test_lambda_read_by_llm_stays_inlined() -> None:

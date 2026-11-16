@@ -29,6 +29,8 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
+    fraction_holds_utilization,
+    gpu_memory_fraction,
     required_task_types,
 )
 
@@ -51,6 +53,20 @@ def _retrieval_is_data_profile_eligible(data_spec: Mapping[str, Any]) -> bool:
     if spec_type == "lumid":
         return data_spec.get("mode") in {"sql", "s3"}
     return False
+
+
+def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:
+    """The GPU workers and the fraction of a card each one owns, for a message."""
+    listed = ", ".join(
+        (
+            f"{worker.id}={worker.gpu_memory_fraction:g}"
+            if worker.gpu_memory_fraction is not None
+            else f"{worker.id}=whole device"
+        )
+        for worker in workers.values()
+        if worker.kind == "gpu"
+    )
+    return f"Claimed GPU worker fractions: {listed}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +236,7 @@ class HaloOptimizer(BaseOptimizer):
                     inputs=deps,
                     outputs=tuple(),
                     db_queries=db_queries,
+                    gpu_memory_utilization=op.gpu_memory_utilization,
                     raw=raw,
                 )
                 for dep in deps:
@@ -386,7 +403,7 @@ class HaloOptimizer(BaseOptimizer):
         )
 
         workers: dict[str, Worker] = {}
-        for worker_name in worker_names:
+        for worker_name in sorted(worker_names):
             worker_profile = worker_profiles.get(worker_name, {})
             has_gpu = bool(worker_profile.get("has_gpu"))
             worker_kind = "gpu" if has_gpu else "cpu"
@@ -396,6 +413,7 @@ class HaloOptimizer(BaseOptimizer):
                 device="cuda:0" if worker_kind == "gpu" else "cpu",
                 capacity=1.0,
                 task_types=advertised_task_types(worker_profile),
+                gpu_memory_fraction=gpu_memory_fraction(worker_profile),
             )
 
         if requires_gpu and not any(w.kind == "gpu" for w in workers.values()):
@@ -441,8 +459,28 @@ class HaloOptimizer(BaseOptimizer):
                     tuple(w for w in tier if node.type in workers[w].task_types)
                     for tier in tiers
                 )
+            utilization = node.gpu_memory_utilization
+            if utilization is not None:
+                tiers = tuple(
+                    tuple(
+                        w
+                        for w in tier
+                        if workers[w].kind != "gpu"
+                        or fraction_holds_utilization(
+                            workers[w].gpu_memory_fraction, utilization
+                        )
+                    )
+                    for tier in tiers
+                )
             eligible = next((tier for tier in tiers if tier), ())
             if not eligible:
+                if utilization is not None:
+                    raise ValueError(
+                        f"No GPU worker has the memory fraction for node '{node_id}',"
+                        f" which requests gpu_memory_utilization={utilization:g}"
+                        f" (engine={node.engine}, type={node.type})."
+                        f" {_describe_gpu_fractions(workers)}"
+                    )
                 raise ValueError(
                     f"No compatible workers for node '{node_id}' (engine={node.engine},"
                     f" type={node.type})"

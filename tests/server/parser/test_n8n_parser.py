@@ -5,20 +5,23 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import OutputOp
+from lumilake_server.ops import LambdaOp, OutputOp
 from lumilake_server.parser import parse_n8n_payload
-from lumilake_server.parser.n8n import (
+from lumilake_server.parser.n8n_nodes.constants import (
     N8N_AGENT_NODE,
     N8N_CHAT_TRIGGER,
     N8N_POSTGRES_NODE,
     N8N_S3_NODE,
+)
+from lumilake_server.parser.n8n_nodes.entries import OpContext
+from lumilake_server.parser.n8n_nodes.llm import (
     _build_aggregate_prompt_content,
     _build_prompt_content,
     _build_rowwise_prompt_content,
     _extract_rowwise_columns,
-    _make_chain_ops,
-    _referenced_op_path,
 )
+from lumilake_server.parser.n8n_nodes.references import items_path
+from lumilake_server.parser.n8n_nodes.tables import make_chain_node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "examples" / "templates" / "n8n"
@@ -205,10 +208,10 @@ def test_image_generation_digest_uses_row_summary_aggregate_table(
 
 
 def test_referenced_op_path_agent_uses_table() -> None:
-    assert _referenced_op_path(N8N_AGENT_NODE, None) == "items.table"
-    assert _referenced_op_path(N8N_POSTGRES_NODE, "symbol") == "items.table.symbol"
-    assert _referenced_op_path(N8N_S3_NODE, None) == "items.content"
-    assert _referenced_op_path(None, None) == "items.output"
+    assert items_path(N8N_AGENT_NODE, None) == "items.table"
+    assert items_path(N8N_POSTGRES_NODE, "symbol") == "items.table.symbol"
+    assert items_path(N8N_S3_NODE, None) == "items.content"
+    assert items_path(None, None) == "items.output"
 
 
 def _code_node_workflow(notes: str) -> dict:
@@ -234,6 +237,86 @@ def _code_node_workflow(notes: str) -> dict:
             "Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}
         },
     }
+
+
+_SQL_UPSTREAM = {
+    "parameters": {"operation": "executeQuery", "query": "SELECT 1"},
+    "type": N8N_POSTGRES_NODE,
+    "name": "SQL",
+    "id": "sql-node",
+    "typeVersion": 1,
+}
+_AGENT_UPSTREAM = {
+    "parameters": {"text": "Find the profile for {{ $('Input') }}."},
+    "type": N8N_AGENT_NODE,
+    "name": "Agent",
+    "id": "agent-node",
+    "typeVersion": 1,
+    "notes": json.dumps({"schema-scope": "s.t"}),
+}
+
+
+@pytest.mark.parametrize(
+    ("upstream", "kept"),
+    [(_SQL_UPSTREAM, False), (_AGENT_UPSTREAM, True)],
+    ids=["postgres-fed-code-node", "agent-fed-code-node"],
+)
+def test_n8n_code_node_inputs_follow_the_upstream_type(
+    upstream: dict, kept: bool
+) -> None:
+    """A code node takes an ordinary upstream as its input and dependency, and
+    skips a data source, which answers references with its own rows."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": N8N_CHAT_TRIGGER,
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1,
+            },
+            upstream,
+            {
+                "parameters": {"pythonCode": "return 'hi'"},
+                "type": "n8n-nodes-base.code",
+                "name": "Code",
+                "id": "code-node",
+                "typeVersion": 1,
+                "notes": json.dumps({"is-output": True}),
+            },
+        ],
+        "connections": {
+            "Input": {
+                "main": [[{"node": upstream["name"], "type": "main", "index": 0}]]
+            },
+            upstream["name"]: {
+                "main": [[{"node": "Code", "type": "main", "index": 0}]]
+            },
+        },
+    }
+    payload = {
+        "graphs": [{"name": "g0", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}]
+    }
+    if not kept:
+        # A data source is no input at all, so a code node that has only one
+        # fails the way it does when it has none.
+        with pytest.raises(ValueError, match="Code node 'Code' missing inputs"):
+            parse_n8n_payload(payload)
+        return
+
+    parsed = parse_n8n_payload(payload)["g0"]["graph"]
+    code_id = next(op_id for op_id, op in parsed.items() if op["_op"] == "LambdaOp")
+    upstream_id = next(
+        op_id
+        for op_id, op in parsed.items()
+        if op["_op"] == "DataRetrievalOp" and op["data_spec"]["mode"] != "sql"
+    )
+    assert upstream_id in parsed[code_id]["_inputs"]
+
+    graph = Graph.from_json(parsed)
+    lambdas = list(graph.iter_ops(LambdaOp))
+    assert len(lambdas) == 1
+    assert upstream_id in {op.id for op in lambdas[0].inputs}
 
 
 def test_n8n_code_node_image_reaches_the_op() -> None:
@@ -715,6 +798,24 @@ def test_prompt_content_whole_item_ref_has_no_path() -> None:
     assert fmt_op.get("format_paths") in (None, {})
 
 
+def _chain_context(
+    incoming: dict,
+    node_map: dict,
+    op_ids: dict,
+    inputs: dict,
+    model_specs: dict,
+    scope: str,
+) -> OpContext:
+    return OpContext(
+        scope=scope,
+        inputs=inputs,
+        incoming=incoming,
+        node_map=node_map,
+        op_ids=op_ids,
+        model_specs=model_specs,
+    )
+
+
 def _aggregate_chain_node(text: str) -> dict:
     return {
         "parameters": {
@@ -762,15 +863,17 @@ def test_aggregate_chain_no_ref_escapes_once() -> None:
     node = _aggregate_chain_node(
         'Return JSON {"a": 1}.\n```table\nx: {{ $json.x }}\n```'
     )
-    ops, _ = _make_chain_ops(
-        node=node,
-        node_name="Digest",
-        incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
-        node_map={},
-        op_ids={},
-        inputs={},
-        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
-        scope="g0",
+    ops, _ = make_chain_node(
+        node,
+        _chain_context(
+            incoming={"Digest": [{"type": "ai_languageModel", "node": "Model"}]},
+            node_map={},
+            op_ids={},
+            inputs={},
+            model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+            scope="g0",
+        ),
+        "Digest",
     )
     content = _aggregate_message_content(ops)
     assert content == 'Return JSON {{"a": 1}}.\n{df}'
@@ -786,17 +889,19 @@ def test_aggregate_chain_with_ref_escapes_once() -> None:
         "Return JSON {\"a\": 1} for {{ $('Stock') }}.\n"
         "```table\nx: {{ $('SQL').item.x }}\n```"
     )
-    ops, _ = _make_chain_ops(
-        node=node,
-        node_name="Digest",
-        incoming={
-            "Digest": [{"type": "ai_languageModel", "node": "Model"}],
-        },
-        node_map={"SQL": {"type": N8N_POSTGRES_NODE}},
-        op_ids={"Stock": "op_stock", "SQL": "op_sql"},
-        inputs={},
-        model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
-        scope="g0",
+    ops, _ = make_chain_node(
+        node,
+        _chain_context(
+            incoming={
+                "Digest": [{"type": "ai_languageModel", "node": "Model"}],
+            },
+            node_map={"SQL": {"type": N8N_POSTGRES_NODE}},
+            op_ids={"Stock": "op_stock", "SQL": "op_sql"},
+            inputs={},
+            model_specs={"Model": {"config": {"model": "m"}, "vlm_config": None}},
+            scope="g0",
+        ),
+        "Digest",
     )
     rendered = _render_aggregate_format_ops(
         ops, df_value='{"x": "v"}', ref_values={"ref0": "NVDA"}

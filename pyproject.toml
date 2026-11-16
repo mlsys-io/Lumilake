@@ -113,7 +113,7 @@ server-runtime = [
     "dill==0.4.1",
     "sqlparse==0.6.0",
     "lumid-hooks==0.2.0",
-    "flowmesh-sdk==0.1.13",
+    "flowmesh-sdk==0.1.14",
     "huggingface-hub==2.3.0",
     "httpx2==2.16.0",
     # Security floors for transitive dependencies.

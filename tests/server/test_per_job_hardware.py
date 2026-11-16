@@ -32,7 +32,7 @@ from lumilake_server.runtime.job_manager.priority_queue import (
 )
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_manager.flowmesh import (
+from lumilake_server.runtime.runtime_manager import (
     _resolve_cpu,
     _resolve_gpu_count,
     _resolve_gpu_memory,
@@ -142,7 +142,7 @@ def test_hardware_requirements_memory_accepts_well_formed(good: str) -> None:
 
 def test_resolve_cpu_uses_override_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_CPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         8,
     )
     assert _resolve_cpu(HardwareRequirements(cpu=16)) == 16
@@ -152,7 +152,7 @@ def test_resolve_cpu_falls_back_to_env_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_CPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         8,
     )
     assert _resolve_cpu(None) == 8
@@ -161,7 +161,7 @@ def test_resolve_cpu_falls_back_to_env_when_unset(
 
 def test_resolve_memory_uses_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_MEMORY_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_MEMORY_REQUIREMENT",
         "16Gi",
     )
     assert _resolve_memory(HardwareRequirements(memory="64Gi")) == "64Gi"
@@ -172,7 +172,7 @@ def test_resolve_gpu_count_uses_override_including_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_GPU_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_GPU_REQUIREMENT",
         1,
     )
     # gpu=0 must beat the env default — that's the "explicit no-GPU" semantic.
@@ -183,7 +183,7 @@ def test_resolve_gpu_count_uses_override_including_zero(
 
 def test_resolve_gpu_memory_uses_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh.envs.HARDWARE_GPU_MEMORY_REQUIREMENT",
+        "lumilake_server.runtime.runtime_manager.envs.HARDWARE_GPU_MEMORY_REQUIREMENT",
         "8Gi",
     )
     assert _resolve_gpu_memory(HardwareRequirements(gpu_memory="48Gi")) == "48Gi"

@@ -45,7 +45,7 @@ def test_flowmesh_for_server_only_referenced_from_runtime_manager() -> None:
     direct_reference = re.compile(r"\bflowmesh_for_server\b")
     allowed = {
         Path("src/lumilake_server/runtime/flowmesh_client.py"),  # definition
-        Path("src/lumilake_server/runtime/runtime_manager/flowmesh.py"),  # caller
+        Path("src/lumilake_server/runtime/runtime_manager.py"),  # caller
     }
     offenders: list[str] = []
     for py in _all_py_files(_SRC, _PACKAGES):
@@ -70,7 +70,7 @@ def test_flowmesh_for_server_only_referenced_from_runtime_manager() -> None:
                         break
     assert offenders == [], (
         "flowmesh_for_server must only be referenced by flowmesh_client.py "
-        f"(definition) and runtime_manager/flowmesh.py (callers); "
+        f"(definition) and runtime_manager.py (callers); "
         f"unexpected references: {offenders}"
     )
 

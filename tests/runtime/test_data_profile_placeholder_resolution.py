@@ -721,7 +721,7 @@ class TestSampleQueryReadonlyValidation:
             return [{"id": 42}]
 
         monkeypatch.setattr(
-            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            "lumilake_server.runtime.runtime_graph.retrieval.lumid_retrieve_sample",
             fake_retrieve,
         )
         result = _default_sql_sampler("SELECT id FROM t LIMIT 1")
@@ -813,7 +813,7 @@ class TestSqlSamplerTimeouts:
             return [{"id": 42}]
 
         monkeypatch.setattr(
-            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            "lumilake_server.runtime.runtime_graph.retrieval.lumid_retrieve_sample",
             fake_retrieve,
         )
         result = _default_sql_sampler("SELECT id FROM t LIMIT 1")
@@ -919,7 +919,7 @@ class TestTimeoutEnvValidation:
             return [{"id": 1}]
 
         monkeypatch.setattr(
-            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            "lumilake_server.runtime.runtime_graph.retrieval.lumid_retrieve_sample",
             fake_retrieve,
         )
         result = _default_sql_sampler("SELECT id FROM t LIMIT 1")
@@ -930,7 +930,7 @@ class TestTimeoutEnvValidation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "lumilake_server.runtime.runtime_graph.lumid_retrieve_sample",
+            "lumilake_server.runtime.runtime_graph.retrieval.lumid_retrieve_sample",
             lambda sql: [],
         )
         result = _default_sql_sampler("SELECT id FROM t LIMIT 1")

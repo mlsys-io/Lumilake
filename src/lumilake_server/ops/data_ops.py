@@ -44,6 +44,10 @@ class DataRetrievalOp(FunctionalOp):
         super().__init__(inputs or [])
         self.data_spec = data_spec
 
+    @property
+    def profilable(self) -> bool:
+        return self.data_spec.get("mode") in {"sql", "s3"}
+
     def _serialize(self) -> dict[str, Any]:
         return {"data_spec": self.data_spec}
 

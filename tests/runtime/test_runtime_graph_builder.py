@@ -7,12 +7,17 @@ from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    DataOp,
     DataRetrievalOp,
     EmbeddingOp,
+    FormatOp,
     ImageGenerationOp,
+    InputOp,
     LambdaOp,
     LLMChatOp,
+    LLMCompletionOp,
     LLMVisionOp,
+    Op,
     OpMessage,
     SingleDtype,
     as_output,
@@ -2312,3 +2317,120 @@ def test_rowwise_input_item_output_field_ref_projects_full_path() -> None:
         "label": "title",
         "data": {"type": "list", "grouped": True, "items": ["T0", "T1"]},
     }
+
+
+_READ_RULES_MODEL = GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct")
+
+
+def _aggregate_chat(upstream: Op) -> LLMChatOp:
+    """A non-API aggregate chat: one row over its whole table."""
+    return LLMChatOp(
+        [OpMessage(role="user", content=upstream)],
+        config=_READ_RULES_MODEL,
+        aggregate_table=[{"label": "df", "node": upstream.id, "path": "items.output"}],
+    )
+
+
+def _rowwise_vlm(upstream: Op, image_source: Op) -> LLMVisionOp:
+    """A rowwise VLM whose image source is not a retrieval, so it is not
+    flattened into the regroup shape."""
+    return LLMVisionOp(
+        [OpMessage(role="user", content=upstream)],
+        image_source=image_source.id,
+        image_source_op=image_source,
+        rowwise_template="Describe {label}.",
+        rowwise_columns=[
+            {"label": "label", "node": upstream.id, "path": "items.output"}
+        ],
+        config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
+    )
+
+
+def _reaches_input(op: Op) -> bool:
+    """Whether the op's inputs reach an InputOp."""
+    pending = list(op.inputs)
+    while pending:
+        current = pending.pop()
+        if isinstance(current, InputOp):
+            return True
+        pending.extend(current.inputs)
+    return False
+
+
+def _build_read_rule_case(case: str, rows: Op, stock: Op) -> tuple[Op, Op, bool]:
+    """One ``(upstream, consumer, accepted)`` triple per parametrised case."""
+    upstream: Op
+    consumer: Op
+    accepted: bool
+    if case == "aggregate_as_completion_prompt":
+        upstream = _aggregate_chat(rows)
+        consumer = LLMCompletionOp(upstream, config=_READ_RULES_MODEL)
+        accepted = True
+    elif case == "embedding_as_completion_prompt":
+        upstream = EmbeddingOp(
+            stock, config=GenerationConfig(model="BAAI/bge-base-en-v1.5")
+        )
+        consumer = LLMCompletionOp(upstream, config=_READ_RULES_MODEL)
+        accepted = False
+    elif case == "image_generation_as_completion_prompt":
+        upstream = ImageGenerationOp(
+            stock, config=GenerationConfig(model="stabilityai/sdxl-turbo")
+        )
+        consumer = LLMCompletionOp(upstream, config=_READ_RULES_MODEL)
+        accepted = False
+    elif case == "format_as_completion_prompt":
+        upstream = FormatOp("{0}", stock)
+        consumer = LLMCompletionOp(upstream, config=_READ_RULES_MODEL)
+        accepted = False
+    elif case == "rowwise_vlm_into_list_lambda":
+        upstream = _rowwise_vlm(rows, stock)
+        consumer = LambdaOp([upstream], fn=_explode_fn, mode="list")
+        accepted = True
+    else:
+        raise AssertionError(case)
+    return upstream, consumer, accepted
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "aggregate_as_completion_prompt",
+        "embedding_as_completion_prompt",
+        "image_generation_as_completion_prompt",
+        "format_as_completion_prompt",
+        "rowwise_vlm_into_list_lambda",
+    ],
+)
+def test_output_read_rules_match_the_old_predicates(case: str) -> None:
+    """The row-wise and flatten rules kept R2's answers for the op kinds the
+    capture cannot build: an aggregate chat is one item per row, an embedding,
+    an image generation and a FormatOp are not, and a non-flattened rowwise
+    VLM is never flattened."""
+    stock = input_placeholder("Stock")
+    rows = DataOp(["a", "b"])
+    upstream, consumer, accepted = _build_read_rule_case(case, rows, stock)
+    graph = Graph.from_ops([as_output("result", consumer)])
+    # Only a pair whose chain reaches the Stock input takes a value for it.
+    inputs = {"Stock": ["NVDA", "AAPL"]} if _reaches_input(consumer) else {}
+    compiled = graph.compile(**inputs)
+
+    if not accepted:
+        with pytest.raises(ValueError, match="one prompt string per row"):
+            RuntimeGraphBuilder().build(compiled)
+        return
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    assert consumer.id in runtime_graph.nodes
+    if case == "aggregate_as_completion_prompt":
+        # Accepted means the completion reads the aggregate chat's output, not
+        # that it joins a python plan.
+        assert runtime_graph.nodes[consumer.id].data_spec["node"] == upstream.id
+        return
+    entries = [
+        entry
+        for node in runtime_graph.nodes.values()
+        for entry in node.data_spec.get("plan", ())
+        if entry.get("node") == upstream.id
+    ]
+    assert entries
+    assert all(not entry.get("flatten") for entry in entries)

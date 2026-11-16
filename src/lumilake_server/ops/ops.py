@@ -1,6 +1,7 @@
 import copy
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from enum import Enum
 from typing import Any, Self, TypeVar
 
 from lumilake_server.common import Message
@@ -32,10 +33,29 @@ class OpRegistry:
         return self._registry[key]
 
 
+class RowShape(Enum):
+    """How many values one item of an op's output holds: a per-row item holds
+    one value, and a grouped item holds a table's values."""
+
+    PER_ROW = "per_row"
+    GROUPED = "grouped"
+
+
 class Op(ABC):
     id: str
     inputs: list["Op"]
     registry: OpRegistry = OpRegistry()
+
+    @property
+    def row_shape(self) -> RowShape:
+        """The shape of one output item: a consumer of a row-wise op reads one
+        value per input row."""
+        return RowShape.PER_ROW
+
+    @property
+    def profilable(self) -> bool:
+        """Whether a preflight may profile the op with the data profiler."""
+        return False
 
     def __init__(self, inputs: list["Op"] | None = None) -> None:
         self.id = unique_id()
@@ -123,16 +143,6 @@ class Op(ABC):
 
     def __hash__(self) -> int:
         return hash(self.id)
-
-    def consumer_result_path(self) -> str | None:
-        """The result path exposed to downstream graph operators."""
-        return None
-
-    def consumer_row_count(self, input_counts: Sequence[int | None]) -> int | None:
-        """The number of result rows exposed to downstream operators."""
-        known = [count for count in input_counts if count is not None]
-        return max(known) if known else None
-
 
 class FunctionalOp(Op):
     pass

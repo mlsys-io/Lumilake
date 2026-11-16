@@ -33,7 +33,12 @@ from lumilake_server.ops.llm_ops import (
     llm_completion,
     llm_vision,
 )
-from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
+from lumilake_server.ops.ops import (
+    FunctionalOp,
+    Op,
+    RowShape,
+    SingleDtype,
+)
 from lumilake_server.ops.util_ops import (
     FormatOp,
     LambdaOp,
@@ -64,6 +69,7 @@ __all__ = [
     "Op",
     "OpMessage",
     "OutputOp",
+    "RowShape",
     "SingleDtype",
     "as_output",
     "classify",
