@@ -166,12 +166,6 @@ class _RuntimeGraphBuilderBase:
             "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             "lumid_data_token": envs.LUMID_DATA_TOKEN,
         }
-        self.logger.warning(
-            "Workflow uses 'type: list' with s3:// items; this path requires the "
-            "FlowMesh worker to support lumid_cfg. If your FlowMesh worker does not "
-            "yet support lumid_cfg, the workflow will fail at retrieval. "
-            "See docs/WORKFLOWS.md."
-        )
         return updated
 
     def _node_ref_column(
