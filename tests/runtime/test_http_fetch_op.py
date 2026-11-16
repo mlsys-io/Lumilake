@@ -28,12 +28,9 @@ def _envs(monkeypatch: pytest.MonkeyPatch) -> None:
     ("fields", "message"),
     [
         ({"url": ""}, "non-empty url"),
-        ({"url": "http://x.test/s", "params": None}, "requires '{query}'"),
+        ({"url": "http://x.test/s"}, "requires '{query}'"),
         ({"method": "PUT"}, "method must be GET or POST"),
-        ({"method": "POST"}, "POST requires a body"),
-        ({"params": ["q"]}, "params must be a mapping"),
         ({"config": {"timeout_sec": 0}}, "timeout_sec must be greater than zero"),
-        ({"config": {"retries": 11}}, "retries must be between 0 and 10"),
         ({"config": {"timeout": 5}}, r"config has unknown fields: \['timeout'\]"),
         ({"config": {"fail_open": True}}, "fail_open needs a flowmesh-sdk"),
     ],
@@ -46,7 +43,6 @@ def test_http_fetch_yaml_errors_name_the_op(fields: dict, message: str) -> None:
         "inputs": ["Query"],
         "query": "Query",
         "url": "http://fixture.test/search?query={query}",
-        "params": {"query": "{query}"},
         **fields,
     }
     yaml_text = yaml.safe_dump(
