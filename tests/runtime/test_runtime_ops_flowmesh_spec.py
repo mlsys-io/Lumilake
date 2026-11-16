@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
@@ -48,6 +50,14 @@ def test_diffusion_includes_model_and_inference() -> None:
     assert spec["taskType"] == "diffusion"
     assert "model" in spec
     assert "inference" in spec
+
+
+def test_empty_input_declaration_is_projected_only_when_set() -> None:
+    declared = replace(_build_runtime_op("api"), skip_when_all_inputs_empty=True)
+    undeclared = replace(_build_runtime_op("api"), skip_when_all_inputs_empty=False)
+
+    assert "skipWhenAllInputsEmpty" not in undeclared.to_flowmesh_node()["spec"]
+    assert declared.to_flowmesh_node()["spec"]["skipWhenAllInputsEmpty"] is True
 
 
 def test_condition_node_is_added_to_dependsOn() -> None:

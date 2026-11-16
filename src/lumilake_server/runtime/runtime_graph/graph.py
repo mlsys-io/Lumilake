@@ -243,6 +243,7 @@ class RuntimeGraph:
                     if op.condition is not None
                     else None
                 ),
+                skip_when_all_inputs_empty=op.skip_when_all_inputs_empty,
             )
 
         node_order = [mapping[node_id] for node_id in self.node_order]
