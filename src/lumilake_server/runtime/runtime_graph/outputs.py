@@ -19,6 +19,7 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
+from lumilake_server.ops.ops import RowShape
 
 _WHOLE = "items.output"
 _VALUE_ROOT = "value.items.output"
@@ -110,7 +111,7 @@ def needs_flatten(op: Op) -> bool:
     return (
         isinstance(op, LLMChatOp)
         and not isinstance(op, LLMVisionOp)
-        and bool(op.rowwise_template)
+        and op.row_shape is RowShape.GROUPED
     )
 
 
