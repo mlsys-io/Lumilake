@@ -30,6 +30,7 @@ class RuntimeOpSchema(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
+    skip_when_all_inputs_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class RuntimeOp:
     dependencies: tuple[str, ...] = ()
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
+    skip_when_all_inputs_empty: bool = False
 
     @property
     def model_key(self) -> tuple[str, str, str]:
@@ -67,6 +69,7 @@ class RuntimeOp:
             dependencies=list(self.dependencies),
             output_spec=self.output_spec,
             condition=self.condition,
+            skip_when_all_inputs_empty=self.skip_when_all_inputs_empty,
         ).model_dump(exclude_none=True)
 
     @classmethod
@@ -83,6 +86,7 @@ class RuntimeOp:
             dependencies=tuple(schema.dependencies),
             output_spec=schema.output_spec,
             condition=schema.condition,
+            skip_when_all_inputs_empty=schema.skip_when_all_inputs_empty,
         )
 
     @classmethod
@@ -122,4 +126,6 @@ class RuntimeOp:
             spec["spec"]["output"] = self.output_spec
         if self.condition:
             spec["spec"]["condition"] = self.condition
+        if self.skip_when_all_inputs_empty:
+            spec["spec"]["skipWhenAllInputsEmpty"] = True
         return spec

@@ -259,13 +259,23 @@ async def _run_failing_request(
     monkeypatch.setattr(FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm()))
 
     serve(monkeypatch, status_by_task, node_by_task, error_by_task)
+    active = True
+    inner = FlowmeshRuntimeManager.fetch_workflow_task_statuses
 
+    async def _watch(self: FlowmeshRuntimeManager, *a: Any, **k: Any) -> Any:
+        nonlocal active
+        if "fields" not in k:
+            active &= ("req-failfast", "batch-1") in self._active_execution_loops
+        return await inner(self, *a, **k)
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "fetch_workflow_task_statuses", _watch)
     with pytest.raises(RuntimeError) as excinfo:
         await manager.process_request(
             request_info,
             Schedule(worker_assignment={"worker-1": [row0_id, row1_id]}),
             worker_ids=["worker-1"],
         )
+    assert active
     return manager, row0_id, row1_id, str(excinfo.value)
 
 
@@ -316,6 +326,7 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
 
     assert sorted(polled) == ["wf-1", "wf-2"]
     assert reported["execution"]["completed"]
+    assert manager._workflow_status_cursors == {}
 
 
 def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, str]:

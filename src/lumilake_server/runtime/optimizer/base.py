@@ -3,6 +3,7 @@
 import json
 import re
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
@@ -191,11 +192,9 @@ def _dedupe_runtime_graph(
             continue
         op = graph.nodes[canonical]
         remapped_deps = [mapping.get(dep, dep) for dep in op.dependencies]
-        new_nodes[canonical] = RuntimeOp(
+        new_nodes[canonical] = replace(
+            op,
             node_id=canonical,
-            task_type=op.task_type,
-            backend=op.backend,
-            model=op.model,
             data_spec=_remap_node_spec(op.data_spec, mapping),
             model_spec=_remap_node_spec(op.model_spec, mapping),
             inference_spec=_remap_node_spec(op.inference_spec, mapping),
