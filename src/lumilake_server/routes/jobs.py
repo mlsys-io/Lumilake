@@ -2253,7 +2253,7 @@ async def _run_dynamic_job(
                 return
             # A template round runs as one slice: its body holds list-mode
             # Lambdas whose whole-list results cannot be split per row, so the
-            # round's row count is no longer the symbol count.
+            # round's row count is not the symbol count.
             one_slice = template is not None
             try:
                 child_job_id = await _submit_dynamic_child(

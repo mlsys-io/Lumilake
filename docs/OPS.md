@@ -85,10 +85,7 @@ list-mode `LambdaOp` reads its result, one value per input row.
 A rowwise `LLMChatOp` may instead declare `rowwise_messages_column`. That
 column holds one serialized message array per row, sent as the whole chat
 history in role order, for conversations whose history grows between
-rounds.
-
-A row gate needs a FlowMesh release that accepts an inference prepared with
-no prompts, because every row may route elsewhere in a round.
+rounds. Like any column, its `path` is `items.output`-rooted.
 
 ### EmbeddingOp
 
