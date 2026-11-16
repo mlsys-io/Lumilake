@@ -30,12 +30,12 @@ class WorkflowItem:
     total_length: int
     template_hash: str
     varying_input_keys: tuple[str, ...]
-    whole_set: bool
     runtime_graph: RuntimeGraph
     data_profile_graph: RuntimeGraph
     dsl_graph: CompiledGraph
     config: LumilakeRequestConfig
     enqueued_at: float
+    whole_set: bool = False
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
     miss_count: int = 0
