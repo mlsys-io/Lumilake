@@ -6,6 +6,8 @@ from typing import Any
 import pytest
 from flowmesh.models.common import TaskType
 from flowmesh.models.workers import (
+    GpuInfo,
+    GpuPlatformInfo,
     MemoryInfo,
     WorkerCapabilities,
     WorkerHardware,
@@ -69,10 +71,13 @@ async def test_profile_keeps_the_hardware_sections(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hardware = WorkerHardware(memory=MemoryInfo(total_bytes=1024))
+    devices = [GpuInfo(index=0, memory_fraction=0.3), GpuInfo(index=1)]
+    hardware = WorkerHardware(
+        memory=MemoryInfo(total_bytes=1024), gpu=GpuPlatformInfo(devices=devices)
+    )
     _serve(monkeypatch, _worker("w", frozenset(), hardware))
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 
     assert profile["memory"]["total_bytes"] == 1024
-    assert profile["supported_task_types"] == []
+    assert profile["gpu_memory_fraction"] == 0.3
