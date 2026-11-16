@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
@@ -80,6 +80,24 @@ def _resolve_gpu_count(hardware: HardwareRequirements | None) -> int:
     if hardware is not None and hardware.gpu is not None:
         return hardware.gpu
     return envs.HARDWARE_GPU_REQUIREMENT
+
+
+def _dump_task_spec_yaml(task_spec: dict[str, Any]) -> tuple[str, str]:
+    """The submit YAML and its redacted archive copy, dumped for one task."""
+    return (
+        yaml.dump(
+            task_spec,
+            Dumper=yaml.CSafeDumper,
+            default_flow_style=False,
+            sort_keys=False,
+        ),
+        yaml.dump(
+            redact_sensitive(task_spec),
+            Dumper=yaml.CSafeDumper,
+            default_flow_style=False,
+            sort_keys=False,
+        ),
+    )
 
 
 def _resolve_gpu_memory(hardware: HardwareRequirements | None) -> str:
@@ -193,7 +211,7 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
     body = redact_secrets_in_text(e.body if e.body is not None else str(e))
     if len(body) > 2000:
         body = body[:2000] + "...[truncated]"
-    message = redact_secrets_in_text(str(e))
+    message = redact_secrets_in_text(e.args[0])
     return type(e)(
         message,
         status_code=e.status_code,
@@ -367,36 +385,80 @@ class FlowmeshRuntimeManager:
             content_type,
         )
 
-    def _save_yaml_artifact(
+    async def save_runtime_artifact_async(
+        self,
+        request_info: RequestInfo,
+        filename: str,
+        data: bytes,
+        content_type: str,
+    ) -> str:
+        """Save a runtime artifact without blocking the event loop."""
+        return await asyncio.to_thread(
+            self.save_runtime_artifact,
+            request_info,
+            filename,
+            data,
+            content_type,
+        )
+
+    async def _save_yaml_artifact(
         self,
         request_info: RequestInfo,
         filename: str,
         data: dict[str, Any] | str,
     ) -> str:
         yaml_data = (
-            yaml.dump(data, default_flow_style=False, sort_keys=False)
-            if isinstance(data, dict)
-            else data
+            data
+            if isinstance(data, str)
+            else yaml.dump(
+                data,
+                Dumper=yaml.CSafeDumper,
+                default_flow_style=False,
+                sort_keys=False,
+            )
         )
-        return self.save_runtime_artifact(
+        return await self.save_runtime_artifact_async(
             request_info,
             filename,
             yaml_data.encode("utf-8"),
             "application/x-yaml",
         )
 
-    def _save_json_artifact(
+    async def _save_json_artifact(
         self,
         request_info: RequestInfo,
         filename: str,
         data: Any,
     ) -> str:
-        return self.save_runtime_artifact(
+        return await self.save_runtime_artifact_async(
             request_info,
             filename,
             json.dumps(data, indent=2).encode("utf-8"),
             "application/json",
         )
+
+    async def _publish_python_task_blobs(
+        self,
+        plans: Sequence[python_step.ColumnPlan],
+    ) -> dict[str, python_step.PublishedBlob]:
+        """Store each task blob once and return its persisted metadata."""
+        if not plans:
+            return {}
+        storage = get_job_storage()
+        runtime_blob = python_step.runtime_blob()
+        blobs = {runtime_blob.key: runtime_blob}
+        for plan in plans:
+            blobs.update(python_step.literal_blobs(plan))
+        published: dict[str, python_step.PublishedBlob] = {}
+
+        async def _publish(key: str, blob: python_step.PublishedBlob) -> None:
+            object_name = await asyncio.to_thread(
+                storage.save_blob, key, blob.body, blob.content_type
+            )
+            published[key] = replace(blob, object_name=object_name)
+
+        await asyncio.gather(*(_publish(key, blob) for key, blob in blobs.items()))
+        return published
 
     async def fetch_task_description(
         self,
@@ -1326,7 +1388,7 @@ class FlowmeshRuntimeManager:
             raise _sanitize_flowmesh_api_error(e) from None
         if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
-        response_uri = self._save_json_artifact(
+        response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
             redact_sensitive(response_data),
@@ -1421,13 +1483,10 @@ class FlowmeshRuntimeManager:
         }
         flowmesh_node_count = len(task_spec["spec"]["graph"].get("nodes", []))
         raw_node_count = len(request_info.runtime_graph.node_order)
-        task_yaml = yaml.dump(task_spec, default_flow_style=False, sort_keys=False)
-        archive_task_yaml = yaml.dump(
-            redact_sensitive(task_spec),
-            default_flow_style=False,
-            sort_keys=False,
+        task_yaml, archive_task_yaml = await asyncio.to_thread(
+            _dump_task_spec_yaml, task_spec
         )
-        graph_uri = self._save_yaml_artifact(
+        graph_uri = await self._save_yaml_artifact(
             request_info,
             "lumilake-runtime-graph.yaml",
             {
@@ -1439,7 +1498,7 @@ class FlowmeshRuntimeManager:
                 "flowmesh_nodes": flowmesh_node_count,
             },
         )
-        job_uri = self._save_yaml_artifact(
+        job_uri = await self._save_yaml_artifact(
             request_info,
             "flowmesh_job.yaml",
             archive_task_yaml,
@@ -1536,7 +1595,7 @@ class FlowmeshRuntimeManager:
                 metadata["raw_nodes"] = raw_node_count
                 metadata["flowmesh_nodes"] = flowmesh_node_count
 
-            mapping_uri = self._save_json_artifact(
+            mapping_uri = await self._save_json_artifact(
                 request_info,
                 "task-node-map.json",
                 raw_task_node_map,
@@ -1809,6 +1868,33 @@ class FlowmeshRuntimeManager:
             nodes = rewrite.nodes
             active_worker_assignment = rewrite.worker_assignment
             flowmesh_to_raw = rewrite.flowmesh_to_raw
+
+        python_nodes: list[
+            tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]
+        ] = []
+        final_plans: list[python_step.ColumnPlan] = []
+        for node in nodes:
+            node_name = node["name"]
+            view_spec = node["spec"]
+            if view_spec["taskType"] != python_step.TASK_TYPE:
+                continue
+            data_spec: dict[str, Any] = view_spec["data"]
+            python_nodes.append((node, view_spec, node_name, data_spec))
+            final_plans.append(data_spec["plan"])
+
+        published_blobs = await self._publish_python_task_blobs(final_plans)
+
+        for node, view_spec, node_name, data_spec in python_nodes:
+            generated = python_step.flowmesh_spec(
+                node_name,
+                data_spec,
+                published_blobs,
+            )
+            node["spec"] = {
+                key: value
+                for key, value in view_spec.items()
+                if key not in {"data", "code", "blobs"}
+            } | generated
 
         spec: dict[str, Any] = {
             "apiVersion": "mloc/v1",

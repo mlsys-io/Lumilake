@@ -4,7 +4,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
@@ -94,11 +93,10 @@ class RuntimeOp:
         return cls.from_schema(node_id, RuntimeOpSchema.model_validate(payload))
 
     def to_flowmesh_node(self) -> dict[str, Any]:
-        spec_payload: dict[str, Any] = {"taskType": self.task_type}
-        if self.task_type == python_step.TASK_TYPE:
-            spec_payload = python_step.flowmesh_spec(self.node_id, self.data_spec)
-        else:
-            spec_payload["data"] = self.data_spec
+        spec_payload: dict[str, Any] = {
+            "taskType": self.task_type,
+            "data": self.data_spec,
+        }
         if self.task_type == "api":
             spec_payload["api"] = self.api_spec
         elif self.task_type in {

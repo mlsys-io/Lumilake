@@ -122,9 +122,10 @@ async def test_api_backend_returns_chat_history_like_local_backend(
     inference item, or ``return_history`` silently drops its history."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
+    storage = InMemoryJobStorage()
     monkeypatch.setattr(
         "lumilake_server.runtime.runtime_manager.get_job_storage",
-        lambda: InMemoryJobStorage(),
+        lambda: storage,
     )
 
     request_info, row_id = _build_single_row_api_request()
@@ -173,6 +174,13 @@ async def test_api_backend_returns_chat_history_like_local_backend(
     # rendered messages, so the runtime manager cannot reconstruct a chat
     # history from the api json; the prompt lives in the data_spec template.
     assert result["chat_histories"] == {}
+
+    # The task-node map is archived during submit; a save that is called
+    # without awaiting its coroutine would leave the artifact unwritten.
+    mapping, _ = storage.get_artifact(
+        request_info.request_id, "runtime/batch-1/task-node-map.json"
+    )
+    assert row_id in mapping.decode()
 
 
 def _build_two_row_request() -> tuple[RequestInfo, str, str]:
