@@ -57,6 +57,16 @@ class Op(ABC):
         """Whether a preflight may profile the op with the data profiler."""
         return False
 
+    result_path: str | None = None
+    """The result-envelope path an output archives this op's payload at, or
+    ``None`` when the op's own item shape is the payload."""
+
+    @property
+    def row_source(self) -> "Op | None":
+        """The input whose rows this op emits one output row per, or ``None``
+        when the row count is not the input's."""
+        return None
+
     def __init__(self, inputs: list["Op"] | None = None) -> None:
         self.id = unique_id()
         self.inputs = [] if inputs is None else inputs

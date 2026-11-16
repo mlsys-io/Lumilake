@@ -14,6 +14,8 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `LLMVisionOp` | Run vision-language generation over image inputs. |
 | `ImageGenerationOp` | Generate images from text prompts. |
 | `EmbeddingOp` | Embed text with a FlowMesh-served embedding model and return one vector per input text. |
+| `ClassificationOp` | Classify query/candidate pairs with a FlowMesh classification task and return the classifier's output per pair. |
+| `HttpFetchOp` | Fetch JSON over HTTP once per query row, with bounded timeout, retries, concurrency, and headers. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 | `RouterOp` | Declare a deterministic per-row branch decision from a source field. |
@@ -131,6 +133,68 @@ is the embedding of input text `i`. A downstream op therefore receives
 `slice_length` per-row vector inputs (one embedding per input doc), and a
 consumer needing raw floats loads `embeddings.safetensors` and indexes by
 `row`.
+
+### ClassificationOp
+
+`ClassificationOp` classifies query/candidate pairs with a FlowMesh
+`classification` task and returns one `items[]` entry per pair, carrying the
+pair's `index` and the classifier's output.
+`config` is required and supplies `model` and `backend` (`vllm` or
+`transformers`); the optional `vllm` mapping is passed to the vLLM engine. A
+vLLM node uses `model.vllm.convert: classify` and reports the head's sigmoid
+probability; setting `config.vllm.apply_sigmoid: false` reports the raw logit
+instead. A Transformers node uses its single-label sequence-classification
+path.
+
+Literal queries and candidates lower to a non-empty `data.items` list of
+`{text, text_pair}` mappings, the query as `text`. A single literal query
+broadcasts across the candidates; otherwise the two lists must have equal
+lengths. When either side comes from an upstream op, Lumilake first runs the
+internal `pairs` Python step, which broadcasts a single query or rejects
+unequal lengths, then passes its `value.items` list to the classification
+task. Empty query or candidate inputs, empty candidate lists, and mismatched
+literal pair counts of a graph built from YAML raise with the
+`ClassificationOp` id in the message; the Python constructor raises before an
+id exists.
+
+```yaml
+inputs:
+  Query: ["How does retrieval augmentation work?"]
+  Candidates: ["retrieval helps ground answers", "unrelated passage"]
+
+ops:
+  - id: "Rerank"
+    op: ClassificationOp
+    inputs: [Query, Candidates]
+    query: Query
+    candidates: Candidates
+    config:
+      model: cross-encoder/ms-marco-MiniLM-L6-v2
+      backend: vllm
+
+outputs:
+  - name: labels
+    ref: "Rerank"
+```
+
+### HttpFetchOp
+
+`HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
+input. The `{query}` placeholder must appear in `url`, `params`, or a POST
+`body`; the runtime converts it to FlowMesh's `{{prompt}}` placeholder. The
+API executor URL-encodes a `{{prompt}}` in a URL and passes `params` to
+`httpx`, so query values in `params` use the same form encoding as
+`requests`.
+`config.headers` carries the request headers, including credentials such as
+an API key: keep credentials there rather than in `url`, `params`, or `body`,
+which are archived as written. `config.timeout_sec`, `config.retries` (at
+most 10), and `config.max_concurrency` bound the request. Headers are sent as
+written, and every header value is redacted in the archived graph. Each input
+row produces one output row. `config.request_delay_sec` spaces actual request
+starts, including retries.
+
+With `config.fail_open: true`, a failed fetch yields an error row whose content
+is null and whose error carries the failure text, instead of failing the task.
 
 ### LLMChatOp output enforcement and beam search
 

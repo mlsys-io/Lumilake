@@ -38,6 +38,14 @@ def _walk_path(value: Any, parts: list[str], where: str) -> Any:
             return value
         if isinstance(value, dict) and part in value:
             value = value[part]
+        elif isinstance(value, list):
+            try:
+                index = int(part)
+            except (TypeError, ValueError):
+                raise ValueError(f"list index must be an integer at {where}")
+            if index < 0 or index >= len(value):
+                raise ValueError(f"list index out of range at {where}")
+            value = value[index]
         else:
             raise ValueError(f"missing {part!r} at {where}")
     return value

@@ -156,6 +156,14 @@ def _walk_output_path(
                 column = _select_dataframe_column(value, attr)
                 if column is not None:
                     value = column
+                elif (
+                    isinstance(value, Mapping)
+                    and attr not in value
+                    and (value.get("error"))
+                ):
+                    # A failed row carries its failure instead of a body, so a
+                    # read of the absent field yields null rather than failing.
+                    value = None
                 elif not isinstance(value, Mapping) or attr not in value:
                     raise RuntimeError(
                         f"output node {output_op_id} item missing field at path "

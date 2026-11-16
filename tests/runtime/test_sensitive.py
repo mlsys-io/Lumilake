@@ -102,6 +102,43 @@ def test_redact_sensitive_scrubs_bearer_token_under_unrecognized_key() -> None:
     assert REDACTED_TOKEN_PLACEHOLDER in json.dumps(result)
 
 
+def test_redact_sensitive_redacts_every_request_header_value() -> None:
+    """A request header mapping carries the credential itself under names no
+    key list can enumerate, so every non-empty value under a ``headers`` key
+    nested below ``api``, ``api_spec`` or ``config`` is replaced; a fetched
+    response body's own ``headers`` object is data and keeps its values."""
+    headers = {
+        "x-api-key": "s2-secret-123",
+        "Ocp-Apim-Subscription-Key": "k1",
+        "Authorization": "Bearer z",
+        "Accept": "application/json",
+        "X-Trace": "",
+    }
+    value = {
+        "api": {"headers": headers, "params": {"api_key": "p1"}},
+        "api_spec": {"headers": {"x-api-key": "k2"}},
+        "config": {"headers": {"x-api-key": "k3"}},
+        "response_data": {"headers": {"ETag": "abc"}},
+    }
+
+    result = redact_sensitive(value)
+
+    assert json.dumps(result) == json.dumps(
+        {
+            "api": {
+                "headers": {
+                    **{name: REDACTED_TOKEN_PLACEHOLDER for name in headers},
+                    "X-Trace": "",
+                },
+                "params": {"api_key": "p1"},
+            },
+            "api_spec": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
+            "config": {"headers": {"x-api-key": REDACTED_TOKEN_PLACEHOLDER}},
+            "response_data": {"headers": {"ETag": "abc"}},
+        }
+    )
+
+
 def test_redact_sensitive_matches_authorization_key_case_insensitively() -> None:
     """Header names are case-insensitive, so a lower- or mixed-case
     ``authorization`` key must be redacted exactly like ``Authorization``."""

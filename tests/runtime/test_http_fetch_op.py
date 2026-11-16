@@ -1,0 +1,173 @@
+"""Tests for the typed HttpFetchOp and its YAML form."""
+
+import json
+import textwrap
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from lumilake import envs
+from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import (
+    DataRetrievalOp,
+    HttpFetchOp,
+    LLMChatOp,
+    OpMessage,
+    as_output,
+    input_placeholder,
+)
+from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime import python_step
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+
+
+@pytest.fixture(autouse=True)
+def _envs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test" + "-pat")
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test" + "-token")
+
+
+def _fetch_yaml(fields: dict) -> str:
+    entry = {
+        "id": "Search",
+        "op": "HttpFetchOp",
+        "inputs": ["Query"],
+        "query": "Query",
+        "url": "http://fixture.test/s?q={query}",
+        **fields,
+    }
+    return yaml.safe_dump(
+        {
+            "name": "fetch",
+            "inputs": {"Query": ["first"]},
+            "ops": [entry],
+            "outputs": [{"name": "candidates", "ref": "Search"}],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"url": ""}, "non-empty url"),
+        ({"url": "http://x.test/s"}, "requires '{query}'"),
+        ({"method": "PUT"}, "method must be GET or POST"),
+        ({"config": {"timeout_sec": 0}}, "timeout_sec must be greater than zero"),
+        ({"config": {"timeout": 5}}, r"config has unknown fields: \['timeout'\]"),
+    ],
+)
+def test_http_fetch_yaml_errors_name_the_op(fields: dict, message: str) -> None:
+    """The parser runs the constructor's request and config checks, naming the op."""
+    with pytest.raises(ValueError, match=rf"HttpFetchOp 'Search' .*{message}"):
+        parse_yaml_payload(_fetch_yaml(fields))
+
+
+def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
+    yaml_text = textwrap.dedent("""
+        name: fetch_candidates
+        inputs: {Query: ["graph retrieval"]}
+        ops:
+          - {id: Search, op: HttpFetchOp, inputs: [Query], query: Query,
+             url: "http://fixture.test/paper/search/{query}?q={query}", method: POST,
+             params: {query: "{query}"}, body: {query: "{query}"},
+             config: {timeout_sec: 9, retries: 2, max_concurrency: 3,
+                      request_delay_sec: 0.5, fail_open: true,
+                      headers: {Accept: application/json, x-api-key: s3cret-key}}}
+        outputs: [{name: candidates, ref: Search}]
+        """)
+    spec = parse_yaml_payload(yaml_text)["fetch_candidates"]
+    runtime_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
+
+    assert node.data_spec == {"type": "list", "items": ["graph retrieval"]}
+    assert node.api_spec == {
+        "method": "POST",
+        "url": "http://fixture.test/paper/search/{{prompt}}?q={{prompt}}",
+        "headers": {"Accept": "application/json", "x-api-key": "s3cret-key"},
+        "timeout_sec": 9,
+        "retries": 2,
+        "concurrency": 3,
+        "request_delay_sec": 0.5,
+        "params": {"query": "{{prompt}}"},
+        "json": {"query": "{{prompt}}"},
+        "response": {
+            "parse_json": True,
+            "return_body": True,
+            "raise_for_status": True,
+            "fail_open": True,
+        },
+    }
+    assert "s3cret-key" not in json.dumps(runtime_graph.serialize())
+
+
+def test_http_fetch_op_reads_its_upstream_result_path() -> None:
+    """A fetch over a retrieval reads its table rows, not its ``output``."""
+    stock = input_placeholder("Stock")
+    retrieval = DataRetrievalOp(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT q FROM t WHERE symbol = :symbol",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
+        inputs=[stock],
+    )
+    fetch = HttpFetchOp(url="http://fixture.test/search?q={query}", query=retrieval)
+    compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[fetch.id]
+
+    assert node.data_spec == {
+        "type": "list",
+        "node": retrieval.id,
+        "path": "items.table",
+    }
+    assert node.dependencies == (retrieval.id,)
+    # The output archives the response body, not the generic item path.
+    assert runtime_graph.output_paths[fetch.id] == "items.json"
+
+
+@pytest.mark.parametrize("upstream", ["local", "api"])
+def test_fetch_flattens_a_grouped_upstream_to_one_query_per_row(
+    upstream: str, tmp_path: Path
+) -> None:
+    """A rowwise chat groups one item per table; the fetch reads a python
+    step's per-row strings, so it issues one request per row."""
+    prompt = input_placeholder("Prompt")
+    rowwise = LLMChatOp(
+        [OpMessage(role="user", content=prompt)],
+        config=GenerationConfig(
+            model="org/llm", api=ApiConfig() if upstream == "api" else None
+        ),
+        rowwise_template="{prompt}",
+        rowwise_columns=[{"label": "prompt", "node": prompt.id, "path": ""}],
+    )
+    fetch = HttpFetchOp("http://fixture.test/search?q={query}", rowwise)
+    compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(
+        Prompt=["one", "two"]
+    )
+    step = RuntimeGraphBuilder().build(compiled).nodes[f"{fetch.id}__flatten"]
+    result: dict[str, Any]
+    if upstream == "api":
+        rows = [{"json": {"choices": [{"message": {"content": q}}]}} for q in "ab"]
+        result = {"items": [{"rows": rows}]}
+    else:
+        result = {"value": {"items": [{"output": ["a", "b"]}]}}
+    stage = tmp_path / "llm"
+    stage.mkdir()
+    (stage / "results.json").write_text(json.dumps({"result": result}))
+    runtime = tmp_path / "runtime.py"
+    runtime.write_bytes(python_step.runtime_blob().body)
+    code = python_step.flatten_step_source(
+        step.node_id, step.data_spec["plan"]
+    ).replace(python_step.TASK_RUNTIME_MOUNT, str(runtime))
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
+
+    assert namespace["main"]({rowwise.id: str(stage)}) == {"items": ["a", "b"]}

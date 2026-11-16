@@ -544,14 +544,19 @@ async def test_list_workflows_empty_when_no_trace_ids(
 async def test_list_workflows_passes_usage_through(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Per-workflow usage is passed through; null when no task reports usage."""
-    _seed_job(job_routes, "j-1", ["wf-1", "wf-2"])
+    """Per-workflow usage is passed through, including a batched classification
+    pass's pooling usage; null when no task reports usage."""
+    _seed_job(job_routes, "j-1", ["wf-1", "wf-2", "wf-3", "wf-4"])
     wf1 = _FakeWorkflow(
         "wf-1", "COMPLETED", completed_tasks=["tsk-00000001", "tsk-00000002"]
     )
     wf2 = _FakeWorkflow("wf-2", "COMPLETED", completed_tasks=["tsk-00000003"])
+    wf3 = _FakeWorkflow(
+        "wf-3", "COMPLETED", completed_tasks=["tsk-00000004", "tsk-00000005"]
+    )
+    wf4 = _FakeWorkflow("wf-4", "COMPLETED", completed_tasks=["tsk-00000006"])
     fake_workflows = _FakeWorkflows(
-        workflows={"wf-1": wf1, "wf-2": wf2},
+        workflows={"wf-1": wf1, "wf-2": wf2, "wf-3": wf3, "wf-4": wf4},
         logs_result=_FakeLogQueryResponse(entries=[], next_cursor=None),
     )
     fake_fm = _FakeFlowMesh(
@@ -563,6 +568,25 @@ async def test_list_workflows_passes_usage_through(
             ),
             "tsk-00000002": _echo_result("tsk-00000002"),
             "tsk-00000003": _unknown_result("tsk-00000003"),
+            "tsk-00000004": {
+                "task_type": "classification",
+                "usage": {
+                    "prompt_tokens": 20,
+                    "total_tokens": 20,
+                    "num_requests": 2,
+                    "latency_sec": 0.5,
+                },
+            },
+            "tsk-00000005": {
+                "task_type": "classification",
+                "usage": {
+                    "prompt_tokens": 30,
+                    "total_tokens": 30,
+                    "num_requests": 3,
+                    "latency_sec": 1.25,
+                },
+            },
+            "tsk-00000006": {"task_type": "classification"},
         },
     )
     monkeypatch.setattr(
@@ -587,7 +611,17 @@ async def test_list_workflows_passes_usage_through(
         "truncated_calls": 0,
         "wall_sec": 3.5,
     }
+    assert workflows["wf-3"]["usage"] == {
+        "prompt_tokens": 50,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "calls": 5,
+        "retries": 0,
+        "truncated_calls": 0,
+        "wall_sec": 1.75,
+    }
     assert workflows["wf-2"]["usage"] is None
+    assert workflows["wf-4"]["usage"] is None
 
 
 @pytest.mark.anyio

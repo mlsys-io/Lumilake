@@ -39,7 +39,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             if isinstance(inp, LambdaOp):
                 nodes.extend(self._build_python_step(inp, ctx))
                 dep = inp.id
-            elif isinstance(inp, (LLMOp, DataRetrievalOp)):
+            elif isinstance(inp, (LLMOp, DataRetrievalOp)) or has_lowering(inp):
                 runtime_ids = ctx.dsl_to_runtime.get(inp.id, [])
                 if len(runtime_ids) != 1:
                     raise ValueError(
@@ -61,8 +61,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             else:
                 raise ValueError(
                     f"LambdaOp '{op.id}' reads a {type(inp).__name__}; a standalone"
-                    " Python step reads LLM, data-retrieval, Lambda, input or data"
-                    " ops"
+                    " Python step reads ops the graph lowers, Lambda, input or"
+                    " data ops"
                 )
             output = self._op_output(inp)
             row_counts.append((inp.id, output.row_count))
@@ -161,7 +161,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                     entry["flatten"] = True
                 plan.append(entry)
                 dependencies.append(inp.id)
-            elif isinstance(inp, DataRetrievalOp):
+            elif isinstance(inp, DataRetrievalOp) or has_lowering(inp):
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, InputOp):
@@ -177,8 +177,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 row_counts.append((inp.id, len(inp.data)))
             else:
                 raise ValueError(
-                    f"LambdaOp '{op_id}' list-mode input must be an LLMOp, "
-                    f"DataRetrievalOp, list-mode LambdaOp, InputOp, or DataOp "
+                    f"LambdaOp '{op_id}' list-mode input must be an op the graph"
+                    " lowers, a list-mode LambdaOp, InputOp, or DataOp "
                     f"(got {type(inp).__name__})"
                 )
             if not isinstance(inp, (InputOp, DataOp)):

@@ -1,3 +1,9 @@
+from lumilake_server.ops.classification_ops import (
+    ClassificationConfig,
+    ClassificationOp,
+    ClassificationPair,
+    classify,
+)
 from lumilake_server.ops.data_ops import (
     DataOp,
     DataRetrievalOp,
@@ -15,6 +21,7 @@ from lumilake_server.ops.embedding_ops import (
     EmbeddingOp,
     embedding,
 )
+from lumilake_server.ops.http_fetch_ops import HttpFetchConfig, HttpFetchOp, http_fetch
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
@@ -41,12 +48,17 @@ from lumilake_server.ops.util_ops import (
 )
 
 __all__ = [
+    "ClassificationConfig",
+    "ClassificationOp",
+    "ClassificationPair",
     "DataOp",
     "DataRetrievalOp",
     "EmbeddingArtifact",
     "EmbeddingOp",
     "FormatOp",
     "FunctionalOp",
+    "HttpFetchConfig",
+    "HttpFetchOp",
     "ImageGenerationOp",
     "InputOp",
     "LLMChatOp",
@@ -64,9 +76,11 @@ __all__ = [
     "RowShape",
     "SingleDtype",
     "as_output",
+    "classify",
     "data",
     "embedding",
     "format_op",
+    "http_fetch",
     "image_generation",
     "input_placeholder",
     "lambda_op",
