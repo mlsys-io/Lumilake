@@ -71,10 +71,10 @@ async def test_profile_keeps_the_hardware_sections(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gpu = GpuPlatformInfo(
-        devices=[GpuInfo(index=0, memory_fraction=0.3), GpuInfo(index=1)]
+    devices = [GpuInfo(index=0, memory_fraction=0.3), GpuInfo(index=1)]
+    hardware = WorkerHardware(
+        memory=MemoryInfo(total_bytes=1024), gpu=GpuPlatformInfo(devices=devices)
     )
-    hardware = WorkerHardware(memory=MemoryInfo(total_bytes=1024), gpu=gpu)
     _serve(monkeypatch, _worker("w", frozenset(), hardware))
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")

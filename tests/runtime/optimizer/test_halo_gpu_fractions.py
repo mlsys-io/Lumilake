@@ -21,11 +21,12 @@ def test_a_node_lands_only_on_a_worker_whose_fraction_holds_it() -> None:
     optimizer = HaloOptimizer()
     shared = {"gpu-small": _SMALL, "gpu-big": _BIG}
     whole = {"gpu-whole": {"has_gpu": True}}
-
     for profiles, expected in ((shared, "gpu-big"), (whole, "gpu-whole")):
         schedule = optimizer.generate_schedule(_GRAPH, list(profiles), profiles)
         placed = [w for w, ids in schedule.worker_assignment.items() if ids]
         assert placed == [expected]
     with pytest.raises(RuntimeError) as raised:
         optimizer.generate_schedule(_GRAPH, ["gpu-small"], {"gpu-small": _SMALL})
-    assert "gpu_memory_utilization=0.8" in str(raised.value.__cause__)
+    cause = str(raised.value.__cause__)
+    assert "gpu_memory_utilization=0.8" in cause
+    assert "Claimed GPU worker fractions" in cause
