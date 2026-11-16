@@ -151,9 +151,8 @@ def test_api_output_enforcement_reaches_task_spec() -> None:
 def test_output_enforcement_rejected_on_vision_op() -> None:
     kwargs: dict = {"output_enforcement": {"text_regex": "x"}}
     config = GenerationConfig(model="m", **kwargs)
-    vision = LLMVisionOp([OpMessage("user", "x")], "images", config=config)
     with pytest.raises(ValueError, match="does not support"):
-        RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", vision)]).compile())
+        LLMVisionOp([OpMessage("user", "x")], "images", config=config)
 
 
 def test_api_key_redacted_on_serialization() -> None:
