@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from flowmesh.exceptions import ValidationError
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import PythonResult
 
@@ -943,46 +942,3 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
     assert result_["flat_outputs"][llm_row_id] == ["reply-0", "reply-1", "reply-2"]
     # One grouped item for three outputs: no recoverable per-row history.
     assert result_["chat_histories"] == {}
-
-
-@pytest.mark.parametrize(
-    ("status_code", "field", "named"),
-    [(400, "spec.blobs", True), (422, "spec.name", False)],
-)
-@pytest.mark.asyncio
-async def test_python_blobs_rejection_names_the_flowmesh_requirement(
-    monkeypatch: pytest.MonkeyPatch, status_code: int, field: str, named: bool
-) -> None:
-    """A server without python-task blobs rejects the whole task spec and names
-    only the unexpected field, so the submit error also names the release that
-    supports python-task blobs - but only for a rejection about blobs."""
-    monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
-
-    request_info, row_id = _build_list_lambda_output_request()
-    rejection = ValidationError(
-        f"node 'observations': {field} is not allowed",
-        status_code=status_code,
-        method="POST",
-        url="https://flowmesh.internal/api/v1/workflows",
-        body={"detail": f"{field}: rejected"},
-    )
-
-    class _Rejecting:
-        def __init__(self) -> None:
-            self.workflows = self
-
-        async def submit(self, task_yaml: str) -> Any:
-            raise rejection
-
-    monkeypatch.setattr(
-        FlowmeshRuntimeManager, "fm", property(lambda self: _Rejecting())
-    )
-
-    with pytest.raises(ValidationError) as excinfo:
-        await FlowmeshRuntimeManager().process_request(
-            request_info,
-            Schedule(worker_assignment={"worker-1": [row_id]}),
-            worker_ids=["worker-1"],
-        )
-
-    assert ("FlowMesh #259" in str(excinfo.value)) is named

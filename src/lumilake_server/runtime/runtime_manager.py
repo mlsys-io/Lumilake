@@ -214,34 +214,6 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
     )
 
 
-PYTHON_BLOBS_REQUIREMENT = (
-    "Lumilake python steps mount their code and literal payloads through "
-    "spec.blobs, so the FlowMesh server must include python-task blobs "
-    "(FlowMesh #259, released after FlowMesh v0.1.13)"
-)
-
-
-def _task_spec_carries_blobs(task_spec: Mapping[str, Any]) -> bool:
-    """Whether any graph node in ``task_spec`` mounts a python task blob."""
-    nodes = task_spec["spec"]["graph"]["nodes"]
-    return any("blobs" in node["spec"] for node in nodes)
-
-
-def _name_python_blobs_requirement(e: APIError) -> APIError:
-    """The rejection, with the FlowMesh version requirement appended.
-
-    A server without python-task blobs rejects the whole task spec and names
-    only the unexpected field; the operator needs the requirement.
-    """
-    return type(e)(
-        f"{e.args[0]}; {PYTHON_BLOBS_REQUIREMENT}",
-        status_code=e.status_code,
-        method=e.method,
-        url=e.url,
-        body=e.body,
-    )
-
-
 _TRANSIENT_FLOWMESH_STATUS = frozenset({502, 503, 504})
 _FLOWMESH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 _DROPPED_CONNECTION_ERRORS = (
@@ -1510,12 +1482,6 @@ class FlowmeshRuntimeManager:
             workflow_id, task_ids = await self._submit_workflow(task_yaml, submit_id)
         except APIError as e:
             sanitized = _sanitize_flowmesh_api_error(e)
-            if (
-                e.status_code in (400, 422)
-                and _task_spec_carries_blobs(task_spec)
-                and "blobs" in sanitized.body
-            ):
-                sanitized = _name_python_blobs_requirement(sanitized)
             self.logger.error(
                 "Flowmesh request failed: %s. Body: %s",
                 sanitized,
