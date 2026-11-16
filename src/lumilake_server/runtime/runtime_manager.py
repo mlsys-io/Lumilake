@@ -947,20 +947,7 @@ class FlowmeshRuntimeManager:
         return sum(graph.node_count for graph in graphs.values())
 
     async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
-        """
-        Fetch the profile of a given worker.
-
-        Parameters
-        ----------
-        worker_id : str
-            The ID of the worker.
-
-        Returns
-        -------
-        dict[str, Any]
-            The worker's hardware sections plus ``supported_task_types``, the
-            sorted task types its executors advertise.
-        """
+        """The worker's hardware sections, task types and per-device GPU fractions."""
         worker = await _retry_transient_read(
             lambda: flowmesh_for_server().workers.retrieve(worker_id),
             f"worker {worker_id}",
@@ -970,6 +957,12 @@ class FlowmeshRuntimeManager:
         profile["supported_task_types"] = sorted(
             str(task_type) for task_type in worker.capabilities.supported_task_types
         )
+        devices = (
+            worker.hardware.gpu.devices
+            if worker.hardware and worker.hardware.gpu
+            else []
+        )
+        profile["gpu_memory_fraction"] = devices[0].memory_fraction if devices else None
         return profile
 
     async def get_request_status(
