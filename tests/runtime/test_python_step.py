@@ -1,8 +1,6 @@
 """A LambdaOp that no LLM consumes compiles to its own FlowMesh python task."""
 
 import json
-import tempfile
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -305,7 +303,7 @@ def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     assert graph.nodes[row.id].data_spec["row_count"] == 3
     assert graph.nodes[whole.id].data_spec["row_count"] == 3
     assert "row_count" not in graph.nodes[plain.id].data_spec
-    assert "row_count" in graph.nodes[row.id].data_spec
+    assert "row_count" not in _spec(graph.nodes[row.id])
 
 
 def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
@@ -369,11 +367,19 @@ def _run_reshape(
     return namespace["main"](inputs)
 
 
-@cache
-def _materialize_task_runtime() -> str:
-    path = Path(tempfile.mkdtemp()) / "lumilake-runtime.py"
+_RUNTIME_MOUNT: dict[str, str] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _task_runtime_mount(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Write the generated task runtime once into a pytest-managed directory."""
+    path = tmp_path_factory.mktemp("lambda-runtime") / "lumilake-runtime.py"
     path.write_bytes(python_step.runtime_blob().body)
-    return str(path)
+    _RUNTIME_MOUNT["path"] = str(path)
+
+
+def _materialize_task_runtime() -> str:
+    return _RUNTIME_MOUNT["path"]
 
 
 def _stage(tmp_path: Path, name: str, result: dict[str, Any]) -> str:
