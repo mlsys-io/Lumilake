@@ -113,7 +113,8 @@ def test_http_fetch_op_reads_its_upstream_result_path() -> None:
     )
     fetch = HttpFetchOp(url="http://fixture.test/search?q={query}", query=retrieval)
     compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(Stock=["NVDA"])
-    node = RuntimeGraphBuilder().build(compiled).nodes[fetch.id]
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[fetch.id]
 
     assert node.data_spec == {
         "type": "list",
@@ -121,3 +122,5 @@ def test_http_fetch_op_reads_its_upstream_result_path() -> None:
         "path": "items.table",
     }
     assert node.dependencies == (retrieval.id,)
+    # The output archives the response body, not the generic item path.
+    assert runtime_graph.output_paths[fetch.id] == "items.json"

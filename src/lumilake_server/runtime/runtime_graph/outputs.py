@@ -12,7 +12,9 @@ from lumilake_server.ops import (
     MessageOp,
     Op,
 )
+from lumilake_server.ops.classification_ops import ClassificationOp
 from lumilake_server.ops.embedding_ops import EmbeddingOp
+from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
@@ -25,6 +27,8 @@ _WHOLE = "items.output"
 _VALUE_ROOT = "value.items.output"
 _API_ROW_PATH = "items.rows.json.choices[0].message.content"
 _API_ITEM_PATH = "items.json.choices[0].message.content"
+_FETCH_ITEM_PATH = "items.json"
+_CLASSIFICATION_ITEM_PATH = "items"
 
 
 class OutputKind(Enum):
@@ -137,6 +141,10 @@ def op_output(
     default_path: str | None
     if isinstance(op, DataRetrievalOp):
         path = default_path = retrieval_items_path(op.data_spec["mode"])
+    elif isinstance(op, HttpFetchOp):
+        path = default_path = _FETCH_ITEM_PATH
+    elif isinstance(op, ClassificationOp):
+        path = default_path = _CLASSIFICATION_ITEM_PATH
     elif kind is OutputKind.API_ROW:
         path = default_path = _API_ROW_PATH
     elif kind is OutputKind.API_ITEM:
@@ -167,6 +175,10 @@ def output_row_count(
         return len(values) if values is not None else None
     if isinstance(op, DataOp):
         return len(op.data)
+    if isinstance(op, HttpFetchOp):
+        return output_row_count(op.query, inputs_dict, graph_dict)
+    if isinstance(op, ClassificationOp):
+        return output_row_count(op.candidates, inputs_dict, graph_dict)
     if isinstance(op, FormatOp) or (isinstance(op, LambdaOp) and op.mode != "list"):
         return _max_known(
             [output_row_count(inp, inputs_dict, graph_dict) for inp in op.inputs]
