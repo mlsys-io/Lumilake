@@ -32,7 +32,6 @@ def _envs(monkeypatch: pytest.MonkeyPatch) -> None:
         ({"method": "PUT"}, "method must be GET or POST"),
         ({"config": {"timeout_sec": 0}}, "timeout_sec must be greater than zero"),
         ({"config": {"timeout": 5}}, r"config has unknown fields: \['timeout'\]"),
-        ({"config": {"fail_open": True}}, "fail_open needs a flowmesh-sdk"),
     ],
 )
 def test_http_fetch_yaml_errors_name_the_op(fields: dict, message: str) -> None:
@@ -67,7 +66,7 @@ def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
              url: "http://fixture.test/paper/search/{query}?q={query}", method: POST,
              params: {query: "{query}"}, body: {query: "{query}"},
              config: {timeout_sec: 9, retries: 2, max_concurrency: 3,
-                      request_delay_sec: 0.5,
+                      request_delay_sec: 0.5, fail_open: true,
                       headers: {Accept: application/json, x-api-key: s3cret-key}}}
         outputs: [{name: candidates, ref: Search}]
         """)
@@ -92,7 +91,7 @@ def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
             "parse_json": True,
             "return_body": True,
             "raise_for_status": True,
-            "fail_open": False,
+            "fail_open": True,
         },
     }
     assert "s3cret-key" not in json.dumps(runtime_graph.serialize())

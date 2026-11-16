@@ -157,9 +157,8 @@ written, and every header value is redacted in the archived graph. Each input
 row produces one output row. `config.request_delay_sec` spaces actual request
 starts, including retries.
 
-`config.fail_open` is not available yet: with the pinned SDK a failed request
-would fail the whole job, so `fail_open: true` is rejected; once enabled it
-keeps a failed request as an error row instead of failing the task.
+With `config.fail_open: true`, a failed fetch yields an error row whose content
+is null and whose error carries the failure text, instead of failing the task.
 
 ### LLMChatOp via external API
 
