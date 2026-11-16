@@ -185,6 +185,7 @@ class _FakeRuntimeServer:
         self.cancel_raises_cancelled = False
         self.omit_leaf_outputs = False
         self.export_rows: list[list[dict[str, Any]]] | None = None
+        self.export_as_one_item = False
         self.leaf_item: Callable[[int], dict[str, Any]] = lambda row: {
             "table": {"market_cap": 10 + row},
             "output": {"market_cap": 10 + row},
@@ -253,12 +254,14 @@ class _FakeRuntimeServer:
                     json.dumps(self.leaf_item(row)) for row in range(max(rows, 1))
                 ]
         if self.export_rows is not None:
-            # A template export archives one item per element, wrapped as the
-            # reader's `value.output`.
             rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
+            if self.export_as_one_item:
+                # A list-mode export archives one item holding the whole list.
+                rows = [{"items": rows}]
             for name in leaf_names:
                 outputs["round"][name] = [
-                    json.dumps({"output": row, "value": {"items": row}}) for row in rows
+                    json.dumps({"output": row.get("items", row), "value": row})
+                    for row in rows
                 ]
         return LumilakeResponse(outputs=outputs)
 
@@ -1134,8 +1137,9 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [{"next": "STOP"}]
-    # Round 2's list-mode export holds no row, so the stop check ends the loop
-    # before a third round runs.
+    # Round 2's list-mode export holds no element: it still archives one item,
+    # whose output is the empty list, so the stop counts zero and ends the loop.
+    fake_server.export_as_one_item = True
     fake_server.export_rows = [[{"case_id": "0", "turn": 0}], []]
     record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
 

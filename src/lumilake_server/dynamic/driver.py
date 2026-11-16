@@ -1035,12 +1035,13 @@ def validate_template_spec(
 
 
 def _validate_stop_export_is_list_lambda(op: dict[str, Any], export_id: str) -> None:
-    """Require the stop export to count one archived item per Lambda element.
+    """Require the stop export to hold the list whose length the stop counts.
 
-    The stop check counts one row per archived item, which is what a list-mode
-    Lambda produces: its python step emits one item per element of the list it
-    returns. A row- or aligned-mode export archives one item per input row
-    instead, so it reads as non-empty whatever its rows hold, and the job would
+    A list-mode Lambda's python step emits one item holding the whole list it
+    returned, which the archive stores as one value: the stop decodes that
+    value and counts its elements, so an empty list stops the loop. A row- or
+    aligned-mode export archives one item per input row, so it reads as
+    non-empty however many rows its steps actually kept, and the job would
     silently spend every remaining round. Refusing it at submission turns that
     into a spec error.
     """

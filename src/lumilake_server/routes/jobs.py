@@ -493,6 +493,20 @@ def _decode_archived_items(values: list[str]) -> list[Any]:
     return items
 
 
+def _archived_element_count(results: list[Any]) -> int:
+    """Count the values the archived items hold, not the items.
+
+    A list-mode export archives one item whose ``output`` is the whole list its
+    step returned, so an empty list still archives one item; the stop counts
+    elements, and that item holds none.
+    """
+    total = 0
+    for item in results:
+        held = item.get("output") if isinstance(item, dict) else item
+        total += len(held) if isinstance(held, list) else 1
+    return total
+
+
 def _dispatch_workflow_to_graph_specs(
     *,
     workflow_format: str,
@@ -2181,7 +2195,9 @@ async def _run_dynamic_job(
                                 f"stop export {stop_export!r} is not in the node "
                                 "registry"
                             )
-                        if not all_results.get(stop_export):
+                        if not _archived_element_count(
+                            all_results.get(stop_export) or []
+                        ):
                             plans.append(
                                 {
                                     "next": STOP,
