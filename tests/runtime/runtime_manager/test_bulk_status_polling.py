@@ -39,9 +39,8 @@ async def test_a_poll_reads_each_transition_once_and_stops_its_cursor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The first poll takes a snapshot and keeps the cursor the page returns;
-    the next poll sends it, so only the rows that changed after it are read. A
-    finished workflow stops its cursor, so a later poll lists every task
-    again."""
+    the next sends it, so only rows changed after it are read, and a finished
+    workflow stops its cursor."""
     cursors: list[str | None] = []
     served = {"task-1": "DISPATCHED"}
     serve(monkeypatch, served, cursors=cursors)
@@ -65,9 +64,8 @@ async def test_a_poll_drains_every_page_and_relists_an_expired_cursor(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A page carries only part of the changes after a cursor, so a poll reads
-    until ``has_more`` is false; an unresumable cursor is dropped and the poll
-    restarts from a snapshot."""
+    """A poll reads on while ``has_more``; an unresumable cursor is dropped and
+    the poll restarts from a snapshot."""
     pages = [
         TaskStatusPage(rows=[{"task_id": "task-1", "status": s}], next_cursor=c)
         for s, c in (("DISPATCHED", "5"), ("DONE", "6"))
