@@ -44,6 +44,9 @@ class _RuntimeGraphBuilderBase:
         # A forwarded reference names a workflow input by id without an input
         # edge, so the sorted op dict omits it; these are the graph's inputs.
         self._input_ops_by_id: dict[str, InputOp] = {}
+        # ``_graph_dict`` with the input ops folded in, so a row count can
+        # resolve a forwarded reference to a literal input.
+        self._read_graph_dict: dict[str, Op] = {}
 
     def _graph_node(self, node_ref: str, graph_dict: dict[str, Op]) -> Op | None:
         """Resolve a node reference, falling back to the graph's input ops.
@@ -390,9 +393,6 @@ class _RuntimeGraphBuilderBase:
 
     def _op_output(self, op: Op) -> OpOutput:
         """How a consumer reads the op's values."""
-        graph_dict = self._graph_dict
-        if self._input_ops_by_id:
-            # A forwarded reference names an input op by id without an edge,
-            # so it is absent from the sorted dict the row count reads.
-            graph_dict = {**self._input_ops_by_id, **self._graph_dict}
-        return op_output(op, self._flattened_vlm_ids, self._inputs_dict, graph_dict)
+        return op_output(
+            op, self._flattened_vlm_ids, self._inputs_dict, self._read_graph_dict
+        )
