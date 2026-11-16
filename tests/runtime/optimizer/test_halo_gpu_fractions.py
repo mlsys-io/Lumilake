@@ -14,25 +14,18 @@ _OP = replace(
     model="Qwen/Qwen3-8B",
     model_spec={"vllm": {"gpu_memory_utilization": 0.8}},
 )
+_GRAPH = RuntimeGraph(nodes={"n": _OP}, node_order=["n"], output_node_map={})
 
 
-@pytest.mark.parametrize(
-    ("profiles", "expected"),
-    [
-        ({"gpu-small": _SMALL, "gpu-big": _BIG}, "gpu-big"),
-        ({"gpu-whole": {"has_gpu": True}}, "gpu-whole"),
-        ({"gpu-small": _SMALL}, None),
-    ],
-)
-def test_a_node_lands_only_on_a_worker_whose_fraction_holds_it(
-    profiles: dict[str, dict], expected: str | None
-) -> None:
-    graph = RuntimeGraph(nodes={"n": _OP}, node_order=["n"], output_node_map={})
+def test_a_node_lands_only_on_a_worker_whose_fraction_holds_it() -> None:
     optimizer = HaloOptimizer()
-    if expected is None:
-        with pytest.raises(RuntimeError) as raised:
-            optimizer.generate_schedule(graph, list(profiles), profiles)
-        assert "gpu_memory_utilization=0.8" in str(raised.value.__cause__)
-        return
-    schedule = optimizer.generate_schedule(graph, list(profiles), profiles)
-    assert [w for w, ids in schedule.worker_assignment.items() if ids] == [expected]
+    shared = {"gpu-small": _SMALL, "gpu-big": _BIG}
+    whole = {"gpu-whole": {"has_gpu": True}}
+
+    for profiles, expected in ((shared, "gpu-big"), (whole, "gpu-whole")):
+        schedule = optimizer.generate_schedule(_GRAPH, list(profiles), profiles)
+        placed = [w for w, ids in schedule.worker_assignment.items() if ids]
+        assert placed == [expected]
+    with pytest.raises(RuntimeError) as raised:
+        optimizer.generate_schedule(_GRAPH, ["gpu-small"], {"gpu-small": _SMALL})
+    assert "gpu_memory_utilization=0.8" in str(raised.value.__cause__)
