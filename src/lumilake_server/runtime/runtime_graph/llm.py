@@ -1,6 +1,5 @@
 import re
 from collections.abc import Sequence
-from dataclasses import asdict
 from typing import Any, cast
 
 from lumilake import envs
@@ -221,11 +220,7 @@ class _LLMBuilder(_EmbeddingBuilder):
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
-        output_enforcement = (
-            asdict(llm_op.config.output_enforcement)
-            if llm_op.config.output_enforcement is not None
-            else None
-        )
+        output_enforcement = llm_op.config.output_enforcement_spec()
 
         if isinstance(llm_op, LLMCompletionOp):
             prompt_op = llm_op.prompt
@@ -498,11 +493,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     "api mode takes structural_outputs as a JSON-schema object; "
                     f"got {type(llm_op.structural_outputs).__name__}"
                 )
-        api_output_enforcement = (
-            asdict(llm_op.config.output_enforcement)
-            if llm_op.config.output_enforcement is not None
-            else None
-        )
+        api_output_enforcement = llm_op.config.output_enforcement_spec()
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,

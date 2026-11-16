@@ -290,6 +290,12 @@ class GenerationConfig:
         spec.update(extras)
         return spec
 
+    def output_enforcement_spec(self) -> dict[str, Any] | None:
+        """The enforcement block as a plain mapping, or ``None`` when unset."""
+        if self.output_enforcement is None:
+            return None
+        return asdict(self.output_enforcement)
+
     def engine_overlay(self) -> dict[str, Any]:
         """Engine-level typed fields + extra_engine_kwargs. Raises on conflict."""
         overlay: dict[str, Any] = {
