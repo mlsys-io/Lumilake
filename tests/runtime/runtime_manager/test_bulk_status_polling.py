@@ -64,8 +64,7 @@ async def test_a_poll_drains_every_page_and_relists_an_expired_cursor(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A poll reads on while ``has_more``; an unresumable cursor is dropped and
-    the poll restarts from a snapshot."""
+    """A poll reads on while ``has_more``; an expired cursor relists once."""
     pages = [
         TaskStatusPage(rows=[{"task_id": "task-1", "status": s}], next_cursor=c)
         for s, c in (("DISPATCHED", "5"), ("DONE", "6"))
@@ -88,9 +87,8 @@ async def test_a_progress_read_leaves_a_running_loops_batch_and_cursor_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Only the execution loop advances the cursor of a workflow it runs. A
-    progress read lists every task and stores nothing, so the narrower view of
-    a caller's own tasks never moves a position the loop would resume from, and
-    a batch whose loop is running is reported as the loop's map has it."""
+    progress read lists every task and stores nothing, and a batch whose loop is
+    running is reported as the loop's map has it."""
     cursors: list[str | None] = []
     serve(monkeypatch, {"task-1": "DISPATCHED"}, cursors=cursors)
     flowmesh_manager._workflow_status_cursors["wf-1"] = "1:2"

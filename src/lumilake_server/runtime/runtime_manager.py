@@ -19,15 +19,11 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import httpx
 import yaml
-from flowmesh.exceptions import (
-    APIError,
-    CursorExpiredError,
-    FlowMeshConnectionError,
-)
+from flowmesh.exceptions import APIError, CursorExpiredError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusPage, TaskStatusRow
 from flowmesh.models.workflows import Workflow
@@ -56,7 +52,7 @@ from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sen
 from lumilake_server.utils.job_storage import get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
-_STATUS_POLL_FIELDS = ["status", "error", "last_error"]
+_STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
 
 
 @dataclass
