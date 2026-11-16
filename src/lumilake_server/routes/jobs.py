@@ -39,6 +39,7 @@ from flowmesh.models.result import (
     AnyExecutorResult,
     APIResult,
     BaseExecutorResult,
+    ClassificationResult,
     DataProfilingResult,
     DataRetrievalResult,
     EchoResult,
@@ -3951,17 +3952,6 @@ class _UnknownUsage:
 
 _UNKNOWN_USAGE = _UnknownUsage()
 
-_CLASSIFICATION_TASK_TYPE = "classification"
-
-
-class _PoolingUsage(BaseModel):
-    """Token and latency accounting a batched pooling pass reports."""
-
-    prompt_tokens: int
-    total_tokens: int
-    num_requests: int
-    latency_sec: float
-
 
 def _task_usage_from_result(
     result: AnyExecutorResult,
@@ -3983,7 +3973,7 @@ def _task_usage_from_result(
         if not isinstance(result.usage, GenerationUsage):
             return _UNKNOWN_USAGE
         return _inference_usage(result)
-    if _is_classification_result(result):
+    if isinstance(result, ClassificationResult):
         return _classification_usage(result)
     if isinstance(result, _NO_USAGE_RESULT_TYPES):
         return None
@@ -3992,25 +3982,13 @@ def _task_usage_from_result(
     return _UNKNOWN_USAGE
 
 
-def _is_classification_result(result: AnyExecutorResult) -> bool:
-    """Whether a result is a batched pooling classification pass.
-
-    An unparsed classification result carries its fields as extras, so the
-    task type and usage are read from there."""
-    return (result.__pydantic_extra__ or {}).get(
-        "task_type"
-    ) == _CLASSIFICATION_TASK_TYPE
-
-
-def _classification_usage(result: AnyExecutorResult) -> WorkflowUsage | _UnknownUsage:
+def _classification_usage(
+    result: ClassificationResult,
+) -> WorkflowUsage | _UnknownUsage:
     """Map a classification result's pooling usage; the pass generates no
     completion tokens."""
-    raw_usage = (result.__pydantic_extra__ or {}).get("usage")
-    if not isinstance(raw_usage, dict):
-        return _UNKNOWN_USAGE
-    try:
-        usage = _PoolingUsage.model_validate(raw_usage)
-    except ValidationError:
+    usage = result.usage
+    if usage is None:
         return _UNKNOWN_USAGE
     return WorkflowUsage(
         prompt_tokens=usage.prompt_tokens,
