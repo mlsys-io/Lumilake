@@ -16,7 +16,6 @@ from lumilake_server.runtime.runtime_graph.lowering import (
     Phase,
     after_phase,
     has_lowering,
-    lookup,
     register,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -40,18 +39,6 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dep = inp.id
             elif isinstance(inp, (LLMOp, DataRetrievalOp)) or has_lowering(inp):
                 runtime_ids = ctx.dsl_to_runtime.get(inp.id, [])
-                derived_lowering = None if runtime_ids else lookup(inp, Phase.DERIVED)
-                if derived_lowering is not None:
-                    # A derived op this step reads lowers in its own phase, so
-                    # run that lowering now to get its final node.
-                    result = derived_lowering(self, inp, ctx)
-                    if result is not None:
-                        for lowered in result.nodes:
-                            ctx.nodes.setdefault(lowered.node_id, lowered)
-                        ctx.dsl_to_runtime[inp.id] = [
-                            node.node_id for node in result.nodes
-                        ]
-                        runtime_ids = ctx.dsl_to_runtime[inp.id]
                 if len(runtime_ids) != 1:
                     raise ValueError(
                         f"LambdaOp '{op.id}' reads '{inp.id}', which compiled to"

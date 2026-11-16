@@ -251,6 +251,29 @@ def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
     )
 
 
+_FLATTEN_STEP_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    (values,) = columns
+    rows = []
+    for value in values:
+        rows.extend(value if isinstance(value, list) else [value])
+    return {{"items": [{{"output": row}} for row in rows]}}
+"""
+
+
+def flatten_step_source(node_id: str, plan: ColumnPlan) -> str:
+    """The python-task code for expanding a grouped upstream column to one
+    value per row."""
+    return (_RESHAPE_PRELUDE + _FLATTEN_STEP_MAIN).format(
+        op_id=node_id,
+        module=TASK_RUNTIME_MODULE,
+        mount=TASK_RUNTIME_MOUNT,
+        plan=json.dumps(plan),
+    )
+
+
 def pairs_source(node_id: str, plan: ColumnPlan) -> str:
     """The python-task code for reshaping query and candidate columns to pairs."""
     return (_RESHAPE_PRELUDE + _PAIRS_MAIN).format(
@@ -408,6 +431,8 @@ def flowmesh_spec(
         code = regroup_source(node_id, plan)
     elif mode == "pairs":
         code = pairs_source(node_id, plan)
+    elif mode == "flatten_step":
+        code = flatten_step_source(node_id, plan)
     else:
         code = wrapper_source(
             node_id, data_spec["fn_name"], data_spec["code"], plan, mode

@@ -7,10 +7,13 @@ import pytest
 import yaml
 
 from lumilake import envs
+from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
     HttpFetchOp,
+    LLMChatOp,
+    OpMessage,
     as_output,
     input_placeholder,
 )
@@ -124,3 +127,28 @@ def test_http_fetch_op_reads_its_upstream_result_path() -> None:
     assert node.dependencies == (retrieval.id,)
     # The output archives the response body, not the generic item path.
     assert runtime_graph.output_paths[fetch.id] == "items.json"
+
+
+def test_http_fetch_op_reads_a_grouped_upstream_through_a_flatten_step() -> None:
+    """A rowwise LLM groups its output per table, so the fetch reads a python
+    step's per-row items and issues one request per row."""
+    prompt = input_placeholder("Prompt")
+    rowwise = LLMChatOp(
+        [OpMessage(role="user", content=prompt)],
+        config=GenerationConfig(model="org/llm"),
+        rowwise_template="{prompt}",
+        rowwise_columns=[{"label": "prompt", "node": prompt.id, "path": ""}],
+    )
+    fetch = HttpFetchOp("http://fixture.test/search?q={query}", rowwise)
+    compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(
+        Prompt=["one", "two"]
+    )
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+    node = runtime_graph.nodes[fetch.id]
+    step = runtime_graph.nodes[f"{fetch.id}__flatten"]
+
+    assert node.data_spec["items"] == f"${{{step.node_id}.value.items}}"
+    assert node.dependencies == (step.node_id,)
+    assert step.data_spec["plan"] == [
+        {"kind": "stage", "node": rowwise.id, "path": "output", "flatten": True}
+    ]

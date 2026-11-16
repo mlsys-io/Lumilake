@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from typing import Any
 
 from lumilake_server.common import GenerationConfig
@@ -15,7 +16,10 @@ from lumilake_server.runtime.runtime_graph.lowering import (
     Phase,
     register,
 )
-from lumilake_server.runtime.runtime_graph.outputs import OpOutput
+from lumilake_server.runtime.runtime_graph.outputs import (
+    OpOutput,
+    item_relative_path,
+)
 from lumilake_server.runtime.runtime_graph.vision import _VisionBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
@@ -29,15 +33,6 @@ def _replace_query_placeholder(value: Any) -> Any:
     if isinstance(value, list):
         return [_replace_query_placeholder(item) for item in value]
     return value
-
-
-def _item_relative_path(path: str) -> str:
-    """Strip the result-envelope prefix from an upstream output path, so a
-    python step reads it inside the item list it already unwrapped."""
-    for prefix in ("value.items.", "items."):
-        if path.startswith(prefix):
-            return path[len(prefix) :]
-    return path
 
 
 class _DerivedBuilder(_VisionBuilder):
@@ -69,16 +64,7 @@ class _DerivedBuilder(_VisionBuilder):
             ctx.dsl_to_runtime[op_ref.id] = runtime_ids
         if not runtime_ids:
             raise ValueError(f"{consumer} input {op_ref.id!r} has no runtime node")
-        output = self._op_output(op_ref)
-        return OpOutput(
-            node=runtime_ids[-1],
-            path=output.path,
-            row_count=output.row_count,
-            default_output_path=output.default_output_path,
-            kind=output.kind,
-            one_item_per_row=output.one_item_per_row,
-            needs_flatten=output.needs_flatten,
-        )
+        return replace(self._op_output(op_ref), node=runtime_ids[-1])
 
     @staticmethod
     def _stage_plan(values: list[str] | OpOutput) -> dict[str, Any]:
@@ -88,28 +74,61 @@ class _DerivedBuilder(_VisionBuilder):
         if values.needs_flatten:
             entry["flatten"] = True
         elif values.path:
-            path = _item_relative_path(values.path)
+            path = item_relative_path(values.path)
             entry["path"] = re.sub(r"\[(\d+)\]", r".\1", path)
         return entry
 
+    def _flatten_step(self, op_id: str, upstream: OpOutput) -> RuntimeOp:
+        """A python step that flattens an upstream's grouped output to one value
+        per row, so a fetch issues one request per row, not per group."""
+        node_id = f"{op_id}__flatten"
+        return self._create_runtime_op(
+            name=node_id,
+            task_type=python_step.TASK_TYPE,
+            data_spec={
+                "mode": "flatten_step",
+                "plan": [
+                    {
+                        "kind": "stage",
+                        "node": upstream.node,
+                        "path": item_relative_path(upstream.path),
+                        "flatten": True,
+                    }
+                ],
+                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
+            },
+            model_spec={},
+            inference_spec={},
+            backend=python_step.BACKEND,
+            model="",
+            dependencies=[upstream.node],
+        )
+
     def _fetch_data_spec(
         self, op_id: str, query_op: Op, ctx: LoweringContext
-    ) -> tuple[dict[str, Any], list[str]]:
-        """The list data spec a fetch reads: literal queries, or one upstream
-        row per request, flattened when the upstream groups its rows."""
+    ) -> tuple[dict[str, Any], list[str], list[RuntimeOp]]:
+        """The list data spec a fetch reads: literal queries, one upstream row
+        per request, or a flatten step's items when the upstream groups rows."""
         consumer = f"HttpFetchOp '{op_id}'"
         values = self._read_source(consumer, query_op, ctx)
         if isinstance(values, list):
             if not values:
                 raise ValueError(f"{consumer} requires at least one query")
-            return {"type": "list", "items": values}, []
+            return {"type": "list", "items": values}, [], []
         if values.needs_flatten:
-            # Only a python step can expand a grouped field into one value per
-            # row, so a fetch reads a row-wise LLM through the op's row path.
-            return {"type": "list", "node": values.node, "path": values.path}, [
-                values.node
-            ]
-        return {"type": "list", "node": values.node, "path": values.path}, [values.node]
+            # A grouped upstream yields one item per table, so only a python
+            # step can expand it to one value per row.
+            step = self._flatten_step(op_id, values)
+            return (
+                {"type": "list", "items": f"${{{step.node_id}.value.items}}"},
+                [step.node_id],
+                [step],
+            )
+        return (
+            {"type": "list", "node": values.node, "path": values.path},
+            [values.node],
+            [],
+        )
 
     @register(HttpFetchOp, Phase.DERIVED)
     def _lower_http_fetch(
@@ -117,7 +136,7 @@ class _DerivedBuilder(_VisionBuilder):
     ) -> LoweringResult | None:
         """Lower a fetch to one FlowMesh ``api`` request per query row."""
         op_id = op.id
-        data_spec, dependencies = self._fetch_data_spec(op_id, op.query, ctx)
+        data_spec, dependencies, extra_ops = self._fetch_data_spec(op_id, op.query, ctx)
         api_spec: dict[str, Any] = {
             "method": op.method,
             "url": op.url.replace("{query}", "{{prompt}}"),
@@ -148,7 +167,7 @@ class _DerivedBuilder(_VisionBuilder):
             model="http-fetch",
             dependencies=dependencies or None,
         )
-        return LoweringResult(nodes=[node])
+        return LoweringResult(nodes=[*extra_ops, node])
 
     @register(ClassificationOp, Phase.DERIVED)
     def _lower_classification(
