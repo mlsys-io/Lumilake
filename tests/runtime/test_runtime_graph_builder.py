@@ -527,11 +527,16 @@ def test_rowwise_messages_column_emits_list_message_array_spec() -> None:
     assert built.nodes[bound.id].data_spec["path"] == "value.items.output"
 
 
-def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
+@pytest.mark.parametrize("source_kind", ["input", "row-lambda"])
+def test_row_gated_llm_emits_status_selected_and_merge_stages(source_kind: str) -> None:
     # A gated chat op stands only as its merge stage, which is the op's output,
-    # and the structural outputs land on the gated call.
+    # and the structural outputs land on the gated call. A row Lambda source
+    # lowers in its own phase when the gate reads it before that phase runs.
     rows = input_placeholder("Rows")
-    router = _router_over(rows)
+    source: Any = rows
+    if source_kind == "row-lambda":
+        source = LambdaOp([rows], _row_lambda_fn, mode="row")
+    router = _router_over(source)
     templates = [{"name": "verdict", "type": "string"}]
     gate = RowGate(node=router.id, branch="ok")
     llm = _row_gate_over(rows, router, structural_outputs=templates, row_gate=gate)

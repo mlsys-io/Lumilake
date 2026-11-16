@@ -7,12 +7,11 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
 from lumilake_server.ops import (
     InputOp,
-    LambdaOp,
     LLMOp,
     Op,
 )
 from lumilake_server.runtime import python_step
-from lumilake_server.runtime.runtime_graph.lowering import Phase
+from lumilake_server.runtime.runtime_graph.lowering import Phase, lookup
 from lumilake_server.runtime.runtime_graph.outputs import (
     OpOutput,
     op_output,
@@ -53,19 +52,17 @@ class _RuntimeGraphBuilderBase:
 
         A row gate's source and gated columns, and a list Lambda that reads a
         gated op, may be read before their phase runs, so the consumer lowers
-        them first. The phase follows the op's class: an LLM lowers in the LLM
-        phase, a Lambda in the list phase. ``_ensure_lowered`` is defined on
-        ``RuntimeGraphBuilder``, which every builder in the chain inherits.
+        them first, in the phase the op itself registers for. A row-mode Lambda
+        registers in the row phase, where its lowering builds it because
+        nothing has reached it yet. Lowering is tracked by ``dsl_to_runtime``,
+        not by the visited set, which also holds ops an LLM absorbed.
         """
-        if op.id in ctx.visited:
+        if op.id in ctx.dsl_to_runtime:
             return
-        if isinstance(op, LambdaOp):
-            phase = Phase.LIST_LAMBDA
-        elif isinstance(op, LLMOp):
-            phase = Phase.LLM
-        else:
-            return
-        self._ensure_lowered(op, phase, ctx)
+        for phase in Phase:
+            if lookup(op, phase) is not None:
+                self._ensure_lowered(op, phase, ctx)
+                return
 
     def _ensure_lowered(self, op: Op, phase: Phase, ctx: Any) -> None:
         """Lower ``op`` in ``phase`` now; ``RuntimeGraphBuilder`` owns the

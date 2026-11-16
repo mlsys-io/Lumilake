@@ -1,13 +1,14 @@
 from typing import Any
 
 from lumilake_server.graphs import CompiledGraph
-from lumilake_server.ops import Op, OutputOp
+from lumilake_server.ops import LambdaOp, Op, OutputOp
 from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
 )
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
+    LoweringResult,
     Phase,
     has_lowering,
     lookup,
@@ -166,13 +167,26 @@ class RuntimeGraphBuilder(_VisionBuilder):
 
         A row gate and a list Lambda that reads one lower out of phase order, so
         each lowers what it reads first rather than deferring to a second pass.
+        A row-mode Lambda's own lowering declines one that is already visited,
+        which is right in its phase and wrong here, so an on-demand read builds
+        the step it needs directly.
         """
-        if op.id in ctx.visited:
+        if op.id in ctx.dsl_to_runtime:
             return
         lowering = lookup(op, phase)
         if lowering is None:
             return
         output_node_map, output_paths = self._lowering_outputs
+        if isinstance(op, LambdaOp) and not op.takes_whole_columns:
+            self._run_lowering(
+                _lower_row_lambda_on_demand,
+                op,
+                ctx,
+                self._lowering_order,
+                output_node_map,
+                output_paths,
+            )
+            return
         self._run_lowering(
             lowering, op, ctx, self._lowering_order, output_node_map, output_paths
         )
@@ -204,3 +218,13 @@ class RuntimeGraphBuilder(_VisionBuilder):
             ctx.dsl_to_runtime[op.id] = own
         ctx.visited.add(op.id)
         self._record_output(op, ctx, output_node_map, output_paths)
+
+
+def _lower_row_lambda_on_demand(builder: Any, op: Op, ctx: Any) -> LoweringResult:
+    """Build a row-mode Lambda's python step because a consumer reads it."""
+    assert isinstance(op, LambdaOp), "only a row Lambda reaches this lowering"
+    steps = builder._build_python_step(op, ctx)
+    return LoweringResult(
+        nodes=steps,
+        built={step.node_id: [step.node_id] for step in steps if step.node_id != op.id},
+    )
