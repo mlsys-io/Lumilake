@@ -514,20 +514,17 @@ def test_rowwise_messages_column_emits_list_message_array_spec() -> None:
     node = RuntimeGraphBuilder().build(graph).nodes[llm.id]
     assert node.data_spec["items"] == [["msg"]]
 
-
-def test_rowwise_messages_column_reads_an_items_output_path() -> None:
-    # A messages column reads an items.output-rooted path like any column, so a
-    # list Lambda's items.output maps to the step result's envelope.
-    rows = input_placeholder("Rows")
+    # A messages column on a list Lambda reads an items.output-rooted path like
+    # any column, so the declared path maps onto the step result's envelope.
     source = LambdaOp([rows], _explode_fn, mode="list")
-    llm = LLMChatOp(
+    bound = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),
         rowwise_messages_column=MessagesColumn(source.id, "items.output", "msgs"),
     )
-    outs = [as_output("s", source), as_output("r", llm)]
-    built = RuntimeGraphBuilder().build(Graph.from_ops(outs).compile(Rows=['["msg"]']))
-    assert built.nodes[llm.id].data_spec["path"] == "value.items.output"
+    ops = [as_output("source", source), as_output("bound", bound)]
+    built = RuntimeGraphBuilder().build(Graph.from_ops(ops).compile(Rows=["x"]))
+    assert built.nodes[bound.id].data_spec["path"] == "value.items.output"
 
 
 def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
