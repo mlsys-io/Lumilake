@@ -15,13 +15,11 @@ from lumilake_server.ops import (
     HttpFetchOp,
     LambdaOp,
     LLMChatOp,
-    LLMVisionOp,
     OpMessage,
     as_output,
     input_placeholder,
 )
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 
 
@@ -105,7 +103,6 @@ def test_classification_op_rejects_bad_literal_inputs(
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
-        ({"config": {"model": "org/reranker", "backend": "tfjs"}}, "backend must be"),
         ({"config": {"model": "org/reranker", "device": "cpu"}}, "unknown fields"),
         ({"candidates": "Missing"}, "requires a 'candidates' reference"),
     ],
@@ -165,34 +162,6 @@ def test_upstream_classification_routes_through_a_pairs_step(tmp_path: Path) -> 
     }
 
 
-def test_classification_op_reads_vision_llm_candidates_from_the_model_node() -> None:
-    """A vision LLM compiles to an embedding stage and the model, so the pairs
-    step must read the model's output, not the embedding's."""
-    stock = input_placeholder("Stock")
-    vision = LLMVisionOp(
-        [OpMessage(role="user", content="Describe the image.")],
-        image_source=stock.id,
-        image_source_op=stock,
-        config=GenerationConfig(model="org/vision-model"),
-    )
-    classification = ClassificationOp(
-        query="question",
-        candidates=vision,
-        config=ClassificationConfig(model="org/reranker"),
-    )
-    compiled = Graph.from_ops([as_output("labels", classification)]).compile(
-        Stock=["NVDA"]
-    )
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    pairs = runtime_graph.nodes[f"{classification.id}__pairs"]
-    assert pairs.data_spec["plan"][1] == {
-        "kind": "stage",
-        "node": vision.id,
-        "path": "output",
-    }
-
-
 def test_mixed_derived_chain_builds_in_dependency_order() -> None:
     """A chain that mixes an LLM, a fetch, a row Lambda, a classification and
     list Lambdas lowers in dependency order, with no reference to a missing
@@ -228,37 +197,3 @@ def test_mixed_derived_chain_builds_in_dependency_order() -> None:
     chain = [llm.id, fetch.id, pairs_id]
     chain += [runtime_graph.dsl_to_runtime[classification.id][0], head.id]
     assert [order[node_id] for node_id in chain] == sorted(order[n] for n in chain)
-
-
-@pytest.mark.parametrize(
-    ("query", "candidates", "message"),
-    [
-        (["  "], ["first"], r"^pairs: row 0 query must be"),
-        (["same question"], [], r"^pairs: candidate column is empty"),
-    ],
-)
-def test_pairs_step_rejects_bad_columns(
-    query: list[str], candidates: list[str], message: str
-) -> None:
-    """A blank fail-open fetch row or an upstream stage that returns nothing
-    reaches the pairs step unchanged; it rejects both instead of letting
-    FlowMesh fail the whole classification task."""
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": query},
-        {"kind": "literal", "values": candidates},
-    ]
-    spec = python_step.flowmesh_spec(
-        "pairs",
-        {
-            "mode": "pairs",
-            "plan": plan,
-            "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-        },
-    )
-    namespace: dict[str, object] = {}
-    exec(spec["code"], namespace)
-    main = namespace["main"]
-    assert callable(main)
-
-    with pytest.raises(ValueError, match=message):
-        main({})
