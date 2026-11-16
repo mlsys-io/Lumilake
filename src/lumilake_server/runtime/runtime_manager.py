@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 from flowmesh.exceptions import APIError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
 from flowmesh.models.tasks import TaskStatusView
@@ -49,7 +50,6 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.yaml import dump_yaml
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 
@@ -84,9 +84,15 @@ def _resolve_gpu_count(hardware: HardwareRequirements | None) -> int:
 def _dump_task_spec_yaml(task_spec: dict[str, Any]) -> tuple[str, str]:
     """The submit YAML and its redacted archive copy, dumped for one task."""
     return (
-        dump_yaml(task_spec, default_flow_style=False, sort_keys=False),
-        dump_yaml(
+        yaml.dump(
+            task_spec,
+            Dumper=yaml.CSafeDumper,
+            default_flow_style=False,
+            sort_keys=False,
+        ),
+        yaml.dump(
             redact_sensitive(task_spec),
+            Dumper=yaml.CSafeDumper,
             default_flow_style=False,
             sort_keys=False,
         ),
@@ -401,7 +407,12 @@ class FlowmeshRuntimeManager:
         yaml_data = (
             data
             if isinstance(data, str)
-            else dump_yaml(data, default_flow_style=False, sort_keys=False)
+            else yaml.dump(
+                data,
+                Dumper=yaml.CSafeDumper,
+                default_flow_style=False,
+                sort_keys=False,
+            )
         )
         return await self.save_runtime_artifact_async(
             request_info,
