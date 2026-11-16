@@ -55,6 +55,7 @@ class _RuntimeGraphBuilderBase:
         condition: dict[str, str] | None = None,
         api_spec: dict[str, Any] | None = None,
         skip_when_all_inputs_empty: bool = False,
+        output_enforcement: dict[str, Any] | None = None,
     ) -> RuntimeOp:
         data_spec = self._attach_lumid_cfg(data_spec)
         return RuntimeOp(
@@ -66,6 +67,7 @@ class _RuntimeGraphBuilderBase:
             model_spec=model_spec,
             inference_spec=inference_spec,
             api_spec=api_spec or {},
+            output_enforcement=output_enforcement,
             dependencies=tuple(dependencies or []),
             output_spec=output_spec,
             condition=condition,

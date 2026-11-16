@@ -220,6 +220,7 @@ class _LLMBuilder(_EmbeddingBuilder):
 
         if isinstance(llm_op, LLMChatOp) and llm_op.structural_outputs:
             inference_spec["templates"] = llm_op.structural_outputs
+        output_enforcement = llm_op.config.output_enforcement_spec()
 
         if isinstance(llm_op, LLMCompletionOp):
             prompt_op = llm_op.prompt
@@ -259,6 +260,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec={**inference_spec, "apply_chat_template": False},
+                output_enforcement=output_enforcement,
                 backend=backend,
                 model=llm_op.config.model,
                 dependencies=row_dependencies if row_dependencies else None,
@@ -282,6 +284,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec=inference_spec,
+                output_enforcement=output_enforcement,
                 backend=backend,
                 model=llm_op.config.model,
                 dependencies=row_dependencies if row_dependencies else None,
@@ -312,6 +315,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec=inference_spec,
+                output_enforcement=output_enforcement,
                 backend=backend,
                 model=llm_op.config.model,
                 dependencies=aggregate_dependencies if aggregate_dependencies else None,
@@ -347,6 +351,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             },
             model_spec=self._build_model_spec(llm_op.config, backend),
             inference_spec=inference_spec,
+            output_enforcement=output_enforcement,
             backend=backend,
             model=llm_op.config.model,
             dependencies=default_dependencies,
@@ -465,6 +470,11 @@ class _LLMBuilder(_EmbeddingBuilder):
         row's rendered messages into the ``{{prompt}}`` body placeholder."""
         model = llm_op.config.resolved_model()
         url = api_config.url or envs.LUMILAKE_API_DEFAULT_URL
+        if llm_op.config.num_beams is not None:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' num_beams is available only for local "
+                "vLLM generation, not API mode."
+            )
         headers = self._api_request_headers(llm_op_id, api_config, url)
         body: dict[str, Any] = {"model": model, "messages": "{{prompt}}"}
         body.update(llm_op.config.inference_spec())
@@ -483,6 +493,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     "api mode takes structural_outputs as a JSON-schema object; "
                     f"got {type(llm_op.structural_outputs).__name__}"
                 )
+        api_output_enforcement = llm_op.config.output_enforcement_spec()
         api_spec: dict[str, Any] = {
             "method": "POST",
             "url": url,
@@ -508,6 +519,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 model_spec={},
                 inference_spec={},
                 api_spec=api_spec,
+                output_enforcement=api_output_enforcement,
                 backend="api",
                 model=model,
                 dependencies=dependencies,
