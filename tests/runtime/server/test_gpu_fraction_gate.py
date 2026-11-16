@@ -19,7 +19,6 @@ def _free(*names: str) -> FreeCapacity:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_try_claim_workers_takes_only_a_worker_whose_fraction_fits(
     server_factory,
 ) -> None:
