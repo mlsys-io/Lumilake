@@ -12,9 +12,7 @@ from lumilake_server.ops import (
     MessageOp,
     Op,
 )
-from lumilake_server.ops.classification_ops import ClassificationOp
 from lumilake_server.ops.embedding_ops import EmbeddingOp
-from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
@@ -23,12 +21,20 @@ from lumilake_server.ops.llm_ops import (
 )
 from lumilake_server.ops.ops import RowShape
 
+
+def item_relative_path(path: str) -> str:
+    """Strip the result-envelope prefix from an upstream output path, so a
+    python step reads it inside the item list it already unwrapped."""
+    for prefix in ("value.items.", "items."):
+        if path.startswith(prefix):
+            return path[len(prefix) :]
+    return path
+
+
 _WHOLE = "items.output"
 _VALUE_ROOT = "value.items.output"
 _API_ROW_PATH = "items.rows.json.choices[0].message.content"
 _API_ITEM_PATH = "items.json.choices[0].message.content"
-_FETCH_ITEM_PATH = "items.json"
-_CLASSIFICATION_ITEM_PATH = "items"
 
 
 class OutputKind(Enum):
@@ -141,10 +147,8 @@ def op_output(
     default_path: str | None
     if isinstance(op, DataRetrievalOp):
         path = default_path = retrieval_items_path(op.data_spec["mode"])
-    elif isinstance(op, HttpFetchOp):
-        path = default_path = _FETCH_ITEM_PATH
-    elif isinstance(op, ClassificationOp):
-        path = default_path = _CLASSIFICATION_ITEM_PATH
+    elif op.result_path is not None:
+        path = default_path = op.result_path
     elif kind is OutputKind.API_ROW:
         path = default_path = _API_ROW_PATH
     elif kind is OutputKind.API_ITEM:
@@ -175,10 +179,9 @@ def output_row_count(
         return len(values) if values is not None else None
     if isinstance(op, DataOp):
         return len(op.data)
-    if isinstance(op, HttpFetchOp):
-        return output_row_count(op.query, inputs_dict, graph_dict)
-    if isinstance(op, ClassificationOp):
-        return output_row_count(op.candidates, inputs_dict, graph_dict)
+    row_source = op.row_source
+    if row_source is not None:
+        return output_row_count(row_source, inputs_dict, graph_dict)
     if isinstance(op, FormatOp) or (isinstance(op, LambdaOp) and op.mode != "list"):
         return _max_known(
             [output_row_count(inp, inputs_dict, graph_dict) for inp in op.inputs]
