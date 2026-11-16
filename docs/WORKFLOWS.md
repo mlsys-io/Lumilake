@@ -44,6 +44,9 @@ A rowwise `LLMChatOp` may use `rowwise_messages_column` instead of
 `rowwise_template`, holding one serialized list of role/content messages per
 row.
 
+`LLMChatOp` supports output validation and local beam search; see
+[`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its

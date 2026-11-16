@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -294,3 +296,13 @@ def test_dedupe_remaps_condition_node_reference() -> None:
     assert optimized.node_count == 2
     assert optimized.nodes["C"].dependencies == ("A",)
     assert optimized.nodes["C"].condition == {"node": "A", "expr": "B == 'ok'"}
+
+
+def test_dedupe_keys_on_output_enforcement() -> None:
+    base = RuntimeOp("A", "inference", "vllm", "m", {}, {}, {})
+    nodes = {
+        n: replace(base, node_id=n, output_enforcement={"text_regex": r})
+        for n, r in (("A", "a"), ("B", "a"), ("F", "F"))
+    }
+    merged = HaloOptimizer().optimize_graphs({"wf": RuntimeGraph(nodes, [*nodes], {})})
+    assert merged[0].nodes["F"].output_enforcement == {"text_regex": "F"}

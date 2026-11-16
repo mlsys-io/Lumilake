@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, ClassVar
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
@@ -9,6 +9,8 @@ from lumilake_server.ops.router_ops import MessagesColumn, RowGate
 class LLMOp(Op):
     config: GenerationConfig
     cacheable: bool
+    # Whether this op validates its own output; only a text LLMChatOp does.
+    validates_output: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -19,6 +21,11 @@ class LLMOp(Op):
         super().__init__(inputs)
         self.config = config or GenerationConfig.from_env()
         self.cacheable = cacheable
+        if self.config.output_enforcement is not None and not self.validates_output:
+            raise ValueError(
+                f"{type(self).__name__} does not support config.output_enforcement;"
+                " use it only on LLMChatOp."
+            )
 
     def _serialize(self) -> dict[str, Any]:
         raise NotImplementedError()
@@ -30,6 +37,7 @@ class LLMOp(Op):
 
 @Op.registry.register("LLMChatOp")
 class LLMChatOp(LLMOp):
+    validates_output: ClassVar[bool] = True
     config: GenerationConfig
     return_history: bool
     structural_outputs: dict[str, Any] | list[dict[str, Any]] | None
@@ -221,6 +229,8 @@ def llm_completion(
 @Op.registry.register("LLMVisionOp")
 class LLMVisionOp(LLMChatOp):
     """LLMChatOp variant that consumes an image input via embedding."""
+
+    validates_output: ClassVar[bool] = False
 
     image_source: str
     image_path: str
