@@ -311,7 +311,9 @@ driver:
     stop_when_empty: "Advance_r{{prev}}"
 ```
 
-`first` runs as round 1 and `next` as every later round, with `{{round}}`
+`first`, `next` and `stop_when_empty` are all required: a template is a loop
+that stops on data, and a fixed-count loop is a static workflow. `first` runs
+as round 1 and `next` as every later round, with `{{round}}`
 and `{{prev}}` rendered into every string the body carries: each op's id, its
 node references and its arguments, and the export list. A LambdaOp's `code`
 is left alone, because it is Python source rather than a node reference.
