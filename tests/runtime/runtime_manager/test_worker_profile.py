@@ -5,18 +5,24 @@ from typing import Any
 
 import pytest
 from flowmesh.models.common import TaskType
-from flowmesh.models.workers import MemoryInfo, WorkerCapabilities
+from flowmesh.models.workers import (
+    GpuInfo,
+    GpuPlatformInfo,
+    MemoryInfo,
+    WorkerCapabilities,
+    WorkerHardware,
+    WorkerInfo,
+)
 
-from lumilake_server.runtime import _worker_fraction as w
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
 def _worker(
     worker_id: str,
     task_types: frozenset[TaskType],
-    hardware: w.WorkerHardware | None = None,
-) -> w.WorkerInfo:
-    return w.WorkerInfo(
+    hardware: WorkerHardware | None = None,
+) -> WorkerInfo:
+    return WorkerInfo(
         id=worker_id,
         namespace="ns",
         cluster="cluster-0",
@@ -28,7 +34,7 @@ def _worker(
     )
 
 
-def _serve(monkeypatch: pytest.MonkeyPatch, worker: w.WorkerInfo) -> None:
+def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
     payload = worker.model_dump(mode="json")
 
     async def fake_get(path: str) -> dict[str, Any]:
@@ -57,10 +63,10 @@ async def test_profile_keeps_the_hardware_sections(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gpu = w.GpuPlatformInfo(
-        devices=[w.GpuInfo(index=0, memory_fraction=0.3), w.GpuInfo(index=1)]
+    gpu = GpuPlatformInfo(
+        devices=[GpuInfo(index=0, memory_fraction=0.3), GpuInfo(index=1)]
     )
-    hardware = w.WorkerHardware(memory=MemoryInfo(total_bytes=1024), gpu=gpu)
+    hardware = WorkerHardware(memory=MemoryInfo(total_bytes=1024), gpu=gpu)
     _serve(monkeypatch, _worker("w", frozenset(), hardware))
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")

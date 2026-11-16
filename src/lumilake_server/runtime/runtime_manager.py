@@ -32,7 +32,6 @@ from pydantic import BaseModel
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.runtime import python_step
-from lumilake_server.runtime._worker_fraction import WorkerInfo
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
@@ -51,6 +50,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
+from lumilake_server.schemas.worker import WorkerInfo
 from lumilake_server.utils.job_storage import get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
