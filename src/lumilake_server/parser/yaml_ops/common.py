@@ -38,6 +38,23 @@ class OpEmitter:
     emit: Emitter
 
 
+def validate_op_config(
+    config_cls: type[Any], config: dict[str, Any], entry_id: str, op_kind: str
+) -> None:
+    """Run the op's own config validation here, where the user-facing op id is
+    known: the op constructor raises the same errors without an id."""
+    unknown = set(config) - {f.name for f in fields(config_cls)}
+    if unknown:
+        raise ValueError(
+            f"{op_kind} '{entry_id}' config has unknown fields: {sorted(unknown)}"
+        )
+    try:
+        config_cls(**config)
+    except ValueError as exc:
+        detail = str(exc).removeprefix(f"{op_kind} ")
+        raise ValueError(f"{op_kind} '{entry_id}' {detail}") from exc
+
+
 def build_generation_config(
     config: dict[str, Any], entry_id: str, op_kind: str = "LLMChatOp"
 ) -> dict[str, Any]:

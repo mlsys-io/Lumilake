@@ -35,6 +35,12 @@ def test_walk_raises_on_missing_key():
         _walk_output_path({"output": "x"}, ("metadata",), "node-3")
 
 
+def test_walk_reads_a_failed_rows_absent_field_as_null():
+    # A fail-open fetch row carries its error instead of a body.
+    item = {"index": 0, "status_code": 500, "error": "boom"}
+    assert _walk_output_path(item, ("json",), "node-fetch") is None
+
+
 def test_walk_raises_on_non_dict_descent():
     with pytest.raises(RuntimeError, match=r"missing field at path"):
         _walk_output_path({"output": 42}, ("output", "nested"), "node-4")

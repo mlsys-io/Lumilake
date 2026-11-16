@@ -14,7 +14,8 @@ class Phase(IntEnum):
     RETRIEVAL = 0
     LIST_LAMBDA = 1
     LLM = 2
-    ROW_LAMBDA = 3
+    DERIVED = 3
+    ROW_LAMBDA = 4
 
 
 @dataclass(frozen=True)

@@ -208,6 +208,38 @@ def main(inputs):
 """
 
 
+_PAIRS_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    queries, candidates = columns
+    for name, values in (("query", queries), ("candidate", candidates)):
+        if not values:
+            raise ValueError(
+                "%s: %s column is empty; classification needs at least one pair"
+                % (_NODE, name)
+            )
+    if len(queries) == 1:
+        queries = queries * len(candidates)
+    if len(queries) != len(candidates):
+        raise ValueError(
+            "%s: query column has %d values but candidate column has %d"
+            % (_NODE, len(queries), len(candidates))
+        )
+    for row, (query, candidate) in enumerate(zip(queries, candidates)):
+        for name, value in (("query", query), ("candidate", candidate)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    "%s: row %d %s must be a non-empty string, got %r"
+                    % (_NODE, row, name, value)
+                )
+    return {{"items": [
+        {{"text": query, "text_pair": candidate}}
+        for query, candidate in zip(queries, candidates)
+    ]}}
+"""
+
+
 def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
     """The python-task code for a flatten step: one rendered prompt per image."""
     return (_RESHAPE_PRELUDE + _FLATTEN_MAIN).format(
@@ -216,6 +248,36 @@ def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
         mount=TASK_RUNTIME_MOUNT,
         plan=json.dumps(plan),
         template=template,
+    )
+
+
+_FLATTEN_STEP_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    (values,) = columns
+    return {{"items": [_text(value) for value in values]}}
+"""
+
+
+def flatten_step_source(node_id: str, plan: ColumnPlan) -> str:
+    """The python-task code for expanding a grouped upstream column to one
+    value per row."""
+    return (_RESHAPE_PRELUDE + _FLATTEN_STEP_MAIN).format(
+        op_id=node_id,
+        module=TASK_RUNTIME_MODULE,
+        mount=TASK_RUNTIME_MOUNT,
+        plan=json.dumps(plan),
+    )
+
+
+def pairs_source(node_id: str, plan: ColumnPlan) -> str:
+    """The python-task code for reshaping query and candidate columns to pairs."""
+    return (_RESHAPE_PRELUDE + _PAIRS_MAIN).format(
+        op_id=node_id,
+        module=TASK_RUNTIME_MODULE,
+        mount=TASK_RUNTIME_MOUNT,
+        plan=json.dumps(plan),
     )
 
 
@@ -364,6 +426,10 @@ def flowmesh_spec(
         code = flatten_source(node_id, plan, data_spec["template"])
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
+    elif mode == "pairs":
+        code = pairs_source(node_id, plan)
+    elif mode == "flatten_step":
+        code = flatten_step_source(node_id, plan)
     else:
         code = wrapper_source(
             node_id, data_spec["fn_name"], data_spec["code"], plan, mode

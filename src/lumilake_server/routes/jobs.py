@@ -39,6 +39,7 @@ from flowmesh.models.result import (
     AnyExecutorResult,
     APIResult,
     BaseExecutorResult,
+    ClassificationResult,
     DataProfilingResult,
     DataRetrievalResult,
     EchoResult,
@@ -3972,11 +3973,32 @@ def _task_usage_from_result(
         if not isinstance(result.usage, GenerationUsage):
             return _UNKNOWN_USAGE
         return _inference_usage(result)
+    if isinstance(result, ClassificationResult):
+        return _classification_usage(result)
     if isinstance(result, _NO_USAGE_RESULT_TYPES):
         return None
     if _is_skipped_task(result):
         return None
     return _UNKNOWN_USAGE
+
+
+def _classification_usage(
+    result: ClassificationResult,
+) -> WorkflowUsage | _UnknownUsage:
+    """Map a classification result's pooling usage; the pass generates no
+    completion tokens."""
+    usage = result.usage
+    if usage is None:
+        return _UNKNOWN_USAGE
+    return WorkflowUsage(
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=0,
+        reasoning_tokens=0,
+        calls=usage.num_requests,
+        retries=0,
+        truncated_calls=0,
+        wall_sec=usage.latency_sec,
+    )
 
 
 def _is_skipped_task(result: AnyExecutorResult) -> bool:
