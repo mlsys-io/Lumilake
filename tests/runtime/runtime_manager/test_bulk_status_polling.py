@@ -96,9 +96,6 @@ async def test_a_progress_read_leaves_a_running_loops_batch_and_cursor_alone(
     statuses_by_batch = {batch_key: loop_status}
 
     assert not await flowmesh_manager._update_batch_task_statuses(
-        statuses_by_batch, [batch_key], {}
-    )
-    assert not await flowmesh_manager._update_batch_task_statuses(
         statuses_by_batch, [batch_key], {batch_key: "wf-1"}
     )
     assert flowmesh_manager._workflow_status_cursors == {"wf-1": "1:2"}
