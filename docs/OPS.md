@@ -100,8 +100,7 @@ consumer needing raw floats loads `embeddings.safetensors` and indexes by
 
 `ClassificationOp` classifies query/candidate pairs with a FlowMesh
 `classification` task and returns one `items[]` entry per pair, carrying the
-pair's `index` and the classifier's output. It needs FlowMesh `main`'s
-`classification` task type.
+pair's `index` and the classifier's output.
 `config` is required and supplies `model` and `backend` (`vllm` or
 `transformers`); the optional `vllm` mapping is passed to the vLLM engine. A
 vLLM node uses `model.vllm.convert: classify` and reports the head's sigmoid
@@ -143,12 +142,11 @@ outputs:
 ### HttpFetchOp
 
 `HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
-input. It needs FlowMesh `main`'s per-row URL and params rendering and
-request pacing. The `{query}` placeholder must appear in `url`, `params`,
-or a POST `body`; the runtime converts it to FlowMesh's `{{prompt}}`
-placeholder. The API executor URL-encodes a `{{prompt}}` in a URL and passes
-`params` to `httpx`, so query values in `params` use the same form encoding
-as `requests`.
+input. The `{query}` placeholder must appear in `url`, `params`, or a POST
+`body`; the runtime converts it to FlowMesh's `{{prompt}}` placeholder. The
+API executor URL-encodes a `{{prompt}}` in a URL and passes `params` to
+`httpx`, so query values in `params` use the same form encoding as
+`requests`.
 `config.headers` carries the request headers, including credentials such as
 an API key: keep credentials there rather than in `url`, `params`, or `body`,
 which are archived as written. `config.timeout_sec`, `config.retries` (at

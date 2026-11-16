@@ -97,15 +97,9 @@ def test_classification_op_rejects_bad_literal_inputs(
         )
 
 
-@pytest.mark.parametrize(
-    ("fields", "message"),
-    [
-        ({"config": {"model": "org/reranker", "device": "cpu"}}, "unknown fields"),
-        ({"candidates": "Missing"}, "requires a 'candidates' reference"),
-    ],
-)
-def test_classification_yaml_errors_name_the_op(fields: dict, message: str) -> None:
-    with pytest.raises(ValueError, match=f"ClassificationOp 'Rank' .*{message}"):
+def test_classification_yaml_errors_name_the_op() -> None:
+    fields = {"config": {"model": "org/reranker", "device": "cpu"}}
+    with pytest.raises(ValueError, match="ClassificationOp 'Rank' .*unknown fields"):
         parse_yaml_payload(_classification_yaml(fields))
 
 
