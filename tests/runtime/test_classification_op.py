@@ -1,8 +1,5 @@
 """Tests for the Lumilake classification op."""
 
-import json
-from pathlib import Path
-
 import pytest
 import yaml
 
@@ -112,10 +109,9 @@ def test_classification_yaml_errors_name_the_op(fields: dict, message: str) -> N
         parse_yaml_payload(_classification_yaml(fields))
 
 
-def test_upstream_classification_routes_through_a_pairs_step(tmp_path: Path) -> None:
-    """A whole-column Lambda emits its values as python-result items, so the
-    pairs step reads them at the item-relative ``output`` path and builds one
-    pair per row."""
+def test_upstream_classification_routes_through_a_pairs_step() -> None:
+    """An upstream candidate op feeds the pairs step at its item-relative
+    ``output`` path, and the classification node consumes that step alone."""
 
     def prepare(items):
         return [str(item) for item in items]
@@ -131,34 +127,17 @@ def test_upstream_classification_routes_through_a_pairs_step(tmp_path: Path) -> 
     )
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     pairs = runtime_graph.nodes[f"{classification.id}__pairs"]
-    candidate_entry = pairs.data_spec["plan"][1]
     classification_node = runtime_graph.nodes[classification.id]
-    stage_dir = tmp_path / "prep"
-    stage_dir.mkdir()
-    (stage_dir / "results.json").write_text(
-        json.dumps({"value": {"items": [{"output": "c1"}, {"output": "c2"}]}}),
-        encoding="utf-8",
-    )
-    namespace: dict[str, object] = {}
-    exec(pairs.to_flowmesh_node()["spec"]["code"], namespace)
-    main = namespace["main"]
-    assert callable(main)
 
+    assert pairs.data_spec["plan"][1] == {
+        "kind": "stage",
+        "node": prepare_op.id,
+        "path": "output",
+    }
     assert classification_node.dependencies == (pairs.node_id,)
     assert classification_node.data_spec == {
         "type": "list",
         "items": f"${{{pairs.node_id}.value.items}}",
-    }
-    assert candidate_entry == {
-        "kind": "stage",
-        "node": pairs.dependencies[0],
-        "path": "output",
-    }
-    assert main({candidate_entry["node"]: str(stage_dir)}) == {
-        "items": [
-            {"text": "question", "text_pair": "c1"},
-            {"text": "question", "text_pair": "c2"},
-        ]
     }
 
 

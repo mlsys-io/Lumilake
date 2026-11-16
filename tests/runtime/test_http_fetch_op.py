@@ -24,6 +24,25 @@ def _envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test" + "-token")
 
 
+def _fetch_yaml(fields: dict) -> str:
+    entry = {
+        "id": "Search",
+        "op": "HttpFetchOp",
+        "inputs": ["Query"],
+        "query": "Query",
+        "url": "http://fixture.test/s?q={query}",
+        **fields,
+    }
+    return yaml.safe_dump(
+        {
+            "name": "fetch",
+            "inputs": {"Query": ["first"]},
+            "ops": [entry],
+            "outputs": [{"name": "candidates", "ref": "Search"}],
+        }
+    )
+
+
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
@@ -36,25 +55,8 @@ def _envs(monkeypatch: pytest.MonkeyPatch) -> None:
 )
 def test_http_fetch_yaml_errors_name_the_op(fields: dict, message: str) -> None:
     """The parser runs the constructor's request and config checks, naming the op."""
-    entry = {
-        "id": "Search",
-        "op": "HttpFetchOp",
-        "inputs": ["Query"],
-        "query": "Query",
-        "url": "http://fixture.test/search?query={query}",
-        **fields,
-    }
-    yaml_text = yaml.safe_dump(
-        {
-            "name": "fetch_errors",
-            "inputs": {"Query": ["first"]},
-            "ops": [entry],
-            "outputs": [{"name": "candidates", "ref": "Search"}],
-        }
-    )
-
     with pytest.raises(ValueError, match=rf"HttpFetchOp 'Search' .*{message}"):
-        parse_yaml_payload(yaml_text)
+        parse_yaml_payload(_fetch_yaml(fields))
 
 
 def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
