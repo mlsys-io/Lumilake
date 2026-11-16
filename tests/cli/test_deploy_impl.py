@@ -901,7 +901,6 @@ def _patch_valid_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LUMILAKE_COST_DEFAULT_MODEL_SIZE_B": 20.0,
         "LUMILAKE_COST_INPUT_QUERY_COUNT": 1,
         "LUMILAKE_SCHEDULER_CUSTOM_ARGS": "{}",
-        "LUMILAKE_RUNTIME_MANAGER_TYPE": "default",
         "LUMILAKE_STARVATION_LIMIT": 3,
         "LUMILAKE_BATCH_ACCUMULATION_SECONDS": 0.0,
         "LUMILAKE_CPU_WORKER_GROUP_SIZE": 1,
