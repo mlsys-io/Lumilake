@@ -25,7 +25,6 @@ import httpx
 import yaml
 from flowmesh.exceptions import (
     APIError,
-    ChangeFeedUnavailableError,
     CursorExpiredError,
     FlowMeshConnectionError,
 )
@@ -438,11 +437,6 @@ class FlowmeshRuntimeManager:
             )
         except CursorExpiredError:
             raise
-        except ChangeFeedUnavailableError as e:
-            raise RuntimeError(
-                "FlowMesh has no task change feed; the server must run FlowMesh"
-                " 0.1.14 or later"
-            ) from e
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
 
