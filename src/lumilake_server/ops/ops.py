@@ -144,5 +144,6 @@ class Op(ABC):
     def __hash__(self) -> int:
         return hash(self.id)
 
+
 class FunctionalOp(Op):
     pass
