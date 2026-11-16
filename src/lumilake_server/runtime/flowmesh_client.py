@@ -9,7 +9,6 @@ and the SDK's ``api_key`` argument carries it through the SSE streaming path.
 import asyncio
 import contextvars
 import threading
-from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -95,12 +94,6 @@ def flowmesh_for_server() -> AsyncFlowMesh:
     Scheduler-internal only — route handlers must not call this.
     """
     return flowmesh_for_token(envs.RUNTIME_TOKEN)
-
-
-async def flowmesh_get_for_server(path: str) -> Any:
-    """``GET`` a FlowMesh endpoint as the scheduler credential, as decoded JSON."""
-    client = flowmesh_for_server()
-    return await client._request("GET", path)
 
 
 _DEFAULT_API_ORIGIN = "https://lum.id"

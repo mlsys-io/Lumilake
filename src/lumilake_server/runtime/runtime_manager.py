@@ -35,7 +35,6 @@ from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
     flowmesh_for_server,
-    flowmesh_get_for_server,
     is_api_origin_trusted,
     resolve_api_credential,
 )
@@ -50,7 +49,6 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
-from lumilake_server.schemas.worker import WorkerInfo
 from lumilake_server.utils.job_storage import get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
@@ -906,11 +904,10 @@ class FlowmeshRuntimeManager:
 
     async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
         """The worker's hardware sections, task types and per-device GPU fractions."""
-        raw_worker = await _retry_transient_read(
-            lambda: flowmesh_get_for_server(f"/workers/{worker_id}"),
+        worker = await _retry_transient_read(
+            lambda: flowmesh_for_server().workers.retrieve(worker_id),
             f"worker {worker_id}",
         )
-        worker = WorkerInfo.model_validate(raw_worker)
         assert worker.id == worker_id
         profile = worker.hardware.model_dump() if worker.hardware else {}
         profile["supported_task_types"] = sorted(

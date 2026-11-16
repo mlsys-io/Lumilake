@@ -34,15 +34,23 @@ def _worker(
     )
 
 
+class _FakeWorkersResource:
+    def __init__(self, worker: WorkerInfo) -> None:
+        self._worker = worker
+
+    async def retrieve(self, worker_id: str) -> WorkerInfo:
+        return self._worker
+
+
+class _FakeFlowMesh:
+    def __init__(self, worker: WorkerInfo) -> None:
+        self.workers = _FakeWorkersResource(worker)
+
+
 def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
-    payload = worker.model_dump(mode="json")
-
-    async def fake_get(path: str) -> dict[str, Any]:
-        return payload
-
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh_get_for_server",
-        fake_get,
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_server",
+        lambda: _FakeFlowMesh(worker),
     )
 
 
