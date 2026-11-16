@@ -37,9 +37,11 @@ class OutputKind(Enum):
     API_ITEM = "api_item"
     LIST_LAMBDA = "list_lambda"
     ROW_LAMBDA = "row_lambda"
+    ROW_GATED = "row_gated"
 
 
 _LAMBDA_KINDS = frozenset({OutputKind.LIST_LAMBDA, OutputKind.ROW_LAMBDA})
+_API_KINDS = frozenset({OutputKind.API_ROW, OutputKind.API_ITEM})
 
 
 @dataclass(frozen=True, slots=True)
