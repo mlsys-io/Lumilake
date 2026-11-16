@@ -29,6 +29,14 @@ class LoweringContext:
     nodes: dict[str, RuntimeOp]
     dsl_to_runtime: dict[str, list[str]]
     visited: set[str]
+    # Ops whose lowering has run, so an on-demand read lowers each only once
+    # and the phase loop skips it.
+    lowered: set[str]
+    # Emission order and the output maps, shared by the phase loop and any
+    # lowering that runs on demand.
+    node_order: list[str]
+    output_node_map: dict[str, str]
+    output_paths: dict[str, str]
 
 
 @dataclass

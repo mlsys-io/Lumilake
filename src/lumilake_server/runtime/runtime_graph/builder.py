@@ -46,6 +46,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
         output_node_map: dict[str, str] = {}
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
+        node_order: list[str] = []
 
         ctx = LoweringContext(
             graph_dict=graph_dict,
@@ -56,11 +57,12 @@ class RuntimeGraphBuilder(_VisionBuilder):
             nodes=nodes,
             dsl_to_runtime=dsl_to_runtime,
             visited=visited,
+            lowered=set(),
+            node_order=node_order,
+            output_node_map=output_node_map,
+            output_paths=output_paths,
         )
-        node_order: list[str] = []
-        self._lowering_order = node_order
-        self._lowering_outputs = (output_node_map, output_paths)
-        self._lower_ops(ctx, node_order, output_node_map, output_paths)
+        self._lower_ops(ctx)
 
         if task_type_override != "data_profile":
             unvisited_node_ids = set(graph_dict) - visited
@@ -118,13 +120,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 )
         return outputs_by_source
 
-    def _lower_ops(
-        self,
-        ctx: LoweringContext,
-        node_order: list[str],
-        output_node_map: dict[str, str],
-        output_paths: dict[str, str],
-    ) -> None:
+    def _lower_ops(self, ctx: LoweringContext) -> None:
         """Run every registered lowering, one phase at a time, adding each
         result's nodes to the graph in emission order and recording the output
         each op archives at as it lowers."""
@@ -133,12 +129,12 @@ class RuntimeGraphBuilder(_VisionBuilder):
             if profile and phase is not Phase.RETRIEVAL:
                 continue
             for op in ctx.graph_dict.values():
+                if op.id in ctx.lowered:
+                    continue
                 lowering = lookup(op, phase)
                 if lowering is None:
                     continue
-                self._run_lowering(
-                    lowering, op, ctx, node_order, output_node_map, output_paths
-                )
+                self._run_lowering(lowering, op, ctx)
             after = phase_hook(phase)
             if after is not None:
                 after(self, ctx)
@@ -147,8 +143,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
         self,
         op: Op,
         ctx: LoweringContext,
-        output_node_map: dict[str, str],
-        output_paths: dict[str, str],
     ) -> None:
         """Record the output an op archives at, if an OutputOp reads it."""
         outputs = ctx.outputs_by_source.get(op.id)
@@ -157,10 +151,10 @@ class RuntimeGraphBuilder(_VisionBuilder):
             return
         ((output_name, path_override),) = outputs
         node_id = runtime_ids[-1]
-        output_node_map[node_id] = output_name
+        ctx.output_node_map[node_id] = output_name
         path = path_override or self._op_output(op).default_output_path
         if path is not None:
-            output_paths[node_id] = path
+            ctx.output_paths[node_id] = path
 
     def _ensure_lowered(self, op: Op, phase: Phase, ctx: LoweringContext) -> None:
         """Lower ``op`` on demand when a lowering reads it before its phase runs.
@@ -176,29 +170,16 @@ class RuntimeGraphBuilder(_VisionBuilder):
         lowering = lookup(op, phase)
         if lowering is None:
             return
-        output_node_map, output_paths = self._lowering_outputs
         if isinstance(op, LambdaOp) and not op.takes_whole_columns:
-            self._run_lowering(
-                _lower_row_lambda_on_demand,
-                op,
-                ctx,
-                self._lowering_order,
-                output_node_map,
-                output_paths,
-            )
+            self._run_lowering(_lower_row_lambda_on_demand, op, ctx)
             return
-        self._run_lowering(
-            lowering, op, ctx, self._lowering_order, output_node_map, output_paths
-        )
+        self._run_lowering(lowering, op, ctx)
 
     def _run_lowering(
         self,
         lowering: Any,
         op: Op,
         ctx: LoweringContext,
-        node_order: list[str],
-        output_node_map: dict[str, str],
-        output_paths: dict[str, str],
     ) -> None:
         """Run one lowering, adding its nodes in emission order and recording
         the output the op archives at."""
@@ -209,7 +190,7 @@ class RuntimeGraphBuilder(_VisionBuilder):
             if node.node_id in ctx.nodes:
                 continue
             ctx.nodes[node.node_id] = node
-            node_order.append(node.node_id)
+            ctx.node_order.append(node.node_id)
         ctx.dsl_to_runtime.update(result.built)
         own = [
             node.node_id for node in result.nodes if node.node_id not in result.built
@@ -217,7 +198,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
         if own:
             ctx.dsl_to_runtime[op.id] = own
         ctx.visited.add(op.id)
-        self._record_output(op, ctx, output_node_map, output_paths)
+        ctx.lowered.add(op.id)
+        self._record_output(op, ctx)
 
 
 def _lower_row_lambda_on_demand(builder: Any, op: Op, ctx: Any) -> LoweringResult:
