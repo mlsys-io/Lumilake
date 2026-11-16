@@ -1153,6 +1153,7 @@ class DPSolver:
             float(worker.capacity),
             state.last_model_id,
             state.last_node_id,
+            worker.gpu_memory_fraction or -1.0,
         )
 
     def _dedup_worker_assignments(

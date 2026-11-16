@@ -12,6 +12,7 @@ from lumilake_server.ops import (
     LLMOp,
     MessageOp,
     Op,
+    RowShape,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
@@ -57,6 +58,7 @@ class OpOutput:
     kind: OutputKind
     one_item_per_row: bool
     needs_flatten: bool
+    step_node: str | None = None
 
     def read(self, declared: str, consumer: str) -> str:
         """Map a declared ``items.output``-rooted read onto this output."""
@@ -64,13 +66,31 @@ class OpOutput:
             return declared
         if declared == _WHOLE:
             return self.path
-        if declared.startswith(_WHOLE) and self.kind not in (
-            OutputKind.API_ROW,
-            OutputKind.API_ITEM,
-        ):
+        if declared.startswith(_WHOLE) and self.kind not in _API_KINDS:
             if self.kind is OutputKind.ROW_LAMBDA:
                 return "value.items.value." + declared[len(_WHOLE) + 1 :]
             return "value." + declared
+        raise ValueError(self._unreadable_message(declared, consumer))
+
+    def step_read(self, declared: str, consumer: str) -> str | None:
+        """Map a declared read onto a python step plan path, relative to one
+        item; ``None`` reads the whole item. A grouped upstream is flattened
+        instead, so it supports only ``items.output``."""
+        if self.kind is not OutputKind.ROW_GATED:
+            if self.needs_flatten:
+                if declared in ("", _WHOLE):
+                    return None
+                raise ValueError(self._unreadable_message(declared, consumer))
+            if declared in ("", _WHOLE):
+                return None
+            if declared.startswith(_WHOLE):
+                return declared[len("items.") :]
+            raise ValueError(self._unreadable_message(declared, consumer))
+        if declared in ("", _WHOLE, self.path):
+            return "value.output"
+        prefix = self.path + "."
+        if declared.startswith(prefix):
+            return "value.output." + declared[len(prefix) :]
         raise ValueError(self._unreadable_message(declared, consumer))
 
     def _unreadable_message(self, declared: str, consumer: str) -> str:
@@ -78,6 +98,15 @@ class OpOutput:
         if self.kind is OutputKind.FLATTENED:
             return (
                 f"{head} per-row VLM '{self.node}'; only 'items.output' is supported."
+            )
+        if self.kind is OutputKind.ROW_GATED:
+            return (
+                f"{head} row-gated op '{self.node}'; only 'items.output'"
+                f" or a field under it is supported."
+            )
+        if self.needs_flatten:
+            return (
+                f"{head} rowwise LLM '{self.node}'; only 'items.output' is supported."
             )
         noun = "Lambda" if self.kind in _LAMBDA_KINDS else "API upstream"
         return (
@@ -95,11 +124,10 @@ def is_api_task(op: Op) -> bool:
     )
 
 
-def is_rowwise_llm(op: Op | None) -> TypeGuard[LLMChatOp]:
-    """Whether a chat op builds one prompt per row."""
-    return isinstance(op, LLMChatOp) and bool(
-        op.rowwise_template or op.rowwise_messages_column
-    )
+def is_row_gated(op: Op) -> TypeGuard[LLMChatOp]:
+    """Whether a chat op lowers to a row gate's status, selection, gated call
+    and merge stages instead of one node."""
+    return isinstance(op, LLMChatOp) and op.row_gate is not None
 
 
 def emits_one_item_per_row(op: Op) -> bool:
@@ -107,7 +135,11 @@ def emits_one_item_per_row(op: Op) -> bool:
     row, so a ``node``/``path`` reference resolves to one value per row."""
     if isinstance(op, LLMCompletionOp):
         return True
-    return isinstance(op, LLMChatOp) and not is_rowwise_llm(op) and not is_api_task(op)
+    return (
+        isinstance(op, LLMChatOp)
+        and op.row_shape is RowShape.PER_ROW
+        and not is_api_task(op)
+    )
 
 
 def needs_flatten(op: Op) -> bool:
@@ -116,7 +148,7 @@ def needs_flatten(op: Op) -> bool:
     return (
         isinstance(op, LLMChatOp)
         and not isinstance(op, LLMVisionOp)
-        and is_rowwise_llm(op)
+        and op.row_shape is RowShape.GROUPED
     )
 
 
@@ -128,10 +160,30 @@ def op_output(
 ) -> OpOutput:
     """Describe how a consumer reads ``op``'s values: the emitting node, the
     envelope path, the row count, and what an OutputOp archives."""
+    if is_row_gated(op):
+        # A gated op has no node of its own: its merge stage is its output, one
+        # item per input row holding the served answer under ``output`` and
+        # ``None`` for a row the gate skipped.
+        path = "value.items.output"
+        return OpOutput(
+            node=f"{op.id}__rows",
+            path=path,
+            row_count=output_row_count(op, inputs_dict, graph_dict),
+            default_output_path=_WHOLE,
+            kind=OutputKind.ROW_GATED,
+            one_item_per_row=False,
+            needs_flatten=False,
+            step_node=f"{op.id}__row_status",
+        )
     if op.id in flattened_vlm_ids:
         kind = OutputKind.FLATTENED
     elif is_api_task(op):
-        kind = OutputKind.API_ROW if is_rowwise_llm(op) else OutputKind.API_ITEM
+        rowwise = (
+            isinstance(op, LLMChatOp)
+            and op.row_shape is RowShape.GROUPED
+            and not isinstance(op, LLMVisionOp)
+        )
+        kind = OutputKind.API_ROW if rowwise else OutputKind.API_ITEM
     elif isinstance(op, LambdaOp):
         kind = (
             OutputKind.LIST_LAMBDA if op.takes_whole_columns else OutputKind.ROW_LAMBDA

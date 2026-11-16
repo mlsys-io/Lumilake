@@ -77,6 +77,8 @@ from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
+    gpu_memory_fraction,
+    holds_gpu_utilizations,
     required_task_types,
     requires_cpu_worker,
 )
@@ -1074,16 +1076,33 @@ class LumilakeServer:
             cpu_group_size = 1
         hardware = batch.config.hardware_requirements
         required = self._batch_required_task_types(batch)
+        required_gpu_utilizations = self._batch_gpu_utilizations(batch)
         selected = free.eligible_workers(
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=self._worker_meets_hardware,
             hardware=hardware,
             required_task_types=required,
+            required_gpu_utilizations=required_gpu_utilizations,
         )
-        if selected is None and required:
+        enough_by_count = (
+            free.gpu_count >= gpu_group_size and free.cpu_count >= cpu_group_size
+        )
+        if (
+            selected is None
+            and enough_by_count
+            and (required or required_gpu_utilizations)
+        ):
+            # Only a refusal from a gate can be permanent; too few idle workers
+            # is capacity, so the batch just waits without a cluster read.
             total = await self._snapshot_total_capacity()
-            if not total.has_cpu_worker_advertising(required):
+            if not (
+                (not required or total.has_cpu_worker_advertising(required))
+                and (
+                    not required_gpu_utilizations
+                    or total.has_gpu_worker_holding(required_gpu_utilizations)
+                )
+            ):
                 # No worker in the cluster can ever run this batch: claim as if
                 # unconstrained so the optimizer fails it with a clear error
                 # instead of leaving it waiting for capacity that never appears.
@@ -1206,7 +1225,23 @@ class LumilakeServer:
                     "No GPU worker meets the requested hardware for schedule "
                     "preview, but graph contains GPU nodes"
                 )
-            selected_workers.append(gpu_workers[0])
+            gpu_utilizations = frozenset(
+                op.gpu_memory_utilization
+                for op in runtime_graph.nodes.values()
+                if self._requires_gpu(op) and op.gpu_memory_utilization is not None
+            )
+            holding = [
+                worker
+                for worker in gpu_workers
+                if holds_gpu_utilizations(normalized_profiles[worker], gpu_utilizations)
+            ]
+            if not holding:
+                raise RuntimeError(
+                    "No GPU worker's memory fraction holds the "
+                    f"{max(gpu_utilizations):g} gpu_memory_utilization the graph "
+                    "requests for schedule preview"
+                )
+            selected_workers.append(holding[0])
         if requires_cpu:
             if not cpu_workers:
                 raise RuntimeError(
@@ -1369,6 +1404,16 @@ class LumilakeServer:
             for op in runtime_graph.nodes.values()
         )
 
+    @classmethod
+    def _batch_gpu_utilizations(cls, batch: BatchSelection) -> frozenset[float]:
+        """The card fractions the batch's GPU nodes reserve for their engines."""
+        return frozenset(
+            op.gpu_memory_utilization
+            for runtime_graph in batch.runtime_graphs.values()
+            for op in runtime_graph.nodes.values()
+            if cls._requires_gpu(op) and op.gpu_memory_utilization is not None
+        )
+
     @staticmethod
     def _batch_requires_cpu(batch: BatchSelection) -> bool:
         """A configured CPU group size of 0 is only valid alongside a nonzero
@@ -1392,6 +1437,7 @@ class LumilakeServer:
             "supported_task_types": list(
                 worker_profile.get("supported_task_types", ())
             ),
+            "gpu_memory_fraction": gpu_memory_fraction(worker_profile),
         }
 
     @staticmethod

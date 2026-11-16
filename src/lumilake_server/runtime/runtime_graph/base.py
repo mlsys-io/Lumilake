@@ -7,10 +7,12 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
 from lumilake_server.ops import (
     InputOp,
+    LambdaOp,
     LLMOp,
     Op,
 )
 from lumilake_server.runtime import python_step
+from lumilake_server.runtime.runtime_graph.lowering import Phase
 from lumilake_server.runtime.runtime_graph.outputs import (
     OpOutput,
     op_output,
@@ -48,17 +50,38 @@ class _RuntimeGraphBuilderBase:
         # resolve a forwarded reference to a literal input.
         self._read_graph_dict: dict[str, Op] = {}
 
-    def _graph_node(self, node_ref: str, graph_dict: dict[str, Op]) -> Op | None:
-        """Resolve a node reference, falling back to the graph's input ops.
+    def _lower_for_read(self, op: Op, ctx: Any) -> None:
+        """Lower ``op`` before a consumer reads it, when it has not lowered yet.
+
+        A row gate's source and gated columns, and a list Lambda that reads a
+        gated op, may be read before their phase runs, so the consumer lowers
+        them first. The phase follows the op's class: an LLM lowers in the LLM
+        phase, a Lambda in the list phase. ``_ensure_lowered`` is defined on
+        ``RuntimeGraphBuilder``, which every builder in the chain inherits.
+        """
+        if op.id in ctx.visited:
+            return
+        if isinstance(op, LambdaOp):
+            phase = Phase.LIST_LAMBDA
+        elif isinstance(op, LLMOp):
+            phase = Phase.LLM
+        else:
+            return
+        self._ensure_lowered(op, phase, ctx)
+
+    def _ensure_lowered(self, op: Op, phase: Phase, ctx: Any) -> None:
+        """Lower ``op`` in ``phase`` now; ``RuntimeGraphBuilder`` owns the
+        ordering, so the base declares the hook and the builder implements it."""
+        raise NotImplementedError
+
+    def _graph_node(self, node_ref: str) -> Op | None:
+        """Resolve a node reference against the graph and its input ops.
 
         A column, param or image source names a node by id rather than through
         an input edge, so a literal InputOp named only that way is absent from
-        the sorted op dict.
+        the sorted op dict; ``_read_graph_dict`` folds the inputs in.
         """
-        op = graph_dict.get(node_ref)
-        if op is None:
-            op = self._input_ops_by_id.get(node_ref)
-        return op
+        return self._read_graph_dict.get(node_ref)
 
     @staticmethod
     def _python_plan_entry(
