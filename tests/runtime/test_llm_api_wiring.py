@@ -142,6 +142,19 @@ def test_api_samplers_flow_into_body() -> None:
     assert body["temperature"] == 0.5
 
 
+def test_api_output_enforcement_reaches_task_spec() -> None:
+    runtime_graph, llm_id = _build_api_graph(output_enforcement={"text_regex": "x"})
+    node = runtime_graph.with_node_prefix("run").nodes[f"run__{llm_id}"]
+    assert node.to_flowmesh_node()["spec"]["output_enforcement"]["text_regex"] == "x"
+
+
+def test_output_enforcement_rejected_on_vision_op() -> None:
+    kwargs: dict = {"output_enforcement": {"text_regex": "x"}}
+    config = GenerationConfig(model="m", **kwargs)
+    with pytest.raises(ValueError, match="does not support"):
+        LLMVisionOp([OpMessage("user", "x")], "images", config=config)
+
+
 def test_api_key_redacted_on_serialization() -> None:
     """The Authorization header carries only the constant placeholder in the
     graph; the real credential never appears in the serialized spec."""

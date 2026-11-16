@@ -104,6 +104,11 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
         ),
         normalized_dependencies,
         _stable_json(op.condition) if op.condition is not None else None,
+        (
+            _stable_json(op.output_enforcement)
+            if op.output_enforcement is not None
+            else None
+        ),
     )
 
 

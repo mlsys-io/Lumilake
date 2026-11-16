@@ -117,16 +117,42 @@ class ApiConfig:
 
 
 @dataclass
+class OutputEnforcement:
+    """Retry or constrain generated output, then validate the final text."""
+
+    mode: str = "retry"
+    max_attempts: int = 1
+    json_schema: dict[str, Any] | None = None
+    text_regex: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"retry", "constrained"}:
+            raise ValueError("output_enforcement.mode must be retry or constrained")
+        if isinstance(self.max_attempts, bool) or not isinstance(
+            self.max_attempts, int
+        ):
+            raise ValueError("output_enforcement.max_attempts must be an integer")
+        if not 1 <= self.max_attempts <= 10:
+            raise ValueError("output_enforcement.max_attempts must be in [1, 10]")
+        if (self.json_schema is None) == (self.text_regex is None):
+            raise ValueError(
+                "output_enforcement requires exactly one of json_schema or text_regex"
+            )
+
+
+@dataclass
 class GenerationConfig:
     """LLM generation parameters; ``model`` is required in both local and API
     mode, so ``config.api`` routes the op externally without relaxing it."""
 
     model: str = ""
     api: ApiConfig | None = None
+    output_enforcement: OutputEnforcement | None = None
     frequency_penalty: float | None = None
     logit_bias: dict[str, int] | None = None
     logprobs: int | None = None
     max_tokens: int | None = None
+    num_beams: int | None = None
     n: int | None = None
     presence_penalty: float | None = None
     seed: int | None = None
@@ -153,12 +179,14 @@ class GenerationConfig:
     # Stripped by openai_kwargs() — OpenAI Chat API rejects these.
     _NON_OPENAI_FIELDS: ClassVar[tuple[str, ...]] = (
         "api",
+        "output_enforcement",
         "ignore_eos",
         "chat_template_kwargs",
         "repetition_penalty",
         "top_k",
         "min_p",
         "min_tokens",
+        "num_beams",
         "extra_sampling_params",
         "max_model_len",
         "gpu_memory_utilization",
@@ -171,6 +199,7 @@ class GenerationConfig:
         {
             "model",
             "api",
+            "output_enforcement",
             "stream",
             "stream_options",
             "extra_sampling_params",
@@ -197,9 +226,33 @@ class GenerationConfig:
                 "GenerationConfig.api must be a mapping or ApiConfig, got "
                 f"{type(self.api).__name__}."
             )
+        if isinstance(self.output_enforcement, dict):
+            self.output_enforcement = OutputEnforcement(**self.output_enforcement)
+        elif self.output_enforcement is not None and not isinstance(
+            self.output_enforcement, OutputEnforcement
+        ):
+            raise ValueError(
+                "GenerationConfig.output_enforcement must be a mapping or "
+                "OutputEnforcement, got "
+                f"{type(self.output_enforcement).__name__}."
+            )
+        if self.num_beams is not None:
+            if isinstance(self.num_beams, bool) or not isinstance(self.num_beams, int):
+                raise ValueError("num_beams must be an integer")
+            if self.num_beams < 1:
+                raise ValueError("num_beams must be at least 1")
         if not self.model:
             raise ValueError(
                 "GenerationConfig.model is required in both local and API mode."
+            )
+        if (
+            self.api is not None
+            and self.output_enforcement is not None
+            and self.output_enforcement.mode == "constrained"
+        ):
+            raise ValueError(
+                "constrained output_enforcement is available only for local vLLM "
+                "inference, not API ops."
             )
 
     def resolved_model(self) -> str:
@@ -236,6 +289,12 @@ class GenerationConfig:
             )
         spec.update(extras)
         return spec
+
+    def output_enforcement_spec(self) -> dict[str, Any] | None:
+        """The enforcement block as a plain mapping, or ``None`` when unset."""
+        if self.output_enforcement is None:
+            return None
+        return asdict(self.output_enforcement)
 
     def engine_overlay(self) -> dict[str, Any]:
         """Engine-level typed fields + extra_engine_kwargs. Raises on conflict."""

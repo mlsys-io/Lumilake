@@ -363,6 +363,8 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
               presence_penalty: 1.5
               repetition_penalty: 1.0
               min_tokens: 4
+              num_beams: 3
+              output_enforcement: {text_regex: "^ok$"}
               chat_template_kwargs:
                 enable_thinking: false
               extra_sampling_params:
@@ -381,6 +383,10 @@ def test_llm_config_accepts_extended_sampler_fields() -> None:
     assert cfg["min_tokens"] == 4
     assert cfg["chat_template_kwargs"] == {"enable_thinking": False}
     assert cfg["extra_sampling_params"] == {"length_penalty": 1.1}
+    (llm,) = list(Graph.from_json(graph_dict).iter_ops(LLMChatOp))
+    built = RuntimeGraphBuilder().build(Graph.from_json(graph_dict).compile())
+    assert built.nodes[llm.id].inference_spec["num_beams"] == 3
+    assert (built.nodes[llm.id].output_enforcement or {})["text_regex"] == "^ok$"
 
 
 def test_llm_config_accepts_api_block() -> None:

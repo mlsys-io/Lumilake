@@ -38,6 +38,9 @@ outputs:
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, and `LambdaOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
+`LLMChatOp` supports output validation and local beam search; see
+[`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its

@@ -43,3 +43,18 @@ def test_generation_config_rejects_non_dict_api() -> None:
     non-``ApiConfig``, non-``None`` value for ``api``."""
     with pytest.raises(ValueError, match="api must be a mapping or ApiConfig"):
         GenerationConfig(model="local-model", api="x")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"output_enforcement": {"text_regex": "x", "json_schema": {}}},
+        {"output_enforcement": {"mode": "x", "text_regex": "x"}},
+        {"output_enforcement": {"max_attempts": 0, "text_regex": "x"}},
+        {"num_beams": 0},
+        {"num_beams": True},
+    ],
+)
+def test_generation_config_rejects_invalid_options(kwargs: dict) -> None:
+    with pytest.raises(ValueError):
+        GenerationConfig(model="m", **kwargs)
