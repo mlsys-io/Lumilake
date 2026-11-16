@@ -1,17 +1,15 @@
 from lumilake_server.graphs import CompiledGraph
-from lumilake_server.ops import (
-    DataRetrievalOp,
-    LambdaOp,
-    LLMOp,
-    OutputOp,
-)
-from lumilake_server.ops.llm_ops import (
-    LLMChatOp,
-    LLMVisionOp,
-)
+from lumilake_server.ops import Op, OutputOp
 from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
+)
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    Phase,
+    has_lowering,
+    lookup,
+    phase_hook,
 )
 from lumilake_server.runtime.runtime_graph.vision import _VisionBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -29,248 +27,41 @@ class RuntimeGraphBuilder(_VisionBuilder):
         input_ops_by_id = {op.id: op for op in compiled_graph.graph.input_ops.values()}
         self._inputs_dict = inputs_dict
         self._graph_dict = graph_dict
-        self._flattened_vlm_ids = {
-            op_id
-            for op_id, op in graph_dict.items()
-            if isinstance(op, LLMVisionOp)
-            and op.rowwise_template
-            and isinstance(graph_dict.get(op.image_source), DataRetrievalOp)
-        }
+        self._flattened_vlm_ids = self._flattened_vision_ids(graph_dict)
 
-        visited_node_ids: set[str] = set()
-        llm_ops: dict[str, LLMOp] = {}
-        retrieval_ops: dict[str, DataRetrievalOp] = {}
-        list_lambda_ops: dict[str, LambdaOp] = {}
-        output_source_to_outputop: dict[str, list[tuple[str, str | None]]] = {}
-        for op_id, op in graph_dict.items():
-            if isinstance(op, LLMOp):
-                llm_ops[op_id] = op
-                visited_node_ids.add(op_id)
-            elif isinstance(op, DataRetrievalOp):
-                retrieval_ops[op_id] = op
-                visited_node_ids.add(op_id)
-            elif isinstance(op, LambdaOp) and op.takes_whole_columns:
-                list_lambda_ops[op_id] = op
-                visited_node_ids.add(op_id)
-            if isinstance(op, OutputOp):
-                assert len(op.inputs) == 1, "OutputOp should have exactly one input"
-                source = op.inputs[0]
-                if not isinstance(source, (LLMOp, DataRetrievalOp, LambdaOp)):
-                    raise ValueError(
-                        f"OutputOp '{op.name}' input must be an LLMOp, "
-                        f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
-                    )
-                visited_node_ids.add(op_id)
-                output_source_to_outputop.setdefault(source.id, []).append(
-                    (op.name, op.path)
-                )
-
-        for source_id, outputs in output_source_to_outputop.items():
-            if len(outputs) > 1:
-                names = ", ".join(name for name, _ in outputs)
-                raise ValueError(
-                    f"Multiple OutputOps ({names}) target the same source node "
-                    f"'{source_id}'. A runtime node produces a single output; "
-                    "project multiple outputs from one source by adding an "
-                    "intermediate LambdaOp instead."
-                )
-
-        has_lambda = any(isinstance(op, LambdaOp) for op in graph_dict.values())
-        if not llm_ops and not retrieval_ops and not has_lambda:
+        visited: set[str] = set()
+        output_source_to_outputop = self._collect_outputs(graph_dict, visited)
+        if not any(has_lowering(op) for op in graph_dict.values()):
             raise ValueError(
                 "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
-        node_order: list[str] = []
         output_node_map: dict[str, str] = {}
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
 
-        for retrieval_op_id, retrieval_op in retrieval_ops.items():
-            self._mark_retrieval_upstream_nodes_visited(
-                op=retrieval_op,
-                graph_dict=graph_dict,
-                visited_node_ids=visited_node_ids,
-            )
-            if task_type_override == "data_profile":
-                runtime_op = self._build_data_profile_node_from_data_retrieval_op(
-                    retrieval_op_id,
-                    retrieval_op,
-                    graph_dict,
-                    inputs_dict,
-                    input_ops_by_id,
-                )
-                if runtime_op is None:
-                    continue
-            else:
-                runtime_op = self._build_node_from_data_retrieval_op(
-                    retrieval_op_id,
-                    retrieval_op,
-                    graph_dict,
-                    inputs_dict,
-                    input_ops_by_id,
-                )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[retrieval_op_id] = [runtime_op.node_id]
-
-            if retrieval_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[
-                    retrieval_op_id
-                ]
-                output_node_map[runtime_op.node_id] = output_name
-                default_path = self._op_output(retrieval_op).default_output_path
-                assert default_path is not None
-                output_paths[runtime_op.node_id] = path_override or default_path
-
-        for lambda_op_id, lambda_op in list_lambda_ops.items():
-            if task_type_override == "data_profile":
-                continue
-            for input_op in lambda_op.inputs:
-                visited_node_ids.add(input_op.id)
-            runtime_op = self._build_node_from_list_lambda_op(
-                lambda_op_id,
-                lambda_op,
-                graph_dict,
-                inputs_dict,
-            )
-            nodes[runtime_op.node_id] = runtime_op
-            node_order.append(runtime_op.node_id)
-            dsl_to_runtime[lambda_op_id] = [runtime_op.node_id]
-
-            if lambda_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[
-                    lambda_op_id
-                ]
-                output_node_map[runtime_op.node_id] = output_name
-                default_path = self._op_output(lambda_op).default_output_path
-                assert default_path is not None
-                output_paths[runtime_op.node_id] = path_override or default_path
-
-        for llm_op_id, llm_op in llm_ops.items():
-            if task_type_override == "data_profile":
-                continue
-
-            runtime_ops: list[RuntimeOp] = []
-            mapping: list[str] = []
-            output_node_ids: list[str] = [llm_op_id]
-            if isinstance(llm_op, LLMVisionOp):
-                runtime_ops, mapping = self._build_vlm_nodes_from_image_op(
-                    llm_op_id,
-                    llm_op,
-                    graph_dict,
-                    inputs_dict,
-                    visited_node_ids,
-                    dsl_to_runtime=dsl_to_runtime,
-                    runtime_nodes=nodes,
-                )
-            elif task_type_override != "data_profile" and llm_op.config.api is not None:
-                upstream_llm_ids, template_spec = self._infer_structural_messages(
-                    llm_op_id,
-                    graph_dict,
-                    inputs_dict,
-                    visited_node_ids,
-                    dsl_to_runtime=dsl_to_runtime,
-                    runtime_nodes=nodes,
-                    api_mode=True,
-                )
-                runtime_ops = self._build_api_llm_op(
-                    llm_op_id=llm_op_id,
-                    llm_op=llm_op,
-                    api_config=llm_op.config.api,
-                    template_spec=template_spec,
-                    upstream_llm_ids=upstream_llm_ids,
-                    output_spec=None,
-                    condition=(
-                        llm_op.condition if isinstance(llm_op, LLMChatOp) else None
-                    ),
-                    graph_dict=graph_dict,
-                    inputs_dict=inputs_dict,
-                    dsl_to_runtime=dsl_to_runtime,
-                )
-                mapping = [runtime_op.node_id for runtime_op in runtime_ops]
-                output_node_ids = mapping
-            else:
-                runtime_ops = [
-                    self._build_node_from_llm_op(
-                        llm_op_id,
-                        llm_op,
-                        graph_dict,
-                        inputs_dict,
-                        visited_node_ids,
-                        task_type_override=task_type_override,
-                        dsl_to_runtime=dsl_to_runtime,
-                        runtime_nodes=nodes,
-                    )
-                ]
-                mapping = [llm_op_id]
-
-            for runtime_op in runtime_ops:
-                if runtime_op.node_id in nodes:
-                    continue
-                nodes[runtime_op.node_id] = runtime_op
-                node_order.append(runtime_op.node_id)
-
-            dsl_to_runtime[llm_op_id] = mapping
-
-            if llm_op_id in output_source_to_outputop:
-                ((output_name, path_override),) = output_source_to_outputop[llm_op_id]
-                for output_node_id in output_node_ids:
-                    output_node_map[output_node_id] = output_name
-                    if path_override:
-                        output_paths[output_node_id] = path_override
-                    elif default_path := self._op_output(llm_op).default_output_path:
-                        output_paths[output_node_id] = default_path
+        ctx = LoweringContext(
+            graph_dict=graph_dict,
+            inputs_dict=inputs_dict,
+            input_ops_by_id=input_ops_by_id,
+            task_type_override=task_type_override,
+            outputs_by_source=output_source_to_outputop,
+            nodes=nodes,
+            dsl_to_runtime=dsl_to_runtime,
+            visited=visited,
+        )
+        node_order = self._lower_ops(ctx, output_node_map, output_paths)
 
         if task_type_override != "data_profile":
-            # A LambdaOp is inlined into the LLM that consumes it (traced above).
-            # One that is an output, that no LLM reached, that has an image, or
-            # that a runtime node references runs on its own as a python step —
-            # see runtime/python_step.py.
-            referenced = self._referenced_row_lambdas(nodes, graph_dict)
-            standalone = [
-                op_id
-                for op_id, op in graph_dict.items()
-                if isinstance(op, LambdaOp)
-                and not op.takes_whole_columns
-                and (
-                    op_id not in visited_node_ids
-                    or op_id in output_source_to_outputop
-                    or op.image is not None
-                    or op_id in referenced
+            unvisited_node_ids = set(graph_dict) - visited
+            if unvisited_node_ids:
+                raise ValueError(
+                    f"Graph transformation failed: {len(unvisited_node_ids)} node(s)"
+                    " were not visited during traversal, indicating orphaned or"
+                    " unreachable ops. Unvisited node IDs:"
+                    f" {sorted(unvisited_node_ids)}"
                 )
-            ]
-            for lambda_id in standalone:
-                self._build_python_step(
-                    lambda_id,
-                    graph_dict,
-                    inputs_dict,
-                    visited_node_ids,
-                    nodes,
-                    node_order,
-                    dsl_to_runtime,
-                )
-                if lambda_id in output_source_to_outputop:
-                    ((output_name, path_override),) = output_source_to_outputop[
-                        lambda_id
-                    ]
-                    output_node_map[lambda_id] = output_name
-                    if path_override:
-                        output_paths[lambda_id] = path_override
-
-        if task_type_override != "data_profile":
-            self._check_inlined_lambda_refs(nodes, graph_dict)
-
-        all_node_ids = set(graph_dict.keys())
-        unvisited_node_ids = all_node_ids - visited_node_ids
-
-        if task_type_override != "data_profile" and unvisited_node_ids:
-            raise ValueError(
-                f"Graph transformation failed: {len(unvisited_node_ids)} node(s) were"
-                " not visited during traversal, indicating orphaned or unreachable"
-                f" ops. Unvisited node IDs: {sorted(unvisited_node_ids)}"
-            )
 
         runtime_graph = RuntimeGraph(
             nodes=nodes,
@@ -285,3 +76,93 @@ class RuntimeGraphBuilder(_VisionBuilder):
                 make_node_prefix(node_prefix)
             )
         return runtime_graph
+
+    def _collect_outputs(
+        self,
+        graph_dict: dict[str, Op],
+        visited_node_ids: set[str],
+    ) -> dict[str, list[tuple[str, str | None]]]:
+        """Map each OutputOp's source to the outputs archiving from it, checking
+        that the source lowers and that one source carries one output."""
+        outputs_by_source: dict[str, list[tuple[str, str | None]]] = {}
+        for op in graph_dict.values():
+            if not isinstance(op, OutputOp):
+                continue
+            assert len(op.inputs) == 1, "OutputOp should have exactly one input"
+            source = op.inputs[0]
+            if not has_lowering(source):
+                raise ValueError(
+                    f"OutputOp '{op.name}' input must be an LLMOp, "
+                    f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
+                )
+            visited_node_ids.add(op.id)
+            outputs_by_source.setdefault(source.id, []).append((op.name, op.path))
+
+        for source_id, outputs in outputs_by_source.items():
+            if len(outputs) > 1:
+                names = ", ".join(name for name, _ in outputs)
+                raise ValueError(
+                    f"Multiple OutputOps ({names}) target the same source node "
+                    f"'{source_id}'. A runtime node produces a single output; "
+                    "project multiple outputs from one source by adding an "
+                    "intermediate LambdaOp instead."
+                )
+        return outputs_by_source
+
+    def _lower_ops(
+        self,
+        ctx: LoweringContext,
+        output_node_map: dict[str, str],
+        output_paths: dict[str, str],
+    ) -> list[str]:
+        """Run every registered lowering, one phase at a time, adding each
+        result's nodes to the graph in emission order and recording the output
+        each op archives at as it lowers."""
+        node_order: list[str] = []
+        profile = ctx.task_type_override == "data_profile"
+        for phase in Phase:
+            if profile and phase is not Phase.RETRIEVAL:
+                continue
+            for op in ctx.graph_dict.values():
+                lowering = lookup(op, phase)
+                if lowering is None:
+                    continue
+                result = lowering(self, op, ctx)
+                if result is None:
+                    continue
+                for node in result.nodes:
+                    if node.node_id in ctx.nodes:
+                        continue
+                    ctx.nodes[node.node_id] = node
+                    node_order.append(node.node_id)
+                ctx.dsl_to_runtime.update(result.built)
+                ctx.dsl_to_runtime[op.id] = [
+                    node.node_id
+                    for node in result.nodes
+                    if node.node_id not in result.built
+                ]
+                ctx.visited.add(op.id)
+                self._record_output(op, ctx, output_node_map, output_paths)
+            after = phase_hook(phase)
+            if after is not None:
+                after(self, ctx)
+        return node_order
+
+    def _record_output(
+        self,
+        op: Op,
+        ctx: LoweringContext,
+        output_node_map: dict[str, str],
+        output_paths: dict[str, str],
+    ) -> None:
+        """Record the output an op archives at, if an OutputOp reads it."""
+        outputs = ctx.outputs_by_source.get(op.id)
+        runtime_ids = ctx.dsl_to_runtime.get(op.id)
+        if outputs is None or not runtime_ids:
+            return
+        ((output_name, path_override),) = outputs
+        node_id = runtime_ids[-1]
+        output_node_map[node_id] = output_name
+        path = path_override or self._op_output(op).default_output_path
+        if path is not None:
+            output_paths[node_id] = path

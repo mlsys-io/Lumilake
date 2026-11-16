@@ -33,6 +33,12 @@ from lumilake_server.runtime.runtime_graph.graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
 )
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_graph.outputs import (
     is_api_task,
     output_row_count,
@@ -782,6 +788,47 @@ class _LLMBuilder(_EmbeddingBuilder):
             inputs_dict=inputs_dict,
             dsl_to_runtime=dsl_to_runtime,
         )
+
+    @register(LLMOp, Phase.LLM)
+    def _lower_llm(self, op: LLMOp, ctx: LoweringContext) -> LoweringResult | None:
+        """Lower an LLM op, through the API task when it targets an external
+        endpoint and through the local inference task otherwise."""
+        if op.config.api is not None:
+            upstream_llm_ids, template_spec = self._infer_structural_messages(
+                op.id,
+                ctx.graph_dict,
+                ctx.inputs_dict,
+                ctx.visited,
+                dsl_to_runtime=ctx.dsl_to_runtime,
+                runtime_nodes=ctx.nodes,
+                api_mode=True,
+            )
+            runtime_ops = self._build_api_llm_op(
+                llm_op_id=op.id,
+                llm_op=op,
+                api_config=op.config.api,
+                template_spec=template_spec,
+                upstream_llm_ids=upstream_llm_ids,
+                output_spec=None,
+                condition=op.condition if isinstance(op, LLMChatOp) else None,
+                graph_dict=ctx.graph_dict,
+                inputs_dict=ctx.inputs_dict,
+                dsl_to_runtime=ctx.dsl_to_runtime,
+            )
+        else:
+            runtime_ops = [
+                self._build_node_from_llm_op(
+                    op.id,
+                    op,
+                    ctx.graph_dict,
+                    ctx.inputs_dict,
+                    ctx.visited,
+                    task_type_override=ctx.task_type_override,
+                    dsl_to_runtime=ctx.dsl_to_runtime,
+                    runtime_nodes=ctx.nodes,
+                )
+            ]
+        return LoweringResult(nodes=runtime_ops)
 
     def _infer_structural_messages(
         self,

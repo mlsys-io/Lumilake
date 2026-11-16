@@ -9,6 +9,12 @@ from sqlparse.tokens import Keyword
 from lumilake import envs
 from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, LLMChatOp, LLMOp, Op
 from lumilake_server.runtime.runtime_graph.llm import _LLMBuilder
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
@@ -75,30 +81,6 @@ def _inline_single_value_list_params(
 
 
 class _RetrievalBuilder(_LLMBuilder):
-    def _mark_retrieval_upstream_nodes_visited(
-        self,
-        *,
-        op: DataRetrievalOp,
-        graph_dict: dict[str, Op],
-        visited_node_ids: set[str],
-    ) -> None:
-        # Retrieval nodes can consume InputOp values that are not represented as
-        # runtime dependencies. Mark those upstream op ids as visited so strict
-        # traversal validation does not flag legitimate input-only branches.
-        for input_op in op.inputs:
-            visited_node_ids.add(input_op.id)
-
-        spec = op.data_spec or {}
-        params = spec.get("params")
-        if not isinstance(params, list):
-            return
-        for param in params:
-            if not isinstance(param, dict):
-                continue
-            node = param.get("node")
-            if isinstance(node, str) and node in graph_dict:
-                visited_node_ids.add(node)
-
     def _resolve_param_upstream(
         self,
         node_id: str,
@@ -113,20 +95,33 @@ class _RetrievalBuilder(_LLMBuilder):
             upstream = input_ops_by_id.get(node_id)
         return upstream
 
-    def _build_node_from_data_retrieval_op(
-        self,
-        op_id: str,
-        op: DataRetrievalOp,
-        graph_dict: dict[str, Op],
-        inputs_dict: dict[str, list[str]],
-        input_ops_by_id: dict[str, InputOp],
-        data_spec_override: dict[str, Any] | None = None,
-    ) -> RuntimeOp:
-        spec = (
-            data_spec_override
-            if data_spec_override is not None
-            else (op.data_spec or {})
-        )
+    @register(DataRetrievalOp, Phase.RETRIEVAL)
+    def _lower_data_retrieval(
+        self, op: DataRetrievalOp, ctx: LoweringContext
+    ) -> LoweringResult | None:
+        """Lower one DataRetrievalOp, or to its data-profile node in profile
+        mode."""
+        # Retrieval nodes can consume InputOp values that are not represented as
+        # runtime dependencies. Mark those upstream op ids as visited so strict
+        # traversal validation does not flag legitimate input-only branches.
+        ctx.visited.update(input_op.id for input_op in op.inputs)
+        spec = op.data_spec or {}
+        params = spec.get("params")
+        if isinstance(params, list):
+            for param in params:
+                if not isinstance(param, dict):
+                    continue
+                node = param.get("node")
+                if isinstance(node, str) and node in ctx.graph_dict:
+                    ctx.visited.add(node)
+
+        if ctx.task_type_override == "data_profile":
+            profile = self._data_profile_node(op, ctx)
+            return None if profile is None else LoweringResult(nodes=[profile])
+        graph_dict = ctx.graph_dict
+        inputs_dict = ctx.inputs_dict
+        input_ops_by_id = ctx.input_ops_by_id
+        op_id = op.id
         if spec.get("type") != "lumid":
             raise ValueError(
                 f"DataRetrievalOp {op_id} requires type: lumid "
@@ -309,7 +304,7 @@ class _RetrievalBuilder(_LLMBuilder):
         if "verify" in spec:
             data_spec["verify"] = spec["verify"]
 
-        return self._create_runtime_op(
+        node = self._create_runtime_op(
             name=op_id,
             task_type="data_retrieval",
             data_spec=data_spec,
@@ -319,6 +314,7 @@ class _RetrievalBuilder(_LLMBuilder):
             model="data_retrieval",
             dependencies=dependencies if dependencies else None,
         )
+        return LoweringResult(nodes=[node])
 
     def _resolve_profile_param(
         self,
@@ -404,18 +400,17 @@ class _RetrievalBuilder(_LLMBuilder):
             "LUMILAKE_DISABLE_DATA_PROFILE=1."
         )
 
-    def _build_data_profile_node_from_data_retrieval_op(
-        self,
-        op_id: str,
-        op: DataRetrievalOp,
-        graph_dict: dict[str, Op],
-        inputs_dict: dict[str, list[str]],
-        input_ops_by_id: dict[str, InputOp],
-        visited: set[str] | None = None,
+    def _data_profile_node(
+        self, op: DataRetrievalOp, ctx: LoweringContext
     ) -> RuntimeOp | None:
+        op_id = op.id
+        graph_dict = ctx.graph_dict
+        inputs_dict = ctx.inputs_dict
+        input_ops_by_id = ctx.input_ops_by_id
+        visited: set[str] | None = None
         spec = op.data_spec or {}
         mode = spec["mode"]
-        if mode not in {"sql", "s3"}:
+        if not op.profilable:
             return None
         template = spec.get("template")
         params = spec.get("params") or []
