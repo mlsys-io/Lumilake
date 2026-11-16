@@ -40,6 +40,7 @@ class Node:
     inputs: Sequence[str] = field(default_factory=tuple)
     outputs: Sequence[str] = field(default_factory=tuple)
     db_queries: Sequence[DBQuery] = field(default_factory=tuple)
+    gpu_memory_utilization: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -64,15 +65,11 @@ class GraphSpec:
 
 @dataclass(frozen=True, slots=True)
 class Worker:
-    """Describes an execution worker (GPU or CPU).
-
-    ``task_types`` holds the FlowMesh task types its executors advertise; a node
-    whose task type needs an executor only some workers run is placed on a
-    worker that lists it.
-    """
+    """An execution worker (GPU or CPU) with its task types and owned GPU fraction."""
 
     id: str
     kind: str  # "gpu" or "cpu"
     device: str
     capacity: float = 1.0
     task_types: frozenset[str] = frozenset()
+    gpu_memory_fraction: float | None = None

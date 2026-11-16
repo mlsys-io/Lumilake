@@ -197,6 +197,12 @@ partition unrunnable while a usable worker sat idle.
 Starvation pinning still applies, but only over partitions that are eligible.
 Pinning an item that cannot run would produce an undispatchable anchor.
 
+### GPU memory fractions
+
+A node runs only on a GPU worker whose owned memory fraction
+(`gpu_memory_fraction`) is at least the fraction its engine reserves
+(`gpu_memory_utilization`); a whole-device worker takes any value.
+
 ## 5. What still causes idle workers
 
 A bubble is idle worker time while the queue holds an item that worker could

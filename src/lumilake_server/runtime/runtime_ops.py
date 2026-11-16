@@ -4,6 +4,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lumilake_server.runtime.worker_capability import (
+    model_spec_gpu_memory_utilization,
+)
+
 
 class RuntimeOpSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeOp``.
@@ -44,6 +48,11 @@ class RuntimeOp:
     @property
     def model_key(self) -> tuple[str, str, str]:
         return (self.task_type, self.backend, self.model)
+
+    @property
+    def gpu_memory_utilization(self) -> float | None:
+        """The fraction of a card this op's engine reserves, or ``None``."""
+        return model_spec_gpu_memory_utilization(self.model_spec)
 
     def serialize(self) -> dict[str, Any]:
         return RuntimeOpSchema(
