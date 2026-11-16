@@ -161,9 +161,9 @@ class RuntimeGraphBuilder(_VisionBuilder):
 
         A row gate and a list Lambda that reads one lower out of phase order, so
         each lowers what it reads first rather than deferring to a second pass.
-        A row-mode Lambda's own lowering declines one that is already visited,
-        which is right in its phase and wrong here, so an on-demand read builds
-        the step it needs directly.
+        A read hook builds the op the way a reader needs it, and may decline an
+        op it does not build, such as a list-mode Lambda; that op then takes its
+        own phase lowering, which is right in this position.
         """
         if op.id in ctx.dsl_to_runtime:
             return
@@ -171,19 +171,22 @@ class RuntimeGraphBuilder(_VisionBuilder):
         if lowering is None:
             return
         hook = read_hook(op)
-        self._run_lowering(hook or lowering, op, ctx)
+        if hook is not None and self._run_lowering(hook, op, ctx):
+            return
+        self._run_lowering(lowering, op, ctx)
 
     def _run_lowering(
         self,
         lowering: Any,
         op: Op,
         ctx: LoweringContext,
-    ) -> None:
+    ) -> bool:
         """Run one lowering, adding its nodes in emission order and recording
-        the output the op archives at."""
+        the output the op archives at. Returns whether it lowered anything; a
+        lowering declines by returning ``None``."""
         result = lowering(self, op, ctx)
         if result is None:
-            return
+            return False
         for node in result.nodes:
             if node.node_id in ctx.nodes:
                 continue
@@ -198,3 +201,4 @@ class RuntimeGraphBuilder(_VisionBuilder):
         ctx.visited.add(op.id)
         ctx.lowered.add(op.id)
         self._record_output(op, ctx)
+        return True
