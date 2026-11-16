@@ -515,6 +515,21 @@ def test_rowwise_messages_column_emits_list_message_array_spec() -> None:
     assert node.data_spec["items"] == [["msg"]]
 
 
+def test_rowwise_messages_column_reads_an_items_output_path() -> None:
+    # A messages column reads an items.output-rooted path like any column, so a
+    # list Lambda's items.output maps to the step result's envelope.
+    rows = input_placeholder("Rows")
+    source = LambdaOp([rows], _explode_fn, mode="list")
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="m"),
+        rowwise_messages_column=MessagesColumn(source.id, "items.output", "msgs"),
+    )
+    outs = [as_output("s", source), as_output("r", llm)]
+    built = RuntimeGraphBuilder().build(Graph.from_ops(outs).compile(Rows=['["msg"]']))
+    assert built.nodes[llm.id].data_spec["path"] == "value.items.output"
+
+
 def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     # A gated chat op stands only as its merge stage, which is the op's output,
     # and the structural outputs land on the gated call.
