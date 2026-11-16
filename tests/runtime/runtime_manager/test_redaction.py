@@ -100,12 +100,12 @@ async def test_fetch_workflow_task_statuses_sanitizes_api_error_before_reraising
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A FlowMesh rejection on a workflow status listing can echo back the
+    """A FlowMesh rejection on a workflow status poll can echo back the
     submitted task spec, Authorization header included, so the re-raised
     APIError is sanitized."""
 
     class _FakeTasks:
-        async def list_statuses(self, workflow_id: str) -> Any:
+        async def changes(self, workflow_id: str, **_: Any) -> Any:
             raise APIError(
                 "task spec invalid",
                 status_code=422,
