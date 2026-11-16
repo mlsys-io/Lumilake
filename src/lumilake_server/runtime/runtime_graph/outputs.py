@@ -108,9 +108,13 @@ class OpOutput:
             return (
                 f"{head} rowwise LLM '{self.node}'; only 'items.output' is supported."
             )
-        noun = "Lambda" if self.kind in _LAMBDA_KINDS else "API upstream"
+        if self.kind in _LAMBDA_KINDS:
+            return (
+                f"{head} Lambda '{self.node}'; only an 'items.output'-rooted path"
+                " (e.g. 'items.output.messages') is supported."
+            )
         return (
-            f"{head} {noun} '{self.node}';"
+            f"{head} API upstream '{self.node}';"
             " only 'items.output' (the whole output) is supported."
         )
 
