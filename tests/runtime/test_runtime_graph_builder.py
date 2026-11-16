@@ -4,7 +4,7 @@ from typing import Any, Literal
 import pytest
 
 from lumilake import envs
-from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.common import ApiConfig, GenerationConfig, OutputEnforcement
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -539,12 +539,23 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages(source_kind: str) 
     router = _router_over(source)
     templates = [{"name": "verdict", "type": "string"}]
     gate = RowGate(node=router.id, branch="ok")
-    llm = _row_gate_over(rows, router, structural_outputs=templates, row_gate=gate)
+    enforced = GenerationConfig(
+        model="m", output_enforcement=OutputEnforcement(text_regex=r"^\w+$")
+    )
+    llm = _row_gate_over(
+        rows, router, structural_outputs=templates, row_gate=gate, config=enforced
+    )
     graph = RuntimeGraphBuilder().build(
         Graph.from_ops([as_output("result", llm)]).compile(Rows=["a", "b"])
     )
     *_, selected, merge = [graph.nodes[i] for i in graph.dsl_to_runtime[llm.id]]
     assert selected.inference_spec["templates"] == templates
+    assert selected.output_enforcement == {
+        "mode": "retry",
+        "max_attempts": 1,
+        "json_schema": None,
+        "text_regex": r"^\w+$",
+    }
     assert graph.output_node_map == {merge.node_id: "result"}
 
 
@@ -641,7 +652,7 @@ def _row_gate_over(rows: Any, router: RouterOp, **extra: Any) -> LLMChatOp:
     extra.setdefault("row_gate", RowGate(node=router.id, branch="fail"))
     return LLMChatOp(
         [OpMessage(role="user", content=rows)],
-        config=GenerationConfig(model="m"),
+        config=extra.pop("config", GenerationConfig(model="m")),
         rowwise_template=extra.pop("rowwise_template", "{row}"),
         rowwise_columns=[{"label": "row", "node": rows.id, "path": "items.output"}],
         row_gate_op=router,

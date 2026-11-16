@@ -948,16 +948,16 @@ class _LLMBuilder(_EmbeddingBuilder):
             inference_spec = llm_op.config.inference_spec()
             if llm_op.structural_outputs:
                 inference_spec["templates"] = llm_op.structural_outputs
-            selected = RuntimeOp(
-                node_id=selected_id,
+            selected = self._create_runtime_op(
+                name=selected_id,
                 task_type=ctx.task_type_override or "inference",
                 backend="vllm",
                 model=llm_op.config.model,
                 data_spec=base_data_spec,
                 model_spec=self._build_model_spec(llm_op.config, "vllm"),
                 inference_spec=inference_spec,
-                dependencies=(select_id,),
-                condition=None,
+                dependencies=[select_id],
+                output_enforcement=llm_op.config.output_enforcement_spec(),
             )
         merge = self._python_step_op(
             merge_id,
@@ -1066,6 +1066,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 backend="vllm",
                 model=llm_op.config.model,
                 dependencies=dependencies or None,
+                output_enforcement=llm_op.config.output_enforcement_spec(),
             )
         api_config = llm_op.config.api
         return self._build_api_task(
