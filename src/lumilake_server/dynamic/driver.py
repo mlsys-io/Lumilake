@@ -25,14 +25,13 @@ from lumilake_server.dynamic.blocks import (
     fused_round_graph,
 )
 from lumilake_server.dynamic.spec import DriverRoundBody, DriverTemplate
+from lumilake_server.ops.data_ops import DataRetrievalOp
+from lumilake_server.ops.llm_ops import LLMOp
+from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
-from lumilake_server.parser.yaml_parser import (
-    SUPPORTED_OPS,
-    _op_id_prefix,
-    parse_yaml_payload,
-)
-from lumilake_server.runtime.runtime_graph import OUTPUT_SOURCE_TYPES
-from lumilake_server.runtime.runtime_manager.flowmesh import (
+from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
+from lumilake_server.parser.yaml_parser import SUPPORTED_OPS, parse_yaml_payload
+from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
 )
@@ -91,8 +90,11 @@ if _MISSING_OP_CLASSES:
     raise RuntimeError(
         f"op types not exported by lumilake_server.ops: {sorted(_MISSING_OP_CLASSES)}"
     )
+_OUTPUT_SOURCE_TYPES = (LLMOp, DataRetrievalOp, LambdaOp)
 _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
-    name for name in SUPPORTED_OPS if issubclass(_OP_CLASSES[name], OUTPUT_SOURCE_TYPES)
+    name
+    for name in SUPPORTED_OPS
+    if issubclass(_OP_CLASSES[name], _OUTPUT_SOURCE_TYPES)
 )
 
 _TEMPLATE_ROUND = "{{round}}"
@@ -1385,4 +1387,4 @@ def build_round(
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
     """Derive the native op id the YAML parser assigns for ``(scope, op, id)``."""
-    return make_id(scope, _op_id_prefix(op_type), user_id)
+    return make_id(scope, op_id_prefix(op_type), user_id)

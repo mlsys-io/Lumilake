@@ -17,12 +17,13 @@ from lumilake_server.dynamic.driver import (
     walk_archived_items,
 )
 from lumilake_server.parser.common import make_id
-from lumilake_server.parser.yaml_parser import _op_id_prefix, parse_yaml_payload
+from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
+from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.routes.jobs import _admit_subgraph
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
-    return make_id(scope, _op_id_prefix(op_type), user_id)
+    return make_id(scope, op_id_prefix(op_type), user_id)
 
 
 def _llm_config(op_id: str) -> dict:
@@ -787,7 +788,7 @@ def _df_item(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def test_walk_serialized_dataframe_column_returns_list():
     # Walking ``table.<col>`` on a real stored item (a serialized DataFrame)
     # returns the column as a list in row order, not a dict or an error.
-    from lumilake_server.runtime.runtime_manager.flowmesh import _walk_output_path
+    from lumilake_server.runtime.runtime_manager import _walk_output_path
 
     item = _df_item(
         [

@@ -96,9 +96,6 @@ off and whose explicit-empty matches the unset case.
 LUMILAKE_JOB_MANAGER_TYPE: str = os.environ.get(
     "LUMILAKE_JOB_MANAGER_TYPE", "priority"
 ).lower()
-LUMILAKE_RUNTIME_MANAGER_TYPE: str = os.environ.get(
-    "LUMILAKE_RUNTIME_MANAGER_TYPE", "default"
-).lower()
 # ``or "<default>"`` so an empty env value (KEY="" in .env) falls through
 # to the default. ``os.environ.get(k, default)`` only uses ``default``
 # when the key is *unset*; an empty-string value bypasses it and the
@@ -472,10 +469,6 @@ def validate() -> None:
         custom_args = None
     if not isinstance(custom_args, dict):
         raise ValueError("LUMILAKE_SCHEDULER_CUSTOM_ARGS must be a JSON object")
-    if LUMILAKE_RUNTIME_MANAGER_TYPE not in ("default", "flowmesh"):
-        raise ValueError(
-            "LUMILAKE_RUNTIME_MANAGER_TYPE must be 'default' or 'flowmesh'"
-        )
     if LUMILAKE_STARVATION_LIMIT < 0:
         raise ValueError("LUMILAKE_STARVATION_LIMIT must be >= 0")
     if LUMILAKE_BATCH_ACCUMULATION_SECONDS < 0:

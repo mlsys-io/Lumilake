@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
+import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
@@ -18,7 +18,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 _MODEL = "BAAI/bge-small-en-v1.5"
 

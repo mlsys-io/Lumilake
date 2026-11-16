@@ -16,14 +16,14 @@ from support.runtime_server import (
     make_workflow_slices_from_inputs,
 )
 
-import lumilake_server.runtime.runtime_manager.flowmesh as fm_mod
+import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_manager.flowmesh import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import RuntimeExecutionError
 from lumilake_server.utils.job_storage import get_job_storage

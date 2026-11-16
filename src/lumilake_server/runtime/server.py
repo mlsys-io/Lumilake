@@ -70,9 +70,6 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
-    create_runtime_manager,
-)
-from lumilake_server.runtime.runtime_manager.flowmesh import (
     _sanitize_flowmesh_api_error,
 )
 from lumilake_server.runtime.sensitive import redact_secrets_in_text
@@ -392,7 +389,7 @@ class LumilakeServer:
         )
         # FlowmeshRuntimeManager reads orchestrator URL + token from envs directly
         # via lumilake_server.runtime.flowmesh_client; no need to pass them here.
-        self.runtime_manager: FlowmeshRuntimeManager = create_runtime_manager(
+        self.runtime_manager: FlowmeshRuntimeManager = FlowmeshRuntimeManager(
             logger=self.logger,
         )
         self._runtime_builder = RuntimeGraphBuilder(logger=self.logger)

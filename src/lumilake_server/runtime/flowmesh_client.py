@@ -25,6 +25,12 @@ _outgoing_token_var: contextvars.ContextVar[str | None] = contextvars.ContextVar
 # Threading lock because FastAPI and _AsyncRunner live on different threads.
 _http_clients: dict[int, httpx.AsyncClient] = {}
 _http_clients_lock = threading.Lock()
+_FLOWMESH_MAX_CONNECTIONS = 100
+_FLOWMESH_MAX_KEEPALIVE_CONNECTIONS = 20
+# The FlowMesh server keeps idle connections for uvicorn's 5 s default and the
+# client starts counting idle time slightly later, so expiring well below it
+# keeps a reused connection from being one the server already closed.
+_FLOWMESH_KEEPALIVE_EXPIRY_SECONDS = 2.0
 
 # A FlowMesh host that drops connection attempts is only abandoned once the OS
 # gives up, minutes later. A short connect timeout bounds each attempt, and the
@@ -51,7 +57,11 @@ def _shared_http_client() -> httpx.AsyncClient:
                         _CONNECT_TIMEOUT_SECONDS, envs.LUMILAKE_HTTP_TIMEOUT_SECONDS
                     ),
                 ),
-                limits=httpx.Limits(keepalive_expiry=0.0),
+                limits=httpx.Limits(
+                    max_connections=_FLOWMESH_MAX_CONNECTIONS,
+                    max_keepalive_connections=_FLOWMESH_MAX_KEEPALIVE_CONNECTIONS,
+                    keepalive_expiry=_FLOWMESH_KEEPALIVE_EXPIRY_SECONDS,
+                ),
                 event_hooks={"request": [_inject_auth_header]},
             )
             _http_clients[loop_id] = client
