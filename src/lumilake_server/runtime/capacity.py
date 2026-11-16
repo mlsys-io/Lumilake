@@ -148,28 +148,10 @@ class FreeCapacity:
         required_task_types: frozenset[str] = frozenset(),
         required_gpu_utilizations: frozenset[float] = frozenset(),
     ) -> tuple[list[str], list[str]] | None:
-        """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``.
-
-        Returns ``None`` when the free set does not hold enough idle workers of
-        each class that also meet ``hardware``. Searches the full free list so
-        a later eligible worker is not missed just because an earlier one fails
-        the hardware check; selection and claim share this helper so they
-        cannot drift apart.
-
-        ``required_task_types`` are the gated task types the batch needs. The
-        selected CPU group must contain a worker that advertises all of them; the
-        helper returns ``None`` when no free eligible CPU worker does, so the
-        caller waits for one instead of claiming a group that cannot run the batch.
-
-        ``required_gpu_utilizations`` are the card fractions the batch's GPU
-        nodes reserve. A worker's memory fraction holds every utilization at or
-        below it, so the selected GPU group must contain a worker holding the
-        largest one;
-        the helper returns ``None`` when no free eligible GPU worker does, so the
-        caller waits instead of claiming a group the optimizer would reject. A
-        batch that claims no GPU worker is not gated on their fractions: it reaches
-        the optimizer, which reports the missing worker.
-        """
+        """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``, or
+        ``None`` while the free set cannot serve the batch: too few idle workers, no CPU
+        worker advertising a required task type, or no GPU worker whose memory fraction
+        holds the batch's largest utilization."""
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):

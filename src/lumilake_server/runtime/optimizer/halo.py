@@ -1,4 +1,3 @@
-import copy
 import json
 import math
 import re
@@ -32,7 +31,6 @@ from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     fraction_holds_utilization,
     gpu_memory_fraction,
-    model_spec_gpu_memory_utilization,
     required_task_types,
 )
 
@@ -57,27 +55,6 @@ def _retrieval_is_data_profile_eligible(data_spec: Mapping[str, Any]) -> bool:
     return False
 
 
-def _node_gpu_memory_utilization(node: Node) -> float | None:
-    """The fraction of a card's memory a node asked its engine to reserve.
-
-    The op's model spec reaches the node under ``_model_spec``; a node that
-    names no utilization returns ``None`` and can run on any GPU worker.
-    """
-    raw = node.raw if isinstance(node.raw, dict) else {}
-    return model_spec_gpu_memory_utilization(raw.get("_model_spec"))
-
-
-def _gpu_worker_holds_utilization(worker: Worker, utilization: float) -> bool:
-    """True when ``worker`` can give ``utilization`` of a card to an engine.
-
-    A CPU worker never runs an engine, and a GPU worker holding a whole device
-    takes any utilization; a shared worker takes one no larger than its fraction.
-    """
-    if worker.kind != "gpu":
-        return True
-    return fraction_holds_utilization(worker.gpu_memory_fraction, utilization)
-
-
 def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:
     """The GPU workers and the fraction of a card each one owns, for a message."""
     listed = ", ".join(
@@ -89,7 +66,7 @@ def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:
         for worker in workers.values()
         if worker.kind == "gpu"
     )
-    return f"GPU worker fractions: {listed}"
+    return f"Claimed GPU worker fractions: {listed}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +236,7 @@ class HaloOptimizer(BaseOptimizer):
                     inputs=deps,
                     outputs=tuple(),
                     db_queries=db_queries,
+                    gpu_memory_utilization=op.gpu_memory_utilization,
                     raw=raw,
                 )
                 for dep in deps:
@@ -481,13 +459,16 @@ class HaloOptimizer(BaseOptimizer):
                     tuple(w for w in tier if node.type in workers[w].task_types)
                     for tier in tiers
                 )
-            utilization = _node_gpu_memory_utilization(node)
+            utilization = node.gpu_memory_utilization
             if utilization is not None:
                 tiers = tuple(
                     tuple(
                         w
                         for w in tier
-                        if _gpu_worker_holds_utilization(workers[w], utilization)
+                        if workers[w].kind != "gpu"
+                        or fraction_holds_utilization(
+                            workers[w].gpu_memory_fraction, utilization
+                        )
                     )
                     for tier in tiers
                 )
@@ -655,8 +636,6 @@ class HaloOptimizer(BaseOptimizer):
         raw = dict(op.data_spec) if isinstance(op.data_spec, dict) else {}
         if isinstance(op.inference_spec, dict) and op.inference_spec:
             raw["_inference_spec"] = dict(op.inference_spec)
-        if isinstance(op.model_spec, dict) and op.model_spec:
-            raw["_model_spec"] = copy.deepcopy(op.model_spec)
         if deps and "parent" not in raw:
             raw["parent"] = deps[0]
         return raw

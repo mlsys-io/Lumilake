@@ -6,6 +6,8 @@ from typing import Any
 import pytest
 from flowmesh.models.common import TaskType
 from flowmesh.models.workers import (
+    GpuInfo,
+    GpuPlatformInfo,
     MemoryInfo,
     WorkerCapabilities,
     WorkerHardware,
@@ -32,18 +34,24 @@ def _worker(
     )
 
 
-def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> dict[str, Any]:
-    """Serve ``worker`` as the raw response and return its payload."""
-    payload = worker.model_dump(mode="json")
+class _FakeWorkersResource:
+    def __init__(self, worker: WorkerInfo) -> None:
+        self._worker = worker
 
-    async def fake_get(path: str) -> dict[str, Any]:
-        return payload
+    async def retrieve(self, worker_id: str) -> WorkerInfo:
+        return self._worker
 
+
+class _FakeFlowMesh:
+    def __init__(self, worker: WorkerInfo) -> None:
+        self.workers = _FakeWorkersResource(worker)
+
+
+def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
     monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.flowmesh_get_for_server",
-        fake_get,
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_server",
+        lambda: _FakeFlowMesh(worker),
     )
-    return payload
 
 
 @pytest.mark.asyncio
@@ -63,13 +71,13 @@ async def test_profile_keeps_the_hardware_sections(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hardware = WorkerHardware(memory=MemoryInfo(total_bytes=1024))
-    payload = _serve(monkeypatch, _worker("w", frozenset(), hardware))
-    payload["hardware"]["gpu"] = {
-        "devices": [{"index": 0, "memory_fraction": 0.3}, {"index": 1}]
-    }
+    devices = [GpuInfo(index=0, memory_fraction=0.3), GpuInfo(index=1)]
+    hardware = WorkerHardware(
+        memory=MemoryInfo(total_bytes=1024), gpu=GpuPlatformInfo(devices=devices)
+    )
+    _serve(monkeypatch, _worker("w", frozenset(), hardware))
 
     profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
 
     assert profile["memory"]["total_bytes"] == 1024
-    assert [d["memory_fraction"] for d in profile["gpu"]["devices"]] == [0.3, None]
+    assert profile["gpu_memory_fraction"] == 0.3

@@ -79,7 +79,6 @@ from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     gpu_memory_fraction,
     holds_gpu_utilizations,
-    model_spec_gpu_memory_utilization,
     required_task_types,
     requires_cpu_worker,
 )
@@ -1086,7 +1085,16 @@ class LumilakeServer:
             required_task_types=required,
             required_gpu_utilizations=required_gpu_utilizations,
         )
-        if selected is None and (required or required_gpu_utilizations):
+        enough_by_count = (
+            free.gpu_count >= gpu_group_size and free.cpu_count >= cpu_group_size
+        )
+        if (
+            selected is None
+            and enough_by_count
+            and (required or required_gpu_utilizations)
+        ):
+            # Only a refusal from a gate can be permanent; too few idle workers
+            # is capacity, so the batch just waits without a cluster read.
             total = await self._snapshot_total_capacity()
             if not (
                 (not required or total.has_cpu_worker_advertising(required))
@@ -1218,11 +1226,9 @@ class LumilakeServer:
                     "preview, but graph contains GPU nodes"
                 )
             gpu_utilizations = frozenset(
-                utilization
+                op.gpu_memory_utilization
                 for op in runtime_graph.nodes.values()
-                if self._requires_gpu(op)
-                for utilization in (model_spec_gpu_memory_utilization(op.model_spec),)
-                if utilization is not None
+                if self._requires_gpu(op) and op.gpu_memory_utilization is not None
             )
             holding = [
                 worker
@@ -1402,12 +1408,10 @@ class LumilakeServer:
     def _batch_gpu_utilizations(cls, batch: BatchSelection) -> frozenset[float]:
         """The card fractions the batch's GPU nodes reserve for their engines."""
         return frozenset(
-            utilization
+            op.gpu_memory_utilization
             for runtime_graph in batch.runtime_graphs.values()
             for op in runtime_graph.nodes.values()
-            if cls._requires_gpu(op)
-            for utilization in (model_spec_gpu_memory_utilization(op.model_spec),)
-            if utilization is not None
+            if cls._requires_gpu(op) and op.gpu_memory_utilization is not None
         )
 
     @staticmethod
