@@ -257,6 +257,13 @@ def validate_library(library: dict[str, dict[str, Any]] | None) -> None:
                 f"library entry {ref!r} has unsupported op type {op_type!r}; "
                 f"supported: {sorted(SUPPORTED_OPS)}"
             )
+        if "row_gate" in template:
+            raise DriverProtocolError(
+                f"library entry {ref!r} declares row_gate; a gated op names the "
+                "router of the round it runs in, which a library entry cannot "
+                "express (only its id and inputs vary per instance). Write the "
+                "gated op inline in the template body instead."
+            )
 
 
 _LIBRARY_REF_OVERRIDES = frozenset({"id", "inputs", "op"})

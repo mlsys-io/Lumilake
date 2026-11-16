@@ -14,6 +14,7 @@ from lumilake_server.dynamic.driver import (
     forward_refs,
     resolve_subgraph,
     validate_emitted_subgraph,
+    validate_library,
     walk_archived_items,
 )
 from lumilake_server.parser.common import make_id
@@ -401,6 +402,16 @@ def test_column_bindings_reject_an_inconsistent_round(
 
     with pytest.raises(DriverProtocolError, match=message):
         resolve_subgraph(subgraph, library)
+
+
+def test_validate_library_refuses_a_gated_entry() -> None:
+    # A gated op names its round's router, which a library entry cannot express,
+    # so validation refuses one that declares row_gate.
+    library = _llm_column_library()
+    library["ReviewTurn"]["row_gate"] = {"node": "Route", "branch": "fail"}
+
+    with pytest.raises(DriverProtocolError, match="ReviewTurn.*row_gate"):
+        validate_library(library)
 
 
 def test_build_round_round2_graph_has_no_round1_op():
