@@ -136,11 +136,15 @@ def test_get_artifact_raises_key_error_on_missing(
 
 
 def test_get_artifact_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
-    storage, _ = _make_storage("archive", monkeypatch)
+    storage, backend = _make_storage("archive", monkeypatch)
     storage.save_artifact("j1", "result.json", b'{"ok":1}', "application/json")
     data, ct = storage.get_artifact("j1", "result.json")
     assert data == b'{"ok":1}'
     assert ct == "application/json"
+    assert storage.save_blob("lambda-runtime/abc.py", b"rt", "text/x-python") == (
+        "archive/lambda-runtime/abc.py"
+    )
+    assert backend.store["archive/lambda-runtime/abc.py"] == (b"rt", "text/x-python")
 
 
 def test_reserve_output_location_raises_on_conflict(

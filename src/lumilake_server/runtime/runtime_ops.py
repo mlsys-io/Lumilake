@@ -4,7 +4,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
@@ -30,6 +29,7 @@ class RuntimeOpSchema(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
+    skip_when_all_inputs_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,7 @@ class RuntimeOp:
     dependencies: tuple[str, ...] = ()
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
+    skip_when_all_inputs_empty: bool = False
 
     @property
     def model_key(self) -> tuple[str, str, str]:
@@ -67,6 +68,7 @@ class RuntimeOp:
             dependencies=list(self.dependencies),
             output_spec=self.output_spec,
             condition=self.condition,
+            skip_when_all_inputs_empty=self.skip_when_all_inputs_empty,
         ).model_dump(exclude_none=True)
 
     @classmethod
@@ -83,6 +85,7 @@ class RuntimeOp:
             dependencies=tuple(schema.dependencies),
             output_spec=schema.output_spec,
             condition=schema.condition,
+            skip_when_all_inputs_empty=schema.skip_when_all_inputs_empty,
         )
 
     @classmethod
@@ -90,11 +93,10 @@ class RuntimeOp:
         return cls.from_schema(node_id, RuntimeOpSchema.model_validate(payload))
 
     def to_flowmesh_node(self) -> dict[str, Any]:
-        spec_payload: dict[str, Any] = {"taskType": self.task_type}
-        if self.task_type == python_step.TASK_TYPE:
-            spec_payload = python_step.flowmesh_spec(self.node_id, self.data_spec)
-        else:
-            spec_payload["data"] = self.data_spec
+        spec_payload: dict[str, Any] = {
+            "taskType": self.task_type,
+            "data": self.data_spec,
+        }
         if self.task_type == "api":
             spec_payload["api"] = self.api_spec
         elif self.task_type in {
@@ -121,4 +123,6 @@ class RuntimeOp:
             spec["spec"]["output"] = self.output_spec
         if self.condition:
             spec["spec"]["condition"] = self.condition
+        if self.skip_when_all_inputs_empty:
+            spec["spec"]["skipWhenAllInputsEmpty"] = True
         return spec

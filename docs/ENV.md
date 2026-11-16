@@ -29,11 +29,12 @@ Run `lumilake deploy -C <deploy-dir> doctor` after editing `.env`.
 
 ## Lumid.data routing
 
-All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`, `s3`, and `agent` modes — route through lumid-data-app at runtime. Data profiling (EXPLAIN cost estimation via `POST /profile`, S3 object listing via `GET /blobs`, and live sampling via `POST /retrieve`) also routes through lumid-data-app. `LUMID_DATA_URL` is required for any deployment that runs workflows with `DataRetrievalOp`s or has data profiling enabled, and an effective lumid-data bearer token is required: `LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`.
+All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`, `s3`, and `agent` modes — route through lumid-data-app at runtime. Data profiling (EXPLAIN cost estimation via `POST /profile`, S3 object listing via `GET /blobs`, and live sampling via `POST /retrieve`) also routes through lumid-data-app. Standalone `LambdaOp` and reshape `python` tasks fetch their content-addressed runtime and large literal blobs through the worker-reachable lumid-data URL. `LUMID_DATA_URL` is required for any deployment that runs those tasks, workflows with `DataRetrievalOp`s, or data profiling, and an effective lumid-data bearer token is required: `LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`.
 
 | Key | Purpose |
 |-----|---------|
-| `LUMID_DATA_URL` | Base URL for the lumid-data-app instance. Required for all `DataRetrievalOp` modes and for data profiling. |
+| `LUMID_DATA_URL` | Base URL for the lumid-data-app instance. Required for all `DataRetrievalOp` modes, for data profiling, and for standalone `LambdaOp` and reshape `python` tasks. |
+| `LUMID_DATA_WORKER_URL` | Optional worker-facing base URL for lumid-data-app blobs. Falls back to `LUMID_DATA_URL`; set it when workers reach lumid-data-app at a different address from the server. |
 | `LUMID_DATA_TOKEN` | Bearer token sent to lumid-data-app. Optional — falls back to `LUMILAKE_RUNTIME_TOKEN` when unset; the effective bearer (this key OR the fallback) is required for all `DataRetrievalOp` modes and for data profiling. |
 | `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid-data-app calls. Defaults to `30`. |
 | `S3_DATA_PREFIX` | Logical blob-key prefix in lumid-data-app's store for compute data (workflow inputs/outputs). Used as the base key prefix for S3-input resolution and output writes. |

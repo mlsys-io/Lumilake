@@ -2,12 +2,26 @@ import pytest
 from flowmesh.exceptions import CursorExpiredError
 from flowmesh.models.tasks import TaskStatusPage
 
+from lumilake import envs
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
 @pytest.fixture
 def flowmesh_manager() -> FlowmeshRuntimeManager:
     return FlowmeshRuntimeManager()
+
+
+@pytest.fixture(autouse=True)
+def job_storage(monkeypatch: pytest.MonkeyPatch) -> InMemoryJobStorage:
+    """Keep archived artifacts and published task blobs in memory."""
+    storage = InMemoryJobStorage()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.get_job_storage", lambda: storage
+    )
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    return storage
 
 
 def serve(

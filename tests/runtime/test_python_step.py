@@ -28,18 +28,39 @@ from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
+from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
 
 @pytest.fixture(autouse=True)
-def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
+def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> InMemoryJobStorage:
+    """Point blob publishing at an in-memory store and return that store."""
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    storage = InMemoryJobStorage()
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.get_job_storage",
+        lambda: storage,
+    )
+    return storage
 
 
 def _python_nodes(graph: Any) -> dict[str, Any]:
     return {k: n for k, n in graph.nodes.items() if n.task_type == "python"}
+
+
+def _published_blobs(
+    plan: python_step.ColumnPlan,
+) -> dict[str, python_step.PublishedBlob]:
+    blobs = [python_step.runtime_blob(), *python_step.literal_blobs(plan).values()]
+    return {blob.key: blob for blob in blobs}
+
+
+def _spec(node: Any) -> dict[str, Any]:
+    return python_step.flowmesh_spec(
+        node.node_id, node.data_spec, _published_blobs(node.data_spec["plan"])
+    )
 
 
 def test_lambda_over_input_is_a_standalone_python_task() -> None:
@@ -53,10 +74,9 @@ def test_lambda_over_input_is_a_standalone_python_task() -> None:
     (node,) = _python_nodes(graph).values()
     assert node.dependencies == ()
     assert graph.output_node_map == {node.node_id: "lowered"}
-    spec = node.to_flowmesh_node()["spec"]
-    assert spec["taskType"] == "python"
-    assert spec["entrypoint"] == "main"
-    assert "inputs" not in spec and "data" not in spec
+    fm = node.to_flowmesh_node()["spec"]
+    assert fm["taskType"] == "python"
+    assert fm["data"]["plan"]
 
 
 def test_lambda_over_llm_reads_the_llm_stage() -> None:
@@ -71,9 +91,6 @@ def test_lambda_over_llm_reads_the_llm_stage() -> None:
 
     node = _python_nodes(graph)[shout.id]
     assert node.dependencies == (llm.id,)
-    fm = node.to_flowmesh_node()
-    assert fm["dependsOn"] == [llm.id]
-    assert fm["spec"]["inputs"] == [{"stage": llm.id}]
     assert graph.topological_order().index(llm.id) < graph.topological_order().index(
         shout.id
     )
@@ -314,7 +331,7 @@ def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     assert graph.nodes[row.id].data_spec["row_count"] == 3
     assert graph.nodes[whole.id].data_spec["row_count"] == 3
     assert "row_count" not in graph.nodes[plain.id].data_spec
-    assert "row_count" not in graph.nodes[row.id].to_flowmesh_node()["spec"]
+    assert "row_count" not in _spec(graph.nodes[row.id])
 
 
 def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
@@ -347,7 +364,13 @@ def _run_wrapper(
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
     declared = fn_name or lambda_runtime.validate_source(code)
     namespace: dict[str, Any] = {}
-    exec(python_step.wrapper_source("op-1", declared, code, plan, mode), namespace)
+    runtime_mount = _materialize_task_runtime()
+    exec(
+        python_step.wrapper_source("op-1", declared, code, plan, mode).replace(
+            python_step.TASK_RUNTIME_MOUNT, runtime_mount
+        ),
+        namespace,
+    )
     return namespace["main"](inputs)
 
 
@@ -359,12 +382,32 @@ def _run_reshape(
 ):
     """Run a generated flatten/regroup step, which never calls user code."""
     namespace: dict[str, Any] = {}
+    runtime_mount = _materialize_task_runtime()
     if mode == "flatten":
-        code = python_step.flatten_source("reshape", plan, template)
+        code = python_step.flatten_source("reshape", plan, template).replace(
+            python_step.TASK_RUNTIME_MOUNT, runtime_mount
+        )
     else:
-        code = python_step.regroup_source("reshape", plan)
+        code = python_step.regroup_source("reshape", plan).replace(
+            python_step.TASK_RUNTIME_MOUNT, runtime_mount
+        )
     exec(code, namespace)
     return namespace["main"](inputs)
+
+
+_RUNTIME_MOUNT: dict[str, str] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _task_runtime_mount(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Write the generated task runtime once into a pytest-managed directory."""
+    path = tmp_path_factory.mktemp("lambda-runtime") / "lumilake-runtime.py"
+    path.write_bytes(python_step.runtime_blob().body)
+    _RUNTIME_MOUNT["path"] = str(path)
+
+
+def _materialize_task_runtime() -> str:
+    return _RUNTIME_MOUNT["path"]
 
 
 def _stage(tmp_path: Path, name: str, result: dict[str, Any]) -> str:
@@ -384,6 +427,14 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     assert out == {
         "items": [{"output": "a-x", "value": "a-x"}, {"output": "b-x", "value": "b-x"}]
     }
+
+    mounted = tmp_path / "values.json"
+    mounted.write_text(json.dumps(["mounted"]))
+    assert _run_wrapper(
+        "def identity(inputs):\n    return str(inputs[0])\n",
+        [{"kind": "literal", "file": str(mounted)}],
+        {},
+    ) == {"items": [{"output": "mounted", "value": "mounted"}]}
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
@@ -729,10 +780,7 @@ def test_prefixed_python_step_mounts_the_prefixed_stage() -> None:
 
     fm = node.to_flowmesh_node()
     assert fm["dependsOn"] == [llm_id]
-    assert fm["spec"]["inputs"] == [{"stage": llm_id}]
-    code = fm["spec"]["code"]
-    assert llm_id in code
-    assert llm.id not in code.replace(llm_id, "")
+    assert fm["spec"]["data"]["plan"][0]["node"] == llm_id
 
 
 def test_python_step_carries_the_declared_fn_name() -> None:
@@ -745,8 +793,10 @@ def test_python_step_carries_the_declared_fn_name() -> None:
     node = RuntimeGraphBuilder().build(compiled).nodes[op.id]
 
     assert node.data_spec["fn_name"] == "shout"
-    code = node.to_flowmesh_node()["spec"]["code"]
+    code = _spec(node)["code"]
     namespace: dict[str, Any] = {}
+    runtime_mount = _materialize_task_runtime()
+    code = code.replace(python_step.TASK_RUNTIME_MOUNT, runtime_mount)
     exec(code, namespace)
     assert namespace["main"]({}) == {"items": [{"output": "NVDA", "value": "NVDA"}]}
 
@@ -754,7 +804,7 @@ def test_python_step_carries_the_declared_fn_name() -> None:
 def test_python_step_timeout_and_memory_reach_the_task() -> None:
     _, shout, compiled = _llm_then_lambda(timeout_s=45, memory_mb=512)
     graph = RuntimeGraphBuilder().build(compiled)
-    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    spec = _spec(graph.nodes[shout.id])
     assert spec["timeoutSeconds"] == 45
     assert spec["resources"] == {"hardware": {"memory": "512Mi"}}
 
@@ -763,7 +813,7 @@ def test_python_step_defaults_carry_the_default_timeout() -> None:
     _, shout, compiled = _llm_then_lambda()
     node = RuntimeGraphBuilder().build(compiled).nodes[shout.id]
     assert node.data_spec["timeout_s"] == python_step.DEFAULT_TIMEOUT_SECONDS
-    spec = node.to_flowmesh_node()["spec"]
+    spec = _spec(node)
     assert spec["timeoutSeconds"] == python_step.DEFAULT_TIMEOUT_SECONDS
     assert "resources" not in spec
 
@@ -783,16 +833,11 @@ def test_lambda_op_rejects_a_bad_memory_limit(value: Any) -> None:
 def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
     _, shout, compiled = _llm_then_lambda(image="ghcr.io/me/sim:latest")
     graph = RuntimeGraphBuilder().build(compiled)
-    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    spec = _spec(graph.nodes[shout.id])
     assert spec["image"] == "ghcr.io/me/sim:latest"
 
     _, plain, compiled_plain = _llm_then_lambda()
-    plain_spec = (
-        RuntimeGraphBuilder()
-        .build(compiled_plain)
-        .nodes[plain.id]
-        .to_flowmesh_node()["spec"]
-    )
+    plain_spec = _spec(RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id])
     assert "image" not in plain_spec
 
 
@@ -827,7 +872,7 @@ def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
     graph = RuntimeGraphBuilder().build(compiled)
     assert shout.id in _python_nodes(graph)
-    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    spec = _spec(graph.nodes[shout.id])
     assert spec["image"] == "ghcr.io/me/sim:latest"
 
 
@@ -861,7 +906,7 @@ def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -
     node = graph.nodes[shout.id]
     assert node.data_spec["expected_runtime_s"] == 5
     # The hint is planning-only and never reaches the FlowMesh task spec.
-    assert "expected_runtime_s" not in node.to_flowmesh_node()["spec"]
+    assert "expected_runtime_s" not in _spec(node)
 
     _, plain, compiled_plain = _llm_then_lambda()
     plain_node = RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
@@ -871,17 +916,59 @@ def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -
 def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> None:
     _, shout, compiled = _llm_then_lambda(cache=True)
     graph = RuntimeGraphBuilder().build(compiled)
-    spec = graph.nodes[shout.id].to_flowmesh_node()["spec"]
+    spec = _spec(graph.nodes[shout.id])
     assert spec["cache"] is True
 
     _, plain, compiled_plain = _llm_then_lambda()
-    plain_spec = (
-        RuntimeGraphBuilder()
-        .build(compiled_plain)
-        .nodes[plain.id]
-        .to_flowmesh_node()["spec"]
-    )
+    plain_spec = _spec(RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id])
     assert "cache" not in plain_spec
+
+
+@pytest.mark.asyncio
+async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
+    _lumid_envs: InMemoryJobStorage,
+) -> None:
+    shared = ["x" * 2000]
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops(
+            [
+                as_output("first", LambdaOp([shared], fn=lambda inputs: inputs[0])),
+                as_output("second", LambdaOp([shared], fn=lambda inputs: inputs[0])),
+                as_output("third", LambdaOp([["x"]], fn=lambda inputs: inputs[0])),
+            ]
+        ).compile()
+    )
+
+    spec, _, _ = await FlowmeshRuntimeManager()._build_task_spec(
+        request_info=type(
+            "Request", (), {"request_id": "req", "hardware_requirements": None}
+        )(),
+        runtime_graph=graph,
+    )
+
+    runtime_key = python_step.runtime_blob().key
+    (literal_key,) = [key for key in _lumid_envs._blobs if key != runtime_key]
+    specs = [node["spec"] for node in spec["spec"]["graph"]["nodes"]]
+    mounted = [blob["mountPath"] for blob in specs[0]["blobs"]]
+    assert mounted == [
+        python_step.TASK_RUNTIME_MOUNT,
+        f"/mnt/blobs/literals/{literal_key.rsplit('/', 1)[-1]}",
+    ]
+    assert specs[0]["blobs"][0]["url"] == f"http://lumid-data/blobs/{runtime_key}"
+    assert specs[1]["blobs"] == specs[0]["blobs"]
+    assert specs[2]["blobs"] == [specs[0]["blobs"][0]]
+    assert "def materialize(" not in specs[0]["code"]
+
+    too_many: python_step.ColumnPlan = [
+        {"kind": "literal", "values": [f"literal-{i}"] * 200}
+        for i in range(python_step.MAX_BLOBS_PER_TASK)
+    ]
+    with pytest.raises(ValueError, match="limit of 16 per task"):
+        python_step.flowmesh_spec(
+            "task",
+            {"code": "def f(i):\n    return i\n", "fn_name": "f", "plan": too_many},
+            _published_blobs(too_many),
+        )
 
 
 def test_lambda_op_rejects_a_non_bool_cache() -> None:
@@ -1331,7 +1418,10 @@ def _gated_chain() -> Any:
 def _run_stage(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
     """Run the code a built python step emits, over staged upstream results."""
     namespace: dict[str, Any] = {}
-    exec(node.to_flowmesh_node()["spec"]["code"], namespace)
+    code = _spec(node)["code"].replace(
+        python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()
+    )
+    exec(code, namespace)
     return namespace["main"](inputs)
 
 

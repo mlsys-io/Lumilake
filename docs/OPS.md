@@ -245,6 +245,9 @@ row. When it is the workflow output, its per-row results are returned as one
 output value per input row (FlowMesh groups them back into one item per table
 internally; the runtime flattens that back to per-row values at aggregation).
 
+When every upstream column a per-row chat reads is empty, FlowMesh completes
+the task with an empty result without dispatching a worker.
+
 ### LLMCompletionOp
 
 `LLMCompletionOp` generates from rendered string prompts without the model
@@ -253,7 +256,9 @@ LLM op that produces one prompt string per row; render a templated prompt with
 a `LambdaOp`. Use it when the prompt already carries the model's own chat
 control tokens. Sampling fields are the same as `LLMChatOp`'s.
 `config.api` and `config.chat_template_kwargs` are not accepted: the task never
-applies a chat template, so both would have no effect.
+applies a chat template, so both would have no effect. The same holds for a
+prompt read from an upstream op: when that op's output column is empty the task
+completes with an empty result without dispatching a worker.
 
 ```yaml
 ops:
@@ -320,13 +325,17 @@ Where the function runs depends on what reads it:
   only on a CPU worker that advertises the `python` task type (a Docker-backed
   worker on a FlowMesh version that supports it). While every such worker is
   busy the batch waits for capacity; with no such worker in the cluster the
-  schedule fails before dispatch. The code may `import` any module the task
-  image provides (the default image carries the standard library, numpy and
-  pandas), at module level or in the function body; only relative imports are
-  rejected at submit. A `LambdaOp` with an `image` always runs as its own
-  standalone `python` task. If the function
-  raises, the job's error names the step and the exception, for example
-  `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
+  schedule fails before dispatch. Lumilake mounts the shared Lambda runtime
+  from a content-addressed blob and uploads literal payloads above 1 KiB once
+  per digest as mounted JSON. Smaller literals stay inline. The generated stub
+  holds only the op id, user code, function name, and plan; the worker fetches
+  blobs through `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`).
+  The code may `import` any module the task image provides (the default image
+  carries the standard library, numpy and pandas), at module level or in the
+  function body; only relative imports are rejected at submit. A `LambdaOp` with
+  an `image` always runs as its own standalone `python` task. If the function
+  raises, the job's error names the step and the exception, for example `Output
+  task <id> failed (node <op>): python task failed: ValueError: ...`.
 - **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the
