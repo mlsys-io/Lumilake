@@ -29,7 +29,6 @@ class RuntimeGraphBuilder(_VisionBuilder):
         input_ops_by_id = {op.id: op for op in compiled_graph.graph.input_ops.values()}
         self._inputs_dict = inputs_dict
         self._graph_dict = graph_dict
-        self._input_ops_by_id = input_ops_by_id
         # A forwarded reference names an input op by id without an edge, so it
         # is absent from the sorted dict; fold the inputs in once for the reads.
         self._read_graph_dict = {**input_ops_by_id, **graph_dict}

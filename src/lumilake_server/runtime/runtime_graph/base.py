@@ -43,11 +43,9 @@ class _RuntimeGraphBuilderBase:
         # The workflow being built, so every read site describes the same one.
         self._inputs_dict: dict[str, list[str]] = {}
         self._graph_dict: dict[str, Op] = {}
-        # A forwarded reference names a workflow input by id without an input
-        # edge, so the sorted op dict omits it; these are the graph's inputs.
-        self._input_ops_by_id: dict[str, InputOp] = {}
-        # ``_graph_dict`` with the input ops folded in, so a row count can
-        # resolve a forwarded reference to a literal input.
+        # ``_graph_dict`` with the graph's input ops folded in: a forwarded
+        # reference names an input by id without an input edge, so the sorted
+        # op dict omits it. Every read resolves through this one dict.
         self._read_graph_dict: dict[str, Op] = {}
 
     def _lower_for_read(self, op: Op, ctx: Any) -> None:
