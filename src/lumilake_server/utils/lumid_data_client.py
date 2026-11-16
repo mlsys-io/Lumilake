@@ -42,7 +42,7 @@ def _validate_sql_identifier(name: str, kind: str) -> None:
         raise ValueError(f"invalid {kind} identifier: {name!r}")
 
 
-def _encode_blob_key(key: str) -> str:
+def encode_blob_key(key: str) -> str:
     """URL-encode a blob key, preserving ``/`` separators."""
     return quote(key.lstrip("/"), safe="/")
 
@@ -210,7 +210,7 @@ def put_blob(key: str, body: bytes, content_type: str) -> None:
     Retries HTTP 429 per ``Retry-After``; raises ``RuntimeError`` on HTTP 413
     (quota exceeded).
     """
-    url = f"{_base_url()}/blobs/{_encode_blob_key(key)}"
+    url = f"{_base_url()}/blobs/{encode_blob_key(key)}"
     logger.info("PUT %s body_bytes=%d", url, len(body))
     start = time.monotonic()
     headers = {**_default_headers(), "Content-Type": content_type}
@@ -245,7 +245,7 @@ def get_blob(key: str) -> tuple[bytes, str]:
     Retries HTTP 429 per ``Retry-After``; raises ``BlobNotFound`` when the
     server returns 404.
     """
-    url = f"{_base_url()}/blobs/{_encode_blob_key(key)}"
+    url = f"{_base_url()}/blobs/{encode_blob_key(key)}"
     logger.info("GET %s", url)
     start = time.monotonic()
     headers = _default_headers()

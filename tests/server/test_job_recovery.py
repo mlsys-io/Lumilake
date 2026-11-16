@@ -183,6 +183,9 @@ async def test_startup_recovery_failure_schedules_background_retry(
     monkeypatch.setattr(envs, "LUMILAKE_CPU_WORKER_GROUP_SIZE", 1)
     monkeypatch.setattr(envs, "LUMILAKE_GPU_WORKER_GROUP_SIZE", 0)
     # main runs envs.validate() at import.
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_HOST", "127.0.0.1")
+    monkeypatch.setattr(envs, "LUMILAKE_SERVER_PORT", 9000)
+    monkeypatch.setattr(envs, "RUNTIME_ORCHESTRATOR_URL", "http://127.0.0.1:7000")
     from lumilake_server import main as main_module
 
     async def boom(**kwargs: Any) -> int:
