@@ -86,9 +86,7 @@ async def test_a_progress_read_leaves_a_running_loops_batch_and_cursor_alone(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only the execution loop advances the cursor of a workflow it runs. A
-    progress read lists every task and stores nothing, and a batch whose loop is
-    running is reported as the loop's map has it."""
+    """A progress read neither moves the loop's cursor nor reads its feed."""
     cursors: list[str | None] = []
     serve(monkeypatch, {"task-1": "DISPATCHED"}, cursors=cursors)
     flowmesh_manager._workflow_status_cursors["wf-1"] = "1:2"
@@ -97,8 +95,6 @@ async def test_a_progress_read_leaves_a_running_loops_batch_and_cursor_alone(
     loop_status = {"task-1": "PENDING", "task-2": "PENDING"}
     statuses_by_batch = {batch_key: loop_status}
 
-    # A batch with no workflow id cannot be read, so it is not finished; a
-    # progress read of a batch no loop is reading stores no cursor.
     assert not await flowmesh_manager._update_batch_task_statuses(
         statuses_by_batch, [batch_key], {}
     )
@@ -107,7 +103,6 @@ async def test_a_progress_read_leaves_a_running_loops_batch_and_cursor_alone(
     )
     assert flowmesh_manager._workflow_status_cursors == {"wf-1": "1:2"}
 
-    # While the loop runs, its own map is reported and the feed is not read.
     flowmesh_manager._active_execution_loops.add(batch_key)
     assert not await flowmesh_manager._update_batch_task_statuses(
         statuses_by_batch, [batch_key], {batch_key: "wf-1"}

@@ -302,10 +302,7 @@ class FlowmeshRuntimeManager:
 
         # FM workflow id per (request_id, batch_id); drives cancel + trace forwarding.
         self._batch_workflow_id: dict[tuple[str, str], str] = {}
-        # FlowMesh workflow id -> status feed cursor, advanced by the execution
-        # loop's own polls, the only reader of the feed while it runs.
         self._workflow_status_cursors: dict[str, str] = {}
-        # (request_id, batch_id) whose execution loop is reading the feed.
         self._active_execution_loops: set[tuple[str, str]] = set()
         # (member request id, workflow id) -> owned task ids, for per-job usage.
         self._request_task_ids: dict[tuple[str, str], list[str]] = {}
@@ -419,9 +416,7 @@ class FlowmeshRuntimeManager:
         fields: list[str] | None = None,
         cursor: str | None = None,
     ) -> TaskStatusPage:
-        """Read one page of a workflow's task status change feed, a snapshot of
-        every matching task without ``cursor`` or only the changes after it,
-        where an unresumable cursor is the caller's to replace."""
+        """Read one page of the workflow's task status change feed."""
         try:
             return await _retry_transient_read(
                 lambda: self.fm.tasks.changes(
@@ -567,9 +562,7 @@ class FlowmeshRuntimeManager:
         batch_keys: Sequence[tuple[str, str]],
         workflow_ids: Mapping[tuple[str, str], str],
     ) -> bool:
-        """Refresh each batch's pending tasks from its workflow's status feed,
-        leaving a batch whose execution loop is running exactly as that loop
-        reports it, because only the loop may write its map while it runs."""
+        """Refresh each batch's pending tasks, skipping one whose loop is running."""
         completed = True
         for batch_key in batch_keys:
             batch_status = statuses_by_batch[batch_key]
@@ -591,7 +584,6 @@ class FlowmeshRuntimeManager:
         statuses_by_batch: Mapping[tuple[str, str], dict[str, str]],
         batch_keys: Sequence[tuple[str, str]],
     ) -> dict[str, str]:
-        """Combine the tracked statuses of every batch into one map."""
         merged: dict[str, str] = {}
         for batch_key in batch_keys:
             merged.update(statuses_by_batch[batch_key])
@@ -604,10 +596,8 @@ class FlowmeshRuntimeManager:
         *,
         advance_cursor: bool = True,
     ) -> bool:
-        """Advance ``task_status`` from the workflow's status feed, taking a snapshot
-        on the first poll and only the changes after its cursor on each later one,
-        where only the execution loop advances that cursor as the sole reader of a
-        workflow it runs and every other caller takes a snapshot it never stores."""
+        """Advance ``task_status`` from the workflow's status feed, storing its cursor
+        only when ``advance_cursor`` says this caller owns it."""
         pending_task_ids = {
             task_id
             for task_id, status in task_status.items()
@@ -651,9 +641,7 @@ class FlowmeshRuntimeManager:
         pending_task_ids: set[str],
         cursor: str | None,
     ) -> str:
-        """Apply the feed's pages for these pending tasks from ``cursor``, reading
-        on while ``has_more`` says a page may hold only part of the changes after
-        it, and return the position reached."""
+        """Apply the feed's pages for these pending tasks and return the last cursor."""
         while True:
             page = await self.fetch_workflow_task_statuses(workflow_id, cursor=cursor)
             for row in page.rows:
@@ -1511,11 +1499,7 @@ class FlowmeshRuntimeManager:
         raw_task_node_map: dict[str, str] = {}
 
         batch_key = (request_info.request_id, request_info.batch_id)
-        # While this loop runs it is the only reader of the workflow's status
-        # feed; the jobs route reports the map it fills instead of polling. The
-        # batch is marked active in the same lock block that publishes it, so a
-        # progress read never finds a batch with a workflow id that is not yet
-        # active, and the loop's map has a single writer.
+        # The loop owns this workflow's status feed until it ends.
         try:
             async with self._task_status_lock:
                 self._active_execution_loops.add(batch_key)
@@ -1634,10 +1618,7 @@ class FlowmeshRuntimeManager:
                     )
                     break
 
-                # Fail fast: any task failure terminates the workflow. Waiting
-                # for output-node terminality alone leaves the user staring at
-                # a "running" job for the full poll timeout when an upstream
-                # task has already crashed the downstream chain.
+                # Fail fast: a crashed upstream task would run until timeout.
                 failed_tasks = [
                     tid
                     for tid, status in self._execution_task_status[batch_key].items()

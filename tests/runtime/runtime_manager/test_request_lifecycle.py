@@ -326,7 +326,6 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
 
     assert sorted(polled) == ["wf-1", "wf-2"]
     assert reported["execution"]["completed"]
-    # The loop ended before every task was terminal, so it left no cursor.
     assert manager._workflow_status_cursors == {}
 
 

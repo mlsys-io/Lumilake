@@ -20,8 +20,7 @@ def serve(
     expired: set[str] | None = None,
     pages: list[TaskStatusPage] | None = None,
 ) -> list[str]:
-    """Answer feed calls from ``statuses``; return polled ids, fill ``cursors``,
-    refuse ``expired`` cursors, and serve ``pages`` in order."""
+    """Answer feed calls from ``statuses``; return the ids polled."""
     polled: list[str] = []
     remaining = list(pages or [])
 
