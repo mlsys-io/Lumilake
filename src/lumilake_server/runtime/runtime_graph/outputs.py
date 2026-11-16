@@ -141,7 +141,7 @@ def emits_one_item_per_row(op: Op) -> bool:
         return True
     return (
         isinstance(op, LLMChatOp)
-        and op.row_shape is RowShape.PER_ROW
+        and op.rowwise_template is None
         and not is_api_task(op)
     )
 
