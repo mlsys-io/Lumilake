@@ -1,18 +1,18 @@
 from typing import Any
 
 from lumilake_server.graphs import CompiledGraph
-from lumilake_server.ops import LambdaOp, Op, OutputOp
+from lumilake_server.ops import Op, OutputOp
 from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
 )
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
-    LoweringResult,
     Phase,
     has_lowering,
     lookup,
     phase_hook,
+    read_hook,
 )
 from lumilake_server.runtime.runtime_graph.vision import _VisionBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -170,10 +170,8 @@ class RuntimeGraphBuilder(_VisionBuilder):
         lowering = lookup(op, phase)
         if lowering is None:
             return
-        if isinstance(op, LambdaOp) and not op.takes_whole_columns:
-            self._run_lowering(_lower_row_lambda_on_demand, op, ctx)
-            return
-        self._run_lowering(lowering, op, ctx)
+        hook = read_hook(op)
+        self._run_lowering(hook or lowering, op, ctx)
 
     def _run_lowering(
         self,
@@ -200,13 +198,3 @@ class RuntimeGraphBuilder(_VisionBuilder):
         ctx.visited.add(op.id)
         ctx.lowered.add(op.id)
         self._record_output(op, ctx)
-
-
-def _lower_row_lambda_on_demand(builder: Any, op: Op, ctx: Any) -> LoweringResult:
-    """Build a row-mode Lambda's python step because a consumer reads it."""
-    assert isinstance(op, LambdaOp), "only a row Lambda reaches this lowering"
-    steps = builder._build_python_step(op, ctx)
-    return LoweringResult(
-        nodes=steps,
-        built={step.node_id: [step.node_id] for step in steps if step.node_id != op.id},
-    )

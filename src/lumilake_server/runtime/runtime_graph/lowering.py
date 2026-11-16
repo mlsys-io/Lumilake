@@ -101,3 +101,30 @@ def lookup(op: Op, phase: Phase) -> LoweringFn | None:
 def has_lowering(op: Op) -> bool:
     """Whether any lowering is registered for the op's class or an ancestor."""
     return any(cls in _LOWERINGS for cls in type(op).__mro__)
+
+
+_READ_HOOKS: dict[type[Op], LoweringFn] = {}
+
+
+def register_read_hook(op_cls: type[Op]) -> Callable[[LoweringFn], LoweringFn]:
+    """Register how an op is built when a consumer reads it before its phase.
+
+    A lowering declines an op its own phase has already visited, which is right
+    in that phase; a consumer that reads the op early needs it built anyway, so
+    it registers the build here and the driver runs it on demand.
+    """
+
+    def _register(fn: LoweringFn) -> LoweringFn:
+        _READ_HOOKS[op_cls] = fn
+        return fn
+
+    return _register
+
+
+def read_hook(op: Op) -> LoweringFn | None:
+    """The on-demand build registered for the op's class or an ancestor."""
+    for cls in type(op).__mro__:
+        fn = _READ_HOOKS.get(cls)
+        if fn is not None:
+            return fn
+    return None

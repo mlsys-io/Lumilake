@@ -17,6 +17,7 @@ from lumilake_server.runtime.runtime_graph.lowering import (
     after_phase,
     has_lowering,
     register,
+    register_read_hook,
 )
 from lumilake_server.runtime.runtime_graph.outputs import is_row_gated
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -312,3 +313,17 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         if len(known) != len(row_counts):
             return None
         return max([1, *known])
+
+
+@register_read_hook(LambdaOp)
+def _read_row_lambda(
+    self: Any, op: LambdaOp, ctx: LoweringContext
+) -> LoweringResult | None:
+    """Build a row-mode Lambda's python step because a consumer reads it."""
+    if op.takes_whole_columns:
+        return None
+    steps = self._build_python_step(op, ctx)
+    return LoweringResult(
+        nodes=steps,
+        built={step.node_id: [step.node_id] for step in steps if step.node_id != op.id},
+    )
