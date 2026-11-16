@@ -221,7 +221,7 @@ def test_dedupe_keys_on_condition_and_preserves_it() -> None:
 
 def test_dedupe_merges_ops_with_identical_condition() -> None:
     """Two ops with the same ``condition`` are still dedupable, and the merged
-    op keeps the condition."""
+    op keeps the condition and its empty-input skip."""
 
     def _op(node_id: str) -> RuntimeOp:
         return RuntimeOp(
@@ -234,6 +234,7 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
             inference_spec={},
             dependencies=(),
             condition={"node": "gate", "expr": "gate == 'on'"},
+            skip_when_all_inputs_empty=True,
         )
 
     graph = RuntimeGraph(
@@ -248,6 +249,7 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
     assert optimized.node_count == 1
     (survivor,) = optimized.nodes.values()
     assert survivor.condition == {"node": "gate", "expr": "gate == 'on'"}
+    assert survivor.skip_when_all_inputs_empty is True
 
 
 def test_dedupe_remaps_condition_node_reference() -> None:
