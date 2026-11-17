@@ -292,7 +292,8 @@ behavior is unchanged.
 
 #### Fixed round templates (`driver.template`)
 
-A workload whose round body is fixed can supply `driver.template` and skip the planner:
+A workload whose round body is fixed can supply `driver.template` and skip
+the planner:
 
 ```yaml
 driver:
@@ -313,10 +314,10 @@ driver:
 
 `first`, `next` and `stop_when_empty` are all required: a template is a loop
 that stops on data, and a fixed-count loop is a static workflow. `first` runs
-as round 1 and `next` as every later round, with `{{round}}`
-and `{{prev}}` rendered into every string the body carries: each op's id, its
-node references and its arguments, and the export list. A LambdaOp's `code`
-is left alone, because it is Python source rather than a node reference.
+as round 1 and `next` as every later round, with `{{round}}` and `{{prev}}`
+rendered into every string the body carries: each op's id, its node references
+and its arguments, and the export list. A LambdaOp's `code` is left alone,
+because it is Python source rather than a node reference.
 `stop_when_empty` names the previous round's export, which must be a
 list-mode LambdaOp: each element it returns is one row, and the server stops
 before a round whose predecessor exported none. A template round runs as one
@@ -335,7 +336,7 @@ The `driver:` YAML settings the server accepts are:
 - `preview_width` — observation preview character limit, default `900`; must be a positive integer.
 - `job_timeout` — per-job wait timeout in seconds, default `600.0`; must be greater than zero.
 - `max_rounds` — round limit, default `10`.
-- `max_nodes_per_round` — per-round subgraph node limit, default `8`. Admission enforces it on every round.
+- `max_nodes_per_round` — per-round subgraph node limit, default `8`.
 - `threshold` — sufficiency threshold, default `None`.
 - `chat_template_kwargs` — chat-template kwargs for the proposer, default
   `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:
@@ -368,7 +369,17 @@ templates the planner can emit by id. Each entry is a full op config (e.g. a
 `DataRetrievalOp` with a real SQL template). The planner references one with
 `{"ref": "<id>", "id": <unique>, "inputs": [...]}`; the template is
 authoritative for its config, so the planner may only override `id` and
-`inputs`. A template may declare `data_spec.param_bindings` for a retrieval op, or `column_bindings` for a rowwise `LLMChatOp`, each a list of `{"label": <template label>, "input": <inputs index>}` mappings that point the template's placeholder at the node passed at that position. A rowwise op's labels name its rowwise columns or its messages column. One library entry can therefore be instantiated repeatedly under distinct node ids. Every input slot must be bound and every such column covered. Ops without a `ref` are emitted fully inline, and a row-gated op is always written inline in the template body: a gate names its round's router, which a library entry cannot express. The planner sees the library (id, op type, key config) in its system message each round.
+`inputs`. A template may declare `data_spec.param_bindings` for a retrieval
+op, or `column_bindings` for a rowwise `LLMChatOp`: each is a list of
+`{"label": <template label>, "input": <inputs index>}` mappings that point the
+template's placeholder at the node passed at that position. A rowwise op's
+labels name its rowwise columns or its messages column, so one library entry
+is instantiated repeatedly under distinct node ids. Every input slot must be
+bound and every such column covered. Ops without a `ref` are emitted fully
+inline, and a row-gated op is always written inline in the template body: a
+gate names its round's router, which a library entry cannot express. The
+planner sees the library (id, op type, key config) in its system message each
+round.
 
 A dynamic round body may route rows with `RouterOp` and a rowwise
 `LLMChatOp` `row_gate` instead of several list-mode stages. The branch
