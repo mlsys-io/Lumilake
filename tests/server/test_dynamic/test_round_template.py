@@ -122,16 +122,7 @@ _KEEP = _state("Keep_r{{round}}", ["Live_r{{round}}"])
         ),
         ([_LIST, _KEEP], [_LIST], ["Live_r{{round}}", "Keep_r{{round}}"], "Keep_r1"),
     ],
-    ids=[
-        "row-1",
-        "row-2",
-        "retrieval",
-        "no-export",
-        "no-ref",
-        "leaf",
-        "row-leaf",
-        "round-3",
-    ],
+    ids=["row-1", "row-2", "retrieval", "no-export", "no-ref", "leaf", "rowleaf", "r3"],
 )
 def test_template_validator_checks_a_body(
     first: list[dict],

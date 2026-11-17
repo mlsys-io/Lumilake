@@ -591,10 +591,10 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     ids=[
         "messages-column",
         "condition",
-        "no-rowwise-template",
-        "undeclared-branch",
+        "no-template",
+        "bad-branch",
         "not-a-router",
-        "rowwise-source-path",
+        "rowwise-source",
         "api-source",
     ],
 )
