@@ -5,6 +5,7 @@ from typing import Any
 
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
+    gpu_memory_fraction,
     holds_gpu_utilizations,
 )
 
@@ -41,10 +42,13 @@ class FreeCapacity:
         )
 
     def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
-        """True when some GPU worker in this snapshot holds every utilization."""
-        return any(
-            holds_gpu_utilizations(self.profiles.get(w, {}), utilizations)
-            for w in self.gpu_worker_ids
+        """True when every utilization has some GPU worker whose fraction holds it."""
+        return all(
+            any(
+                holds_gpu_utilizations(self.profiles.get(w, {}), {utilization})
+                for w in self.gpu_worker_ids
+            )
+            for utilization in utilizations
         )
 
     def can_satisfy(self, *, cpu_group_size: int, gpu_group_size: int) -> bool:
@@ -151,7 +155,9 @@ class FreeCapacity:
         """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``, or
         ``None`` while the free set cannot serve the batch: too few idle workers, no CPU
         worker advertising a required task type, or no GPU worker whose memory fraction
-        holds the batch's largest utilization."""
+        holds every utilization the batch reserves. The GPU group claims one worker per
+        distinct utilization before filling to ``gpu_group_size``, so a batch holding
+        engines of different sizes keeps them on separate workers."""
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
@@ -184,18 +190,43 @@ class FreeCapacity:
                 return None
             if not any(w in capable for w in selected_cpu):
                 selected_cpu[-1] = capable[0]
-        selected_gpu = eligible_gpu[:gpu_group_size]
         if fraction_gate:
-            # A worker's memory fraction holds every utilization at or below it, so a
-            # group covering the largest one covers them all.
-            largest = max(fraction_gate)
-            capable = [
+            covered = self._claim_gpu_per_utilization(eligible_gpu, fraction_gate)
+            if covered is None:
+                return None
+            remaining = [w for w in eligible_gpu if w not in covered]
+            selected_gpu = covered + remaining[: max(0, gpu_group_size - len(covered))]
+        else:
+            selected_gpu = eligible_gpu[:gpu_group_size]
+        return (selected_cpu, selected_gpu)
+
+    def _claim_gpu_per_utilization(
+        self, eligible_gpu: list[str], utilizations: frozenset[float]
+    ) -> list[str] | None:
+        """One eligible worker per reserved utilization, ``None`` when one is unheld.
+
+        Utilizations are taken smallest first, so each claims the tightest worker
+        holding it (the smallest memory fraction, a whole-device worker last). A
+        worker claimed for a smaller utilization also holds a larger one it can
+        host, so a batch is not split across workers it does not need.
+        """
+        claimed: list[str] = []
+        for utilization in sorted(utilizations):
+            holders = [
                 w
                 for w in eligible_gpu
-                if holds_gpu_utilizations(self.profiles.get(w, {}), {largest})
+                if holds_gpu_utilizations(self.profiles.get(w, {}), {utilization})
             ]
-            if not capable:
+            if not holders:
                 return None
-            if not any(w in capable for w in selected_gpu):
-                selected_gpu[-1] = capable[0]
-        return (selected_cpu, selected_gpu)
+            if any(w in holders for w in claimed):
+                continue
+            claimed.append(min(holders, key=self._gpu_tightness))
+        return claimed
+
+    def _gpu_tightness(self, worker_id: str) -> tuple[bool, float]:
+        """Sort key preferring the smallest memory fraction, a whole device last."""
+        fraction = gpu_memory_fraction(self.profiles.get(worker_id, {}))
+        if fraction is None:
+            return (True, 0.0)
+        return (False, fraction)
