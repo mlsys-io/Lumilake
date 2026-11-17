@@ -2131,10 +2131,7 @@ class FlowmeshRuntimeManager:
                 "Invalid internal schedule: worker assignment does not cover graph"
                 f" nodes. Missing: {missing}, extra: {extra}"
             )
-        # FlowMesh reads the candidates as the set of workers a task may run on,
-        # so a CPU node lists every worker this plan gives no GPU node and runs on
-        # whichever CPU worker is idle first, instead of queueing behind the one
-        # the plan assigned it. A GPU node keeps the plan's worker.
+        # Candidates are a restriction, so a CPU node offers every CPU worker.
         cpu_worker_ids = [
             worker for worker in worker_assignment if worker not in gpu_worker_ids
         ]
