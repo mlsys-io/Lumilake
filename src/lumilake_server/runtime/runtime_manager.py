@@ -1952,6 +1952,14 @@ class FlowmeshRuntimeManager:
             ) = self._build_flat_schedule_hint(
                 worker_assignment=active_worker_assignment,
                 node_names=node_names,
+                gpu_node_names={
+                    flowmesh_node_name
+                    for flowmesh_node_name, raw_node_name in flowmesh_to_raw.items()
+                    if raw_node_name in runtime_graph.nodes
+                    and self._runtime_op_requires_gpu(
+                        runtime_graph.nodes[raw_node_name]
+                    )
+                },
                 node_dependencies={
                     node_name: [
                         dep
@@ -2080,6 +2088,7 @@ class FlowmeshRuntimeManager:
         *,
         worker_assignment: Mapping[str, Sequence[str]],
         node_names: list[str],
+        gpu_node_names: set[str],
         node_dependencies: Mapping[str, Sequence[str]],
     ) -> tuple[list[str], dict[str, list[str]]]:
         per_node_selected_worker_candidates: dict[str, list[str]] = {}
@@ -2118,10 +2127,22 @@ class FlowmeshRuntimeManager:
                 "Invalid internal schedule: worker assignment does not cover graph"
                 f" nodes. Missing: {missing}, extra: {extra}"
             )
+        # FlowMesh reads the candidates as the set of workers a task may run on,
+        # so a CPU node lists every worker this plan gives no GPU node and runs on
+        # whichever CPU worker is idle first, instead of queueing behind the one
+        # the plan assigned it. A GPU node keeps the plan's worker.
+        cpu_worker_ids = [
+            worker
+            for worker, worker_nodes in worker_assignment.items()
+            if not any(node_name in gpu_node_names for node_name in worker_nodes)
+        ]
         for node_name in node_names:
-            per_node_selected_worker_candidates[node_name] = list(
-                node_to_workers[node_name]
-            )
+            if node_name in gpu_node_names or not cpu_worker_ids:
+                per_node_selected_worker_candidates[node_name] = node_to_workers[
+                    node_name
+                ].copy()
+            else:
+                per_node_selected_worker_candidates[node_name] = cpu_worker_ids.copy()
 
         order_index = {node_id: idx for idx, node_id in enumerate(node_names)}
         in_degree: dict[str, int] = {node_id: 0 for node_id in node_names}
