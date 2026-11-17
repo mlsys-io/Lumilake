@@ -61,9 +61,7 @@ async def test_task_spec_uses_full_hardware_override(
     request_info = cast(
         Any,
         SimpleNamespace(
-            request_id="req-1",
-            hardware_requirements=hardware,
-            gpu_worker_ids=set(),
+            request_id="req-1", hardware_requirements=hardware, gpu_worker_ids=set()
         ),
     )
 
@@ -112,9 +110,7 @@ async def test_task_spec_partial_override_falls_back_to_env_per_field(
     request_info = cast(
         Any,
         SimpleNamespace(
-            request_id="req-2",
-            hardware_requirements=hardware,
-            gpu_worker_ids=set(),
+            request_id="req-2", hardware_requirements=hardware, gpu_worker_ids=set()
         ),
     )
 
@@ -150,9 +146,7 @@ async def test_task_spec_no_override_uses_env_defaults(
     request_info = cast(
         Any,
         SimpleNamespace(
-            request_id="req-3",
-            hardware_requirements=None,
-            gpu_worker_ids=set(),
+            request_id="req-3", hardware_requirements=None, gpu_worker_ids=set()
         ),
     )
 
