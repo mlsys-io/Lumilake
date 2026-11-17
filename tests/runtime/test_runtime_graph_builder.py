@@ -555,7 +555,7 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
 
     # A list-mode Lambda binds the merge stage, one item per input row.
     reader = LambdaOp([llm], lambda columns: columns[0], mode="list")
-    outs = [as_output("gated", llm), as_output("fixed", reader)]
+    outs = [as_output("fixed", reader)]
     read = RuntimeGraphBuilder().build(Graph.from_ops(outs).compile(Rows=["a", "b"]))
     assert read.nodes[reader.id].data_spec["plan"] == [
         {"kind": "stage", "node": merge.node_id, "path": "value.output"}
@@ -587,15 +587,6 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
             "from rowwise LLM",
         ),
         ({"source": "api"}, "reads API upstream"),
-    ],
-    ids=[
-        "messages-column",
-        "condition",
-        "no-template",
-        "bad-branch",
-        "not-a-router",
-        "rowwise-source",
-        "api-source",
     ],
 )
 def test_row_gate_rejects_an_unusable_gate(

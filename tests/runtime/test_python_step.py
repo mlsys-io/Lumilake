@@ -1386,8 +1386,9 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
 
 
-def _gated_chain() -> Any:
-    """One model that reads the rows a router marked with its branch."""
+def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
+    # status labels every row, selection keeps the routed rows, and merge gives
+    # one value per input row at ``value.output``, ``None`` where it was skipped.
     rows = input_placeholder("Rows")
     classify = LambdaOp(
         [rows],
@@ -1403,32 +1404,19 @@ def _gated_chain() -> Any:
         default_branch="ok",
         input_path="items.output.status",
     )
-    column = {"label": "code", "node": classify.id, "path": "items.output.code"}
     llm = LLMChatOp(
         [OpMessage(role="user", content="repair {code}")],
         config=GenerationConfig(model=_MODEL),
         rowwise_template="repair {code}",
-        rowwise_columns=[column],
+        rowwise_columns=[
+            {"label": "code", "node": classify.id, "path": "items.output.code"}
+        ],
         row_gate=RowGate(node=router.id, branch="fail"),
         row_gate_op=router,
     )
-    return Graph.from_ops([as_output("repair", llm)]).compile(Rows=["a", "b", "c"])
-
-
-def _run_stage(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
-    """Run the code a built python step emits, over staged upstream results."""
-    namespace: dict[str, Any] = {}
-    code = _spec(node)["code"].replace(
-        python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("repair", llm)]).compile(Rows=["a", "b", "c"])
     )
-    exec(code, namespace)
-    return namespace["main"](inputs)
-
-
-def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
-    # status labels every row, selection keeps the routed rows, and merge gives
-    # one value per input row at ``value.output``, ``None`` where it was skipped.
-    graph = RuntimeGraphBuilder().build(_gated_chain())
     (merge_id,) = graph.output_node_map
     (gated,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
     status, selector, _selected, merge = [graph.nodes[i] for i in gated]
@@ -1452,3 +1440,15 @@ def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
     read = {status.node_id: with_status, merge.data_spec["plan"][1]["node"]: served}
     merged = _run_stage(merge, read)
     assert [i["value"]["output"] for i in merged["items"]] == [None, "fixed"]
+
+
+def _run_stage(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
+    """Run the code a built python step emits, over staged upstream results."""
+    namespace: dict[str, Any] = {}
+    exec(
+        _spec(node)["code"].replace(
+            python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()
+        ),
+        namespace,
+    )
+    return namespace["main"](inputs)

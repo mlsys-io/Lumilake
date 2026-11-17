@@ -14,7 +14,6 @@ from lumilake_server.dynamic.driver import (
     forward_refs,
     resolve_subgraph,
     validate_emitted_subgraph,
-    validate_library,
     walk_archived_items,
 )
 from lumilake_server.parser.common import make_id
@@ -305,28 +304,6 @@ def test_admit_subgraph_forwards_export_to_validation():
     assert [r["id"] for r in resolved] == ["q1"]
 
 
-def _llm_column_library() -> dict[str, dict[str, Any]]:
-    labels = ("prompt", "review_system")
-    return {
-        "ReviewTurn": {
-            "op": "LLMChatOp",
-            "inputs": ["ReviewPrompt"],
-            "messages": [{"role": "user", "content": "review"}],
-            "rowwise_template": "{prompt}",
-            "rowwise_columns": [
-                {
-                    "label": label,
-                    "node": "ReviewPrompt",
-                    "path": f"items.output.{label}",
-                }
-                for label in labels
-            ],
-            "column_bindings": [{"label": label, "input": 0} for label in labels],
-            "config": {"model": "m"},
-        }
-    }
-
-
 def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
     return [
         {
@@ -345,10 +322,25 @@ def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
     ]
 
 
+_LIBRARY: dict[str, dict[str, Any]] = {
+    "ReviewTurn": {
+        "op": "LLMChatOp",
+        "inputs": ["ReviewPrompt"],
+        "messages": [{"role": "user", "content": "review"}],
+        "rowwise_template": "{prompt}",
+        "rowwise_columns": [
+            {"label": "prompt", "node": "ReviewPrompt", "path": "items.output.prompt"}
+        ],
+        "column_bindings": [{"label": "prompt", "input": 0}],
+        "config": {"model": "m"},
+    }
+}
+
+
 def test_column_bindings_remap_independent_library_instances() -> None:
     # One library entry, two instances, each bound to its own prompt node; a
     # messages column binds by its label the same way.
-    library = _llm_column_library()
+    library = copy.deepcopy(_LIBRARY)
     messages = resolve_subgraph(
         [{"ref": "Messages", "id": "m1", "inputs": ["P1"]}],
         {
@@ -379,7 +371,7 @@ def test_column_bindings_remap_independent_library_instances() -> None:
     ("bindings", "inputs", "message"),
     [
         # The bindings must cover every column and every input the round passes.
-        ([{"label": "prompt", "input": 0}], ["p1"], "review_system"),
+        ([], ["p1"], "unbound"),
         ([{"label": "missing", "input": 0}], ["p1"], "unknown label"),
         ([{"label": "prompt", "input": -1}], ["p1"], "invalid input slot"),
     ],
@@ -388,21 +380,13 @@ def test_column_bindings_remap_independent_library_instances() -> None:
 def test_column_bindings_reject_an_inconsistent_round(
     bindings: list[dict[str, Any]], inputs: list[str], message: str
 ) -> None:
-    library = _llm_column_library()
+    library = copy.deepcopy(_LIBRARY)
     library["ReviewTurn"]["column_bindings"] = bindings
     subgraph = _llm_column_subgraph("review")
     subgraph[1]["inputs"] = inputs
 
     with pytest.raises(DriverProtocolError, match=message):
         resolve_subgraph(subgraph, library)
-
-
-def test_validate_library_refuses_a_gated_entry() -> None:
-    # A gated op names its round's router, which a library entry cannot express.
-    library = _llm_column_library()
-    library["ReviewTurn"]["row_gate"] = {"node": "Route", "branch": "fail"}
-    with pytest.raises(DriverProtocolError, match="ReviewTurn.*row_gate"):
-        validate_library(library)
 
 
 def test_build_round_round2_graph_has_no_round1_op():

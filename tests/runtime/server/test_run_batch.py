@@ -1252,7 +1252,7 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
 
 
 def _install_rowwise_api_build_and_schedule(
-    server: Any, output_name: str, node_prefix_name: str | None = None
+    server: Any, output_name: str, node_id_prefix: str | None = None
 ) -> None:
     """Fake build/schedule whose output node is a plain api task (not a
     list-mode python step), so the row-wise API demux path applies."""
@@ -1264,7 +1264,7 @@ def _install_rowwise_api_build_and_schedule(
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
-        node_id = f"{node_prefix_name or node_prefix}__{suffix}"
+        node_id = f"{node_id_prefix or node_prefix}__{suffix}"
         op = RuntimeOp(
             node_id=node_id,
             task_type="api",

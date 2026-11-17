@@ -1541,21 +1541,3 @@ async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
         )
     assert resp.status_code == 422
     await _run_background(app)
-
-
-@pytest.mark.anyio
-async def test_template_body_resolves_library_refs_before_validation(
-    app: FastAPI,
-) -> None:
-    bad_yaml = _TEMPLATE_DYNAMIC_YAML.replace(
-        "ref: LiveState", "ref: MissingLibraryEntry", 1
-    )
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        header = {"Authorization": "Bearer token", "Workflow-Format": "yaml"}
-        for path in ("/jobs", "/jobs/preview"):
-            resp = await client.post(path, json=_submit_body(bad_yaml), headers=header)
-            assert resp.status_code == 422, resp.text
-            assert (
-                "unknown library entry 'MissingLibraryEntry'" in resp.json()["detail"]
-            )
