@@ -207,8 +207,8 @@ A batch claiming GPU workers also claims one worker per distinct utilization it
 reserves before filling the rest of the group, so a batch whose nodes need
 different fractions keeps each engine on its own worker instead of stacking them
 on the largest one. Each utilization takes the tightest worker holding it (the
-smallest fraction, a whole-device worker last), and one worker covers every
-lower utilization it also holds.
+smallest fraction, a whole-device worker last), and a worker already claimed for
+a smaller utilization covers a larger one it also holds.
 
 ## 5. What still causes idle workers
 

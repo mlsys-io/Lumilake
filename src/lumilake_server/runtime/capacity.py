@@ -205,10 +205,11 @@ class FreeCapacity:
     ) -> list[str] | None:
         """One eligible worker per reserved utilization, ``None`` when one is unheld.
 
-        Utilizations are taken smallest first, so each claims the tightest worker
+        Utilizations are taken smallest first, and each claims the tightest worker
         holding it (the smallest memory fraction, a whole-device worker last). A
-        worker claimed for a smaller utilization also holds a larger one it can
-        host, so a batch is not split across workers it does not need.
+        worker already claimed for a smaller utilization covers a utilization it
+        also holds, so a batch is not split over workers it does not need and a
+        cluster with one large enough worker still runs it.
         """
         claimed: list[str] = []
         for utilization in sorted(utilizations):
