@@ -146,6 +146,36 @@ def test_router_row_gate_and_messages_column_parse() -> None:
         parse_yaml_payload(payload)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("row_gate", {"node": "route", "branch": "review"}),
+        (
+            "rowwise_messages_column",
+            {"node": "source", "path": "items.output", "label": "msgs"},
+        ),
+    ],
+    ids=["row-gate", "messages-column"],
+)
+def test_row_routing_fields_are_rejected_on_a_vision_model(
+    field: str, value: Any
+) -> None:
+    # A vision op runs the shared emitter, so only the chat op may carry these.
+    payload = _routed()
+    payload["ops"][-1] = {
+        "id": "look",
+        "op": "LLMVisionOp",
+        "inputs": ["source"],
+        "messages": [{"role": "user", "content": "source"}],
+        "config": {"model": "dummy-model"},
+        "image_source": "source",
+        field: value,
+    }
+    payload["outputs"] = [{"name": "result", "ref": "look"}]
+    with pytest.raises(ValueError, match=f"does not support {field}"):
+        parse_yaml_payload(payload)
+
+
 def test_multi_op_topology_inputs() -> None:
     yaml_text = textwrap.dedent("""
         name: multi

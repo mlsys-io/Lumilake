@@ -146,6 +146,11 @@ def _emit_llm_like_op(
         op_dict["rowwise_columns"] = resolved_rowwise
     rowwise_messages_column = entry.fields.get("rowwise_messages_column")
     if rowwise_messages_column is not None:
+        if op_kind != "LLMChatOp":
+            raise ValueError(
+                f"{op_kind} '{entry.id}' does not support rowwise_messages_column;"
+                " use it only on LLMChatOp."
+            )
         if not isinstance(rowwise_messages_column, dict):
             raise ValueError(
                 f"{op_kind} '{entry.id}' rowwise_messages_column must be a mapping"
@@ -166,6 +171,11 @@ def _emit_llm_like_op(
         ).to_dict()
     row_gate = entry.fields.get("row_gate")
     if row_gate is not None:
+        if op_kind != "LLMChatOp":
+            raise ValueError(
+                f"{op_kind} '{entry.id}' does not support row_gate;"
+                " use it only on LLMChatOp."
+            )
         if not isinstance(row_gate, dict):
             raise ValueError(f"{op_kind} '{entry.id}' row_gate must be a mapping")
         gate_node = row_gate.get("node")
@@ -183,8 +193,6 @@ def _emit_llm_like_op(
                 " Use rowwise_template, or drop the row gate."
             )
         op_dict["row_gate"] = gate.to_dict()
-        if gate.node not in op_dict["_inputs"]:
-            op_dict["_inputs"].append(gate.node)
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
     elif "rowwise_template" in entry.fields and isinstance(inline_messages, list):
