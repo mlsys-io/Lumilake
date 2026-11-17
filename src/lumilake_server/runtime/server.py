@@ -3054,6 +3054,11 @@ class LumilakeServer:
             hardware_requirements=batch.config.hardware_requirements,
             member_request_ids=set(member_request_ids),
             task_owner_members=task_owner_members,
+            gpu_worker_ids={
+                worker
+                for worker in selected_workers
+                if worker_profiles[worker]["has_gpu"]
+            },
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph

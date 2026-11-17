@@ -50,6 +50,11 @@ class RequestInfo:
     request ids whose pre-dedup graphs contributed it. Used to compute
     per-job usage for jobs sharing a FlowMesh workflow."""
 
+    gpu_worker_ids: set[str] = field(default_factory=set)
+    """The selected workers whose profile has a GPU, read from the same
+    profiles the optimizer scheduled with. CPU nodes offer every other
+    selected worker, so an idle GPU worker never takes a CPU step."""
+
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)
     data_profile_graph: RuntimeGraph = field(init=False)
