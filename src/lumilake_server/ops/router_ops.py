@@ -65,11 +65,9 @@ class MessagesColumn:
 
 @Op.registry.register("RouterOp")
 class RouterOp(FunctionalOp):
-    """Declarative per-row routing decision.
-
-    A router reads one field from each source row and marks it with a branch.
-    A downstream row gate selects the rows whose branch matches its own.
-    """
+    """Declarative per-row routing decision: each source row's field is matched
+    to a branch, and a downstream row gate selects the rows whose branch matches
+    its own."""
 
     rules: list[RouterRule]
     default_branch: str
