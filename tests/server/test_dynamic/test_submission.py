@@ -255,14 +255,15 @@ class _FakeRuntimeServer:
                 ]
         if self.export_rows is not None:
             rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
-            if self.export_as_one_item:
-                # A list-mode export archives one item holding the whole list.
-                rows = [{"items": rows}]
             for name in leaf_names:
-                outputs["round"][name] = [
-                    json.dumps({"output": row.get("items", row), "value": row})
-                    for row in rows
-                ]
+                if self.export_as_one_item:
+                    # A list-mode export archives one value holding a list of
+                    # items, the shape an empty round stores as ``[{"output": []}]``.
+                    outputs["round"][name] = [json.dumps([{"output": rows}])]
+                else:
+                    outputs["round"][name] = [
+                        json.dumps({"output": row, "value": row}) for row in rows
+                    ]
         return LumilakeResponse(outputs=outputs)
 
     def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
@@ -1130,9 +1131,9 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [{"next": "STOP"}]
-    # A list-mode export archives one item holding its whole list, so round 1's
-    # two survivors reach round 2 as one value, and round 2's empty list still
-    # archives one item whose element count is zero, which stops the loop.
+    # A list-mode export archives one value holding a list of items, so round
+    # 1's two survivors reach round 2 as one value, and round 2's empty list
+    # still archives one value whose element count is zero, which stops the loop.
     fake_server.export_as_one_item = True
     fake_server.export_rows = [
         [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
