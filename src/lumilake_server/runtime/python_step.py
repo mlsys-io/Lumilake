@@ -236,7 +236,7 @@ def main(inputs):
             if matched:
                 branch = rule["branch"]
                 break
-        row = {{"selected": True, "branch": branch, "row": i}}
+        row = {{"branch": branch, "row": i}}
         statuses.append({{"output": json.dumps(row), "value": row}})
     return {{"items": statuses}}
 """
@@ -473,7 +473,7 @@ def _blob_entry(blob: PublishedBlob) -> dict[str, Any]:
     }
 
 
-def row_skip_merge_code(
+def row_skip_merge_source(
     node_id: str,
     plan: ColumnPlan,
     *,
@@ -562,7 +562,7 @@ def flowmesh_spec(
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
     elif mode == "row_skip_merge":
-        code = row_skip_merge_code(node_id, plan, branch=data_spec["branch"])
+        code = row_skip_merge_source(node_id, plan, branch=data_spec["branch"])
     elif mode == "row_select":
         code = row_select_source(
             node_id, plan, labels=data_spec["labels"], branch=data_spec["branch"]
