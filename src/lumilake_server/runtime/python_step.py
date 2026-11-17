@@ -212,19 +212,11 @@ _ROW_STATUS_MAIN = """\
 
 def main(inputs):
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
-    n = max((len(c) for c in columns), default=0)
-    for entry, col in zip(_PLAN, columns):
-        if len(col) not in (1, n):
-            raise ValueError(
-                "input %r has %d rows; expected 1 or %d"
-                % (entry.get("node", "literal"), len(col), n)
-            )
     (source,) = columns
     rules = {rules}
     statuses = []
-    for i in range(n):
+    for i, source_value in enumerate(source):
         # Re-encoding would rewrite the text the rules test.
-        source_value = source[0] if len(source) == 1 else source[i]
         if not isinstance(source_value, str):
             source_value = json.dumps(source_value)
         branch = {default_branch}

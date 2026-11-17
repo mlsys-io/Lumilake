@@ -22,7 +22,7 @@ from lumilake_server.ops.llm_ops import (
     LLMChatOp,
     LLMCompletionOp,
 )
-from lumilake_server.ops.router_ops import RowGate
+from lumilake_server.ops.router_ops import MessagesColumn, RowGate
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -624,11 +624,10 @@ class _LLMBuilder(_EmbeddingBuilder):
             "messages": messages,
         }, dependencies
 
-    def _lower_gated_llm(self, op: LLMChatOp, ctx: LoweringContext) -> LoweringResult:
+    def _lower_gated_llm(
+        self, op: LLMChatOp, row_gate: RowGate, ctx: LoweringContext
+    ) -> LoweringResult:
         """Validate a row gate and lower its chat op to its four stages."""
-        row_gate = op.row_gate
-        if row_gate is None:
-            raise ValueError(f"LLMChatOp '{op.id}' has no row gate")
         self._check_row_gate(
             consumer=op.id, row_gate=row_gate, graph_dict=ctx.graph_dict
         )
@@ -886,6 +885,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         self,
         *,
         llm_op: LLMChatOp,
+        column: MessagesColumn,
         ctx: LoweringContext,
     ) -> RuntimeOp:
         """Build one LLM op whose input is a list of complete message arrays."""
@@ -901,9 +901,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             dsl_to_runtime=dsl_to_runtime,
             api_mode=llm_op.config.api is not None,
         )
-        column = llm_op.rowwise_messages_column
-        if column is None:
-            raise ValueError(f"LLMChatOp '{llm_op_id}' has no message column")
         node_ref = column.node
         upstream = self._graph_node(node_ref)
         if isinstance(upstream, InputOp):
@@ -1204,11 +1201,15 @@ class _LLMBuilder(_EmbeddingBuilder):
         """Lower an LLM op: a row-gated chat op to its four stages, a messages
         column to a list-fed task, and any other op through the API task when it
         targets an external endpoint and the local inference task otherwise."""
-        if is_row_gated(op):
-            return self._lower_gated_llm(op, ctx)
+        if isinstance(op, LLMChatOp) and op.row_gate is not None:
+            return self._lower_gated_llm(op, op.row_gate, ctx)
         if isinstance(op, LLMChatOp) and op.rowwise_messages_column is not None:
             return LoweringResult(
-                nodes=[self._build_rowwise_messages_op(llm_op=op, ctx=ctx)]
+                nodes=[
+                    self._build_rowwise_messages_op(
+                        llm_op=op, column=op.rowwise_messages_column, ctx=ctx
+                    )
+                ]
             )
         if op.config.api is not None:
             upstream_llm_ids, template_spec = self._infer_structural_messages(

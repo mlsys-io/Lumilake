@@ -87,15 +87,11 @@ class OpOutput:
         """Map a declared read onto a python step plan path, relative to one
         item; ``None`` reads the whole item."""
         if self.kind is not OutputKind.ROW_GATED:
-            if self.needs_flatten:
-                if declared in ("", _WHOLE):
-                    return None
-                raise ValueError(self._unreadable_message(declared, consumer))
             if declared in ("", _WHOLE):
                 return None
-            if declared.startswith(_WHOLE):
-                return declared[len("items.") :]
-            raise ValueError(self._unreadable_message(declared, consumer))
+            if self.needs_flatten or not declared.startswith(_WHOLE):
+                raise ValueError(self._unreadable_message(declared, consumer))
+            return declared[len("items.") :]
         if declared in ("", _WHOLE, self.path):
             return "value.output"
         prefix = self.path + "."
