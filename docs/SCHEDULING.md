@@ -203,6 +203,13 @@ A node runs only on a GPU worker whose owned memory fraction
 (`gpu_memory_fraction`) is at least the fraction its engine reserves
 (`gpu_memory_utilization`); a whole-device worker takes any value.
 
+A batch claiming GPU workers also claims one worker per distinct utilization it
+reserves before filling the rest of the group, so a batch whose nodes need
+different fractions keeps each engine on its own worker instead of stacking them
+on the largest one. Each utilization takes the tightest worker holding it (the
+smallest fraction, a whole-device worker last), and one worker covers every
+lower utilization it also holds.
+
 ## 5. What still causes idle workers
 
 A bubble is idle worker time while the queue holds an item that worker could
