@@ -78,7 +78,6 @@ from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     gpu_memory_fraction,
-    holds_gpu_utilizations,
     required_task_types,
     requires_cpu_worker,
 )
@@ -1230,18 +1229,24 @@ class LumilakeServer:
                 for op in runtime_graph.nodes.values()
                 if self._requires_gpu(op) and op.gpu_memory_utilization is not None
             )
-            holding = [
-                worker
-                for worker in gpu_workers
-                if holds_gpu_utilizations(normalized_profiles[worker], gpu_utilizations)
-            ]
-            if not holding:
+            gpu_capacity = FreeCapacity(
+                cpu_worker_ids=(),
+                gpu_worker_ids=tuple(gpu_workers),
+                profiles=normalized_profiles,
+            )
+            holding = gpu_capacity.eligible_workers(
+                cpu_group_size=0,
+                gpu_group_size=1,
+                worker_meets_hardware=self._worker_meets_hardware,
+                hardware=None,
+                required_gpu_utilizations=gpu_utilizations,
+            )
+            if holding is None:
                 raise RuntimeError(
-                    "No GPU worker's memory fraction holds the "
-                    f"{max(gpu_utilizations):g} gpu_memory_utilization the graph "
-                    "requests for schedule preview"
+                    "No GPU worker's memory fraction holds every "
+                    "gpu_memory_utilization the graph requests for schedule preview"
                 )
-            selected_workers.append(holding[0])
+            selected_workers.extend(holding[1])
         if requires_cpu:
             if not cpu_workers:
                 raise RuntimeError(
