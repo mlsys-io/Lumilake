@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -16,24 +16,11 @@ def _op(node_id: str, task_type: str = "api") -> RuntimeOp:
 async def test_build_task_spec_pins_planned_gpu_nodes_and_offers_cpu_pool(
     flowmesh_manager,
 ) -> None:
+    nodes = {name: _op(name) for name in ("c0", "c1")}
+    nodes["n1"] = _op("n1", "inference")
+    nodes["omni"] = _op("omni", "omni_text2image")
     graph = RuntimeGraph(
-        nodes={
-            "n1": RuntimeOp(
-                node_id="n1",
-                task_type="inference",
-                backend="vllm",
-                model="meta-llama/Llama-3.1-8B-Instruct",
-                data_spec={"type": "list", "items": ["a", "b"]},
-                model_spec={},
-                inference_spec={"max_tokens": 32},
-            ),
-            "c0": _op("c0"),
-            "c1": _op("c1"),
-            "omni": _op("omni", "omni_text2image"),
-        },
-        node_order=["c0", "c1", "n1", "omni"],
-        output_node_map={},
-        dsl_to_runtime={},
+        nodes=nodes, node_order=list(nodes), output_node_map={}, dsl_to_runtime={}
     )
     schedule = Schedule(
         worker_assignment={
@@ -43,13 +30,9 @@ async def test_build_task_spec_pins_planned_gpu_nodes_and_offers_cpu_pool(
             "gpu-1": [],
         }
     )
-    request_info = cast(
-        Any,
-        SimpleNamespace(
-            request_id="req-1",
-            hardware_requirements=None,
-            gpu_worker_ids={"gpu-0", "gpu-1"},
-        ),
+    gpu_ids = {"gpu-0", "gpu-1"}
+    request_info: Any = SimpleNamespace(
+        request_id="req-1", hardware_requirements=None, gpu_worker_ids=gpu_ids
     )
 
     spec, _, _ = await flowmesh_manager._build_task_spec(
