@@ -154,11 +154,8 @@ class RuntimeGraphBuilder(_DerivedBuilder):
             ctx.output_paths[node_id] = path
 
     def _lower_now(self, op: Op, phase: Phase, ctx: LoweringContext) -> None:
-        """Lower ``op`` on demand, through its read hook when it has one.
-
-        A read hook may decline an op, such as a list-mode Lambda, which then
-        takes its phase lowering.
-        """
+        """Lower ``op`` on demand, through its read hook when it has one; a hook
+        may decline, such as a list-mode Lambda, which takes its phase lowering."""
         if op.id in ctx.dsl_to_runtime:
             return
         lowering = lookup(op, phase)

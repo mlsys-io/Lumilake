@@ -11,7 +11,11 @@ from lumilake_server.ops import (
     Op,
 )
 from lumilake_server.runtime import python_step
-from lumilake_server.runtime.runtime_graph.lowering import Phase, lookup
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    Phase,
+    lookup,
+)
 from lumilake_server.runtime.runtime_graph.outputs import (
     OpOutput,
     op_output,
@@ -47,7 +51,7 @@ class _RuntimeGraphBuilderBase:
         # omits it.
         self._read_graph_dict: dict[str, Op] = {}
 
-    def _lower_for_read(self, op: Op, ctx: Any) -> None:
+    def _lower_for_read(self, op: Op, ctx: LoweringContext) -> None:
         """Lower ``op`` now, in the phase it registers for, when a consumer
         reads it before that phase runs."""
         if op.id in ctx.dsl_to_runtime:
@@ -57,7 +61,7 @@ class _RuntimeGraphBuilderBase:
                 self._lower_now(op, phase, ctx)
                 return
 
-    def _lower_now(self, op: Op, phase: Phase, ctx: Any) -> None:
+    def _lower_now(self, op: Op, phase: Phase, ctx: LoweringContext) -> None:
         """Lower ``op`` in ``phase`` now; ``RuntimeGraphBuilder`` implements
         this, since it owns the lowering order."""
         raise NotImplementedError
@@ -87,7 +91,7 @@ class _RuntimeGraphBuilderBase:
         node_id: str,
         mode: str,
         plan: python_step.ColumnPlan,
-        dependencies: tuple[str, ...],
+        dependencies: list[str],
         **spec: Any,
     ) -> RuntimeOp:
         """A generated python step with its plan and mode-specific fields."""
@@ -106,7 +110,7 @@ class _RuntimeGraphBuilderBase:
             },
             model_spec={},
             inference_spec={},
-            dependencies=dependencies,
+            dependencies=tuple(dependencies),
         )
 
     def _create_runtime_op(

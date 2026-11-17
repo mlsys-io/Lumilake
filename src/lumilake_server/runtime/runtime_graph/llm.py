@@ -370,16 +370,14 @@ class _LLMBuilder(_EmbeddingBuilder):
             ),
         )
 
-    def _row_gate(
+    def _check_row_gate(
         self,
         *,
         consumer: str,
-        row_gate: RowGate | None,
+        row_gate: RowGate,
         graph_dict: dict[str, Op],
-    ) -> RowGate | None:
+    ) -> None:
         """Validate a per-row branch gate against the router it names."""
-        if row_gate is None:
-            return None
         router = graph_dict.get(row_gate.node)
         if not isinstance(router, RouterOp):
             raise ValueError(
@@ -391,7 +389,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                 f"LLMChatOp '{consumer}' row_gate branch {row_gate.branch!r} is not"
                 f" declared by RouterOp '{row_gate.node}'"
             )
-        return row_gate
 
     def _api_request_headers(
         self, llm_op_id: str, api_config: ApiConfig, url: str
@@ -629,10 +626,12 @@ class _LLMBuilder(_EmbeddingBuilder):
 
     def _lower_gated_llm(self, op: LLMChatOp, ctx: LoweringContext) -> LoweringResult:
         """Validate a row gate and lower its chat op to its four stages."""
-        row_gate = self._row_gate(
-            consumer=op.id, row_gate=op.row_gate, graph_dict=ctx.graph_dict
+        row_gate = op.row_gate
+        if row_gate is None:
+            raise ValueError(f"LLMChatOp '{op.id}' has no row gate")
+        self._check_row_gate(
+            consumer=op.id, row_gate=row_gate, graph_dict=ctx.graph_dict
         )
-        assert row_gate is not None, "the caller checked the gate is present"
         if op.rowwise_messages_column is not None:
             raise ValueError(
                 f"LLMChatOp '{op.id}' combines row_gate with"
@@ -669,10 +668,10 @@ class _LLMBuilder(_EmbeddingBuilder):
         row_gate: RowGate,
         ctx: LoweringContext,
     ) -> list[RuntimeOp]:
-        """Build status, selection, gated LLM, and merge stages for a row gate.
+        """Build status, selection, gated LLM and merge stages for a row gate.
 
-        A gated op's source must compile to one node and no API item can fill a
-        status or a column, because an API item's text sits under ``json.choices``.
+        A gated op's source must compile to one node, and no API item can fill a
+        status or a column because its text sits under ``json.choices``.
         """
         llm_op_id = llm_op.id
         graph_dict = ctx.graph_dict
@@ -690,7 +689,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             source_columns: python_step.ColumnPlan = [
                 {"kind": "literal", "label": "source", "values": values}
             ]
-            status_dependencies: tuple[str, ...] = ()
+            status_dependencies: list[str] = []
         else:
             self._lower_for_read(source_op, ctx)
             output = self._op_output(source_op)
@@ -715,7 +714,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     ),
                 }
             ]
-            status_dependencies = (output.node,)
+            status_dependencies = [output.node]
         status_id = f"{llm_op_id}__row_status"
         select_id = f"{llm_op_id}__row_select"
         selected_id = f"{llm_op_id}__selected"
@@ -814,7 +813,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             select_id,
             "row_select",
             select_plan,
-            tuple(select_dependencies),
+            select_dependencies,
             labels=labels,
             branch=row_gate.branch,
         )
@@ -877,7 +876,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     "allow_empty": True,
                 },
             ],
-            (status_id, selector.node_id, selected_id),
+            [status_id, selector.node_id, selected_id],
             branch=row_gate.branch,
         )
         ctx.visited.update({router_id, llm_op_id})
@@ -1195,7 +1194,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         """Lower an LLM op: a row-gated chat op to its four stages, a messages
         column to a list-fed task, and any other op through the API task when it
         targets an external endpoint and the local inference task otherwise."""
-        if isinstance(op, LLMChatOp) and op.row_gate is not None:
+        if is_row_gated(op):
             return self._lower_gated_llm(op, ctx)
         if isinstance(op, LLMChatOp) and op.rowwise_messages_column is not None:
             return LoweringResult(

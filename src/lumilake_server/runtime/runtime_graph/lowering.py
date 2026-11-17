@@ -108,9 +108,9 @@ _READ_HOOKS: dict[type[Op], LoweringFn] = {}
 def register_read_hook(op_cls: type[Op]) -> Callable[[LoweringFn], LoweringFn]:
     """Register how an op is built when a consumer reads it before its phase.
 
-    A lowering declines an op its own phase has already visited, which is right
-    in that phase; a consumer that reads the op early needs it built anyway, so
-    it registers the build here and the driver runs it on demand.
+    A lowering declines an op its own phase has already visited, but a consumer
+    that reads the op early needs it built anyway, so the driver runs this build
+    on demand instead.
     """
 
     def _register(fn: LoweringFn) -> LoweringFn:
