@@ -8,12 +8,12 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def _op(node_id: str, task_type: str = "api", *deps: str) -> RuntimeOp:
-    return RuntimeOp(node_id, task_type, task_type, "", {}, {}, {}, dependencies=deps)
+def _op(node_id: str, task_type: str = "api") -> RuntimeOp:
+    return RuntimeOp(node_id, task_type, task_type, "", {}, {}, {})
 
 
 @pytest.mark.asyncio
-async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
+async def test_build_task_spec_pins_planned_gpu_nodes_and_offers_cpu_pool(
     flowmesh_manager,
 ) -> None:
     graph = RuntimeGraph(
@@ -26,17 +26,29 @@ async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
                 data_spec={"type": "list", "items": ["a", "b"]},
                 model_spec={},
                 inference_spec={"max_tokens": 32},
-            )
+            ),
+            "c0": _op("c0"),
+            "c1": _op("c1"),
+            "omni": _op("omni", "omni_text2image"),
         },
-        node_order=["n1"],
+        node_order=["c0", "c1", "n1", "omni"],
         output_node_map={},
         dsl_to_runtime={},
     )
-    schedule = Schedule(worker_assignment={"gpu-0": ["n1"]})
+    schedule = Schedule(
+        worker_assignment={
+            "cpu-0": ["c0"],
+            "cpu-1": ["c1"],
+            "gpu-0": ["n1", "omni"],
+            "gpu-1": [],
+        }
+    )
     request_info = cast(
         Any,
         SimpleNamespace(
-            request_id="req-1", hardware_requirements=None, gpu_worker_ids=set()
+            request_id="req-1",
+            hardware_requirements=None,
+            gpu_worker_ids={"gpu-0", "gpu-1"},
         ),
     )
 
@@ -53,47 +65,10 @@ async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
     assert "user_id" not in annotations
     schedule_hint = annotations.get("schedule_hint")
     assert isinstance(schedule_hint, dict)
-    assert schedule_hint.get("node_execution_order") == ["n1"]
     assert "node_schedule_in_epoch_order" not in schedule_hint
-
-
-@pytest.mark.asyncio
-async def test_build_task_spec_offers_cpu_nodes_every_cpu_worker(
-    flowmesh_manager,
-) -> None:
-    nodes = {name: _op(name) for name in ("c0", "c1", "c2")}
-    nodes["gpu"] = _op("gpu", "inference", "c0", "c1", "c2")
-    graph = RuntimeGraph(
-        nodes=nodes,
-        node_order=["c0", "c1", "c2", "gpu"],
-        output_node_map={},
-        dsl_to_runtime={},
-    )
-    schedule = Schedule(
-        worker_assignment={
-            "cpu-0": ["c0", "c1"],
-            "cpu-1": ["c2"],
-            "gpu-0": ["gpu"],
-            "gpu-1": [],
-        }
-    )
-    request_info: Any = SimpleNamespace(
-        request_id="req",
-        hardware_requirements=None,
-        gpu_worker_ids={"gpu-0", "gpu-1"},
-    )
-    spec, _, _ = await flowmesh_manager._build_task_spec(
-        request_info=request_info,
-        runtime_graph=graph,
-        schedule=schedule,
-    )
-    hint = spec["metadata"]["annotations"]["schedule_hint"]
-    cpu = ["cpu-0", "cpu-1"]
-    assert hint["selected_worker"]["selected"] == {
-        "c0": cpu,
-        "c1": cpu,
-        "c2": cpu,
-        "gpu": ["gpu-0"],
+    assert schedule_hint["node_execution_order"] == ["c0", "c1", "n1", "omni"]
+    assert schedule_hint["selected_worker"]["selected"] == {
+        **dict.fromkeys(("c0", "c1"), ["cpu-0", "cpu-1"]),
+        "n1": ["gpu-0"],
+        "omni": ["gpu-0"],
     }
-    assert "gpu-1" not in hint["selected_worker"]["selected"]["c0"]
-    assert hint["node_execution_order"] == ["c0", "c2", "c1", "gpu"]

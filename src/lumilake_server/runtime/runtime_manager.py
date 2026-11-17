@@ -1946,19 +1946,12 @@ class FlowmeshRuntimeManager:
                         "FlowMesh rewritten node is missing a valid 'name'"
                     )
                 node_names.append(node_name)
-            gpu_node_names = {
-                flowmesh_node_name
-                for flowmesh_node_name, raw_node_name in flowmesh_to_raw.items()
-                if raw_node_name in runtime_graph.nodes
-                and self._runtime_op_requires_gpu(runtime_graph.nodes[raw_node_name])
-            }
             (
                 schedule_hint,
                 per_node_selected_worker_candidates,
             ) = self._build_flat_schedule_hint(
                 worker_assignment=active_worker_assignment,
                 node_names=node_names,
-                gpu_node_names=gpu_node_names,
                 node_dependencies={
                     node_name: [
                         dep
@@ -2088,7 +2081,6 @@ class FlowmeshRuntimeManager:
         *,
         worker_assignment: Mapping[str, Sequence[str]],
         node_names: list[str],
-        gpu_node_names: set[str],
         gpu_worker_ids: set[str],
         node_dependencies: Mapping[str, Sequence[str]],
     ) -> tuple[list[str], dict[str, list[str]]]:
@@ -2131,15 +2123,17 @@ class FlowmeshRuntimeManager:
                 "Invalid internal schedule: worker assignment does not cover graph"
                 f" nodes. Missing: {missing}, extra: {extra}"
             )
-        # Candidates are a restriction, so a CPU node offers every CPU worker.
+        # Candidates are a restriction, so a node the plan put on a GPU worker
+        # keeps that worker and every other node offers the CPU workers.
         cpu_worker_ids = [
             worker for worker in worker_assignment if worker not in gpu_worker_ids
         ]
         for node_name in node_names:
-            if node_name in gpu_node_names or not cpu_worker_ids:
-                per_node_selected_worker_candidates[node_name] = node_to_workers[
-                    node_name
-                ].copy()
+            plan_workers = node_to_workers[node_name]
+            if not cpu_worker_ids or any(
+                worker in gpu_worker_ids for worker in plan_workers
+            ):
+                per_node_selected_worker_candidates[node_name] = plan_workers.copy()
             else:
                 per_node_selected_worker_candidates[node_name] = cpu_worker_ids.copy()
 

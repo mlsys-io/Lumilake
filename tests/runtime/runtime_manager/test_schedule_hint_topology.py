@@ -8,7 +8,6 @@ def test_build_flat_schedule_hint_from_worker_assignment() -> None:
             "gpu-1": ["n2", "n1"],
         },
         node_names=["n1", "n2"],
-        gpu_node_names={"n1", "n2"},
         gpu_worker_ids={"gpu-0", "gpu-1"},
         node_dependencies={
             "n1": [],
@@ -28,7 +27,6 @@ def test_build_flat_schedule_hint_is_topological() -> None:
             "gpu-0": ["n2", "n1"],
         },
         node_names=["n1", "n2"],
-        gpu_node_names={"n1"},
         gpu_worker_ids={"gpu-0"},
         node_dependencies={
             "n1": [],
