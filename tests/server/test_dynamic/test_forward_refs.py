@@ -390,14 +390,10 @@ def test_column_bindings_reject_an_inconsistent_round(
     library = copy.deepcopy(_LIBRARY)
     library["ReviewTurn"].update(entry)
     library["ReviewTurn"]["column_bindings"] = bindings
-    if "row_gate" in entry:
-        with pytest.raises(DriverProtocolError, match=message):
-            validate_library(library)
-        return
     subgraph = _llm_column_subgraph("review")
     subgraph[1]["inputs"] = inputs
-
     with pytest.raises(DriverProtocolError, match=message):
+        validate_library(library)
         resolve_subgraph(subgraph, library)
 
 

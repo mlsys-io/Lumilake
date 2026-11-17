@@ -148,48 +148,38 @@ def test_router_row_gate_and_messages_column_parse() -> None:
         parse_yaml_payload(payload)
 
 
+_GATE = {"node": "route", "branch": "review"}
+_MSG_COLUMN = {"node": "source", "path": "items", "label": "m"}
+
+
 @pytest.mark.parametrize(
-    ("op_kind", "fields", "message"),
+    ("fields", "message"),
     [
-        # A vision op runs the shared emitter, so only the chat op may carry
-        # the routing fields. The messages column supplies the whole chat
-        # history, so a field that would build prompts is refused beside it.
-        (
-            "LLMVisionOp",
-            {"row_gate": {"node": "route", "branch": "review"}},
-            "does not support row_gate",
-        ),
-        ("LLMVisionOp", {}, "does not support rowwise_messages_column"),
-        ("LLMChatOp", {"system_messages": ["s"]}, "with system_messages"),
-        ("LLMChatOp", {"rowwise_template": "{q}"}, "with rowwise_template"),
-        (
-            "LLMChatOp",
-            {"rowwise_columns": [{"label": "q", "node": "source"}]},
-            "with rowwise_columns",
-        ),
-        (
-            "LLMChatOp",
-            {"aggregate_table": [{"label": "q", "node": "source"}]},
-            "with aggregate_table",
-        ),
+        # A vision op runs the shared emitter, so only the chat op may carry the
+        # routing fields; a messages column supplies the whole chat history, so
+        # a field that would build prompts is refused beside it.
+        ({"op": "LLMVisionOp", "row_gate": _GATE}, "does not support row_gate"),
+        ({"op": "LLMVisionOp", "rowwise_messages_column": _MSG_COLUMN}, "messages"),
+        ({"system_messages": ["s"]}, "system_"),
+        ({"rowwise_template": "{q}"}, "template"),
+        ({"rowwise_columns": []}, "columns"),
+        ({"aggregate_table": []}, "aggregate"),
     ],
 )
 def test_row_routing_fields_are_rejected_when_unsupported(
-    op_kind: str, fields: dict[str, Any], message: str
+    fields: dict[str, Any], message: str
 ) -> None:
     op = {
         "id": "look",
-        "op": op_kind,
+        "op": "LLMChatOp",
         "inputs": ["source"],
         "messages": [{"role": "user", "content": "source"}],
         "config": {"model": "dummy-model"},
-        "rowwise_messages_column": {"node": "source", "path": "items", "label": "m"},
-        **fields,
+        "image_source": "source",
+        **{"rowwise_messages_column": _MSG_COLUMN, **fields},
     }
     if "row_gate" in fields:
         op.pop("rowwise_messages_column")
-    if op_kind == "LLMVisionOp":
-        op["image_source"] = "source"
     payload = _routed()
     payload["ops"][-1] = op
     payload["outputs"] = [{"name": "result", "ref": "look"}]

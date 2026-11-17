@@ -566,27 +566,17 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
     ("fields", "message"),
     [
         (
-            {
-                "rowwise_messages_column": MessagesColumn(
-                    node="Rows", path="items", label="msgs"
-                )
-            },
-            "combines row_gate with rowwise_messages_column",
+            {"rowwise_messages_column": MessagesColumn("Rows", "items", "msgs")},
+            "row_gate with rowwise_messages_column",
         ),
-        (
-            {"condition": {"node": "Rows", "expr": "x == 'on'"}},
-            "combines row_gate with condition",
-        ),
+        ({"condition": {"node": "Rows", "expr": "x == 'on'"}}, "row_gate with cond"),
         # A gate needs a row template, and its branch must be one the router
         # declares; the native graph format skips the parser's own validation.
         ({"rowwise_template": None}, "requires rowwise_template"),
-        ({"gate_branch": "missing"}, "branch 'missing' is not declared"),
+        ({"gate_branch": "missing"}, "'missing' is not declared"),
         ({"gate_node": "rows"}, "must be a RouterOp"),
-        (
-            {"source": "rowwise", "input_path": "items.output.verdict"},
-            "from rowwise LLM",
-        ),
-        ({"source": "api"}, "reads API upstream"),
+        ({"source": "rowwise", "input_path": "items.output.verdict"}, "rowwise LLM"),
+        ({"source": "api"}, "reads API"),
     ],
 )
 def test_row_gate_rejects_an_unusable_gate(

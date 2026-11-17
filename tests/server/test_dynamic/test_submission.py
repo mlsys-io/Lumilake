@@ -1147,13 +1147,13 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
 
     assert record.status == "completed", record.error
     assert [config.chain_round for config in fake_server.configs] == [1, 2]
-    # Every round runs as one slice over the whole input set rather than per
-    # symbol.
-    assert [
+    # Every round runs as one slice over the whole input set, not per symbol.
+    whole_sets = [
         meta.whole_set
         for slices in fake_server.workflow_slices_calls
         for meta in slices.values()
-    ] == [True, True]
+    ]
+    assert whole_sets == [True, True]
     round_plans = record.result.outputs["round"]["plan"]
     assert [(plan["next"], plan["round"], plan["source"]) for plan in round_plans] == [
         ("subgraph", 1, "template"),

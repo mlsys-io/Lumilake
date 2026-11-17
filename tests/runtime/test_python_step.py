@@ -1420,25 +1420,22 @@ def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
     (merge_id,) = graph.output_node_map
     (gated,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]
     status, selector, _selected, merge = [graph.nodes[i] for i in gated]
-
     items = [
         {"output": {"code": f"fn_{i}", "status": s}}
-        for i, s in enumerate(("ok", "fail"))
+        for i, s in (("0", "ok"), ("1", "fail"))
     ]
     upstream = _stage(tmp_path, "classify", {"items": items})
     status_payload = _run_stage(status, {status.data_spec["plan"][0]["node"]: upstream})
     assert [i["value"]["branch"] for i in status_payload["items"]] == ["ok", "fail"]
-
     with_status = _stage(tmp_path, "status", status_payload)
-    stages = {
-        e["node"]: with_status if e["node"] == status.node_id else upstream
-        for e in selector.data_spec["plan"]
-    }
+    stages = {e["node"]: upstream for e in selector.data_spec["plan"]}
+    stages[status.node_id] = with_status
     assert _run_stage(selector, stages)["items"] == [{"code": "fn_1"}]
-
     served = _stage(tmp_path, "served", {"items": [{"output": ["fixed"]}]})
     read = {status.node_id: with_status, merge.data_spec["plan"][1]["node"]: served}
     merged = _run_stage(merge, read)
+    # The row index survives the merge, so an OutputOp archives it with the row.
+    assert [i["value"]["row"] for i in merged["items"]] == [0, 1]
     assert [i["value"]["output"] for i in merged["items"]] == [None, "fixed"]
 
 

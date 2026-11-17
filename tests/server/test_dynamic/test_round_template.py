@@ -83,9 +83,10 @@ _RETRIEVAL = {
     "inputs": ["Symbols"],
     "data_spec": {"type": "lumid", "mode": "sql", "template": "S"},
 }
-_ROW_NEXT = dict(_LIST, mode="row", inputs=["Live_r{{prev}}"])
-_MISSING = {"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}
 _TALLY = _state("T_r{{round}}", ["Symbols"])
+_ROW_NEXT = dict(_LIST, mode="row", inputs=["Live_r{{prev}}"])
+_MISSING = [{"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}]
+_OTHER = [_state("Other_r{{round}}", ["Symbols"])]
 _KEEP = _state("Keep_r{{round}}", ["Live_r{{round}}"])
 
 
@@ -98,22 +99,12 @@ _KEEP = _state("Keep_r{{round}}", ["Live_r{{round}}"])
         ([_LIST], [_ROW_NEXT], None, "not available"),
         ([_RETRIEVAL], [_LIST], None, "must be a LambdaOp"),
         # Every export names a node its body builds, and a library ref resolves.
-        ([_state("Other_r{{round}}", ["Symbols"])], [_LIST], None, "exported op id"),
-        (
-            [{"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}],
-            [_LIST],
-            None,
-            "library",
-        ),
+        (_OTHER, [_LIST], None, "exported op id"),
+        (_MISSING, [_LIST], None, "library"),
         # A next body may read a list-mode Lambda the earlier round ran, which is
         # how a tally carries across rounds; a row-wise one is misread. A node
         # only round 1 built is gone by round 3, which renders ``next`` again.
-        (
-            [_LIST, _TALLY],
-            [_LIST, dict(_TALLY, inputs=["T_r{{prev}}"])],
-            None,
-            None,
-        ),
+        ([_LIST, _TALLY], [_LIST, dict(_TALLY, inputs=["T_r{{prev}}"])], None, None),
         (
             [_LIST, _TALLY],
             [_LIST, dict(_TALLY, mode="row", inputs=["T_r{{prev}}"])],
@@ -130,18 +121,17 @@ def test_template_validator_checks_a_body(
     export: list[str] | None,
     message: str | None,
 ) -> None:
-    spec = {
-        "first": {"ops": first, "export": export or ["Live_r{{round}}"]},
-        "next": {"ops": next_ops, "export": export or ["Live_r{{round}}"]},
-        "stop_when_empty": "Live_r{{prev}}",
-    }
-    template = DriverTemplate.model_validate(spec)
+    body = export or ["Live_r{{round}}"]
+    template = DriverTemplate.model_validate(
+        {
+            "first": {"ops": first, "export": body},
+            "next": {"ops": next_ops, "export": body},
+            "stop_when_empty": "Live_r{{prev}}",
+        }
+    )
+    library = {"Known": _state("Known", [])}
     if message is None:
-        validate_template_spec(
-            template, {"Known": _state("Known", [])}, max_nodes_per_round=8
-        )
+        validate_template_spec(template, library, max_nodes_per_round=8)
         return
     with pytest.raises(DriverProtocolError, match=message):
-        validate_template_spec(
-            template, {"Known": _state("Known", [])}, max_nodes_per_round=8
-        )
+        validate_template_spec(template, library, max_nodes_per_round=8)

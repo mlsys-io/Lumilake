@@ -1960,6 +1960,7 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
 async def test_whole_set_round_accepts_its_own_row_count(
     server_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # One slice over the whole set answers two rows, which its own count allows.
     server = server_factory()
     monkeypatch.setattr(
         server,
@@ -1972,16 +1973,12 @@ async def test_whole_set_round_accepts_its_own_row_count(
             request_id="req-node",
             graph_name="g0",
             public_graph_name="shared",
-            template_hash="template-shared",
-            slice_index=0,
             slice_length=4,
             total_length=4,
             whole_set=True,
         )
     ]
     handlers = attach_request_states(server, workflows)
-    batch = make_batch(workflows)
-
     monkeypatch.setattr(
         server,
         "_merge_group_compiled_graph",
@@ -1989,11 +1986,13 @@ async def test_whole_set_round_accepts_its_own_row_count(
     )
     _install_rowwise_api_build_and_schedule(server, "out", "wf-node-0")
 
-    await server._run_batch(["worker-1"], batch)
+    await server._run_batch(["worker-1"], make_batch(workflows))
 
     resp = handlers["req-node"].results[0]
-    assert resp.error_info is None
-    assert resp.outputs["shared"]["out"] == ["case-0", "case-1"]
+    assert (resp.error_info, resp.outputs["shared"]["out"]) == (
+        None,
+        ["case-0", "case-1"],
+    )
 
 
 def _two_request_batch(server: Any) -> tuple[dict[str, Any], BatchSelection]:
