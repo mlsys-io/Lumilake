@@ -91,7 +91,7 @@ class _RuntimeGraphBuilderBase:
         node_id: str,
         mode: str,
         plan: python_step.ColumnPlan,
-        dependencies: list[str],
+        dependencies: tuple[str, ...],
         **spec: Any,
     ) -> RuntimeOp:
         """A generated python step with its plan and mode-specific fields."""
@@ -110,7 +110,7 @@ class _RuntimeGraphBuilderBase:
             },
             model_spec={},
             inference_spec={},
-            dependencies=tuple(dependencies),
+            dependencies=dependencies,
         )
 
     def _create_runtime_op(

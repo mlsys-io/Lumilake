@@ -667,17 +667,16 @@ class _LLMBuilder(_EmbeddingBuilder):
         row_gate: RowGate,
         ctx: LoweringContext,
     ) -> list[RuntimeOp]:
-        """Build status, selection, gated LLM and merge stages for a row gate.
-
-        A gated op's source must compile to one node, and no API item can fill a
-        status or a column because its text sits under ``json.choices``.
-        """
+        """Build status, selection, gated LLM and merge stages for a row gate;
+        its source must compile to one node, and no API item can fill a status
+        or a column because its text sits under ``json.choices``."""
         llm_op_id = llm_op.id
         graph_dict = ctx.graph_dict
         router_id = row_gate.node
         router = graph_dict[router_id]
         assert isinstance(router, RouterOp), "the gate was validated by the caller"
         source_op = router.source
+        status_dependencies: tuple[str, ...]
         if isinstance(source_op, InputOp):
             values = ctx.inputs_dict.get(source_op.name)
             if values is None:
@@ -688,7 +687,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             source_columns: python_step.ColumnPlan = [
                 {"kind": "literal", "label": "source", "values": values}
             ]
-            status_dependencies: list[str] = []
+            status_dependencies = ()
         else:
             self._lower_for_read(source_op, ctx)
             output = self._op_output(source_op)
@@ -713,7 +712,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     ),
                 }
             ]
-            status_dependencies = [output.node]
+            status_dependencies = (output.node,)
         status_id = f"{llm_op_id}__row_status"
         select_id = f"{llm_op_id}__row_select"
         selected_id = f"{llm_op_id}__selected"
@@ -738,7 +737,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         select_plan: python_step.ColumnPlan = [
             {"kind": "stage", "node": status_id, "path": "value"}
         ]
-        select_dependencies: list[str] = [status_id]
+        select_dependencies: tuple[str, ...] = (status_id,)
         for column in llm_op.rowwise_columns or []:
             label = column.get("label")
             if not isinstance(label, str) or not label:
@@ -807,7 +806,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 )
             )
             if output.node not in select_dependencies:
-                select_dependencies.append(output.node)
+                select_dependencies += (output.node,)
         selector = self._python_step_op(
             select_id,
             "row_select",
@@ -875,7 +874,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     "allow_empty": True,
                 },
             ],
-            [status_id, selector.node_id, selected_id],
+            (status_id, selector.node_id, selected_id),
             branch=row_gate.branch,
         )
         ctx.visited.update({router_id, llm_op_id})
