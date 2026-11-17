@@ -159,7 +159,10 @@ _MSG_COLUMN = {"node": "source", "path": "items", "label": "m"}
         # routing fields; a messages column supplies the whole chat history, so
         # a field that would build prompts is refused beside it.
         ({"op": "LLMVisionOp", "row_gate": _GATE}, "does not support row_gate"),
-        ({"op": "LLMVisionOp", "rowwise_messages_column": _MSG_COLUMN}, "messages"),
+        (
+            {"op": "LLMVisionOp", "rowwise_messages_column": _MSG_COLUMN},
+            "does not support rowwise_messages_column",
+        ),
         ({"system_messages": ["s"]}, "system_"),
         ({"rowwise_template": "{q}"}, "template"),
         ({"rowwise_columns": []}, "columns"),
@@ -175,9 +178,10 @@ def test_row_routing_fields_are_rejected_when_unsupported(
         "inputs": ["source"],
         "messages": [{"role": "user", "content": "source"}],
         "config": {"model": "dummy-model"},
-        "image_source": "source",
         **{"rowwise_messages_column": _MSG_COLUMN, **fields},
     }
+    if "op" in fields:
+        op["image_source"] = "source"
     if "row_gate" in fields:
         op.pop("rowwise_messages_column")
     payload = _routed()

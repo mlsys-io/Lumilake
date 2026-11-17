@@ -319,14 +319,15 @@ rendered into every string the body carries: each op's id, its node references
 and its arguments, and the export list. A LambdaOp's `code` is left alone,
 because it is Python source rather than a node reference. `stop_when_empty`
 names the previous round's export, which must be a list-mode LambdaOp: each
-element it returns is one row, and the server stops before a round whose
-predecessor exported none. A template round runs as one slice over the whole
-input set, since a list-mode Lambda's whole-list result cannot be partitioned
-per row, and a `next` body reads an earlier round only through a list-mode
-LambdaOp that round ran, as a leaf or an export. Template mode calls no
-planner and is mutually exclusive with `api`; every rendered body passes the
-same checks as a planner plan, and each stored plan records
-`source: "template"`.
+element it returns is one row, and an element that is itself a list counts by
+its length, so a Lambda may return its rows wrapped in one list. The server
+stops before a round whose predecessor exported none. A template round runs
+as one slice over the whole input set, since a list-mode Lambda's whole-list
+result cannot be partitioned per row, and a `next` body reads an earlier round
+only through a list-mode LambdaOp that round ran, as a leaf or an export.
+Template mode calls no planner and is mutually exclusive with `api`; every
+rendered body passes the same checks as a planner plan, and each stored plan
+records `source: "template"`.
 
 The `driver:` YAML settings the server accepts are:
 

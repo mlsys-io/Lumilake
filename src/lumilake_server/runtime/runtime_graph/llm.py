@@ -889,6 +889,13 @@ class _LLMBuilder(_EmbeddingBuilder):
     ) -> RuntimeOp:
         """Build one LLM op whose input is a list of complete message arrays."""
         llm_op_id = llm_op.id
+        if llm_op.condition is not None:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' combines rowwise_messages_column with"
+                " condition; the column supplies one chat history per row, so a"
+                " condition would be ignored. Route on the condition's field"
+                " instead, or drop the messages column."
+            )
         graph_dict = ctx.graph_dict
         inputs_dict = ctx.inputs_dict
         dsl_to_runtime = ctx.dsl_to_runtime
@@ -953,13 +960,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                 ),
             }
             dependencies = [output.node]
-        if llm_op.condition is not None:
-            raise ValueError(
-                f"LLMChatOp '{llm_op_id}' combines rowwise_messages_column with"
-                " condition; the column supplies one chat history per row, so a"
-                " condition would be ignored. Route on the condition's field"
-                " instead, or drop the messages column."
-            )
         if llm_op.config.api is None:
             inference_spec = llm_op.config.inference_spec()
             if llm_op.structural_outputs:
