@@ -42,40 +42,28 @@ class _RuntimeGraphBuilderBase:
         # The workflow being built, so every read site describes the same one.
         self._inputs_dict: dict[str, list[str]] = {}
         self._graph_dict: dict[str, Op] = {}
-        # ``_graph_dict`` with the graph's input ops folded in: a forwarded
-        # reference names an input by id without an input edge, so the sorted
-        # op dict omits it. Every read resolves through this one dict.
+        # ``_graph_dict`` with the input ops folded in: a forwarded reference
+        # names an input by id without an input edge, so the sorted op dict
+        # omits it.
         self._read_graph_dict: dict[str, Op] = {}
 
     def _lower_for_read(self, op: Op, ctx: Any) -> None:
-        """Lower ``op`` before a consumer reads it, when it has not lowered yet.
-
-        A row gate's source and gated columns, and a list Lambda that reads a
-        gated op, may be read before their phase runs, so the consumer lowers
-        them first, in the phase the op itself registers for. A row-mode Lambda
-        registers in the row phase, where its lowering builds it because
-        nothing has reached it yet. Lowering is tracked by ``dsl_to_runtime``,
-        not by the visited set, which also holds ops an LLM absorbed.
-        """
+        """Lower ``op`` now, in the phase it registers for, when a consumer
+        reads it before that phase runs."""
         if op.id in ctx.dsl_to_runtime:
             return
         for phase in Phase:
             if lookup(op, phase) is not None:
-                self._ensure_lowered(op, phase, ctx)
+                self._lower_now(op, phase, ctx)
                 return
 
-    def _ensure_lowered(self, op: Op, phase: Phase, ctx: Any) -> None:
-        """Lower ``op`` in ``phase`` now; ``RuntimeGraphBuilder`` owns the
-        ordering, so the base declares the hook and the builder implements it."""
+    def _lower_now(self, op: Op, phase: Phase, ctx: Any) -> None:
+        """Lower ``op`` in ``phase`` now; ``RuntimeGraphBuilder`` implements
+        this, since it owns the lowering order."""
         raise NotImplementedError
 
     def _graph_node(self, node_ref: str) -> Op | None:
-        """Resolve a node reference against the graph and its input ops.
-
-        A column, param or image source names a node by id rather than through
-        an input edge, so a literal InputOp named only that way is absent from
-        the sorted op dict; ``_read_graph_dict`` folds the inputs in.
-        """
+        """Resolve a node reference against the graph and its input ops."""
         return self._read_graph_dict.get(node_ref)
 
     @staticmethod
@@ -85,12 +73,8 @@ class _RuntimeGraphBuilderBase:
         path: str | None = None,
         flatten: bool = False,
     ) -> dict[str, Any]:
-        """One python step plan entry for upstream ``node_id``.
-
-        ``path`` reads a field out of each item; ``flatten`` expands a row-wise
-        upstream's grouped answer to one value per row; otherwise the whole
-        item value is read.
-        """
+        """One python step plan entry reading a field or the whole item of
+        upstream ``node_id``; ``flatten`` expands a grouped answer per row."""
         entry: dict[str, Any] = {"kind": "stage", "node": node_id}
         if flatten:
             entry["flatten"] = True

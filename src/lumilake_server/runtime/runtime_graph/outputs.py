@@ -12,7 +12,6 @@ from lumilake_server.ops import (
     LLMOp,
     MessageOp,
     Op,
-    RowShape,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
@@ -21,6 +20,7 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
+from lumilake_server.ops.ops import RowShape
 
 
 def item_relative_path(path: str) -> str:
@@ -52,7 +52,6 @@ class OutputKind(Enum):
 
 
 _LAMBDA_KINDS = frozenset({OutputKind.LIST_LAMBDA, OutputKind.ROW_LAMBDA})
-_API_KINDS = frozenset({OutputKind.API_ROW, OutputKind.API_ITEM})
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +67,6 @@ class OpOutput:
     kind: OutputKind
     one_item_per_row: bool
     needs_flatten: bool
-    step_node: str | None = None
 
     def read(self, declared: str, consumer: str) -> str:
         """Map a declared ``items.output``-rooted read onto this output."""
@@ -76,7 +74,10 @@ class OpOutput:
             return declared
         if declared == _WHOLE:
             return self.path
-        if declared.startswith(_WHOLE) and self.kind not in _API_KINDS:
+        if declared.startswith(_WHOLE) and self.kind not in (
+            OutputKind.API_ROW,
+            OutputKind.API_ITEM,
+        ):
             if self.kind is OutputKind.ROW_LAMBDA:
                 return "value.items.value." + declared[len(_WHOLE) + 1 :]
             return "value." + declared
@@ -84,8 +85,7 @@ class OpOutput:
 
     def step_read(self, declared: str, consumer: str) -> str | None:
         """Map a declared read onto a python step plan path, relative to one
-        item; ``None`` reads the whole item. A grouped upstream is flattened
-        instead, so it supports only ``items.output``."""
+        item; ``None`` reads the whole item."""
         if self.kind is not OutputKind.ROW_GATED:
             if self.needs_flatten:
                 if declared in ("", _WHOLE):
@@ -118,13 +118,9 @@ class OpOutput:
             return (
                 f"{head} rowwise LLM '{self.node}'; only 'items.output' is supported."
             )
-        if self.kind in _LAMBDA_KINDS:
-            return (
-                f"{head} Lambda '{self.node}'; only an 'items.output'-rooted path"
-                " (e.g. 'items.output.messages') is supported."
-            )
+        noun = "Lambda" if self.kind in _LAMBDA_KINDS else "API upstream"
         return (
-            f"{head} API upstream '{self.node}';"
+            f"{head} {noun} '{self.node}';"
             " only 'items.output' (the whole output) is supported."
         )
 
@@ -139,8 +135,7 @@ def is_api_task(op: Op) -> bool:
 
 
 def is_row_gated(op: Op) -> TypeGuard[LLMChatOp]:
-    """Whether a chat op lowers to a row gate's status, selection, gated call
-    and merge stages instead of one node."""
+    """Whether a chat op lowers to a row gate's four stages instead of one node."""
     return isinstance(op, LLMChatOp) and op.row_gate is not None
 
 
@@ -175,9 +170,6 @@ def op_output(
     """Describe how a consumer reads ``op``'s values: the emitting node, the
     envelope path, the row count, and what an OutputOp archives."""
     if is_row_gated(op):
-        # A gated op has no node of its own: its merge stage is its output, one
-        # item per input row holding the served answer under ``output`` and
-        # ``None`` for a row the gate skipped.
         path = "value.items.output"
         return OpOutput(
             node=f"{op.id}__rows",
@@ -187,16 +179,11 @@ def op_output(
             kind=OutputKind.ROW_GATED,
             one_item_per_row=False,
             needs_flatten=False,
-            step_node=f"{op.id}__row_status",
         )
     if op.id in flattened_vlm_ids:
         kind = OutputKind.FLATTENED
     elif is_api_task(op):
-        rowwise = (
-            isinstance(op, LLMChatOp)
-            and op.row_shape is RowShape.GROUPED
-            and not isinstance(op, LLMVisionOp)
-        )
+        rowwise = isinstance(op, LLMChatOp) and op.rowwise_template is not None
         kind = OutputKind.API_ROW if rowwise else OutputKind.API_ITEM
     elif isinstance(op, LambdaOp):
         kind = (

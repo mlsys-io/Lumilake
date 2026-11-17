@@ -1,5 +1,3 @@
-from typing import Any
-
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.ops import Op, OutputOp
 from lumilake_server.runtime.runtime_graph.derived import _DerivedBuilder
@@ -9,6 +7,7 @@ from lumilake_server.runtime.runtime_graph.graph import (
 )
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
+    LoweringFn,
     Phase,
     has_lowering,
     lookup,
@@ -30,8 +29,6 @@ class RuntimeGraphBuilder(_DerivedBuilder):
         input_ops_by_id = {op.id: op for op in compiled_graph.graph.input_ops.values()}
         self._inputs_dict = inputs_dict
         self._graph_dict = graph_dict
-        # A forwarded reference names an input op by id without an edge, so it
-        # is absent from the sorted dict; fold the inputs in once for the reads.
         self._read_graph_dict = {**input_ops_by_id, **graph_dict}
         self._flattened_vlm_ids = self._flattened_vision_ids(graph_dict)
 
@@ -156,14 +153,11 @@ class RuntimeGraphBuilder(_DerivedBuilder):
         if path is not None:
             ctx.output_paths[node_id] = path
 
-    def _ensure_lowered(self, op: Op, phase: Phase, ctx: LoweringContext) -> None:
-        """Lower ``op`` on demand when a lowering reads it before its phase runs.
+    def _lower_now(self, op: Op, phase: Phase, ctx: LoweringContext) -> None:
+        """Lower ``op`` on demand, through its read hook when it has one.
 
-        A row gate and a list Lambda that reads one lower out of phase order, so
-        each lowers what it reads first rather than deferring to a second pass.
-        A read hook builds the op the way a reader needs it, and may decline an
-        op it does not build, such as a list-mode Lambda; that op then takes its
-        own phase lowering, which is right in this position.
+        A read hook may decline an op, such as a list-mode Lambda, which then
+        takes its phase lowering.
         """
         if op.id in ctx.dsl_to_runtime:
             return
@@ -177,7 +171,7 @@ class RuntimeGraphBuilder(_DerivedBuilder):
 
     def _run_lowering(
         self,
-        lowering: Any,
+        lowering: LoweringFn,
         op: Op,
         ctx: LoweringContext,
     ) -> bool:
@@ -193,11 +187,9 @@ class RuntimeGraphBuilder(_DerivedBuilder):
             ctx.nodes[node.node_id] = node
             ctx.node_order.append(node.node_id)
         ctx.dsl_to_runtime.update(result.built)
-        own = [
+        ctx.dsl_to_runtime[op.id] = [
             node.node_id for node in result.nodes if node.node_id not in result.built
         ]
-        if own:
-            ctx.dsl_to_runtime[op.id] = own
         ctx.visited.add(op.id)
         ctx.lowered.add(op.id)
         self._record_output(op, ctx)

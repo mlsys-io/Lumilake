@@ -14,9 +14,7 @@ from lumilake_server.ops import (
     LLMOp,
     MessageOp,
     Op,
-    OutputOp,
     RouterOp,
-    RowShape,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
@@ -52,20 +50,6 @@ from lumilake_server.runtime.runtime_graph.outputs import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import lambda_runtime
-
-
-def _declared_node_refs(op: LLMChatOp) -> set[str]:
-    """Every node id an ``LLMChatOp`` names outside its inputs."""
-    refs: set[str] = set()
-    for column in (*(op.rowwise_columns or []), *(op.aggregate_table or [])):
-        node_ref = column.get("node")
-        if isinstance(node_ref, str):
-            refs.add(node_ref)
-    if op.rowwise_messages_column is not None:
-        refs.add(op.rowwise_messages_column.node)
-    if op.condition is not None:
-        refs.add(op.condition["node"])
-    return refs
 
 
 class _LLMBuilder(_EmbeddingBuilder):
@@ -290,7 +274,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 skip_when_all_inputs_empty=bool(row_dependencies),
             )
 
-        if isinstance(llm_op, LLMChatOp) and llm_op.row_shape is RowShape.GROUPED:
+        if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
             data_spec, row_dependencies = self._rowwise_data_spec(
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
@@ -408,75 +392,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                 f" declared by RouterOp '{row_gate.node}'"
             )
         return row_gate
-
-    @staticmethod
-    def _check_row_gate_consumers(graph_dict: dict[str, Op]) -> None:
-        """Reject every reader of a row-gated LLM other than an ``OutputOp`` or
-        a render step.
-
-        A row gate compiles its LLM into status, selection, gated call and
-        merge stages, so the op has no single runtime node a consumer could
-        bind to. A fused round reads each leaf through a render step, and a
-        list-mode Lambda reads the merge stage's item list, which holds one
-        item per input row. References declared on a column
-        (``rowwise_columns``, ``aggregate_table``), on a messages column or in
-        a ``condition`` read the op without listing it as an input, so they are
-        checked as well.
-        """
-        for op_id, op in graph_dict.items():
-            if not isinstance(op, LLMChatOp) or op.row_gate is None:
-                continue
-            for consumer_id, consumer in graph_dict.items():
-                if consumer_id == op_id:
-                    continue
-                reads_op = any(inp is op for inp in consumer.inputs) or (
-                    isinstance(consumer, LLMChatOp)
-                    and op_id in _declared_node_refs(consumer)
-                )
-                if not reads_op:
-                    continue
-                if isinstance(consumer, OutputOp):
-                    continue
-                if (
-                    isinstance(consumer, FormatOp)
-                    and consumer.template == "{ref0}"
-                    and len(consumer.inputs) == 1
-                ):
-                    continue
-                if isinstance(consumer, LambdaOp) and consumer.takes_whole_columns:
-                    # A list-mode Lambda reads the merge stage, one item per
-                    # input row, so it sees the routed answer or ``None``.
-                    continue
-                raise ValueError(
-                    f"Op '{consumer_id}' reads the row-gated LLMChatOp '{op_id}',"
-                    " which compiles to status, selection, gated call and merge"
-                    " stages; a row gate keeps one item per input row, so read it"
-                    " through an OutputOp, a list-mode Lambda, or a fused round's"
-                    " render step."
-                )
-
-    def _row_gate_item_path(
-        self,
-        *,
-        llm_op_id: str,
-        label: str,
-        path: str,
-    ) -> str:
-        """Map a gated column's declared read to the python step's item path.
-
-        The selector reads the upstream's item list first, so a declared
-        ``items.output.<field>`` read walks ``output.<field>`` inside each
-        item. The walker decodes a JSON string before stepping into it, so a
-        row-mode Lambda's textified ``output`` reads the same value as its raw
-        ``value``.
-        """
-        if not path.startswith("items.output."):
-            raise ValueError(
-                f"LLMChatOp '{llm_op_id}' row gate column {label!r} reads"
-                f" {path!r}; only 'items.output' (the whole output) or a"
-                " field under it is supported."
-            )
-        return path[len("items.") :]
 
     def _api_request_headers(
         self, llm_op_id: str, api_config: ApiConfig, url: str
@@ -658,8 +573,10 @@ class _LLMBuilder(_EmbeddingBuilder):
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None,
     ) -> tuple[dict[str, Any], list[str]]:
-        """Build the dataframe data_spec for a rowwise LLMChatOp with a
-        ``rowwise_template``, shared by the local and API paths."""
+        """Build the dataframe data_spec for a rowwise LLMChatOp, shared by the
+        local and API paths."""
+        if llm_op.rowwise_template is None:
+            raise ValueError(f"LLMChatOp {llm_op_id} has no rowwise_template")
         columns: list[dict[str, Any]] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for col in llm_op.rowwise_columns or []:
@@ -703,9 +620,6 @@ class _LLMBuilder(_EmbeddingBuilder):
         messages: list[dict[str, str]] = []
         for system_msg in llm_op.system_messages or []:
             messages.append({"role": "system", "content": system_msg})
-        assert (
-            llm_op.rowwise_template is not None
-        ), "a rowwise op without a messages column declares rowwise_template"
         messages.append({"role": "user", "content": llm_op.rowwise_template})
         return {
             "type": "dataframe",
@@ -726,7 +640,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 " from rowwise_template, so a messages column would be ignored."
                 " Use rowwise_template, or drop the row gate."
             )
-        if op.row_shape is not RowShape.GROUPED:
+        if op.rowwise_template is None:
             raise ValueError(f"LLMChatOp '{op.id}' row_gate requires rowwise_template")
         if op.condition is not None:
             raise ValueError(
@@ -757,10 +671,8 @@ class _LLMBuilder(_EmbeddingBuilder):
     ) -> list[RuntimeOp]:
         """Build status, selection, gated LLM, and merge stages for a row gate.
 
-        Every upstream read goes through ``OpOutput``; a gated op keeps only the
-        gate's own rules: its source must compile to one node, and no API item
-        can fill a status or a column, because an API item's text sits under
-        ``json.choices``.
+        A gated op's source must compile to one node and no API item can fill a
+        status or a column, because an API item's text sits under ``json.choices``.
         """
         llm_op_id = llm_op.id
         graph_dict = ctx.graph_dict
@@ -816,8 +728,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             rules=[rule.to_dict() for rule in router.rules],
             default_branch=router.default_branch,
         )
-        # Mark the message chain as visited even though the gated model reads
-        # its rows from the filtered selector below.
         self._infer_structural_messages(
             llm_op_id,
             graph_dict,
@@ -827,8 +737,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             api_mode=llm_op.config.api is not None,
         )
         labels: list[str] = []
-        # The selector and the merge both read the status step's raw row, not
-        # its JSON text.
         select_plan: python_step.ColumnPlan = [
             {"kind": "stage", "node": status_id, "path": "value"}
         ]
@@ -910,8 +818,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             labels=labels,
             branch=row_gate.branch,
         )
-        # The selector emits one flat ``{label: value}`` row per kept row, so
-        # a gated column reads its label straight off each selected item.
         base_data_spec: dict[str, Any] = {
             "type": "dataframe",
             "columns": [
@@ -983,11 +889,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         llm_op: LLMChatOp,
         ctx: LoweringContext,
     ) -> RuntimeOp:
-        """Build one LLM op whose input is a list of complete message arrays.
-
-        The declared read is ``items.output``-rooted like any other column, so
-        it maps through ``OpOutput.read`` to the envelope the upstream emits.
-        """
+        """Build one LLM op whose input is a list of complete message arrays."""
         llm_op_id = llm_op.id
         graph_dict = ctx.graph_dict
         inputs_dict = ctx.inputs_dict

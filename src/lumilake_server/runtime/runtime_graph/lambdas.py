@@ -136,9 +136,6 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif is_row_gated(inp) and has_lowering(inp):
-                # A gated op lowers in the LLM phase, after this list Lambda, so
-                # lower it on demand. Its output node is the merge stage, and
-                # OpOutput names it and the item path in one place.
                 self._lower_for_read(inp, ctx)
                 output = self._op_output(inp)
                 if output.node not in ctx.nodes:
