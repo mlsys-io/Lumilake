@@ -471,11 +471,33 @@ def _flatten_leaf_outputs(
     return flattened
 
 
-def _archived_element_count(results: list[Any]) -> int:
-    """Count the values the archived items hold: a list-mode export archives
-    one item whose ``output`` is the whole list its step returned."""
+def _archived_result_items(
+    leaf_outputs: dict[str, list[str]],
+) -> dict[str, list[Any]]:
+    """Decode each archived value into the whole result items it holds.
+
+    ``_flatten_leaf_outputs`` keeps a decoded value inside its outer list so
+    ``round_results`` preserves the archive representation. ``all_results``
+    forwards whole items, so a decoded value holding a list of items is
+    flattened by one level.
+    """
+    flattened: dict[str, list[Any]] = {}
+    for leaf_id, values in _flatten_leaf_outputs(leaf_outputs).items():
+        items: list[Any] = []
+        for value in values:
+            if isinstance(value, list):
+                items.extend(value)
+            else:
+                items.append(value)
+        flattened[leaf_id] = items
+    return flattened
+
+
+def _archived_element_count(items: list[Any]) -> int:
+    """Count the values the archived items hold: a list-mode export's item
+    carries the whole list its step returned as its ``output``."""
     total = 0
-    for item in results:
+    for item in items:
         held = item.get("output") if isinstance(item, dict) else item
         total += len(held) if isinstance(held, list) else 1
     return total
@@ -2364,10 +2386,8 @@ async def _run_dynamic_job(
                         round_build.leaf_user_ids,
                     )
                 )
-                for internal_id, values in leaf_outputs.items():
-                    all_results[leaf_internal_to_user[internal_id]] = (
-                        _flatten_leaf_outputs({internal_id: values})[internal_id]
-                    )
+                for internal_id, values in _archived_result_items(leaf_outputs).items():
+                    all_results[leaf_internal_to_user[internal_id]] = values
                 export_internal_to_user = dict(
                     zip(
                         (
@@ -2377,10 +2397,10 @@ async def _run_dynamic_job(
                         round_build.export_user_ids,
                     )
                 )
-                for internal_id, values in export_outputs.items():
-                    all_results[export_internal_to_user[internal_id]] = (
-                        _flatten_leaf_outputs({internal_id: values})[internal_id]
-                    )
+                for internal_id, values in _archived_result_items(
+                    export_outputs
+                ).items():
+                    all_results[export_internal_to_user[internal_id]] = values
                 if isinstance(plan, StopPlan):
                     stopped_by = STOP
                     break
