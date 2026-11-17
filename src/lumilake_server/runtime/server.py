@@ -3050,7 +3050,7 @@ class LumilakeServer:
             gpu_worker_ids={
                 worker
                 for worker in selected_workers
-                if worker_profiles.get(worker, {}).get("has_gpu")
+                if worker_profiles[worker]["has_gpu"]
             },
         )
         batch_request_info.batch_id = batch_id
