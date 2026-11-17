@@ -83,3 +83,4 @@ async def test_build_task_spec_offers_cpu_nodes_every_cpu_worker(
         "c2": cpu,
         "gpu": ["gpu-0"],
     }
+    assert hint["node_execution_order"] == ["c0", "c2", "c1", "gpu"]
