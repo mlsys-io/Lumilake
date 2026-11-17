@@ -2102,6 +2102,8 @@ async def _run_dynamic_job(
         current_export: list[str] = []
         api = spec.driver.api
         include_proposer = api is None and template is None
+        # A template round proposes no next plan; its body is fixed.
+        plan: StopPlan | SubgraphPlan | None
         while (
             round_index <= max_rounds
             if template is not None
@@ -2321,11 +2323,11 @@ async def _run_dynamic_job(
                 observation = compute_observation(
                     walked_leaves, spec.driver.preview_width
                 )
-                next_plan: StopPlan | SubgraphPlan | None = None
-                if template is None and api is None:
-                    next_plan = validate_plan(outputs)
-                    plans.append(plan_to_dict(next_plan))
-                elif template is None and api is not None:
+                if template is not None:
+                    plan = None
+                elif api is None:
+                    plan = validate_plan(outputs)
+                else:
                     system, user = planner_messages(
                         goal=spec.goal,
                         observations=observations,
@@ -2337,7 +2339,7 @@ async def _run_dynamic_job(
                             observation if round_build.leaf_output_names else None
                         ),
                     )
-                    next_plan = validate_plan_text(
+                    plan = validate_plan_text(
                         await _call_api_planner(
                             api,
                             model=spec.driver.model,
@@ -2348,7 +2350,8 @@ async def _run_dynamic_job(
                             chat_template_kwargs=spec.driver.chat_template_kwargs,
                         )
                     )
-                    plans.append(plan_to_dict(next_plan))
+                if plan is not None:
+                    plans.append(plan_to_dict(plan))
                 observations.append(observation)
                 # Decode the archived whole items into results keyed by user id
                 # so a later round can forward references to them.
@@ -2378,14 +2381,14 @@ async def _run_dynamic_job(
                     all_results[export_internal_to_user[internal_id]] = (
                         _flatten_leaf_outputs({internal_id: values})[internal_id]
                     )
-                if isinstance(next_plan, StopPlan):
+                if isinstance(plan, StopPlan):
                     stopped_by = STOP
                     break
-                if next_plan is not None:
+                if plan is not None:
                     current_subgraph = _admit_subgraph(
-                        next_plan, node_registry, max_nodes, spec.library, all_results
+                        plan, node_registry, max_nodes, spec.library, all_results
                     )
-                    current_export = next_plan.export
+                    current_export = plan.export
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:
