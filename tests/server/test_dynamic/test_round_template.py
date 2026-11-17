@@ -99,7 +99,12 @@ _KEEP = _state("Keep_r{{round}}", ["Live_r{{round}}"])
         ([_RETRIEVAL], [_LIST], None, "must be a LambdaOp"),
         # Every export names a node its body builds, and a library ref resolves.
         ([_state("Other_r{{round}}", ["Symbols"])], [_LIST], None, "exported op id"),
-        ([_MISSING], [_LIST], None, "library"),
+        (
+            [{"ref": "Missing", "id": "Live_r{{round}}", "inputs": []}],
+            [_LIST],
+            None,
+            "library",
+        ),
         # A next body may read a list-mode Lambda the earlier round ran, which is
         # how a tally carries across rounds; a row-wise one is misread. A node
         # only round 1 built is gone by round 3, which renders ``next`` again.

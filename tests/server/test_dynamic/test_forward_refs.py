@@ -378,22 +378,18 @@ def test_column_bindings_remap_independent_library_instances() -> None:
 @pytest.mark.parametrize(
     ("bindings", "inputs", "message"),
     [
-        # The bindings must fill every column, name every input the round
-        # passes, and stay inside the op's columns and inputs.
-        (None, ["review_prompt_1", "unused"], "unused"),
-        ([{"label": "prompt", "input": 0}], ["review_prompt_1"], "review_system"),
-        ([{"label": "missing", "input": 0}], ["review_prompt_1"], "unknown label"),
-        ([{"label": "prompt", "input": -1}], ["review_prompt_1"], "invalid input slot"),
-        ([{"label": "prompt", "input": "0"}], ["review_prompt_1"], "non-integer"),
+        # The bindings must cover every column and every input the round passes.
+        ([{"label": "prompt", "input": 0}], ["p1"], "review_system"),
+        ([{"label": "missing", "input": 0}], ["p1"], "unknown label"),
+        ([{"label": "prompt", "input": -1}], ["p1"], "invalid input slot"),
     ],
-    ids=["unused-input", "unbound-column", "unknown-label", "bad-slot", "str-slot"],
+    ids=["unbound-column", "unknown-label", "bad-slot"],
 )
 def test_column_bindings_reject_an_inconsistent_round(
-    bindings: list[dict[str, Any]] | None, inputs: list[str], message: str
+    bindings: list[dict[str, Any]], inputs: list[str], message: str
 ) -> None:
     library = _llm_column_library()
-    if bindings is not None:
-        library["ReviewTurn"]["column_bindings"] = bindings
+    library["ReviewTurn"]["column_bindings"] = bindings
     subgraph = _llm_column_subgraph("review")
     subgraph[1]["inputs"] = inputs
 

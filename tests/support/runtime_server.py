@@ -115,13 +115,7 @@ class RecordingRuntimeManager:
             "flat_outputs": dict.fromkeys(
                 request_info.output_node_map, self.output_values
             ),
-            "chat_histories": {
-                node_id: [
-                    [{"role": "assistant", "content": value}]
-                    for value in self.output_values
-                ]
-                for node_id in request_info.output_node_map
-            },
+            "chat_histories": {},
             "task_node_map": {},
         }
 

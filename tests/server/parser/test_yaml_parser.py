@@ -71,23 +71,19 @@ def test_inputs_and_outputs_wiring() -> None:
     assert compiled is not None
 
 
-def _echo(op_id: str) -> dict[str, Any]:
-    return {
-        "id": op_id,
-        "op": "LambdaOp",
-        "inputs": ["rows"],
-        "fn_name": "echo",
-        "code": "def echo(inputs):\n    return inputs[0]\n",
-    }
-
-
 def _routed(*ops: dict[str, Any]) -> dict[str, Any]:
     """A routed workflow: an echo, the given ops, and a gated model output."""
     return {
         "name": "routed",
         "inputs": {"rows": ["normal", "NEEDS REVIEW"]},
         "ops": [
-            _echo("source"),
+            {
+                "id": "source",
+                "op": "LambdaOp",
+                "inputs": ["rows"],
+                "fn_name": "echo",
+                "code": "def echo(inputs):\n    return inputs[0]\n",
+            },
             {
                 "id": "route",
                 "op": "RouterOp",

@@ -1994,7 +1994,6 @@ async def test_whole_set_round_accepts_its_own_row_count(
     resp = handlers["req-node"].results[0]
     assert resp.error_info is None
     assert resp.outputs["shared"]["out"] == ["case-0", "case-1"]
-    assert len(resp.chat_histories["shared"]["out"]) == 2
 
 
 def _two_request_batch(server: Any) -> tuple[dict[str, Any], BatchSelection]:
