@@ -77,8 +77,9 @@ class _VisionBuilder(_RetrievalBuilder):
                     columns.append({"label": label, "data": data})
                     continue
                 if isinstance(label, str) and isinstance(node_ref, str):
-                    upstream = self._graph_node(node_ref)
-                    if path is None and not isinstance(upstream, InputOp):
+                    if path is None and not isinstance(
+                        graph_dict.get(node_ref), InputOp
+                    ):
                         raise ValueError(
                             f"Column '{label}' of consumer '{llm_op_id}'"
                             f" references node '{node_ref}' without a path;"
@@ -90,7 +91,7 @@ class _VisionBuilder(_RetrievalBuilder):
                             label=label,
                             node_ref=node_ref,
                             path=path if isinstance(path, str) else "",
-                            upstream=upstream,
+                            upstream=graph_dict.get(node_ref),
                             inputs_dict=inputs_dict,
                         )
                     )
