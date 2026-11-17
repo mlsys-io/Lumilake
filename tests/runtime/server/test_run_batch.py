@@ -1960,9 +1960,6 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
 async def test_whole_set_round_accepts_its_own_row_count(
     server_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The round's row count is its own answer, so the per-slice check takes it
-    # verbatim rather than against the round's longest input.
-
     server = server_factory()
     monkeypatch.setattr(
         server,

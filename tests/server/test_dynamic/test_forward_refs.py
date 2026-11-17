@@ -345,28 +345,25 @@ def _llm_column_subgraph(prefix: str) -> list[dict[str, Any]]:
     ]
 
 
-def test_column_bindings_remap_a_messages_column() -> None:
-    # A template that reads its rows as one message array per row binds that
-    # column the same way a rowwise column binds.
-    library = {
-        "Turn": {
-            "op": "LLMChatOp",
-            "messages": [{"role": "user", "content": "x"}],
-            "rowwise_messages_column": {"label": "m", "node": "P", "path": "out"},
-            "column_bindings": [{"label": "m", "input": 0}],
-            "config": {"model": "m"},
-        }
-    }
-    resolved = resolve_subgraph(
-        [{"ref": "Turn", "id": "t1", "inputs": ["P1"]}], library
-    )
-    assert resolved[0]["rowwise_messages_column"]["node"] == "P1"
-
-
 def test_column_bindings_remap_independent_library_instances() -> None:
+    # One library entry, two instances, each bound to its own prompt node; a
+    # messages column binds by its label the same way.
     library = _llm_column_library()
-    subgraph = _llm_column_subgraph("first") + _llm_column_subgraph("second")
+    messages = resolve_subgraph(
+        [{"ref": "Messages", "id": "m1", "inputs": ["P1"]}],
+        {
+            "Messages": {
+                "op": "LLMChatOp",
+                "messages": [{"role": "user", "content": "x"}],
+                "rowwise_messages_column": {"label": "m", "node": "P", "path": "out"},
+                "column_bindings": [{"label": "m", "input": 0}],
+                "config": {"model": "m"},
+            }
+        },
+    )
+    assert messages[0]["rowwise_messages_column"]["node"] == "P1"
 
+    subgraph = _llm_column_subgraph("first") + _llm_column_subgraph("second")
     resolved = resolve_subgraph(subgraph, library)
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, library=library)
 
@@ -405,11 +402,9 @@ def test_column_bindings_reject_an_inconsistent_round(
 
 
 def test_validate_library_refuses_a_gated_entry() -> None:
-    # A gated op names its round's router, which a library entry cannot express,
-    # so validation refuses one that declares row_gate.
+    # A gated op names its round's router, which a library entry cannot express.
     library = _llm_column_library()
     library["ReviewTurn"]["row_gate"] = {"node": "Route", "branch": "fail"}
-
     with pytest.raises(DriverProtocolError, match="ReviewTurn.*row_gate"):
         validate_library(library)
 

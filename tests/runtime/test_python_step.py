@@ -1426,9 +1426,8 @@ def _run_stage(node: Any, inputs: dict[str, str]) -> dict[str, Any]:
 
 
 def test_gated_stages_label_select_and_merge_two_rows(tmp_path: Path) -> None:
-    # The three generated steps read each other's archives: status labels every
-    # row, selection keeps the routed rows, and merge gives one value per input
-    # row at ``value.output``, ``None`` for a row the gate skipped.
+    # status labels every row, selection keeps the routed rows, and merge gives
+    # one value per input row at ``value.output``, ``None`` where it was skipped.
     graph = RuntimeGraphBuilder().build(_gated_chain())
     (merge_id,) = graph.output_node_map
     (gated,) = [ids for ids in graph.dsl_to_runtime.values() if ids[-1] == merge_id]

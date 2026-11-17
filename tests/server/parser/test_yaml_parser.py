@@ -144,9 +144,9 @@ def test_router_row_gate_and_messages_column_parse() -> None:
     assert plain.rowwise_messages_column is not None
     assert plain.rowwise_messages_column.label == "msgs"
     # A router reads exactly one upstream, which the parser checks itself.
+    payload = _routed()
+    payload["ops"][1]["inputs"] = ["source", "source"]
     with pytest.raises(ValueError, match="exactly one input"):
-        payload = _routed()
-        payload["ops"][1]["inputs"] = ["source", "source"]
         parse_yaml_payload(payload)
 
 

@@ -266,12 +266,12 @@ class _FakeRuntimeServer:
         return LumilakeResponse(outputs=outputs)
 
     def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
-        return [
-            name
-            for graph in graphs.values()
-            for name in graph.graph.output_ops
-            if str(name).startswith("leaf_")
-        ]
+        names: list[str] = []
+        for graph in graphs.values():
+            for op in graph.iter_ops(OutputOp):
+                if str(op.name).startswith("leaf_") and op.name not in names:
+                    names.append(op.name)
+        return names
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
         return list(self._traces.get(job_id, []))
@@ -451,23 +451,6 @@ def _submit_body(yaml_text: str) -> dict[str, Any]:
 async def _run_background(app: FastAPI) -> None:
     for task in list(app.state.background_tasks):
         await task
-
-
-async def _submit(
-    app: FastAPI, yaml_text: str, inputs: dict[str, Any] | None = None
-) -> str:
-    body = _submit_body(yaml_text)
-    if inputs is not None:
-        body["data"][0]["inputs"] = inputs
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 200, resp.text
-    return resp.json()["data"]["job_id"]
 
 
 @pytest.mark.anyio
@@ -1056,9 +1039,19 @@ async def _submit_and_run(
     yaml_text: str,
     inputs: dict[str, Any] | None = None,
 ) -> Any:
-    job_id = await _submit(app, yaml_text, inputs)
+    body = _submit_body(yaml_text)
+    if inputs is not None:
+        body["data"][0]["inputs"] = inputs
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
     await _run_background(app)
-    return job_routes.jobs[job_id]
+    return job_routes.jobs[resp.json()["data"]["job_id"]]
 
 
 @pytest.mark.anyio
@@ -1137,16 +1130,25 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     monkeypatch.setattr(job_routes_module, "_call_api_planner", _unexpected_planner)
     fake_server = job_routes._fake_runtime_server
     fake_server.plans = [{"next": "STOP"}]
-    # Round 2's list-mode export holds no element: it still archives one item,
-    # whose output is the empty list, so the stop counts zero and ends the loop.
+    # A list-mode export archives one item holding its whole list, so round 1's
+    # two survivors reach round 2 as one value, and round 2's empty list still
+    # archives one item whose element count is zero, which stops the loop.
     fake_server.export_as_one_item = True
-    fake_server.export_rows = [[{"case_id": "0", "turn": 0}], []]
-    record = await _submit_and_run(app, job_routes, _TEMPLATE_DYNAMIC_YAML)
+    fake_server.export_rows = [
+        [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
+        [],
+    ]
+    record = await _submit_and_run(
+        app,
+        job_routes,
+        _TEMPLATE_DYNAMIC_YAML,
+        inputs={"Symbols": ["a", "b", "c", "d"]},
+    )
 
     assert record.status == "completed", record.error
     assert [config.chain_round for config in fake_server.configs] == [1, 2]
-    # Round 1 holds the whole input set in one slice, and the loop stops before
-    # a third round runs.
+    # Every round runs as one slice over the whole input set rather than per
+    # symbol.
     assert [
         meta.whole_set
         for slices in fake_server.workflow_slices_calls
@@ -1158,36 +1160,9 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
         ("subgraph", 2, "template"),
         ("STOP", 3, "template"),
     ]
-
-
-@pytest.mark.anyio
-async def test_dynamic_template_round_binds_the_export_per_item(
-    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # A template round runs over four symbols but binds the previous round's
-    # list-mode export one value per archived item, so a two-element export
-    # reaches round 2 as two values rather than failing the symbol row count.
-    async def _no_planner(*args: Any, **kwargs: Any) -> str:
-        raise AssertionError("template mode must not call a planner")
-
-    monkeypatch.setattr(job_routes_module, "_call_api_planner", _no_planner)
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [{"next": "STOP"}]
-    fake_server.export_rows = [
-        [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
-        [{"case_id": "0", "turn": 1}],
-    ]
-    record = await _submit_and_run(
-        app,
-        job_routes,
-        _TEMPLATE_DYNAMIC_YAML,
-        inputs={"Symbols": ["a", "b", "c", "d"]},
-    )
-
-    assert record.status == "completed", record.error
     (round_two,) = fake_server.executed_graphs[1].values()
     bound = round_two.inputs["LiveState_r0"]
-    assert [json.loads(value) for value in bound] == fake_server.export_rows[0]
+    assert [json.loads(value) for value in bound] == [fake_server.export_rows[0]]
 
 
 @pytest.mark.anyio
@@ -1326,21 +1301,25 @@ async def test_dynamic_api_spec_engine_fields_not_validated_at_submit(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("yaml_text", "mode"),
+    [(_API_DYNAMIC_YAML, "api"), (_TEMPLATE_DYNAMIC_YAML, "template")],
+)
 async def test_dynamic_api_spec_preview_rejected(
-    app: FastAPI, fake_planner: Any
+    app: FastAPI, fake_planner: Any, yaml_text: str, mode: str
 ) -> None:
-    # There is no round graph to preview before the external planner runs, so
-    # an api-driven dynamic spec is rejected 422 on /jobs/preview.
+    # There is no round graph to preview before the planner runs, and a
+    # template's rounds are rendered at run time, so both are refused.
     fake_planner([{"next": "STOP"}])
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/jobs/preview",
-            json=_submit_body(_API_DYNAMIC_YAML),
+            json=_submit_body(yaml_text),
             headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
         )
     assert resp.status_code == 422, resp.text
-    assert "api-driven dynamic workflow" in resp.json()["detail"]
+    assert f"{mode}-driven dynamic workflow" in resp.json()["detail"]
 
 
 @pytest.mark.anyio
@@ -1565,25 +1544,18 @@ async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
 
 
 @pytest.mark.anyio
-async def test_library_template_validates_at_both_doors(app: FastAPI) -> None:
-    # A template's ops resolve library refs before validation at both doors: an
-    # unknown ref is rejected on submission and by the preview, and a valid
-    # template is still not previewable because its rounds render at run time.
-    transport = httpx.ASGITransport(app=app)
+async def test_template_body_resolves_library_refs_before_validation(
+    app: FastAPI,
+) -> None:
     bad_yaml = _TEMPLATE_DYNAMIC_YAML.replace(
         "ref: LiveState", "ref: MissingLibraryEntry", 1
     )
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         header = {"Authorization": "Bearer token", "Workflow-Format": "yaml"}
-        for path, yaml_text in (
-            ("/jobs", bad_yaml),
-            ("/jobs/preview", bad_yaml),
-            ("/jobs/preview", _TEMPLATE_DYNAMIC_YAML),
-        ):
-            resp = await client.post(path, json=_submit_body(yaml_text), headers=header)
+        for path in ("/jobs", "/jobs/preview"):
+            resp = await client.post(path, json=_submit_body(bad_yaml), headers=header)
             assert resp.status_code == 422, resp.text
-            detail = resp.json()["detail"]
-            if yaml_text is bad_yaml:
-                assert "unknown library entry 'MissingLibraryEntry'" in detail
-            else:
-                assert "preview is not available for a template-driven" in detail
+            assert (
+                "unknown library entry 'MissingLibraryEntry'" in resp.json()["detail"]
+            )
