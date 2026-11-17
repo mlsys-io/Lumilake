@@ -249,7 +249,7 @@ async def test_process_batch_fills_member_request_ids_from_originating_jobs(
         batch,
         "batch-1",
         ["worker-1"],
-        {"worker-1": {"gpu": {"count": 0}}},
+        {"worker-1": {"has_gpu": False}},
         execution_request_id="exec-1",
         member_request_ids={"req-a", "req-b"},
     )
