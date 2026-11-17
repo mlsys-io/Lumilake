@@ -1002,8 +1002,6 @@ def validate_template_spec(
             results={op_id: [] for op_id in results},
         )
         registry.update({op["id"]: op for op in resolve_subgraph(plan.ops, library)})
-        # Only a list-mode Lambda archives one item per returned element, so only
-        # it can be counted per row by a later body.
         for run_id in [*_current_leaves(plan.ops), *plan.export]:
             if registry[run_id].get("op") == "LambdaOp" and (
                 registry[run_id].get("mode") == "list"
