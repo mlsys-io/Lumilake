@@ -16,7 +16,7 @@ def _op(node_id: str, task_type: str = "api") -> RuntimeOp:
 async def test_build_task_spec_pins_planned_gpu_nodes_and_offers_cpu_pool(
     flowmesh_manager,
 ) -> None:
-    nodes = {name: _op(name) for name in ("c0", "c1")}
+    nodes = {name: _op(name) for name in ("c0", "c1", "c2")}
     nodes["n1"] = _op("n1", "inference")
     nodes["omni"] = _op("omni", "omni_text2image")
     graph = RuntimeGraph(
@@ -24,7 +24,7 @@ async def test_build_task_spec_pins_planned_gpu_nodes_and_offers_cpu_pool(
     )
     schedule = Schedule(
         worker_assignment={
-            "cpu-0": ["c0"],
+            "cpu-0": ["c0", "c2"],
             "cpu-1": ["c1"],
             "gpu-0": ["n1", "omni"],
             "gpu-1": [],
@@ -49,9 +49,9 @@ async def test_build_task_spec_pins_planned_gpu_nodes_and_offers_cpu_pool(
     schedule_hint = annotations.get("schedule_hint")
     assert isinstance(schedule_hint, dict)
     assert "node_schedule_in_epoch_order" not in schedule_hint
-    assert schedule_hint["node_execution_order"] == ["c0", "c1", "n1", "omni"]
+    assert schedule_hint["node_execution_order"] == ["c0", "c1", "n1", "c2", "omni"]
     assert schedule_hint["selected_worker"]["selected"] == {
-        **dict.fromkeys(("c0", "c1"), ["cpu-0", "cpu-1"]),
+        **dict.fromkeys(("c0", "c1", "c2"), ["cpu-0", "cpu-1"]),
         "n1": ["gpu-0"],
         "omni": ["gpu-0"],
     }
