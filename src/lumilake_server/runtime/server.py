@@ -2607,10 +2607,6 @@ class LumilakeServer:
             merged_without_errors = True
             for output_name, values in payload.items():
                 if workflow.whole_set:
-                    # This slice holds the whole input set of a round whose row
-                    # count is its own answer rather than the input accounting
-                    # length, so its result is taken whole rather than checked
-                    # against that length.
                     buffers[output_name] = values
                     continue
                 if output_name in list_lambda_names:
@@ -3381,9 +3377,6 @@ class LumilakeServer:
         }
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(workflows, key=lambda item: item.slice_index)
-            # A whole-set group is one slice holding the whole input set of a
-            # round whose row count is its own answer, so its result is taken
-            # verbatim rather than split across slices.
             if any(item.whole_set for item in ordered):
                 if len(ordered) != 1:
                     raise ValueError(

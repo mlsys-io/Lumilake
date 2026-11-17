@@ -223,9 +223,7 @@ def main(inputs):
     rules = {rules}
     statuses = []
     for i in range(n):
-        # Match the upstream value as it stands: a whole output is the string
-        # the upstream emitted, and a field read is the value the path walk
-        # decoded. Re-encoding either would rewrite the text the rules test.
+        # Re-encoding would rewrite the text the rules test.
         source_value = source[0] if len(source) == 1 else source[i]
         if not isinstance(source_value, str):
             source_value = json.dumps(source_value)

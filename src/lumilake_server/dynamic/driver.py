@@ -130,14 +130,8 @@ def _render_op_strings(value: Any, round_number: int) -> Any:
 
 
 def _render_node_refs(op: dict[str, Any], round_number: int) -> None:
-    """Render the template placeholders in every string the op carries.
-
-    The YAML parser reads node references from many fields — inputs, gate and
-    column targets, prompt arguments, message content, retrieval params — and a
-    field added later would silently keep the literal placeholder. Rendering
-    every string covers all of them; only a LambdaOp's ``code`` is left alone,
-    because it is Python source rather than a node reference.
-    """
+    """Render the placeholders in every string the op carries, since node
+    references sit in many fields; a LambdaOp's ``code`` is Python source."""
     is_lambda = op.get("op") == "LambdaOp"
     for key, value in op.items():
         if is_lambda and key in {"code", "_code"}:
@@ -161,14 +155,8 @@ class SubgraphPlan(BaseModel):
 
 
 def render_template_body(body: DriverRoundBody, round_number: int) -> SubgraphPlan:
-    """Render a fixed body for the one-based round number.
-
-    ``{{round}}`` is the zero-based suffix of this round and ``{{prev}}`` is
-    that suffix minus one. Double braces avoid collisions with JSON or Python
-    braces in library templates. The placeholders render in every string the
-    body carries — each op's ``id``, its references and its arguments, and the
-    export list — except a LambdaOp's ``code``.
-    """
+    """Render a fixed body for the one-based round number, where ``{{round}}``
+    is that round's zero-based suffix and ``{{prev}}`` is one less."""
     if round_number < 1:
         raise DriverProtocolError("template rounds start at 1")
     suffix = round_number - 1
@@ -326,11 +314,8 @@ def _apply_param_bindings(
 def _apply_column_bindings(
     template: dict[str, Any], ref: str, inputs: list[Any]
 ) -> dict[str, Any] | None:
-    """Substitute instance ids into an LLM template's row-reading columns.
-
-    A template declares its row-reading columns either as ``rowwise_columns``
-    or as one ``rowwise_messages_column``; a binding names either by its label.
-    """
+    """Substitute instance ids into an LLM template's row-reading columns,
+    naming either a ``rowwise_columns`` entry or the messages column by label."""
     bindings = template.get("column_bindings")
     if bindings is None:
         return None
@@ -995,11 +980,7 @@ def validate_template_spec(
     *,
     max_nodes_per_round: int,
 ) -> None:
-    """Validate the first/next template bodies and the stop export wiring.
-
-    Round 3 renders ``next`` again, so validating it checks that every later
-    round reads an op ``next`` itself ran.
-    """
+    """Validate the first/next template bodies and the stop export wiring."""
     plans = {
         round_number: template_plan_for_round(template, round_number)
         for round_number in (1, 2, 3)
@@ -1021,17 +1002,13 @@ def validate_template_spec(
             results={op_id: [] for op_id in results},
         )
         registry.update({op["id"]: op for op in resolve_subgraph(plan.ops, library)})
-        # A later body binds one value per archived item, which is exact only for
-        # a list-mode Lambda: each element it returns is one row. The route
-        # archives every leaf of a round, so a list-mode Lambda counts whether
-        # the body exports it or not.
+        # Only a list-mode Lambda archives one item per returned element, so only
+        # it can be counted per row by a later body.
         for run_id in [*_current_leaves(plan.ops), *plan.export]:
             if registry[run_id].get("op") == "LambdaOp" and (
                 registry[run_id].get("mode") == "list"
             ):
                 results.add(run_id)
-    # ``next`` runs every round from round 2 on, so its export decides every
-    # stop from round 3 on.
     later_export = template_stop_export(template, 3)
     if later_export not in plans[2].export:
         raise DriverProtocolError(
@@ -1042,16 +1019,8 @@ def validate_template_spec(
 
 
 def _validate_stop_export_is_list_lambda(op: dict[str, Any], export_id: str) -> None:
-    """Require the stop export to hold the list whose length the stop counts.
-
-    A list-mode Lambda's python step emits one item holding the whole list it
-    returned, which the archive stores as one value: the stop decodes that
-    value and counts its elements, so an empty list stops the loop. A row- or
-    aligned-mode export archives one item per input row, so it reads as
-    non-empty however many rows its steps actually kept, and the job would
-    silently spend every remaining round. Refusing it at submission turns that
-    into a spec error.
-    """
+    """Require the stop export to be a list-mode LambdaOp, the only op whose
+    archived export reads as empty when it returned no rows."""
     op_type = op.get("op", "")
     if op_type != "LambdaOp":
         raise DriverProtocolError(
@@ -1327,10 +1296,7 @@ def build_round(
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
-        subgraph,
-        results if results is not None else {},
-        node_registry,
-        rows,
+        subgraph, results if results is not None else {}, node_registry, rows
     )
     workflow_inputs: dict[str, list[str]] = {INPUT_NODE_ID: []}
     workflow_inputs.update(inputs)

@@ -22,7 +22,7 @@ class WorkflowSliceMeta:
     varying_input_keys: tuple[str, ...] = ()
     whole_set: bool = False
     """True when this slice holds a template round's whole input set, whose row
-    count is its own answer, so each output is accepted whole."""
+    count is its own answer."""
 
 
 @dataclass(slots=True)

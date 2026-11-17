@@ -471,36 +471,9 @@ def _flatten_leaf_outputs(
     return flattened
 
 
-def _decode_archived_items(values: list[str]) -> list[Any]:
-    """Decode one archive value per stored whole result item.
-
-    ``_flatten_leaf_outputs`` deliberately keeps a decoded value inside its
-    outer list so ``round_results`` preserves the archive representation.
-    ``all_results`` instead forwards decoded whole items, so a decoded list of
-    result items is flattened by one level and malformed archives are rejected.
-    """
-    items: list[Any] = []
-    for value in values:
-        try:
-            decoded = json.loads(value)
-        except (TypeError, ValueError) as exc:
-            raise DriverProtocolError(
-                f"archived result item is not valid JSON: {value!r}"
-            ) from exc
-        if isinstance(decoded, list):
-            items.extend(decoded)
-        else:
-            items.append(decoded)
-    return items
-
-
 def _archived_element_count(results: list[Any]) -> int:
-    """Count the values the archived items hold, not the items.
-
-    A list-mode export archives one item whose ``output`` is the whole list its
-    step returned, so an empty list still archives one item; the stop counts
-    elements, and that item holds none.
-    """
+    """Count the values the archived items hold: a list-mode export archives
+    one item whose ``output`` is the whole list its step returned."""
     total = 0
     for item in results:
         held = item.get("output") if isinstance(item, dict) else item
@@ -1813,11 +1786,9 @@ async def _submit_dynamic_child(
     graph_name = f"round_{round_index}"
     inputs = {INPUT_NODE_ID: list(symbols)}
     inputs.update(forwarded_inputs)
-    # Planner rounds slice exactly as a static submission with
-    # ``input_batch_size: 1`` does: one graph per row, merged back into one
-    # batch by the job manager. A template round runs as one slice, because its
-    # body holds list-mode Lambdas whose whole-list results cannot be
-    # partitioned per row.
+    # A planner round slices as a static ``input_batch_size: 1``; a template
+    # round runs as one slice, because a list-mode Lambda's whole-list result
+    # cannot be partitioned per row.
     if one_slice:
         total_length = max((len(values) for values in inputs.values()), default=0)
         varying_input_keys: tuple[str, ...] = ()
@@ -1855,8 +1826,7 @@ async def _submit_dynamic_child(
             idx=0,
         )
         slice_start += slice_length
-    # API- and template-driven runs check hardware.gpu == 0 per real round;
-    # neither dispatches the in-graph proposer.
+    # API- and template-driven runs check hardware.gpu == 0 per real round.
     child_graphs: dict[str, CompiledGraph] | None = None
     if hardware_requirements is not None and hardware_requirements.gpu == 0:
         server = LumilakeServer.get_started_instance()
@@ -2150,7 +2120,7 @@ async def _run_dynamic_job(
                         library=spec.library,
                         has_subgraph=False,
                     )
-                    initial_plan = validate_plan_text(
+                    plan = validate_plan_text(
                         await _call_api_planner(
                             api,
                             model=spec.driver.model,
@@ -2161,18 +2131,18 @@ async def _run_dynamic_job(
                             chat_template_kwargs=spec.driver.chat_template_kwargs,
                         )
                     )
-                    plans.append(plan_to_dict(initial_plan))
-                    if isinstance(initial_plan, StopPlan):
+                    plans.append(plan_to_dict(plan))
+                    if isinstance(plan, StopPlan):
                         stopped_by = STOP
                         break
                     current_subgraph = _admit_subgraph(
-                        initial_plan,
+                        plan,
                         node_registry,
                         max_nodes,
                         spec.library,
                         all_results,
                     )
-                    current_export = initial_plan.export
+                    current_export = plan.export
                 except (DriverProtocolError, ValueError) as exc:
                     async with jobs_lock:
                         if record.status in TERMINAL_JOB_STATUSES:
@@ -2254,9 +2224,6 @@ async def _run_dynamic_job(
                     dtype=spec.driver.dtype,
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
-                    # A template round binds an earlier round's results one
-                    # value per archived item, which is one row for a list-mode
-                    # export; a planner round binds one value per symbol.
                     rows=1 if template is not None else len(symbols),
                 )
             except (DriverProtocolError, ValueError) as exc:
@@ -2268,9 +2235,6 @@ async def _run_dynamic_job(
                     record.finished_at = _now()
                 await asyncio.to_thread(_job_storage.save, record)
                 return
-            # A template round runs as one slice: its body holds list-mode
-            # Lambdas whose whole-list results cannot be split per row, so the
-            # round's row count is not the symbol count.
             one_slice = template is not None
             try:
                 child_job_id = await _submit_dynamic_child(
@@ -2361,13 +2325,11 @@ async def _run_dynamic_job(
                 observation = compute_observation(
                     walked_leaves, spec.driver.preview_width
                 )
-                next_plan: StopPlan | SubgraphPlan | None
-                if template is not None:
-                    next_plan = None
-                elif api is None:
+                next_plan: StopPlan | SubgraphPlan | None = None
+                if template is None and api is None:
                     next_plan = validate_plan(outputs)
                     plans.append(plan_to_dict(next_plan))
-                else:
+                elif template is None and api is not None:
                     system, user = planner_messages(
                         goal=spec.goal,
                         observations=observations,
@@ -2392,9 +2354,8 @@ async def _run_dynamic_job(
                     )
                     plans.append(plan_to_dict(next_plan))
                 observations.append(observation)
-                # Decode one whole item per archive value into results keyed by
-                # user id so later rounds and the stop check see the same flat
-                # list of Lambda/Ops result items.
+                # Decode the archived whole items into results keyed by user id
+                # so a later round can forward references to them.
                 leaf_internal_to_user = dict(
                     zip(
                         (
@@ -2406,7 +2367,7 @@ async def _run_dynamic_job(
                 )
                 for internal_id, values in leaf_outputs.items():
                     all_results[leaf_internal_to_user[internal_id]] = (
-                        _decode_archived_items(values)
+                        _flatten_leaf_outputs({internal_id: values})[internal_id]
                     )
                 export_internal_to_user = dict(
                     zip(
@@ -2419,7 +2380,7 @@ async def _run_dynamic_job(
                 )
                 for internal_id, values in export_outputs.items():
                     all_results[export_internal_to_user[internal_id]] = (
-                        _decode_archived_items(values)
+                        _flatten_leaf_outputs({internal_id: values})[internal_id]
                     )
                 if isinstance(next_plan, StopPlan):
                     stopped_by = STOP
@@ -2961,9 +2922,6 @@ async def preview_job(
                 dynamic_spec.driver.api is not None
                 or dynamic_spec.driver.template is not None
             ):
-                # Preview validates the spec, then refuses: a planner-driven
-                # round comes from the external planner and a template round is
-                # rendered when the job runs.
                 _render_dynamic_round0(dynamic_spec)
                 mode = "api" if dynamic_spec.driver.api is not None else "template"
                 raise HTTPException(
