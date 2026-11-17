@@ -957,13 +957,23 @@ class _LLMBuilder(_EmbeddingBuilder):
                 ),
             }
             dependencies = [output.node]
+        if llm_op.condition is not None:
+            raise ValueError(
+                f"LLMChatOp '{llm_op_id}' combines rowwise_messages_column with"
+                " condition; the column supplies one chat history per row, so a"
+                " condition would be ignored. Route on the condition's field"
+                " instead, or drop the messages column."
+            )
         if llm_op.config.api is None:
+            inference_spec = llm_op.config.inference_spec()
+            if llm_op.structural_outputs:
+                inference_spec["templates"] = llm_op.structural_outputs
             return self._create_runtime_op(
                 name=llm_op_id,
                 task_type="inference",
                 data_spec=data_spec,
                 model_spec=self._build_model_spec(llm_op.config, "vllm"),
-                inference_spec=llm_op.config.inference_spec(),
+                inference_spec=inference_spec,
                 backend="vllm",
                 model=llm_op.config.model,
                 dependencies=dependencies or None,

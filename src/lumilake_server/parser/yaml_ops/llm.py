@@ -145,6 +145,7 @@ def _emit_llm_like_op(
     if resolved_rowwise is not None:
         op_dict["rowwise_columns"] = resolved_rowwise
     rowwise_messages_column = entry.fields.get("rowwise_messages_column")
+    messages_column_node: str | None = None
     if rowwise_messages_column is not None:
         if op_kind != "LLMChatOp":
             raise ValueError(
@@ -155,13 +156,27 @@ def _emit_llm_like_op(
             raise ValueError(
                 f"{op_kind} '{entry.id}' rowwise_messages_column must be a mapping"
             )
+        for field in (
+            "system_messages",
+            "rowwise_template",
+            "rowwise_columns",
+            "aggregate_table",
+        ):
+            if entry.fields.get(field) is not None:
+                raise ValueError(
+                    f"{op_kind} '{entry.id}' combines rowwise_messages_column with"
+                    f" {field}; the column supplies the whole chat history, so"
+                    f" {field} would be ignored. Drop it, or drop the messages"
+                    " column."
+                )
         column_node = rowwise_messages_column.get("node")
         if not isinstance(column_node, str) or column_node not in user_id_to_internal:
             raise ValueError(
                 f"{op_kind} '{entry.id}' rowwise_messages_column requires a known node"
             )
+        messages_column_node = user_id_to_internal[column_node]
         op_dict["rowwise_messages_column"] = MessagesColumn(
-            node=user_id_to_internal[column_node],
+            node=messages_column_node,
             path=require_str(
                 rowwise_messages_column, "path", f"{op_kind} '{entry.id}'"
             ),
@@ -169,6 +184,7 @@ def _emit_llm_like_op(
                 rowwise_messages_column, "label", f"{op_kind} '{entry.id}'"
             ),
         ).to_dict()
+    gate_node: str | None = None
     row_gate = entry.fields.get("row_gate")
     if row_gate is not None:
         if op_kind != "LLMChatOp":
@@ -178,11 +194,12 @@ def _emit_llm_like_op(
             )
         if not isinstance(row_gate, dict):
             raise ValueError(f"{op_kind} '{entry.id}' row_gate must be a mapping")
-        gate_node = row_gate.get("node")
-        if not isinstance(gate_node, str) or gate_node not in user_id_to_internal:
+        gate_ref = row_gate.get("node")
+        if not isinstance(gate_ref, str) or gate_ref not in user_id_to_internal:
             raise ValueError(f"{op_kind} '{entry.id}' row_gate requires a known node")
+        gate_node = user_id_to_internal[gate_ref]
         gate = RowGate(
-            node=user_id_to_internal[gate_node],
+            node=gate_node,
             branch=require_str(row_gate, "branch", f"{op_kind} '{entry.id}' row_gate"),
         )
         if "rowwise_messages_column" in op_dict:
@@ -220,11 +237,9 @@ def _emit_llm_like_op(
                 node_id = item.get("node")
                 if isinstance(node_id, str) and node_id not in llm_inputs:
                     llm_inputs.append(node_id)
-        row_gate = op_dict.get("row_gate")
-        if isinstance(row_gate, dict):
-            gate_node = row_gate.get("node")
-            if isinstance(gate_node, str) and gate_node not in llm_inputs:
-                llm_inputs.append(gate_node)
+        for node_id in (gate_node, messages_column_node):
+            if node_id is not None and node_id not in llm_inputs:
+                llm_inputs.append(node_id)
     op_dict["_inputs"] = llm_inputs
 
 

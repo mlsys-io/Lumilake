@@ -111,24 +111,24 @@ def _routed(*ops: dict[str, Any]) -> dict[str, Any]:
 def test_router_row_gate_and_messages_column_parse() -> None:
     # The gate's router becomes an input of the model that names it, and an
     # ungated model can take its prompts from an upstream column.
-    graph = Graph.from_json(
-        parse_yaml_payload(
-            _routed(
-                {
-                    "id": "ask",
-                    "op": "LLMChatOp",
-                    "inputs": ["source"],
-                    "messages": [{"role": "user", "content": "source"}],
-                    "config": {"model": "dummy-model"},
-                    "rowwise_messages_column": {
-                        "node": "source",
-                        "path": "items.output",
-                        "label": "msgs",
-                    },
-                }
-            )
-        )["routed"]["graph"]
+    specs = parse_yaml_payload(
+        _routed(
+            {
+                "id": "ask",
+                "op": "LLMChatOp",
+                "inputs": ["source"],
+                "messages": [{"role": "user", "content": "source"}],
+                "config": {"model": "dummy-model"},
+                "rowwise_messages_column": {
+                    "node": "source",
+                    "path": "items.output",
+                    "label": "msgs",
+                },
+            }
+        )
     )
+    graph_dict = specs["routed"]["graph"]
+    graph = Graph.from_json(graph_dict)
     (router,) = list(graph.iter_ops(RouterOp))
     gated, plain = sorted(graph.iter_ops(LLMChatOp), key=lambda op: op.row_gate is None)
     assert (router.default_branch, router.branches) == (
@@ -139,6 +139,8 @@ def test_router_row_gate_and_messages_column_parse() -> None:
     assert router.id in {op.id for op in gated.inputs}
     assert plain.rowwise_messages_column is not None
     assert plain.rowwise_messages_column.label == "msgs"
+    # The column's producer is an input of the model, not a leaf in the DSL.
+    assert plain.rowwise_messages_column.node in graph_dict[plain.id]["_inputs"]
     # A router reads exactly one upstream, which the parser checks itself.
     payload = _routed()
     payload["ops"][1]["inputs"] = ["source", "source"]
@@ -147,32 +149,51 @@ def test_router_row_gate_and_messages_column_parse() -> None:
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("op_kind", "fields", "message"),
     [
-        ("row_gate", {"node": "route", "branch": "review"}),
+        # A vision op runs the shared emitter, so only the chat op may carry
+        # the routing fields. The messages column supplies the whole chat
+        # history, so a field that would build prompts is refused beside it.
         (
-            "rowwise_messages_column",
-            {"node": "source", "path": "items.output", "label": "msgs"},
+            "LLMVisionOp",
+            {"row_gate": {"node": "route", "branch": "review"}},
+            "does not support row_gate",
+        ),
+        ("LLMVisionOp", {}, "does not support rowwise_messages_column"),
+        ("LLMChatOp", {"system_messages": ["s"]}, "with system_messages"),
+        ("LLMChatOp", {"rowwise_template": "{q}"}, "with rowwise_template"),
+        (
+            "LLMChatOp",
+            {"rowwise_columns": [{"label": "q", "node": "source"}]},
+            "with rowwise_columns",
+        ),
+        (
+            "LLMChatOp",
+            {"aggregate_table": [{"label": "q", "node": "source"}]},
+            "with aggregate_table",
         ),
     ],
-    ids=["row-gate", "messages-column"],
 )
-def test_row_routing_fields_are_rejected_on_a_vision_model(
-    field: str, value: Any
+def test_row_routing_fields_are_rejected_when_unsupported(
+    op_kind: str, fields: dict[str, Any], message: str
 ) -> None:
-    # A vision op runs the shared emitter, so only the chat op may carry these.
-    payload = _routed()
-    payload["ops"][-1] = {
+    op = {
         "id": "look",
-        "op": "LLMVisionOp",
+        "op": op_kind,
         "inputs": ["source"],
         "messages": [{"role": "user", "content": "source"}],
         "config": {"model": "dummy-model"},
-        "image_source": "source",
-        field: value,
+        "rowwise_messages_column": {"node": "source", "path": "items", "label": "m"},
+        **fields,
     }
+    if "row_gate" in fields:
+        op.pop("rowwise_messages_column")
+    if op_kind == "LLMVisionOp":
+        op["image_source"] = "source"
+    payload = _routed()
+    payload["ops"][-1] = op
     payload["outputs"] = [{"name": "result", "ref": "look"}]
-    with pytest.raises(ValueError, match=f"does not support {field}"):
+    with pytest.raises(ValueError, match=message):
         parse_yaml_payload(payload)
 
 
