@@ -185,7 +185,6 @@ class _FakeRuntimeServer:
         self.cancel_raises_cancelled = False
         self.omit_leaf_outputs = False
         self.export_rows: list[list[dict[str, Any]]] | None = None
-        self.export_as_one_item = False
         self.leaf_item: Callable[[int], dict[str, Any]] = lambda row: {
             "table": {"market_cap": 10 + row},
             "output": {"market_cap": 10 + row},
@@ -256,14 +255,9 @@ class _FakeRuntimeServer:
         if self.export_rows is not None:
             rows = self.export_rows[min(round_index, len(self.export_rows) - 1)]
             for name in leaf_names:
-                if self.export_as_one_item:
-                    # A list-mode export archives one value holding a list of
-                    # items, the shape an empty round stores as ``[{"output": []}]``.
-                    outputs["round"][name] = [json.dumps([{"output": rows}])]
-                else:
-                    outputs["round"][name] = [
-                        json.dumps({"output": row, "value": row}) for row in rows
-                    ]
+                # A list-mode export archives one value holding a list of
+                # items, the shape an empty round stores as ``[{"output": []}]``.
+                outputs["round"][name] = [json.dumps([{"output": rows}])]
         return LumilakeResponse(outputs=outputs)
 
     def _leaf_output_names(self, graphs: dict[str, Any]) -> list[str]:
@@ -1134,7 +1128,6 @@ async def test_dynamic_template_runs_rounds_until_the_export_is_empty(
     # A list-mode export archives one value holding a list of items, so round
     # 1's two survivors reach round 2 as one value, and round 2's empty list
     # still archives one value whose element count is zero, which stops the loop.
-    fake_server.export_as_one_item = True
     fake_server.export_rows = [
         [{"case_id": "0", "turn": 0}, {"case_id": "1", "turn": 0}],
         [],
@@ -1303,7 +1296,7 @@ async def test_dynamic_api_spec_engine_fields_not_validated_at_submit(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("yaml_text", "mode"),
+    ("yaml_text", "expected"),
     [
         (_API_DYNAMIC_YAML, "api"),
         (_TEMPLATE_DYNAMIC_YAML, "template"),
@@ -1316,7 +1309,7 @@ async def test_dynamic_api_spec_engine_fields_not_validated_at_submit(
     ],
 )
 async def test_dynamic_spec_preview_rejected(
-    app: FastAPI, fake_planner: Any, yaml_text: str, mode: str
+    app: FastAPI, fake_planner: Any, yaml_text: str, expected: str
 ) -> None:
     # There is no round graph to preview before the planner runs, and a
     # template's rounds are rendered at run time, so both are refused.
@@ -1329,7 +1322,7 @@ async def test_dynamic_spec_preview_rejected(
             headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
         )
     assert resp.status_code == 422, resp.text
-    assert mode in resp.json()["detail"]
+    assert expected in resp.json()["detail"]
 
 
 @pytest.mark.anyio
