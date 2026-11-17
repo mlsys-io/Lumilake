@@ -1303,9 +1303,18 @@ async def test_dynamic_api_spec_engine_fields_not_validated_at_submit(
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("yaml_text", "mode"),
-    [(_API_DYNAMIC_YAML, "api"), (_TEMPLATE_DYNAMIC_YAML, "template")],
+    [
+        (_API_DYNAMIC_YAML, "api"),
+        (_TEMPLATE_DYNAMIC_YAML, "template"),
+        # A template renders and validates its round bodies before it refuses,
+        # so a bad library ref is reported as an invalid spec instead.
+        (
+            _TEMPLATE_DYNAMIC_YAML.replace("ref: LiveState", "ref: Missing", 1),
+            "Invalid dynamic workflow spec for index",
+        ),
+    ],
 )
-async def test_dynamic_api_spec_preview_rejected(
+async def test_dynamic_spec_preview_rejected(
     app: FastAPI, fake_planner: Any, yaml_text: str, mode: str
 ) -> None:
     # There is no round graph to preview before the planner runs, and a
@@ -1319,7 +1328,7 @@ async def test_dynamic_api_spec_preview_rejected(
             headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
         )
     assert resp.status_code == 422, resp.text
-    assert f"{mode}-driven dynamic workflow" in resp.json()["detail"]
+    assert mode in resp.json()["detail"]
 
 
 @pytest.mark.anyio

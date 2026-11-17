@@ -14,6 +14,7 @@ from lumilake_server.dynamic.driver import (
     forward_refs,
     resolve_subgraph,
     validate_emitted_subgraph,
+    validate_library,
     walk_archived_items,
 )
 from lumilake_server.parser.common import make_id
@@ -368,20 +369,31 @@ def test_column_bindings_remap_independent_library_instances() -> None:
 
 
 @pytest.mark.parametrize(
-    ("bindings", "inputs", "message"),
+    ("entry", "bindings", "inputs", "message"),
     [
         # The bindings must cover every column and every input the round passes.
-        ([], ["p1"], "unbound"),
-        ([{"label": "missing", "input": 0}], ["p1"], "unknown label"),
-        ([{"label": "prompt", "input": -1}], ["p1"], "invalid input slot"),
+        ({}, [], ["p1"], "unbound"),
+        ({}, [{"label": "missing", "input": 0}], ["p1"], "unknown label"),
+        ({}, [{"label": "prompt", "input": -1}], ["p1"], "invalid input slot"),
+        # A gated op names its round's router, which a library entry cannot
+        # express, so validation refuses it before any round runs.
+        ({"row_gate": {"node": "Route", "branch": "fail"}}, [], ["p1"], "row_gate"),
     ],
-    ids=["unbound-column", "unknown-label", "bad-slot"],
+    ids=["unbound-column", "unknown-label", "bad-slot", "gated-entry"],
 )
 def test_column_bindings_reject_an_inconsistent_round(
-    bindings: list[dict[str, Any]], inputs: list[str], message: str
+    entry: dict[str, Any],
+    bindings: list[dict[str, Any]],
+    inputs: list[str],
+    message: str,
 ) -> None:
     library = copy.deepcopy(_LIBRARY)
+    library["ReviewTurn"].update(entry)
     library["ReviewTurn"]["column_bindings"] = bindings
+    if "row_gate" in entry:
+        with pytest.raises(DriverProtocolError, match=message):
+            validate_library(library)
+        return
     subgraph = _llm_column_subgraph("review")
     subgraph[1]["inputs"] = inputs
 
