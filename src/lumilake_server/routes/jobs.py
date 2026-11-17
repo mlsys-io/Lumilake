@@ -2136,11 +2136,7 @@ async def _run_dynamic_job(
                         stopped_by = STOP
                         break
                     current_subgraph = _admit_subgraph(
-                        plan,
-                        node_registry,
-                        max_nodes,
-                        spec.library,
-                        all_results,
+                        plan, node_registry, max_nodes, spec.library, all_results
                     )
                     current_export = plan.export
                 except (DriverProtocolError, ValueError) as exc:
@@ -2387,11 +2383,7 @@ async def _run_dynamic_job(
                     break
                 if next_plan is not None:
                     current_subgraph = _admit_subgraph(
-                        next_plan,
-                        node_registry,
-                        max_nodes,
-                        spec.library,
-                        all_results,
+                        next_plan, node_registry, max_nodes, spec.library, all_results
                     )
                     current_export = next_plan.export
             except (DriverProtocolError, ValueError) as exc:
@@ -2918,16 +2910,21 @@ async def preview_job(
             )
         if is_dynamic:
             dynamic_spec = _decode_dynamic_spec(entry.workflow, idx)
-            if (
-                dynamic_spec.driver.api is not None
-                or dynamic_spec.driver.template is not None
-            ):
-                _render_dynamic_round0(dynamic_spec)
-                mode = "api" if dynamic_spec.driver.api is not None else "template"
+            if dynamic_spec.driver.api is not None:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=(
-                        f"preview is not available for a {mode}-driven dynamic "
+                        "preview is not available for an api-driven dynamic "
+                        "workflow: its rounds come from the external planner "
+                        "at run time"
+                    ),
+                )
+            if dynamic_spec.driver.template is not None:
+                _render_dynamic_round0(dynamic_spec)
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=(
+                        "preview is not available for a template-driven dynamic "
                         "workflow: its rounds are rendered when the job runs"
                     ),
                 )
