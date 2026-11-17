@@ -474,13 +474,9 @@ def _flatten_leaf_outputs(
 def _archived_result_items(
     leaf_outputs: dict[str, list[str]],
 ) -> dict[str, list[Any]]:
-    """Decode each archived value into the whole result items it holds.
-
-    ``_flatten_leaf_outputs`` keeps a decoded value inside its outer list so
-    ``round_results`` preserves the archive representation. ``all_results``
-    forwards whole items, so a decoded value holding a list of items is
-    flattened by one level.
-    """
+    """Decode each archived value into the whole items it holds, flattening a
+    decoded list of items by one level; ``round_results`` keeps the unflattened
+    archive form."""
     flattened: dict[str, list[Any]] = {}
     for leaf_id, values in _flatten_leaf_outputs(leaf_outputs).items():
         items: list[Any] = []
@@ -2119,6 +2115,11 @@ async def _run_dynamic_job(
         await asyncio.to_thread(_job_storage.save, record)
 
         template = spec.driver.template
+        # A template round forwards whole items, flattening a decoded list of
+        # them; planner rounds forward one grouped value per row.
+        decode_results = (
+            _archived_result_items if template is not None else _flatten_leaf_outputs
+        )
         round_index = 1 if template is not None else 0
         current_subgraph: list[dict[str, Any]] = []
         current_export: list[str] = []
@@ -2386,7 +2387,7 @@ async def _run_dynamic_job(
                         round_build.leaf_user_ids,
                     )
                 )
-                for internal_id, values in _archived_result_items(leaf_outputs).items():
+                for internal_id, values in decode_results(leaf_outputs).items():
                     all_results[leaf_internal_to_user[internal_id]] = values
                 export_internal_to_user = dict(
                     zip(
@@ -2397,9 +2398,7 @@ async def _run_dynamic_job(
                         round_build.export_user_ids,
                     )
                 )
-                for internal_id, values in _archived_result_items(
-                    export_outputs
-                ).items():
+                for internal_id, values in decode_results(export_outputs).items():
                     all_results[export_internal_to_user[internal_id]] = values
                 if isinstance(plan, StopPlan):
                     stopped_by = STOP
