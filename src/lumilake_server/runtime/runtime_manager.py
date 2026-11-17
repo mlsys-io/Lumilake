@@ -1946,20 +1946,19 @@ class FlowmeshRuntimeManager:
                         "FlowMesh rewritten node is missing a valid 'name'"
                     )
                 node_names.append(node_name)
+            gpu_node_names = {
+                flowmesh_node_name
+                for flowmesh_node_name, raw_node_name in flowmesh_to_raw.items()
+                if raw_node_name in runtime_graph.nodes
+                and self._runtime_op_requires_gpu(runtime_graph.nodes[raw_node_name])
+            }
             (
                 schedule_hint,
                 per_node_selected_worker_candidates,
             ) = self._build_flat_schedule_hint(
                 worker_assignment=active_worker_assignment,
                 node_names=node_names,
-                gpu_node_names={
-                    flowmesh_node_name
-                    for flowmesh_node_name, raw_node_name in flowmesh_to_raw.items()
-                    if raw_node_name in runtime_graph.nodes
-                    and self._runtime_op_requires_gpu(
-                        runtime_graph.nodes[raw_node_name]
-                    )
-                },
+                gpu_node_names=gpu_node_names,
                 node_dependencies={
                     node_name: [
                         dep
@@ -1970,6 +1969,7 @@ class FlowmeshRuntimeManager:
                         (str(item.get("name")), item) for item in nodes
                     )
                 },
+                gpu_worker_ids=request_info.gpu_worker_ids,
             )
             schedule_hint_annotation: dict[str, Any] = {
                 "node_execution_order": schedule_hint,
@@ -2089,6 +2089,7 @@ class FlowmeshRuntimeManager:
         worker_assignment: Mapping[str, Sequence[str]],
         node_names: list[str],
         gpu_node_names: set[str],
+        gpu_worker_ids: set[str],
         node_dependencies: Mapping[str, Sequence[str]],
     ) -> tuple[list[str], dict[str, list[str]]]:
         per_node_selected_worker_candidates: dict[str, list[str]] = {}
@@ -2135,9 +2136,7 @@ class FlowmeshRuntimeManager:
         # whichever CPU worker is idle first, instead of queueing behind the one
         # the plan assigned it. A GPU node keeps the plan's worker.
         cpu_worker_ids = [
-            worker
-            for worker, worker_nodes in worker_assignment.items()
-            if not any(node_name in gpu_node_names for node_name in worker_nodes)
+            worker for worker in worker_assignment if worker not in gpu_worker_ids
         ]
         for node_name in node_names:
             if node_name in gpu_node_names or not cpu_worker_ids:

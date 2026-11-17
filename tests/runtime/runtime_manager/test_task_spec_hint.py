@@ -34,7 +34,10 @@ async def test_build_task_spec_emits_flat_schedule_hint_without_epoch_flag(
     )
     schedule = Schedule(worker_assignment={"gpu-0": ["n1"]})
     request_info = cast(
-        Any, SimpleNamespace(request_id="req-1", hardware_requirements=None)
+        Any,
+        SimpleNamespace(
+            request_id="req-1", hardware_requirements=None, gpu_worker_ids=set()
+        ),
     )
 
     spec, _, _ = await flowmesh_manager._build_task_spec(
@@ -67,9 +70,18 @@ async def test_build_task_spec_offers_cpu_nodes_every_cpu_worker(
         dsl_to_runtime={},
     )
     schedule = Schedule(
-        worker_assignment={"cpu-0": ["c0", "c1"], "cpu-1": ["c2"], "gpu-0": ["gpu"]}
+        worker_assignment={
+            "cpu-0": ["c0", "c1"],
+            "cpu-1": ["c2"],
+            "gpu-0": ["gpu"],
+            "gpu-1": [],
+        }
     )
-    request_info: Any = SimpleNamespace(request_id="req", hardware_requirements=None)
+    request_info: Any = SimpleNamespace(
+        request_id="req",
+        hardware_requirements=None,
+        gpu_worker_ids={"gpu-0", "gpu-1"},
+    )
     spec, _, _ = await flowmesh_manager._build_task_spec(
         request_info=request_info,
         runtime_graph=graph,
@@ -83,4 +95,5 @@ async def test_build_task_spec_offers_cpu_nodes_every_cpu_worker(
         "c2": cpu,
         "gpu": ["gpu-0"],
     }
+    assert "gpu-1" not in hint["selected_worker"]["selected"]["c0"]
     assert hint["node_execution_order"] == ["c0", "c2", "c1", "gpu"]

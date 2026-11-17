@@ -60,7 +60,11 @@ async def test_task_spec_uses_full_hardware_override(
     hardware = HardwareRequirements(cpu=32, memory="128Gi", gpu=2, gpu_memory="48Gi")
     request_info = cast(
         Any,
-        SimpleNamespace(request_id="req-1", hardware_requirements=hardware),
+        SimpleNamespace(
+            request_id="req-1",
+            hardware_requirements=hardware,
+            gpu_worker_ids=set(),
+        ),
     )
 
     spec, _, _ = await flowmesh_manager._build_task_spec(
@@ -107,7 +111,11 @@ async def test_task_spec_partial_override_falls_back_to_env_per_field(
     hardware = HardwareRequirements(memory="64Gi")
     request_info = cast(
         Any,
-        SimpleNamespace(request_id="req-2", hardware_requirements=hardware),
+        SimpleNamespace(
+            request_id="req-2",
+            hardware_requirements=hardware,
+            gpu_worker_ids=set(),
+        ),
     )
 
     spec, _, _ = await flowmesh_manager._build_task_spec(
@@ -141,7 +149,11 @@ async def test_task_spec_no_override_uses_env_defaults(
 
     request_info = cast(
         Any,
-        SimpleNamespace(request_id="req-3", hardware_requirements=None),
+        SimpleNamespace(
+            request_id="req-3",
+            hardware_requirements=None,
+            gpu_worker_ids=set(),
+        ),
     )
 
     spec, _, _ = await flowmesh_manager._build_task_spec(
@@ -164,6 +176,7 @@ async def test_task_spec_rejects_gpu_zero_against_gpu_op(
         SimpleNamespace(
             request_id="req-no-gpu",
             hardware_requirements=HardwareRequirements(gpu=0),
+            gpu_worker_ids=set(),
         ),
     )
 
