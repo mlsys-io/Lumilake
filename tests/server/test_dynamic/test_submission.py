@@ -1453,3 +1453,81 @@ async def test_dynamic_submit_accepts_multiple_symbols_and_rejects_blank(
         )
     assert resp.status_code == 422
     await _run_background(app)
+
+
+_TEMPLATE_DYNAMIC_YAML = """
+name: dynamic
+type: dynamic
+goal: advance the cases
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 6
+  output_location:
+    type: s3
+    prefix: dynamic/data-free/
+  template:
+    first:
+      ops:
+        - id: "Live_r{{round}}"
+          op: LambdaOp
+          mode: list
+          inputs: [Symbols]
+          fn_name: advance
+          code: |
+            def advance(columns):
+                return [{"case_id": value} for value in columns[0]]
+      export: ["Live_r{{round}}"]
+    next:
+      ops:
+        - id: "Live_r{{round}}"
+          op: LambdaOp
+          mode: list
+          inputs: ["Live_r{{prev}}"]
+          fn_name: advance
+          code: |
+            def advance(columns):
+                return json.loads(columns[0][0])
+      export: ["Live_r{{round}}"]
+    stop_when_empty: "Live_r{{prev}}"
+"""
+
+
+@pytest.mark.anyio
+async def test_template_rounds_forward_the_export_then_stop_on_an_empty_one(
+    app: FastAPI, job_routes: Any
+) -> None:
+    body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
+    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    # Round 1 advances two cases; round 2's next body archives none, which stops
+    # the loop before round 3 runs.
+    replies = [[{"case_id": 1}, {"case_id": 2}], []]
+    fake_server.leaf_item = lambda row: {"output": replies.pop(0)}
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    assert record.status == "completed", record.error
+    assert len(record.child_job_ids) == 2
+    # Each template round dispatches its whole input set as one whole-set slice.
+    for slices in fake_server.workflow_slices_calls:
+        (meta,) = slices.values()
+        assert meta.whole_set is True
+        assert meta.slice_length == 1
+        assert meta.total_length == 1
+        assert meta.varying_input_keys == ()
+    # Round 2 binds round 1's export from its stored archive, one input row.
+    (graph,) = fake_server.executed_graphs[1].values()
+    assert len(graph.inputs["Live_r0"]) == 1
+    assert [plan["source"] for plan in record.result.outputs["round"]["plan"]] == [
+        "template",
+        "template",
+        "template",
+    ]
