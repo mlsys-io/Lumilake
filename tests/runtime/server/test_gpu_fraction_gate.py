@@ -5,7 +5,7 @@ import pytest
 from support.runtime_server import make_runtime_op
 
 from lumilake_server.runtime.capacity import FreeCapacity
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeOp
 
 _OP = replace(
     make_runtime_op("n"), model_spec={"vllm": {"gpu_memory_utilization": 0.8}}
@@ -18,7 +18,7 @@ def _free(*names: str) -> FreeCapacity:
     return FreeCapacity(cpu_worker_ids=(), gpu_worker_ids=names, profiles=profiles)
 
 
-def _util(node_id: str, utilization: float):
+def _util(node_id: str, utilization: float) -> RuntimeOp:
     spec = {"vllm": {"gpu_memory_utilization": utilization}}
     return replace(_OP, node_id=node_id, model_spec=spec)
 
