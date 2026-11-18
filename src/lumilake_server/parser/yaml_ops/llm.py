@@ -139,6 +139,9 @@ def _emit_llm_like_op(
 
     aggregate_table = entry.fields.get("aggregate_table")
     rowwise_columns = entry.fields.get("rowwise_columns")
+    rowwise_seed = _resolve_seed_node(
+        entry.fields.get("rowwise_seed"), user_id_to_internal
+    )
     resolved_aggregate = _resolve_table_nodes(aggregate_table, user_id_to_internal)
     resolved_rowwise = _resolve_table_nodes(rowwise_columns, user_id_to_internal)
 
@@ -151,6 +154,10 @@ def _emit_llm_like_op(
     if resolved_rowwise is not None:
         op_dict["rowwise_columns"] = resolved_rowwise
     _emit_rowwise_messages(entry, op_dict, user_id_to_internal, op_kind)
+    if rowwise_seed is not None:
+        if op_kind != "LLMChatOp":
+            raise ValueError(f"{op_kind} '{entry.id}' does not support rowwise_seed")
+        op_dict["rowwise_seed"] = rowwise_seed
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
     elif "rowwise_template" in entry.fields and isinstance(inline_messages, list):
@@ -178,6 +185,7 @@ def _emit_llm_like_op(
                 node_id = item.get("node")
                 if isinstance(node_id, str) and node_id not in llm_inputs:
                     llm_inputs.append(node_id)
+    _append_seed_input(llm_inputs, rowwise_seed)
     op_dict["_inputs"] = llm_inputs
 
 
@@ -310,6 +318,37 @@ def _resolve_table_nodes(
             resolved["node"] = user_id_to_internal[node_ref]
         out.append(resolved)
     return out
+
+
+def _resolve_seed_node(
+    seed: Any, user_id_to_internal: dict[str, str]
+) -> dict[str, Any] | None:
+    """Resolve a ``rowwise_seed`` column ref, mapping its user-facing ``node``
+    to the internal op id."""
+    if seed is None:
+        return None
+    if not isinstance(seed, dict):
+        raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
+    resolved = dict(seed)
+    node_ref = resolved.get("node")
+    if not isinstance(node_ref, str) or not isinstance(resolved.get("path"), str):
+        raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
+    if node_ref not in user_id_to_internal:
+        raise ValueError(f"rowwise_seed references unknown id '{node_ref}'")
+    resolved["node"] = user_id_to_internal[node_ref]
+    return resolved
+
+
+def _append_seed_input(
+    llm_inputs: list[str], rowwise_seed: dict[str, Any] | None
+) -> None:
+    """Add a rowwise seed column's node to the op's inputs, as an aggregate or
+    rowwise column node is added."""
+    if rowwise_seed is None:
+        return
+    node_id = rowwise_seed.get("node")
+    if isinstance(node_id, str) and node_id not in llm_inputs:
+        llm_inputs.append(node_id)
 
 
 def _build_inline_messages(
