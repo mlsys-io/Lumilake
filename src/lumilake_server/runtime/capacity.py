@@ -42,13 +42,10 @@ class FreeCapacity:
         )
 
     def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
-        """True when every utilization has some GPU worker whose fraction holds it."""
-        return all(
-            any(
-                holds_gpu_utilizations(self.profiles.get(w, {}), {utilization})
-                for w in self.gpu_worker_ids
-            )
-            for utilization in utilizations
+        """True when some GPU worker in this snapshot holds every utilization."""
+        return any(
+            holds_gpu_utilizations(self.profiles.get(w, {}), utilizations)
+            for w in self.gpu_worker_ids
         )
 
     def can_satisfy(self, *, cpu_group_size: int, gpu_group_size: int) -> bool:
