@@ -42,11 +42,9 @@ def read_env_value(path: Path, key: str) -> str:
 
 
 def patch_env_value(path: Path, key: str, value: str, *, quote: bool = True) -> None:
-    """Replace ``key=...`` in ``path`` if present, append otherwise.
-
-    Pass ``quote=False`` for ``.env.flowmesh``: FlowMesh's stack loader
-    hands those values to compose verbatim, quotes included.
-    Idempotent: writing the same value is a no-op.
+    """Replace ``key=...`` in ``path`` if present, append otherwise. Pass
+    ``quote=False`` for ``.env.flowmesh``, whose values FlowMesh's stack
+    loader hands to compose verbatim; writing the same value is a no-op.
     """
     new_line = _line(key, value) if quote else f"{key}={value}\n"
     if not path.is_file():
@@ -88,16 +86,13 @@ def _local_url(value: str, host: str, port: int) -> str | None:
 
 
 def sync_orchestrator_urls(env_path: Path, flowmesh_env_path: Path) -> list[str]:
-    """Align both FlowMesh URLs with ``SERVER_HTTP_PORT``.
-
-    The templates hardcode the FlowMesh URLs for the template's own port,
-    so a stack on any other port leaves every worker result-delivery
-    check refused. A loopback URL (or a missing one) is re-pointed at
-    ``SERVER_HTTP_PORT``; a URL naming another host is a deliberate
-    remote endpoint and is kept. Returns the rewritten ``KEY=value``
-    pairs, empty when nothing changed.
-    """
-    port = int(read_env_value(flowmesh_env_path, "SERVER_HTTP_PORT") or "8000")
+    """Point a missing or loopback FlowMesh URL at ``SERVER_HTTP_PORT``,
+    keep one naming another host, and return the rewritten ``KEY=value``
+    pairs. Does nothing when ``.env.flowmesh`` sets no port."""
+    raw_port = read_env_value(flowmesh_env_path, "SERVER_HTTP_PORT")
+    if not raw_port:
+        return []
+    port = int(raw_port)
     changed: list[str] = []
     for path, key, host in (
         (env_path, ORCHESTRATOR_URL_KEY, "127.0.0.1"),
@@ -106,9 +101,6 @@ def sync_orchestrator_urls(env_path: Path, flowmesh_env_path: Path) -> list[str]
         url = _local_url(read_env_value(path, key), host, port)
         if url is None:
             continue
-        # FlowMesh's stack loader passes .env.flowmesh values to compose
-        # unparsed, so that line has to stay bare for the worker to read
-        # a usable URL.
         bare = path == flowmesh_env_path
         line = f"{key}={url}" if bare else _line(key, url).rstrip("\n")
         if line in path.read_text().splitlines():
