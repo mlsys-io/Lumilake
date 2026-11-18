@@ -157,7 +157,8 @@ class FreeCapacity:
         worker advertising a required task type, or no GPU worker whose memory fraction
         holds every utilization the batch reserves. The GPU group claims one worker per
         distinct utilization before filling to ``gpu_group_size``, so a batch holding
-        engines of different sizes keeps them on separate workers."""
+        engines of different sizes keeps them on separate workers whenever the free set
+        allows it."""
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
@@ -205,11 +206,12 @@ class FreeCapacity:
     ) -> list[str] | None:
         """One eligible worker per reserved utilization, ``None`` when one is unheld.
 
-        Utilizations are taken smallest first, and each claims the tightest worker
-        holding it (the smallest memory fraction, a whole-device worker last). A
-        worker already claimed for a smaller utilization covers a utilization it
-        also holds, so a batch is not split over workers it does not need and a
-        cluster with one large enough worker still runs it.
+        Utilizations are taken smallest first, and each takes the tightest worker
+        holding it that is not claimed yet (the smallest memory fraction, a whole
+        device last). An already-claimed worker is reused only when no unclaimed
+        holder exists, so engines of different sizes stay on separate workers
+        whenever the free set allows it, while a cluster with one large enough
+        worker still runs them.
         """
         claimed: list[str] = []
         for utilization in sorted(utilizations):
@@ -220,9 +222,10 @@ class FreeCapacity:
             ]
             if not holders:
                 return None
-            if any(w in holders for w in claimed):
+            unclaimed = [w for w in holders if w not in claimed]
+            if not unclaimed:
                 continue
-            claimed.append(min(holders, key=self._gpu_tightness))
+            claimed.append(min(unclaimed, key=self._gpu_tightness))
         return claimed
 
     def _gpu_tightness(self, worker_id: str) -> tuple[bool, float]:
