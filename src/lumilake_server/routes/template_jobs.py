@@ -23,6 +23,7 @@ from lumilake_server.dynamic.driver import (
 )
 from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.dynamic.template import DriverTemplate, run_round
+from lumilake_server.routes import jobs as job_routes
 from lumilake_server.routes.jobs import (
     _IO_LOCATION_ADAPTER,
     TERMINAL_JOB_STATUSES,
@@ -32,11 +33,8 @@ from lumilake_server.routes.jobs import (
     _extract_leaf_outputs,
     _fire_parent_terminal_hooks,
     _flatten_leaf_outputs,
-    _job_storage,
     _now,
     _submit_dynamic_child,
-    jobs,
-    jobs_lock,
 )
 from lumilake_server.runtime.protocol import (
     HardwareRequirements,
@@ -71,14 +69,14 @@ async def run_template_job(
     """
     set_trace_id(trace_id)
     try:
-        async with jobs_lock:
+        async with job_routes.jobs_lock:
             terminal_before_start = record.status in TERMINAL_JOB_STATUSES
             if not terminal_before_start:
                 record.status = "running"
                 record.started_at = _now()
         if terminal_before_start:
             return
-        await asyncio.to_thread(_job_storage.save, record)
+        await asyncio.to_thread(job_routes._job_storage.save, record)
 
         run_namespace = f"run-{uuid.uuid4().hex}"
         max_rounds = spec.driver.max_rounds
@@ -89,7 +87,7 @@ async def run_template_job(
         round_results: list[dict[str, list[str]]] = []
         all_results: dict[str, list[dict[str, Any]]] = {}
 
-        async with jobs_lock:
+        async with job_routes.jobs_lock:
             record.progress.execution = ProgressStep(
                 completed=False,
                 details=ProgressDetails(
@@ -99,7 +97,7 @@ async def run_template_job(
                     dispatched=0,
                 ),
             )
-        await asyncio.to_thread(_job_storage.save, record)
+        await asyncio.to_thread(job_routes._job_storage.save, record)
 
         round_index = 1
         while round_index <= max_rounds:
@@ -141,13 +139,13 @@ async def run_template_job(
                     rows=1,
                 )
             except (DriverProtocolError, ValueError) as exc:
-                async with jobs_lock:
+                async with job_routes.jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:
                         return
                     record.status = "failed"
                     record.error = f"dynamic round {round_index} failed to build: {exc}"
                     record.finished_at = _now()
-                await asyncio.to_thread(_job_storage.save, record)
+                await asyncio.to_thread(job_routes._job_storage.save, record)
                 return
             try:
                 child_job_id = await _submit_dynamic_child(
@@ -171,21 +169,21 @@ async def run_template_job(
                     one_slice=True,
                 )
             except TimeoutError as exc:
-                async with jobs_lock:
+                async with job_routes.jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:
                         return
                     record.status = "failed"
                     record.error = str(exc)
                     record.finished_at = _now()
-                await asyncio.to_thread(_job_storage.save, record)
+                await asyncio.to_thread(job_routes._job_storage.save, record)
                 return
             if child_job_id is None:
                 return
-            async with jobs_lock:
-                child = jobs[child_job_id]
+            async with job_routes.jobs_lock:
+                child = job_routes.jobs[child_job_id]
                 child_status = child.status
             if child_status != "completed":
-                async with jobs_lock:
+                async with job_routes.jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:
                         return
                     if child_status == "cancelled":
@@ -201,17 +199,17 @@ async def run_template_job(
                             f"terminated with status {child_status!r}"
                         )
                     record.finished_at = _now()
-                await asyncio.to_thread(_job_storage.save, record)
+                await asyncio.to_thread(job_routes._job_storage.save, record)
                 return
             result = child.result
             if result is None:
-                async with jobs_lock:
+                async with job_routes.jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:
                         return
                     record.status = "failed"
                     record.error = f"dynamic round {round_index} produced no result"
                     record.finished_at = _now()
-                await asyncio.to_thread(_job_storage.save, record)
+                await asyncio.to_thread(job_routes._job_storage.save, record)
                 return
             outputs = result_outputs({"result": {"outputs": result.outputs}})
             leaf_outputs = _extract_leaf_outputs(outputs, round_build.leaf_output_names)
@@ -256,7 +254,7 @@ async def run_template_job(
                 ]
             round_index += 1
             completed_rounds = round_index - 1
-            async with jobs_lock:
+            async with job_routes.jobs_lock:
                 if record.status in TERMINAL_JOB_STATUSES:
                     return
                 record.progress.execution = ProgressStep(
@@ -268,8 +266,8 @@ async def run_template_job(
                         dispatched=0,
                     ),
                 )
-            await asyncio.to_thread(_job_storage.save, record)
-        async with jobs_lock:
+            await asyncio.to_thread(job_routes._job_storage.save, record)
+        async with job_routes.jobs_lock:
             if record.status in TERMINAL_JOB_STATUSES:
                 return
             record.status = "completed"
@@ -286,16 +284,16 @@ async def run_template_job(
             record.result = LumilakeResponse(
                 outputs={"round": {"plan": plans, "results": round_results}}
             )
-        await asyncio.to_thread(_job_storage.save, record)
+        await asyncio.to_thread(job_routes._job_storage.save, record)
     except Exception as exc:  # noqa: BLE001 - any escape must fail the parent
-        async with jobs_lock:
+        async with job_routes.jobs_lock:
             if record.status in TERMINAL_JOB_STATUSES:
                 return
             record.status = "failed"
             record.error = f"dynamic run failed: {exc}"
             record.finished_at = _now()
         try:
-            await asyncio.to_thread(_job_storage.save, record)
+            await asyncio.to_thread(job_routes._job_storage.save, record)
         except Exception as save_exc:  # noqa: BLE001 - persistence is best-effort
             logger.error(
                 "failed to persist failed dynamic parent %s: %s",
