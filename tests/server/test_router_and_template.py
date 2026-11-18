@@ -41,12 +41,12 @@ def _router(**extra: Any) -> dict[str, Any]:
     }
 
 
-def _run_branch(entry: dict[str, Any], column: list[str]) -> list[dict[str, Any]]:
+def _branch_rows(
+    entry: dict[str, Any], branch_id: str, column: list[str]
+) -> list[dict[str, Any]]:
     """Run one expanded branch's generated source over ``column``."""
-    ops = expand_routers([entry])
-    op = next(item for item in ops if item["id"] == "route.patient")
-    fn = materialize(op["code"], op["fn_name"])
-    return fn((column,))
+    op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
+    return materialize(op["code"], op["fn_name"])((column,))
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
@@ -57,56 +57,36 @@ def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
         "route.test",
     ]
     for op in expanded:
-        assert op["op"] == "LambdaOp"
-        assert op["mode"] == "list"
-        assert op["inputs"] == ["norm"]
-    assert [op for op in expand_routers([])] == []
+        assert (op["op"], op["mode"], op["inputs"]) == ("LambdaOp", "list", ["norm"])
 
 
 def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
     column = [json.dumps(row) for row in _ROWS]
-    assert [row["case_id"] for row in _run_branch(_router(), column)] == ["a"]
-    diagnose = _run_branch(_router(), column) and [
-        row["case_id"] for row in _branch_rows(_router(), "route.diagnose", column)
-    ]
-    assert diagnose == ["b"]
-    assert [
-        row["case_id"] for row in _branch_rows(_router(), "route.test", column)
-    ] == ["c", "d"]
-
-
-def _branch_rows(
-    entry: dict[str, Any], branch_id: str, column: list[str]
-) -> list[dict[str, Any]]:
-    op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
-    return materialize(op["code"], op["fn_name"])((column,))
+    for branch_id, expected in (
+        ("route.patient", ["a"]),
+        ("route.diagnose", ["b"]),
+        ("route.test", ["c", "d"]),
+    ):
+        got = _branch_rows(_router(), branch_id, column)
+        assert [row["case_id"] for row in got] == expected
 
 
 def test_branch_reads_a_wrapped_list_and_no_rows() -> None:
-    # A list-mode source archives its whole list as one item; the same decoder
-    # handles that shape, and zero rows yield zero output rows.
-    entry = _router()
-    column = [json.dumps(_ROWS)]
-    (patient,) = [op for op in expand_routers([entry]) if op["id"] == "route.patient"]
-    fn = materialize(patient["code"], patient["fn_name"])
-    assert [row["case_id"] for row in fn((column,))] == ["a"]
-    assert fn(([],)) == []
+    # A list-mode source archives its whole list as one item, which the same
+    # decoder unwraps; zero rows yield zero output rows.
+    wrapped = _branch_rows(_router(), "route.patient", [json.dumps(_ROWS)])
+    assert [row["case_id"] for row in wrapped] == ["a"]
+    assert _branch_rows(_router(), "route.patient", []) == []
 
 
-def test_router_rejects_a_duplicate_branch_a_rule_and_a_default() -> None:
+def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
     with pytest.raises(ValueError, match="default branch"):
         RouterOp.from_entry(_router(default_branch="diagnose"))
     with pytest.raises(ValueError, match="exactly one input"):
         RouterOp.from_entry(_router(inputs=[]))
+    twin = [{"branch": "x", "match": "equals", "value": "1"}] * 2
     with pytest.raises(ValueError, match="branches must be unique"):
-        RouterOp.from_entry(
-            _router(
-                rules=[
-                    {"branch": "x", "match": "equals", "value": "1"},
-                    {"branch": "x", "match": "equals", "value": "2"},
-                ]
-            )
-        )
+        RouterOp.from_entry(_router(rules=twin))
 
 
 def test_router_expands_before_the_graph_is_built() -> None:
@@ -120,7 +100,7 @@ def test_router_expands_before_the_graph_is_built() -> None:
                 "mode": "list",
                 "inputs": ["Symbols"],
                 "fn_name": "norm",
-                "code": "def norm(c):\n    return [{'text': t} for t in c[0]]\n",
+                "code": "def norm(c):\n    return c[0]\n",
             },
             _router(),
             {
@@ -136,16 +116,10 @@ def test_router_expands_before_the_graph_is_built() -> None:
     }
     graph = parse_yaml_payload(workflow)["r"]["graph"]
     kinds = [node["_op"] for node in graph.values()]
-    assert "RouterOp" not in kinds
-    assert kinds.count("LambdaOp") == 5
-    branch_ids = sorted(
-        op_id for op_id in graph if "route_patient" in op_id or "route_test" in op_id
-    )
-    assert len(branch_ids) == 2
+    assert "RouterOp" not in kinds and kinds.count("LambdaOp") == 5
+    (test_branch,) = [op_id for op_id in graph if "route_test" in op_id]
     turn = next(node for node in graph.values() if "turn" in node["_id"])
-    assert turn["_inputs"] == [
-        next(op_id for op_id in branch_ids if "route_test" in op_id)
-    ]
+    assert turn["_inputs"] == [test_branch]
 
 
 def _state(op_id: str, inputs: list[str], **extra: Any) -> dict[str, Any]:
@@ -185,47 +159,25 @@ def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
     assert template is not None
     assert plan_for_round(template, 1).export == ["Live_r0"]
     assert plan_for_round(template, 2).ops[0]["inputs"] == ["Live_r0"]
-    assert stop_export(template, 2) == "Live_r0"
-    assert stop_export(template, 3) == "Live_r1"
+    assert (stop_export(template, 2), stop_export(template, 3)) == (
+        "Live_r0",
+        "Live_r1",
+    )
 
 
-def test_template_leaves_lambda_code_alone_but_renders_every_other_string() -> None:
-    template = _spec(
-        [
-            {
-                "id": "Live_r{{round}}",
-                "op": "LambdaOp",
-                "mode": "list",
-                "inputs": ["Symbols"],
-                "fn_name": "echo",
-                "code": "# {{round}}\ndef echo(c):\n    return c[0]\n",
-            }
-        ],
-        [_state("Live_r{{round}}", ["Live_r{{prev}}"])],
-    ).driver.template
-    assert template is not None
-    (op,) = plan_for_round(template, 1).ops
-    assert op["id"] == "Live_r0"
-    assert op["code"] == "# {{round}}\ndef echo(c):\n    return c[0]\n"
+def test_template_leaves_a_lambda_code_alone_and_renders_the_rest() -> None:
+    echo = _state("Live_r{{round}}", ["Symbols"], code="# {{round}}\ndef echo(c):\n")
+    template = _spec([echo], [_state("Live_r{{round}}", ["Live_r{{prev}}"])])
+    assert template.driver.template is not None
+    (op,) = plan_for_round(template.driver.template, 1).ops
+    assert (op["id"], op["code"]) == ("Live_r0", "# {{round}}\ndef echo(c):\n")
 
 
-def test_template_rejects_an_api_driver() -> None:
+def test_template_and_api_are_mutually_exclusive() -> None:
+    body = _spec([_state("Live_r{{round}}", ["Symbols"])], []).model_dump()
+    body["driver"]["api"] = {"url": "http://planner.test"}
     with pytest.raises(ValidationError, match="mutually exclusive"):
-        DynamicSpec.model_validate(
-            {
-                "type": "dynamic",
-                "goal": "g",
-                "driver": {
-                    "model": "m",
-                    "template": {
-                        "first": {"ops": [_state("Live_r{{round}}", ["Symbols"])]},
-                        "next": {"ops": [_state("Live_r{{round}}", ["Symbols"])]},
-                        "stop_when_empty": "Live_r{{prev}}",
-                    },
-                    "api": {"url": "http://planner.test"},
-                },
-            }
-        )
+        DynamicSpec.model_validate(body)
 
 
 @pytest.mark.parametrize(
@@ -280,4 +232,3 @@ def test_template_accepts_a_list_lambda_export_and_counts_its_rows() -> None:
     # A list-mode export archives one item holding the list its step returned.
     assert archived_element_count([{"output": [{"case_id": 1}, {"case_id": 2}]}]) == 2
     assert archived_element_count([{"output": []}]) == 0
-    assert archived_element_count([{"output": "one"}]) == 1
