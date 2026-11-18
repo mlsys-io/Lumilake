@@ -137,8 +137,9 @@ ports before `deploy up`. Common co-tenant FlowMesh defaults are HTTP
 `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry `6380`.
 The bundled stack reads `SERVER_HTTP_PORT`, `SERVER_GRPC_PORT`,
 `REDIS_CONTROL_PORT`, and `REDIS_TELEMETRY_PORT` from `.env.flowmesh`;
-change them to free ports and keep `LUMILAKE_RUNTIME_ORCHESTRATOR_URL`
-in `.env` aligned with `SERVER_HTTP_PORT`.
+change them to free ports. `deploy init --flowmesh` and `deploy up`
+derive `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` and `FLOWMESH_BASE_URL`
+from `SERVER_HTTP_PORT` unless one names another host.
 
 Common deployment commands:
 
