@@ -75,10 +75,10 @@ FLOWMESH_BASE_URL_KEY = "FLOWMESH_BASE_URL"
 
 
 def _local_url(value: str, host: str, port: int) -> str | None:
-    """``value`` on ``port``, or None when it is missing or names another host."""
-    parts = urlsplit(value)
-    if not parts.hostname:
+    """``value`` on ``port``, or None to keep it as it is."""
+    if not value:
         return f"http://{host}:{port}"
+    parts = urlsplit(value)
     if parts.hostname not in _LOOPBACK_HOSTS:
         return None
     netloc = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
