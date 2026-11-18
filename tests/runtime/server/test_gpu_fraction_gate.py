@@ -44,3 +44,36 @@ async def test_try_claim_workers_takes_only_a_worker_whose_fraction_fits(
 
         server._snapshot_total_capacity = total
         assert await server._try_claim_workers(batch, _free(*idle)) == expected
+
+
+@pytest.mark.asyncio
+async def test_try_claim_workers_takes_the_tightest_fitting_worker_per_fraction(
+    server_factory,
+) -> None:
+    small = replace(
+        _OP,
+        node_id="s",
+        model_spec={"vllm": {"gpu_memory_utilization": _FRACS["gpu-small"]}},
+    )
+    for ops, expected in (
+        ((_OP, small), ["gpu-small", "gpu-big"]),
+        ((small,), ["gpu-small"]),
+    ):
+        server = server_factory()
+        server.config.gpu_worker_group_size = 1
+        server.config.cpu_worker_group_size = 0
+        names = [op.node_id for op in ops]
+        batch = SimpleNamespace(
+            config=SimpleNamespace(hardware_requirements=None),
+            workflows=[SimpleNamespace(request_id="req", id="wf")],
+            runtime_graphs={
+                "g": RuntimeGraph(
+                    nodes={op.node_id: op for op in ops},
+                    node_order=names,
+                    output_node_map={},
+                )
+            },
+            clustering_seconds=0.0,
+        )
+        claimed = await server._try_claim_workers(batch, _free("gpu-big", "gpu-small"))
+        assert claimed == expected
