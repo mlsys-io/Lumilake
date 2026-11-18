@@ -315,6 +315,7 @@ halves are loaded as a unit and versioned together.
   the port on the host (e.g. tear down a competing stack), or pick a
   free value for `LUMILAKE_SERVER_PORT` in `.env` (server) and
   `SERVER_HTTP_PORT` / `SERVER_GRPC_PORT` / `REDIS_CONTROL_PORT` /
-  `REDIS_TELEMETRY_PORT` in `.env.flowmesh` (orchestrator). If you
-  change `SERVER_HTTP_PORT`, update `LUMILAKE_RUNTIME_ORCHESTRATOR_URL`
-  in `.env` and `FLOWMESH_BASE_URL` in `.env.flowmesh` to match.
+  `REDIS_TELEMETRY_PORT` in `.env.flowmesh` (orchestrator). Changing
+  `SERVER_HTTP_PORT` also re-points `LUMILAKE_RUNTIME_ORCHESTRATOR_URL`
+  in `.env` and `FLOWMESH_BASE_URL` in `.env.flowmesh` on the next
+  `lumilake deploy up`.

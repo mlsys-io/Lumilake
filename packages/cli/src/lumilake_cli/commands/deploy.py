@@ -22,6 +22,7 @@ from lumilake_deploy.env import (
     ENV_FILE_NAME,
     FLOWMESH_ENV_FILE_NAME,
     patch_env_value,
+    sync_orchestrator_urls,
 )
 from lumilake_deploy.errors import DeployError
 from lumilake_deploy.setup import (
@@ -133,22 +134,6 @@ def _confirm_overwrite(target: Path, *, force: bool, new_content: str) -> bool:
     return False
 
 
-def _flowmesh_env_value(env_path: Path, key: str) -> str:
-    """Read a single line from ``.env.flowmesh`` (no quoting strip pattern)."""
-    if not env_path.is_file():
-        return ""
-    prefix = f"{key}="
-    for raw in env_path.read_text().splitlines():
-        line = raw.strip()
-        if not line.startswith(prefix):
-            continue
-        value = line[len(prefix) :]
-        if value.startswith('"') and value.endswith('"'):
-            value = value[1:-1]
-        return value
-    return ""
-
-
 _FLOWMESH_LOCAL_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("FLOWMESH_STACK_SUFFIX", "lumilake"),
     ("SERVER_GRPC_TLS_CA_FILE", ""),
@@ -167,14 +152,10 @@ def _patch_flowmesh_env(env_path: Path) -> None:
 
 
 def _cross_populate_runtime(env_path: Path, fm_env_path: Path) -> None:
-    """After ``init --flowmesh`` writes both files, point ``.env``'s
-    ``LUMILAKE_RUNTIME_ORCHESTRATOR_URL`` at the FlowMesh server's port."""
-    server_port = _flowmesh_env_value(fm_env_path, "SERVER_HTTP_PORT") or "18000"
-    patch_env_value(
-        env_path,
-        "LUMILAKE_RUNTIME_ORCHESTRATOR_URL",
-        f"http://127.0.0.1:{server_port}",
-    )
+    """After ``init --flowmesh`` writes both files, point both FlowMesh
+    URLs at the FlowMesh server's port."""
+    for changed in sync_orchestrator_urls(env_path, fm_env_path):
+        logging.info(f"Set {changed} to match the FlowMesh HTTP port.")
 
 
 @app.command("init")
