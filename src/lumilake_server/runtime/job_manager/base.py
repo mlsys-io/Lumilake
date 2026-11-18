@@ -35,6 +35,7 @@ class WorkflowItem:
     dsl_graph: CompiledGraph
     config: LumilakeRequestConfig
     enqueued_at: float
+    whole_set: bool = False
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
     miss_count: int = 0

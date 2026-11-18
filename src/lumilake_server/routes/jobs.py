@@ -76,6 +76,11 @@ from lumilake_server.dynamic.driver import (
     walk_archived_items,
 )
 from lumilake_server.dynamic.spec import DriverApi, DynamicSpec
+from lumilake_server.dynamic.template import (
+    TemplateRound,
+    run_round,
+    validate_template,
+)
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.hooks.security import (
     authenticate_request,
@@ -86,6 +91,7 @@ from lumilake_server.hooks.security import (
     resolve_accessible_ids,
     run_submission_guards,
 )
+from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
@@ -330,7 +336,8 @@ def _render_dynamic_round0(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Render the round-0 native graph for a validated dynamic spec.
 
-    With ``api`` set the graph is ``None`` because round 0 dispatches no graph.
+    With ``api`` or ``template`` set the graph is ``None`` because round 0
+    dispatches no graph; round 1 is the first real body.
     """
     if spec.driver.poll_interval != 2.0:
         raise HTTPException(
@@ -343,7 +350,13 @@ def _render_dynamic_round0(
     declared_output_location = spec.driver.output_location
     try:
         validate_library(spec.library)
-        if spec.driver.api is not None:
+        if spec.driver.template is not None:
+            validate_template(
+                spec.driver.template,
+                spec.library,
+                max_nodes_per_round=spec.driver.max_nodes_per_round,
+            )
+        if spec.driver.api is not None or spec.driver.template is not None:
             return None, declared_output_location
         round_build = build_round(
             [],
@@ -1755,6 +1768,7 @@ async def _submit_dynamic_child(
     optimizer_type: str | None = None,
     hardware_requirements: HardwareRequirements | None = None,
     job_timeout: float = 600.0,
+    one_slice: bool = False,
 ) -> str | None:
     """Create and dispatch one dynamic round as a child job, returning its id.
 
@@ -1765,11 +1779,18 @@ async def _submit_dynamic_child(
     graph_name = f"round_{round_index}"
     inputs = {INPUT_NODE_ID: list(symbols)}
     inputs.update(forwarded_inputs)
-    # Slice the round exactly as a static submission with ``input_batch_size:
-    # 1`` does: one graph per row, merged back into one batch by the job
-    # manager.
-    total_length, varying_input_keys = _input_shape(inputs)
-    input_batches = _chunk_inputs(inputs, 1)
+    # A planner round slices exactly as a static submission with
+    # ``input_batch_size: 1`` does: one graph per row, merged back into one
+    # batch by the job manager. A template round runs as one whole-set slice,
+    # because a list-mode Lambda's whole-list result cannot be partitioned
+    # per row.
+    if one_slice:
+        total_length = 1
+        varying_input_keys: tuple[str, ...] = ()
+        input_batches = [inputs]
+    else:
+        total_length, varying_input_keys = _input_shape(inputs)
+        input_batches = _chunk_inputs(inputs, 1)
     template_hash = _workflow_template_hash(graph, "native")
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
@@ -1780,7 +1801,7 @@ async def _submit_dynamic_child(
             if len(input_batches) == 1
             else f"{graph_name}__slice_{batch_idx + 1}"
         )
-        slice_length, _ = _input_shape(batch_inputs)
+        slice_length, _ = (1, ()) if one_slice else _input_shape(batch_inputs)
         workflow_slices[slice_name] = WorkflowSliceMeta(
             public_graph_name=graph_name,
             slice_index=batch_idx,
@@ -1789,6 +1810,7 @@ async def _submit_dynamic_child(
             total_length=total_length,
             template_hash=template_hash,
             varying_input_keys=varying_input_keys,
+            whole_set=one_slice,
         )
         _dispatch_workflow_to_graph_specs(
             workflow_format="native",
@@ -1799,7 +1821,7 @@ async def _submit_dynamic_child(
             idx=0,
         )
         slice_start += slice_length
-    # An api-driven run checks hardware.gpu == 0 per real round.
+    # An api- or template-driven run checks hardware.gpu == 0 per real round.
     child_graphs: dict[str, CompiledGraph] | None = None
     if hardware_requirements is not None and hardware_requirements.gpu == 0:
         server = LumilakeServer.get_started_instance()
@@ -2003,6 +2025,7 @@ def _admit_subgraph(
     results: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Validate an emitted subgraph, resolve it, and register its nodes."""
+    plan = SubgraphPlan(ops=expand_routers(plan.ops), export=plan.export)
     validate_emitted_subgraph(
         plan.ops,
         node_registry,
@@ -2069,12 +2092,17 @@ async def _run_dynamic_job(
             )
         await asyncio.to_thread(_job_storage.save, record)
 
-        round_index = 0
+        template = spec.driver.template
+        round_index = 1 if template is not None else 0
         current_subgraph: list[dict[str, Any]] = []
         current_export: list[str] = []
         api = spec.driver.api
-        include_proposer = api is None
-        while round_index < max_rounds:
+        include_proposer = api is None and template is None
+        # A template round is one of max_rounds declared bodies, numbered from 1;
+        # a planner round is numbered from 0.
+        round_limit = max_rounds + 1 if template is not None else max_rounds
+        plan: StopPlan | SubgraphPlan | None = None
+        while round_index < round_limit:
             topology = list(node_registry.keys())
             if api is not None and round_index == 0:
                 # Round 0 dispatches no graph: the planner is asked for the
@@ -2121,6 +2149,35 @@ async def _run_dynamic_job(
                     return
                 round_index += 1
                 continue
+            template_round: TemplateRound | None = None
+            if template is not None:
+                try:
+                    template_round = run_round(template, round_index, node_registry)
+                    if template_round.stopped(all_results):
+                        plans.append({"next": STOP, "source": "template"})
+                        stopped_by = STOP
+                        break
+                    current_subgraph = _admit_subgraph(
+                        template_round.plan,
+                        node_registry,
+                        max_nodes,
+                        spec.library,
+                        all_results,
+                    )
+                    current_export = template_round.plan.export
+                    plans.append(template_round.record())
+                except (DriverProtocolError, ValueError) as exc:
+                    async with jobs_lock:
+                        if record.status in TERMINAL_JOB_STATUSES:
+                            return
+                        record.status = "failed"
+                        record.error = (
+                            f"dynamic round {round_index} produced an invalid "
+                            f"template body: {exc}"
+                        )
+                        record.finished_at = _now()
+                    await asyncio.to_thread(_job_storage.save, record)
+                    return
             try:
                 round_build = build_round(
                     current_subgraph,
@@ -2143,7 +2200,7 @@ async def _run_dynamic_job(
                     dtype=spec.driver.dtype,
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
-                    rows=len(symbols),
+                    rows=1 if template is not None else len(symbols),
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2173,6 +2230,7 @@ async def _run_dynamic_job(
                     optimizer_type=optimizer_type,
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,
+                    one_slice=template is not None,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:
@@ -2242,7 +2300,9 @@ async def _run_dynamic_job(
                 observation = compute_observation(
                     walked_leaves, spec.driver.preview_width
                 )
-                if api is None:
+                if template is not None:
+                    plan = None
+                elif api is None:
                     plan = validate_plan(outputs)
                 else:
                     system, user = planner_messages(
@@ -2267,7 +2327,8 @@ async def _run_dynamic_job(
                             chat_template_kwargs=spec.driver.chat_template_kwargs,
                         )
                     )
-                plans.append(plan_to_dict(plan))
+                if plan is not None:
+                    plans.append(plan_to_dict(plan))
                 observations.append(observation)
                 # Decode the archived whole items into results keyed by user id
                 # so a later round can forward references to them.
@@ -2300,10 +2361,11 @@ async def _run_dynamic_job(
                 if isinstance(plan, StopPlan):
                     stopped_by = STOP
                     break
-                current_subgraph = _admit_subgraph(
-                    plan, node_registry, max_nodes, spec.library, all_results
-                )
-                current_export = plan.export
+                if plan is not None:
+                    current_subgraph = _admit_subgraph(
+                        plan, node_registry, max_nodes, spec.library, all_results
+                    )
+                    current_export = plan.export
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:
@@ -2835,6 +2897,15 @@ async def preview_job(
                         "preview is not available for an api-driven dynamic "
                         "workflow: its rounds come from the external planner "
                         "at run time"
+                    ),
+                )
+            if dynamic_spec.driver.template is not None:
+                _render_dynamic_round0(dynamic_spec)
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=(
+                        "preview is not available for a template-driven dynamic "
+                        "workflow: its rounds are rendered when the job runs"
                     ),
                 )
             workflow_payload, dynamic_output_location = _render_dynamic_round0(
