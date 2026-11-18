@@ -310,6 +310,24 @@ row. When it is the workflow output, its per-row results are returned as one
 output value per input row (FlowMesh groups them back into one item per table
 internally; the runtime flattens that back to per-row values at aggregation).
 
+An optional `rowwise_seed` binds a per-row sampling seed. It takes the same
+`{node, path}` shape as a rowwise column and must resolve to one integer (or
+null) per row; the runtime passes the column to FlowMesh as `spec.data.seeds`,
+so each row's generation carries its own seed on a vLLM worker. A null entry
+leaves that row unseeded. `rowwise_seed` requires `rowwise_template` and is
+rejected with `num_beams > 1`.
+
+```yaml
+- id: Answer
+  op: LLMChatOp
+  inputs: [Prompts, Seeds]
+  messages: [{role: user, content: placeholder}]
+  rowwise_template: "{prompt}"
+  rowwise_columns:
+    - {label: prompt, node: Prompts, path: items.output.prompt}
+  rowwise_seed: {node: Seeds, path: items.output.seed}
+```
+
 When every upstream column a per-row chat reads is empty, FlowMesh completes
 the task with an empty result without dispatching a worker.
 

@@ -278,6 +278,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                 inputs_dict=inputs_dict,
                 dsl_to_runtime=dsl_to_runtime,
             )
+            self._attach_rowwise_seed(
+                data_spec,
+                llm_op_id=llm_op_id,
+                llm_op=llm_op,
+                dependencies=row_dependencies,
+                graph_dict=graph_dict,
+            )
             return self._create_runtime_op(
                 name=llm_op_id,
                 task_type=task_type,
@@ -599,6 +606,34 @@ class _LLMBuilder(_EmbeddingBuilder):
             "columns": columns,
             "messages": messages,
         }, dependencies
+
+    def _attach_rowwise_seed(
+        self,
+        data_spec: dict[str, Any],
+        *,
+        llm_op_id: str,
+        llm_op: LLMChatOp,
+        dependencies: list[str],
+        graph_dict: dict[str, Op],
+    ) -> None:
+        """Bind a rowwise op's per-row seed column as the task's ``seeds``
+        reference and add its node as a dependency."""
+        if llm_op.rowwise_seed is None:
+            return
+        node_ref = llm_op.rowwise_seed.get("node")
+        path = llm_op.rowwise_seed.get("path")
+        if not isinstance(node_ref, str) or not isinstance(path, str):
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} rowwise_seed must name a node and path"
+            )
+        if node_ref not in dependencies:
+            dependencies.append(node_ref)
+        data_spec["seeds"] = {
+            "node": node_ref,
+            "path": self._op_output(graph_dict[node_ref]).read(
+                path, f"LLMChatOp {llm_op_id} rowwise_seed"
+            ),
+        }
 
     def _aggregate_data_spec(
         self,
