@@ -1229,6 +1229,13 @@ class LumilakeServer:
                 for op in runtime_graph.nodes.values()
                 if self._requires_gpu(op) and op.gpu_memory_utilization is not None
             )
+            gpu_group_size = max(1, self.config.gpu_worker_group_size)
+            if len(gpu_workers) < gpu_group_size:
+                raise RuntimeError(
+                    f"Schedule preview needs a group of {gpu_group_size} GPU "
+                    f"workers, but only {len(gpu_workers)} meet the requested "
+                    "hardware"
+                )
             gpu_capacity = FreeCapacity(
                 cpu_worker_ids=(),
                 gpu_worker_ids=tuple(gpu_workers),
@@ -1236,7 +1243,7 @@ class LumilakeServer:
             )
             holding = gpu_capacity.eligible_workers(
                 cpu_group_size=0,
-                gpu_group_size=max(1, self.config.gpu_worker_group_size),
+                gpu_group_size=gpu_group_size,
                 worker_meets_hardware=self._worker_meets_hardware,
                 hardware=None,
                 required_gpu_utilizations=gpu_utilizations,
