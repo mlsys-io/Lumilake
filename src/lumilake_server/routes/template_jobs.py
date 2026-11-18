@@ -22,7 +22,11 @@ from lumilake_server.dynamic.driver import (
     walk_archived_items,
 )
 from lumilake_server.dynamic.spec import DynamicSpec
-from lumilake_server.dynamic.template import DriverTemplate, run_round
+from lumilake_server.dynamic.template import (
+    DriverTemplate,
+    archive_result_items,
+    run_round,
+)
 from lumilake_server.routes import jobs as job_routes
 from lumilake_server.routes.jobs import (
     _IO_LOCATION_ADAPTER,
@@ -238,9 +242,9 @@ async def run_template_job(
             }
             for internal_id, values in leaf_outputs.items():
                 user_id = leaf_internal_to_user[internal_id]
-                all_results[user_id] = _flatten_leaf_outputs({internal_id: values})[
-                    internal_id
-                ]
+                all_results[user_id] = archive_result_items(
+                    _flatten_leaf_outputs({internal_id: values})[internal_id]
+                )
             export_internal_to_user = {
                 name[len("export_") :]: user
                 for name, user in zip(
@@ -249,9 +253,9 @@ async def run_template_job(
             }
             for internal_id, values in export_outputs.items():
                 user_id = export_internal_to_user[internal_id]
-                all_results[user_id] = _flatten_leaf_outputs({internal_id: values})[
-                    internal_id
-                ]
+                all_results[user_id] = archive_result_items(
+                    _flatten_leaf_outputs({internal_id: values})[internal_id]
+                )
             round_index += 1
             completed_rounds = round_index - 1
             async with job_routes.jobs_lock:
