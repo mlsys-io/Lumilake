@@ -41,13 +41,14 @@ def read_env_value(path: Path, key: str) -> str:
     return read_env_file(path).get(key, "")
 
 
-def patch_env_value(path: Path, key: str, value: str) -> None:
+def patch_env_value(path: Path, key: str, value: str, *, quote: bool = True) -> None:
     """Replace ``key=...`` in ``path`` if present, append otherwise.
 
-    Used by ``deploy init`` only — never by lifecycle commands.
+    Pass ``quote=False`` for ``.env.flowmesh``: FlowMesh's stack loader
+    hands those values to compose verbatim, quotes included.
     Idempotent: writing the same value is a no-op.
     """
-    quoted_line = _line(key, value)
+    quoted_line = _line(key, value) if quote else f"{key}={value}\n"
     if not path.is_file():
         path.write_text(quoted_line)
         return
@@ -99,6 +100,8 @@ def sync_orchestrator_urls(env_path: Path, flowmesh_env_path: Path) -> list[str]
             url = urlunsplit(parts._replace(netloc=f"{netloc}:{port}"))
         else:
             continue
-        patch_env_value(path, key, url)
+        # FlowMesh's stack loader passes .env.flowmesh values to compose
+        # unparsed, so a quoted value would reach the worker with quotes.
+        patch_env_value(path, key, url, quote=path != flowmesh_env_path)
         changed.append(f"{key}={url}")
     return changed
