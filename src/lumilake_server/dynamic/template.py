@@ -12,16 +12,36 @@ import copy
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, StrictStr
+
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
     resolve_subgraph,
     validate_emitted_subgraph,
 )
-from lumilake_server.dynamic.spec import DriverRoundBody, DriverTemplate
 
 _ROUND = "{{round}}"
 _PREV = "{{prev}}"
+
+
+class DriverRoundBody(BaseModel):
+    """One declared round body of a template-driven dynamic run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ops: list[dict[str, Any]]
+    export: list[StrictStr] = []
+
+
+class DriverTemplate(BaseModel):
+    """Fixed ``first``/``next`` round bodies and the export that stops the loop."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    first: DriverRoundBody
+    next: DriverRoundBody
+    stop_when_empty: StrictStr
 
 
 def _render_string(value: str, suffix: int) -> str:

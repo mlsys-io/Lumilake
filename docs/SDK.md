@@ -288,6 +288,51 @@ describe the planner request. The engine-sizing fields (`max_model_len`,
 in-graph proposer and have no effect when `api` is set. Without `api`,
 behavior is unchanged.
 
+#### Fixed round templates (`driver.template`)
+
+A workload whose round body is fixed can declare `driver.template` instead of
+a planner:
+
+```yaml
+driver:
+  model: model-id
+  max_rounds: 20
+  template:
+    first:
+      ops:
+        - {ref: CaseState, id: "CaseState_r{{round}}", inputs: []}
+        - {ref: LiveState, id: "LiveState_r{{round}}", inputs: ["CaseState_r{{round}}"]}
+      export: ["LiveState_r{{round}}"]
+    next:
+      ops:
+        - {ref: CaseState, id: "CaseState_r{{round}}", inputs: ["LiveState_r{{prev}}"]}
+        - {ref: LiveState, id: "LiveState_r{{round}}", inputs: ["CaseState_r{{round}}"]}
+      export: ["LiveState_r{{round}}"]
+    stop_when_empty: "LiveState_r{{prev}}"
+```
+
+`first`, `next` and `stop_when_empty` are all required: a template is a loop
+that stops on data, and a fixed-count loop is a static workflow. `first` runs
+as round 1 and `next` as every later round, with `{{round}}` and `{{prev}}`
+rendered into every string a body carries: each op's id, its node references
+and its arguments, and the export list. A `LambdaOp`'s `code` is left alone,
+because it is Python source rather than a node reference.
+
+`stop_when_empty` names the previous round's export, which must be a list-mode
+`LambdaOp`: only its archive collapses to one item, so only it can read as
+empty. The server stops before a round whose predecessor exported no rows. A
+template round runs as one slice over the whole input set, since a list-mode
+`LambdaOp`'s whole-list result cannot be partitioned per row. Template mode
+calls no planner and is mutually exclusive with `api`; every rendered body
+passes the same checks as a planner plan, `POST /jobs/preview` rejects the
+spec with 422, and each stored plan records `source: "template"`.
+
+A `next` body reads the previous round's export through its `{{prev}}` id in
+`inputs`, which binds the archived whole item; a list-mode `LambdaOp` unwraps
+that item first, as the workloads do. A rowwise op that needs one value per
+row instead takes an explicit `rowwise_columns` entry naming the previous
+round's node, whose `path` the server rewrites.
+
 The `driver:` YAML settings the server accepts are:
 
 - `model` — proposer model, required.

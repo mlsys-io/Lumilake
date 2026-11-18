@@ -21,6 +21,8 @@ from pydantic import (
     model_validator,
 )
 
+from lumilake_server.dynamic.template import DriverTemplate
+
 
 class DriverApi(BaseModel):
     """External OpenAI-compatible planner endpoint for a dynamic run.
@@ -36,25 +38,6 @@ class DriverApi(BaseModel):
     authorization: StrictStr | None = None
     timeout_sec: StrictFloat | None = Field(default=None, gt=0)
     retries: StrictInt | None = Field(default=None, ge=0)
-
-
-class DriverRoundBody(BaseModel):
-    """One declared round body of a template-driven dynamic run."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    ops: list[dict[str, Any]]
-    export: list[StrictStr] = []
-
-
-class DriverTemplate(BaseModel):
-    """Fixed ``first``/``next`` round bodies and the export that stops the loop."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    first: DriverRoundBody
-    next: DriverRoundBody
-    stop_when_empty: StrictStr
 
 
 class DriverSettings(BaseModel):

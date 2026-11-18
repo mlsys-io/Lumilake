@@ -76,11 +76,7 @@ from lumilake_server.dynamic.driver import (
     walk_archived_items,
 )
 from lumilake_server.dynamic.spec import DriverApi, DynamicSpec
-from lumilake_server.dynamic.template import (
-    TemplateRound,
-    run_round,
-    validate_template,
-)
+from lumilake_server.dynamic.template import run_round, validate_template
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.hooks.security import (
     authenticate_request,
@@ -2149,9 +2145,8 @@ async def _run_dynamic_job(
                     return
                 round_index += 1
                 continue
-            template_round: TemplateRound | None = None
-            if template is not None:
-                try:
+            try:
+                if template is not None:
                     template_round = run_round(template, round_index, node_registry)
                     if template_round.stopped(all_results):
                         plans.append({"next": STOP, "source": "template"})
@@ -2166,19 +2161,6 @@ async def _run_dynamic_job(
                     )
                     current_export = template_round.plan.export
                     plans.append(template_round.record())
-                except (DriverProtocolError, ValueError) as exc:
-                    async with jobs_lock:
-                        if record.status in TERMINAL_JOB_STATUSES:
-                            return
-                        record.status = "failed"
-                        record.error = (
-                            f"dynamic round {round_index} produced an invalid "
-                            f"template body: {exc}"
-                        )
-                        record.finished_at = _now()
-                    await asyncio.to_thread(_job_storage.save, record)
-                    return
-            try:
                 round_build = build_round(
                     current_subgraph,
                     node_registry=node_registry,
