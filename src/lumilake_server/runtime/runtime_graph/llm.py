@@ -654,6 +654,12 @@ class _LLMBuilder(_EmbeddingBuilder):
                 " would be ignored. Route on the condition's field instead, or"
                 " drop the row gate."
             )
+        if op.rowwise_seed is not None:
+            raise ValueError(
+                f"LLMChatOp '{op.id}' combines row_gate with rowwise_seed; the"
+                " gated call runs on the rows the selector kept, so a per-row"
+                " seed column would be misaligned with them. Drop the row gate."
+            )
         return LoweringResult(
             nodes=self._build_row_gated_llm_ops(llm_op=op, row_gate=row_gate, ctx=ctx)
         )

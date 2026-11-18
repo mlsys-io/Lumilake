@@ -570,6 +570,10 @@ def test_row_gated_llm_emits_status_selected_and_merge_stages() -> None:
             "row_gate with rowwise_messages_column",
         ),
         ({"condition": {"node": "Rows", "expr": "x == 'on'"}}, "row_gate with cond"),
+        (
+            {"rowwise_seed": {"node": "Rows", "path": "items.output"}},
+            "row_gate with rowwise_seed",
+        ),
         # A gate needs a row template, and its branch must be one the router
         # declares; the native graph format skips the parser's own validation.
         ({"rowwise_template": None}, "requires rowwise_template"),
