@@ -205,10 +205,12 @@ A node runs only on a GPU worker whose owned memory fraction
 
 A batch claiming GPU workers also claims one worker per distinct utilization it
 reserves before filling the rest of the group, so a batch whose nodes need
-different fractions keeps each engine on its own worker instead of stacking them
-on the largest one. Each utilization takes the tightest worker holding it (the
-smallest fraction, a whole-device worker last), and a worker already claimed for
-a smaller utilization covers a larger one it also holds.
+different fractions keeps each engine on its own worker instead of stacking
+them on the largest one. Each utilization takes the tightest worker holding it
+that is not claimed yet (the smallest fraction, a whole-device worker last); an
+already-claimed worker is reused only when no unclaimed holder exists, so
+engines separate whenever the free set allows it and a cluster with one large
+enough worker still runs them.
 
 ## 5. What still causes idle workers
 
