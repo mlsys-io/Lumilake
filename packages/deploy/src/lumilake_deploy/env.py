@@ -48,23 +48,23 @@ def patch_env_value(path: Path, key: str, value: str, *, quote: bool = True) -> 
     hands those values to compose verbatim, quotes included.
     Idempotent: writing the same value is a no-op.
     """
-    quoted_line = _line(key, value) if quote else f"{key}={value}\n"
+    new_line = _line(key, value) if quote else f"{key}={value}\n"
     if not path.is_file():
-        path.write_text(quoted_line)
+        path.write_text(new_line)
         return
     prefix = f"{key}="
     out: list[str] = []
     replaced = False
     for raw in path.read_text().splitlines(keepends=True):
         if raw.lstrip().startswith(prefix):
-            out.append(quoted_line)
+            out.append(new_line)
             replaced = True
         else:
             out.append(raw)
     if not replaced:
         if out and not out[-1].endswith("\n"):
             out[-1] = out[-1] + "\n"
-        out.append(quoted_line)
+        out.append(new_line)
     path.write_text("".join(out))
 
 
@@ -74,6 +74,17 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 ORCHESTRATOR_URL_KEY = "LUMILAKE_RUNTIME_ORCHESTRATOR_URL"
 FLOWMESH_BASE_URL_KEY = "FLOWMESH_BASE_URL"
+
+
+def _local_url(value: str, host: str, port: int) -> str | None:
+    """``value`` on ``port``, or None when it is missing or names another host."""
+    parts = urlsplit(value)
+    if not parts.hostname:
+        return f"http://{host}:{port}"
+    if parts.hostname not in _LOOPBACK_HOSTS:
+        return None
+    netloc = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return urlunsplit(parts._replace(netloc=f"{netloc}:{port}"))
 
 
 def sync_orchestrator_urls(env_path: Path, flowmesh_env_path: Path) -> list[str]:
@@ -88,20 +99,20 @@ def sync_orchestrator_urls(env_path: Path, flowmesh_env_path: Path) -> list[str]
     """
     port = int(read_env_value(flowmesh_env_path, "SERVER_HTTP_PORT") or "8000")
     changed: list[str] = []
-    for path, key, default_host in (
+    for path, key, host in (
         (env_path, ORCHESTRATOR_URL_KEY, "127.0.0.1"),
         (flowmesh_env_path, FLOWMESH_BASE_URL_KEY, "localhost"),
     ):
-        parts = urlsplit(read_env_value(path, key))
-        if not parts.hostname:
-            url = f"http://{default_host}:{port}"
-        elif parts.hostname in _LOOPBACK_HOSTS and parts.port != port:
-            netloc = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
-            url = urlunsplit(parts._replace(netloc=f"{netloc}:{port}"))
-        else:
+        url = _local_url(read_env_value(path, key), host, port)
+        if url is None:
             continue
         # FlowMesh's stack loader passes .env.flowmesh values to compose
-        # unparsed, so a quoted value would reach the worker with quotes.
-        patch_env_value(path, key, url, quote=path != flowmesh_env_path)
+        # unparsed, so that line has to stay bare for the worker to read
+        # a usable URL.
+        bare = path == flowmesh_env_path
+        line = f"{key}={url}" if bare else _line(key, url).rstrip("\n")
+        if line in path.read_text().splitlines():
+            continue
+        patch_env_value(path, key, url, quote=not bare)
         changed.append(f"{key}={url}")
     return changed
