@@ -367,6 +367,7 @@ class PriorityJobManager(BaseJobManager):
                     total_length=slice_meta.total_length,
                     template_hash=slice_meta.template_hash,
                     varying_input_keys=slice_meta.varying_input_keys,
+                    whole_set=slice_meta.whole_set,
                     runtime_graph=runtime_graph,
                     data_profile_graph=data_profile_graph,
                     dsl_graph=dsl_graph,
