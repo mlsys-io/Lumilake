@@ -1236,7 +1236,7 @@ class LumilakeServer:
             )
             holding = gpu_capacity.eligible_workers(
                 cpu_group_size=0,
-                gpu_group_size=1,
+                gpu_group_size=max(1, self.config.gpu_worker_group_size),
                 worker_meets_hardware=self._worker_meets_hardware,
                 hardware=None,
                 required_gpu_utilizations=gpu_utilizations,
