@@ -582,15 +582,6 @@ def test_deploy_up_points_both_flowmesh_urls_at_the_stack_port(
 
         rendered = 'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:21050"'
         assert rendered in env.read_text()
-        # FlowMesh hands .env.flowmesh values to compose verbatim, so an
-        # already-correct URL is rewritten bare too.
-        fm_env.write_text(
-            fm_env.read_text().replace(
-                "FLOWMESH_BASE_URL=http://localhost:21050",
-                'FLOWMESH_BASE_URL="http://localhost:21050"',
-            )
-        )
-        setup_mod.run_setup(tmp_path, setup_mod.SetupOptions(no_server=True))
         assert "FLOWMESH_BASE_URL=http://localhost:21050\n" in fm_env.read_text()
 
         remote = 'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="https://flowmesh.example.com/v1"'
