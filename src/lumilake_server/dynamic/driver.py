@@ -25,6 +25,8 @@ from lumilake_server.dynamic.blocks import (
 )
 from lumilake_server.ops.data_ops import DataRetrievalOp
 from lumilake_server.ops.llm_ops import LLMOp
+from lumilake_server.ops.router_ops import expand_routers
+from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import SUPPORTED_OPS, parse_yaml_payload
@@ -90,7 +92,7 @@ if _MISSING_OP_CLASSES:
 _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
     name
     for name in SUPPORTED_OPS
-    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp))
+    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp, LambdaOp))
 )
 
 
@@ -726,6 +728,7 @@ def validate_emitted_subgraph(
     if not subgraph:
         raise DriverProtocolError("subgraph must not be empty")
 
+    subgraph = expand_routers(subgraph)
     resolved = resolve_subgraph(subgraph, library)
 
     ids: set[str] = set()
@@ -817,7 +820,7 @@ def validate_emitted_subgraph(
         if types[op_id] not in _OUTPUT_SOURCE_OPS:
             raise DriverProtocolError(
                 f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be "
-                "archived; every leaf must be an LLMOp or DataRetrievalOp"
+                "archived; every leaf must be an LLMOp, DataRetrievalOp or LambdaOp"
             )
 
 
@@ -1085,7 +1088,7 @@ def build_round(
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
     """
-    subgraph = resolve_subgraph(subgraph, library)
+    subgraph = resolve_subgraph(expand_routers(subgraph), library)
     forwarded, inputs = forward_refs(
         subgraph, results if results is not None else {}, node_registry, rows
     )
