@@ -3378,11 +3378,6 @@ class LumilakeServer:
             if any(item.whole_set for item in ordered):
                 # A whole-set slice's outputs are already complete, so copy them
                 # through instead of requiring one value per declared row.
-                if len(ordered) != 1:
-                    raise ValueError(
-                        "A whole-set round must run as exactly one slice, but "
-                        f"group {group_key} holds {len(ordered)}"
-                    )
                 (whole_set_slice,) = ordered
                 remapped_outputs.setdefault(whole_set_slice.workflow_id, {}).update(
                     grouped_outputs.get(group_key, {})
