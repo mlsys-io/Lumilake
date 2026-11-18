@@ -354,7 +354,8 @@ An optional `rowwise_seed` binds a per-row sampling seed. It takes the same
 null) per row; the runtime passes the column to FlowMesh as `spec.data.seeds`,
 so each row's generation carries its own seed on a vLLM worker. A null entry
 leaves that row unseeded. `rowwise_seed` requires `rowwise_template` and is
-rejected with `num_beams > 1`.
+rejected with `num_beams > 1`, in API mode, and on a row-gated op, whose call
+runs on the rows the selector kept.
 
 ```yaml
 - id: Answer
