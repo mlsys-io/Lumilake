@@ -76,6 +76,7 @@ from lumilake_server.dynamic.driver import (
     walk_archived_items,
 )
 from lumilake_server.dynamic.spec import DriverApi, DynamicSpec
+from lumilake_server.dynamic.template import validate_template
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.hooks.security import (
     authenticate_request,
@@ -86,6 +87,7 @@ from lumilake_server.hooks.security import (
     resolve_accessible_ids,
     run_submission_guards,
 )
+from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
@@ -330,7 +332,8 @@ def _render_dynamic_round0(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Render the round-0 native graph for a validated dynamic spec.
 
-    With ``api`` set the graph is ``None`` because round 0 dispatches no graph.
+    With ``api`` or ``template`` set the graph is ``None`` because round 0
+    dispatches no graph; round 1 is the first real body.
     """
     if spec.driver.poll_interval != 2.0:
         raise HTTPException(
@@ -343,7 +346,13 @@ def _render_dynamic_round0(
     declared_output_location = spec.driver.output_location
     try:
         validate_library(spec.library)
-        if spec.driver.api is not None:
+        if spec.driver.template is not None:
+            validate_template(
+                spec.driver.template,
+                spec.library,
+                max_nodes_per_round=spec.driver.max_nodes_per_round,
+            )
+        if spec.driver.api is not None or spec.driver.template is not None:
             return None, declared_output_location
         round_build = build_round(
             [],
@@ -1755,6 +1764,7 @@ async def _submit_dynamic_child(
     optimizer_type: str | None = None,
     hardware_requirements: HardwareRequirements | None = None,
     job_timeout: float = 600.0,
+    one_slice: bool = False,
 ) -> str | None:
     """Create and dispatch one dynamic round as a child job, returning its id.
 
@@ -1770,6 +1780,9 @@ async def _submit_dynamic_child(
     # manager.
     total_length, varying_input_keys = _input_shape(inputs)
     input_batches = _chunk_inputs(inputs, 1)
+    if one_slice:
+        # A template round runs its whole input set as one slice.
+        total_length, varying_input_keys, input_batches = 1, (), [inputs]
     template_hash = _workflow_template_hash(graph, "native")
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
@@ -1780,7 +1793,7 @@ async def _submit_dynamic_child(
             if len(input_batches) == 1
             else f"{graph_name}__slice_{batch_idx + 1}"
         )
-        slice_length, _ = _input_shape(batch_inputs)
+        slice_length, _ = (1, ()) if one_slice else _input_shape(batch_inputs)
         workflow_slices[slice_name] = WorkflowSliceMeta(
             public_graph_name=graph_name,
             slice_index=batch_idx,
@@ -1789,6 +1802,7 @@ async def _submit_dynamic_child(
             total_length=total_length,
             template_hash=template_hash,
             varying_input_keys=varying_input_keys,
+            whole_set=one_slice,
         )
         _dispatch_workflow_to_graph_specs(
             workflow_format="native",
@@ -1799,7 +1813,7 @@ async def _submit_dynamic_child(
             idx=0,
         )
         slice_start += slice_length
-    # An api-driven run checks hardware.gpu == 0 per real round.
+    # An api- or template-driven run checks hardware.gpu == 0 per real round.
     child_graphs: dict[str, CompiledGraph] | None = None
     if hardware_requirements is not None and hardware_requirements.gpu == 0:
         server = LumilakeServer.get_started_instance()
@@ -2003,6 +2017,7 @@ def _admit_subgraph(
     results: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Validate an emitted subgraph, resolve it, and register its nodes."""
+    plan = SubgraphPlan(ops=expand_routers(plan.ops), export=plan.export)
     validate_emitted_subgraph(
         plan.ops,
         node_registry,
@@ -2034,8 +2049,26 @@ async def _run_dynamic_job(
 
     Each round is a child job. After awaiting each round's ``_run_job``, the
     child record's status is checked: a failed/cancelled round fails the
-    parent. The loop stops on ``StopPlan`` or ``max_rounds``.
+    parent. The loop stops on ``StopPlan`` or ``max_rounds``. A
+    template-driven spec runs :func:`run_template_job` instead.
     """
+    if spec.driver.template is not None:
+        from lumilake_server.routes.template_jobs import run_template_job
+
+        return await run_template_job(
+            parent_job_id,
+            spec,
+            record,
+            symbols,
+            output_location,
+            priority,
+            principal,
+            runtime_token,
+            trace_id,
+            spec.driver.template,
+            optimizer_type=optimizer_type,
+            hardware_requirements=hardware_requirements,
+        )
     set_trace_id(trace_id)
     try:
         async with jobs_lock:
@@ -2835,6 +2868,15 @@ async def preview_job(
                         "preview is not available for an api-driven dynamic "
                         "workflow: its rounds come from the external planner "
                         "at run time"
+                    ),
+                )
+            if dynamic_spec.driver.template is not None:
+                _render_dynamic_round0(dynamic_spec)
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=(
+                        "preview is not available for a template-driven dynamic "
+                        "workflow: its rounds are rendered when the job runs"
                     ),
                 )
             workflow_payload, dynamic_output_location = _render_dynamic_round0(
