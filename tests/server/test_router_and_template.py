@@ -50,18 +50,20 @@ def _branch_rows(
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
-    expanded = expand_routers([_router()])
-    assert [op["id"] for op in expanded] == [
+    for op in expand_routers([_router()]):
+        assert (op["op"], op["mode"], op["inputs"]) == ("LambdaOp", "list", ["norm"])
+    assert [op["id"] for op in expand_routers([_router()])] == [
         "route.patient",
         "route.diagnose",
         "route.test",
     ]
-    for op in expanded:
-        assert (op["op"], op["mode"], op["inputs"]) == ("LambdaOp", "list", ["norm"])
 
 
 def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
     column = [json.dumps(row) for row in _ROWS]
+    # A wrapped whole list is unwrapped by the same decoder; no rows yields none.
+    assert _branch_rows(_router(), "route.patient", [json.dumps(_ROWS)])[0] == _ROWS[0]
+    assert _branch_rows(_router(), "route.patient", []) == []
     for branch_id, expected in (
         ("route.patient", ["a"]),
         ("route.diagnose", ["b"]),
@@ -69,14 +71,6 @@ def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
     ):
         got = _branch_rows(_router(), branch_id, column)
         assert [row["case_id"] for row in got] == expected
-
-
-def test_branch_reads_a_wrapped_list_and_no_rows() -> None:
-    # A list-mode source archives its whole list as one item, which the same
-    # decoder unwraps; zero rows yield zero output rows.
-    wrapped = _branch_rows(_router(), "route.patient", [json.dumps(_ROWS)])
-    assert [row["case_id"] for row in wrapped] == ["a"]
-    assert _branch_rows(_router(), "route.patient", []) == []
 
 
 def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
@@ -152,24 +146,20 @@ def _spec(first: list[dict[str, Any]], next_ops: list[dict[str, Any]]) -> Dynami
 
 
 def test_template_renders_the_round_suffix_and_the_stop_export() -> None:
+    echo = _state("Live_r{{round}}", ["Symbols"], code="# {{round}}\ndef echo(c):\n")
     template = _spec(
-        [_state("Live_r{{round}}", ["Symbols"])],
+        [echo],
         [_state("Live_r{{round}}", ["Live_r{{prev}}"])],
     ).driver.template
     assert template is not None
+    (op,) = plan_for_round(template, 1).ops
     assert plan_for_round(template, 1).export == ["Live_r0"]
     assert plan_for_round(template, 2).ops[0]["inputs"] == ["Live_r0"]
     assert (stop_export(template, 2), stop_export(template, 3)) == (
         "Live_r0",
         "Live_r1",
     )
-
-
-def test_template_leaves_a_lambda_code_alone_and_renders_the_rest() -> None:
-    echo = _state("Live_r{{round}}", ["Symbols"], code="# {{round}}\ndef echo(c):\n")
-    template = _spec([echo], [_state("Live_r{{round}}", ["Live_r{{prev}}"])])
-    assert template.driver.template is not None
-    (op,) = plan_for_round(template.driver.template, 1).ops
+    # A Lambda's ``code`` is Python source, not a node reference, so it is kept.
     assert (op["id"], op["code"]) == ("Live_r0", "# {{round}}\ndef echo(c):\n")
 
 

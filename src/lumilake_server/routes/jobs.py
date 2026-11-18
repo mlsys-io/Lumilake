@@ -76,7 +76,7 @@ from lumilake_server.dynamic.driver import (
     walk_archived_items,
 )
 from lumilake_server.dynamic.spec import DriverApi, DynamicSpec
-from lumilake_server.dynamic.template import run_round, validate_template
+from lumilake_server.dynamic.template import validate_template
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.hooks.security import (
     authenticate_request,
@@ -1775,18 +1775,14 @@ async def _submit_dynamic_child(
     graph_name = f"round_{round_index}"
     inputs = {INPUT_NODE_ID: list(symbols)}
     inputs.update(forwarded_inputs)
-    # A planner round slices exactly as a static submission with
-    # ``input_batch_size: 1`` does: one graph per row, merged back into one
-    # batch by the job manager. A template round runs as one whole-set slice,
-    # because a list-mode Lambda's whole-list result cannot be partitioned
-    # per row.
+    # Slice the round exactly as a static submission with ``input_batch_size:
+    # 1`` does: one graph per row, merged back into one batch by the job
+    # manager.
+    total_length, varying_input_keys = _input_shape(inputs)
+    input_batches = _chunk_inputs(inputs, 1)
     if one_slice:
-        total_length = 1
-        varying_input_keys: tuple[str, ...] = ()
-        input_batches = [inputs]
-    else:
-        total_length, varying_input_keys = _input_shape(inputs)
-        input_batches = _chunk_inputs(inputs, 1)
+        # A template round runs its whole input set as one slice.
+        total_length, varying_input_keys, input_batches = 1, (), [inputs]
     template_hash = _workflow_template_hash(graph, "native")
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
@@ -2053,8 +2049,26 @@ async def _run_dynamic_job(
 
     Each round is a child job. After awaiting each round's ``_run_job``, the
     child record's status is checked: a failed/cancelled round fails the
-    parent. The loop stops on ``StopPlan`` or ``max_rounds``.
+    parent. The loop stops on ``StopPlan`` or ``max_rounds``. A
+    template-driven spec runs :func:`run_template_job` instead.
     """
+    if spec.driver.template is not None:
+        from lumilake_server.routes.template_jobs import run_template_job
+
+        return await run_template_job(
+            parent_job_id,
+            spec,
+            record,
+            symbols,
+            output_location,
+            priority,
+            principal,
+            runtime_token,
+            trace_id,
+            spec.driver.template,
+            optimizer_type=optimizer_type,
+            hardware_requirements=hardware_requirements,
+        )
     set_trace_id(trace_id)
     try:
         async with jobs_lock:
@@ -2088,17 +2102,12 @@ async def _run_dynamic_job(
             )
         await asyncio.to_thread(_job_storage.save, record)
 
-        template = spec.driver.template
-        round_index = 1 if template is not None else 0
+        round_index = 0
         current_subgraph: list[dict[str, Any]] = []
         current_export: list[str] = []
         api = spec.driver.api
-        include_proposer = api is None and template is None
-        # A template round is one of max_rounds declared bodies, numbered from 1;
-        # a planner round is numbered from 0.
-        round_limit = max_rounds + 1 if template is not None else max_rounds
-        plan: StopPlan | SubgraphPlan | None = None
-        while round_index < round_limit:
+        include_proposer = api is None
+        while round_index < max_rounds:
             topology = list(node_registry.keys())
             if api is not None and round_index == 0:
                 # Round 0 dispatches no graph: the planner is asked for the
@@ -2146,21 +2155,6 @@ async def _run_dynamic_job(
                 round_index += 1
                 continue
             try:
-                if template is not None:
-                    template_round = run_round(template, round_index, node_registry)
-                    if template_round.stopped(all_results):
-                        plans.append({"next": STOP, "source": "template"})
-                        stopped_by = STOP
-                        break
-                    current_subgraph = _admit_subgraph(
-                        template_round.plan,
-                        node_registry,
-                        max_nodes,
-                        spec.library,
-                        all_results,
-                    )
-                    current_export = template_round.plan.export
-                    plans.append(template_round.record())
                 round_build = build_round(
                     current_subgraph,
                     node_registry=node_registry,
@@ -2182,7 +2176,7 @@ async def _run_dynamic_job(
                     dtype=spec.driver.dtype,
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
-                    rows=1 if template is not None else len(symbols),
+                    rows=len(symbols),
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2212,7 +2206,6 @@ async def _run_dynamic_job(
                     optimizer_type=optimizer_type,
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,
-                    one_slice=template is not None,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:
@@ -2282,9 +2275,7 @@ async def _run_dynamic_job(
                 observation = compute_observation(
                     walked_leaves, spec.driver.preview_width
                 )
-                if template is not None:
-                    plan = None
-                elif api is None:
+                if api is None:
                     plan = validate_plan(outputs)
                 else:
                     system, user = planner_messages(
@@ -2309,8 +2300,7 @@ async def _run_dynamic_job(
                             chat_template_kwargs=spec.driver.chat_template_kwargs,
                         )
                     )
-                if plan is not None:
-                    plans.append(plan_to_dict(plan))
+                plans.append(plan_to_dict(plan))
                 observations.append(observation)
                 # Decode the archived whole items into results keyed by user id
                 # so a later round can forward references to them.
@@ -2343,11 +2333,10 @@ async def _run_dynamic_job(
                 if isinstance(plan, StopPlan):
                     stopped_by = STOP
                     break
-                if plan is not None:
-                    current_subgraph = _admit_subgraph(
-                        plan, node_registry, max_nodes, spec.library, all_results
-                    )
-                    current_export = plan.export
+                current_subgraph = _admit_subgraph(
+                    plan, node_registry, max_nodes, spec.library, all_results
+                )
+                current_export = plan.export
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
                     if record.status in TERMINAL_JOB_STATUSES:

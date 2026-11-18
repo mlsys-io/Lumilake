@@ -77,7 +77,7 @@ class RouterOp:
     """A validated router entry: one source, ordered rules, a default branch."""
 
     id: str
-    inputs: tuple[str, ...]
+    inputs: list[str]
     path: tuple[str, ...]
     default_branch: str
     rules: tuple[RouterRule, ...]
@@ -156,7 +156,7 @@ class RouterOp:
         default_branch = entry.get("default_branch")
         if not isinstance(default_branch, str):
             raise ValueError(f"RouterOp {router_id!r} requires a default_branch")
-        return cls(router_id, tuple(raw_inputs), path, default_branch, tuple(rules))
+        return cls(router_id, raw_inputs, path, default_branch, tuple(rules))
 
 
 def branch_lambda_code(router: RouterOp, branch: str) -> str:
@@ -220,7 +220,7 @@ def expand_routers(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "id": f"{router.id}.{branch}",
                 "op": "LambdaOp",
-                "inputs": list(router.inputs),
+                "inputs": router.inputs.copy(),
                 "mode": "list",
                 "fn_name": f"route_{branch}",
                 "code": branch_lambda_code(router, branch),
