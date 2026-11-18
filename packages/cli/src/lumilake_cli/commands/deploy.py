@@ -148,7 +148,7 @@ _FLOWMESH_LOCAL_OVERRIDES: tuple[tuple[str, str], ...] = (
 def _patch_flowmesh_env(env_path: Path) -> None:
     """Disable TLS bind mounts on the bundled FlowMesh template."""
     for key, value in _FLOWMESH_LOCAL_OVERRIDES:
-        patch_env_value(env_path, key, value)
+        patch_env_value(env_path, key, value, quote=False)
 
 
 def _cross_populate_runtime(env_path: Path, fm_env_path: Path) -> None:

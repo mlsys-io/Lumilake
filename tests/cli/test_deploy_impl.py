@@ -572,6 +572,7 @@ def test_deploy_up_points_both_flowmesh_urls_at_the_stack_port(
 
     deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=True, force=True)
     fm_env = tmp_path / ".env.flowmesh"
+    assert "REDIS_TLS_CA_FILE=\n" in fm_env.read_text()
     fm_env.write_text(
         fm_env.read_text().replace("SERVER_HTTP_PORT=8000", "SERVER_HTTP_PORT=21050")
     )
