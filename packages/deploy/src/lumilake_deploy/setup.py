@@ -13,7 +13,11 @@ from . import flowmesh as fm_mod
 from .assets import compose_path
 from .containers import compose_project_args, read_stack_name, server_container
 from .docker_client import image_exists, image_pull
-from .env import ENV_FILE_NAME, FLOWMESH_ENV_FILE_NAME
+from .env import (
+    ENV_FILE_NAME,
+    FLOWMESH_ENV_FILE_NAME,
+    sync_orchestrator_urls,
+)
 from .errors import DeployError
 from .shell import check_docker, info, require_commands, run, wait_healthy
 
@@ -218,6 +222,10 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
             f"{env_file} not found. Run ``lumilake deploy init`` "
             "(optionally with ``--flowmesh``) first."
         )
+    env_fm = project_root / FLOWMESH_ENV_FILE_NAME
+    if env_fm.is_file():
+        for changed in sync_orchestrator_urls(env_file, env_fm):
+            info(f"Set {changed} to match the FlowMesh HTTP port.")
     load_project_env(project_root)
     stack_name = read_stack_name(project_root)
     if stack_name and not envs.valid_stack_name(stack_name):
@@ -235,7 +243,6 @@ def run_setup(project_root: Path, options: SetupOptions) -> None:
     _check_port_collisions(project_root, layout)
 
     if layout.deploy_fm:
-        env_fm = project_root / FLOWMESH_ENV_FILE_NAME
         fm_mod.stack_pull(env_fm)
         fm_mod.stack_up(env_fm)
         if not fm_mod.wait_healthy(env_fm, timeout=120):

@@ -1,6 +1,7 @@
 """``.env``-file helpers for the deploy CLI."""
 
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import dotenv_values
 
@@ -64,3 +65,40 @@ def patch_env_value(path: Path, key: str, value: str) -> None:
             out[-1] = out[-1] + "\n"
         out.append(quoted_line)
     path.write_text("".join(out))
+
+
+# Hosts that reach this host's own FlowMesh server from a host-network
+# container. Anything else is a deliberate remote endpoint.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+ORCHESTRATOR_URL_KEY = "LUMILAKE_RUNTIME_ORCHESTRATOR_URL"
+FLOWMESH_BASE_URL_KEY = "FLOWMESH_BASE_URL"
+
+
+def sync_orchestrator_urls(env_path: Path, flowmesh_env_path: Path) -> list[str]:
+    """Align both FlowMesh URLs with ``SERVER_HTTP_PORT``.
+
+    The templates hardcode the FlowMesh URLs for the template's own port,
+    so a stack on any other port leaves every worker result-delivery
+    check refused. A loopback URL (or a missing one) is re-pointed at
+    ``SERVER_HTTP_PORT``; a URL naming another host is a deliberate
+    remote endpoint and is kept. Returns the rewritten ``KEY=value``
+    pairs, empty when nothing changed.
+    """
+    port = int(read_env_value(flowmesh_env_path, "SERVER_HTTP_PORT") or "8000")
+    changed: list[str] = []
+    for path, key, default_host in (
+        (env_path, ORCHESTRATOR_URL_KEY, "127.0.0.1"),
+        (flowmesh_env_path, FLOWMESH_BASE_URL_KEY, "localhost"),
+    ):
+        parts = urlsplit(read_env_value(path, key))
+        if not parts.hostname:
+            url = f"http://{default_host}:{port}"
+        elif parts.hostname in _LOOPBACK_HOSTS and parts.port != port:
+            netloc = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+            url = urlunsplit(parts._replace(netloc=f"{netloc}:{port}"))
+        else:
+            continue
+        patch_env_value(path, key, url)
+        changed.append(f"{key}={url}")
+    return changed
