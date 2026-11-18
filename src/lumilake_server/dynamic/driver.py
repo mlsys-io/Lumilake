@@ -712,6 +712,14 @@ def forward_refs(
                 path = column.get("path")
                 if isinstance(node, str) and isinstance(path, str) and node in results:
                     column["node"], column["path"] = bind_explicit(node, path, consumer)
+        rowwise_seed = op.get("rowwise_seed")
+        if isinstance(rowwise_seed, dict):
+            node = rowwise_seed.get("node")
+            path = rowwise_seed.get("path")
+            if isinstance(node, str) and isinstance(path, str) and node in results:
+                rowwise_seed["node"], rowwise_seed["path"] = bind_explicit(
+                    node, path, consumer
+                )
         data_spec = op.get("data_spec")
         if isinstance(data_spec, dict):
             params = data_spec.get("params")
