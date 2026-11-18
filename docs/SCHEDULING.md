@@ -212,6 +212,10 @@ already-claimed worker is reused only when no unclaimed holder exists, so
 engines separate whenever the free set allows it and a cluster with one large
 enough worker still runs them.
 
+Lane counting stays per group size and ignores utilizations, so a batch
+reserving several fractions can take more than one lane's GPU workers on its
+own, and a later claim for the same workers waits.
+
 ## 5. What still causes idle workers
 
 A bubble is idle worker time while the queue holds an item that worker could
