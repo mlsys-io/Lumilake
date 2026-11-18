@@ -76,8 +76,8 @@ templating is done by upstream `FormatOp`s.
 Supported op types: ``InputOp`` (auto-generated from ``inputs:`` block),
 ``DataOp``, ``DataRetrievalOp``, ``MessageOp``, ``LLMChatOp``,
 ``LLMCompletionOp``, ``LLMVisionOp``, ``ImageGenerationOp``, ``EmbeddingOp``,
-``FormatOp``, ``LambdaOp``, ``OutputOp`` (auto-generated from ``outputs:``
-block).
+``FormatOp``, ``LambdaOp``, ``RouterOp``, ``OutputOp`` (auto-generated from
+``outputs:`` block).
 
 Users with an existing n8n workflow should submit it as
 ``Workflow-Format: n8n`` rather than transliterating it into YAML — no
@@ -89,6 +89,7 @@ from typing import Any
 
 import yaml
 
+from ..ops.router_ops import expand_routers
 from .common import make_id as _make_id
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
@@ -201,7 +202,10 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
-    op_entries = [_parse_op_entry(entry, idx) for idx, entry in enumerate(ops_block)]
+    op_entries = [
+        _parse_op_entry(entry, idx)
+        for idx, entry in enumerate(expand_routers(ops_block))
+    ]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
     ]
