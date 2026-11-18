@@ -66,6 +66,7 @@ class LLMChatOp(LLMOp):
     rowwise_template: str | None
     rowwise_columns: list[dict[str, Any]] | None
     rowwise_messages: RowwiseMessages | None
+    rowwise_seed: dict[str, Any] | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
 
@@ -83,6 +84,7 @@ class LLMChatOp(LLMOp):
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
+        rowwise_seed: dict[str, Any] | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
         super().__init__([messages], config, cacheable)
@@ -92,11 +94,13 @@ class LLMChatOp(LLMOp):
         self.rowwise_template = rowwise_template
         self.rowwise_columns = rowwise_columns
         self.rowwise_messages = rowwise_messages
+        self.rowwise_seed = rowwise_seed
         self.system_messages = system_messages
         self.condition = condition
         if rowwise_messages_op is not None:
             # Keep the column's producer in the graph traversal.
             self.inputs.append(rowwise_messages_op)
+        _validate_rowwise_seed(rowwise_seed, rowwise_template, self.config)
 
     @property
     def messages(self) -> Op:
@@ -125,6 +129,8 @@ class LLMChatOp(LLMOp):
             payload["rowwise_columns"] = self.rowwise_columns
         if self.rowwise_messages is not None:
             payload["rowwise_messages"] = self.rowwise_messages.to_dict()
+        if self.rowwise_seed is not None:
+            payload["rowwise_seed"] = self.rowwise_seed
         if self.system_messages is not None:
             payload["system_messages"] = self.system_messages
         if self.condition is not None:
@@ -167,6 +173,34 @@ class LLMChatOp(LLMOp):
             system_messages,
             cacheable,
             condition,
+            data.get("rowwise_seed"),
+        )
+
+
+def _validate_rowwise_seed(
+    rowwise_seed: dict[str, Any] | None,
+    rowwise_template: str | None,
+    config: GenerationConfig,
+) -> None:
+    """A per-row seed column ref only fits a rowwise chat op on a backend that
+    accepts one seed per prompt."""
+    if rowwise_seed is None:
+        return
+    if rowwise_template is None:
+        raise ValueError(
+            "rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
+            " seeds each row separately"
+        )
+    num_beams = config.num_beams
+    if num_beams is not None and num_beams > 1:
+        raise ValueError(
+            "rowwise_seed is not supported with num_beams > 1: the beam path"
+            " takes no per-row seed"
+        )
+    if config.api is not None:
+        raise ValueError(
+            "rowwise_seed is available only for local vLLM generation, not API"
+            " mode, which takes no per-row seed"
         )
 
 
