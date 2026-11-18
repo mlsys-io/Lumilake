@@ -88,6 +88,22 @@ def stop_export(template: DriverTemplate, round_number: int) -> str:
     return _render_string(template.stop_when_empty, round_number - 1)
 
 
+def archive_result_items(decoded: list[Any]) -> list[Any]:
+    """Flatten a decoded archive value into the whole result items it holds.
+
+    A list-mode export archives one value whose ``output`` is the whole list
+    its step returned, so its items sit one level down from where the stop
+    count and a later round's forwarding read them.
+    """
+    items: list[Any] = []
+    for value in decoded:
+        if isinstance(value, list):
+            items.extend(value)
+        else:
+            items.append(value)
+    return items
+
+
 def archived_element_count(items: list[Any]) -> int:
     """Count the rows an archived export holds.
 
