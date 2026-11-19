@@ -57,7 +57,7 @@ class RouterRule:
             )
         if self.match not in _MATCHES:
             raise ValueError(
-                f"RouterRule match must be one of {_MATCHES}, got " f"{self.match!r}"
+                f"RouterRule match must be one of {_MATCHES}, got {self.match!r}"
             )
         if not self.value:
             raise ValueError("RouterRule requires a non-empty string value")
