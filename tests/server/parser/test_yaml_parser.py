@@ -6,7 +6,14 @@ import pytest
 
 from lumilake_server.common import ApiConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import InputOp, LambdaOp, LLMChatOp, MessageOp, OutputOp
+from lumilake_server.ops import (
+    InputOp,
+    LambdaOp,
+    LLMChatOp,
+    MessageOp,
+    OutputOp,
+    RowwiseMessages,
+)
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
@@ -595,3 +602,73 @@ def test_lambda_op_unknown_mode_rejected() -> None:
         """)
     with pytest.raises(ValueError, match="mode"):
         parse_yaml_payload(yaml_text)
+
+
+def _messages_payload(**column: Any) -> dict[str, Any]:
+    return {
+        "name": "messages_column",
+        "inputs": {"rows": ["{}"]},
+        "ops": [
+            {
+                "id": "prompts",
+                "op": "LambdaOp",
+                "inputs": ["rows"],
+                "fn_name": "messages",
+                "code": "def messages(items):\n    return items[0]\n",
+                "mode": "list",
+            },
+            {
+                "id": "turn",
+                "op": "LLMChatOp",
+                "inputs": ["prompts"],
+                "config": {"model": "dummy-model"},
+                **column,
+            },
+        ],
+        "outputs": [{"name": "result", "ref": "turn"}],
+    }
+
+
+def test_messages_column_parses_into_a_list_fed_chat_op() -> None:
+    """The column's producer becomes an input of the model, and the empty
+    MessageOp stands in for the prompt the column replaces."""
+    column = {"rowwise_messages": {"node": "prompts", "path": "items.output"}}
+    graph_dict = parse_yaml_payload(_messages_payload(**column))["messages_column"][
+        "graph"
+    ]
+    graph = Graph.from_json(graph_dict)
+    (turn,) = graph.iter_ops(LLMChatOp)
+    (prompts,) = graph.iter_ops(LambdaOp)
+    assert turn.rowwise_messages_op is prompts
+    assert turn.rowwise_messages == RowwiseMessages("items.output")
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"op": "LLMVisionOp", "image_source": "prompts"}, "does not support"),
+        (
+            {"messages": [{"role": "user", "content": "x"}]},
+            "combines rowwise_messages with messages",
+        ),
+        ({"system_messages": ["s"]}, "system_messages"),
+        ({"return_history": True}, "return_history"),
+        ({"rowwise_template": "{q}"}, "rowwise_template"),
+        ({"rowwise_columns": []}, "rowwise_columns"),
+        ({"aggregate_table": []}, "aggregate_table"),
+        ({"rowwise_messages": {"node": "missing"}}, "known node"),
+        ({"inputs": ["rows"]}, "not listed in the op's inputs"),
+    ],
+)
+def test_messages_column_is_refused_beside_prompt_fields_and_outside_chat(
+    fields: dict[str, Any], message: str
+) -> None:
+    """A field the column would make moot, a node the workflow lacks, and a
+    non-chat op are all refused."""
+    payload = _messages_payload(
+        rowwise_messages={"node": "prompts", "path": "items.output"}
+    )
+    payload["ops"][1] = {**payload["ops"][1], **fields}
+    with pytest.raises(ValueError, match=message):
+        graph_dict = parse_yaml_payload(payload)["messages_column"]["graph"]
+        Graph.from_json(graph_dict)

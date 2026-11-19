@@ -1,8 +1,61 @@
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake_server.ops.ops import Op, RowShape
+
+
+@dataclass(frozen=True)
+class RowwiseMessages:
+    """Locates one chat-message list per row at ``path`` under the chat op's
+    producing ``rowwise_messages_op`` input; an absent path reads that
+    producer's whole output."""
+
+    path: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.path is not None and (
+            not isinstance(self.path, str) or not self.path.strip()
+        ):
+            raise ValueError("RowwiseMessages path must be a non-empty string")
+
+    def to_dict(self, node: str) -> dict[str, str]:
+        payload = {"node": node}
+        if self.path is not None:
+            payload["path"] = self.path
+        return payload
+
+
+def _refuse_fields_beside_rowwise_messages(
+    op_kind: str,
+    producer: Op,
+    aggregate_table: list[dict[str, Any]] | None,
+    rowwise_template: str | None,
+    rowwise_columns: list[dict[str, Any]] | None,
+    system_messages: list[str] | None,
+    condition: dict[str, str] | None,
+    return_history: bool,
+) -> None:
+    """Refuse a field the column would make moot: the column supplies each
+    row's whole conversation."""
+    beside: list[tuple[str, Any]] = [
+        ("aggregate_table", aggregate_table),
+        ("rowwise_template", rowwise_template),
+        ("rowwise_columns", rowwise_columns),
+        ("system_messages", system_messages),
+        ("condition", condition),
+        ("return_history", return_history or None),
+    ]
+    for field, value in beside:
+        if value is None:
+            continue
+        raise ValueError(
+            f"{op_kind} combines rowwise_messages with {field};"
+            f" the column '{producer.id}' supplies the whole conversation, so"
+            " the field beside it would be ignored. Drop it, or drop the"
+            " messages column."
+        )
 
 
 class LLMOp(Op):
@@ -43,6 +96,7 @@ class LLMChatOp(LLMOp):
     aggregate_table: list[dict[str, Any]] | None
     rowwise_template: str | None
     rowwise_columns: list[dict[str, Any]] | None
+    rowwise_messages: RowwiseMessages | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
 
@@ -55,23 +109,56 @@ class LLMChatOp(LLMOp):
         aggregate_table: list[dict[str, Any]] | None = None,
         rowwise_template: str | None = None,
         rowwise_columns: list[dict[str, Any]] | None = None,
+        rowwise_messages: RowwiseMessages | None = None,
+        rowwise_messages_op: Op | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
-        super().__init__([messages], config, cacheable)
+        inputs: list[Op] = [messages]
+        if rowwise_messages is not None:
+            if rowwise_messages_op is None:
+                raise ValueError(
+                    f"{type(self).__name__} rowwise_messages requires the"
+                    " producing op"
+                )
+            _refuse_fields_beside_rowwise_messages(
+                type(self).__name__,
+                rowwise_messages_op,
+                aggregate_table,
+                rowwise_template,
+                rowwise_columns,
+                system_messages,
+                condition,
+                return_history,
+            )
+            if not isinstance(messages, MessageOp) or messages.messages:
+                raise ValueError(
+                    f"{type(self).__name__} combines rowwise_messages with"
+                    " messages; the column supplies each row's whole"
+                    " conversation, so a message beside it would be ignored."
+                )
+            # Keep the column's producer in the graph traversal.
+            inputs.append(rowwise_messages_op)
+        super().__init__(inputs, config, cacheable)
         self.return_history = return_history
         self.structural_outputs = structural_outputs
         self.aggregate_table = aggregate_table
         self.rowwise_template = rowwise_template
         self.rowwise_columns = rowwise_columns
+        self.rowwise_messages = rowwise_messages
         self.system_messages = system_messages
         self.condition = condition
 
     @property
     def messages(self) -> Op:
         return self.inputs[0]
+
+    @property
+    def rowwise_messages_op(self) -> Op | None:
+        """The input the column reads each row's whole conversation from."""
+        return self.inputs[1] if self.rowwise_messages is not None else None
 
     @property
     def row_shape(self) -> RowShape:
@@ -94,6 +181,10 @@ class LLMChatOp(LLMOp):
             payload["rowwise_template"] = self.rowwise_template
         if self.rowwise_columns is not None:
             payload["rowwise_columns"] = self.rowwise_columns
+        if self.rowwise_messages is not None:
+            payload["rowwise_messages"] = self.rowwise_messages.to_dict(
+                self.inputs[1].id
+            )
         if self.system_messages is not None:
             payload["system_messages"] = self.system_messages
         if self.condition is not None:
@@ -112,6 +203,12 @@ class LLMChatOp(LLMOp):
         aggregate_table = data.get("aggregate_table")
         rowwise_template = data.get("rowwise_template")
         rowwise_columns = data.get("rowwise_columns")
+        column_data = data.get("rowwise_messages")
+        rowwise_messages: RowwiseMessages | None = None
+        rowwise_messages_op: Op | None = None
+        if column_data is not None:
+            rowwise_messages = RowwiseMessages(column_data.get("path"))
+            rowwise_messages_op = other_ops[column_data["node"]]
         system_messages = data.get("system_messages")
         condition = data.get("condition")
         return cls(
@@ -122,6 +219,8 @@ class LLMChatOp(LLMOp):
             aggregate_table,
             rowwise_template,
             rowwise_columns,
+            rowwise_messages,
+            rowwise_messages_op,
             system_messages,
             cacheable,
             condition,

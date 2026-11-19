@@ -1,3 +1,4 @@
+import json
 import textwrap
 from typing import Any, Literal
 
@@ -19,6 +20,7 @@ from lumilake_server.ops import (
     LLMVisionOp,
     Op,
     OpMessage,
+    RowwiseMessages,
     SingleDtype,
     as_output,
     input_placeholder,
@@ -2434,3 +2436,79 @@ def test_output_read_rules_match_the_old_predicates(case: str) -> None:
     ]
     assert entries
     assert all(not entry.get("flatten") for entry in entries)
+
+
+def test_messages_column_lowers_to_a_list_fed_task() -> None:
+    """The column reads its conversations from the producer's output, which
+    the task depends on instead of the rendered message; a literal producer
+    binds its values decoded, one row each."""
+    rows = input_placeholder("rows")
+    prompts = LambdaOp([rows], _explode_fn, mode="list")
+    turn = LLMChatOp(
+        [],
+        config=GenerationConfig(model="m"),
+        rowwise_messages=RowwiseMessages("items.output"),
+        rowwise_messages_op=prompts,
+    )
+    compiled = Graph.from_ops(
+        [as_output("prompts", prompts), as_output("result", turn)]
+    ).compile(rows=["x"])
+    graph = RuntimeGraphBuilder().build(compiled)
+    (turn_id,) = graph.dsl_to_runtime[turn.id]
+    assert graph.nodes[turn_id].data_spec == {
+        "type": "list",
+        "node": prompts.id,
+        "path": "value.items.output",
+    }
+    assert graph.nodes[turn_id].dependencies == (prompts.id,)
+    copied = compiled.copy()
+    (copied_turn,) = copied.iter_ops(LLMChatOp)
+    (copied_prompts,) = copied.iter_ops(LambdaOp)
+    assert copied_turn.rowwise_messages_op is copied_prompts
+    RuntimeGraphBuilder().build(copied)
+
+    conversation = (
+        '[{"role": "user", "content": "hi"}, '
+        '{"role": "assistant", "content": "hello"}]'
+    )
+    literal = LLMChatOp(
+        [],
+        config=GenerationConfig(model="m"),
+        rowwise_messages=RowwiseMessages(),
+        rowwise_messages_op=rows,
+    )
+    bound = Graph.from_ops([as_output("result", literal)]).compile(rows=[conversation])
+    node = RuntimeGraphBuilder().build(bound).nodes[literal.id]
+    assert node.data_spec["items"] == [json.loads(conversation)]
+    assert not node.dependencies
+
+
+def test_messages_column_refuses_a_path_on_a_literal_producer() -> None:
+    """A literal producer binds its values whole, so a drill path is refused
+    rather than silently ignored."""
+    rows = input_placeholder("rows")
+    llm = LLMChatOp(
+        [],
+        config=GenerationConfig(model="m"),
+        rowwise_messages=RowwiseMessages("items"),
+        rowwise_messages_op=rows,
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
+    with pytest.raises(ValueError, match="reads the literal"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_messages_column_refuses_a_row_mode_lambda_producer() -> None:
+    """A row-mode Lambda does not materialize before the chat op lowers, so it
+    is refused by kind, naming the kinds the column reads."""
+    rows = input_placeholder("rows")
+    prompts = LambdaOp([rows], _explode_fn)
+    llm = LLMChatOp(
+        [],
+        config=GenerationConfig(model="m"),
+        rowwise_messages=RowwiseMessages("items.output"),
+        rowwise_messages_op=prompts,
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
+    with pytest.raises(ValueError, match="list-mode LambdaOp"):
+        RuntimeGraphBuilder().build(compiled)
