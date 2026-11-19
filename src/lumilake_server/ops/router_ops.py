@@ -1,7 +1,7 @@
 """The ``RouterOp`` YAML construct and its expansion into branch lambdas.
 
 ``RouterOp`` partitions one source op's rows into named branches. It is a
-paper construct, not a runtime op: :func:`expand_routers` rewrites it, before
+YAML construct, not a runtime op: :func:`expand_routers` rewrites it, before
 any graph is built, into one ordinary list-mode ``LambdaOp`` per branch named
 ``<id>.<branch>``, so a consumer lists ``route.test`` in ``inputs`` like any
 other node and reads exactly that branch's rows; the generated function
@@ -10,7 +10,7 @@ carries its own row decoder and ``path`` walk.
 
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 ROUTER_OP = "RouterOp"
 
@@ -112,7 +112,7 @@ class RouterOp:
         return (self.default_branch, *(rule.branch for rule in self.rules))
 
     @classmethod
-    def from_entry(cls, entry: dict[str, Any]) -> "RouterOp":
+    def from_entry(cls, entry: dict[str, Any]) -> Self:
         """Validate a raw YAML router entry."""
         router_id = entry.get("id")
         if not isinstance(router_id, str) or not router_id:

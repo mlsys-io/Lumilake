@@ -6,7 +6,7 @@ validation are handled by pydantic, not hand-rolled.
 """
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import yaml
 from pydantic import (
@@ -64,7 +64,7 @@ class DriverSettings(BaseModel):
     template: DriverTemplate | None = None
 
     @model_validator(mode="after")
-    def _api_and_template_exclusive(self) -> "DriverSettings":
+    def _api_and_template_exclusive(self) -> Self:
         if self.api is not None and self.template is not None:
             raise ValueError("driver.api and driver.template are mutually exclusive")
         return self
