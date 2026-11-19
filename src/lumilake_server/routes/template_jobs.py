@@ -1,8 +1,7 @@
-"""The template-driven dynamic job loop.
-
-A template-driven run renders a declared body per round instead of asking a
-planner for one, so its loop dispatches every round from ``driver.template``
-and stops when the previous round's export holds no rows.
+"""The template-driven dynamic job loop: a run renders a declared body per
+round instead of asking a planner for one, so its loop dispatches every round
+from ``driver.template`` and stops when the previous round's export holds no
+rows.
 """
 
 import asyncio
@@ -65,12 +64,10 @@ async def run_template_job(
     optimizer_type: str | None = None,
     hardware_requirements: HardwareRequirements | None = None,
 ) -> None:
-    """Run a template-driven dynamic job, one child job per round.
-
-    Round 1 renders ``first`` and every later round ``next``; each round runs
-    as one whole-set slice. A round whose predecessor exported no rows stops
-    the loop, and the parent fails if any child round does not complete.
-    """
+    """Run a template-driven dynamic job, one child job per round: round 1
+    renders ``first`` and every later round ``next``, each round runs as one
+    whole-set slice, a round whose predecessor exported no rows stops the loop,
+    and the parent fails if any child round does not complete."""
     set_trace_id(trace_id)
     try:
         async with job_routes.jobs_lock:

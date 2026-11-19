@@ -25,7 +25,6 @@ from lumilake_server.dynamic.blocks import (
 )
 from lumilake_server.ops.data_ops import DataRetrievalOp
 from lumilake_server.ops.llm_ops import LLMOp
-from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
@@ -728,7 +727,6 @@ def validate_emitted_subgraph(
     if not subgraph:
         raise DriverProtocolError("subgraph must not be empty")
 
-    subgraph = expand_routers(subgraph)
     resolved = resolve_subgraph(subgraph, library)
 
     ids: set[str] = set()
@@ -1088,7 +1086,7 @@ def build_round(
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
     """
-    subgraph = resolve_subgraph(expand_routers(subgraph), library)
+    subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
         subgraph, results if results is not None else {}, node_registry, rows
     )

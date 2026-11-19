@@ -332,8 +332,7 @@ def _render_dynamic_round0(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Render the round-0 native graph for a validated dynamic spec.
 
-    With ``api`` or ``template`` set the graph is ``None`` because round 0
-    dispatches no graph; round 1 is the first real body.
+    With ``api`` set the graph is ``None`` because round 0 dispatches no graph.
     """
     if spec.driver.poll_interval != 2.0:
         raise HTTPException(
@@ -1778,11 +1777,14 @@ async def _submit_dynamic_child(
     # Slice the round exactly as a static submission with ``input_batch_size:
     # 1`` does: one graph per row, merged back into one batch by the job
     # manager.
-    total_length, varying_input_keys = _input_shape(inputs)
-    input_batches = _chunk_inputs(inputs, 1)
     if one_slice:
-        # A template round runs its whole input set as one slice.
-        total_length, varying_input_keys, input_batches = 1, (), [inputs]
+        # A template round runs its whole input set as one slice, whatever
+        # lengths the forwarded inputs have.
+        varying_input_keys: tuple[str, ...] = ()
+        total_length, input_batches = 1, [inputs]
+    else:
+        total_length, varying_input_keys = _input_shape(inputs)
+        input_batches = _chunk_inputs(inputs, 1)
     template_hash = _workflow_template_hash(graph, "native")
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
@@ -1813,7 +1815,7 @@ async def _submit_dynamic_child(
             idx=0,
         )
         slice_start += slice_length
-    # An api- or template-driven run checks hardware.gpu == 0 per real round.
+    # An api-driven run checks hardware.gpu == 0 per real round.
     child_graphs: dict[str, CompiledGraph] | None = None
     if hardware_requirements is not None and hardware_requirements.gpu == 0:
         server = LumilakeServer.get_started_instance()

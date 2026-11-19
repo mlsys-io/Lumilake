@@ -515,8 +515,6 @@ For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see
 `src/lumilake_server/ops/util_ops.py` for the closure-capture rules.
 
-For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
-
 ### RouterOp
 
 `RouterOp` partitions one source op's rows into named branches, one ordinary
@@ -530,3 +528,5 @@ ops:
      rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"},
              {branch: test, match: contains, value: "REQUEST TEST"}]}
 ```
+
+For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.

@@ -3,9 +3,9 @@
 A template round has a fixed body instead of a planner proposal. The spec
 declares ``first`` (round 1), ``next`` (every later round) and the export
 whose emptiness stops the loop; ``{{round}}`` renders to the round's
-zero-based suffix and ``{{prev}}`` is one less. This module renders a body,
-validates a template at submit, and builds the per-round state the job loop
-delegates to.
+zero-based suffix and ``{{prev}}`` is one less, and this module renders a
+body, validates a template at submit, and builds the per-round state the job
+loop delegates to.
 """
 
 import copy
@@ -20,6 +20,7 @@ from lumilake_server.dynamic.driver import (
     resolve_subgraph,
     validate_emitted_subgraph,
 )
+from lumilake_server.ops.router_ops import expand_routers
 
 _ROUND = "{{round}}"
 _PREV = "{{prev}}"
@@ -89,12 +90,10 @@ def stop_export(template: DriverTemplate, round_number: int) -> str:
 
 
 def archive_result_items(decoded: list[Any]) -> list[Any]:
-    """Flatten a decoded archive value into the whole result items it holds.
-
-    A list-mode export archives one value whose ``output`` is the whole list
-    its step returned, so its items sit one level down from where the stop
-    count and a later round's forwarding read them.
-    """
+    """Flatten a decoded archive value into the whole result items it holds: a
+    list-mode export archives one value whose ``output`` is the whole list its
+    step returned, so its items sit one level down from where the stop count and
+    a later round's forwarding read them."""
     items: list[Any] = []
     for value in decoded:
         if isinstance(value, list):
@@ -105,11 +104,9 @@ def archive_result_items(decoded: list[Any]) -> list[Any]:
 
 
 def archived_element_count(items: list[Any]) -> int:
-    """Count the rows an archived export holds.
-
-    A list-mode Lambda archives one item whose ``output`` is the list its step
-    returned, so an export that returned no rows counts 0.
-    """
+    """Count the rows an archived export holds: a list-mode Lambda archives one
+    item whose ``output`` is the list its step returned, so an export that
+    returned no rows counts 0."""
     total = 0
     for item in items:
         held = item.get("output") if isinstance(item, dict) else item
@@ -119,11 +116,9 @@ def archived_element_count(items: list[Any]) -> int:
 
 @dataclass(frozen=True)
 class TemplateRound:
-    """The state one template round hands to, and keeps for, the job loop.
-
+    """The state one template round hands to, and keeps for, the job loop:
     ``stop_export`` names the archived export whose element count decides
-    whether the next round runs; round 1 has none.
-    """
+    whether the next round runs, and round 1 has none."""
 
     round_number: int
     stop_export: str | None
@@ -202,15 +197,16 @@ def validate_template(
     registry: dict[str, dict[str, Any]] = {}
     for number in (1, 2, 3):
         plan = plans[number]
+        ops = expand_routers(plan.ops)
         validate_emitted_subgraph(
-            plan.ops,
+            ops,
             registry,
             max_nodes_per_round,
             library,
             export=plan.export,
             results={op_id: [] for op_id in registry},
         )
-        registry.update({op["id"]: op for op in resolve_subgraph(plan.ops, library)})
+        registry.update({op["id"]: op for op in resolve_subgraph(ops, library)})
     for number in (2, 3):
         export_id = stop_export(template, number)
         _require_list_lambda(registry[export_id], export_id)

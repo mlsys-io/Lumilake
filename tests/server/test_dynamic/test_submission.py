@@ -1335,7 +1335,7 @@ _LLM_PLAN: dict[str, Any] = {
 
 async def _submit_multi_symbol(app: FastAPI, job_routes: Any) -> Any:
     body = _submit_body(_VALID_DYNAMIC_YAML)
-    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -1502,7 +1502,7 @@ async def test_template_rounds_forward_the_export_then_stop_on_an_empty_one(
     app: FastAPI, job_routes: Any
 ) -> None:
     body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
-    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
@@ -1551,7 +1551,7 @@ async def test_template_stop_counts_a_list_mode_export(
     # empty round archives ``[{"output": []}]``; counting that as one element
     # would run every round to ``max_rounds``.
     body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
-    body["data"][0]["inputs"] = dict(_MULTI_SYMBOL_BODY_INPUTS)
+    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
     fake_server = job_routes._fake_runtime_server
     fake_server.list_mode_archive = True
     opened = [[{"case_id": 1}, {"case_id": 2}]]
@@ -1568,3 +1568,74 @@ async def test_template_stop_counts_a_list_mode_export(
     record = job_routes.jobs[resp.json()["data"]["job_id"]]
     assert record.status == "completed", record.error
     assert len(record.child_job_ids) == rounds
+
+
+_TEMPLATE_ROWWISE_YAML = """
+name: dynamic
+type: dynamic
+goal: advance the cases
+driver:
+  model: Qwen/Qwen3-8B
+  max_rounds: 3
+  output_location:
+    type: s3
+    prefix: dynamic/data-free/
+  template:
+    first:
+      ops:
+        - id: "Live_r{{round}}"
+          op: LambdaOp
+          mode: list
+          inputs: [Symbols]
+          fn_name: advance
+          code: |
+            def advance(columns):
+                return [{"case_id": value} for value in columns[0]]
+      export: ["Live_r{{round}}"]
+    next:
+      ops:
+        - id: "Live_r{{round}}"
+          op: LambdaOp
+          mode: list
+          inputs: [Symbols]
+          fn_name: advance
+          code: |
+            def advance(columns):
+                return json.loads(columns[0][0])
+        - id: "Step_r{{round}}"
+          op: LLMChatOp
+          inputs: ["Live_r{{prev}}"]
+          messages: [{role: user, content: "Advance the case."}]
+          aggregate_table:
+            - {label: rows, node: "Live_r{{prev}}", path: items.output}
+          config: {model: Qwen/Qwen3-8B}
+      export: ["Live_r{{round}}"]
+    stop_when_empty: "Live_r{{prev}}"
+"""
+
+
+@pytest.mark.anyio
+async def test_template_round_forwards_one_value_per_live_row(
+    app: FastAPI, job_routes: Any
+) -> None:
+    # A rowwise column naming the previous round's node flattens to one value per
+    # live row, so round 2's forwarded input holds K values next to N symbols;
+    # the whole-set slice must not compare the two lengths.
+    body = _submit_body(_TEMPLATE_ROWWISE_YAML)
+    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    fake_server = job_routes._fake_runtime_server
+    fake_server.leaf_item = lambda row: {"output": [{"case_id": 1}, {"case_id": 2}]}
+    await _run_background(app)
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+    assert record.status == "completed", record.error
+    for slices in fake_server.workflow_slices_calls:
+        (meta,) = slices.values()
+        assert (meta.whole_set, meta.slice_length, meta.total_length) == (True, 1, 1)

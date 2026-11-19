@@ -4,7 +4,7 @@
 paper construct, not a runtime op: :func:`expand_routers` rewrites it, before
 any graph is built, into one ordinary list-mode ``LambdaOp`` per branch named
 ``<id>.<branch>``, so a consumer lists ``route.test`` in ``inputs`` like any
-other node and reads exactly that branch's rows. The generated function
+other node and reads exactly that branch's rows; the generated function
 carries its own row decoder and ``path`` walk.
 """
 
@@ -57,8 +57,7 @@ class RouterRule:
             )
         if self.match not in _MATCHES:
             raise ValueError(
-                f"RouterRule match must be one of {list(_MATCHES)}, got "
-                f"{self.match!r}"
+                f"RouterRule match must be one of {_MATCHES}, got " f"{self.match!r}"
             )
         if not self.value:
             raise ValueError("RouterRule requires a non-empty string value")
@@ -78,9 +77,9 @@ class RouterOp:
 
     id: str
     inputs: list[str]
-    path: tuple[str, ...]
+    path: list[str]
     default_branch: str
-    rules: tuple[RouterRule, ...]
+    rules: list[RouterRule]
 
     def __post_init__(self) -> None:
         if not _NAME_RE.match(self.id):
@@ -125,9 +124,9 @@ class RouterOp:
             raise ValueError(f"RouterOp {router_id!r} inputs must be a list of ids")
         raw_path = entry.get("path")
         if raw_path is None:
-            path: tuple[str, ...] = ()
+            path: list[str] = []
         elif isinstance(raw_path, str) and _PATH_RE.match(raw_path):
-            path = tuple(raw_path.split("."))
+            path = raw_path.split(".")
         else:
             raise ValueError(
                 f"RouterOp {router_id!r} path must be a dotted field name, got "
@@ -156,15 +155,13 @@ class RouterOp:
         default_branch = entry.get("default_branch")
         if not isinstance(default_branch, str):
             raise ValueError(f"RouterOp {router_id!r} requires a default_branch")
-        return cls(router_id, raw_inputs, path, default_branch, tuple(rules))
+        return cls(router_id, raw_inputs, path, default_branch, rules)
 
 
 def branch_lambda_code(router: RouterOp, branch: str) -> str:
-    """The list-mode LambdaOp source selecting ``branch``'s rows from ``router``.
-
-    A rule branch keeps the rows its own rule matches and no earlier rule does;
-    the default branch keeps the rows no rule matches at all.
-    """
+    """The list-mode LambdaOp source selecting ``branch``'s rows from ``router``:
+    a rule branch keeps the rows its own rule matches and no earlier rule
+    matches, and the default branch keeps the rows no rule matches at all."""
     rules = router.rules
     names = [rule.branch for rule in rules]
     own = names.index(branch) if branch in names else None
@@ -188,10 +185,11 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         lines.append('                raise ValueError(f"{LABEL} row has no {part!r}")')
         lines.append("            value = value[part]")
         lines.append(
-            "        text = value if isinstance(value, str) else json.dumps(value)"
+            "        text = value if isinstance(value, str) else "
+            "json.dumps(value, ensure_ascii=False)"
         )
     else:
-        lines.append("        text = row if isinstance(row, str) else json.dumps(row)")
+        lines.append("        text = json.dumps(row, ensure_ascii=False)")
     if skip:
         lines.append(f"        if {' or '.join(skip)}:")
         lines.append("            continue")
@@ -205,11 +203,9 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
 
 
 def expand_routers(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Replace every ``RouterOp`` entry with one list-mode LambdaOp per branch.
-
-    Each branch reads the router's single input, so a consumer that names
-    ``<router id>.<branch>`` in its ``inputs`` gets exactly that branch's rows.
-    """
+    """Expand every ``RouterOp`` entry into one list-mode LambdaOp per branch,
+    each reading the router's single input, so a consumer that names
+    ``<router id>.<branch>`` in its ``inputs`` gets exactly that branch's rows."""
     expanded: list[dict[str, Any]] = []
     for entry in ops:
         if not isinstance(entry, dict) or entry.get("op") != ROUTER_OP:
