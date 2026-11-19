@@ -2606,6 +2606,11 @@ class LumilakeServer:
             ).setdefault(public_name, {})
             merged_without_errors = True
             for output_name, values in payload.items():
+                if workflow.whole_set:
+                    # A whole-set slice carries each output as its own answer, so
+                    # neither the declared length nor the fixed-size buffer apply.
+                    buffers[output_name] = values
+                    continue
                 if output_name in list_lambda_names:
                     if len(values) != 1:
                         append_error(
@@ -3370,6 +3375,17 @@ class LumilakeServer:
         }
         for group_key, workflows in grouped_workflows.items():
             ordered = sorted(workflows, key=lambda item: item.slice_index)
+            if any(item.whole_set for item in ordered):
+                # A whole-set slice's outputs are already complete, so copy them
+                # through instead of requiring one value per declared row.
+                (whole_set_slice,) = ordered
+                remapped_outputs.setdefault(whole_set_slice.workflow_id, {}).update(
+                    grouped_outputs.get(group_key, {})
+                )
+                remapped_histories.setdefault(whole_set_slice.workflow_id, {}).update(
+                    grouped_histories.get(group_key, {})
+                )
+                continue
             total_slice_len = sum(item.slice_length for item in ordered)
             group_outputs = grouped_outputs.get(group_key, {})
             for output_name, values in group_outputs.items():

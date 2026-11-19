@@ -6,7 +6,7 @@ validation are handled by pydantic, not hand-rolled.
 """
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import yaml
 from pydantic import (
@@ -18,7 +18,10 @@ from pydantic import (
     StrictStr,
     ValidationError,
     field_validator,
+    model_validator,
 )
+
+from lumilake_server.dynamic.template import DriverTemplate
 
 
 class DriverApi(BaseModel):
@@ -58,6 +61,13 @@ class DriverSettings(BaseModel):
     dtype: StrictStr | None = None
     extra_engine_kwargs: dict[StrictStr, Any] | None = None
     api: DriverApi | None = None
+    template: DriverTemplate | None = None
+
+    @model_validator(mode="after")
+    def _api_and_template_exclusive(self) -> Self:
+        if self.api is not None and self.template is not None:
+            raise ValueError("driver.api and driver.template are mutually exclusive")
+        return self
 
     @field_validator("dtype")
     @classmethod

@@ -18,6 +18,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `HttpFetchOp` | Fetch JSON over HTTP once per query row, with bounded timeout, retries, concurrency, and headers. |
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
+| `RouterOp` | Partition one source op's rows into named branches, one ordinary node per branch. |
 
 ## YAML Use
 
@@ -513,5 +514,19 @@ data-profile preflight can resolve a placeholder whose upstream is this
 For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
 serializes the function automatically via `dill.source.getsource` — see
 `src/lumilake_server/ops/util_ops.py` for the closure-capture rules.
+
+### RouterOp
+
+`RouterOp` partitions one source op's rows into named branches, one ordinary
+node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
+first rule that matches wins; `match` is `contains` or `equals`, optional
+`path` selects the field tested, and `default_branch` keeps unmatched rows.
+
+```yaml
+ops:
+  - {id: route, op: RouterOp, inputs: [norm], default_branch: patient,
+     rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"},
+             {branch: test, match: contains, value: "REQUEST TEST"}]}
+```
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.

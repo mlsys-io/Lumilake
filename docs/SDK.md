@@ -288,6 +288,26 @@ describe the planner request. The engine-sizing fields (`max_model_len`,
 in-graph proposer and have no effect when `api` is set. Without `api`,
 behavior is unchanged.
 
+#### Fixed round templates (`driver.template`)
+
+A workload whose round body is fixed can declare `driver.template` instead of
+a planner: `first` runs as round 1, `next` as every later round, with
+`{{round}}` and `{{prev}}` rendered into every string a body carries. All three
+of `first`, `next` and `stop_when_empty` are required; a template is a loop
+that stops on data, and a fixed-count loop is a static workflow. The server
+stops before a round whose list-mode `LambdaOp` export held no rows. Template
+mode calls no planner and is mutually exclusive with `api`.
+
+```yaml
+template:
+  stop_when_empty: "LiveState_r{{prev}}"
+  next:
+    export: ["LiveState_r{{round}}"]
+    ops:
+      - {ref: CaseState, id: "CaseState_r{{round}}", inputs: ["LiveState_r{{prev}}"]}
+      - {ref: LiveState, id: "LiveState_r{{round}}", inputs: ["CaseState_r{{round}}"]}
+```
+
 The `driver:` YAML settings the server accepts are:
 
 - `model` — proposer model, required.

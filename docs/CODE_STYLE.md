@@ -17,6 +17,7 @@ This guide collects rules agents and contributors should apply before editing so
 - Import at the top of the file. Inline imports are only for genuine circular imports or optional heavy dependencies.
 - Do not use `importlib` when a normal `import` or `from ... import ...` works.
 - Prefer `X | Y` and `X | None` over `typing.Union` and `typing.Optional`.
+- Annotate a method that returns an instance of its own class with `typing.Self`, not the quoted class name.
 - Prefer `typing.Any` over `object` unless `Any` would be semantically wrong.
 - Use Pydantic v2 models for API payloads and profile schemas when structured data crosses a boundary.
 - Avoid `.get()` and `getattr()` for keys or attributes known to exist. Narrow broad types with `isinstance` instead.
