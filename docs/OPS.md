@@ -315,14 +315,13 @@ When every upstream column a per-row chat reads is empty, FlowMesh completes
 the task with an empty result without dispatching a worker.
 
 A `rowwise_messages` column replaces the rendered prompt with each row's whole
-conversation: `node` names the op whose output holds one JSON array of
-`{role, content}` messages per row, and `path` drills into that output (the
-whole output when omitted). The column is sent to the model as that row's chat
-history, so `system_messages`, `rowwise_template`, `rowwise_columns` and
-`aggregate_table` are refused beside it, as is a `condition`, and only
-`LLMChatOp` accepts it. A literal input node binds its values whole, so it
-carries no `path`. Workflows keep a per-row conversation this way when the
-number of turns varies between rows, which a fixed template cannot express.
+conversation: `node` names the op whose output holds one message list per row,
+and `path` drills into that output (the whole output when omitted). Only
+`LLMChatOp` accepts it, it takes no `messages`, `system_messages`,
+`rowwise_template`, `rowwise_columns`, `aggregate_table` or `condition`, and
+its node must be listed in `inputs:`. The node is a list-mode `LambdaOp`, a
+data retrieval, or a literal input whose values are JSON message lists and
+which takes no `path`. Use it when the number of turns varies between rows.
 
 ### LLMCompletionOp
 

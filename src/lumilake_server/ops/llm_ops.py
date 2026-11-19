@@ -8,23 +8,55 @@ from lumilake_server.ops.ops import Op, RowShape
 
 @dataclass(frozen=True)
 class RowwiseMessages:
-    """Locates one serialized chat-message array per row at ``path`` under
-    ``node``; an absent path reads the node's whole output."""
+    """Locates one chat-message list per row at ``path`` under the producing
+    ``op``; an absent path reads the producer's whole output."""
 
-    node: str
+    op: Op
     path: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.node:
-            raise ValueError("RowwiseMessages requires a node")
         if self.path is not None and not self.path:
             raise ValueError("RowwiseMessages path must be a non-empty string")
+
+    @property
+    def node(self) -> str:
+        return self.op.id
 
     def to_dict(self) -> dict[str, str]:
         payload = {"node": self.node}
         if self.path is not None:
             payload["path"] = self.path
         return payload
+
+
+def _refuse_fields_beside_rowwise_messages(
+    op_kind: str,
+    column: RowwiseMessages,
+    *,
+    aggregate_table: list[dict[str, Any]] | None,
+    rowwise_template: str | None,
+    rowwise_columns: list[dict[str, Any]] | None,
+    system_messages: list[str] | None,
+    condition: dict[str, str] | None,
+) -> None:
+    """Refuse a prompt field or a condition the column would make moot: the
+    column supplies each row's whole conversation."""
+    beside: list[tuple[str, object | None]] = [
+        ("aggregate_table", aggregate_table),
+        ("rowwise_template", rowwise_template),
+        ("rowwise_columns", rowwise_columns),
+        ("system_messages", system_messages),
+        ("condition", condition),
+    ]
+    for field, value in beside:
+        if value is None:
+            continue
+        raise ValueError(
+            f"{op_kind} combines rowwise_messages with {field};"
+            f" the column '{column.node}' supplies the whole conversation, so"
+            " the prompt fields beside it would be ignored. Drop them, or"
+            " drop the messages column."
+        )
 
 
 class LLMOp(Op):
@@ -79,11 +111,20 @@ class LLMChatOp(LLMOp):
         rowwise_template: str | None = None,
         rowwise_columns: list[dict[str, Any]] | None = None,
         rowwise_messages: RowwiseMessages | None = None,
-        rowwise_messages_op: Op | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
     ) -> None:
+        if rowwise_messages is not None:
+            _refuse_fields_beside_rowwise_messages(
+                type(self).__name__,
+                rowwise_messages,
+                aggregate_table=aggregate_table,
+                rowwise_template=rowwise_template,
+                rowwise_columns=rowwise_columns,
+                system_messages=system_messages,
+                condition=condition,
+            )
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
         super().__init__([messages], config, cacheable)
         self.return_history = return_history
@@ -94,9 +135,9 @@ class LLMChatOp(LLMOp):
         self.rowwise_messages = rowwise_messages
         self.system_messages = system_messages
         self.condition = condition
-        if rowwise_messages_op is not None:
+        if rowwise_messages is not None:
             # Keep the column's producer in the graph traversal.
-            self.inputs.append(rowwise_messages_op)
+            self.inputs.append(rowwise_messages.op)
 
     @property
     def messages(self) -> Op:
@@ -145,11 +186,8 @@ class LLMChatOp(LLMOp):
         rowwise_columns = data.get("rowwise_columns")
         column_data = data.get("rowwise_messages")
         rowwise_messages = (
-            RowwiseMessages(**column_data) if column_data is not None else None
-        )
-        column_op = (
-            other_ops.get(rowwise_messages.node)
-            if rowwise_messages is not None
+            RowwiseMessages(other_ops[column_data["node"]], column_data.get("path"))
+            if column_data is not None
             else None
         )
         system_messages = data.get("system_messages")
@@ -163,7 +201,6 @@ class LLMChatOp(LLMOp):
             rowwise_template,
             rowwise_columns,
             rowwise_messages,
-            column_op,
             system_messages,
             cacheable,
             condition,

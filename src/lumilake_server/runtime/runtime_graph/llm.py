@@ -39,7 +39,6 @@ from lumilake_server.runtime.runtime_graph.lowering import (
     Phase,
     register,
 )
-from lumilake_server.runtime.runtime_graph.messages import lower_rowwise_messages
 from lumilake_server.runtime.runtime_graph.outputs import (
     is_api_task,
     output_row_count,
@@ -365,6 +364,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                 dsl_to_runtime,
             ),
         )
+
+    def lower_rowwise_messages(
+        self, llm_op: LLMChatOp, ctx: LoweringContext
+    ) -> RuntimeOp:
+        """Build the task a chat op runs when its conversation comes from a
+        per-row messages column; implemented by the messages builder mixin."""
+        raise NotImplementedError()
 
     def _api_request_headers(
         self, llm_op_id: str, api_config: ApiConfig, url: str
@@ -812,7 +818,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         """Lower an LLM op, through the API task when it targets an external
         endpoint and through the local inference task otherwise."""
         if isinstance(op, LLMChatOp) and op.rowwise_messages is not None:
-            return lower_rowwise_messages(self, op, ctx)
+            return LoweringResult(nodes=[self.lower_rowwise_messages(op, ctx)])
         if op.config.api is not None:
             upstream_llm_ids, template_spec = self._infer_structural_messages(
                 op.id,

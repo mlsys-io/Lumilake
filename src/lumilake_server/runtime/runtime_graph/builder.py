@@ -1,6 +1,5 @@
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.ops import Op, OutputOp
-from lumilake_server.runtime.runtime_graph.derived import _DerivedBuilder
 from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
@@ -12,10 +11,11 @@ from lumilake_server.runtime.runtime_graph.lowering import (
     lookup,
     phase_hook,
 )
+from lumilake_server.runtime.runtime_graph.messages import _MessagesBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-class RuntimeGraphBuilder(_DerivedBuilder):
+class RuntimeGraphBuilder(_MessagesBuilder):
     def build(
         self,
         compiled_graph: CompiledGraph,

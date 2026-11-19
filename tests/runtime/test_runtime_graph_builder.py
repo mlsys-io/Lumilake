@@ -1,3 +1,4 @@
+import json
 import textwrap
 from typing import Any, Literal
 
@@ -2439,14 +2440,14 @@ def test_output_read_rules_match_the_old_predicates(case: str) -> None:
 
 def test_messages_column_lowers_to_a_list_fed_task() -> None:
     """The column reads its conversations from the producer's output, which
-    the task depends on instead of the rendered message; an InputOp binds its
-    literal values decoded, one row each."""
+    the task depends on instead of the rendered message; a literal producer
+    binds its values decoded, one row each."""
     rows = input_placeholder("rows")
     prompts = LambdaOp([rows], _explode_fn, mode="list")
     turn = LLMChatOp(
         [OpMessage(role="user", content="ask")],
         config=GenerationConfig(model="m"),
-        rowwise_messages=RowwiseMessages(prompts.id, "items.output"),
+        rowwise_messages=RowwiseMessages(prompts, "items.output"),
     )
     compiled = Graph.from_ops(
         [as_output("prompts", prompts), as_output("result", turn)]
@@ -2460,41 +2461,45 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     }
     assert graph.nodes[turn_id].dependencies == (prompts.id,)
 
+    conversation = (
+        '[{"role": "user", "content": "hi"}, '
+        '{"role": "assistant", "content": "hello"}]'
+    )
     literal = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),
-        rowwise_messages=RowwiseMessages(rows.id),
+        rowwise_messages=RowwiseMessages(rows),
     )
-    bound = Graph.from_ops([as_output("result", literal)]).compile(
-        rows=['[{"role": "user", "content": "hi"}]', "[]"]
-    )
+    bound = Graph.from_ops([as_output("result", literal)]).compile(rows=[conversation])
     node = RuntimeGraphBuilder().build(bound).nodes[literal.id]
-    assert node.data_spec == {
-        "type": "list",
-        "items": [[{"role": "user", "content": "hi"}], []],
-    }
+    assert node.data_spec["items"] == [json.loads(conversation)]
     assert not node.dependencies
 
 
-@pytest.mark.parametrize(
-    ("column", "condition", "message"),
-    [
-        ({"path": "items"}, None, "reads the literal"),
-        ({}, {"node": "gate", "expr": "gate == 'on'"}, "condition"),
-    ],
-)
-def test_messages_column_refuses_a_literal_path_and_a_condition(
-    column: dict[str, str], condition: dict[str, str] | None, message: str
-) -> None:
-    """A drill path on a literal input and a native condition are refused
+def test_messages_column_refuses_a_path_on_a_literal_producer() -> None:
+    """A literal producer binds its values whole, so a drill path is refused
     rather than silently ignored."""
     rows = input_placeholder("rows")
     llm = LLMChatOp(
         [OpMessage(role="user", content=rows)],
         config=GenerationConfig(model="m"),
-        rowwise_messages=RowwiseMessages(rows.id, column.get("path")),
-        condition=condition,
+        rowwise_messages=RowwiseMessages(rows, "items"),
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="reads the literal"):
+        RuntimeGraphBuilder().build(compiled)
+
+
+def test_messages_column_refuses_a_row_mode_lambda_producer() -> None:
+    """A row-mode Lambda does not materialize before the chat op lowers, so it
+    is refused by kind, naming the kinds the column reads."""
+    rows = input_placeholder("rows")
+    prompts = LambdaOp([rows], _explode_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=rows)],
+        config=GenerationConfig(model="m"),
+        rowwise_messages=RowwiseMessages(prompts, "items.output"),
+    )
+    compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
+    with pytest.raises(ValueError, match="list-mode LambdaOp"):
         RuntimeGraphBuilder().build(compiled)

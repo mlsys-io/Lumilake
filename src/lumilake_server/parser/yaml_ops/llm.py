@@ -2,7 +2,6 @@
 
 from typing import Any
 
-from lumilake_server.ops.llm_ops import RowwiseMessages
 from lumilake_server.parser.common import make_id
 
 from .common import EmitContext, OpEntry, build_generation_config
@@ -91,7 +90,17 @@ def _emit_llm_like_op(
     messages_ref = entry.fields.get("messages_ref")
     inline_messages = entry.fields.get("messages")
 
-    if messages_ref is not None:
+    msg_internal_id: str
+    if entry.fields.get("rowwise_messages") is not None:
+        if messages_ref is not None or inline_messages is not None:
+            raise ValueError(
+                f"{op_kind} '{entry.id}' combines rowwise_messages with"
+                " messages; the column supplies each row's whole conversation,"
+                " so an inline message would be ignored. Drop it, or drop the"
+                " messages column."
+            )
+        msg_internal_id = _queue_empty_message_op(op_dict, ctx)
+    elif messages_ref is not None:
         if not isinstance(messages_ref, str):
             raise ValueError(f"{op_kind} '{entry.id}' messages_ref must be a string id")
         if messages_ref not in user_id_to_internal:
@@ -191,30 +200,23 @@ def _emit_rowwise_messages(
     field = entry.fields.get("rowwise_messages")
     if field is None:
         return None
+    if not isinstance(field, dict):
+        raise ValueError(f"{op_kind} '{entry.id}' rowwise_messages must be a mapping")
     if op_kind != "LLMChatOp":
         raise ValueError(
             f"{op_kind} '{entry.id}' does not support rowwise_messages; use it"
             " only on LLMChatOp."
         )
-    if not isinstance(field, dict):
-        raise ValueError(f"{op_kind} '{entry.id}' rowwise_messages must be a mapping")
-    for beside in (
-        "system_messages",
-        "rowwise_template",
-        "rowwise_columns",
-        "aggregate_table",
-    ):
-        if entry.fields.get(beside) is not None:
-            raise ValueError(
-                f"{op_kind} '{entry.id}' combines rowwise_messages with {beside};"
-                " the column supplies the whole conversation, so the prompt"
-                " fields beside it would be ignored. Drop them, or drop the"
-                " messages column."
-            )
     node_ref = field.get("node")
     if not isinstance(node_ref, str) or node_ref not in user_id_to_internal:
         raise ValueError(
             f"{op_kind} '{entry.id}' rowwise_messages requires a known node"
+        )
+    if node_ref not in entry.inputs:
+        raise ValueError(
+            f"{op_kind} '{entry.id}' rowwise_messages reads '{node_ref}', which"
+            " is not listed in the op's inputs; add it there so the column's"
+            " producer is built before the chat op"
         )
     path = field.get("path")
     if path is not None and (not isinstance(path, str) or not path.strip()):
@@ -223,8 +225,28 @@ def _emit_rowwise_messages(
             " string"
         )
     node = user_id_to_internal[node_ref]
-    op_dict["rowwise_messages"] = RowwiseMessages(node=node, path=path).to_dict()
+    column: dict[str, str] = {"node": node}
+    if path is not None:
+        column["path"] = path
+    op_dict["rowwise_messages"] = column
     return node
+
+
+def _queue_empty_message_op(op_dict: dict[str, Any], ctx: EmitContext) -> str:
+    """Queue the empty MessageOp a messages-column chat depends on: the
+    column, not a rendered message, is what the model reads."""
+    msg_internal_id = make_id(ctx.scope, "message", ctx.entry.id)
+    # No message of its own: the column supplies the conversation, and the
+    # lowering traces this op only to keep the graph traversal complete.
+    msg_dict: dict[str, Any] = {
+        "_id": msg_internal_id,
+        "_op": "MessageOp",
+        "_max_iter": None,
+        "_inputs": [],
+        "messages": [],
+    }
+    op_dict.setdefault("__implicit_ops__", []).append(msg_dict)
+    return msg_internal_id
 
 
 def _queue_inline_message_op(
