@@ -160,11 +160,11 @@ Picked up by the bundled FlowMesh deploy helpers.
 
 | Key | Purpose |
 |-----|---------|
-| `SERVER_HTTP_PORT` | FlowMesh HTTP API port in `.env.flowmesh`. Keep `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` in `.env` and `FLOWMESH_BASE_URL` in `.env.flowmesh` aligned with this port. |
+| `SERVER_HTTP_PORT` | FlowMesh HTTP API port in `.env.flowmesh`. `lumilake deploy init --flowmesh` and `lumilake deploy up` point `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` in `.env` and `FLOWMESH_BASE_URL` in `.env.flowmesh` at this port. |
 | `SERVER_GRPC_PORT` | FlowMesh gRPC port in `.env.flowmesh`. Change it when a co-tenant FlowMesh stack already owns `50051`. |
 | `REDIS_CONTROL_PORT` | FlowMesh control Redis port in `.env.flowmesh`. Change it when another stack already owns `6379`. |
 | `REDIS_TELEMETRY_PORT` | FlowMesh telemetry Redis port in `.env.flowmesh`. Change it when another stack already owns `6380`. |
-| `FLOWMESH_BASE_URL` | FlowMesh HTTP base URL consumed by FlowMesh workers; should point at `SERVER_HTTP_PORT`. |
+| `FLOWMESH_BASE_URL` | FlowMesh HTTP base URL consumed by FlowMesh workers. Defaults to `http://localhost:<SERVER_HTTP_PORT>`. |
 | `FLOWMESH_VERSION` | FlowMesh image tag in `.env.flowmesh`. Set it to the pinned release, `v` plus the `flowmesh-sdk` version; the bundled example sets the moving `dev` tag. |
 | `REDIS_TLS_DIR` | Directory holding Redis TLS certs, in `.env.flowmesh`. Empty disables TLS bind-mounts. |
 | `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs, in `.env.flowmesh`. Empty disables TLS. |

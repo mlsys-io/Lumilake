@@ -557,6 +557,50 @@ def test_cli_init_honors_project_dir_argument(tmp_path: Path) -> None:
     assert (tmp_path / ".env").is_file()
 
 
+def test_deploy_up_points_both_flowmesh_urls_at_the_stack_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``up`` renders both URLs on ``SERVER_HTTP_PORT``, keeping a remote one."""
+    monkeypatch.setenv("HOME", tmp_path.as_posix())
+    monkeypatch.setattr(setup_mod, "check_docker", lambda: None)
+    monkeypatch.setattr(setup_mod, "require_commands", lambda _cmds: None)
+    monkeypatch.setattr(setup_mod, "_check_port_collisions", lambda *_a: None)
+    monkeypatch.setattr(setup_mod.fm_mod, "stack_pull", lambda *_a: None)
+    monkeypatch.setattr(setup_mod.fm_mod, "stack_up", lambda *_a: None)
+    monkeypatch.setattr(setup_mod.fm_mod, "wait_healthy", lambda *_a, **_kw: True)
+    monkeypatch.setattr(setup_mod.fm_mod, "create_workers", lambda *_a, **_kw: None)
+
+    deploy_cmd.init(_fake_ctx(tmp_path), flowmesh=True, force=True)
+    fm_env = tmp_path / ".env.flowmesh"
+    assert "REDIS_TLS_CA_FILE=\n" in fm_env.read_text()
+    fm_env.write_text(
+        fm_env.read_text().replace("SERVER_HTTP_PORT=8000", "SERVER_HTTP_PORT=21050")
+    )
+    env = tmp_path / ".env"
+
+    try:
+        setup_mod.run_setup(tmp_path, setup_mod.SetupOptions(no_server=True))
+
+        rendered = 'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="http://127.0.0.1:21050"'
+        assert rendered in env.read_text()
+        assert "FLOWMESH_BASE_URL=http://localhost:21050\n" in fm_env.read_text()
+
+        remote = 'LUMILAKE_RUNTIME_ORCHESTRATOR_URL="https://flowmesh.example.com/v1"'
+        env.write_text(env.read_text().replace(rendered, remote))
+        fm_env.write_text(
+            fm_env.read_text().replace(
+                "FLOWMESH_BASE_URL=http://localhost:21050",
+                "FLOWMESH_BASE_URL=flowmesh.lan:8000",
+            )
+        )
+        setup_mod.run_setup(tmp_path, setup_mod.SetupOptions(no_server=True))
+        assert remote in env.read_text()
+        assert "FLOWMESH_BASE_URL=flowmesh.lan:8000\n" in fm_env.read_text()
+    finally:
+        os.environ.pop("LUMILAKE_STACK_NAME", None)
+        importlib.reload(envs)
+
+
 def test_run_stop_names_the_stack_in_the_compose_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
