@@ -318,10 +318,11 @@ A `rowwise_messages` column replaces the rendered prompt with each row's whole
 conversation: `node` names the op whose output holds one message list per row,
 and `path` drills into that output (the whole output when omitted). Only
 `LLMChatOp` accepts it, it takes no `messages`, `system_messages`,
-`rowwise_template`, `rowwise_columns`, `aggregate_table` or `condition`, and
-its node must be listed in `inputs:`. The node is a list-mode `LambdaOp`, a
-data retrieval, or a literal input whose values are JSON message lists and
-which takes no `path`. Use it when the number of turns varies between rows.
+`return_history`, `rowwise_template`, `rowwise_columns`, `aggregate_table` or
+`condition`, and its node must be listed in `inputs:`. The node is a
+list-mode `LambdaOp`, a data retrieval, or a literal input whose values
+are JSON message lists and which takes no `path`. Use it when the number
+of turns varies between rows.
 
 ### LLMCompletionOp
 

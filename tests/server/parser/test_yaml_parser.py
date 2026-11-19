@@ -652,6 +652,7 @@ def test_messages_column_parses_into_a_list_fed_chat_op() -> None:
             "combines rowwise_messages with messages",
         ),
         ({"system_messages": ["s"]}, "system_messages"),
+        ({"return_history": True}, "return_history"),
         ({"rowwise_template": "{q}"}, "rowwise_template"),
         ({"rowwise_columns": []}, "rowwise_columns"),
         ({"aggregate_table": []}, "aggregate_table"),

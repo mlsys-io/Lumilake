@@ -7,7 +7,12 @@ from typing import Any
 from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.llm_ops import LLMChatOp, RowwiseMessages
 from lumilake_server.runtime.runtime_graph.derived import _DerivedBuilder
-from lumilake_server.runtime.runtime_graph.lowering import LoweringContext
+from lumilake_server.runtime.runtime_graph.lowering import (
+    LoweringContext,
+    LoweringResult,
+    Phase,
+    register,
+)
 from lumilake_server.runtime.runtime_graph.outputs import _WHOLE
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
@@ -16,28 +21,20 @@ class _MessagesBuilder(_DerivedBuilder):
     """Builds the task a chat op runs when its conversations come from a
     per-row messages column."""
 
-    def lower_rowwise_messages(
-        self, llm_op: LLMChatOp, ctx: LoweringContext
-    ) -> RuntimeOp:
-        """The local inference task, or the API task when the op targets an
-        external endpoint, reading each row's whole conversation from its
-        ``rowwise_messages`` column instead of a rendered template."""
-        column = llm_op.rowwise_messages
+    @register(LLMChatOp, Phase.LLM)
+    def _lower_chat(self, op: LLMChatOp, ctx: LoweringContext) -> LoweringResult | None:
+        """The list-fed task reading each row's whole conversation from its
+        ``rowwise_messages`` column, or the rendered-prompt lowering for a
+        chat op without one."""
+        column = op.rowwise_messages
         if column is None:
-            raise ValueError(f"LLMChatOp '{llm_op.id}' has no rowwise_messages column")
-        # Trace the message chain: it validates the op's row shape and marks the
-        # ops it names visited. The column, not the rendered message, is what
-        # the model reads.
-        self._infer_structural_messages(
-            llm_op.id,
-            ctx.graph_dict,
-            ctx.inputs_dict,
-            ctx.visited,
-            dsl_to_runtime=ctx.dsl_to_runtime,
-            api_mode=llm_op.config.api is not None,
-        )
-        data_spec, dependencies = self._messages_data_spec(llm_op, column, ctx)
-        return self._messages_op(llm_op, data_spec, dependencies, ctx)
+            return self._lower_llm(op, ctx)
+        # The column, not the message op, is what the model reads; the message
+        # op carries no messages and is marked visited for the traversal check.
+        ctx.visited.add(op.messages.id)
+        data_spec, dependencies = self._messages_data_spec(op, column, ctx)
+        node = self._messages_op(op, data_spec, dependencies, ctx)
+        return LoweringResult(nodes=[node])
 
     def _messages_data_spec(
         self, llm_op: LLMChatOp, column: RowwiseMessages, ctx: LoweringContext

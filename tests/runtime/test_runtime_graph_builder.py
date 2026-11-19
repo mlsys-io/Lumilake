@@ -2445,7 +2445,7 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     rows = input_placeholder("rows")
     prompts = LambdaOp([rows], _explode_fn, mode="list")
     turn = LLMChatOp(
-        [OpMessage(role="user", content="ask")],
+        [],
         config=GenerationConfig(model="m"),
         rowwise_messages=RowwiseMessages(prompts, "items.output"),
     )
@@ -2460,13 +2460,17 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
         "path": "value.items.output",
     }
     assert graph.nodes[turn_id].dependencies == (prompts.id,)
+    copied = compiled.copy()
+    (copied_turn,) = list(copied.iter_ops(LLMChatOp))
+    column = copied_turn.rowwise_messages
+    assert column is not None and column.op is copied_turn.inputs[1]
 
     conversation = (
         '[{"role": "user", "content": "hi"}, '
         '{"role": "assistant", "content": "hello"}]'
     )
     literal = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
+        [],
         config=GenerationConfig(model="m"),
         rowwise_messages=RowwiseMessages(rows),
     )
@@ -2481,7 +2485,7 @@ def test_messages_column_refuses_a_path_on_a_literal_producer() -> None:
     rather than silently ignored."""
     rows = input_placeholder("rows")
     llm = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
+        [],
         config=GenerationConfig(model="m"),
         rowwise_messages=RowwiseMessages(rows, "items"),
     )
@@ -2496,7 +2500,7 @@ def test_messages_column_refuses_a_row_mode_lambda_producer() -> None:
     rows = input_placeholder("rows")
     prompts = LambdaOp([rows], _explode_fn)
     llm = LLMChatOp(
-        [OpMessage(role="user", content=rows)],
+        [],
         config=GenerationConfig(model="m"),
         rowwise_messages=RowwiseMessages(prompts, "items.output"),
     )

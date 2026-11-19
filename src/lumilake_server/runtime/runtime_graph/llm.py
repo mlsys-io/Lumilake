@@ -365,13 +365,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             ),
         )
 
-    def lower_rowwise_messages(
-        self, llm_op: LLMChatOp, ctx: LoweringContext
-    ) -> RuntimeOp:
-        """Build the task a chat op runs when its conversation comes from a
-        per-row messages column; implemented by the messages builder mixin."""
-        raise NotImplementedError()
-
     def _api_request_headers(
         self, llm_op_id: str, api_config: ApiConfig, url: str
     ) -> dict[str, str]:
@@ -817,8 +810,6 @@ class _LLMBuilder(_EmbeddingBuilder):
     def _lower_llm(self, op: LLMOp, ctx: LoweringContext) -> LoweringResult | None:
         """Lower an LLM op, through the API task when it targets an external
         endpoint and through the local inference task otherwise."""
-        if isinstance(op, LLMChatOp) and op.rowwise_messages is not None:
-            return LoweringResult(nodes=[self.lower_rowwise_messages(op, ctx)])
         if op.config.api is not None:
             upstream_llm_ids, template_spec = self._infer_structural_messages(
                 op.id,

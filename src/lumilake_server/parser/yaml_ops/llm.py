@@ -91,14 +91,11 @@ def _emit_llm_like_op(
     inline_messages = entry.fields.get("messages")
 
     msg_internal_id: str
-    if entry.fields.get("rowwise_messages") is not None:
-        if messages_ref is not None or inline_messages is not None:
-            raise ValueError(
-                f"{op_kind} '{entry.id}' combines rowwise_messages with"
-                " messages; the column supplies each row's whole conversation,"
-                " so an inline message would be ignored. Drop it, or drop the"
-                " messages column."
-            )
+    if (
+        entry.fields.get("rowwise_messages") is not None
+        and messages_ref is None
+        and inline_messages is None
+    ):
         msg_internal_id = _queue_empty_message_op(op_dict, ctx)
     elif messages_ref is not None:
         if not isinstance(messages_ref, str):
@@ -153,9 +150,7 @@ def _emit_llm_like_op(
         op_dict["rowwise_template"] = entry.fields["rowwise_template"]
     if resolved_rowwise is not None:
         op_dict["rowwise_columns"] = resolved_rowwise
-    messages_column_node = _emit_rowwise_messages(
-        entry, op_dict, user_id_to_internal, op_kind=op_kind
-    )
+    _emit_rowwise_messages(entry, op_dict, user_id_to_internal, op_kind)
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
     elif "rowwise_template" in entry.fields and isinstance(inline_messages, list):
@@ -183,8 +178,6 @@ def _emit_llm_like_op(
                 node_id = item.get("node")
                 if isinstance(node_id, str) and node_id not in llm_inputs:
                     llm_inputs.append(node_id)
-        if messages_column_node is not None:
-            llm_inputs.append(messages_column_node)
     op_dict["_inputs"] = llm_inputs
 
 
@@ -192,14 +185,13 @@ def _emit_rowwise_messages(
     entry: OpEntry,
     op_dict: dict[str, Any],
     user_id_to_internal: dict[str, str],
-    *,
     op_kind: str,
-) -> str | None:
+) -> None:
     """Fill in the ``rowwise_messages`` column, which replaces the rendered
-    prompt, and return the internal id of the node it reads from."""
+    prompt."""
     field = entry.fields.get("rowwise_messages")
     if field is None:
-        return None
+        return
     if not isinstance(field, dict):
         raise ValueError(f"{op_kind} '{entry.id}' rowwise_messages must be a mapping")
     if op_kind != "LLMChatOp":
@@ -218,18 +210,10 @@ def _emit_rowwise_messages(
             " is not listed in the op's inputs; add it there so the column's"
             " producer is built before the chat op"
         )
-    path = field.get("path")
-    if path is not None and (not isinstance(path, str) or not path.strip()):
-        raise ValueError(
-            f"{op_kind} '{entry.id}' rowwise_messages path must be a non-empty"
-            " string"
-        )
-    node = user_id_to_internal[node_ref]
-    column: dict[str, str] = {"node": node}
-    if path is not None:
-        column["path"] = path
+    column: dict[str, Any] = {"node": user_id_to_internal[node_ref]}
+    if field.get("path") is not None:
+        column["path"] = field["path"]
     op_dict["rowwise_messages"] = column
-    return node
 
 
 def _queue_empty_message_op(op_dict: dict[str, Any], ctx: EmitContext) -> str:

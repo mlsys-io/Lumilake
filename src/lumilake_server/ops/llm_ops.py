@@ -15,7 +15,9 @@ class RowwiseMessages:
     path: str | None = None
 
     def __post_init__(self) -> None:
-        if self.path is not None and not self.path:
+        if self.path is not None and (
+            not isinstance(self.path, str) or not self.path.strip()
+        ):
             raise ValueError("RowwiseMessages path must be a non-empty string")
 
     @property
@@ -32,21 +34,22 @@ class RowwiseMessages:
 def _refuse_fields_beside_rowwise_messages(
     op_kind: str,
     column: RowwiseMessages,
-    *,
     aggregate_table: list[dict[str, Any]] | None,
     rowwise_template: str | None,
     rowwise_columns: list[dict[str, Any]] | None,
     system_messages: list[str] | None,
     condition: dict[str, str] | None,
+    return_history: bool,
 ) -> None:
-    """Refuse a prompt field or a condition the column would make moot: the
-    column supplies each row's whole conversation."""
-    beside: list[tuple[str, object | None]] = [
+    """Refuse a field the column would make moot: the column supplies each
+    row's whole conversation."""
+    beside: list[tuple[str, Any]] = [
         ("aggregate_table", aggregate_table),
         ("rowwise_template", rowwise_template),
         ("rowwise_columns", rowwise_columns),
         ("system_messages", system_messages),
         ("condition", condition),
+        ("return_history", return_history or None),
     ]
     for field, value in beside:
         if value is None:
@@ -54,8 +57,8 @@ def _refuse_fields_beside_rowwise_messages(
         raise ValueError(
             f"{op_kind} combines rowwise_messages with {field};"
             f" the column '{column.node}' supplies the whole conversation, so"
-            " the prompt fields beside it would be ignored. Drop them, or"
-            " drop the messages column."
+            " the field beside it would be ignored. Drop it, or drop the"
+            " messages column."
         )
 
 
@@ -115,17 +118,24 @@ class LLMChatOp(LLMOp):
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
     ) -> None:
+        messages = messages if isinstance(messages, Op) else MessageOp(messages)
         if rowwise_messages is not None:
             _refuse_fields_beside_rowwise_messages(
                 type(self).__name__,
                 rowwise_messages,
-                aggregate_table=aggregate_table,
-                rowwise_template=rowwise_template,
-                rowwise_columns=rowwise_columns,
-                system_messages=system_messages,
-                condition=condition,
+                aggregate_table,
+                rowwise_template,
+                rowwise_columns,
+                system_messages,
+                condition,
+                return_history,
             )
-        messages = messages if isinstance(messages, Op) else MessageOp(messages)
+            if not isinstance(messages, MessageOp) or messages.messages:
+                raise ValueError(
+                    f"{type(self).__name__} combines rowwise_messages with"
+                    " messages; the column supplies each row's whole"
+                    " conversation, so a message beside it would be ignored."
+                )
         super().__init__([messages], config, cacheable)
         self.return_history = return_history
         self.structural_outputs = structural_outputs
