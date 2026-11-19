@@ -38,10 +38,6 @@ outputs:
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, and `RouterOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
-`RouterOp` partitions one source op's rows into named branches; each branch is
-an ordinary node named `<id>.<branch>` that a consumer lists in `inputs`. See
-[`docs/OPS.md`](OPS.md#routerop).
-
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 

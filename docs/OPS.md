@@ -519,39 +519,14 @@ For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see
 
 ### RouterOp
 
-`RouterOp` partitions one source op's rows into named branches by an ordered
-list of rules. It is expanded before any graph is built: each branch becomes
-an ordinary list-mode `LambdaOp` node named `<id>.<branch>`, so a consumer
-lists that id in `inputs:` like any other node and reads exactly that
-branch's rows.
+`RouterOp` partitions one source op's rows into named branches, one ordinary
+node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
+first rule that matches wins; `match` is `contains` or `equals`, optional
+`path` selects the field tested, and `default_branch` keeps unmatched rows.
 
 ```yaml
 ops:
-  - id: route
-    op: RouterOp
-    inputs: [norm]              # exactly one source
-    path: text                  # field of each row the rules test
-    default_branch: patient     # rows no rule matched
-    rules:
-      - {branch: diagnose, match: contains, value: "DIAGNOSIS READY"}
-      - {branch: test, match: contains, value: "REQUEST TEST"}
-
-  - id: test_turn
-    op: LLMChatOp
-    inputs: [route.test]
-    rowwise_template: "{prompt}"
-    rowwise_columns:
-      - {label: prompt, node: route.test, path: items.output.prompt}
-    config: {model: model-id}
+  - {id: route, op: RouterOp, inputs: [norm], default_branch: patient,
+     rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"},
+             {branch: test, match: contains, value: "REQUEST TEST"}]}
 ```
-
-Rules are tested in order and the first match wins. `match` is `contains` or
-`equals`; `path` is an optional dotted field that selects the value the rules
-test (the whole row when omitted). `default_branch` must not also appear as a
-rule: it catches what no rule matched. Every branch reads the router's whole
-source, so the generated nodes are list-mode and a consumer reads one list
-column, which is how a list-mode `LambdaOp` output is read. A chat op reading
-a branch is one call per branch row, so every prompt it needs must come from
-the branch row: a chat op cannot bind both a branch and the un-routed rows in
-one rowwise template. Join a branch back to the full row set with a list-mode
-`LambdaOp` that reads the branch and keys on the field each row carries.
