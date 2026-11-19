@@ -221,7 +221,7 @@ def _queue_empty_message_op(op_dict: dict[str, Any], ctx: EmitContext) -> str:
     column, not a rendered message, is what the model reads."""
     msg_internal_id = make_id(ctx.scope, "message", ctx.entry.id)
     # No message of its own: the column supplies the conversation, and the
-    # lowering traces this op only to keep the graph traversal complete.
+    # lowering marks this op visited to keep the graph traversal complete.
     msg_dict: dict[str, Any] = {
         "_id": msg_internal_id,
         "_op": "MessageOp",

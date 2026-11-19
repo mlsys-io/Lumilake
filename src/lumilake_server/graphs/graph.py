@@ -1,9 +1,8 @@
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import replace
 from typing import Any, TypeVar, overload
 
-from lumilake_server.ops import InputOp, LLMChatOp, Op, OutputOp
+from lumilake_server.ops import InputOp, Op, OutputOp
 from lumilake_server.utils.graph import topological_sort
 
 OpType = TypeVar("OpType", bound=Op)
@@ -146,11 +145,6 @@ class Graph:
         output_ops: list[OutputOp] = []
         for new_op in node_map.values():
             new_op.inputs = [node_map[inp] for inp in new_op.inputs]
-            if isinstance(new_op, LLMChatOp) and new_op.rowwise_messages is not None:
-                new_op.rowwise_messages = replace(
-                    new_op.rowwise_messages,
-                    op=node_map[new_op.rowwise_messages.op],
-                )
             if isinstance(new_op, OutputOp):
                 output_ops.append(new_op)
 

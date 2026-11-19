@@ -2447,7 +2447,8 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     turn = LLMChatOp(
         [],
         config=GenerationConfig(model="m"),
-        rowwise_messages=RowwiseMessages(prompts, "items.output"),
+        rowwise_messages=RowwiseMessages("items.output"),
+        rowwise_messages_op=prompts,
     )
     compiled = Graph.from_ops(
         [as_output("prompts", prompts), as_output("result", turn)]
@@ -2461,9 +2462,10 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     }
     assert graph.nodes[turn_id].dependencies == (prompts.id,)
     copied = compiled.copy()
-    (copied_turn,) = list(copied.iter_ops(LLMChatOp))
-    column = copied_turn.rowwise_messages
-    assert column is not None and column.op is copied_turn.inputs[1]
+    (copied_turn,) = copied.iter_ops(LLMChatOp)
+    (copied_prompts,) = copied.iter_ops(LambdaOp)
+    assert copied_turn.rowwise_messages_op is copied_prompts
+    RuntimeGraphBuilder().build(copied)
 
     conversation = (
         '[{"role": "user", "content": "hi"}, '
@@ -2472,7 +2474,8 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     literal = LLMChatOp(
         [],
         config=GenerationConfig(model="m"),
-        rowwise_messages=RowwiseMessages(rows),
+        rowwise_messages=RowwiseMessages(),
+        rowwise_messages_op=rows,
     )
     bound = Graph.from_ops([as_output("result", literal)]).compile(rows=[conversation])
     node = RuntimeGraphBuilder().build(bound).nodes[literal.id]
@@ -2487,7 +2490,8 @@ def test_messages_column_refuses_a_path_on_a_literal_producer() -> None:
     llm = LLMChatOp(
         [],
         config=GenerationConfig(model="m"),
-        rowwise_messages=RowwiseMessages(rows, "items"),
+        rowwise_messages=RowwiseMessages("items"),
+        rowwise_messages_op=rows,
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
     with pytest.raises(ValueError, match="reads the literal"):
@@ -2502,7 +2506,8 @@ def test_messages_column_refuses_a_row_mode_lambda_producer() -> None:
     llm = LLMChatOp(
         [],
         config=GenerationConfig(model="m"),
-        rowwise_messages=RowwiseMessages(prompts, "items.output"),
+        rowwise_messages=RowwiseMessages("items.output"),
+        rowwise_messages_op=prompts,
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
     with pytest.raises(ValueError, match="list-mode LambdaOp"):

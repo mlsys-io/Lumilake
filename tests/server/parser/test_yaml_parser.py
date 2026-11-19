@@ -637,10 +637,10 @@ def test_messages_column_parses_into_a_list_fed_chat_op() -> None:
         "graph"
     ]
     graph = Graph.from_json(graph_dict)
-    (turn,) = list(graph.iter_ops(LLMChatOp))
-    (prompts,) = list(graph.iter_ops(LambdaOp))
-    assert turn.rowwise_messages == RowwiseMessages(prompts, "items.output")
-    assert prompts in turn.inputs
+    (turn,) = graph.iter_ops(LLMChatOp)
+    (prompts,) = graph.iter_ops(LambdaOp)
+    assert turn.rowwise_messages_op is prompts
+    assert turn.rowwise_messages == RowwiseMessages("items.output")
 
 
 @pytest.mark.parametrize(

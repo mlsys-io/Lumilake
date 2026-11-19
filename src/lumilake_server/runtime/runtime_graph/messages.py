@@ -29,8 +29,8 @@ class _MessagesBuilder(_DerivedBuilder):
         column = op.rowwise_messages
         if column is None:
             return self._lower_llm(op, ctx)
-        # The column, not the message op, is what the model reads; the message
-        # op carries no messages and is marked visited for the traversal check.
+        # The column, not the empty message op, is what the model reads; that
+        # op is marked visited for the graph traversal check.
         ctx.visited.add(op.messages.id)
         data_spec, dependencies = self._messages_data_spec(op, column, ctx)
         node = self._messages_op(op, data_spec, dependencies, ctx)
@@ -42,17 +42,14 @@ class _MessagesBuilder(_DerivedBuilder):
         """The ``list`` data spec one row per conversation, plus the runtime
         node that produces the column."""
         consumer = f"LLMChatOp '{llm_op.id}' rowwise_messages"
-        upstream = ctx.graph_dict.get(column.node)
-        if upstream is None:
-            raise ValueError(
-                f"{consumer} references {column.node!r}, which is not in the"
-                " workflow graph"
-            )
-        ctx.visited.add(column.node)
+        upstream = llm_op.rowwise_messages_op
+        assert upstream is not None
+        node = upstream.id
+        ctx.visited.add(node)
         if isinstance(upstream, (InputOp, DataOp)):
             if column.path is not None:
                 raise ValueError(
-                    f"{consumer} reads the literal {column.node!r} with drill"
+                    f"{consumer} reads the literal {node!r} with drill"
                     f" path {column.path!r}; literal values bind whole, so drop"
                     " the path"
                 )
@@ -63,25 +60,25 @@ class _MessagesBuilder(_DerivedBuilder):
             )
             if not values:
                 raise ValueError(
-                    f"{consumer} reads {column.node!r}, which has no values supplied"
+                    f"{consumer} reads {node!r}, which has no values supplied"
                 )
             return {"type": "list", "items": _decoded(values, consumer)}, []
         output = self._op_output(upstream)
         if output.needs_flatten:
             raise ValueError(
-                f"{consumer} reads '{column.node}', which groups its rows into"
+                f"{consumer} reads '{node}', which groups its rows into"
                 " one item; a messages column needs one conversation per row"
             )
         if not _producer_kind_supported(upstream):
             raise ValueError(
-                f"{consumer} reads '{column.node}' ({type(upstream).__name__});"
+                f"{consumer} reads '{node}' ({type(upstream).__name__});"
                 " a messages column reads a list-mode LambdaOp, a data"
                 " retrieval or a literal input"
             )
-        runtime_ids = ctx.dsl_to_runtime.get(column.node)
+        runtime_ids = ctx.dsl_to_runtime.get(node)
         if not runtime_ids:
             raise ValueError(
-                f"{consumer} reads '{column.node}', which compiles to no runtime"
+                f"{consumer} reads '{node}', which compiles to no runtime"
                 " node even though the build order should have materialized it"
             )
         path = output.read(column.path or _WHOLE, consumer)
