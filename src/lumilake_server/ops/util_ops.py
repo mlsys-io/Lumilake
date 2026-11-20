@@ -170,7 +170,6 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: RowLambdaFn,
         code: str | None = None,
-        by: str | None = None,
         mode: Literal["row"] = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -186,7 +185,6 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: ListLambdaFn,
         code: str | None = None,
-        by: str | None = None,
         mode: Literal["list"] = "list",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -202,7 +200,6 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: ListLambdaFn,
         code: str | None = None,
-        by: str | None = None,
         mode: Literal["aligned"] = "aligned",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -218,7 +215,6 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: ExpandLambdaFn,
         code: str | None = None,
-        by: str | None = None,
         mode: Literal["expand"] = "expand",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -234,7 +230,6 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: ReduceLambdaFn,
         code: str | None = None,
-        by: str | None = None,
         mode: Literal["reduce"] = "reduce",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -242,6 +237,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        by: str | None = None,
     ) -> None: ...
 
     def __init__(
@@ -249,7 +245,6 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: Callable[..., Any],
         code: str | None = None,
-        by: str | None = None,
         mode: str = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -257,6 +252,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        by: str | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -377,7 +373,7 @@ class LambdaOp(Op):
         cache = data.get("cache")
         sample_value = data.get("sample_value")
         try:
-            fn = SubmittedFunction(code, fn_name)
+            fn: Callable[..., Any] = SubmittedFunction(code, fn_name)
         except ValueError as exc:
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
