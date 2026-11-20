@@ -16,6 +16,7 @@ class Phase(IntEnum):
     LLM = 2
     DERIVED = 3
     ROW_LAMBDA = 4
+    JOIN = 5
 
 
 @dataclass(frozen=True)

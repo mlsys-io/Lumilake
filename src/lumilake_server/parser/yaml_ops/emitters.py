@@ -6,6 +6,7 @@ from .data import emit_data_op, emit_data_retrieval_op, emit_format_op, emit_mes
 from .embedding import emit_embedding_op
 from .http_fetch import emit_http_fetch_op
 from .image import emit_image_generation_op
+from .joins import emit_join_op
 from .lambdas import emit_lambda_op
 from .llm import emit_llm_chat_op, emit_llm_completion_op, emit_llm_vision_op
 
@@ -17,6 +18,7 @@ EMITTERS: dict[str, OpEmitter] = {
     "FormatOp": OpEmitter("format", emit_format_op),
     "HttpFetchOp": OpEmitter("httpfetch", emit_http_fetch_op),
     "ImageGenerationOp": OpEmitter("imagegen", emit_image_generation_op),
+    "JoinOp": OpEmitter("join", emit_join_op),
     "LLMChatOp": OpEmitter("llm", emit_llm_chat_op),
     "LLMCompletionOp": OpEmitter("llmcompletion", emit_llm_completion_op),
     "LLMVisionOp": OpEmitter("llmvision", emit_llm_vision_op),
