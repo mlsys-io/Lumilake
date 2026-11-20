@@ -311,7 +311,12 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     assert len(_python_nodes(graph)) == 1
 
 
-def _rowwise_llm(source: LambdaOp) -> LLMChatOp:
+@pytest.mark.parametrize("mode", ["expand", "reduce"])
+def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> None:
+    """An expand or reduce LambdaOp always compiles to its own python task
+    after every producer, and its mode and ``by`` reach the task spec."""
+    stock = input_placeholder("Stock")
+    source = LambdaOp([stock], fn=lambda row: [row[0], row[0]])
     llm = LLMChatOp(
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model=_MODEL),
@@ -319,16 +324,6 @@ def _rowwise_llm(source: LambdaOp) -> LLMChatOp:
         rowwise_columns=[{"label": "v", "node": source.id, "path": "items.output"}],
     )
     llm.inputs.append(source)
-    return llm
-
-
-@pytest.mark.parametrize("mode", ["expand", "reduce"])
-def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> None:
-    """An expand or reduce LambdaOp always compiles to its own python task
-    after every producer, and its mode and ``by`` reach the task spec."""
-    stock = input_placeholder("Stock")
-    source = LambdaOp([stock], fn=lambda row: [row[0], row[0]])
-    llm = _rowwise_llm(source)
     if mode == "reduce":
         reading = LambdaOp([llm], fn=lambda rows: len(rows), mode="reduce", by="v")
     else:
