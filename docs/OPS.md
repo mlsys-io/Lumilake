@@ -504,7 +504,7 @@ fails with the op and the row index named. `by` is accepted only in reduce mode.
 ops:
   - id: "TopThree"
     op: LambdaOp
-    inputs: ["Scores"]
+    inputs: [Scores]
     mode: reduce
     by: patient_id
     fn_name: top_three

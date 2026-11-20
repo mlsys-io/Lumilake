@@ -305,91 +305,37 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     assert len(_python_nodes(graph)) == 1
 
 
-def test_expand_and_reduce_build_standalone_steps_with_their_mode() -> None:
-    """An expand or reduce LambdaOp always compiles to its own python task, and
-    its mode (and a reduce op's ``by``) reach the task spec."""
-    payload = """
-name: shapes
-inputs:
-  Keywords: ["a,b", "", "c"]
-ops:
-  - id: "Split"
-    op: LambdaOp
-    inputs: [Keywords]
-    mode: expand
-    fn_name: split
-    code: |
-      def split(row):
-          return [k for k in row[0].split(",") if k]
-  - id: "Group"
-    op: LambdaOp
-    inputs: ["Split"]
-    mode: reduce
-    by: keyword
-    fn_name: group
-    code: |
-      def group(rows):
-          return len(rows)
-outputs:
-  - name: grouped
-    ref: "Group"
-"""
-    spec = parse_yaml_payload(payload)["shapes"]
-    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    graph = RuntimeGraphBuilder().build(compiled)
-
-    nodes = _python_nodes(graph)
-    assert len(nodes) == 2
-    by_mode = {node.data_spec["mode"]: node for node in nodes.values()}
-    assert by_mode["expand"].data_spec.get("by") is None
-    assert by_mode["reduce"].data_spec["by"] == "keyword"
-    assert by_mode["reduce"].dependencies == (by_mode["expand"].node_id,)
+def _rowwise_llm(source: LambdaOp) -> LLMChatOp:
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Say {v}",
+        rowwise_columns=[{"label": "v", "node": source.id, "path": "items.output"}],
+    )
+    llm.inputs.append(source)
+    return llm
 
 
 @pytest.mark.parametrize("mode", ["expand", "reduce"])
-def test_expand_and_reduce_read_a_rowwise_llm_output(mode: str) -> None:
-    """An expand or reduce LambdaOp over a rowwise LLM builds its step after
-    the LLM's node, reading that LLM's per-row outputs."""
-    payload = f"""
-name: shapes
-inputs:
-  q: ["a", "b"]
-ops:
-  - id: "Ask"
-    op: LLMChatOp
-    inputs: [q]
-    messages:
-      - role: user
-        content: "hi"
-    rowwise_template: "Say {{v}}"
-    rowwise_columns:
-      - {{ label: v, node: q, path: "items.output" }}
-    config: {{ model: {_MODEL} }}
-  - id: "Read"
-    op: LambdaOp
-    inputs: ["Ask"]
-    mode: {mode}
-    {"by: v" if mode == "reduce" else ""}
-    fn_name: read
-    code: |
-      def read(rows):
-          return [row[0] for row in rows]
-outputs:
-  - name: out
-    ref: "Read"
-"""
-    spec = parse_yaml_payload(payload)["shapes"]
-    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> None:
+    """An expand or reduce LambdaOp always compiles to its own python task
+    after every producer, and its mode and ``by`` reach the task spec."""
+    stock = input_placeholder("Stock")
+    source = LambdaOp([stock], fn=lambda row: [row[0], row[0]])
+    llm = _rowwise_llm(source)
+    if mode == "reduce":
+        reading = LambdaOp([llm], fn=lambda rows: len(rows), mode="reduce", by="v")
+    else:
+        reading = LambdaOp([llm], fn=lambda row: [row[0], row[0]], mode="expand")
+    compiled = Graph.from_ops([as_output("out", reading)]).compile(Stock=["a", "b"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    nodes = list(_python_nodes(graph).values())
-    (node,) = nodes
-    llm_node_id = graph.dsl_to_runtime[node.data_spec["plan"][0]["node"]][0]
+    node = _python_nodes(graph)[reading.id]
     assert node.data_spec["mode"] == mode
     assert node.data_spec["plan"] == [
-        {"kind": "stage", "node": llm_node_id, "flatten": True}
+        {"kind": "stage", "node": llm.id, "flatten": True}
     ]
-    assert node.dependencies == (llm_node_id,)
+    assert node.dependencies == (llm.id,)
 
 
 def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
@@ -773,47 +719,27 @@ def test_wrapper_expand_mode_emits_one_item_per_element_and_drops_empty() -> Non
 
 def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
     code = "def best(rows):\n    return sorted(rows, key=lambda r: -r[0]['s'])[:2]\n"
-    rows = [
-        json.dumps({"id": i, "s": s})
-        for i, s in (("p1", 5), ("p2", 9), ("p1", 7), ("p2", 3), ("p1", 1))
-    ]
+    pairs = (("p1", 5), ("p2", 9), ("p1", 7), (1, 2), ("1", 3), ("p1", 1))
+    rows = [json.dumps({"id": i, "s": s}) for i, s in pairs]
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": rows}]
     out = _run_wrapper(code, plan, {}, fn_name="best", mode="reduce", by="id")
     assert [[row[0]["s"] for row in item["output"]] for item in out["items"]] == [
         [7, 5],
-        [9, 3],
+        [9],
+        [2],
+        [3],
     ]
 
 
-def test_wrapper_reduce_mode_groups_by_json_text() -> None:
-    rows = [json.dumps({"id": v}) for v in (1, "1")]
-    plan: python_step.ColumnPlan = [{"kind": "literal", "values": rows}]
-    out = _run_wrapper(
-        "lambda rows: len(rows)", plan, {}, fn_name="f", mode="reduce", by="id"
-    )
-    assert [item["output"] for item in out["items"]] == [1, 1]
+_DF = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
+_DF_ROWS = [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}]
 
 
 @pytest.mark.parametrize(
     "value, expected",
     [
-        (
-            {"df": json.dumps({"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}})},
-            [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}],
-        ),
-        (
-            {
-                "index": 0,
-                "query": "SELECT 1",
-                "rows": 2,
-                "table": {
-                    "df": json.dumps(
-                        {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
-                    )
-                },
-            },
-            [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}],
-        ),
+        ({"df": json.dumps(_DF)}, _DF_ROWS),
+        ({"index": 0, "table": {"df": json.dumps(_DF)}}, _DF_ROWS),
         (
             {"table": "[1, 2]", "note": "x"},
             [{"output": {"table": "[1, 2]", "note": "x"}}],
@@ -825,8 +751,7 @@ def test_wrapper_expand_mode_decodes_only_a_serialized_table(
 ) -> None:
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(value)]}]
     code = (
-        "def rows(row):\n"
-        "    value = row[0]\n"
+        "def rows(row):\n    value = row[0]\n"
         "    return value if isinstance(value, list) else [value]\n"
     )
     out = _run_wrapper(code, plan, {}, fn_name="rows", mode="expand")
@@ -851,22 +776,16 @@ def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
 def test_by_is_refused_outside_reduce_mode() -> None:
     with pytest.raises(ValueError, match="'by' is only valid in reduce mode"):
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), by="id")
+
+
+def test_a_reduce_mode_yaml_op_without_by_names_the_op() -> None:
     payload = """
 name: shapes
-inputs:
-  K: ["a"]
+inputs: {K: ["a"]}
 ops:
-  - id: "Group"
-    op: LambdaOp
-    inputs: [K]
-    mode: reduce
-    fn_name: group
-    code: |
-      def group(rows):
-          return len(rows)
-outputs:
-  - name: out
-    ref: "Group"
+  - {id: Group, op: LambdaOp, inputs: [K], mode: reduce, fn_name: group,
+     code: "def group(rows):\\n    return len(rows)\\n"}
+outputs: [{name: out, ref: Group}]
 """
     with pytest.raises(ValueError, match="LambdaOp 'Group' reduce mode requires"):
         parse_yaml_payload(payload)

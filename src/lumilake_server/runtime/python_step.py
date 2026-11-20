@@ -56,7 +56,8 @@ _SPEC.loader.exec_module(_RUNTIME)
 _text = _RUNTIME._text
 _column = _RUNTIME._column
 _decode = _RUNTIME._decode
-_at_path = _RUNTIME._at_path
+_walk_path = _RUNTIME._walk_path
+_rows = _RUNTIME._rows
 materialize = _RUNTIME.materialize
 
 _USER_CODE = {code!r}
@@ -219,16 +220,9 @@ def main(inputs):
         [_decode(v) for v in _column(entry, inputs, lambda v: v)]
         for entry in _PLAN
     ]
-    n = max((len(c) for c in columns), default=1)
-    for entry, col in zip(_PLAN, columns):
-        if len(col) not in (1, n):
-            raise ValueError(
-                "%s: input %r has %d rows; expected 1 or %d"
-                % ({op_id!r}, entry.get("node", "literal"), len(col), n)
-            )
     items = []
-    for i in range(n):
-        values = fn(tuple(c[0] if len(c) == 1 else c[i] for c in columns))
+    for row in _rows(columns, _PLAN, {op_id!r}):
+        values = fn(row)
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"
@@ -241,6 +235,7 @@ def main(inputs):
 _REDUCE_MAIN = """\
 
 _BY = {by!r}
+_BY_PATH = _BY.split(".")
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
@@ -248,18 +243,12 @@ def main(inputs):
         [_decode(v) for v in _column(entry, inputs, lambda v: v)]
         for entry in _PLAN
     ]
-    n = max((len(c) for c in columns), default=1)
-    for entry, col in zip(_PLAN, columns):
-        if len(col) not in (1, n):
-            raise ValueError(
-                "%s: input %r has %d rows; expected 1 or %d"
-                % ({op_id!r}, entry.get("node", "literal"), len(col), n)
-            )
     groups = {{}}
-    for i in range(n):
-        row = tuple(c[0] if len(c) == 1 else c[i] for c in columns)
+    for i, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
         try:
-            key = json.dumps(_at_path(row[0], _BY), sort_keys=True)
+            key = json.dumps(
+                _walk_path(row[0], _BY_PATH, "row %d" % i), sort_keys=True
+            )
         except ValueError as exc:
             raise ValueError(
                 "%s: reduce lambda cannot group row %d by %r: %s"
