@@ -74,16 +74,15 @@ def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
     return [rows[index] for index in ordered]
 
 
-def _decode(value: Any) -> Any:
-    """Decode one column value for a per-row or per-group function: JSON object
-    or array text is parsed, a serialized table becomes its rows, and anything
-    else is passed as is."""
+def _serialized_table(value: Any) -> dict[str, Any] | None:
+    """The ``column -> row index -> value`` mapping of a serialized table, or
+    ``None`` when ``value`` is not one, either as a ``{"df": <json text>}``
+    mapping or as the JSON text of one."""
     if isinstance(value, str):
         try:
-            decoded = json.loads(value)
+            value = json.loads(value)
         except ValueError:
-            return value
-        return _decode(decoded) if isinstance(decoded, (dict, list)) else value
+            return None
     if (
         isinstance(value, dict)
         and list(value) == ["df"]
@@ -92,13 +91,29 @@ def _decode(value: Any) -> Any:
         try:
             table = json.loads(value["df"])
         except ValueError:
-            return value
+            return None
         if isinstance(table, dict):
-            return _table_rows(table)
-    if isinstance(value, dict) and isinstance(value.get("table"), dict | str):
-        table = _decode(value["table"])
-        if isinstance(table, list):
             return table
+    return None
+
+
+def _decode(value: Any) -> Any:
+    """Decode one column value for a per-row or per-group function: JSON object
+    or array text is parsed, a serialized table becomes its rows (also when a
+    retrieval item carries it under ``table``), and anything else is passed as
+    is."""
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return value
+        return _decode(decoded) if isinstance(decoded, (dict, list)) else value
+    if isinstance(value, dict):
+        table = _serialized_table(value)
+        if table is None and "table" in value:
+            table = _serialized_table(value["table"])
+        if table is not None:
+            return _table_rows(table)
     return value
 
 
