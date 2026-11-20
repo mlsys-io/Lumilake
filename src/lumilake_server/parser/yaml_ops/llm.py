@@ -10,6 +10,7 @@ from .data import emit_message_op
 
 def emit_llm_chat_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     _emit_llm_like_op(op_dict, ctx, op_kind="LLMChatOp")
+    _emit_rowwise_seed(op_dict, ctx)
 
 
 def emit_llm_completion_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
@@ -35,6 +36,8 @@ def emit_llm_completion_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
 def emit_llm_vision_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     entry = ctx.entry
     user_id_to_internal = ctx.user_id_to_internal
+    if entry.fields.get("rowwise_seed") is not None:
+        raise ValueError(f"LLMVisionOp '{entry.id}' does not support rowwise_seed")
     image_source = entry.fields.get("image_source")
     if not isinstance(image_source, str) or not image_source.strip():
         raise ValueError(
@@ -139,9 +142,6 @@ def _emit_llm_like_op(
 
     aggregate_table = entry.fields.get("aggregate_table")
     rowwise_columns = entry.fields.get("rowwise_columns")
-    rowwise_seed = _resolve_seed_node(
-        entry.fields.get("rowwise_seed"), user_id_to_internal
-    )
     resolved_aggregate = _resolve_table_nodes(aggregate_table, user_id_to_internal)
     resolved_rowwise = _resolve_table_nodes(rowwise_columns, user_id_to_internal)
 
@@ -154,10 +154,6 @@ def _emit_llm_like_op(
     if resolved_rowwise is not None:
         op_dict["rowwise_columns"] = resolved_rowwise
     _emit_rowwise_messages(entry, op_dict, user_id_to_internal, op_kind)
-    if rowwise_seed is not None:
-        if op_kind != "LLMChatOp":
-            raise ValueError(f"{op_kind} '{entry.id}' does not support rowwise_seed")
-        op_dict["rowwise_seed"] = rowwise_seed
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
     elif "rowwise_template" in entry.fields and isinstance(inline_messages, list):
@@ -185,7 +181,6 @@ def _emit_llm_like_op(
                 node_id = item.get("node")
                 if isinstance(node_id, str) and node_id not in llm_inputs:
                     llm_inputs.append(node_id)
-    _append_seed_input(llm_inputs, rowwise_seed)
     op_dict["_inputs"] = llm_inputs
 
 
@@ -320,33 +315,30 @@ def _resolve_table_nodes(
     return out
 
 
-def _resolve_seed_node(
-    seed: Any, user_id_to_internal: dict[str, str]
-) -> dict[str, Any] | None:
-    """Resolve a ``rowwise_seed`` column ref, mapping its user-facing ``node``
-    to the internal op id."""
+def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
+    """Fill in the ``rowwise_seed`` column and add its node to the op's
+    inputs, as a rowwise column node is added."""
+    entry = ctx.entry
+    user_id_to_internal = ctx.user_id_to_internal
+    seed = entry.fields.get("rowwise_seed")
     if seed is None:
-        return None
-    if not isinstance(seed, dict):
-        raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
-    node_ref = seed.get("node")
-    if not isinstance(node_ref, str) or not isinstance(seed.get("path", ""), str):
-        raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
-    if node_ref not in user_id_to_internal:
-        raise ValueError(f"rowwise_seed references unknown id '{node_ref}'")
-    return {"node": user_id_to_internal[node_ref], "path": seed.get("path", "")}
-
-
-def _append_seed_input(
-    llm_inputs: list[str], rowwise_seed: dict[str, Any] | None
-) -> None:
-    """Add a rowwise seed column's node to the op's inputs, as an aggregate or
-    rowwise column node is added."""
-    if rowwise_seed is None:
         return
-    node_id = rowwise_seed["node"]
-    if node_id not in llm_inputs:
-        llm_inputs.append(node_id)
+    if not isinstance(seed, dict):
+        raise ValueError(f"LLMChatOp '{entry.id}' rowwise_seed must be a mapping")
+    node_ref = seed.get("node")
+    path = seed.get("path", "")
+    if not isinstance(node_ref, str) or not isinstance(path, str):
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed must name a node and path"
+        )
+    if node_ref not in user_id_to_internal:
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed references unknown id '{node_ref}'"
+        )
+    node_id = user_id_to_internal[node_ref]
+    op_dict["rowwise_seed"] = {"node": node_id, "path": path}
+    if node_id not in op_dict["_inputs"]:
+        op_dict["_inputs"].append(node_id)
 
 
 def _build_inline_messages(
