@@ -316,7 +316,12 @@ An optional `rowwise_seed` binds a per-row sampling seed. It takes the same
 null) per row; the runtime passes the column to FlowMesh as `spec.data.seeds`,
 so each row's generation carries its own seed on a vLLM worker. A null entry
 keeps the op's own `seed` for that row. `rowwise_seed` requires
-`rowwise_template` and is rejected with `num_beams > 1` and in API mode.
+`rowwise_template`, is rejected with `num_beams > 1` and in API mode, and its
+producer must emit one value per row: a row- or list-mode `LambdaOp`, a
+per-row `LLMChatOp`, or a literal input. A retrieval, or any op that
+groups rows, emits one list per group instead, so it is refused at build
+time. A literal input's values are inlined as the seed list and take no
+`path`.
 
 ```yaml
 - id: Answer

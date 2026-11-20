@@ -20,6 +20,7 @@ from lumilake_server.ops.llm_ops import (
     LLMChatOp,
     LLMCompletionOp,
 )
+from lumilake_server.ops.ops import RowShape
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
@@ -40,11 +41,24 @@ from lumilake_server.runtime.runtime_graph.lowering import (
     register,
 )
 from lumilake_server.runtime.runtime_graph.outputs import (
+    emits_one_item_per_row,
     is_api_task,
     output_row_count,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import lambda_runtime
+
+
+def _emits_one_seed_per_row(op: Op) -> bool:
+    """Whether the op's output holds one scalar per row, so a seed read from it
+    pairs with the rowwise prompts. A retrieval, a grouped op, and an LLM that
+    does not emit one item per row (an API task, a grouped chat) hold a list
+    per group instead."""
+    if isinstance(op, DataRetrievalOp):
+        return False
+    if isinstance(op, LLMOp):
+        return emits_one_item_per_row(op)
+    return op.row_shape is RowShape.PER_ROW
 
 
 def _literal_seed(value: Any, llm_op_id: str) -> int | None:
@@ -665,6 +679,14 @@ class _LLMBuilder(_EmbeddingBuilder):
                 data_spec, llm_op_id=llm_op_id, values=upstream.data, path=path
             )
             return
+        if not _emits_one_seed_per_row(upstream):
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} rowwise_seed references '{node_ref}'"
+                f" ({type(upstream).__name__}), which does not emit one value"
+                " per row; the seed must come from a producer that emits one"
+                " value per row, such as a Lambda, a per-row LLMChatOp, or a"
+                " literal input"
+            )
         if node_ref not in dependencies:
             dependencies.append(node_ref)
         data_spec["seeds"] = {

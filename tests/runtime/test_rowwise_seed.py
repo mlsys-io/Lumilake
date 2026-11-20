@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 import yaml
 
+from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -47,10 +48,26 @@ def test_rowwise_seed_lowers_to_task_seeds() -> None:
     [
         (lambda p: p["ops"][1].pop("rowwise_template"), "rowwise_template"),
         (lambda p: p["ops"][1]["config"].update(num_beams=3), "num_beams"),
+        (
+            lambda p: p["ops"].insert(
+                0,
+                {
+                    "id": "Rows",
+                    "op": "DataRetrievalOp",
+                    "inputs": [],
+                    "data_spec": {"type": "lumid", "mode": "sql", "template": "s"},
+                },
+            )
+            or p["ops"][2]["rowwise_seed"].update(node="Rows")
+            or p["ops"][2]["inputs"].append("Rows"),
+            "one value per row",
+        ),
     ],
 )
 def test_rowwise_seed_refused(
-    mutate: Callable[[dict[str, Any]], None], match: str
+    mutate: Callable[[dict[str, Any]], None], match: str, monkeypatch: Any
 ) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "token")
     with pytest.raises(ValueError, match=match):
         _build(mutate)
