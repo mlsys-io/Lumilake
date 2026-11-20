@@ -73,19 +73,28 @@ def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         for index, value in column.items():
             rows.setdefault(index, {})[name] = value
-    indexes = [index for index in rows]
     try:
-        indexes.sort(key=int)
+        indexes = sorted(rows, key=int)
     except ValueError:
-        pass
+        indexes = list(rows)
     return [rows[index] for index in indexes]
 
 
 def _decoded_rows(value: Any) -> list[Any]:
     """The rows one decoded cell carries: a table's ``{"df": "<json>"}``
     envelope, a row object, or a list of any of these."""
-    if isinstance(value, dict) and len(value) == 1 and isinstance(value.get("df"), str):
-        return _table_rows(json.loads(value["df"]))
+    if (
+        isinstance(value, dict)
+        and list(value) == ["df"]
+        and isinstance(value["df"], str)
+    ):
+        try:
+            table = json.loads(value["df"])
+        except ValueError:
+            raise ValueError("join input df is not JSON")
+        if not isinstance(table, dict):
+            raise ValueError("join input df is not a column table")
+        return _table_rows(table)
     if isinstance(value, list):
         rows: list[Any] = []
         for item in value:

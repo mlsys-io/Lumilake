@@ -241,6 +241,8 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
         {"case_id": "a", "text": "x", "reply": 1},
         {"case_id": "c", "text": "z", "reply": 1},
     ]
+    with pytest.raises(ValueError, match="join input df is not a column table"):
+        _run(tmp_path, node, {0: [{"output": [{"df": "[1, 2]"}]}]}, name="bad")
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
