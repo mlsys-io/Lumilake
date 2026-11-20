@@ -746,11 +746,15 @@ def test_wrapper_reduce_mode_groups_by_json_text() -> None:
     assert [item["output"] for item in out["items"]] == [1, 1]
 
 
-def test_wrapper_expand_mode_decodes_a_serialized_table_to_its_rows() -> None:
+@pytest.mark.parametrize("wrap_in_retrieval_item", [False, True])
+def test_wrapper_expand_mode_decodes_a_serialized_table_to_its_rows(
+    wrap_in_retrieval_item: bool,
+) -> None:
     df = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": [json.dumps({"df": json.dumps(df)})]}
-    ]
+    table: Any = {"df": json.dumps(df)}
+    if wrap_in_retrieval_item:
+        table = {"index": 0, "query": "SELECT 1", "rows": 2, "table": table}
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(table)]}]
     out = _run_wrapper(
         "lambda row: row[0]",
         plan,
