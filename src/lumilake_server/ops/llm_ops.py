@@ -36,10 +36,8 @@ class RowwiseSeed:
     path: str = ""
 
     def __post_init__(self) -> None:
-        if not isinstance(self.node, str) or not self.node.strip():
+        if not self.node.strip():
             raise ValueError("RowwiseSeed node must be a non-empty string")
-        if not isinstance(self.path, str):
-            raise ValueError("RowwiseSeed path must be a string")
 
     def to_dict(self) -> dict[str, str]:
         return {"node": self.node, "path": self.path}
@@ -162,10 +160,21 @@ class LLMChatOp(LLMOp):
                 )
             # Keep the column's producer in the graph traversal.
             inputs.append(rowwise_messages_op)
-        if rowwise_seed_op is not None and rowwise_seed_op not in inputs:
-            # The seed's producer may feed no message, so keep it in the graph
-            # the same way the messages column does.
-            inputs.append(rowwise_seed_op)
+        if rowwise_seed is not None:
+            if rowwise_seed_op is None:
+                raise ValueError(
+                    f"{type(self).__name__} rowwise_seed requires the producing op"
+                )
+            if rowwise_seed_op.id != rowwise_seed.node:
+                raise ValueError(
+                    f"{type(self).__name__} rowwise_seed names node"
+                    f" '{rowwise_seed.node}' but its producing op is"
+                    f" '{rowwise_seed_op.id}'"
+                )
+            if rowwise_seed_op not in inputs:
+                # The seed's producer may feed no message, so keep it in the
+                # graph the same way the messages column does.
+                inputs.append(rowwise_seed_op)
         super().__init__(inputs, config, cacheable)
         self.return_history = return_history
         self.structural_outputs = structural_outputs
@@ -278,8 +287,6 @@ def _validate_rowwise_seed(
     accepts one seed per prompt."""
     if rowwise_seed is None:
         return
-    if not isinstance(rowwise_seed, RowwiseSeed):
-        raise ValueError("rowwise_seed must be a RowwiseSeed")
     if rowwise_template is None:
         raise ValueError(
             "rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
