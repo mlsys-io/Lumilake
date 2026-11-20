@@ -4,6 +4,7 @@ from lumilake_server.runtime.runtime_graph.graph import (
     RuntimeGraph,
     make_node_prefix,
 )
+from lumilake_server.runtime.runtime_graph.join import _JoinBuilder
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
     Phase,
@@ -15,7 +16,7 @@ from lumilake_server.runtime.runtime_graph.messages import _MessagesBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-class RuntimeGraphBuilder(_MessagesBuilder):
+class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
     def build(
         self,
         compiled_graph: CompiledGraph,
