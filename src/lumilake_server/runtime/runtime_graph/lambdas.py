@@ -248,7 +248,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
 
     def _referenced_row_lambdas(self, ctx: LoweringContext) -> set[str]:
         """Row-mode LambdaOps referenced by any built runtime node, either in
-        its data_spec/condition or as a runtime dependency."""
+        its data_spec/condition or as a runtime dependency, or by a join, which
+        reads its columns and attach targets in the join phase."""
         refs: set[str] = set()
         for node in ctx.nodes.values():
             for ref in _RuntimeGraphBuilderBase._iter_runtime_refs(node):
@@ -259,6 +260,10 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 op = ctx.graph_dict.get(dep)
                 if isinstance(op, LambdaOp) and not op.takes_whole_columns:
                     refs.add(dep)
+        for op in ctx.graph_dict.values():
+            if isinstance(op, JoinOp):
+                # A join reads every one of its inputs in the join phase.
+                refs.update(inp.id for inp in op.inputs)
         return refs
 
     @after_phase(Phase.ROW_LAMBDA)
