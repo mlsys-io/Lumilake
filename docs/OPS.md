@@ -516,8 +516,9 @@ ops:
 
 In both modes each column value is decoded once before the function sees it:
 a string that parses as a JSON object or array is parsed, a serialized table
-(`{"df": "<json>"}`) becomes a list of row dicts, and anything else is passed
-as is. Like list mode, both modes always run as a standalone `python` task.
+(`{"df": "<json>"}`) becomes a list of row dicts, including a data
+retrieval's table, and anything else is passed as is. Like list mode, both
+modes always run as a standalone `python` task.
 
 `mode: aligned` is the same calling convention as `list` (whole columns in, a
 list out, read at `value.items.output`), with one added guarantee: the function
