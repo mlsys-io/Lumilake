@@ -17,6 +17,20 @@ MAX_MEMORY_MB = 8192
 
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
+ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
+ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
+
+
+def _validate_path(path: str, field: str) -> None:
+    """Check that a field holds a dotted path of non-empty segments."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError(f"LambdaOp '{field}' must be a non-empty dotted path")
+    parts = path.split(".")
+    if any(not part or part != part.strip() for part in parts):
+        raise ValueError(
+            f"LambdaOp '{field}' must be a dotted path of non-empty segments"
+            f" (got {path!r})"
+        )
 
 
 def _validate_limits(
@@ -146,9 +160,9 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
-    fn: RowLambdaFn | ListLambdaFn
+    fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
 
-    LAMBDA_MODES = ("row", "list", "aligned")
+    LAMBDA_MODES = ("row", "list", "aligned", "expand", "reduce")
 
     @overload
     def __init__(
@@ -156,6 +170,7 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: RowLambdaFn,
         code: str | None = None,
+        by: str | None = None,
         mode: Literal["row"] = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -171,6 +186,7 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: ListLambdaFn,
         code: str | None = None,
+        by: str | None = None,
         mode: Literal["list"] = "list",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -186,7 +202,40 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: ListLambdaFn,
         code: str | None = None,
+        by: str | None = None,
         mode: Literal["aligned"] = "aligned",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+        image: str | None = None,
+        expected_runtime_s: float | None = None,
+        cache: bool | None = None,
+        sample_value: Any | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: ExpandLambdaFn,
+        code: str | None = None,
+        by: str | None = None,
+        mode: Literal["expand"] = "expand",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+        image: str | None = None,
+        expected_runtime_s: float | None = None,
+        cache: bool | None = None,
+        sample_value: Any | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: ReduceLambdaFn,
+        code: str | None = None,
+        by: str | None = None,
+        mode: Literal["reduce"] = "reduce",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
@@ -198,8 +247,9 @@ class LambdaOp(Op):
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
-        fn: RowLambdaFn | ListLambdaFn,
+        fn: Callable[..., Any],
         code: str | None = None,
+        by: str | None = None,
         mode: str = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
@@ -211,6 +261,14 @@ class LambdaOp(Op):
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
                 f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
+            )
+        if mode == "reduce":
+            if by is None:
+                raise ValueError("LambdaOp reduce mode requires 'by'")
+            _validate_path(by, "by")
+        elif by is not None:
+            raise ValueError(
+                f"LambdaOp 'by' is only valid in reduce mode (got mode {mode!r})"
             )
         if image is not None and not image.strip():
             raise ValueError("LambdaOp image must be a non-empty string")
@@ -226,6 +284,8 @@ class LambdaOp(Op):
         super().__init__(input_ops)
         self.fn = fn
         self.mode = mode
+        # The grouping key of a reduce-mode LambdaOp; never set otherwise.
+        self.by = by
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
@@ -274,6 +334,12 @@ class LambdaOp(Op):
         """List and aligned Lambdas receive whole columns and return a list."""
         return self.mode in ("list", "aligned")
 
+    @property
+    def whole_result_per_run(self) -> bool:
+        """Whether one run of the step produces a single value of data-dependent
+        length: list, expand and reduce mode all do."""
+        return self.mode in ("list", "expand", "reduce")
+
     def _serialize(self) -> dict[str, Any]:
         data: dict[str, Any] = {
             "fn_name": self.fn.__name__,
@@ -281,6 +347,8 @@ class LambdaOp(Op):
             "_inputs": [inp.id for inp in self.inputs],
             "mode": self.mode,
         }
+        if self.by is not None:
+            data["by"] = self.by
         if self.timeout_s is not None:
             data["timeout_s"] = self.timeout_s
         if self.memory_mb is not None:
@@ -319,6 +387,7 @@ class LambdaOp(Op):
             fn=fn,
             code=code,
             mode=data.get("mode", "row"),
+            by=data.get("by"),
             timeout_s=timeout_s,
             memory_mb=memory_mb,
             image=image,
