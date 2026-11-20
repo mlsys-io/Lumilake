@@ -329,14 +329,12 @@ def _resolve_seed_node(
         return None
     if not isinstance(seed, dict):
         raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
-    resolved = seed.copy()
-    node_ref = resolved.get("node")
-    if not isinstance(node_ref, str) or not isinstance(resolved.get("path"), str):
+    node_ref = seed.get("node")
+    if not isinstance(node_ref, str) or not isinstance(seed.get("path", ""), str):
         raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
     if node_ref not in user_id_to_internal:
         raise ValueError(f"rowwise_seed references unknown id '{node_ref}'")
-    resolved["node"] = user_id_to_internal[node_ref]
-    return resolved
+    return {"node": user_id_to_internal[node_ref], "path": seed.get("path", "")}
 
 
 def _append_seed_input(
@@ -346,8 +344,8 @@ def _append_seed_input(
     rowwise column node is added."""
     if rowwise_seed is None:
         return
-    node_id = rowwise_seed.get("node")
-    if isinstance(node_id, str) and node_id not in llm_inputs:
+    node_id = rowwise_seed["node"]
+    if node_id not in llm_inputs:
         llm_inputs.append(node_id)
 
 

@@ -27,6 +27,24 @@ class RowwiseMessages:
         return payload
 
 
+@dataclass(frozen=True)
+class RowwiseSeed:
+    """Locates one sampling seed per row at ``path`` under the seed producer's
+    output; an empty path reads a literal input's value itself."""
+
+    node: str
+    path: str = ""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.node, str) or not self.node.strip():
+            raise ValueError("RowwiseSeed node must be a non-empty string")
+        if not isinstance(self.path, str):
+            raise ValueError("RowwiseSeed path must be a string")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"node": self.node, "path": self.path}
+
+
 def _refuse_fields_beside_rowwise_messages(
     op_kind: str,
     producer: Op,
@@ -97,7 +115,7 @@ class LLMChatOp(LLMOp):
     rowwise_template: str | None
     rowwise_columns: list[dict[str, Any]] | None
     rowwise_messages: RowwiseMessages | None
-    rowwise_seed: dict[str, Any] | None
+    rowwise_seed: RowwiseSeed | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
 
@@ -115,7 +133,7 @@ class LLMChatOp(LLMOp):
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
-        rowwise_seed: dict[str, Any] | None = None,
+        rowwise_seed: RowwiseSeed | None = None,
         rowwise_seed_op: Op | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
@@ -195,7 +213,7 @@ class LLMChatOp(LLMOp):
                 self.inputs[1].id
             )
         if self.rowwise_seed is not None:
-            payload["rowwise_seed"] = self.rowwise_seed
+            payload["rowwise_seed"] = self.rowwise_seed.to_dict()
         if self.system_messages is not None:
             payload["system_messages"] = self.system_messages
         if self.condition is not None:
@@ -223,9 +241,11 @@ class LLMChatOp(LLMOp):
         system_messages = data.get("system_messages")
         condition = data.get("condition")
         seed_data = data.get("rowwise_seed")
+        seed: RowwiseSeed | None = None
         seed_op: Op | None = None
         if seed_data is not None:
-            seed_op = other_ops[seed_data["node"]]
+            seed = RowwiseSeed(seed_data["node"], seed_data.get("path", ""))
+            seed_op = other_ops[seed.node]
         return cls(
             message,
             config,
@@ -239,13 +259,13 @@ class LLMChatOp(LLMOp):
             system_messages,
             cacheable,
             condition,
-            seed_data,
+            seed,
             seed_op,
         )
 
 
 def _validate_rowwise_seed(
-    rowwise_seed: dict[str, Any] | None,
+    rowwise_seed: RowwiseSeed | None,
     rowwise_template: str | None,
     config: GenerationConfig,
 ) -> None:
@@ -253,6 +273,8 @@ def _validate_rowwise_seed(
     accepts one seed per prompt."""
     if rowwise_seed is None:
         return
+    if not isinstance(rowwise_seed, RowwiseSeed):
+        raise ValueError("rowwise_seed must be a RowwiseSeed")
     if rowwise_template is None:
         raise ValueError(
             "rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"

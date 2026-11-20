@@ -651,12 +651,8 @@ class _LLMBuilder(_EmbeddingBuilder):
         """Bind a rowwise op's per-row seed column as the task's ``seeds``."""
         if llm_op.rowwise_seed is None:
             return
-        node_ref = llm_op.rowwise_seed.get("node")
-        path = llm_op.rowwise_seed.get("path")
-        if not isinstance(node_ref, str) or not isinstance(path, str):
-            raise ValueError(
-                f"LLMChatOp {llm_op_id} rowwise_seed must name a node and path"
-            )
+        node_ref = llm_op.rowwise_seed.node
+        path = llm_op.rowwise_seed.path
         upstream = graph_dict.get(node_ref)
         if upstream is None:
             raise ValueError(
