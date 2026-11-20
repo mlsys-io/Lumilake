@@ -778,7 +778,7 @@ def test_by_is_refused_outside_reduce_mode() -> None:
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), by="id")
 
 
-def test_a_reduce_mode_yaml_op_without_by_names_the_op() -> None:
+def test_a_reduce_mode_op_without_by_names_the_op() -> None:
     payload = """
 name: shapes
 inputs: {K: ["a"]}
@@ -787,8 +787,9 @@ ops:
      code: "def group(rows):\\n    return len(rows)\\n"}
 outputs: [{name: out, ref: Group}]
 """
-    with pytest.raises(ValueError, match="LambdaOp 'Group' reduce mode requires"):
-        parse_yaml_payload(payload)
+    spec = parse_yaml_payload(payload)
+    with pytest.raises(ValueError, match="Group.* reduce mode requires 'by'"):
+        Graph.from_json(spec["shapes"]["graph"])
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:

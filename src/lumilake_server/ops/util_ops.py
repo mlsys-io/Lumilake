@@ -362,19 +362,22 @@ class LambdaOp(Op):
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
-        return cls(
-            inputs=input_ops,
-            fn=fn,
-            code=code,
-            mode=data.get("mode", "row"),
-            by=data.get("by"),
-            timeout_s=timeout_s,
-            memory_mb=memory_mb,
-            image=image,
-            expected_runtime_s=expected_runtime_s,
-            cache=cache,
-            sample_value=sample_value,
-        )
+        try:
+            return cls(
+                inputs=input_ops,
+                fn=fn,
+                code=code,
+                mode=data.get("mode", "row"),
+                by=data.get("by"),
+                timeout_s=timeout_s,
+                memory_mb=memory_mb,
+                image=image,
+                expected_runtime_s=expected_runtime_s,
+                cache=cache,
+                sample_value=sample_value,
+            )
+        except ValueError as exc:
+            raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc
 
 
 def lambda_op(inputs: list[list[str] | Op], fn: RowLambdaFn) -> LambdaOp:
