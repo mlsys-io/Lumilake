@@ -27,6 +27,22 @@ class RowwiseMessages:
         return payload
 
 
+@dataclass(frozen=True)
+class RowwiseSeed:
+    """Locates one sampling seed per row at ``path`` under the seed producer's
+    output; an empty path reads a literal input's value itself."""
+
+    node: str
+    path: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.node.strip():
+            raise ValueError("RowwiseSeed node must be a non-empty string")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"node": self.node, "path": self.path}
+
+
 def _refuse_fields_beside_rowwise_messages(
     op_kind: str,
     producer: Op,
@@ -97,6 +113,7 @@ class LLMChatOp(LLMOp):
     rowwise_template: str | None
     rowwise_columns: list[dict[str, Any]] | None
     rowwise_messages: RowwiseMessages | None
+    rowwise_seed: RowwiseSeed | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
 
@@ -114,6 +131,8 @@ class LLMChatOp(LLMOp):
         system_messages: list[str] | None = None,
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
+        rowwise_seed: RowwiseSeed | None = None,
+        rowwise_seed_op: Op | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
         inputs: list[Op] = [messages]
@@ -141,6 +160,21 @@ class LLMChatOp(LLMOp):
                 )
             # Keep the column's producer in the graph traversal.
             inputs.append(rowwise_messages_op)
+        if rowwise_seed is not None:
+            if rowwise_seed_op is None:
+                raise ValueError(
+                    f"{type(self).__name__} rowwise_seed requires the producing op"
+                )
+            if rowwise_seed_op.id != rowwise_seed.node:
+                raise ValueError(
+                    f"{type(self).__name__} rowwise_seed names node"
+                    f" '{rowwise_seed.node}' but its producing op is"
+                    f" '{rowwise_seed_op.id}'"
+                )
+            if rowwise_seed_op not in inputs:
+                # The seed's producer may feed no message, so keep it in the
+                # graph the same way the messages column does.
+                inputs.append(rowwise_seed_op)
         super().__init__(inputs, config, cacheable)
         self.return_history = return_history
         self.structural_outputs = structural_outputs
@@ -148,8 +182,10 @@ class LLMChatOp(LLMOp):
         self.rowwise_template = rowwise_template
         self.rowwise_columns = rowwise_columns
         self.rowwise_messages = rowwise_messages
+        self.rowwise_seed = rowwise_seed
         self.system_messages = system_messages
         self.condition = condition
+        _validate_rowwise_seed(rowwise_seed, rowwise_template, self.config)
 
     @property
     def messages(self) -> Op:
@@ -185,6 +221,8 @@ class LLMChatOp(LLMOp):
             payload["rowwise_messages"] = self.rowwise_messages.to_dict(
                 self.inputs[1].id
             )
+        if self.rowwise_seed is not None:
+            payload["rowwise_seed"] = self.rowwise_seed.to_dict()
         if self.system_messages is not None:
             payload["system_messages"] = self.system_messages
         if self.condition is not None:
@@ -211,6 +249,17 @@ class LLMChatOp(LLMOp):
             rowwise_messages_op = other_ops[column_data["node"]]
         system_messages = data.get("system_messages")
         condition = data.get("condition")
+        seed_data = data.get("rowwise_seed")
+        seed: RowwiseSeed | None = None
+        seed_op: Op | None = None
+        if seed_data is not None:
+            seed = RowwiseSeed(seed_data["node"], seed_data.get("path", ""))
+            seed_op = other_ops.get(seed.node)
+            if seed_op is None:
+                raise ValueError(
+                    f"LLMChatOp rowwise_seed references '{seed.node}', which is"
+                    " not built before it; list it in the op's inputs"
+                )
         return cls(
             message,
             config,
@@ -224,6 +273,35 @@ class LLMChatOp(LLMOp):
             system_messages,
             cacheable,
             condition,
+            seed,
+            seed_op,
+        )
+
+
+def _validate_rowwise_seed(
+    rowwise_seed: RowwiseSeed | None,
+    rowwise_template: str | None,
+    config: GenerationConfig,
+) -> None:
+    """A per-row seed column ref only fits a rowwise chat op on a backend that
+    accepts one seed per prompt."""
+    if rowwise_seed is None:
+        return
+    if rowwise_template is None:
+        raise ValueError(
+            "rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
+            " seeds each row separately"
+        )
+    num_beams = config.num_beams
+    if num_beams is not None and num_beams > 1:
+        raise ValueError(
+            "rowwise_seed is not supported with num_beams > 1: the beam path"
+            " takes no per-row seed"
+        )
+    if config.api is not None:
+        raise ValueError(
+            "rowwise_seed is available only for local vLLM generation, not API"
+            " mode, which takes no per-row seed"
         )
 
 

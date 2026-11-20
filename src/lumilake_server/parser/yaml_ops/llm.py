@@ -10,6 +10,7 @@ from .data import emit_message_op
 
 def emit_llm_chat_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     _emit_llm_like_op(op_dict, ctx, op_kind="LLMChatOp")
+    _emit_rowwise_seed(op_dict, ctx)
 
 
 def emit_llm_completion_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
@@ -35,6 +36,8 @@ def emit_llm_completion_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
 def emit_llm_vision_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     entry = ctx.entry
     user_id_to_internal = ctx.user_id_to_internal
+    if entry.fields.get("rowwise_seed") is not None:
+        raise ValueError(f"LLMVisionOp '{entry.id}' does not support rowwise_seed")
     image_source = entry.fields.get("image_source")
     if not isinstance(image_source, str) or not image_source.strip():
         raise ValueError(
@@ -310,6 +313,40 @@ def _resolve_table_nodes(
             resolved["node"] = user_id_to_internal[node_ref]
         out.append(resolved)
     return out
+
+
+def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
+    """Fill in the ``rowwise_seed`` column and add its node to the op's
+    inputs, as a rowwise column node is added."""
+    entry = ctx.entry
+    user_id_to_internal = ctx.user_id_to_internal
+    seed = entry.fields.get("rowwise_seed")
+    if seed is None:
+        return
+    if not isinstance(seed, dict):
+        raise ValueError(f"LLMChatOp '{entry.id}' rowwise_seed must be a mapping")
+    node_ref = seed.get("node")
+    path = seed.get("path", "")
+    if not isinstance(node_ref, str) or not isinstance(path, str):
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed must name a node and path"
+        )
+    if node_ref not in user_id_to_internal:
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed references unknown id '{node_ref}'"
+        )
+    node_id = user_id_to_internal[node_ref]
+    producer = ctx.graph_ops.get(node_id)
+    is_workflow_input = producer is not None and producer.get("_op") == "InputOp"
+    if node_ref not in entry.inputs and not is_workflow_input:
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed reads '{node_ref}', which is"
+            " not listed in the op's inputs; add it there so the seed's"
+            " producer is built before the chat op"
+        )
+    op_dict["rowwise_seed"] = {"node": node_id, "path": path}
+    if node_id not in op_dict["_inputs"]:
+        op_dict["_inputs"].append(node_id)
 
 
 def _build_inline_messages(
