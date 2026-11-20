@@ -52,44 +52,39 @@ def _walk_path(value: Any, parts: list[str], where: str) -> Any:
 
 
 def _decoded_cell(value: Any) -> Any:
-    """Decode one cell of a column: a JSON string becomes the object or list it
-    holds, and any other value passes through."""
-    while isinstance(value, str):
+    """Decode one cell of a column: JSON object or array text becomes the
+    object or list it holds, and any other value passes through."""
+    if isinstance(value, str):
         try:
-            value = json.loads(value)
+            decoded = json.loads(value)
         except ValueError:
             return value
+        if isinstance(decoded, (dict, list)):
+            return decoded
     return value
 
 
 def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
-    """A column-major table, a mapping from position to cell per column, as one
-    row per position."""
-    width = max((len(column) for column in table.values()), default=0)
-    return [
-        {
-            name: (
-                column.get(str(index), column.get(index))
-                if isinstance(column, dict)
-                else column[index]
-            )
-            for name, column in table.items()
-        }
-        for index in range(width)
-    ]
+    """A column-major table, a mapping from row index to cell per column, as
+    one row per index in index order."""
+    rows: dict[str, dict[str, Any]] = {}
+    for name, column in table.items():
+        if not isinstance(column, dict):
+            continue
+        for index, value in column.items():
+            rows.setdefault(index, {})[name] = value
+    try:
+        ordered = sorted(rows, key=int)
+    except ValueError:
+        ordered = list(rows)
+    return [rows[index] for index in ordered]
 
 
 def _decoded_rows(value: Any) -> list[Any]:
-    """The rows one decoded cell carries: a row object, a cell map, a table, or
-    a list of any of these."""
+    """The rows one decoded cell carries: a table's ``{"df": "<json>"}``
+    envelope, a row object, or a list of any of these."""
     if isinstance(value, dict) and len(value) == 1 and isinstance(value.get("df"), str):
         return _table_rows(json.loads(value["df"]))
-    if (
-        isinstance(value, dict)
-        and value
-        and all(isinstance(cells, dict) for cells in value.values())
-    ):
-        return _table_rows(value)
     if isinstance(value, list):
         rows: list[Any] = []
         for item in value:
