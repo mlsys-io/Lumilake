@@ -8,7 +8,6 @@ from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import LLMChatOp, RowwiseMessages
 from lumilake_server.runtime.runtime_graph.derived import _DerivedBuilder
-from lumilake_server.runtime.runtime_graph.join_build import build_join_step
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
     LoweringResult,
@@ -79,10 +78,8 @@ class _MessagesBuilder(_DerivedBuilder):
             )
         runtime_ids = ctx.dsl_to_runtime.get(node)
         if not runtime_ids and isinstance(upstream, JoinOp):
-            # A join runs on its own, and the join phase follows this one, so
-            # build it here.
-            build_join_step(self, upstream, ctx)
-            runtime_ids = ctx.dsl_to_runtime.get(node)
+            # A join's runtime node is its op id; the join phase builds it.
+            runtime_ids = [node]
         if not runtime_ids:
             raise ValueError(
                 f"{consumer} reads '{node}', which compiles to no runtime"

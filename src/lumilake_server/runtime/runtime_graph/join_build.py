@@ -1,10 +1,10 @@
-"""Building one join's python step, for its own lowering and for a consumer
-that lowers ahead of it.
+"""Building one join's python step.
 
 A join reads one plan column per row column and one value/source pair per
 attach field. An attach target's row source is resolved here, when the runtime
 graph is built, so the step pairs values with keys by position and never by
-user code.
+user code. Consumers in an earlier phase read the join by its op id, which is
+its runtime node id, so only the join phase builds the step.
 """
 
 from typing import Any
@@ -83,13 +83,11 @@ def _drop_broadcasts(inputs: list[Op], ctx: LoweringContext) -> list[Op]:
 
 def resolve_row_source(
     target: Op, allowed: set[str], ctx: LoweringContext, consumer: str
-) -> tuple[Op, list[Op]]:
+) -> Op:
     """Follow an attach target's row sources to the node whose rows its values
-    belong to, returning that node and the chain of hops above it."""
-    chain: list[Op] = []
+    belong to."""
     current = target
     while current.id not in allowed:
-        chain.append(current)
         source = current.row_source
         if source is None:
             candidates = row_source_candidates(current, ctx, consumer)
@@ -101,14 +99,13 @@ def resolve_row_source(
                 )
             source = candidates[0]
         current = source
-    return current, chain
+    return current
 
 
 def build_join_step(
     builder: _RuntimeGraphBuilderBase, op: JoinOp, ctx: LoweringContext
-) -> list[RuntimeOp]:
-    """Build a join's python step, recording it so its own lowering reuses it
-    rather than building a second one."""
+) -> RuntimeOp:
+    """Build a join's python step."""
     ctx.visited.add(op.id)
     plan: list[dict[str, Any]] = []
     dependencies: list[str] = []
@@ -118,10 +115,7 @@ def build_join_step(
     attach: list[list[Any]] = []
     for field, target in op.attach_ops.items():
         consumer = f"JoinOp '{op.id}' attach field {field!r} reading '{target.id}'"
-        source, chain = resolve_row_source(target, set(op.column_ids), ctx, consumer)
-        # Every hop on the chain feeds no other node, so the join is what keeps
-        # it in the graph.
-        ctx.visited.update(hop.id for hop in chain)
+        source = resolve_row_source(target, set(op.column_ids), ctx, consumer)
         attach.append(
             [
                 field,
@@ -150,9 +144,7 @@ def build_join_step(
         model="",
         dependencies=dependencies or None,
     )
-    ctx.nodes.setdefault(node.node_id, node)
-    ctx.dsl_to_runtime[op.id] = [node.node_id]
-    return [node]
+    return node
 
 
 def _planned(
@@ -167,16 +159,10 @@ def _planned(
     ctx.visited.add(column.id)
     runtime_ids = ctx.dsl_to_runtime.get(column.id)
     if not runtime_ids:
-        if isinstance(column, JoinOp):
-            runtime_ids = [
-                node.node_id for node in build_join_step(builder, column, ctx)
-            ]
-        else:
-            raise ValueError(
-                f"JoinOp '{join.id}' reads '{column.id}', which compiled to no"
-                " runtime node before the join"
-            )
-        ctx.dsl_to_runtime[column.id] = runtime_ids
+        raise ValueError(
+            f"JoinOp '{join.id}' reads '{column.id}', which compiled to no"
+            " runtime node before the join"
+        )
     node = runtime_ids[-1]
     entry: dict[str, Any] = {"kind": "stage", "node": node}
     output = builder._op_output(column)

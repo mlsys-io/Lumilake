@@ -11,7 +11,6 @@ from lumilake_server.ops import (
 from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import _RuntimeGraphBuilderBase
-from lumilake_server.runtime.runtime_graph.join_build import build_join_step
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
     LoweringResult,
@@ -40,9 +39,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 nodes.extend(self._build_python_step(inp, ctx))
                 dep = inp.id
             elif isinstance(inp, JoinOp):
-                # A join a standalone Python step reads runs on its own; the
-                # join phase follows this one, so build it here.
-                build_join_step(self, inp, ctx)
+                # A join's runtime node is its op id; the join phase builds it.
                 dep = inp.id
             elif isinstance(inp, (LLMOp, DataRetrievalOp)) or has_lowering(inp):
                 runtime_ids = ctx.dsl_to_runtime.get(inp.id, [])
@@ -145,9 +142,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, JoinOp):
-                # A join a standalone Python step reads runs on its own, and
-                # the join phase follows this one, so build it here.
-                build_join_step(self, inp, ctx)
+                # A join's runtime node is its op id; the join phase builds it.
                 plan.append({"kind": "stage", "node": inp.id})
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
