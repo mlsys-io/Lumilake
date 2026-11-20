@@ -490,7 +490,9 @@ def flowmesh_spec(
     plan, literal_mounts = resolve_plan(data_spec.plan, published_blobs)
     mode = data_spec.mode or "row"
     if mode == "join":
-        code = join_step.join_source(node_id, data_spec["join"], plan)
+        code = join_step.join_source(
+            node_id, data_spec["join"], plan, TASK_RUNTIME_MOUNT
+        )
     elif mode == "flatten":
         code = flatten_source(
             node_id, plan, _required(data_spec.template, "template", mode)

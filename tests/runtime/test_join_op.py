@@ -100,9 +100,12 @@ def _run(tmp_path: Path, node: Any, upstream: dict[int, Any]) -> dict[str, Any]:
     for index, items in upstream.items():
         name = f"{node.node_id}-{index}"
         stages[plan[index]["node"]] = _stage(tmp_path, name, items)
-    code = join_step.join_source(node.node_id, node.data_spec["join"], plan).replace(
-        python_step.TASK_RUNTIME_MOUNT, _RUNTIME_MOUNT["path"]
-    )
+    code = join_step.join_source(
+        node.node_id,
+        node.data_spec["join"],
+        plan,
+        python_step.TASK_RUNTIME_MOUNT,
+    ).replace(python_step.TASK_RUNTIME_MOUNT, _RUNTIME_MOUNT["path"])
     namespace: dict[str, Any] = {}
     exec(code, namespace)
     return namespace["main"](stages)
@@ -254,3 +257,170 @@ def test_join_missing_error_names_the_key(tmp_path: Path) -> None:
     node = _join_node(spec)
     with pytest.raises(ValueError, match=r'key "a"'):
         _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
+
+
+_DOWNSTREAM = """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.diagnose]
+    by: case_id
+  - id: Merged
+    op: LambdaOp
+    mode: list
+    inputs: [Merge]
+    fn_name: merged
+    code: |
+      def merged(c):
+          return json.loads(c[0]) if isinstance(c[0], str) else c[0]
+  - id: Tag
+    op: LambdaOp
+    mode: row
+    inputs: [Merge]
+    fn_name: tag
+    code: |
+      def tag(row):
+          return row[0]["case_id"]
+outputs:
+  - {name: merged, ref: Merged}
+  - {name: tags, ref: Tag}
+"""
+
+
+def test_a_join_feeds_a_downstream_list_and_row_lambda() -> None:
+    spec = parse_yaml_payload(_PRELUDE + _DOWNSTREAM)["j"]
+    runtime = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    merge = next(
+        node
+        for node in runtime.nodes.values()
+        if node.data_spec.get("mode") == join_step.JOIN_MODE
+    )
+    downstream = {
+        node.data_spec.get("mode", "row"): node
+        for node in runtime.nodes.values()
+        if node.task_type == "python" and node is not merge
+    }
+    assert set(downstream) == {"list", "row"}
+    for node in downstream.values():
+        (entry,) = node.data_spec["plan"]
+        assert entry == {"kind": "stage", "node": merge.node_id}
+        assert node.dependencies == (merge.node_id,)
+
+
+def test_join_output_reads_as_a_rowwise_node_column() -> None:
+    spec = parse_yaml_payload(_PRELUDE + """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.diagnose]
+    by: case_id
+  - id: Ask
+    op: LLMChatOp
+    inputs: [Merge]
+    messages:
+      - {role: user, content: "Go"}
+    config: {model: test/model}
+    rowwise_template: "{text}"
+    rowwise_columns: [{label: text, node: Merge, path: items.output.text}]
+""")["j"]
+    runtime = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    merge = next(
+        node
+        for node in runtime.nodes.values()
+        if node.data_spec.get("mode") == join_step.JOIN_MODE
+    )
+    ask = next(
+        node
+        for node in runtime.nodes.values()
+        if node.data_spec.get("type") == "dataframe"
+    )
+    (column,) = ask.data_spec["columns"]
+    assert column["node"] == merge.node_id
+    # A join's per-row fields sit under the python envelope, as a list
+    # Lambda's do, not at the declared path.
+    assert column["path"] == "value.items.output.text"
+
+
+def test_join_missing_error_fails_on_a_further_input_row_the_first_lacks(
+    tmp_path: Path,
+) -> None:
+    spec = _parse(
+        "",
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.diagnose]
+    by: case_id
+    missing: error
+""",
+    )
+    node = _join_node(spec)
+    stray = {"case_id": "z", "text": "not in the first input"}
+    with pytest.raises(ValueError, match=r'key "z" is not in'):
+        _run(
+            tmp_path,
+            node,
+            {0: [{"output": [_ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]},
+        )
+
+
+_SCALAR_REPLY = """
+  - id: Reply
+    op: LambdaOp
+    mode: row
+    inputs: [State]
+    fn_name: reply
+    code: |
+      def reply(row):
+          return "reply"
+"""
+
+
+def test_join_keeps_a_json_scalar_attach_value_as_its_string(tmp_path: Path) -> None:
+    spec = _parse(
+        _SCALAR_REPLY,
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Reply]
+    by: case_id
+    attach: {reply: Reply}
+""",
+    )
+    node = _join_node(spec)
+    out = _run(
+        tmp_path,
+        node,
+        {
+            0: [{"output": [_ROWS[1]]}],
+            1: [{"output": '"1"'}],
+            2: [{"output": [_ROWS[1]]}],
+        },
+    )
+    (row,) = out["items"]
+    assert row["output"]["reply"] == '"1"'
+
+
+def test_join_reads_a_table_by_its_own_index_keys(tmp_path: Path) -> None:
+    spec = _parse(
+        "",
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State]
+    by: case_id
+""",
+    )
+    node = _join_node(spec)
+    table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
+    out = _run(
+        tmp_path,
+        node,
+        {0: [{"output": [{"df": json.dumps(table)}]}]},
+    )
+    assert [item["output"] for item in out["items"]] == [
+        {"case_id": "a", "text": "x"},
+        {"case_id": "c", "text": "z"},
+    ]

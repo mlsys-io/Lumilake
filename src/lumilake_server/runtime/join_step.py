@@ -14,12 +14,17 @@ from typing import Any
 JOIN_MODE = "join"
 
 
-def join_source(op_id: str, description: dict[str, Any], plan: list[Any]) -> str:
+def join_source(
+    op_id: str,
+    description: dict[str, Any],
+    plan: list[Any],
+    runtime_mount: str,
+) -> str:
     """The python-task code for one lowered join."""
     return _PRELUDE.format(
         op_id=op_id,
         module="lumilake_runtime",
-        mount="/mnt/blobs/lumilake-runtime.py",
+        mount=runtime_mount,
         join=json.dumps(description, ensure_ascii=False),
         plan=json.dumps(plan, ensure_ascii=False),
     )
@@ -53,7 +58,7 @@ def _where(entry):
     return "%s input %r" % (_NODE, _named(entry))
 
 
-def _rows(column, where):
+def _rows(column):
     """The row objects a column holds, one per row."""
     rows = []
     for item in column:
@@ -84,13 +89,16 @@ def _keyed(rows, where):
 
 
 def _required(output, keys, where):
-    """Fail the job when ``error`` is set and a join row the column does not
-    carry would silently lose its fields."""
+    """Fail the job when ``error`` is set and one side carries a key the other
+    does not, so a stray or misspelt row never loses its fields unnoticed."""
     if _MISSING != "error":
         return
     for key in output:
         if key not in keys:
             raise ValueError("%s: key %s is missing from %r" % (_NODE, key, where))
+    for key in keys:
+        if key not in output:
+            raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
 
 
 def _merged(merged, field, value, where):
@@ -106,10 +114,10 @@ def main(inputs):
     indexes = _JOIN["inputs"]
     columns = [_column(_PLAN[index], inputs, _decoded_cell) for index in indexes]
     first = _where(_PLAN[indexes[0]])
-    output = _keyed(_rows(columns[0], first), first)
+    output = _keyed(_rows(columns[0]), first)
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
-        keyed = _keyed(_rows(column, where), where)
+        keyed = _keyed(_rows(column), where)
         _required(output, keyed, where)
         for key, row in keyed.items():
             if key in output:
@@ -118,7 +126,7 @@ def main(inputs):
     for name, value_index, source_index in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = _column(_PLAN[value_index], inputs, _decoded_cell)
-        rows = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
+        rows = _rows(_column(_PLAN[source_index], inputs, _decoded_cell))
         if len(values) != len(rows):
             raise ValueError(
                 "%s: %d values from %r but %d rows from %r"
