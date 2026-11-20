@@ -351,7 +351,7 @@ def test_join_missing_error_fails_on_a_further_input_row_the_first_lacks(
         )
 
 
-_SCALAR_REPLY = """
+_NUMBERED_REPLY = """
   - id: Reply
     op: LambdaOp
     mode: row
@@ -359,13 +359,13 @@ _SCALAR_REPLY = """
     fn_name: reply
     code: |
       def reply(row):
-          return "reply"
+          return 1
 """
 
 
-def test_join_keeps_a_json_scalar_attach_value_as_its_string(tmp_path: Path) -> None:
+def test_join_keeps_a_row_lambda_attach_value_typed(tmp_path: Path) -> None:
     spec = _parse(
-        _SCALAR_REPLY,
+        _NUMBERED_REPLY,
         """
   - id: Merge
     op: JoinOp
@@ -375,17 +375,19 @@ def test_join_keeps_a_json_scalar_attach_value_as_its_string(tmp_path: Path) -> 
 """,
     )
     node = _join_node(spec)
+    reply = next(e for e in node.data_spec["plan"] if "Reply" in e["node"])
+    assert reply["path"] == "value"
     out = _run(
         tmp_path,
         node,
         {
             0: [{"output": [_ROWS[1]]}],
-            1: [{"output": '"1"'}],
+            1: [{"output": "1", "value": 1}],
             2: [{"output": [_ROWS[1]]}],
         },
     )
     (row,) = out["items"]
-    assert row["output"]["reply"] == '"1"'
+    assert row["output"]["reply"] == 1
 
 
 def test_join_reads_a_table_by_its_own_index_keys(tmp_path: Path) -> None:
