@@ -794,28 +794,43 @@ def test_wrapper_reduce_mode_groups_by_json_text() -> None:
     assert [item["output"] for item in out["items"]] == [1, 1]
 
 
-@pytest.mark.parametrize("wrap_in_retrieval_item", [False, True])
-def test_wrapper_expand_mode_decodes_a_serialized_table_to_its_rows(
-    wrap_in_retrieval_item: bool,
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (
+            {"df": json.dumps({"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}})},
+            [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}],
+        ),
+        (
+            {
+                "index": 0,
+                "query": "SELECT 1",
+                "rows": 2,
+                "table": {
+                    "df": json.dumps(
+                        {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
+                    )
+                },
+            },
+            [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}],
+        ),
+        (
+            {"table": "[1, 2]", "note": "x"},
+            [{"output": {"table": "[1, 2]", "note": "x"}}],
+        ),
+    ],
+)
+def test_wrapper_expand_mode_decodes_only_a_serialized_table(
+    value: dict[str, Any], expected: list[dict[str, Any]]
 ) -> None:
-    df = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
-    table: Any = {"df": json.dumps(df)}
-    if wrap_in_retrieval_item:
-        table = {"index": 0, "query": "SELECT 1", "rows": 2, "table": table}
-    plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(table)]}]
-    out = _run_wrapper(
-        "lambda row: row[0]",
-        plan,
-        {},
-        fn_name="rows",
-        mode="expand",
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(value)]}]
+    code = (
+        "def rows(row):\n"
+        "    value = row[0]\n"
+        "    return value if isinstance(value, list) else [value]\n"
     )
-    assert out == {
-        "items": [
-            {"output": {"id": "p1", "s": 5}},
-            {"output": {"id": "p2", "s": 9}},
-        ]
-    }
+    out = _run_wrapper(code, plan, {}, fn_name="rows", mode="expand")
+    assert out == {"items": expected}
 
 
 def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
