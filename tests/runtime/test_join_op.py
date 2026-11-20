@@ -198,6 +198,25 @@ def test_join_refuses_an_attach_whose_row_source_is_not_one_node() -> None:
         _join_node(ops)
 
 
+_FORMAT = """
+  - id: Prompt
+    op: FormatOp
+    inputs: [State]
+    template: "Reply to {0}"
+    format_args: [State]
+"""
+
+
+def test_join_refuses_a_format_op_as_an_attach_target() -> None:
+    """A format op has no runtime node of its own, so it is a row source only
+    as a hop on a chain, never as an attach target."""
+    ops = _FORMAT + _merge(
+        "State, Prompt", "    attach: {prompt: Prompt}\n    missing: null\n"
+    )
+    with pytest.raises(ValueError, match="attach field 'prompt' reads FormatOp"):
+        _join_node(ops)
+
+
 def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
     node = _join_node(_merge("State, Route.diagnose", "    missing: error\n"))
     with pytest.raises(ValueError, match="duplicate key"):
