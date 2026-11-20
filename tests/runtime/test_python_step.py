@@ -873,6 +873,25 @@ def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
 def test_by_is_refused_outside_reduce_mode() -> None:
     with pytest.raises(ValueError, match="'by' is only valid in reduce mode"):
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), by="id")
+    payload = """
+name: shapes
+inputs:
+  K: ["a"]
+ops:
+  - id: "Group"
+    op: LambdaOp
+    inputs: [K]
+    mode: reduce
+    fn_name: group
+    code: |
+      def group(rows):
+          return len(rows)
+outputs:
+  - name: out
+    ref: "Group"
+"""
+    with pytest.raises(ValueError, match="LambdaOp 'Group' reduce mode requires"):
+        parse_yaml_payload(payload)
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
