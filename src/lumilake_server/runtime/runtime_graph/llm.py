@@ -678,9 +678,9 @@ class _LLMBuilder(_EmbeddingBuilder):
             raise ValueError(
                 f"LLMChatOp {llm_op_id} rowwise_seed references '{node_ref}'"
                 f" ({type(upstream).__name__}), which does not emit one value"
-                " per row; the seed must come from a producer that emits one"
-                " value per row, such as a Lambda, a per-row LLMChatOp, or a"
-                " literal input"
+                " per row; the seed must come from a LambdaOp, a local per-row"
+                " LLMChatOp with structural_outputs, a local LLMCompletionOp,"
+                " or a literal input"
             )
         if node_ref not in dependencies:
             dependencies.append(node_ref)

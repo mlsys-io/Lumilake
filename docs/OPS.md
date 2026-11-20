@@ -317,9 +317,10 @@ null) per row; the runtime passes the column to FlowMesh as `spec.data.seeds`,
 so each row's generation carries its own seed on a vLLM worker. A null entry
 keeps the op's own `seed` for that row. `rowwise_seed` requires
 `rowwise_template`, is rejected with `num_beams > 1` and in API mode, and its
-producer must emit one value per row: a row- or list-mode `LambdaOp`, a
-per-row `LLMChatOp`, or a literal input. A retrieval, or any op that
-groups rows, emits one list per group instead, so it is refused at build
+producer must emit one value per row: a `LambdaOp`, a local per-row
+`LLMChatOp` with `structural_outputs` that holds an integer field, a local
+`LLMCompletionOp`, or a literal input. A retrieval, an API LLM, or any op
+that groups rows emits one list per group instead, so it is refused at build
 time. The seed's producer must be listed in the op's `inputs:`; a literal
 input's values are inlined as the seed list and take no `path`.
 
