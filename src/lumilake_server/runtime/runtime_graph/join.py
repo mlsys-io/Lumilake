@@ -33,9 +33,8 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
     where the op's shape names one."""
     graph = ctx.graph_dict
     if isinstance(op, LambdaOp):
-        if op.mode == "list":
-            # A list Lambda may filter, reorder or expand rows, so its outputs
-            # do not pair with any input's keys by position.
+        if op.mode not in ("row", "aligned"):
+            # A whole-result mode may filter, reorder or expand rows.
             return []
         return _drop_broadcasts(_non_literal(op), ctx)
     if isinstance(op, FormatOp):
