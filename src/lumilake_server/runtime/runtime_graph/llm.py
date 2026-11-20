@@ -19,6 +19,7 @@ from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
     LLMCompletionOp,
+    LLMVisionOp,
 )
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime.flowmesh_client import (
@@ -50,14 +51,20 @@ from lumilake_server.utils import lambda_runtime
 
 def _emits_one_seed_per_row(op: Op) -> bool:
     """Whether the op is a supported seed producer, whose output holds one
-    scalar per row so a seed read from it pairs with the rowwise prompts.
-    Only a ``LambdaOp`` and a local non-rowwise ``LLMChatOp`` or
-    ``LLMCompletionOp`` qualify: a retrieval, an API task, and a grouped op
-    hold a list per group instead, and any other op lowers to no runtime
-    node that could supply a seed."""
-    if isinstance(op, LambdaOp | LLMCompletionOp):
+    integer per row so a seed read from it pairs with the rowwise prompts.
+    Only a ``LambdaOp`` and a local non-rowwise ``LLMChatOp`` that carries
+    ``structural_outputs`` qualify: a retrieval, an API task, and a grouped
+    op hold a list per group instead, a completion op and a chat op without
+    structural outputs emit text, and any other op lowers to no runtime node
+    that could supply a seed."""
+    if isinstance(op, LambdaOp):
         return True
-    return isinstance(op, LLMChatOp) and emits_one_item_per_row(op)
+    return (
+        isinstance(op, LLMChatOp)
+        and op.structural_outputs is not None
+        and not isinstance(op, LLMVisionOp)
+        and emits_one_item_per_row(op)
+    )
 
 
 def _literal_seed(value: Any, llm_op_id: str) -> int | None:
@@ -679,8 +686,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 f"LLMChatOp {llm_op_id} rowwise_seed references '{node_ref}'"
                 f" ({type(upstream).__name__}), which does not emit one value"
                 " per row; the seed must come from a LambdaOp, a local per-row"
-                " LLMChatOp with structural_outputs, a local LLMCompletionOp,"
-                " or a literal input"
+                " LLMChatOp with structural_outputs, or a literal input"
             )
         if node_ref not in dependencies:
             dependencies.append(node_ref)

@@ -58,6 +58,20 @@ def _seed_from_a_format(payload: dict[str, Any]) -> None:
     payload["ops"][2]["inputs"].append("Text")
 
 
+def _seed_from_a_text_chat(payload: dict[str, Any]) -> None:
+    payload["ops"].insert(
+        0,
+        {
+            "id": "Text",
+            "op": "LLMChatOp",
+            "config": {"model": "m"},
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+    payload["ops"][2]["rowwise_seed"] = {"node": "Text", "path": "items.output"}
+    payload["ops"][2]["inputs"].append("Text")
+
+
 @pytest.mark.parametrize(
     "mutate, match",
     [
@@ -66,6 +80,7 @@ def _seed_from_a_format(payload: dict[str, Any]) -> None:
         (lambda p: p["ops"][1]["config"].update(api={"url": "x"}), "API"),
         (lambda p: p["ops"][1]["inputs"].remove("Seeds"), "in the op's inputs"),
         (_seed_from_a_format, "one value per row"),
+        (_seed_from_a_text_chat, "one value per row"),
     ],
 )
 def test_rowwise_seed_refused(
