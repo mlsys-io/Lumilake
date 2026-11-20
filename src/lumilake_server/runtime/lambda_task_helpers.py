@@ -95,6 +95,10 @@ def _decode(value: Any) -> Any:
             return value
         if isinstance(table, dict):
             return _table_rows(table)
+    if isinstance(value, dict) and isinstance(value.get("table"), dict | str):
+        table = _decode(value["table"])
+        if isinstance(table, list):
+            return table
     return value
 
 
