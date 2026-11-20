@@ -124,10 +124,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
     def _lower_list_lambda(
         self, op: LambdaOp, ctx: LoweringContext
     ) -> LoweringResult | None:
-        """Lower a list or aligned mode LambdaOp, each of which reads whole
-        columns; a row, expand or reduce mode one is lowered by its consumer or
-        on its own."""
-        if op.mode in ("row", "expand", "reduce"):
+        """Lower a list-mode LambdaOp; a row-mode one is lowered by its consumer
+        or on its own."""
+        if not op.takes_whole_columns:
             return None
         op_id = op.id
         inputs_dict = ctx.inputs_dict
@@ -211,20 +210,6 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         ctx.visited.update(input_op.id for input_op in op.inputs)
         return LoweringResult(nodes=[node])
 
-    def _lower_row_fed_lambda(
-        self, op: LambdaOp, ctx: LoweringContext
-    ) -> LoweringResult:
-        """Lower an expand or reduce mode LambdaOp: its function reads one
-        decoded row per call, so the plan is the row-mode one and the step
-        itself is always its own task."""
-        steps = self._build_python_step(op, ctx)
-        return LoweringResult(
-            nodes=steps,
-            built={
-                step.node_id: [step.node_id] for step in steps if step.node_id != op.id
-            },
-        )
-
     @register(LambdaOp, Phase.ROW_LAMBDA)
     def _lower_row_lambda(
         self, op: LambdaOp, ctx: LoweringContext
@@ -234,13 +219,12 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         that a runtime node references. An expand or reduce mode one reads one
         decoded row per call and always gets its own step. The last row-mode
         case lowers checks that no runtime node reads an inlined Lambda."""
-        if op.mode in ("expand", "reduce"):
-            return self._lower_row_fed_lambda(op, ctx)
-        if op.mode != "row":
+        if op.takes_whole_columns:
             return None
         referenced = self._referenced_row_lambdas(ctx)
         if (
-            op.id in ctx.visited
+            op.mode == "row"
+            and op.id in ctx.visited
             and op.id not in ctx.outputs_by_source
             and op.image is None
             and op.id not in referenced
