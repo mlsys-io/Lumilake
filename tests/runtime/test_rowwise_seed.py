@@ -78,6 +78,10 @@ def test_rowwise_seed_from_a_literal_input_is_inlined() -> None:
             or p["ops"][3]["inputs"].append("Rows"),
             "one value per row",
         ),
+        (
+            lambda p: p["ops"][2]["inputs"].remove("Seeds"),
+            "listed in the op's inputs",
+        ),
     ],
 )
 def test_rowwise_seed_refused(

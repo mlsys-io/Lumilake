@@ -336,6 +336,14 @@ def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             f"LLMChatOp '{entry.id}' rowwise_seed references unknown id '{node_ref}'"
         )
     node_id = user_id_to_internal[node_ref]
+    producer = ctx.graph_ops.get(node_id)
+    is_workflow_input = producer is not None and producer.get("_op") == "InputOp"
+    if node_ref not in entry.inputs and not is_workflow_input:
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed reads '{node_ref}', which is"
+            " not listed in the op's inputs; add it there so the seed's"
+            " producer is built before the chat op"
+        )
     op_dict["rowwise_seed"] = {"node": node_id, "path": path}
     if node_id not in op_dict["_inputs"]:
         op_dict["_inputs"].append(node_id)

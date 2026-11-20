@@ -320,8 +320,8 @@ keeps the op's own `seed` for that row. `rowwise_seed` requires
 producer must emit one value per row: a row- or list-mode `LambdaOp`, a
 per-row `LLMChatOp`, or a literal input. A retrieval, or any op that
 groups rows, emits one list per group instead, so it is refused at build
-time. A literal input's values are inlined as the seed list and take no
-`path`.
+time. The seed's producer must be listed in the op's `inputs:`; a literal
+input's values are inlined as the seed list and take no `path`.
 
 ```yaml
 - id: Answer

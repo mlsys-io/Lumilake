@@ -245,7 +245,12 @@ class LLMChatOp(LLMOp):
         seed_op: Op | None = None
         if seed_data is not None:
             seed = RowwiseSeed(seed_data["node"], seed_data.get("path", ""))
-            seed_op = other_ops[seed.node]
+            seed_op = other_ops.get(seed.node)
+            if seed_op is None:
+                raise ValueError(
+                    f"LLMChatOp rowwise_seed references '{seed.node}', which is"
+                    " not built before it; list it in the op's inputs"
+                )
         return cls(
             message,
             config,
