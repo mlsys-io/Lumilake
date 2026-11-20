@@ -324,12 +324,6 @@ class LambdaOp(Op):
         """List and aligned Lambdas receive whole columns and return a list."""
         return self.mode in ("list", "aligned")
 
-    @property
-    def whole_result_per_run(self) -> bool:
-        """Whether one run of the step produces a single value of data-dependent
-        length: list, expand and reduce mode all do."""
-        return self.mode in ("list", "expand", "reduce")
-
     def _serialize(self) -> dict[str, Any]:
         data: dict[str, Any] = {
             "fn_name": self.fn.__name__,
