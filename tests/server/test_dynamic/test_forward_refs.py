@@ -772,7 +772,6 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     # A seed read from an earlier round is forwarded as a workflow input, so
     # the lowering inlines its values as a literal seed list.
     seed_id = "s2"
-    results = {seed_id: [{"output": 7}, {"output": 9}]}
     configs = {seed_id: _llm_config(seed_id)}
     subgraph = [
         {
@@ -780,24 +779,23 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
             "op": "LLMChatOp",
             "inputs": [],
             "prompt": {"template": "x", "format_kwargs": {}},
-            "config": {"model": "Qwen/Qwen3-8B"},
+            "config": {"model": "m"},
             "messages": [{"role": "user", "content": "x"}],
             "rowwise_template": "{p}",
-            "rowwise_columns": [
-                {"label": "p", "data": {"type": "list", "items": ["a", "b"]}}
-            ],
+            "rowwise_columns": [{"label": "p", "data": {"type": "list", "items": []}}],
             "rowwise_seed": {"node": seed_id, "path": "items.output"},
         }
     ]
+    results = {seed_id: [{"output": 7}, {"output": 9}]}
     ops, inputs = forward_refs(subgraph, results, configs, rows=2)
     assert ops[0]["rowwise_seed"] == {"node": f"{seed_id} | items.output", "path": ""}
-    workflow = {
-        "name": "r1",
-        "inputs": inputs,
-        "ops": ops,
-        "outputs": [{"name": "o", "ref": "q7"}],
-    }
-    spec = next(iter(parse_yaml_payload(workflow).values()))
+    spec = next(
+        iter(
+            parse_yaml_payload(
+                {"inputs": inputs, "ops": ops, "outputs": [{"name": "o", "ref": "q7"}]}
+            ).values()
+        )
+    )
     graph = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
