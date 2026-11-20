@@ -18,6 +18,7 @@ from lumilake_server.runtime import join_step, python_step
 from lumilake_server.runtime.runtime_graph.base import _RuntimeGraphBuilderBase
 from lumilake_server.runtime.runtime_graph.lowering import LoweringContext
 from lumilake_server.runtime.runtime_graph.outputs import (
+    OutputKind,
     item_relative_path,
     output_row_count,
 )
@@ -168,6 +169,10 @@ def _planned(
     output = builder._op_output(column)
     if output.needs_flatten:
         entry["flatten"] = True
+    elif output.kind is OutputKind.ROW_LAMBDA:
+        # A row step writes the result both as JSON text under ``output`` and
+        # as the value itself under ``value``; read the value to keep its type.
+        entry["path"] = "value"
     else:
         entry["path"] = item_relative_path(output.path)
     plan.append(entry)
