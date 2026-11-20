@@ -88,11 +88,10 @@ def _drop_broadcasts(inputs: list[Op], ctx: LoweringContext) -> list[Op]:
 
 
 def resolve_row_source(
-    target: Op, allowed: set[str], ctx: LoweringContext
+    target: Op, allowed: set[str], ctx: LoweringContext, consumer: str
 ) -> tuple[Op, list[Op]]:
     """Follow an attach target's row sources to the node whose rows its values
     belong to, returning that node and the chain of hops above it."""
-    consumer = f"attach target '{target.id}' ({type(target).__name__})"
     chain: list[Op] = []
     current = target
     while current.id not in allowed:
@@ -125,8 +124,11 @@ class _JoinBuilder(_DerivedBuilder):
             columns.append(self._planned(op, column, ctx, plan, dependencies))
         attach: list[list[Any]] = []
         for field, target in op.attach_ops.items():
+            consumer = f"JoinOp attach field {field!r} reading '{target.id}'"
             try:
-                source, chain = resolve_row_source(target, set(op.column_ids), ctx)
+                source, chain = resolve_row_source(
+                    target, set(op.column_ids), ctx, consumer
+                )
             except ValueError as exc:
                 raise ValueError(
                     f"JoinOp attach field {field!r} reads '{target.id}': {exc}"
