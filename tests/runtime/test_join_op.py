@@ -1,0 +1,225 @@
+"""Keyed joins through the production path: YAML -> graph -> generated step."""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from lumilake_server.graphs import Graph
+from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime import join_step, python_step
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+
+_ROWS = [
+    {"case_id": "a", "text": "hello"},
+    {"case_id": "b", "text": "DIAGNOSIS READY: flu"},
+    {"case_id": "c", "text": "REQUEST TEST: cbc"},
+]
+
+_PRELUDE = """
+name: j
+inputs:
+  Rows:
+    - '{"case_id": "a", "text": "hello"}'
+    - '{"case_id": "b", "text": "DIAGNOSIS READY: flu"}'
+    - '{"case_id": "c", "text": "REQUEST TEST: cbc"}'
+ops:
+  - id: State
+    op: LambdaOp
+    mode: list
+    inputs: [Rows]
+    fn_name: state
+    code: |
+      def state(c):
+          return [json.loads(v) for v in c[0]]
+  - id: Route
+    op: RouterOp
+    inputs: [State]
+    path: text
+    default_branch: patient
+    rules:
+      - {branch: diagnose, match: contains, value: "DIAGNOSIS READY"}
+"""
+
+_TURNS = """
+  - id: PatientPrompt
+    op: FormatOp
+    inputs: [Route.patient]
+    template: "Reply to {text}"
+    format_kwargs: {text: Route.patient}
+  - id: PatientTurn
+    op: LLMChatOp
+    inputs: [PatientPrompt]
+    messages:
+      - {role: user, content: "Answer the patient."}
+    config: {model: test/model}
+    rowwise_template: "{prompt}"
+    rowwise_columns: [{label: prompt, node: PatientPrompt, path: items.output}]
+"""
+
+
+def _parse(turns: str, join: str) -> dict[str, Any]:
+    payload = _PRELUDE + turns + join
+    return parse_yaml_payload(payload)["j"]
+
+
+def _join_node(spec: dict[str, Any]) -> Any:
+    graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    runtime = RuntimeGraphBuilder().build(graph)
+    return next(
+        node
+        for node in runtime.nodes.values()
+        if node.data_spec.get("mode") == join_step.JOIN_MODE
+    )
+
+
+_RUNTIME_MOUNT: dict[str, str] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _task_runtime_mount(tmp_path_factory: pytest.TempPathFactory) -> None:
+    path = tmp_path_factory.mktemp("join-runtime") / "lumilake-runtime.py"
+    path.write_bytes(python_step.runtime_blob().body)
+    _RUNTIME_MOUNT["path"] = str(path)
+
+
+def _stage(tmp_path: Path, name: str, items: list[dict[str, Any]]) -> str:
+    stage = tmp_path / name
+    stage.mkdir()
+    (stage / "results.json").write_text(
+        json.dumps({"task_id": "t", "result": {"items": items}})
+    )
+    return str(stage)
+
+
+def _run(tmp_path: Path, node: Any, upstream: dict[int, Any]) -> dict[str, Any]:
+    """Run the generated step over one result list per plan entry."""
+    plan = node.data_spec["plan"]
+    stages: dict[str, str] = {}
+    for index, items in upstream.items():
+        name = f"{node.node_id}-{index}"
+        stages[plan[index]["node"]] = _stage(tmp_path, name, items)
+    code = join_step.join_source(node.node_id, node.data_spec["join"], plan).replace(
+        python_step.TASK_RUNTIME_MOUNT, _RUNTIME_MOUNT["path"]
+    )
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
+    return namespace["main"](stages)
+
+
+def test_join_merges_a_disjoint_branch_and_leaves_its_fields_out(
+    tmp_path: Path,
+) -> None:
+    spec = _parse(
+        "",
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.diagnose]
+    on: case_id
+""",
+    )
+    node = _join_node(spec)
+    out = _run(
+        tmp_path,
+        node,
+        {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]},
+    )
+    rows = [item["output"] for item in out["items"]]
+    assert [row["case_id"] for row in rows] == ["a", "b", "c"]
+    assert rows[1]["text"] == _ROWS[1]["text"]
+    assert set(rows[0]) == {"case_id", "text"}
+
+
+def test_join_attaches_a_rowwise_chat_through_its_row_source(
+    tmp_path: Path,
+) -> None:
+    spec = _parse(
+        _TURNS,
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.patient, PatientTurn]
+    on: case_id
+    attach: {patient_reply: PatientTurn}
+""",
+    )
+    node = _join_node(spec)
+    patient = [_ROWS[0], _ROWS[2]]
+    out = _run(
+        tmp_path,
+        node,
+        {
+            0: [{"output": _ROWS}],
+            1: [{"output": patient}],
+            2: [{"output": ["for-a", "for-c"]}],
+            3: [{"output": patient}],
+        },
+    )
+    replies = {
+        item["output"]["case_id"]: item["output"].get("patient_reply")
+        for item in out["items"]
+    }
+    assert replies == {"a": "for-a", "b": None, "c": "for-c"}
+
+
+def test_join_refuses_an_attach_read_from_two_nodes() -> None:
+    spec = _parse(
+        """
+  - id: PatientTurn
+    op: LLMChatOp
+    inputs: [Route.patient]
+    messages:
+      - {role: user, content: "Reply to the patient"}
+    config: {model: test/model}
+    rowwise_template: "Reply to {case_id}"
+    rowwise_columns:
+      - {label: case_id, node: Route.patient, path: items.output.case_id}
+      - {label: text, node: State, path: items.output.text}
+""",
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.patient, PatientTurn]
+    on: case_id
+    attach: {patient_reply: PatientTurn}
+""",
+    )
+    with pytest.raises(ValueError, match="patient_reply.*several nodes"):
+        _join_node(spec)
+
+
+def test_join_fails_on_a_duplicate_key(tmp_path: Path) -> None:
+    spec = _parse(
+        "",
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.diagnose]
+    on: case_id
+""",
+    )
+    node = _join_node(spec)
+    with pytest.raises(ValueError, match="duplicate key"):
+        _run(
+            tmp_path,
+            node,
+            {0: [{"output": [_ROWS[1], _ROWS[1]]}], 1: [{"output": [_ROWS[1]]}]},
+        )
+
+
+def test_join_missing_error_names_the_key(tmp_path: Path) -> None:
+    spec = _parse(
+        "",
+        """
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Route.diagnose]
+    on: case_id
+    missing: error
+""",
+    )
+    node = _join_node(spec)
+    with pytest.raises(ValueError, match=r'key "a"'):
+        _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
