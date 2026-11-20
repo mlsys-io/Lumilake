@@ -51,7 +51,7 @@ class OutputKind(Enum):
     JOIN = "join"
 
 
-_LAMBDA_KINDS = frozenset(
+_WHOLE_ITEM_KINDS = frozenset(
     {OutputKind.LIST_LAMBDA, OutputKind.ROW_LAMBDA, OutputKind.JOIN}
 )
 
@@ -91,7 +91,7 @@ class OpOutput:
             return (
                 f"{head} per-row VLM '{self.node}'; only 'items.output' is supported."
             )
-        noun = "Lambda" if self.kind in _LAMBDA_KINDS else "API upstream"
+        noun = "Lambda" if self.kind in _WHOLE_ITEM_KINDS else "API upstream"
         return (
             f"{head} {noun} '{self.node}';"
             " only 'items.output' (the whole output) is supported."
