@@ -55,10 +55,16 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a bool")
         op_dict["cache"] = cache
     by = entry.fields.get("by")
-    if by is not None:
-        if mode != "reduce":
+    if mode == "reduce":
+        parts = by.split(".") if isinstance(by, str) else []
+        if not parts or any(not part or part != part.strip() for part in parts):
             raise ValueError(
-                f"LambdaOp '{entry.id}' 'by' is only valid in reduce mode "
-                f"(got mode {mode!r})"
+                f"LambdaOp '{entry.id}' reduce mode requires 'by' to be a dotted"
+                f" path of non-empty segments (got {by!r})"
             )
         op_dict["by"] = by
+    elif by is not None:
+        raise ValueError(
+            f"LambdaOp '{entry.id}' 'by' is only valid in reduce mode "
+            f"(got mode {mode!r})"
+        )
