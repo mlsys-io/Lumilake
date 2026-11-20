@@ -164,9 +164,7 @@ def test_join_attaches_a_rowwise_chat_through_its_row_source(
     assert replies == {"a": "for-a", "b": None, "c": "for-c"}
 
 
-def test_join_refuses_an_attach_read_from_two_nodes() -> None:
-    spec = _parse(
-        """
+_TURNS_READ_TWO_NODES = """
   - id: PatientTurn
     op: LLMChatOp
     inputs: [Route.patient]
@@ -177,7 +175,40 @@ def test_join_refuses_an_attach_read_from_two_nodes() -> None:
     rowwise_columns:
       - {label: case_id, node: Route.patient, path: items.output.case_id}
       - {label: text, node: State, path: items.output.text}
-""",
+"""
+
+_LIST_HOP_TURNS = """
+  - id: Turns
+    op: LambdaOp
+    mode: list
+    inputs: [State]
+    fn_name: turns
+    code: |
+      def turns(c):
+          return [row for row in c[0] if "READY" in row["text"]]
+  - id: PatientTurn
+    op: LLMChatOp
+    inputs: [Route.patient]
+    messages:
+      - {role: user, content: "Reply to the patient"}
+    config: {model: test/model}
+    rowwise_template: "Reply to {case_id}"
+    rowwise_columns: [{label: case_id, node: Turns, path: items.output.case_id}]
+"""
+
+
+@pytest.mark.parametrize(
+    ("turns", "match"),
+    [
+        pytest.param(_TURNS_READ_TWO_NODES, "several nodes", id="two-nodes"),
+        pytest.param(_LIST_HOP_TURNS, "not 1:1 over one row column", id="list-hop"),
+    ],
+)
+def test_join_refuses_an_attach_it_cannot_pair_with_rows(
+    turns: str, match: str
+) -> None:
+    spec = _parse(
+        turns,
         """
   - id: Merge
     op: JoinOp
@@ -186,7 +217,7 @@ def test_join_refuses_an_attach_read_from_two_nodes() -> None:
     attach: {patient_reply: PatientTurn}
 """,
     )
-    with pytest.raises(ValueError, match="patient_reply.*several nodes"):
+    with pytest.raises(ValueError, match=f"patient_reply.*{match}"):
         _join_node(spec)
 
 

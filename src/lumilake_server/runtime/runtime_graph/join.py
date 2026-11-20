@@ -33,12 +33,11 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
     where the op's shape names one."""
     graph = ctx.graph_dict
     if isinstance(op, LambdaOp):
-        inputs = _non_literal(op)
-        if op.takes_whole_columns:
-            # A list-mode Lambda over several inputs is not 1:1 over one row
-            # column, so it has no row source at all.
-            return inputs if len(inputs) == 1 else []
-        return _drop_broadcasts(inputs, ctx)
+        if op.mode == "list":
+            # A list Lambda may filter, reorder or expand rows, so its outputs
+            # do not pair with any input's keys by position.
+            return []
+        return _drop_broadcasts(_non_literal(op), ctx)
     if isinstance(op, FormatOp):
         return _drop_broadcasts(_non_literal(op), ctx)
     if isinstance(op, (LLMCompletionOp, EmbeddingOp)):
