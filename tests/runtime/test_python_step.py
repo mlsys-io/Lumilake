@@ -311,7 +311,46 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     assert len(_python_nodes(graph)) == 1
 
 
-def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
+def test_expand_and_reduce_build_standalone_steps_with_their_mode() -> None:
+    """An expand or reduce LambdaOp always compiles to its own python task, and
+    its mode (and a reduce op's ``by``) reach the task spec."""
+    payload = """
+name: shapes
+inputs:
+  Keywords: ["a,b", "", "c"]
+ops:
+  - id: "Split"
+    op: LambdaOp
+    inputs: [Keywords]
+    mode: expand
+    fn_name: split
+    code: |
+      def split(row):
+          return [k for k in row[0].split(",") if k]
+  - id: "Group"
+    op: LambdaOp
+    inputs: ["Split"]
+    mode: reduce
+    by: keyword
+    fn_name: group
+    code: |
+      def group(rows):
+          return len(rows)
+outputs:
+  - name: grouped
+    ref: "Group"
+"""
+    spec = parse_yaml_payload(payload)["shapes"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    nodes = _python_nodes(graph)
+    assert len(nodes) == 2
+    by_mode = {node.data_spec["mode"]: node for node in nodes.values()}
+    assert by_mode["expand"].data_spec.get("by") is None
+    assert by_mode["reduce"].data_spec["by"] == "keyword"
+    assert by_mode["reduce"].dependencies == (by_mode["expand"].node_id,)
+
     a = input_placeholder("A")
     b = input_placeholder("B")
     row = LambdaOp(
@@ -363,6 +402,7 @@ def _run_wrapper(
     inputs: dict[str, str],
     fn_name: str | None = None,
     mode: str = "row",
+    by: str | None = None,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
     declared = fn_name or lambda_runtime.validate_source(code)
@@ -370,7 +410,7 @@ def _run_wrapper(
     runtime_mount = _materialize_task_runtime()
     exec(
         python_step.wrapper_source(
-            "op-1", declared, code, _entries(plan), mode
+            "op-1", declared, code, _entries(plan), mode, by
         ).replace(python_step.TASK_RUNTIME_MOUNT, runtime_mount),
         namespace,
     )
@@ -684,6 +724,92 @@ def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": ["x"]}]
+    out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
+    assert out == {"items": [{"output": "x", "value": "x"}]}
+
+
+def test_wrapper_expand_mode_emits_one_item_per_element_and_drops_empty() -> None:
+    code = "def split(row):\n    return [k for k in row[0].split(',') if k]\n"
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["a,b", "", "c"]})
+    ]
+    out = _run_wrapper(code, plan, {}, fn_name="split", mode="expand")
+    assert out == {"items": [{"output": "a"}, {"output": "b"}, {"output": "c"}]}
+
+
+def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
+    code = "def best(rows):\n    return sorted(rows, key=lambda r: -r[0]['s'])[:2]\n"
+    rows = [
+        json.dumps({"id": i, "s": s})
+        for i, s in (("p1", 5), ("p2", 9), ("p1", 7), ("p2", 3), ("p1", 1))
+    ]
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": rows})
+    ]
+    out = _run_wrapper(code, plan, {}, fn_name="best", mode="reduce", by="id")
+    assert [[row[0]["s"] for row in item["output"]] for item in out["items"]] == [
+        [7, 5],
+        [9, 3],
+    ]
+
+
+def test_wrapper_reduce_mode_groups_by_json_text() -> None:
+    rows = [json.dumps({"id": v}) for v in (1, "1")]
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": rows})
+    ]
+    out = _run_wrapper(
+        "lambda rows: len(rows)", plan, {}, fn_name="f", mode="reduce", by="id"
+    )
+    assert [item["output"] for item in out["items"]] == [1, 1]
+
+
+def test_wrapper_expand_mode_decodes_a_serialized_table_to_its_rows() -> None:
+    df = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate(
+            {"kind": "literal", "values": [json.dumps({"df": json.dumps(df)})]}
+        )
+    ]
+    out = _run_wrapper(
+        "lambda row: row[0]",
+        plan,
+        {},
+        fn_name="rows",
+        mode="expand",
+    )
+    assert out == {
+        "items": [
+            {"output": {"id": "p1", "s": 5}},
+            {"output": {"id": "p2", "s": 9}},
+        ]
+    }
+
+
+def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate(
+            {"kind": "literal", "values": [json.dumps({"x": 1})]}
+        )
+    ]
+    with pytest.raises(ValueError, match="group row 0 by 'patient_id'"):
+        _run_wrapper(
+            "lambda rows: len(rows)",
+            plan,
+            {},
+            fn_name="f",
+            mode="reduce",
+            by="patient_id",
+        )
+
+
+def test_by_is_refused_outside_reduce_mode() -> None:
+    with pytest.raises(ValueError, match="'by' is only valid in reduce mode"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), by="id")
+
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})
+    ]
     out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
     assert out == {"items": [{"output": "x", "value": "x"}]}
 
