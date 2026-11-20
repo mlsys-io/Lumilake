@@ -73,11 +73,12 @@ def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         for index, value in column.items():
             rows.setdefault(index, {})[name] = value
+    indexes = [index for index in rows]
     try:
-        ordered = sorted(rows, key=int)
+        indexes.sort(key=int)
     except ValueError:
-        ordered = list(rows)
-    return [rows[index] for index in ordered]
+        pass
+    return [rows[index] for index in indexes]
 
 
 def _decoded_rows(value: Any) -> list[Any]:
