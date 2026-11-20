@@ -9,7 +9,9 @@ from lumilake_server.ops.classification_ops import (
     literal_pairs,
 )
 from lumilake_server.ops.http_fetch_ops import HttpFetchOp
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.runtime import python_step
+from lumilake_server.runtime.runtime_graph.join_build import build_join_step
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
     LoweringResult,
@@ -36,6 +38,33 @@ def _replace_query_placeholder(value: Any) -> Any:
 
 
 class _DerivedBuilder(_VisionBuilder):
+    def _upstream_steps(
+        self, op_ref: Op, ctx: LoweringContext
+    ) -> list[RuntimeOp] | None:
+        """The python steps ``op_ref`` lowers to on demand: a row-mode Lambda's,
+        a join's, or ``None`` when the op lowers in a later phase by another
+        rule."""
+        if isinstance(op_ref, JoinOp):
+            return build_join_step(self, op_ref, ctx)
+        if isinstance(op_ref, LambdaOp):
+            return self._build_python_step(op_ref, ctx)
+        return None
+
+    def _upstream_runtime(self, op_ref: Op, ctx: LoweringContext) -> list[str]:
+        """The runtime nodes ``op_ref`` reads as, building a row-mode Lambda or
+        a join whose own phase has not run yet."""
+        runtime_ids = ctx.dsl_to_runtime.get(op_ref.id)
+        if runtime_ids:
+            return runtime_ids
+        steps = self._upstream_steps(op_ref, ctx)
+        if steps is None:
+            return []
+        for node in steps:
+            ctx.nodes.setdefault(node.node_id, node)
+        runtime_ids = [node.node_id for node in steps]
+        ctx.dsl_to_runtime[op_ref.id] = runtime_ids
+        return runtime_ids
+
     def _read_source(
         self, consumer: str, op_ref: Op, ctx: LoweringContext
     ) -> list[str] | OpOutput:
@@ -52,16 +81,7 @@ class _DerivedBuilder(_VisionBuilder):
             if not op_ref.data:
                 raise ValueError(f"{consumer} has empty input")
             return op_ref.data
-        runtime_ids = ctx.dsl_to_runtime.get(op_ref.id)
-        if not runtime_ids and isinstance(op_ref, LambdaOp):
-            # A row-mode Lambda a derived op reads runs on its own; the derived
-            # phase precedes the row-Lambda one, so build it here.
-            steps = self._build_python_step(op_ref, ctx)
-            runtime_ids = []
-            for node in steps:
-                ctx.nodes.setdefault(node.node_id, node)
-                runtime_ids.append(node.node_id)
-            ctx.dsl_to_runtime[op_ref.id] = runtime_ids
+        runtime_ids = self._upstream_runtime(op_ref, ctx)
         if not runtime_ids:
             raise ValueError(f"{consumer} input {op_ref.id!r} has no runtime node")
         return replace(self._op_output(op_ref), node=runtime_ids[-1])

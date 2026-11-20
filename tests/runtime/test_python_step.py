@@ -308,7 +308,8 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
 @pytest.mark.parametrize("mode", ["expand", "reduce"])
 def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> None:
     """An expand or reduce LambdaOp always compiles to its own python task
-    after every producer, and its mode and ``by`` reach the task spec."""
+    after every producer, its mode and ``by`` reach the task spec, and its
+    output archives the whole result rather than a per-row value."""
     stock = input_placeholder("Stock")
     source = LambdaOp([stock], fn=lambda row: [row[0], row[0]])
     llm = LLMChatOp(
@@ -331,6 +332,7 @@ def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> 
         {"kind": "stage", "node": llm.id, "flatten": True}
     ]
     assert node.dependencies == (llm.id,)
+    assert graph.output_paths[node.node_id] == "items.output"
 
 
 def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
