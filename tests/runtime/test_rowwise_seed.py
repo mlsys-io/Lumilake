@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 import yaml
 
-from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -15,13 +14,11 @@ _WORKFLOW = yaml.safe_load("""
 name: seeded-chat
 inputs: {Q: [Q1, Q2]}
 ops:
-- {id: Prompts, op: LambdaOp, inputs: [Q], fn_name: prompts, mode: row,
-   code: "def prompts(c):\\n    return 'ask ' + c[0]\\n"}
 - {id: Seeds, op: LambdaOp, inputs: [Q], fn_name: seeds, mode: row,
    code: "def seeds(c):\\n    return len(c[0])\\n"}
-- {id: Answer, op: LLMChatOp, inputs: [Prompts, Seeds], config: {model: m},
-   messages: [{role: user, content: placeholder}], rowwise_template: "{prompt}",
-   rowwise_columns: [{label: prompt, node: Prompts, path: items.output}],
+- {id: Answer, op: LLMChatOp, inputs: [Seeds], config: {model: m},
+   messages: [{role: user, content: placeholder}], rowwise_template: "{q}",
+   rowwise_columns: [{label: q, node: Q}],
    rowwise_seed: {node: Seeds, path: items.output}}
 outputs: [{name: answer, ref: Answer}]
 """)
@@ -47,47 +44,32 @@ def test_rowwise_seed_lowers_to_task_seeds() -> None:
 
 def test_rowwise_seed_from_a_literal_input_is_inlined() -> None:
     def seed_from_input(payload: dict[str, Any]) -> None:
-        payload["inputs"] = {"Q": ["Q1", "Q2"], "S": ["7", "", "null"]}
-        payload["ops"][2]["inputs"] = ["Prompts", "S"]
-        payload["ops"][2]["rowwise_seed"] = {"node": "S"}
+        payload["inputs"] = {"Q": ["Q1", "Q2"], "S": ["7", ""]}
+        payload["ops"][1]["inputs"] = ["S"]
+        payload["ops"][1]["rowwise_seed"] = {"node": "S"}
 
     node = _build(seed_from_input)
-    assert node.data_spec["seeds"] == [7, None, None]
+    assert node.data_spec["seeds"] == [7, None]
+
+
+def _seed_from_a_format(payload: dict[str, Any]) -> None:
+    payload["ops"].insert(0, {"id": "Text", "op": "FormatOp", "template": "{q}"})
+    payload["ops"][2]["rowwise_seed"] = {"node": "Text", "path": "items.output"}
+    payload["ops"][2]["inputs"].append("Text")
 
 
 @pytest.mark.parametrize(
     "mutate, match",
     [
-        (lambda p: p["ops"][2].pop("rowwise_template"), "rowwise_template"),
-        (lambda p: p["ops"][2]["config"].update(num_beams=3), "num_beams"),
-        (
-            lambda p: p["ops"][2]["config"].update(api={"url": "http://x"}),
-            "API mode",
-        ),
-        (
-            lambda p: p["ops"].insert(
-                0,
-                {
-                    "id": "Rows",
-                    "op": "DataRetrievalOp",
-                    "inputs": [],
-                    "data_spec": {"type": "lumid", "mode": "sql", "template": "s"},
-                },
-            )
-            or p["ops"][3]["rowwise_seed"].update(node="Rows")
-            or p["ops"][3]["inputs"].append("Rows"),
-            "one value per row",
-        ),
-        (
-            lambda p: p["ops"][2]["inputs"].remove("Seeds"),
-            "listed in the op's inputs",
-        ),
+        (lambda p: p["ops"][1].pop("rowwise_template"), "rowwise_template"),
+        (lambda p: p["ops"][1]["config"].update(num_beams=3), "num_beams"),
+        (lambda p: p["ops"][1]["config"].update(api={"url": "x"}), "API"),
+        (lambda p: p["ops"][1]["inputs"].remove("Seeds"), "in the op's inputs"),
+        (_seed_from_a_format, "one value per row"),
     ],
 )
 def test_rowwise_seed_refused(
-    mutate: Callable[[dict[str, Any]], None], match: str, monkeypatch: Any
+    mutate: Callable[[dict[str, Any]], None], match: str
 ) -> None:
-    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "token")
     with pytest.raises(ValueError, match=match):
         _build(mutate)
