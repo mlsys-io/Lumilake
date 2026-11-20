@@ -26,6 +26,7 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -1759,6 +1760,10 @@ def _row_lambda_fn(row: tuple[SingleDtype, ...]) -> str:
     return str(row[0]).upper()
 
 
+def _rows_lambda_fn(columns: tuple[list[str], ...]) -> list[dict[str, str]]:
+    return [{"id": value} for value in columns[0]]
+
+
 def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
     """A rowwise LLM reading a standalone row-mode LambdaOp must bind the
     column to ``value.items.output`` (the PythonResult field), not
@@ -1863,6 +1868,27 @@ def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
 
     assert inner.id in runtime_graph.nodes
     assert outer.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_read_by_a_join_materializes() -> None:
+    """A row-mode LambdaOp an LLM inlines into its message chain and a join
+    attaches materializes, so the join phase finds its runtime node."""
+    stock = input_placeholder("Stock")
+    state = LambdaOp([stock], fn=_rows_lambda_fn)
+    inner = LambdaOp([state], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=inner)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    join = JoinOp([state, inner, llm], by="id", attach={"reply": inner})
+    compiled = Graph.from_ops(
+        [as_output("merged", join), as_output("answers", llm)]
+    ).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert inner.id in runtime_graph.nodes
+    assert inner.id in runtime_graph.nodes[join.id].dependencies
 
 
 def test_inlined_row_lambda_referenced_by_condition_materializes() -> None:
