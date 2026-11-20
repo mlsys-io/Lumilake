@@ -308,9 +308,15 @@ def test_deserialize_rejects_bad_source_and_limits() -> None:
         LambdaOp._from_json(
             {"fn_name": "f", "_code": "def f(a, b):\n    return a", "_inputs": []}, {}
         )
-    with pytest.raises(ValueError, match="memory_mb"):
+    with pytest.raises(ValueError, match="lambda_shout': memory_mb"):
         LambdaOp._from_json(
-            {"fn_name": "shout", "_code": _SHOUT, "_inputs": [], "memory_mb": 10**9},
+            {
+                "_id": "lambda_shout",
+                "fn_name": "shout",
+                "_code": _SHOUT,
+                "_inputs": [],
+                "memory_mb": 10**9,
+            },
             {},
         )
 

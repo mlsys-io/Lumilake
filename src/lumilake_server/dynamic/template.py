@@ -168,8 +168,8 @@ def _require_export(plan: SubgraphPlan, export_id: str, round_number: int) -> No
 
 
 def _require_list_lambda(op: dict[str, Any], export_id: str) -> None:
-    """Require the stop export to be a whole-result LambdaOp, one of the ops
-    whose archived export collapses to a single value."""
+    """Require the stop export to be a LambdaOp whose archived export collapses
+    to a single value."""
     op_type = op.get("op", "")
     if op_type != "LambdaOp":
         raise DriverProtocolError(
@@ -177,9 +177,9 @@ def _require_list_lambda(op: dict[str, Any], export_id: str) -> None:
         )
     if op.get("mode") not in WHOLE_RESULT_MODES:
         raise DriverProtocolError(
-            f"stop_when_empty {export_id!r} must be a whole-result LambdaOp, got "
-            f"mode {op.get('mode')!r}: only {WHOLE_RESULT_MODES} exports read as"
-            " an empty list"
+            f"stop_when_empty {export_id!r} must be a list, expand or reduce"
+            f" mode LambdaOp, got mode {op.get('mode')!r}: only those exports"
+            " read as an empty list"
         )
 
 

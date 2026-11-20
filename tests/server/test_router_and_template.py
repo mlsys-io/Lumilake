@@ -176,12 +176,12 @@ def test_template_and_api_are_mutually_exclusive() -> None:
         (
             [_state("Live_r{{round}}", ["Symbols"], mode="row")],
             [_state("Live_r{{round}}", ["Symbols"])],
-            "whole-result",
+            "list, expand or reduce",
         ),
         (
             [_state("Live_r{{round}}", ["Symbols"])],
             [_state("Live_r{{round}}", ["Symbols"], mode="row")],
-            "whole-result",
+            "list, expand or reduce",
         ),
         (
             [
