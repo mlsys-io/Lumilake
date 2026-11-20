@@ -15,10 +15,12 @@ from lumilake_server.dynamic.driver import (
     validate_emitted_subgraph,
     walk_archived_items,
 )
+from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.routes.jobs import _admit_subgraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
@@ -764,6 +766,43 @@ def test_forward_serialized_dataframe_columns_materialize():
         assert materializer["op"] == "LambdaOp"
         assert materializer["mode"] == "aligned"
         assert materializer["inputs"] == [input_id]
+
+
+def test_forward_seed_reference_lowers_to_literal_seeds():
+    # A seed read from an earlier round is forwarded as a workflow input, so
+    # the lowering inlines its values as a literal seed list.
+    seed_id = "s2"
+    results = {seed_id: [{"output": 7}, {"output": 9}]}
+    configs = {seed_id: _llm_config(seed_id)}
+    subgraph = [
+        {
+            "id": "q7",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "config": {"model": "Qwen/Qwen3-8B"},
+            "messages": [{"role": "user", "content": "x"}],
+            "rowwise_template": "{p}",
+            "rowwise_columns": [
+                {"label": "p", "data": {"type": "list", "items": ["a", "b"]}}
+            ],
+            "rowwise_seed": {"node": seed_id, "path": "items.output"},
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
+    assert ops[0]["rowwise_seed"] == {"node": f"{seed_id} | items.output", "path": ""}
+    workflow = {
+        "name": "r1",
+        "inputs": inputs,
+        "ops": ops,
+        "outputs": [{"name": "o", "ref": "q7"}],
+    }
+    spec = next(iter(parse_yaml_payload(workflow).values()))
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
+    assert node.data_spec["seeds"] == [7, 9]
 
 
 def test_forward_aligned_materializers_are_row_cardinality():

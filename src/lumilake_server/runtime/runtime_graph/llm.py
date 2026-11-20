@@ -47,6 +47,20 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import lambda_runtime
 
 
+def _literal_seed(value: Any, llm_op_id: str) -> int | None:
+    """Convert one literal seed value, mapping an empty or null entry to
+    ``None`` so the op's own seed applies to that row."""
+    if value is None or value == "" or value == "null":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"LLMChatOp {llm_op_id} rowwise_seed value {value!r} is not an"
+            " integer or null"
+        ) from exc
+
+
 class _LLMBuilder(_EmbeddingBuilder):
 
     def _row_condition(
@@ -284,6 +298,8 @@ class _LLMBuilder(_EmbeddingBuilder):
                 llm_op=llm_op,
                 dependencies=row_dependencies,
                 graph_dict=graph_dict,
+                inputs_dict=inputs_dict,
+                visited_node_ids=visited_node_ids,
             )
             return self._create_runtime_op(
                 name=llm_op_id,
@@ -615,9 +631,10 @@ class _LLMBuilder(_EmbeddingBuilder):
         llm_op: LLMChatOp,
         dependencies: list[str],
         graph_dict: dict[str, Op],
+        inputs_dict: dict[str, list[str]],
+        visited_node_ids: set[str],
     ) -> None:
-        """Bind a rowwise op's per-row seed column as the task's ``seeds``
-        reference and add its node as a dependency."""
+        """Bind a rowwise op's per-row seed column as the task's ``seeds``."""
         if llm_op.rowwise_seed is None:
             return
         node_ref = llm_op.rowwise_seed.get("node")
@@ -626,14 +643,58 @@ class _LLMBuilder(_EmbeddingBuilder):
             raise ValueError(
                 f"LLMChatOp {llm_op_id} rowwise_seed must name a node and path"
             )
+        upstream = graph_dict.get(node_ref)
+        if upstream is None:
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} rowwise_seed references unknown node"
+                f" '{node_ref}'"
+            )
+        # The seed's producer feeds no chat message, so the graph traversal
+        # never reaches it on its own.
+        visited_node_ids.add(node_ref)
+        if isinstance(upstream, InputOp):
+            self._inline_seed_values(
+                data_spec,
+                llm_op_id=llm_op_id,
+                values=inputs_dict.get(upstream.name),
+                path=path,
+            )
+            return
+        if isinstance(upstream, DataOp):
+            self._inline_seed_values(
+                data_spec, llm_op_id=llm_op_id, values=upstream.data, path=path
+            )
+            return
         if node_ref not in dependencies:
             dependencies.append(node_ref)
         data_spec["seeds"] = {
             "node": node_ref,
-            "path": self._op_output(graph_dict[node_ref]).read(
+            "path": self._op_output(upstream).read(
                 path, f"LLMChatOp {llm_op_id} rowwise_seed"
             ),
         }
+
+    @staticmethod
+    def _inline_seed_values(
+        data_spec: dict[str, Any],
+        *,
+        llm_op_id: str,
+        values: list[str] | None,
+        path: str,
+    ) -> None:
+        """Bind a literal input or data op as a literal ``seeds`` list; it
+        never materializes a runtime envelope, so no path can drill it."""
+        if values is None:
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} rowwise_seed references an input with no"
+                " values supplied"
+            )
+        if path:
+            raise ValueError(
+                f"LLMChatOp {llm_op_id} rowwise_seed references a literal source"
+                f" with drill path '{path}'; a literal seed source takes no path"
+            )
+        data_spec["seeds"] = [_literal_seed(value, llm_op_id) for value in values]
 
     def _aggregate_data_spec(
         self,

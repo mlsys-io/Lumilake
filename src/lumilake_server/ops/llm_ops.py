@@ -116,6 +116,7 @@ class LLMChatOp(LLMOp):
         cacheable: bool = False,
         condition: dict[str, str] | None = None,
         rowwise_seed: dict[str, Any] | None = None,
+        rowwise_seed_op: Op | None = None,
     ) -> None:
         messages = messages if isinstance(messages, Op) else MessageOp(messages)
         inputs: list[Op] = [messages]
@@ -143,6 +144,10 @@ class LLMChatOp(LLMOp):
                 )
             # Keep the column's producer in the graph traversal.
             inputs.append(rowwise_messages_op)
+        if rowwise_seed_op is not None and rowwise_seed_op not in inputs:
+            # The seed's producer may feed no message, so keep it in the graph
+            # the same way the messages column does.
+            inputs.append(rowwise_seed_op)
         super().__init__(inputs, config, cacheable)
         self.return_history = return_history
         self.structural_outputs = structural_outputs
@@ -217,6 +222,10 @@ class LLMChatOp(LLMOp):
             rowwise_messages_op = other_ops[column_data["node"]]
         system_messages = data.get("system_messages")
         condition = data.get("condition")
+        seed_data = data.get("rowwise_seed")
+        seed_op: Op | None = None
+        if seed_data is not None:
+            seed_op = other_ops[seed_data["node"]]
         return cls(
             message,
             config,
@@ -230,7 +239,8 @@ class LLMChatOp(LLMOp):
             system_messages,
             cacheable,
             condition,
-            data.get("rowwise_seed"),
+            seed_data,
+            seed_op,
         )
 
 
