@@ -24,6 +24,7 @@ LITERAL_INLINE_MAX_BYTES = 1024
 LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
 TASK_TYPE = "python"
+WHOLE_RESULT_MODES = ("list", "expand", "reduce")
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_BLOBS_PER_TASK = 16
