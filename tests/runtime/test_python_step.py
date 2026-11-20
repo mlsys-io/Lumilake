@@ -352,6 +352,52 @@ outputs:
     assert by_mode["reduce"].dependencies == (by_mode["expand"].node_id,)
 
 
+@pytest.mark.parametrize("mode", ["expand", "reduce"])
+def test_expand_and_reduce_read_a_rowwise_llm_output(mode: str) -> None:
+    """An expand or reduce LambdaOp over a rowwise LLM builds its step after
+    the LLM's node, reading that LLM's per-row outputs."""
+    payload = f"""
+name: shapes
+inputs:
+  q: ["a", "b"]
+ops:
+  - id: "Ask"
+    op: LLMChatOp
+    inputs: [q]
+    messages:
+      - role: user
+        content: "hi"
+    rowwise_template: "Say {{v}}"
+    rowwise_columns:
+      - {{ label: v, node: q, path: "items.output" }}
+    config: {{ model: {_MODEL} }}
+  - id: "Read"
+    op: LambdaOp
+    inputs: ["Ask"]
+    mode: {mode}
+    {"by: v" if mode == "reduce" else ""}
+    fn_name: read
+    code: |
+      def read(rows):
+          return [row[0] for row in rows]
+outputs:
+  - name: out
+    ref: "Read"
+"""
+    spec = parse_yaml_payload(payload)["shapes"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    nodes = list(_python_nodes(graph).values())
+    (node,) = nodes
+    llm_node_id = graph.dsl_to_runtime[node.data_spec["plan"][0]["node"]][0]
+    assert node.data_spec["mode"] == mode
+    assert node.data_spec["plan"] == [
+        {"kind": "stage", "node": llm_node_id, "flatten": True}
+    ]
+    assert node.dependencies == (llm_node_id,)
+
+
 def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     a = input_placeholder("A")
     b = input_placeholder("B")

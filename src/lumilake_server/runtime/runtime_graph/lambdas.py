@@ -122,13 +122,11 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
     def _lower_list_lambda(
         self, op: LambdaOp, ctx: LoweringContext
     ) -> LoweringResult | None:
-        """Lower a list, expand or reduce mode LambdaOp, each of which always
-        runs as its own step; a row-mode one is lowered by its consumer or on
-        its own."""
-        if op.mode == "row":
+        """Lower a list or aligned mode LambdaOp, each of which reads whole
+        columns; a row, expand or reduce mode one is lowered by its consumer or
+        on its own."""
+        if op.mode in ("row", "expand", "reduce"):
             return None
-        if op.mode in ("expand", "reduce"):
-            return self._lower_row_fed_lambda(op, ctx)
         op_id = op.id
         inputs_dict = ctx.inputs_dict
         plan: list[ColumnPlanEntry] = []
@@ -229,8 +227,11 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
     ) -> LoweringResult | None:
         """Lower a row-mode LambdaOp to its own python step when no LLM inlined
         it: one that is an output, that nothing reached, that has an image, or
-        that a runtime node references. The last one lowers checks that no
-        runtime node reads an inlined Lambda."""
+        that a runtime node references. An expand or reduce mode one reads one
+        decoded row per call and always gets its own step. The last row-mode
+        case lowers checks that no runtime node reads an inlined Lambda."""
+        if op.mode in ("expand", "reduce"):
+            return self._lower_row_fed_lambda(op, ctx)
         if op.mode != "row":
             return None
         referenced = self._referenced_row_lambdas(ctx)
