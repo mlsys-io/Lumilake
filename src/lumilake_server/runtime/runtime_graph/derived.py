@@ -70,7 +70,7 @@ class _DerivedBuilder(_VisionBuilder):
                 ctx.nodes.setdefault(node.node_id, node)
                 runtime_ids.append(node.node_id)
             ctx.dsl_to_runtime[op_ref.id] = runtime_ids
-        if not runtime_ids and isinstance(op_ref, JoinOp):
+        if isinstance(op_ref, JoinOp):
             # A join's runtime node is its op id; the join phase builds it.
             runtime_ids = [op_ref.id]
         if not runtime_ids:

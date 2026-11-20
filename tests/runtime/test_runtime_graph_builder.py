@@ -1760,10 +1760,6 @@ def _row_lambda_fn(row: tuple[SingleDtype, ...]) -> str:
     return str(row[0]).upper()
 
 
-def _rows_lambda_fn(columns: tuple[list[str], ...]) -> list[dict[str, str]]:
-    return [{"id": value} for value in columns[0]]
-
-
 def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
     """A rowwise LLM reading a standalone row-mode LambdaOp must bind the
     column to ``value.items.output`` (the PythonResult field), not
@@ -1871,10 +1867,9 @@ def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
 
 
 def test_inlined_row_lambda_read_by_a_join_materializes() -> None:
-    """A row-mode LambdaOp an LLM inlines into its message chain and a join
-    attaches materializes, so the join phase finds its runtime node."""
+    """A row Lambda an LLM inlined materializes when a join attaches it."""
     stock = input_placeholder("Stock")
-    state = LambdaOp([stock], fn=_rows_lambda_fn)
+    state = LambdaOp([stock], fn=lambda columns: [{"id": "".join(columns[0])}])
     inner = LambdaOp([state], fn=_row_lambda_fn)
     llm = LLMChatOp(
         [OpMessage(role="user", content=inner)],

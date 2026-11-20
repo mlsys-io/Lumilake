@@ -139,10 +139,6 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
                 plan.append(ColumnPlanEntry(kind="stage", node=inp.id))
                 dependencies.append(inp.id)
-            elif isinstance(inp, JoinOp):
-                # A join's runtime node is its op id; the join phase builds it.
-                plan.append({"kind": "stage", "node": inp.id})
-                dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
                 plan.append(
                     ColumnPlanEntry(
