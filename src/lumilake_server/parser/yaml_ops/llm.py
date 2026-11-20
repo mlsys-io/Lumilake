@@ -329,7 +329,7 @@ def _resolve_seed_node(
         return None
     if not isinstance(seed, dict):
         raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
-    resolved = dict(seed)
+    resolved = seed.copy()
     node_ref = resolved.get("node")
     if not isinstance(node_ref, str) or not isinstance(resolved.get("path"), str):
         raise ValueError("rowwise_seed must be a mapping with 'node' and 'path'")
