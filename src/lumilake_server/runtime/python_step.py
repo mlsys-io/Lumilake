@@ -23,6 +23,7 @@ TASK_RUNTIME_MODULE = "lumilake_runtime"
 LITERAL_INLINE_MAX_BYTES = 1024
 LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
+WHOLE_RESULT_MODES = ("list", "expand", "reduce")
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_BLOBS_PER_TASK = 16
