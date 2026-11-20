@@ -14,7 +14,7 @@ from typing import Any
 
 from lumilake import envs
 from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
-from lumilake_server.runtime import lambda_task_helpers
+from lumilake_server.runtime import join_step, lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.lumid_data_client import encode_blob_key
 
@@ -489,7 +489,9 @@ def flowmesh_spec(
     """The FlowMesh ``python`` task spec for a runtime python step."""
     plan, literal_mounts = resolve_plan(data_spec.plan, published_blobs)
     mode = data_spec.mode or "row"
-    if mode == "flatten":
+    if mode == "join":
+        code = join_step.join_source(node_id, data_spec["join"], plan)
+    elif mode == "flatten":
         code = flatten_source(
             node_id, plan, _required(data_spec.template, "template", mode)
         )
