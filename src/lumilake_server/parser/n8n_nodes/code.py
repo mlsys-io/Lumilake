@@ -50,6 +50,11 @@ def make_code(
                 f"{LambdaOp.LAMBDA_MODES} (got {mode!r})"
             )
         op["mode"] = mode
+    by = notes.get("by")
+    if by is not None:
+        if not isinstance(by, str):
+            raise ValueError(f"Code node '{node_name}' notes 'by' must be a string")
+        op["by"] = by
     image = notes.get("image")
     if image is not None:
         if not isinstance(image, str) or not image.strip():
