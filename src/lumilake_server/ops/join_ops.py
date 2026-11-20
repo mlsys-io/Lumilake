@@ -51,6 +51,7 @@ class JoinOp(Op):
             if op not in joined:
                 joined.append(op)
         self.attach_indices = {}
+        target_indices = set()
         for field, target in attach.items():
             _validate_field(field)
             if target not in joined:
@@ -60,10 +61,9 @@ class JoinOp(Op):
                     " producer is built before the join"
                 )
             self.attach_indices[field] = joined.index(target)
+            target_indices.add(self.attach_indices[field])
         self.column_indices = [
-            index
-            for index in range(len(joined))
-            if index not in set(self.attach_indices.values())
+            index for index in range(len(joined)) if index not in target_indices
         ]
         if not self.column_indices:
             raise ValueError("JoinOp needs a row column besides its attach targets")
@@ -87,13 +87,12 @@ class JoinOp(Op):
         }
 
     @property
-    def row_source(self) -> Op | None:
+    def row_source(self) -> Op:
         """The first input fixes the output: one row per its row."""
         return self.columns[0]
 
     def _serialize(self) -> dict[str, Any]:
         return {
-            "inputs": [op.id for op in self.inputs],
             "by": self.by,
             "attach": {
                 field: self.inputs[index].id
@@ -104,7 +103,7 @@ class JoinOp(Op):
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "JoinOp":
-        joined = [_built_before(other_ops, name, "input") for name in data["inputs"]]
+        joined = [_built_before(other_ops, name, "input") for name in data["_inputs"]]
         attach = {
             field: _built_before(other_ops, op_id, f"attach field {field!r}")
             for field, op_id in data["attach"].items()
@@ -125,7 +124,7 @@ def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
 
 def _as_path(by: str | list[str]) -> list[str]:
     """The key path as parts, refusing anything but a dotted field name."""
-    parts = by.split(".") if isinstance(by, str) else [part for part in by]
+    parts = by.split(".") if isinstance(by, str) else by.copy()
     if not parts or not all(isinstance(part, str) for part in parts):
         raise ValueError(f"JoinOp by must be a dotted field name, got {by!r}")
     if not _PATH_RE.match(".".join(parts)):
