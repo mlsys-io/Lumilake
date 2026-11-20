@@ -117,7 +117,7 @@ def test_join_merges_a_disjoint_branch_and_leaves_its_fields_out(
   - id: Merge
     op: JoinOp
     inputs: [State, Route.diagnose]
-    on: case_id
+    by: case_id
 """,
     )
     node = _join_node(spec)
@@ -141,7 +141,7 @@ def test_join_attaches_a_rowwise_chat_through_its_row_source(
   - id: Merge
     op: JoinOp
     inputs: [State, Route.patient, PatientTurn]
-    on: case_id
+    by: case_id
     attach: {patient_reply: PatientTurn}
 """,
     )
@@ -213,7 +213,7 @@ def test_join_refuses_an_attach_it_cannot_pair_with_rows(
   - id: Merge
     op: JoinOp
     inputs: [State, Route.patient, PatientTurn]
-    on: case_id
+    by: case_id
     attach: {patient_reply: PatientTurn}
 """,
     )
@@ -228,7 +228,7 @@ def test_join_fails_on_a_duplicate_key(tmp_path: Path) -> None:
   - id: Merge
     op: JoinOp
     inputs: [State, Route.diagnose]
-    on: case_id
+    by: case_id
 """,
     )
     node = _join_node(spec)
@@ -247,7 +247,7 @@ def test_join_missing_error_names_the_key(tmp_path: Path) -> None:
   - id: Merge
     op: JoinOp
     inputs: [State, Route.diagnose]
-    on: case_id
+    by: case_id
     missing: error
 """,
     )

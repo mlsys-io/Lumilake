@@ -40,7 +40,7 @@ _PLAN = json.loads({plan!r})
 _JOIN = json.loads({join!r})
 
 _NODE = _JOIN["node"]
-_ON = _JOIN["on"]
+_BY = _JOIN["by"]
 _MISSING = _JOIN["missing"]
 
 
@@ -63,7 +63,7 @@ def _rows(column, where):
 
 def _key(row, where):
     value = row
-    for part in _ON:
+    for part in _BY:
         if not isinstance(value, dict) or part not in value:
             raise ValueError("%s: row has no key field %r" % (where, part))
         value = value[part]
