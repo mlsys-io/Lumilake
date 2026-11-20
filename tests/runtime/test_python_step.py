@@ -718,12 +718,8 @@ def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
     rows = [json.dumps({"id": i, "s": s}) for i, s in pairs]
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": rows}]
     out = _run_wrapper(code, plan, {}, fn_name="best", mode="reduce", by="id")
-    assert [[row[0]["s"] for row in item["output"]] for item in out["items"]] == [
-        [7, 5],
-        [9],
-        [2],
-        [3],
-    ]
+    scores = [[row[0]["s"] for row in item["output"]] for item in out["items"]]
+    assert scores == [[7, 5], [9], [2], [3]]
 
 
 _DF = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
@@ -745,45 +741,35 @@ def test_wrapper_expand_mode_decodes_only_a_serialized_table(
     value: dict[str, Any], expected: list[dict[str, Any]]
 ) -> None:
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(value)]}]
-    code = (
-        "def rows(row):\n    value = row[0]\n"
-        "    return value if isinstance(value, list) else [value]\n"
-    )
+    code = "def rows(r):\n    return r[0] if isinstance(r[0], list) else [r[0]]\n"
     out = _run_wrapper(code, plan, {}, fn_name="rows", mode="expand")
     assert out == {"items": expected}
 
 
 def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": [json.dumps({"x": 1})]}
-    ]
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ['{"x": 1}']}]
     with pytest.raises(ValueError, match="group row 0 by 'patient_id'"):
-        _run_wrapper(
-            "lambda rows: len(rows)",
-            plan,
-            {},
-            fn_name="f",
-            mode="reduce",
-            by="patient_id",
-        )
+        _run_wrapper("lambda rows: 0", plan, {}, "f", "reduce", "patient_id")
 
 
-def test_by_is_refused_outside_reduce_mode() -> None:
-    with pytest.raises(ValueError, match="'by' is only valid in reduce mode"):
-        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), by="id")
-
-
-def test_a_reduce_mode_op_without_by_names_the_op() -> None:
-    payload = """
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ("mode: reduce", "Group.* reduce mode requires 'by'"),
+        ("mode: row, by: id", "Group.* 'by' is only valid in reduce mode"),
+    ],
+)
+def test_a_bad_by_names_the_op(fields: str, expected: str) -> None:
+    payload = f"""
 name: shapes
-inputs: {K: ["a"]}
+inputs: {{K: ["a"]}}
 ops:
-  - {id: Group, op: LambdaOp, inputs: [K], mode: reduce, fn_name: group,
-     code: "def group(rows):\\n    return len(rows)\\n"}
-outputs: [{name: out, ref: Group}]
+  - {{id: Group, op: LambdaOp, inputs: [K], {fields}, fn_name: f,
+     code: "def f(rows):\\n    return rows\\n"}}
+outputs: [{{name: out, ref: Group}}]
 """
     spec = parse_yaml_payload(payload)
-    with pytest.raises(ValueError, match="Group.* reduce mode requires 'by'"):
+    with pytest.raises(ValueError, match=expected):
         Graph.from_json(spec["shapes"]["graph"])
 
 
