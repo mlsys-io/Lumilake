@@ -351,6 +351,8 @@ outputs:
     assert by_mode["reduce"].data_spec["by"] == "keyword"
     assert by_mode["reduce"].dependencies == (by_mode["expand"].node_id,)
 
+
+def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     a = input_placeholder("A")
     b = input_placeholder("B")
     row = LambdaOp(
@@ -813,6 +815,8 @@ def test_by_is_refused_outside_reduce_mode() -> None:
     with pytest.raises(ValueError, match="'by' is only valid in reduce mode"):
         LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), by="id")
 
+
+def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
     plan: python_step.ColumnPlan = [
         ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})
     ]
