@@ -99,6 +99,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 if op.timeout_s is None
                 else op.timeout_s
             ),
+            mode=op.mode if op.mode != "row" else None,
+            by=op.by,
             memory_mb=op.memory_mb,
             image=op.image,
             expected_runtime_s=op.expected_runtime_s,
@@ -120,10 +122,13 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
     def _lower_list_lambda(
         self, op: LambdaOp, ctx: LoweringContext
     ) -> LoweringResult | None:
-        """Lower a list-mode LambdaOp; a row-mode one is lowered by its consumer
-        or on its own."""
-        if not op.takes_whole_columns:
+        """Lower a list, expand or reduce mode LambdaOp, each of which always
+        runs as its own step; a row-mode one is lowered by its consumer or on
+        its own."""
+        if op.mode == "row":
             return None
+        if op.mode in ("expand", "reduce"):
+            return self._lower_row_fed_lambda(op, ctx)
         op_id = op.id
         inputs_dict = ctx.inputs_dict
         plan: list[ColumnPlanEntry] = []
@@ -204,6 +209,20 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         ctx.visited.update(input_op.id for input_op in op.inputs)
         return LoweringResult(nodes=[node])
 
+    def _lower_row_fed_lambda(
+        self, op: LambdaOp, ctx: LoweringContext
+    ) -> LoweringResult:
+        """Lower an expand or reduce mode LambdaOp: its function reads one
+        decoded row per call, so the plan is the row-mode one and the step
+        itself is always its own task."""
+        steps = self._build_python_step(op, ctx)
+        return LoweringResult(
+            nodes=steps,
+            built={
+                step.node_id: [step.node_id] for step in steps if step.node_id != op.id
+            },
+        )
+
     @register(LambdaOp, Phase.ROW_LAMBDA)
     def _lower_row_lambda(
         self, op: LambdaOp, ctx: LoweringContext
@@ -212,7 +231,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         it: one that is an output, that nothing reached, that has an image, or
         that a runtime node references. The last one lowers checks that no
         runtime node reads an inlined Lambda."""
-        if op.takes_whole_columns:
+        if op.mode != "row":
             return None
         referenced = self._referenced_row_lambdas(ctx)
         if (

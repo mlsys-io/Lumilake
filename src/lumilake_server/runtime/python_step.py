@@ -57,6 +57,8 @@ _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
 _text = _RUNTIME._text
 _column = _RUNTIME._column
+_decode = _RUNTIME._decode
+_at_path = _RUNTIME._at_path
 materialize = _RUNTIME.materialize
 
 _USER_CODE = {code!r}
@@ -208,6 +210,65 @@ def main(inputs):
             % (len(values), n)
         )
     return {{"items": [{{"output": v}} for v in values]}}
+"""
+
+
+_EXPAND_MAIN = """\
+
+def main(inputs):
+    fn = materialize(_USER_CODE, _FN_NAME)
+    columns = [
+        [_decode(v) for v in _column(entry, inputs, lambda v: v)]
+        for entry in _PLAN
+    ]
+    n = max((len(c) for c in columns), default=1)
+    for entry, col in zip(_PLAN, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "%s: input %r has %d rows; expected 1 or %d"
+                % ({op_id!r}, entry.get("node", "literal"), len(col), n)
+            )
+    items = []
+    for i in range(n):
+        values = fn(tuple(c[0] if len(c) == 1 else c[i] for c in columns))
+        if not isinstance(values, list):
+            raise ValueError(
+                "%s: expand lambda %r returned %s; expected a list"
+                % ({op_id!r}, _FN_NAME, type(values).__name__)
+            )
+        items.extend({{"output": v}} for v in values)
+    return {{"items": items}}
+"""
+
+_REDUCE_MAIN = """\
+
+_BY = {by!r}
+
+def main(inputs):
+    fn = materialize(_USER_CODE, _FN_NAME)
+    columns = [
+        [_decode(v) for v in _column(entry, inputs, lambda v: v)]
+        for entry in _PLAN
+    ]
+    n = max((len(c) for c in columns), default=1)
+    for entry, col in zip(_PLAN, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "%s: input %r has %d rows; expected 1 or %d"
+                % ({op_id!r}, entry.get("node", "literal"), len(col), n)
+            )
+    groups = {{}}
+    for i in range(n):
+        row = tuple(c[0] if len(c) == 1 else c[i] for c in columns)
+        try:
+            key = json.dumps(_at_path(row[0], _BY), sort_keys=True)
+        except ValueError as exc:
+            raise ValueError(
+                "%s: reduce lambda cannot group row %d by %r: %s"
+                % ({op_id!r}, i, _BY, exc)
+            ) from exc
+        groups.setdefault(key, []).append(row)
+    return {{"items": [{{"output": fn(rows)}} for rows in groups.values()]}}
 """
 
 
@@ -399,12 +460,17 @@ def wrapper_source(
     user_code: str,
     plan: ColumnPlan,
     mode: str = "row",
+    by: str | None = None,
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode == "list":
         main = _LIST_MAIN
     elif mode == "aligned":
         main = _ALIGNED_MAIN
+    elif mode == "expand":
+        main = _EXPAND_MAIN
+    elif mode == "reduce":
+        main = _REDUCE_MAIN
     else:
         main = _ROW_MAIN
     return (_PRELUDE + main).format(
@@ -414,6 +480,7 @@ def wrapper_source(
         code=user_code,
         fn_name=fn_name,
         plan=plan_json(plan),
+        by=by,
     )
 
 
@@ -449,6 +516,7 @@ def flowmesh_spec(
             _required(data_spec.code, "code", mode),
             plan,
             mode,
+            data_spec.by,
         )
     spec: dict[str, Any] = {
         "taskType": PYTHON_TASK_TYPE,

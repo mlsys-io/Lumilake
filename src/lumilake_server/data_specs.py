@@ -17,7 +17,15 @@ ALL_TASK_TYPES = MODEL_TASK_TYPES | {
 }
 
 PythonMode = Literal[
-    "row", "list", "aligned", "flatten", "regroup", "pairs", "flatten_step"
+    "row",
+    "list",
+    "aligned",
+    "flatten",
+    "regroup",
+    "pairs",
+    "flatten_step",
+    "expand",
+    "reduce",
 ]
 
 
@@ -136,6 +144,7 @@ class PythonData(DataSpecModel):
     fn_name: str | None = None
     plan: list[ColumnPlanEntry] = Field(default_factory=list)
     mode: PythonMode | None = None
+    by: str | None = None
     template: str | None = None
     timeout_s: int | float = 600
     memory_mb: int | None = None
