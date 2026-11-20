@@ -3305,9 +3305,9 @@ class LumilakeServer:
                     raise ValueError(
                         "List-Lambda output cannot be split across slices: "
                         f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A whole-result Lambda runs once "
-                        "per run and its single result cannot be partitioned "
-                        "per slice."
+                        f"group {group_key}. A list-mode Lambda runs once per "
+                        "run and its single whole-list result cannot be "
+                        "partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_outputs.setdefault(single_workflow.workflow_id, {})[
@@ -3345,9 +3345,9 @@ class LumilakeServer:
                     raise ValueError(
                         "List-Lambda history cannot be split across slices: "
                         f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A whole-result Lambda runs once "
-                        "per run and its single result cannot be partitioned "
-                        "per slice."
+                        f"group {group_key}. A list-mode Lambda runs once per "
+                        "run and its single whole-list result cannot be "
+                        "partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_histories[single_workflow.workflow_id][output_name] = history
