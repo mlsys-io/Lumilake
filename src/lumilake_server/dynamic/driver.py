@@ -24,6 +24,7 @@ from lumilake_server.dynamic.blocks import (
     fused_round_graph,
 )
 from lumilake_server.ops.data_ops import DataRetrievalOp
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import LLMOp
 from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
@@ -91,7 +92,7 @@ if _MISSING_OP_CLASSES:
 _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
     name
     for name in SUPPORTED_OPS
-    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp, LambdaOp))
+    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp, LambdaOp, JoinOp))
 )
 
 
@@ -826,7 +827,8 @@ def validate_emitted_subgraph(
         if types[op_id] not in _OUTPUT_SOURCE_OPS:
             raise DriverProtocolError(
                 f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be "
-                "archived; every leaf must be an LLMOp, DataRetrievalOp or LambdaOp"
+                "archived; every leaf must be an LLMOp, DataRetrievalOp, LambdaOp"
+                " or JoinOp"
             )
 
 
