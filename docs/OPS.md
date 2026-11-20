@@ -517,7 +517,11 @@ In both modes each column value is decoded once before the function sees it:
 a string that parses as a JSON object or array is parsed, a serialized table
 (`{"df": "<json>"}`) becomes a list of row dicts, including one a data
 retrieval item carries under its `table` field, and anything else is passed
-as is. Like list mode, both modes always run as a standalone `python` task.
+as is. Both modes always run as a standalone `python` task, so the whole-list
+per-run rules below apply to them as they do to list mode: a direct read of
+their column folds to one value, an `input_batch_size` that would split them
+is rejected at submit, and either mode may be the export that stops a
+template round.
 
 `mode: aligned` is the same calling convention as `list` (whole columns in, a
 list out, read at `value.items.output`), with one added guarantee: the function
