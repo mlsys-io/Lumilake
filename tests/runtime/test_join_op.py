@@ -43,19 +43,14 @@ ops:
 """
 
 _TURNS = """
-  - id: PatientPrompt
-    op: FormatOp
-    inputs: [Route.patient]
-    template: "Reply to {text}"
-    format_kwargs: {text: Route.patient}
   - id: PatientTurn
     op: LLMChatOp
-    inputs: [PatientPrompt]
+    inputs: [State]
     messages:
       - {role: user, content: "Answer the patient."}
     config: {model: test/model}
-    rowwise_template: "{prompt}"
-    rowwise_columns: [{label: prompt, node: PatientPrompt, path: items.output}]
+    rowwise_template: "Reply to {text}"
+    rowwise_columns: [{label: text, node: State, path: items.output.text}]
 """
 
 
@@ -143,28 +138,26 @@ def test_join_attaches_a_rowwise_chat_through_its_row_source(
         """
   - id: Merge
     op: JoinOp
-    inputs: [State, Route.patient, PatientTurn]
+    inputs: [State, PatientTurn]
     by: case_id
     attach: {patient_reply: PatientTurn}
 """,
     )
     node = _join_node(spec)
-    patient = [_ROWS[0], _ROWS[2]]
     out = _run(
         tmp_path,
         node,
         {
             0: [{"output": _ROWS}],
-            1: [{"output": patient}],
-            2: [{"output": ["for-a", "for-c"]}],
-            3: [{"output": patient}],
+            1: [{"output": ["for-a", "for-b", "for-c"]}],
+            2: [{"output": _ROWS}],
         },
     )
     replies = {
         item["output"]["case_id"]: item["output"].get("patient_reply")
         for item in out["items"]
     }
-    assert replies == {"a": "for-a", "b": None, "c": "for-c"}
+    assert replies == {"a": "for-a", "b": "for-b", "c": "for-c"}
 
 
 _TURNS_READ_TWO_NODES = """
@@ -262,8 +255,9 @@ def test_join_missing_error_names_the_key(tmp_path: Path) -> None:
 _DOWNSTREAM = """
   - id: Merge
     op: JoinOp
-    inputs: [State, Route.diagnose]
+    inputs: [State, Route.patient, PatientTurn]
     by: case_id
+    attach: {patient_reply: PatientTurn}
   - id: Merged
     op: LambdaOp
     mode: list
@@ -271,23 +265,14 @@ _DOWNSTREAM = """
     fn_name: merged
     code: |
       def merged(c):
-          return json.loads(c[0]) if isinstance(c[0], str) else c[0]
-  - id: Tag
-    op: LambdaOp
-    mode: row
-    inputs: [Merge]
-    fn_name: tag
-    code: |
-      def tag(row):
-          return row[0]["case_id"]
+          return [row["case_id"] for row in c[0]]
 outputs:
-  - {name: merged, ref: Merged}
-  - {name: tags, ref: Tag}
+  - {name: merged, ref: Merge}
 """
 
 
-def test_a_join_feeds_a_downstream_list_and_row_lambda() -> None:
-    spec = parse_yaml_payload(_PRELUDE + _DOWNSTREAM)["j"]
+def test_a_join_attaching_a_chat_feeds_a_list_lambda_and_keeps_its_output() -> None:
+    spec = parse_yaml_payload(_PRELUDE + _TURNS + _DOWNSTREAM)["j"]
     runtime = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
@@ -296,16 +281,16 @@ def test_a_join_feeds_a_downstream_list_and_row_lambda() -> None:
         for node in runtime.nodes.values()
         if node.data_spec.get("mode") == join_step.JOIN_MODE
     )
-    downstream = {
-        node.data_spec.get("mode", "row"): node
+    merged = next(
+        node
         for node in runtime.nodes.values()
-        if node.task_type == "python" and node is not merge
-    }
-    assert set(downstream) == {"list", "row"}
-    for node in downstream.values():
-        (entry,) = node.data_spec["plan"]
-        assert entry == {"kind": "stage", "node": merge.node_id}
-        assert node.dependencies == (merge.node_id,)
+        if node is not merge and "Merged_" in node.node_id
+    )
+    (entry,) = merged.data_spec["plan"]
+    assert entry == {"kind": "stage", "node": merge.node_id}
+    assert merged.dependencies == (merge.node_id,)
+    assert runtime.output_node_map == {merge.node_id: "merged"}
+    assert runtime.output_paths[merge.node_id] == "items.output"
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
