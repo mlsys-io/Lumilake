@@ -23,24 +23,24 @@ _MISSING = ("null", "error")
 @Op.registry.register(JOIN_OP)
 class JoinOp(Op):
     """A keyed join: one row per first-input row, further inputs merged by
-    ``on``, and ``attach`` outputs joined to the rows they were computed from."""
+    ``by``, and ``attach`` outputs joined to the rows they were computed from."""
 
     column_indices: list[int]
     attach_indices: dict[str, int]
-    on: list[str]
+    by: list[str]
     missing: str
 
     def __init__(
         self,
         inputs: list[Op],
-        on: str | list[str],
+        by: str | list[str],
         attach: dict[str, Op] | None = None,
         missing: str = "null",
     ) -> None:
         if not inputs:
             raise ValueError("JoinOp requires at least one input")
         attach = {} if attach is None else attach
-        self.on = _as_path(on)
+        self.by = _as_path(by)
         if missing not in _MISSING:
             raise ValueError(
                 f"JoinOp missing must be one of {_MISSING}, got {missing!r}"
@@ -94,7 +94,7 @@ class JoinOp(Op):
     def _serialize(self) -> dict[str, Any]:
         return {
             "inputs": [op.id for op in self.inputs],
-            "on": self.on,
+            "by": self.by,
             "attach": {
                 field: self.inputs[index].id
                 for field, index in self.attach_indices.items()
@@ -109,7 +109,7 @@ class JoinOp(Op):
             field: _built_before(other_ops, op_id, f"attach field {field!r}")
             for field, op_id in data["attach"].items()
         }
-        return cls(joined, data["on"], attach, data["missing"])
+        return cls(joined, data["by"], attach, data["missing"])
 
 
 def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
@@ -123,13 +123,13 @@ def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
     return op
 
 
-def _as_path(on: str | list[str]) -> list[str]:
+def _as_path(by: str | list[str]) -> list[str]:
     """The key path as parts, refusing anything but a dotted field name."""
-    parts = on.split(".") if isinstance(on, str) else [part for part in on]
+    parts = by.split(".") if isinstance(by, str) else [part for part in by]
     if not parts or not all(isinstance(part, str) for part in parts):
-        raise ValueError(f"JoinOp on must be a dotted field name, got {on!r}")
+        raise ValueError(f"JoinOp by must be a dotted field name, got {by!r}")
     if not _PATH_RE.match(".".join(parts)):
-        raise ValueError(f"JoinOp on must be a dotted field name, got {on!r}")
+        raise ValueError(f"JoinOp by must be a dotted field name, got {by!r}")
     return parts
 
 

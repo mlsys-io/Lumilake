@@ -9,10 +9,9 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     """Fill in a join's key path, attach targets and missing-field policy."""
     entry = ctx.entry
     user_id_to_internal = ctx.user_id_to_internal
-    # YAML 1.1 reads an unquoted ``on:`` key as the boolean true.
-    on = entry.fields.get("on") or _true_key(entry.fields)
-    if not isinstance(on, str) or not on.strip():
-        raise ValueError(f"JoinOp '{entry.id}' requires 'on', a dotted field name")
+    by = entry.fields.get("by")
+    if not isinstance(by, str) or not by.strip():
+        raise ValueError(f"JoinOp '{entry.id}' requires 'by', a dotted field name")
     if not entry.inputs:
         raise ValueError(f"JoinOp '{entry.id}' requires at least one input")
     attach = entry.fields.get("attach", {})
@@ -45,11 +44,6 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             )
         resolved[field] = user_id_to_internal[target]
     op_dict["inputs"] = [user_id_to_internal[ref] for ref in entry.inputs]
-    op_dict["on"] = on.split(".")
+    op_dict["by"] = by.split(".")
     op_dict["attach"] = resolved
     op_dict["missing"] = missing
-
-
-def _true_key(fields: dict[Any, Any]) -> Any:
-    """The value an unquoted ``on:`` key holds, which YAML 1.1 reads as true."""
-    return next((value for name, value in fields.items() if name is True), None)

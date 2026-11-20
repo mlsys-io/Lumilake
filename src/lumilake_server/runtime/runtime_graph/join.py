@@ -150,7 +150,7 @@ class _JoinBuilder(_DerivedBuilder):
                 "plan": plan,
                 "join": {
                     "node": op.id,
-                    "on": op.on,
+                    "by": op.by,
                     "inputs": columns,
                     "attach": attach,
                     "missing": op.missing,

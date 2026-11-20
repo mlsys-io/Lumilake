@@ -619,7 +619,7 @@ For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see
 
 `JoinOp` merges row columns back by a key field. The first input fixes the
 output: one row per its row, in its order. Every further input contributes the
-fields of the row carrying the same `on` value, so the key and any copied
+fields of the row carrying the same `by` value, so the key and any copied
 context must be equal on both sides. Each `attach` field joins one node's
 per-row output to the row it was computed from; the node whose rows those
 values belong to is resolved at submit, so no user code positions values. An
@@ -636,7 +636,7 @@ disagree on length each fail the job naming the join.
 ```yaml
 ops:
   - {id: Merge, op: JoinOp, inputs: [CaseState, Route.patient, PatientTurn],
-     on: case_id, attach: {patient_reply: PatientTurn}, missing: null}
+     by: case_id, attach: {patient_reply: PatientTurn}, missing: null}
 ```
 
 A join runs as one standalone `python` task. For workflow-format details, see
