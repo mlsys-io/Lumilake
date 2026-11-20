@@ -117,22 +117,19 @@ def _decode(value: Any) -> Any:
     return value
 
 
-def _at_path(value: Any, path: str) -> Any:
-    """The value at a dotted path inside one decoded column value."""
-    for part in path.split("."):
-        if isinstance(value, dict) and part in value:
-            value = value[part]
-        elif isinstance(value, list):
-            try:
-                index = int(part)
-            except ValueError:
-                raise ValueError(f"list index {part!r} is not an integer")
-            if not 0 <= index < len(value):
-                raise ValueError(f"list index {part!r} is out of range")
-            value = value[index]
-        else:
-            raise ValueError(f"missing {part!r}")
-    return value
+def _rows(
+    columns: list[list[Any]], plan: list[dict[str, Any]], op_id: str
+) -> list[tuple[Any, ...]]:
+    """The per-call rows of a decoded column set: a one-row column applies to
+    every row, and every other column must carry the same count."""
+    n = max((len(c) for c in columns), default=1)
+    for entry, col in zip(plan, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                f"{op_id}: input {entry.get('node', 'literal')!r} has {len(col)}"
+                f" rows; expected 1 or {n}"
+            )
+    return [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
 
 
 def _column(

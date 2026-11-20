@@ -470,12 +470,13 @@ def _split_fn(row: tuple[Any, ...]) -> list[dict[str, str]]:
     return [{"value": v} for v in str(row[0]).split(",")]
 
 
-def _build_whole_result_output_request(mode: str) -> tuple[RequestInfo, str]:
+def _build_list_lambda_output_request(mode: str) -> tuple[RequestInfo, str]:
     stock = input_placeholder("Stock")
-    if mode == "list":
-        explode = LambdaOp([stock], _explode_fn, mode="list")
-    else:
-        explode = LambdaOp([stock], _split_fn, mode="expand")
+    explode = (
+        LambdaOp([stock], _explode_fn, mode="list")
+        if mode == "list"
+        else LambdaOp([stock], _split_fn, mode="expand")
+    )
     output = as_output("observations", explode)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
@@ -496,12 +497,12 @@ def _build_whole_result_output_request(mode: str) -> tuple[RequestInfo, str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["list", "expand"])
-async def test_whole_result_lambda_output_aggregates_into_one_value(
+async def test_list_lambda_output_aggregates_whole_list_into_one_value(
     monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    """A list or expand Lambda output node produces a data-dependent number of
-    items per run, so its python step's several items must collapse into ONE
-    output value holding the whole list, not one output per item."""
+    """A list-mode Lambda output node runs once over the whole input lists,
+    so its python step's several items must collapse into ONE output value
+    holding the whole list, not one output per item."""
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-pat")
     manager = FlowmeshRuntimeManager()
     monkeypatch.setattr(
@@ -509,7 +510,7 @@ async def test_whole_result_lambda_output_aggregates_into_one_value(
         lambda: InMemoryJobStorage(),
     )
 
-    request_info, row_id = _build_whole_result_output_request(mode)
+    request_info, row_id = _build_list_lambda_output_request(mode)
 
     class _FakeWorkflows:
         async def submit(self, task_yaml: str) -> Any:
@@ -565,7 +566,7 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
         lambda: InMemoryJobStorage(),
     )
 
-    request_info, row_id = _build_whole_result_output_request("list")
+    request_info, row_id = _build_list_lambda_output_request("list")
 
     class _FakeWorkflows:
         async def submit(self, task_yaml: str) -> Any:

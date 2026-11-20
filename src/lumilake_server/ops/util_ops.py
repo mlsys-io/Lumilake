@@ -21,18 +21,6 @@ ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
 
 
-def _validate_path(path: str, field: str) -> None:
-    """Check that a field holds a dotted path of non-empty segments."""
-    if not isinstance(path, str) or not path.strip():
-        raise ValueError(f"LambdaOp '{field}' must be a non-empty dotted path")
-    parts = path.split(".")
-    if any(not part or part != part.strip() for part in parts):
-        raise ValueError(
-            f"LambdaOp '{field}' must be a dotted path of non-empty segments"
-            f" (got {path!r})"
-        )
-
-
 def _validate_limits(
     timeout_s: float | None,
     memory_mb: int | None,
@@ -263,9 +251,12 @@ class LambdaOp(Op):
                 f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
             )
         if mode == "reduce":
-            if by is None:
-                raise ValueError("LambdaOp reduce mode requires 'by'")
-            _validate_path(by, "by")
+            parts = by.split(".") if isinstance(by, str) else []
+            if not parts or any(not part or part != part.strip() for part in parts):
+                raise ValueError(
+                    "LambdaOp reduce mode requires 'by' to be a dotted path of"
+                    f" non-empty segments (got {by!r})"
+                )
         elif by is not None:
             raise ValueError(
                 f"LambdaOp 'by' is only valid in reduce mode (got mode {mode!r})"
@@ -284,7 +275,6 @@ class LambdaOp(Op):
         super().__init__(input_ops)
         self.fn = fn
         self.mode = mode
-        # The grouping key of a reduce-mode LambdaOp; never set otherwise.
         self.by = by
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
