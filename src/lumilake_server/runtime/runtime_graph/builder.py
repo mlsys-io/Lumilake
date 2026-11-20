@@ -34,7 +34,8 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
         output_source_to_outputop = self._collect_outputs(graph_dict, visited)
         if not any(has_lowering(op) for op in graph_dict.values()):
             raise ValueError(
-                "Graph must contain at least one LLMOp, DataRetrievalOp or LambdaOp"
+                "Graph must contain at least one LLMOp, DataRetrievalOp,"
+                " LambdaOp or JoinOp"
             )
 
         nodes: dict[str, RuntimeOp] = {}
@@ -94,7 +95,8 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
             if not has_lowering(source):
                 raise ValueError(
                     f"OutputOp '{op.name}' input must be an LLMOp, "
-                    f"DataRetrievalOp or LambdaOp (got {type(source).__name__})"
+                    f"DataRetrievalOp, LambdaOp or JoinOp"
+                    f" (got {type(source).__name__})"
                 )
             visited_node_ids.add(op.id)
             outputs_by_source.setdefault(source.id, []).append((op.name, op.path))
