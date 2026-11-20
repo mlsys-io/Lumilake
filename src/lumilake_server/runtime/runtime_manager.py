@@ -1771,7 +1771,7 @@ class FlowmeshRuntimeManager:
                 output_node is not None
                 and output_node.task_type == PYTHON_TASK_TYPE
                 and isinstance(output_node.data_spec, PythonData)
-                and output_node.data_spec.mode == "list"
+                and output_node.data_spec.mode in python_step.WHOLE_RESULT_MODES
             )
             list_lambda_cardinality = output_op_id in list_lambda_cardinality_nodes
             list_lambda_direct_read = output_op_id in list_lambda_direct_read_nodes
