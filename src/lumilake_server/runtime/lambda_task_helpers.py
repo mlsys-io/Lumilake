@@ -58,6 +58,64 @@ def _row_content(row: Any) -> Any:
         return row.get("text", row)
 
 
+def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
+    """A serialized table of ``column -> row index -> value`` as one dict per
+    row, in row-index order."""
+    rows: dict[str, dict[str, Any]] = {}
+    for column, values in table.items():
+        if not isinstance(values, dict):
+            continue
+        for index, value in values.items():
+            rows.setdefault(index, {})[column] = value
+    try:
+        ordered = sorted(rows, key=int)
+    except ValueError:
+        ordered = list(rows)
+    return [rows[index] for index in ordered]
+
+
+def _decode(value: Any) -> Any:
+    """Decode one column value for a per-row or per-group function: JSON object
+    or array text is parsed, a serialized table becomes its rows, and anything
+    else is passed as is."""
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return value
+        return _decode(decoded) if isinstance(decoded, (dict, list)) else value
+    if (
+        isinstance(value, dict)
+        and list(value) == ["df"]
+        and isinstance(value["df"], str)
+    ):
+        try:
+            table = json.loads(value["df"])
+        except ValueError:
+            return value
+        if isinstance(table, dict):
+            return _table_rows(table)
+    return value
+
+
+def _at_path(value: Any, path: str) -> Any:
+    """The value at a dotted path inside one decoded column value."""
+    for part in path.split("."):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list):
+            try:
+                index = int(part)
+            except ValueError:
+                raise ValueError(f"list index {part!r} is not an integer")
+            if not 0 <= index < len(value):
+                raise ValueError(f"list index {part!r} is out of range")
+            value = value[index]
+        else:
+            raise ValueError(f"missing {part!r}")
+    return value
+
+
 def _column(
     entry: dict[str, Any], inputs: dict[str, str], text: Callable[[Any], str]
 ) -> list[str]:
