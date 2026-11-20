@@ -198,20 +198,12 @@ def test_join_refuses_an_attach_whose_row_source_is_not_one_node() -> None:
         _join_node(ops)
 
 
-_FORMAT = """
-  - id: Prompt
-    op: FormatOp
-    inputs: [State]
-    template: "Reply to {0}"
-    format_args: [State]
-"""
-
-
 def test_join_refuses_a_format_op_as_an_attach_target() -> None:
-    """A format op has no runtime node of its own, so it is a row source only
-    as a hop on a chain, never as an attach target."""
-    ops = _FORMAT + _merge(
-        "State, Prompt", "    attach: {prompt: Prompt}\n    missing: null\n"
+    """A format op is a row source only as a hop on a chain, never a target."""
+    ops = (
+        '  - {id: Prompt, op: FormatOp, inputs: [State], template: "{0}",\n'
+        "     format_args: [State]}\n"
+        + _merge("State, Prompt", "    attach: {prompt: Prompt}\n")
     )
     with pytest.raises(ValueError, match="attach field 'prompt' reads FormatOp"):
         _join_node(ops)
@@ -260,7 +252,7 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
         {"case_id": "a", "text": "x", "reply": 1},
         {"case_id": "c", "text": "z", "reply": 1},
     ]
-    with pytest.raises(ValueError, match="join input df is not a column table"):
+    with pytest.raises(ValueError, match="table is not a column table"):
         _run(tmp_path, node, {0: [{"output": [{"df": "[1, 2]"}]}]}, name="bad")
 
 

@@ -58,11 +58,16 @@ def _where(entry):
     return "%s input %r" % (_NODE, _named(entry))
 
 
-def _rows(column):
+def _cell(value):
+    """A column value kept as it arrives, for a caller that decodes it."""
+    return value
+
+
+def _rows(column, where):
     """The row objects a column holds, one per row."""
     rows = []
     for item in column:
-        rows.extend(_decoded_rows(_decoded_cell(item)))
+        rows.extend(_decoded_rows(_decoded_cell(item), where))
     return rows
 
 
@@ -114,10 +119,10 @@ def main(inputs):
     indexes = _JOIN["inputs"]
     columns = [_column(_PLAN[index], inputs, _decoded_cell) for index in indexes]
     first = _where(_PLAN[indexes[0]])
-    output = _keyed(_rows(columns[0]), first)
+    output = _keyed(_rows(columns[0], first), first)
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
-        keyed = _keyed(_rows(column), where)
+        keyed = _keyed(_rows(column, where), where)
         _required(output, keyed, where)
         for key, row in keyed.items():
             if key in output:
@@ -125,8 +130,11 @@ def main(inputs):
                     _merged(output[key], name, value, where)
     for name, value_index, source_index in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
-        values = _column(_PLAN[value_index], inputs, _decoded_cell)
-        rows = _rows(_column(_PLAN[source_index], inputs, _decoded_cell))
+        values = [
+            _decoded_cell(value)
+            for value in _column(_PLAN[value_index], inputs, _cell)
+        ]
+        rows = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
         if len(values) != len(rows):
             raise ValueError(
                 "%s: %d values from %r but %d rows from %r"

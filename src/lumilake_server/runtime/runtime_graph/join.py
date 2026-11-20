@@ -19,6 +19,6 @@ from lumilake_server.runtime.runtime_graph.lowering import (
 
 class _JoinBuilder(_RuntimeGraphBuilderBase):
     @register(JoinOp, Phase.JOIN)
-    def _lower_join(self, op: JoinOp, ctx: LoweringContext) -> LoweringResult | None:
+    def _lower_join(self, op: JoinOp, ctx: LoweringContext) -> LoweringResult:
         """Lower a join to its own python step."""
         return LoweringResult(nodes=[build_join_step(self, op, ctx)])

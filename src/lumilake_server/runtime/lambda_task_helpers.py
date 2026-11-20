@@ -80,7 +80,7 @@ def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
     return [rows[index] for index in indexes]
 
 
-def _decoded_rows(value: Any) -> list[Any]:
+def _decoded_rows(value: Any, where: str) -> list[Any]:
     """The rows one decoded cell carries: a table's ``{"df": "<json>"}``
     envelope, a row object, or a list of any of these."""
     if (
@@ -91,14 +91,14 @@ def _decoded_rows(value: Any) -> list[Any]:
         try:
             table = json.loads(value["df"])
         except ValueError:
-            raise ValueError("join input df is not JSON")
+            raise ValueError(f"{where}: table is not JSON")
         if not isinstance(table, dict):
-            raise ValueError("join input df is not a column table")
+            raise ValueError(f"{where}: table is not a column table")
         return _table_rows(table)
     if isinstance(value, list):
         rows: list[Any] = []
         for item in value:
-            rows.extend(_decoded_rows(_decoded_cell(item)))
+            rows.extend(_decoded_rows(_decoded_cell(item), where))
         return rows
     return [value]
 

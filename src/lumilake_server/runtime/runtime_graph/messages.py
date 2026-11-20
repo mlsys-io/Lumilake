@@ -77,13 +77,12 @@ class _MessagesBuilder(_DerivedBuilder):
                 " retrieval or a literal input"
             )
         runtime_ids = ctx.dsl_to_runtime.get(node)
-        if not runtime_ids and isinstance(upstream, JoinOp):
+        if isinstance(upstream, JoinOp):
             # A join's runtime node is its op id; the join phase builds it.
             runtime_ids = [node]
         if not runtime_ids:
             raise ValueError(
-                f"{consumer} reads '{node}', which compiles to no runtime"
-                " node even though the build order should have materialized it"
+                f"{consumer} reads '{node}', which compiles to no runtime node"
             )
         path = output.read(column.path or _WHOLE, consumer)
         return (
@@ -132,8 +131,8 @@ class _MessagesBuilder(_DerivedBuilder):
 
 
 def _producer_kind_supported(upstream: Op) -> bool:
-    """Whether the op is one the build materializes before the chat op lowers:
-    a list-mode Lambda, a join, or a data retrieval."""
+    """Whether the op is a producer the chat op reads by node id: a whole-list
+    producer, or a data retrieval."""
     if isinstance(upstream, (DataRetrievalOp, JoinOp)):
         return True
     return isinstance(upstream, LambdaOp) and upstream.takes_whole_columns
