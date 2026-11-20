@@ -20,7 +20,9 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             f"JoinOp '{entry.id}' attach must map a field name to an op id"
         )
     # ``missing: null`` spells the default in YAML.
-    missing = entry.fields.get("missing") or "null"
+    missing = entry.fields.get("missing")
+    if missing is None:
+        missing = "null"
     if missing not in ("null", "error"):
         raise ValueError(
             f"JoinOp '{entry.id}' missing must be 'null' or 'error', got {missing!r}"
@@ -43,7 +45,6 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
                 " producer is built before the join"
             )
         resolved[field] = user_id_to_internal[target]
-    op_dict["inputs"] = [user_id_to_internal[ref] for ref in entry.inputs]
     op_dict["by"] = by.split(".")
     op_dict["attach"] = resolved
     op_dict["missing"] = missing
