@@ -139,9 +139,7 @@ def op_output(
         rowwise = isinstance(op, LLMChatOp) and op.rowwise_template is not None
         kind = OutputKind.API_ROW if rowwise else OutputKind.API_ITEM
     elif isinstance(op, LambdaOp):
-        kind = (
-            OutputKind.LIST_LAMBDA if op.whole_result_per_run else OutputKind.ROW_LAMBDA
-        )
+        kind = OutputKind.LIST_LAMBDA if op.mode != "row" else OutputKind.ROW_LAMBDA
     else:
         kind = OutputKind.DECLARED
     default_path: str | None
