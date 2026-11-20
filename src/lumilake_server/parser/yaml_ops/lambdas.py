@@ -54,3 +54,11 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         if not isinstance(cache, bool):
             raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a bool")
         op_dict["cache"] = cache
+    by = entry.fields.get("by")
+    if by is not None:
+        if mode != "reduce":
+            raise ValueError(
+                f"LambdaOp '{entry.id}' 'by' is only valid in reduce mode "
+                f"(got mode {mode!r})"
+            )
+        op_dict["by"] = by
