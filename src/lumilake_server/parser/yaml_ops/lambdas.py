@@ -4,8 +4,7 @@ from typing import Any
 
 from lumilake_server.ops.util_ops import LambdaOp
 
-from .common import EmitContext
-from .llm import _emit_keyed_seed
+from .common import EmitContext, emit_keyed_seed
 
 
 def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
@@ -74,4 +73,4 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             f" {LambdaOp.SEED_MODES}, where the function runs once per row"
         )
     op_dict["seed"] = seed
-    _emit_keyed_seed(op_dict, ctx, seed, field="seed", op_kind="LambdaOp")
+    emit_keyed_seed(op_dict, ctx, seed, "seed", "LambdaOp")
