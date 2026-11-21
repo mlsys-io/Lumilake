@@ -607,8 +607,15 @@ def _dispatch_workflow_to_graph_specs(
                 ),
             )
     job_seed = _native_job_seed(workflow_payload)
+    try:
+        graph = rewrite_native_keys(graph_payload, job_seed=job_seed)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     graph_specs[graph_name] = {
-        "graph": rewrite_native_keys(graph_payload, job_seed=job_seed),
+        "graph": graph,
         "inputs": batch_inputs,
         "seed": job_seed,
     }
