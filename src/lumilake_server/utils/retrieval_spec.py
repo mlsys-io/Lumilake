@@ -10,6 +10,7 @@ from pydantic import (
     StrictInt,
     ValidationError,
     ValidationInfo,
+    field_validator,
     model_validator,
 )
 from sqlparse.sql import Parenthesis, Token, TokenList
@@ -18,6 +19,12 @@ from sqlparse.tokens import Comment, Keyword, Punctuation
 from lumilake_server.data_specs import RetrievalData
 
 ROWS_ONE = "one"
+
+ROWS_TABLE = "table"
+
+ROWS_KEY = "rows"
+
+ROWS_VALUES = (ROWS_ONE, ROWS_TABLE)
 
 _ORDER_BY = "ORDER BY"
 
@@ -35,10 +42,25 @@ class RetrievalSpec(RetrievalData):
     verify: StrictBool | None = None
     max_steps: StrictInt | None = None
 
+    @field_validator("rows", mode="before")
+    @classmethod
+    def _rows_declared(cls, value: Any) -> Any:
+        if value is not None and value not in ROWS_VALUES:
+            raise ValueError(
+                f"'{ROWS_KEY}' must be '{ROWS_ONE}' or '{ROWS_TABLE}' when declared"
+                f" (got {value!r})"
+            )
+        return value
+
     @model_validator(mode="after")
     def _row_order(self, info: ValidationInfo) -> Self:
         if not (info.context or {}).get(_CHECK_ROW_ORDER):
             return self
+        if self.rows is not None and self.mode != "sql":
+            raise ValueError(
+                f"'{ROWS_KEY}' is declared only on a mode: sql retrieval"
+                f" (got mode {self.mode!r})"
+            )
         if self.mode != "sql" or self.rows is not None or self.template is None:
             return self
         if sql_has_top_level_order_by(self.template):
@@ -46,8 +68,9 @@ class RetrievalSpec(RetrievalData):
         raise ValueError(
             "a mode: sql retrieval returns rows in no defined order without a "
             "top-level ORDER BY. End the query with an ORDER BY that breaks ties "
-            "(for example on the primary key), or declare 'rows: one' when each "
-            "parameter row returns at most one row"
+            "(for example on the primary key), declare 'rows: one' when each "
+            "parameter row returns at most one row, or declare 'rows: table' when "
+            "the whole result is one value"
         )
 
     @classmethod

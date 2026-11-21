@@ -31,6 +31,7 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
+from lumilake_server.utils.retrieval_spec import ROWS_TABLE
 
 
 def _default_sql_sampler(query: str) -> list[Any]:
@@ -272,6 +273,7 @@ class _RetrievalBuilder(_LLMBuilder):
             type="lumid",
             mode=mode,
             rows=spec.rows,
+            require_non_empty_rows=False if spec.rows == ROWS_TABLE else None,
             lumid_data_url=envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             lumid_data_token=envs.LUMID_DATA_TOKEN,
             params=resolved_params,
