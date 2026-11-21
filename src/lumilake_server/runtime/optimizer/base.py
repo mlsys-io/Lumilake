@@ -117,7 +117,7 @@ _SAMPLING_TASK_TYPES: frozenset[str] = frozenset(
 )
 
 
-def _number(value: object) -> float | None:
+def _number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
@@ -164,7 +164,7 @@ def _has_bound_seed(op: RuntimeOp, sampler: dict[str, Any]) -> bool:
 
 def _dedupe_scope(
     op: RuntimeOp, logical_ops: dict[str, set[str]]
-) -> tuple[object, ...] | None:
+) -> tuple[Any, ...] | None:
     """The per-node part of the dedupe key, or ``None`` when the node must not
     be merged. A sampling node without a bound seed draws from a distribution
     independently of its inputs, so it keeps its own key; a seeded node merges
