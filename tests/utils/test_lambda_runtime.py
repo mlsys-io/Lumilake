@@ -605,6 +605,7 @@ def test_inline_wrapper_leaves_the_op_code_at_top_level() -> None:
     "source, args, expected",
     [
         ("lambda a: a[0].upper()", ("nm",), "NM"),
+        ("lambda a: a[0]  # first column", ("nm",), "nm"),
         ("def f(a):\n    return {'k': a[0]}", ("q",), '{"k": "q"}'),
     ],
 )
