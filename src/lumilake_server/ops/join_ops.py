@@ -25,18 +25,21 @@ class JoinSpec(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    by: list[StrictStr]
+    by: list[StrictStr] = Field(min_length=1)
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     on_missing: Literal["null_fill", "fail_row"] = "null_fill"
 
     @field_validator("by", mode="before")
     @classmethod
-    def _dotted_path(cls, value: Any) -> Any:
-        """Take the key path as parts, from one dotted name or a list of them."""
-        parts = value.split(".") if isinstance(value, str) else value
-        if not isinstance(parts, list) or not _PATH_RE.match(".".join(parts)):
-            raise ValueError("must be a dotted field name")
-        return parts
+    def _dotted_paths(cls, value: Any) -> Any:
+        """Take the key as its paths: one dotted field name, or a list of them
+        for a composite key."""
+        paths = [value] if isinstance(value, str) else value
+        if not isinstance(paths, list) or not all(
+            isinstance(path, str) and _PATH_RE.match(path) for path in paths
+        ):
+            raise ValueError("must be a dotted field name or a list of them")
+        return paths
 
     @field_validator("attach")
     @classmethod
