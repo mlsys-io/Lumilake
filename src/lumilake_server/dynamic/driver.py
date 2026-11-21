@@ -408,8 +408,8 @@ def _explode_one_list(values: list[Any], rows: int) -> list[Any]:
     template round forwards an export as a single item whose output is the
     list its list-mode step returned, and its rows are what a later round reads
     one per row."""
-    if len(values) == 1 and isinstance(values[0], list) and len(values[0]) == rows:
-        return list(values[0])
+    if rows > 1 and len(values) == 1 and isinstance(values[0], list):
+        return values[0]
     return values
 
 

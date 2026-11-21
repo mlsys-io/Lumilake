@@ -755,16 +755,15 @@ columns stay aligned.
   [`RouterOp`](#routerop).
 - Outputs archive the marker, so a job result shows which records failed and
   why.
-- A source carries markers when a `ParseOp` reaches it through any op except a
-  router's rule or default branch, which drop them. A model op (`LLMChatOp`
-  with `rowwise_template`, `LLMVisionOp`, `LLMCompletionOp`, `EmbeddingOp`, or
-  a rowwise seed or aggregate table) may not read such a source: the job is
-  refused at submit when a rowwise column, aggregate table, rowwise seed or
-  embedding content reads one. Read a router's rule or default branch instead,
-  so failed records never reach the model. The rule covers an earlier round's
-  output as well: a reference that binds a marker is refused when a model op
-  reads it, directly or through any op except a router's rule or default
-  branch.
+- A source carries markers when a `ParseOp` or an input whose value is a marker
+  reaches it through any op except a router's rule or default branch, which
+  drop them. A model op (`LLMChatOp` with `rowwise_template`, `LLMVisionOp`,
+  `LLMCompletionOp`, `EmbeddingOp`, or a rowwise seed or aggregate table) may
+  not read such a source: the job is refused at submit when a rowwise column,
+  aggregate table, rowwise seed or embedding content reads one. Read a router's
+  rule or default branch instead, so failed records never reach the model. An
+  earlier round's output is an input like any other, so a reference that binds
+  a marker follows the same rule.
 
 `_fail` is reserved: a user function that returns an object carrying it fails
 the task, so a user value is never mistaken for a marker.
