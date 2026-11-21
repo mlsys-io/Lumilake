@@ -41,7 +41,7 @@ YAML reads unquoted `on`, `off`, `yes`, `no` and bare numbers as non-string keys
 
 `seed` is the job seed, an integer that defaults to 0 and is recorded with the job. A rowwise chat op's keyed `rowwise_seed` derives each row's seed from it, so two jobs that share the seed, the op id, the round and a row's key make the same draw for that row; see [`docs/OPS.md`](OPS.md). A native graph payload takes the same top-level `seed` field. A job carries one seed: workflows submitted together must share it, and submitting them with different seeds is refused.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `RouterOp`, and `JoinOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `ParseOp`, `RouterOp`, and `JoinOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
