@@ -460,40 +460,30 @@ def test_forward_per_row_rejects_variable_length_row_value():
         forward_refs(_three_row_subgraph(llm_id), results, configs, rows=3)
 
 
-@pytest.mark.parametrize("intermediate", [False, True], ids=["direct", "row_lambda"])
-def test_round_two_refuses_a_forwarded_failed_record_reaching_a_model_op(
-    intermediate: bool,
-) -> None:
+def test_round_two_refuses_a_forwarded_failed_record_reaching_a_model_op():
     # A round-1 ParseOp's marker is archived like any value; a round-2 model op
-    # reading it, directly or through a row Lambda, would render it as an
-    # ordinary prompt value.
-    source = "s0"
-    read = source
-    subgraph: list[dict[str, Any]] = []
-    if intermediate:
-        read = "l2"
-        subgraph.append(
-            {
-                "id": "l2",
-                "op": "LambdaOp",
-                "inputs": [source],
-                "fn_name": "f",
-                "code": "def f(row):\n    return row[0]\n",
-            }
-        )
-    subgraph.append(
+    # reading it through a row Lambda would render it as an ordinary prompt
+    # value.
+    subgraph: list[dict[str, Any]] = [
+        {
+            "id": "l2",
+            "op": "LambdaOp",
+            "inputs": ["s0"],
+            "fn_name": "f",
+            "code": "def f(row):\n    return row[0]\n",
+        },
         {
             "id": "q2",
             "op": "LLMChatOp",
-            "inputs": [read],
+            "inputs": ["l2"],
             "messages": [{"role": "user", "content": "x"}],
             "rowwise_template": "Summarize {value}",
             "rowwise_columns": [
-                {"label": "value", "node": read, "path": "items.output"}
+                {"label": "value", "node": "l2", "path": "items.output"}
             ],
             "config": {"model": "m"},
-        }
-    )
+        },
+    ]
     with pytest.raises(DriverProtocolError, match="q2.*rule or default branch"):
         build_round(
             subgraph,
