@@ -39,6 +39,7 @@ WORKFLOW = {
                 "query": (
                     "SELECT close FROM lumilake_demo.ohlc_10m"
                     " WHERE symbol = '{{ $('Stock') }}'"
+                    " ORDER BY timestamp"
                 ),
                 "options": {},
             },
