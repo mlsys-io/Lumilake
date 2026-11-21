@@ -136,9 +136,8 @@ def seed_source(
     template_id: str,
     round_number: int | None,
     parts: list[str],
-    *,
-    op_kind: str = "LLMChatOp",
-    shared: bool = False,
+    op_kind: str,
+    shared: bool,
 ) -> str:
     """The source of a keyed-seed row function: it reads one row's key and
     returns the seed that row draws with."""
@@ -182,10 +181,9 @@ def _duplicate_message(named: str) -> str:
 def key_target(
     op_id: str,
     seed: dict[str, Any],
-    *,
-    op_kind: str = "LLMChatOp",
-    rowwise_template: str | None = None,
-    config: Any = None,
+    op_kind: str,
+    rowwise_template: str | None,
+    config: Any,
 ) -> tuple[str, str]:
     """The ``(node, path)`` a key form reads, after checking the form fits this
     op, with the op named in the refusal. ``rowwise_template`` applies to a chat
@@ -221,7 +219,7 @@ def key_target(
     return node_ref, path
 
 
-def key_pairing(seed: dict[str, Any], op_id: str, op_kind: str = "LLMChatOp") -> str:
+def key_pairing(seed: dict[str, Any], op_id: str, op_kind: str) -> str:
     """The key form's pairing, which is ``unique`` unless declared shared."""
     pairing = seed.get("pairing", PAIRINGS[0])
     if pairing not in PAIRINGS:
@@ -236,12 +234,11 @@ def seed_op(
     op_id: str,
     key_node: str,
     key_path: str,
-    *,
     job_seed: int,
     round_number: int | None,
+    op_kind: str,
     template_id: str | None = None,
     scope: str | None = None,
-    op_kind: str = "LLMChatOp",
     pairing: str = PAIRINGS[0],
 ) -> dict[str, Any]:
     """The row-mode ``LambdaOp`` that returns each row's seed from its key.
@@ -258,8 +255,8 @@ def seed_op(
             op_id if template_id is None else template_id,
             round_number,
             key_parts(key_path),
-            op_kind=op_kind,
-            shared=pairing == "shared",
+            op_kind,
+            pairing == "shared",
         ),
         "mode": "row",
     }
@@ -282,9 +279,9 @@ def rewrite_native_keys(
         node_ref, path = key_target(
             op_id,
             seed,
-            op_kind=op_kind,
-            rowwise_template=op.get("rowwise_template"),
-            config=op.get("config", {}),
+            op_kind,
+            op.get("rowwise_template"),
+            op.get("config", {}),
         )
         if node_ref not in op.get("_inputs", []):
             raise ValueError(
@@ -296,9 +293,9 @@ def rewrite_native_keys(
             op_id,
             node_ref,
             path,
-            job_seed=job_seed,
-            round_number=None,
-            op_kind=op_kind,
+            job_seed,
+            None,
+            op_kind,
             pairing=key_pairing(seed, op_id, op_kind),
         )
         if generated["_id"] in graph:

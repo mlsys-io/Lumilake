@@ -117,9 +117,9 @@ def emit_keyed_seed(
     node_ref, path = keyed_seed.key_target(
         entry.id,
         seed,
-        op_kind=op_kind,
-        rowwise_template=entry.fields.get("rowwise_template"),
-        config=entry.fields.get("config", {}),
+        op_kind,
+        entry.fields.get("rowwise_template"),
+        entry.fields.get("config", {}),
     )
     node_id = seed_input_id(entry.id, node_ref, ctx, op_kind)
     values = _literal_key_values(node_ref, ctx)
@@ -134,11 +134,11 @@ def emit_keyed_seed(
         entry.id,
         node_id,
         path,
-        job_seed=ctx.job_seed,
-        round_number=ctx.round_number,
+        ctx.job_seed,
+        ctx.round_number,
+        op_kind,
         template_id=ctx.template_ids.get(entry.id, entry.id),
         scope=ctx.scope,
-        op_kind=op_kind,
         pairing=keyed_seed.key_pairing(seed, entry.id, op_kind),
     )
     op_dict.setdefault("__implicit_ops__", []).append(seed_dict)
