@@ -1,0 +1,187 @@
+"""A rowwise chat op derives each row's seed from that row's key."""
+
+import json
+from typing import Any
+
+import pytest
+import yaml
+
+from lumilake_server.dynamic.driver import build_round
+from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
+from lumilake_server.graphs import Graph
+from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.parser.keyed_seed import rewrite_native_keys
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.utils import lambda_runtime
+
+_ROWS = [
+    {"case_id": "c1", "question": "q1"},
+    {"case_id": "c2", "question": "q2"},
+    {"case_id": "c1", "question": "q3"},
+]
+
+_COLUMN = [json.dumps(row) for row in _ROWS]
+
+_WORKFLOW = {
+    "seed": 7,
+    "inputs": {"Rows": _COLUMN},
+    "ops": [
+        {
+            "id": "Cases",
+            "op": "LambdaOp",
+            "inputs": ["Rows"],
+            "fn_name": "rows",
+            "mode": "row",
+            "code": "def rows(row):\n    return row[0]\n",
+        },
+        {
+            "id": "Answer",
+            "op": "LLMChatOp",
+            "inputs": ["Cases"],
+            "config": {"model": "m"},
+            "messages": [{"role": "user", "content": "placeholder"}],
+            "rowwise_template": "{question}",
+            "rowwise_columns": [
+                {"label": "question", "node": "Cases", "path": "items.output.question"}
+            ],
+            "rowwise_seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
+        },
+    ],
+    "outputs": [{"name": "answer", "ref": "Answer"}],
+}
+
+
+def _payload(**changes: Any) -> dict[str, Any]:
+    payload = yaml.safe_load(yaml.safe_dump(_WORKFLOW))
+    payload.update(changes)
+    return payload
+
+
+def _nodes(payload: dict[str, Any]) -> dict[str, Any]:
+    spec = next(iter(parse_yaml_payload(payload).values()))
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    return RuntimeGraphBuilder().build(compiled).nodes
+
+
+def _seed_spec(payload: dict[str, Any]) -> dict[str, Any]:
+    node = next(
+        node for node_id, node in _nodes(payload).items() if "__seed" in node_id
+    )
+    return node.data_spec
+
+
+def _seeds(spec: dict[str, Any], items: list[Any]) -> list[str]:
+    """Run the generated function over one source column, as its step does."""
+    fn = lambda_runtime.materialize(spec["code"], spec["fn_name"])
+    return fn((items,))
+
+
+def test_a_key_gives_the_same_seed_wherever_the_row_sits() -> None:
+    spec = _seed_spec(_payload())
+    column = list(_COLUMN)
+    seeds = _seeds(spec, column)
+    assert seeds[0] == seeds[2] != seeds[1]
+    assert _seeds(spec, [column[1], column[2], column[0]]) == [
+        seeds[1],
+        seeds[2],
+        seeds[0],
+    ]
+
+
+def test_the_chat_op_reads_the_generated_seed_column() -> None:
+    nodes = _nodes(_payload())
+    chat = next(node for node in nodes.values() if node.task_type == "inference")
+    (seed_id,) = [node_id for node_id in nodes if "__seed" in node_id]
+    assert chat.data_spec["seeds"] == {
+        "node": seed_id,
+        "path": "value.items.output",
+    }
+    assert nodes[seed_id].data_spec["plan"] == [
+        {
+            "kind": "stage",
+            "node": next(
+                node_id
+                for node_id in nodes
+                if "Cases" in node_id and "__seed" not in node_id
+            ),
+        }
+    ]
+
+
+def test_a_different_job_seed_op_id_or_round_gives_a_different_seed() -> None:
+    column = list(_COLUMN)
+    base = _seeds(_seed_spec(_payload()), column)
+    assert _seeds(_seed_spec(_payload(seed=8)), column) != base
+    key = _ROWS[0]["case_id"]
+    direct = lambda_runtime.row_seed(7, "Answer", None, key)
+    assert lambda_runtime.row_seed(7, "Other", None, key) != direct
+    assert lambda_runtime.row_seed(7, "Answer", 1, key) != direct
+
+
+def test_a_template_op_keeps_its_unrendered_id_across_rounds() -> None:
+    answer = _payload()["ops"][1]
+    body = {
+        "ops": [
+            dict(answer, id="Answer{{round}}", inputs=["Cases"]),
+            {"id": "Cases", "op": "DataOp", "data": _COLUMN},
+        ]
+    }
+    template = DriverTemplate.model_validate(
+        {"first": body, "next": body, "stop_when_empty": "x"}
+    )
+    plan = plan_for_round(template, 2)
+    build = build_round(
+        plan.ops,
+        node_registry={},
+        round_index=2,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=50,
+        model="m",
+        max_tokens=10,
+        temperature=0.1,
+        job_seed=7,
+        template_ids=plan.template_ids,
+    )
+    generated = next(v for k, v in build.graph.items() if k.endswith("__seed"))
+    assert "[7, 'Answer{{round}}', 2, value]" in generated["_code"]
+
+
+def test_a_missing_or_null_key_fails_naming_the_op_and_row() -> None:
+    spec = _seed_spec(_payload())
+    with pytest.raises(ValueError, match="Answer row 1 has no key"):
+        _seeds(spec, [json.dumps(_ROWS[0]), json.dumps({"question": "q"})])
+    with pytest.raises(ValueError, match="Answer row 0 has a null key"):
+        _seeds(spec, [json.dumps({"case_id": None})])
+    with pytest.raises(ValueError, match="'seed' must be an integer"):
+        parse_yaml_payload(_payload(seed="7"))
+
+
+def test_the_key_form_is_refused_without_a_rowwise_template_or_in_api_mode() -> None:
+    without_template = _payload()
+    without_template["ops"][1].pop("rowwise_template")
+    with pytest.raises(ValueError, match="rowwise_template"):
+        _nodes(without_template)
+    api_mode = _payload()
+    api_mode["ops"][1]["config"]["api"] = {"url": "https://example.test"}
+    with pytest.raises(ValueError, match="API mode"):
+        _nodes(api_mode)
+
+
+def test_a_native_graph_takes_the_same_key_form() -> None:
+    native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
+    chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
+    cases_id = next(k for k, v in native.items() if v["_op"] == "LambdaOp")
+    rewritten = dict(native)
+    rewritten[chat_id] = {
+        **native[chat_id],
+        "rowwise_seed": {"key": {"node": cases_id, "path": "items.output.case_id"}},
+    }
+    out = rewrite_native_keys(rewritten, job_seed=7)
+    generated = out[f"{chat_id}__seed"]
+    assert generated["mode"] == "list"
+    assert out[chat_id]["rowwise_seed"] == {
+        "node": f"{chat_id}__seed",
+        "path": "items.output",
+    }

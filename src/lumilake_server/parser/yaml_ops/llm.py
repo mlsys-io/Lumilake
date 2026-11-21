@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 
+from lumilake_server.parser import keyed_seed
 from lumilake_server.parser.common import make_id
 
 from .common import EmitContext, OpEntry, build_generation_config
@@ -318,36 +319,73 @@ def _resolve_table_nodes(
 
 def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     """Fill in the ``rowwise_seed`` column and add its node to the op's
-    inputs, as a rowwise column node is added."""
+    inputs, as a rowwise column node is added. The ``key`` form becomes a
+    generated row function, ``<op id>__seed``, that reads the row's key."""
     entry = ctx.entry
-    user_id_to_internal = ctx.user_id_to_internal
     seed = entry.fields.get("rowwise_seed")
     if seed is None:
         return
     if not isinstance(seed, dict):
         raise ValueError(f"LLMChatOp '{entry.id}' rowwise_seed must be a mapping")
+    key = seed.get("key")
+    if key is not None:
+        _emit_keyed_seed(op_dict, ctx, seed)
+        return
     node_ref = seed.get("node")
     path = seed.get("path", "")
     if not isinstance(node_ref, str) or not isinstance(path, str):
         raise ValueError(
-            f"LLMChatOp '{entry.id}' rowwise_seed must name a node and path"
+            f"LLMChatOp '{entry.id}' rowwise_seed must name a node and path,"
+            " or a key"
         )
-    if node_ref not in user_id_to_internal:
-        raise ValueError(
-            f"LLMChatOp '{entry.id}' rowwise_seed references unknown id '{node_ref}'"
-        )
-    node_id = user_id_to_internal[node_ref]
-    producer = ctx.graph_ops.get(node_id)
-    is_workflow_input = producer is not None and producer.get("_op") == "InputOp"
-    if node_ref not in entry.inputs and not is_workflow_input:
-        raise ValueError(
-            f"LLMChatOp '{entry.id}' rowwise_seed reads '{node_ref}', which is"
-            " not listed in the op's inputs; add it there so the seed's"
-            " producer is built before the chat op"
-        )
+    node_id = _seed_input_id(entry.id, node_ref, ctx)
     op_dict["rowwise_seed"] = {"node": node_id, "path": path}
     if node_id not in op_dict["_inputs"]:
         op_dict["_inputs"].append(node_id)
+
+
+def _seed_input_id(op_id: str, node_ref: str, ctx: EmitContext) -> str:
+    """The internal id of a node a ``rowwise_seed`` reads, after checking the
+    producer is built first."""
+    if node_ref not in ctx.user_id_to_internal:
+        raise ValueError(
+            f"LLMChatOp '{op_id}' rowwise_seed references unknown id '{node_ref}'"
+        )
+    node_id = ctx.user_id_to_internal[node_ref]
+    producer = ctx.graph_ops.get(node_id)
+    is_workflow_input = producer is not None and producer.get("_op") == "InputOp"
+    if node_ref not in ctx.entry.inputs and not is_workflow_input:
+        raise ValueError(
+            f"LLMChatOp '{op_id}' rowwise_seed reads '{node_ref}', which is"
+            " not listed in the op's inputs; add it there so the seed's"
+            " producer is built before the chat op"
+        )
+    return node_id
+
+
+def _emit_keyed_seed(op_dict: dict[str, Any], ctx: EmitContext, seed: Any) -> None:
+    """Derive each row's seed from its key: queue a row function over the
+    key column and bind the chat op to its output."""
+    entry = ctx.entry
+    node_ref, path = keyed_seed.key_target(
+        entry.id,
+        seed,
+        rowwise_template=entry.fields.get("rowwise_template"),
+        config=entry.fields.get("config") or {},
+    )
+    node_id = _seed_input_id(entry.id, node_ref, ctx)
+    seed_dict = keyed_seed.seed_op(
+        entry.id,
+        node_id,
+        path,
+        job_seed=ctx.job_seed,
+        round_number=ctx.round_number,
+        template_id=ctx.template_ids.get(entry.id, entry.id),
+    )
+    op_dict.setdefault("__implicit_ops__", []).append(seed_dict)
+    op_dict["rowwise_seed"] = {"node": seed_dict["_id"], "path": "items.output"}
+    if seed_dict["_id"] not in op_dict["_inputs"]:
+        op_dict["_inputs"].append(seed_dict["_id"])
 
 
 def _build_inline_messages(
