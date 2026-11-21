@@ -73,7 +73,9 @@ def parse_row(spec: dict[str, Any], text: Any) -> Any:
     value = _decode_record(body)
     require = spec.get("require")
     if require:
-        missing = next((key for key in require if not _has_key(value, key)), None)
+        if not isinstance(value, dict):
+            raise ValueError("require needs a JSON object, not a list")
+        missing = next((key for key in require if key not in value), None)
         if missing is not None:
             raise ValueError(f"missing key '{missing}'")
     return value
@@ -96,12 +98,6 @@ def _decode_record(body: str) -> Any:
     if any(char in "{[" for char in body[end:]):
         raise ValueError("no JSON object")
     return value
-
-
-def _has_key(value: Any, key: str) -> bool:
-    if isinstance(value, dict):
-        return key in value
-    return isinstance(value, list) and any(_has_key(item, key) for item in value)
 
 
 def _text(value: Any) -> str:

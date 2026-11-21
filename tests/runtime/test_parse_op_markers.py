@@ -162,6 +162,14 @@ def test_a_model_op_reading_a_router_branch_still_builds() -> None:
     assert _build(ops, {"Answer": ['{"a": 1}']}) is not None
 
 
+def test_parse_json_fails_require_on_a_list_reply(tmp_path: Path) -> None:
+    ops = [_parse(format="json", require=["answer"])]
+    items = _run(ops, {"Answer": ['[{"answer": 1}]']}, tmp_path)
+    assert items[0]["value"]["_fail"]["reason"] == (
+        "require needs a JSON object, not a list"
+    )
+
+
 def test_parse_regex_returns_the_named_groups_of_a_match(tmp_path: Path) -> None:
     ops = [_parse(format="regex", pattern=r"Score: (?P<score>\d+)/\d+")]
     assert _values(_run(ops, {"Answer": ["Score: 7/10"]}, tmp_path)) == [{"score": "7"}]
