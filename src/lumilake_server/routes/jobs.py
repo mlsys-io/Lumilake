@@ -591,9 +591,7 @@ def _dispatch_workflow_to_graph_specs(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"workflow payload at index {idx} must be an object",
         )
-    graph_payload = (
-        workflow_payload["graph"] if "graph" in workflow_payload else workflow_payload
-    )
+    graph_payload = _native_graph_ops(workflow_payload)
     for op_id, op in graph_payload.items():
         if not isinstance(op, dict) or CLEARS_KEY not in op:
             continue
@@ -619,6 +617,18 @@ def _dispatch_workflow_to_graph_specs(
         "inputs": batch_inputs,
         "seed": job_seed,
     }
+
+
+def _native_graph_ops(workflow_payload: dict[str, Any]) -> dict[str, Any]:
+    """A native workflow's ops. A bare graph carries its job ``seed`` beside its
+    ops, so that field is taken out first; a wrapped payload keeps it there."""
+    if "graph" in workflow_payload:
+        return workflow_payload["graph"]
+    if "seed" not in workflow_payload:
+        return workflow_payload
+    ops = workflow_payload.copy()
+    del ops["seed"]
+    return ops
 
 
 def _native_job_seed(workflow_payload: dict[str, Any]) -> int:
