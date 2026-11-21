@@ -370,9 +370,11 @@ Two rows of one op that carry the same key draw the same seed, so a key that
 repeats turns independent samples into one shared draw. A key column the
 submission can see in full, a workflow input or a literal data op, is checked
 over the whole input set before the job is split into slices, so a repeat fails
-with the op and the two row indices whatever slices the rows land in, and the
-generated seed step repeats that check over the rows one task sees, so a column
-an upstream op produces still fails when that task holds the repeating rows.
+with the op and the two row indices whatever slices the rows land in; a dynamic
+round checks its own key columns the same way when it is built, over the run
+input and the values it forwards. The generated seed step repeats the check over
+the rows one task sees, so a column an upstream op produces still fails when
+that task holds the repeating rows.
 Write `pairing: shared` on the key form to declare that the same key should draw
 the same seed, for example to compare two specs on one paired draw.
 
