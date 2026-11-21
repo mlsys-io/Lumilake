@@ -7,8 +7,8 @@ from lumilake_server.ops import (
     InputOp,
     LambdaOp,
     LLMOp,
+    ParseOp,
 )
-from lumilake_server.ops.parse_ops import ParseOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import _RuntimeGraphBuilderBase
 from lumilake_server.runtime.runtime_graph.lowering import (

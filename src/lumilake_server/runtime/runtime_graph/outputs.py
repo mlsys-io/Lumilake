@@ -11,6 +11,7 @@ from lumilake_server.ops import (
     LLMOp,
     MessageOp,
     Op,
+    ParseOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
@@ -20,7 +21,6 @@ from lumilake_server.ops.llm_ops import (
     LLMVisionOp,
 )
 from lumilake_server.ops.ops import RowShape
-from lumilake_server.ops.parse_ops import ParseOp
 
 
 def item_relative_path(path: str) -> str:
