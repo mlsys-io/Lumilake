@@ -294,15 +294,6 @@ def _param_count(args: ast.arguments) -> int:
     return count + (1 if args.vararg else 0) + (1 if args.kwarg else 0)
 
 
-def _is_docstring(stmt: ast.stmt) -> bool:
-    """Whether ``stmt`` is a module-level string literal (a docstring)."""
-    return (
-        isinstance(stmt, ast.Expr)
-        and isinstance(stmt.value, ast.Constant)
-        and isinstance(stmt.value.value, str)
-    )
-
-
 def _parse(code: str) -> ast.Expression | ast.Module:
     src = code.strip()
     try:
@@ -434,17 +425,15 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
         )
-    annotations = sorted(
-        set(_unbound_global_names(code)).intersection(
-            INLINE_UNAVAILABLE_ANNOTATION_NAMES
-        ),
-        key=INLINE_UNAVAILABLE_ANNOTATION_NAMES.index,
+    unbound = set(_unbound_global_names(code))
+    annotated = next(
+        (n for n in INLINE_UNAVAILABLE_ANNOTATION_NAMES if n in unbound), None
     )
-    if annotations:
+    if annotated is not None:
         raise ValueError(
-            f"it references {annotations[0]!r}, which a LambdaOp that feeds an"
-            " LLM cannot use inline: the FlowMesh worker evaluates the"
-            " function's annotations, and its namespace has no Message or ops."
+            f"it references {annotated!r}, which a LambdaOp that feeds an"
+            " LLM cannot use inline: the FlowMesh worker's namespace has no"
+            " Message or ops, and a def evaluates its annotations there."
             " Annotate with builtin types, or move this logic to a LambdaOp"
             " that runs as its own python task"
         )

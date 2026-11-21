@@ -577,6 +577,7 @@ _TABLE = json.dumps({"name": {"0": "a", "2": "b", "10": "c"}, "tag": "x"})
 _VALUES = ['{"a": 1}', "plain {x", "1", "[1, 2]", {"table": {"df": _TABLE}}]
 _VALUES += [{"table": json.dumps({"df": _TABLE})}, {"df": "not json"}]
 _VALUES += [{"df": "[1]"}, {"df": _TABLE}]
+_VALUES += [{"table": "not json"}, {"df": json.dumps({"n": {"a": 1, "b": 2}})}]
 
 
 @pytest.mark.parametrize("value", _VALUES)
