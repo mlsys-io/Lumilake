@@ -124,14 +124,13 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         data_spec: dict[str, Any] = {
             "code": op.code,
             "fn_name": op.fn.__name__,
-            "plan": plan,
+            "plan": self._tag_seed_entry(op, plan, ctx, dependencies),
             "timeout_s": (
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None
                 else op.timeout_s
             ),
         }
-        data_spec["plan"] = self._tag_seed_entry(op, plan, ctx, dependencies)
         if op.mode != "row":
             data_spec["mode"] = op.mode
         if op.by is not None:
