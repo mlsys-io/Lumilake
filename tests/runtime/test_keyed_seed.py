@@ -78,7 +78,9 @@ def _documented_seed(
     return [one(key) for key in keys]
 
 
-def _round_build(body: dict[str, Any], results: dict[str, Any]) -> Any:
+def _round_build(
+    body: dict[str, Any], results: dict[str, Any], symbols: list[str] | None = None
+) -> Any:
     template = DriverTemplate.model_validate(
         {"first": body, "next": body, "stop_when_empty": "x"}
     )
@@ -97,6 +99,7 @@ def _round_build(body: dict[str, Any], results: dict[str, Any]) -> Any:
         results=results,
         job_seed=7,
         template_ids=plan.template_ids,
+        symbols=symbols if symbols is not None else [],
     )
 
 
@@ -137,6 +140,22 @@ def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     del repeated["rowwise_seed"]["pairing"]
     with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
         _round_build({"ops": [repeated]}, {"Cases": [{"output": row} for row in _ROWS]})
+
+
+def test_a_round_refuses_a_repeated_key_in_its_run_input() -> None:
+    """A round's key column may be the run input, whose symbols the round
+    builder is given, so a repeated symbol is refused when the round is built."""
+    sample = {
+        "id": "Sample",
+        "op": "LambdaOp",
+        "inputs": ["Symbols"],
+        "fn_name": "sample",
+        "code": "def sample(row, seed):\n    return '%d' % seed\n",
+        "seed": {"key": {"node": "Symbols", "path": "items.output"}},
+    }
+    with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
+        _round_build({"ops": [sample]}, {}, symbols=["AAA", "BBB", "AAA"])
+    _round_build({"ops": [sample]}, {}, symbols=["AAA", "BBB", "CCC"])
 
 
 def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:

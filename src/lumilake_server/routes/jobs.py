@@ -399,6 +399,7 @@ def _render_dynamic_round0(
             dtype=spec.driver.dtype,
             extra_engine_kwargs=spec.driver.extra_engine_kwargs,
             job_seed=spec.seed,
+            symbols=[],
         )
         return round_build.graph, declared_output_location
     except Exception as exc:
@@ -2293,6 +2294,7 @@ async def _run_dynamic_job(
                     rows=len(symbols),
                     job_seed=spec.seed,
                     cleared_ids=current_cleared,
+                    symbols=symbols,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2616,6 +2618,7 @@ async def _run_template_job(
                     job_seed=spec.seed,
                     template_ids=template_round.plan.template_ids,
                     cleared_ids=current_cleared,
+                    symbols=symbols,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
