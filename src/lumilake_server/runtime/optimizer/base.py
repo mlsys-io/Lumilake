@@ -8,7 +8,11 @@ from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule
-from lumilake_server.runtime.runtime_graph import RuntimeGraph, merge_runtime_graphs
+from lumilake_server.runtime.runtime_graph import (
+    RuntimeGraph,
+    chunk_group_parent,
+    merge_runtime_graphs,
+)
 from lumilake_server.runtime.runtime_ops import SAMPLING_TASK_TYPES, RuntimeOp
 
 __all__ = ["BaseOptimizer", "Schedule"]
@@ -169,10 +173,7 @@ def _workflow_scope(group_name: str) -> str:
     """The parent workflow a graph group was built for. A request whose slices
     were split into chunk groups ``parent``, ``parent::1``, … is one workflow,
     so its chunk groups share a scope."""
-    parent, _, chunk = group_name.rpartition("::")
-    if parent and chunk.isdigit():
-        return parent
-    return group_name
+    return chunk_group_parent(group_name)
 
 
 def _logical_ops(
