@@ -57,13 +57,25 @@ def sql_has_top_level_order_by(query: str) -> bool:
     if not statements:
         return False
     statement: TokenList = statements[-1]
-    if (
-        len(statement.tokens) == 1
-        and isinstance(statement.tokens[0], Parenthesis)
-        and isinstance(statement.tokens[0], TokenList)
-    ):
+    if len(statement.tokens) == 1 and isinstance(statement.tokens[0], Parenthesis):
         statement = statement.tokens[0]
     return any(
         token.ttype is Keyword and token.normalized == _ORDER_BY
         for token in statement.tokens
     )
+
+
+def multi_row_item_indexes(items: object) -> list[int]:
+    """The indexes of the retrieval items that returned more than one row.
+
+    A ``rows: one`` retrieval fails when this list is non-empty: the declared
+    bound held for no item, so every row this item feeds downstream would be
+    silently reduced to its first.
+    """
+    if not isinstance(items, list):
+        return []
+    multi: list[int] = []
+    for position, item in enumerate(items):
+        if isinstance(item, dict) and item.get("rows", 0) > 1:
+            multi.append(item.get("index", position))
+    return multi

@@ -190,6 +190,9 @@ async def test_archive_task_response_sanitizes_api_error_before_reraising(
         request_id="req-1", runtime_graphs={}, data_profile_graphs={}
     )
     request_info.batch_id = "batch-1"
+    request_info.runtime_graph = RuntimeGraph(
+        nodes={}, node_order=[], output_node_map={}
+    )
 
     with pytest.raises(APIError) as excinfo:
         await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
@@ -390,6 +393,9 @@ async def test_archive_task_response_redacts_credential_under_unexpected_key(
         request_id="req-1", runtime_graphs={}, data_profile_graphs={}
     )
     request_info.batch_id = "batch-1"
+    request_info.runtime_graph = RuntimeGraph(
+        nodes={}, node_order=[], output_node_map={}
+    )
 
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
@@ -466,6 +472,9 @@ async def test_archive_task_response_archives_grouped_api_result(
         request_id="req-1", runtime_graphs={}, data_profile_graphs={}
     )
     request_info.batch_id = "batch-1"
+    request_info.runtime_graph = RuntimeGraph(
+        nodes={}, node_order=[], output_node_map={}
+    )
 
     await flowmesh_manager._archive_task_response(request_info, "task-1", "node-a")
 
