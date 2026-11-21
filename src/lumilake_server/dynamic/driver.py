@@ -391,12 +391,23 @@ def _walk_values_per_row(
         if isinstance(walked, list) and len(walked) == 1:
             walked = walked[0]
         values.append(walked)
+    values = _explode_one_list(values, rows)
     if len(values) != rows:
         raise DriverProtocolError(
             f"op {consumer!r} references {ref!r}: its result has "
             f"{len(values)} items for a {rows}-row run, so its items cannot "
             "be matched to rows"
         )
+    return values
+
+
+def _explode_one_list(values: list[Any], rows: int) -> list[Any]:
+    """Split one stored item that holds the run's whole list into its rows: a
+    template round forwards an export as a single item whose output is the
+    list its list-mode step returned, and its rows are what a later round reads
+    one per row."""
+    if len(values) == 1 and isinstance(values[0], list) and len(values[0]) == rows:
+        return list(values[0])
     return values
 
 
