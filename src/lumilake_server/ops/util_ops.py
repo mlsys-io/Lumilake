@@ -263,6 +263,7 @@ class LambdaOp(Op):
         on_fail: ReduceOnFail | None = None,
         on_empty: ExpandOnEmpty | None = None,
         clears_markers: bool = False,
+        by: str | None = None,
     ) -> None:
         input_ops: list[Op] = [
             inp if isinstance(inp, Op) else DataOp(inp) for inp in inputs
