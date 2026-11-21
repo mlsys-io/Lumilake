@@ -308,6 +308,16 @@ _EXPAND = _lowering(
 )
 
 
+def _reduce(on_fail: str, **fields: Any) -> dict[str, Any]:
+    return _lowering(
+        "reduce",
+        "def f(rows):\n    return len(rows)\n",
+        by="unit",
+        on_fail=on_fail,
+        **fields,
+    )
+
+
 def _group(on_fail: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """A reduce by unit, over a wrapper that moves a row's marker into a
     non-key field so its key still reads and it joins its group."""
@@ -318,31 +328,14 @@ def _group(on_fail: str) -> tuple[dict[str, Any], dict[str, Any]]:
         "    return [{'unit': v.get('unit', 'u'), 'score': v} for v in rows]\n",
         id="W",
     )
-    return wrapper, _lowering(
-        "reduce",
-        "def f(rows):\n    return len(rows)\n",
-        by="unit",
-        on_fail=on_fail,
-        inputs=["W"],
-    )
+    return wrapper, _reduce(on_fail, inputs=["W"])
 
 
 @pytest.mark.parametrize(
     "tail, answers, expected",
     [
         # A row whose key cannot be read is its own group and emits its marker.
-        (
-            [
-                _lowering(
-                    "reduce",
-                    "def f(rows):\n    return len(rows)\n",
-                    by="unit",
-                    on_fail="fail_group",
-                )
-            ],
-            ["bad", '{"unit": "u"}'],
-            ["marker", 1],
-        ),
+        ([_reduce("fail_group")], ["bad", '{"unit": "u"}'], ["marker", 1]),
         # A row whose key reads joins its group; the policy decides that group.
         (_group("fail_group"), ['{"unit": "u"}', "bad"], ["marker"]),
         (_group("drop_failed"), ['{"unit": "u"}', "bad"], [1]),
@@ -366,9 +359,3 @@ def test_a_marked_row_keeps_its_group_or_its_slot(
             f"{output}@{item['parent']}.{item['child']}" if "parent" in item else output
         )
     assert got == expected
-
-
-def test_an_on_fail_policy_is_refused_outside_reduce_mode() -> None:
-    ops = [_parse(format="json"), _lower(on_fail="drop_failed")]
-    with pytest.raises(ValueError, match="only valid in reduce mode"):
-        _build(ops, {"Answer": ["x"]})

@@ -171,8 +171,9 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
             live.append(row)
             continue
         key = _key_of(row, where)
-        if key is not None:
-            # The source row's own failed record is its key's output.
+        if key is not None and key not in marked:
+            # The source row's own failed record is its key's output, unless
+            # another marker already holds that key.
             marked[key] = carried
     if len(values) == len(rows):
         # A row whose key cannot be read is already its own marker, and its

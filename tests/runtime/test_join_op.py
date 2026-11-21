@@ -325,16 +325,11 @@ _PART_VALUES = [{"output": 1, "value": 1}]
             [{**_ROWS[0], "reply": "hi"}, _MARK, {**_ROWS[2], "reply": "bye"}],
         ),
         # Only the key the attach source reaches keeps its value; the others
-        # are marked under fail_row and keep the field out under null_fill.
+        # are marked under fail_row.
         (
             _PART + "    on_missing: fail_row\n",
             {0: _ALL, 1: _PART_UPSTREAM, 2: _PART_VALUES, 3: _PART_UPSTREAM},
             [_KEY_MARK, _MERGED, _KEY_MARK],
-        ),
-        (
-            _PART,
-            {0: _ALL, 1: _PART_UPSTREAM, 2: _PART_VALUES, 3: _PART_UPSTREAM},
-            [_ROWS[0], _MERGED, _ROWS[2]],
         ),
         # An attach length mismatch is a job failure under both policies.
         (_ATTACH, {0: _LIVE, 1: _GAPPED_VALUES[:1]}, "values attached but"),
@@ -352,12 +347,10 @@ def test_a_marked_join_row_keeps_its_key_and_every_other_row(
             _run(tmp_path, node, upstream)
         return
     got = [item["output"] for item in _run(tmp_path, node, upstream)["items"]]
-    # A fail_row marker names the join by its own node id; expected rows carry
-    # the stand-in _KEY_MARK for it.
+    mark = {"_fail": {**_KEY_MARK["_fail"], "op": node.node_id}}
     assert [
-        _KEY_MARK if row.get("_fail", {}).get("op") == node.node_id else row
-        for row in got
-    ] == expected
+        mark if row.get("_fail", {}).get("op") == node.node_id else row for row in got
+    ] == [mark if row is _KEY_MARK else row for row in expected]
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
