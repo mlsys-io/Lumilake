@@ -92,7 +92,7 @@ from lumilake_server.hooks.security import (
     resolve_accessible_ids,
     run_submission_guards,
 )
-from lumilake_server.ops.router_ops import expand_routers, reject_clears_markers
+from lumilake_server.ops.router_ops import expand_routers, reject_user_clears_markers
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
@@ -585,7 +585,7 @@ def _dispatch_workflow_to_graph_specs(
     graph_payload = (
         workflow_payload["graph"] if "graph" in workflow_payload else workflow_payload
     )
-    reject_clears_markers(
+    reject_user_clears_markers(
         [op for op in graph_payload.values() if isinstance(op, dict)],
         f"the native graph at index {idx}",
     )
@@ -2047,9 +2047,9 @@ def _admit_subgraph(
     results: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Validate an emitted subgraph, resolve it, and register its nodes."""
-    reject_clears_markers(plan.ops, "an emitted subgraph")
-    ops, _ = expand_routers(plan.ops)
-    plan = SubgraphPlan(ops=ops, export=plan.export)
+    reject_user_clears_markers(plan.ops, "an emitted subgraph")
+    expanded = expand_routers(plan.ops)
+    plan = SubgraphPlan(ops=expanded, export=plan.export)
     validate_emitted_subgraph(
         plan.ops,
         node_registry,

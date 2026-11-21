@@ -14,7 +14,7 @@ from lumilake_server.dynamic.template import (
     stop_export,
     validate_template,
 )
-from lumilake_server.ops.router_ops import RouterOp, expand_routers
+from lumilake_server.ops.router_ops import CLEARS_KEY, RouterOp, expand_routers
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.utils.lambda_runtime import materialize
 
@@ -45,13 +45,12 @@ def _branch_rows(
     entry: dict[str, Any], branch_id: str, column: list[str]
 ) -> list[dict[str, Any]]:
     """Run one expanded branch's generated source over ``column``."""
-    ops, _ = expand_routers([entry])
-    op = next(item for item in ops if item["id"] == branch_id)
+    op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
     return materialize(op["code"], op["fn_name"])((column,))
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
-    ops, clearing = expand_routers([_router()])
+    ops = expand_routers([_router()])
     for op in ops:
         assert (op["op"], op["mode"], op["inputs"]) == ("LambdaOp", "list", ["norm"])
     assert [op["id"] for op in ops] == [
@@ -59,7 +58,9 @@ def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
         "route.diagnose",
         "route.test",
     ]
-    assert clearing == {op["id"] for op in ops}
+    assert all(op.get(CLEARS_KEY) for op in ops)
+    error = expand_routers([_router(error_branch=True)])
+    assert [op.get(CLEARS_KEY, False) for op in error] == [True, True, True, False]
 
 
 def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:

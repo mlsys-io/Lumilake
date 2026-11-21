@@ -91,7 +91,7 @@ from typing import Any
 
 import yaml
 
-from ..ops.router_ops import expand_routers, reject_clears_markers
+from ..ops.router_ops import expand_routers, reject_user_clears_markers
 from .common import make_id as _make_id
 from .repeat import unroll_repeats
 from .yaml_ops.common import EmitContext, OpEntry
@@ -113,11 +113,17 @@ class _OutputEntry:
     path: str | None = None
 
 
-def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
+def parse_yaml_payload(
+    payload: dict | str,
+    *,
+    expanded: bool = False,
+) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
     Args:
         payload: Either the raw YAML text, or an already-parsed dict.
+        expanded: The payload already holds a router's expanded branch entries,
+            which carry the marker-clearing key that expansion owns.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict}}``,
@@ -132,7 +138,7 @@ def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
     if "ops" not in spec_dict:
         raise ValueError("YAML workflow must declare an 'ops:' list at the top level")
 
-    compiled_ops = _compile_workflow(spec_dict, graph_name)
+    compiled_ops = _compile_workflow(spec_dict, graph_name, expanded=expanded)
     return {
         graph_name: {
             "graph": compiled_ops.graph,
@@ -192,7 +198,12 @@ def _get_graph_name(spec: dict[str, Any]) -> str:
     return name.strip()
 
 
-def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
+def _compile_workflow(
+    spec: dict[str, Any],
+    scope: str,
+    *,
+    expanded: bool = False,
+) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
     outputs_block = spec.get("outputs", []) or []
@@ -205,10 +216,13 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
+    if not expanded:
+        reject_user_clears_markers(ops_block, "the workflow")
     ops_block, unroll = unroll_repeats(ops_block, set(inputs))
-    reject_clears_markers(ops_block, "the workflow")
-    expanded, clearing = expand_routers(ops_block)
-    op_entries = [_parse_op_entry(entry, idx) for idx, entry in enumerate(expanded)]
+    op_entries = [
+        _parse_op_entry(entry, idx)
+        for idx, entry in enumerate(expand_routers(ops_block))
+    ]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
     ]
@@ -258,7 +272,10 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
             if unresolved:
                 continue
             op_dict = _build_op_dict(
-                entry, refs, scope, graph_ops, clears_markers=entry.id in clearing
+                entry,
+                refs,
+                scope,
+                graph_ops,
             )
             for implicit in op_dict.pop("__implicit_ops__", []):
                 graph_ops[implicit["_id"]] = implicit
@@ -362,8 +379,6 @@ def _build_op_dict(
     user_id_to_internal: Mapping[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
-    *,
-    clears_markers: bool = False,
 ) -> dict[str, Any]:
     internal_id = user_id_to_internal[entry.id]
     input_ids = [user_id_to_internal[ref] for ref in entry.inputs]
@@ -380,7 +395,6 @@ def _build_op_dict(
         user_id_to_internal=user_id_to_internal,
         scope=scope,
         graph_ops=graph_ops,
-        clears_markers=clears_markers,
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
     return op_dict
