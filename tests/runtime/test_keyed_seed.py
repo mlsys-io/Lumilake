@@ -159,6 +159,57 @@ def test_a_template_op_keeps_its_unrendered_id_across_rounds() -> None:
     assert "[7, 'Answer{{round}}', 2, value]" in generated["_code"]
 
 
+def test_a_later_round_keys_on_an_earlier_rounds_node() -> None:
+    """A round-2 chat op keys on a column of a round-1 node: the column
+    forwards as a flat input, and the row function reads that value itself."""
+    earlier = "Cases"
+    results = {earlier: [{"output": row} for row in _ROWS]}
+    body = {
+        "ops": [
+            {
+                "id": "Answer{{round}}",
+                "op": "LLMChatOp",
+                "inputs": [earlier],
+                "config": {"model": "m"},
+                "messages": [{"role": "user", "content": "placeholder"}],
+                "rowwise_template": "{question}",
+                "rowwise_seed": {
+                    "key": {"node": earlier, "path": "items.output.case_id"}
+                },
+            }
+        ]
+    }
+    template = DriverTemplate.model_validate(
+        {"first": body, "next": body, "stop_when_empty": "x"}
+    )
+    plan = plan_for_round(template, 2)
+    build = build_round(
+        plan.ops,
+        node_registry={earlier: {"op": "DataOp"}},
+        round_index=2,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=50,
+        model="m",
+        max_tokens=10,
+        temperature=0.1,
+        results=results,
+        job_seed=7,
+        template_ids=plan.template_ids,
+    )
+    generated = next(v for k, v in build.graph.items() if k.endswith("__seed"))
+    forwarded = build.forwarded_inputs[f"{earlier} | items.output.case_id"]
+    (input_id,) = generated["_inputs"]
+    assert build.graph[input_id]["_op"] == "InputOp"
+    assert build.graph[input_id]["name"] == f"{earlier} | items.output.case_id"
+    assert forwarded == ["c1", "c2", "c1"]
+    spec = {"code": generated["_code"], "fn_name": generated["fn_name"]}
+    assert _seeds(spec, forwarded) == [
+        row_seed(7, "Answer{{round}}", 2, key) for key in forwarded
+    ]
+
+
 def test_a_missing_or_null_key_fails_naming_the_op() -> None:
     spec = _seed_spec(_payload())
     with pytest.raises(ValueError, match="Answer' has no row key in .*question"):

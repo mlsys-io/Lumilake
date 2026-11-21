@@ -9,7 +9,7 @@ import ast
 import copy
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -570,12 +570,10 @@ def forward_refs(
                     column["node"], column["path"] = bind_explicit(node, path, consumer)
         rowwise_seed = op.get("rowwise_seed")
         if isinstance(rowwise_seed, dict):
-            node = rowwise_seed.get("node")
-            path = rowwise_seed.get("path")
-            if isinstance(node, str) and isinstance(path, str) and node in results:
-                rowwise_seed["node"], rowwise_seed["path"] = bind_explicit(
-                    node, path, consumer
-                )
+            _bind_seed_ref(rowwise_seed, consumer, results, bind_explicit)
+            key = rowwise_seed.get("key")
+            if isinstance(key, dict):
+                _bind_seed_ref(key, consumer, results, bind_explicit)
         data_spec = op.get("data_spec")
         if isinstance(data_spec, dict):
             params = data_spec.get("params")
@@ -596,6 +594,21 @@ def forward_refs(
         ops.append(op)
     ops.extend(materializers)
     return ops, inputs
+
+
+def _bind_seed_ref(
+    ref: dict[str, Any],
+    consumer: str,
+    results: dict[str, list[dict[str, Any]]],
+    bind_explicit: Callable[[str, str, str], tuple[str, str]],
+) -> None:
+    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place. A
+    forwarded ref binds as a flat input, so both forms come back with a
+    ``path`` of ``""``."""
+    node = ref.get("node")
+    path = ref.get("path")
+    if isinstance(node, str) and isinstance(path, str) and node in results:
+        ref["node"], ref["path"] = bind_explicit(node, path, consumer)
 
 
 def _validate_declared_inputs(
