@@ -20,7 +20,7 @@ _ROWS = [
     {"case_id": c, "question": q} for c, q in [("c1", "q1"), ("c2", "q2"), ("c1", "q3")]
 ]
 _COLUMN = [json.dumps(row) for row in _ROWS]
-_ANSWER = {
+_ANSWER: dict[str, Any] = {
     "id": "Answer",
     "op": "LLMChatOp",
     "inputs": ["Cases"],
@@ -119,7 +119,8 @@ def test_a_keyed_seed_reads_the_chat_op() -> None:
 
 def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     """A template op keeps its unrendered id, and a later round's chat op keys
-    on an earlier round's node, forwarded flat for the row function to read."""
+    on an earlier round's node, forwarded flat for the row function to read;
+    a key that repeats over the round's own values is refused when it is built."""
     answer = {**_ANSWER, "id": "Answer{{round}}"}
     results = {"Cases": [{"output": row} for row in _ROWS]}
     build = _round_build({"ops": [answer]}, results)
@@ -132,6 +133,10 @@ def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     assert [fn(("c1",)), fn(("c2",))] == _documented_seed(
         ["c1", "c2"], "Answer{{round}}", 2
     )
+    repeated = copy.deepcopy(answer)
+    del repeated["rowwise_seed"]["pairing"]
+    with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
+        _round_build({"ops": [repeated]}, {"Cases": [{"output": row} for row in _ROWS]})
 
 
 def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:
