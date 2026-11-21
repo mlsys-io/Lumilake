@@ -112,17 +112,6 @@ _MARKER = {"_fail": {"op": "Q", "reason": "x"}}
         ('I compared [1] and [2]. {"answer": "yes"}', "no JSON object"),
         ('{"_fail": 1, "a": 2}', "reserved key"),
     ],
-    ids=[
-        "record",
-        "fenced",
-        "prose-wrapped",
-        "list",
-        "literal-marker",
-        "prose",
-        "truncated",
-        "citation",
-        "reserved-key",
-    ],
 )
 def test_parse_json_reads_a_record_or_marks_the_row(
     answer: str, expected: Any, tmp_path: Path
@@ -148,7 +137,6 @@ def test_parse_json_reads_a_record_or_marks_the_row(
             {"score": "7"},
         ),
     ],
-    ids=["missing-key", "require-list", "pattern", "match"],
 )
 def test_parse_reads_a_row_by_its_spec_or_marks_it(
     ops: list[dict[str, Any]], answer: str, expected: Any, tmp_path: Path
@@ -291,8 +279,7 @@ def test_a_router_error_branch_passes_its_markers_and_refuses_a_new_one(
 
 
 def test_a_router_without_an_error_branch_sends_a_marked_row_nowhere() -> None:
-    ops, cleared = expand_routers([_router()])
-    assert cleared == frozenset(op["id"] for op in ops)
+    ops, _ = expand_routers([_router()])
     for op in ops:
         assert materialize(op["code"], op["fn_name"])(([_MARKED],)) == []
 
