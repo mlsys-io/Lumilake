@@ -169,7 +169,7 @@ def _planned(
     """The plan index reading one column's values, one per row."""
     ctx.visited.add(column.id)
     if isinstance(column, (InputOp, DataOp)):
-        return _literal(column, ctx, plan)
+        return _literal(join, column, ctx, plan)
     runtime_ids = ctx.dsl_to_runtime.get(column.id)
     if not runtime_ids:
         raise ValueError(
@@ -194,13 +194,18 @@ def _planned(
 
 
 def _literal(
+    join: JoinOp,
     column: InputOp | DataOp,
     ctx: LoweringContext,
     plan: list[dict[str, Any]],
 ) -> int:
     """The plan index reading a literal column's values, one per row."""
     if isinstance(column, InputOp):
-        values = ctx.inputs_dict[column.name]
+        values = ctx.inputs_dict.get(column.name)
+        if values is None:
+            raise ValueError(
+                f"JoinOp '{join.id}' input '{column.id}' has no values supplied."
+            )
     else:
         values = column.data.copy()
     plan.append({"kind": "literal", "values": values})
