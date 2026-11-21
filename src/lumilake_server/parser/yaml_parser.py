@@ -93,9 +93,10 @@ import yaml
 
 from ..ops.router_ops import expand_routers
 from ..ops.util_ops import CLEARS_KEY
+from . import keyed_seed
 from .common import make_id as _make_id
 from .repeat import unroll_repeats
-from .yaml_ops.common import EmitContext, OpEntry
+from .yaml_ops.common import EmitContext, OpEntry, keyed_seeds
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
 
 SUPPORTED_OPS: frozenset[str] = frozenset(EMITTERS)
@@ -221,6 +222,32 @@ def _get_job_seed(spec: dict[str, Any]) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"workflow 'seed' must be an integer, got {value!r}")
     return value
+
+
+def check_keyed_seed_duplicates(
+    spec: dict[str, Any], inputs: dict[str, list[str]]
+) -> None:
+    """Refuse a repeated key in a key form whose column this input set
+    supplies, before the set is split into slices: a key repeated across two
+    slices would otherwise pass each slice's own check and draw one shared
+    seed."""
+    ops_block = spec.get("ops", []) or []
+    literal: dict[str, list[Any]] = {}
+    for op in ops_block if isinstance(ops_block, list) else []:
+        data = op.get("data") if isinstance(op, dict) else None
+        if isinstance(op, dict) and op.get("op") == "DataOp":
+            if isinstance(op.get("id"), str) and isinstance(data, list):
+                literal[op["id"]] = data
+    for op_id, op_kind, node, path, shared in keyed_seeds(spec, inputs):
+        values = inputs.get(node, literal.get(node))
+        if values is None:
+            continue
+        keyed_seed.check_unique(
+            op_id,
+            op_kind,
+            keyed_seed.key_cells(values, keyed_seed.key_parts(path)),
+            "shared" if shared else keyed_seed.PAIRINGS[0],
+        )
 
 
 def _compile_workflow(
