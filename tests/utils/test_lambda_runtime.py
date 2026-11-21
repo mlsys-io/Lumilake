@@ -523,8 +523,10 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
 def test_yaml_inlined_lambda_step_decodes_its_row_at_run_time() -> None:
     """A row Lambda the LLM inlines runs wrapped, so it sees the decoded value."""
     payload = _CHAIN.replace('Name: ["world"]', 'Name: [\'{"name": "nvda"}\']').replace(
-        "      def shout(inputs):\n          (greeting,) = inputs",
-        '      def shout(inputs):\n          greeting = inputs[0]["name"]',
+        "          (greeting,) = inputs",
+        "          greeting = inputs[0]\n"
+        "          if isinstance(greeting, dict):\n"
+        '              greeting = greeting["name"]',
     )
     runtime = _build(payload)
     reply = next(n for n in runtime.nodes.values() if n.task_type == "inference")
@@ -533,11 +535,11 @@ def test_yaml_inlined_lambda_step_decodes_its_row_at_run_time() -> None:
         for s in reply.data_spec["template"]["options"]["format"]["steps"]
         if s.get("function")
     ]
-    # The step reads the FormatOp's rendered text, which the worker passes as
-    # one string; a JSON row arrives decoded, plain text stays as written.
+    # A JSON row arrives decoded and plain text stays as written; the op's own
+    # function runs on both, so its result is what the step returns.
     wrapper = _run_in_inline_namespace(step["function"], "adapt")
     assert wrapper(('{"name": "nvda"}',)) == "NVDA"
-    assert wrapper(("Hello, world!",)) == "Hello, world!"
+    assert wrapper(("Hello, world!",)) == "HELLO, WORLD!"
 
 
 def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
