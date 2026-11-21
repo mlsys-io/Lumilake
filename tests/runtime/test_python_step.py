@@ -402,7 +402,7 @@ def _run_wrapper(
     runtime_mount = _materialize_task_runtime()
     exec(
         python_step.wrapper_source(
-            "op-1", declared, code, _entries(plan), mode, by, seeded
+            "op-1", declared, code, _entries(plan), mode, by
         ).replace(python_step.TASK_RUNTIME_MOUNT, runtime_mount),
         namespace,
     )
