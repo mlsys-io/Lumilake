@@ -1239,7 +1239,9 @@ class _LLMBuilder(_EmbeddingBuilder):
                     # these literals are decoded here too.
                     row_fn = cast(RowLambdaFn, op.fn)
                     row = tuple(lambda_task_helpers._decode(v) for v in literal_args)
-                    columns[label] = Column(data=ListData(items=[str(row_fn(row))]))
+                    columns[label] = Column(
+                        data=ListData(items=[lambda_task_helpers._text(row_fn(row))])
+                    )
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
                 else:
                     if api_mode:
