@@ -3,9 +3,9 @@
 A LambdaOp function is ``fn(row: tuple[str, ...]) -> str``, written as a lambda
 or as module source that defines a one-parameter ``def`` named by ``fn_name``.
 The source may put imports, constants and helper functions before that ``def``.
-It sees a fixed namespace: a small set of builtins plus ``json``, ``hashlib``,
-``re``, ``math``, ``np`` and ``pd`` (``np``/``pd`` imported only when the code
-names them), and it may ``import`` any module the container image provides.
+It sees a fixed namespace: a small set of builtins plus ``json``, ``re``,
+``math``, ``np`` and ``pd`` (``np``/``pd`` imported only when the code names
+them), and it may ``import`` any module the container image provides.
 
 The namespace fixes what names resolve; it is not a security boundary, because
 the object graph reaches every class without a single builtin. Caller-supplied
@@ -23,14 +23,11 @@ grammar so it fails at submit with a clear message rather than at run time.
 
 This file uses the standard library only. The generated FlowMesh task embeds
 its source verbatim, so the task materializes the function with the same rules
-the server validates against. It also builds the keyed-seed row function a
-parser generates, so the server and the generated task share one definition of
-the seed.
+the server validates against.
 """
 
 import ast
 import builtins
-import hashlib
 import json
 import math
 import re
@@ -94,7 +91,7 @@ INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 # Names the standalone LambdaOp namespace provides beyond the safe builtins.
 # ``np``/``pd`` are provided only when the code names them, so they are checked
 # separately; the rest are always present.
-NAMESPACE_GLOBAL_NAMES = frozenset(("json", "hashlib", "re", "math", "Message", "ops"))
+NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
 
 _SOURCE_NAME = "<lambda_op>"
 
@@ -220,9 +217,9 @@ def _check_free_names(code: str) -> None:
     if unavailable:
         raise ValueError(
             f"it references {unavailable[0]!r}, which the LambdaOp namespace"
-            " does not provide. Only the safe builtins, json, hashlib, re, math,"
-            " np, pd and Message are available; bind or import the name, or"
-            " define it as a helper"
+            " does not provide. Only the safe builtins, json, re, math, np, pd"
+            " and Message are available; bind or import the name, or define it"
+            " as a helper"
         )
 
 
@@ -320,83 +317,6 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     )
 
 
-SEED_MODULUS = 2**31
-
-
-def row_seed(
-    job_seed: int, template_id: str, round_number: int | None, key: object
-) -> int:
-    """The seed one row draws with: a pseudo-random function of the job seed,
-    the op's template id, the round and the row key, so the same four values
-    give the same draw wherever the row runs."""
-    payload = json.dumps(
-        [job_seed, template_id, round_number, key],
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % SEED_MODULUS
-
-
-_SEED_TEMPLATE = """\
-def {fn_name}(columns):
-    seeds = []
-    for index, value in enumerate(columns[0]):
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except ValueError:
-                pass
-        found = True
-        for part in {parts!r}:
-            if isinstance(value, dict) and part in value:
-                value = value[part]
-            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
-                value = value[int(part)]
-            else:
-                found = False
-                break
-        if not found:
-            raise ValueError("{template_id} row %d has no key" % index)
-        if value is None:
-            raise ValueError("{template_id} row %d has a null key" % index)
-        seeds.append(
-            _seed([{job_seed!r}, {template_id!r}, {round_number!r}, value])
-        )
-    return seeds
-
-
-def _seed(values):
-    payload = json.dumps(
-        values, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % {modulus}
-"""
-
-
-def seed_source(
-    fn_name: str,
-    job_seed: int,
-    template_id: str,
-    round_number: int | None,
-    parts: list[str],
-) -> str:
-    """The LambdaOp source of a keyed-seed function, which reads every row's
-    key out of its input column and returns the seed each row draws with, in
-    row order. It takes whole columns so a bad row names its index; the job
-    seed, template id, round and key path are baked in as constants, so the
-    body never runs user code. ``_seed`` is ``row_seed`` over one row's
-    inputs, so both sides of the runtime share one definition."""
-    return _SEED_TEMPLATE.format(
-        fn_name=fn_name,
-        parts=parts,
-        template_id=template_id,
-        job_seed=job_seed,
-        round_number=round_number,
-        modulus=SEED_MODULUS,
-    )
-
-
 def materialize(
     code: str, fn_name: str | None = None
 ) -> Callable[[tuple[Any, ...]], Any]:
@@ -411,7 +331,6 @@ def materialize(
         "__name__": "lambda_op",
         "__builtins__": {name: getattr(builtins, name) for name in SAFE_BUILTIN_NAMES},
         "json": json,
-        "hashlib": hashlib,
         "re": re,
         "math": math,
         # SDK-serialized code may name these in annotations, which run at def time.
