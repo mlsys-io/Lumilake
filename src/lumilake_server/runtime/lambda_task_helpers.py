@@ -36,6 +36,27 @@ def failure_of(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def carried_marker(row: tuple[Any, ...] | list[Any]) -> dict[str, Any] | None:
+    """The first marker a row's tuple carries, either as a cell or nested in
+    one of the row's object fields, or ``None`` when every cell is live."""
+    for cell in row:
+        marked = failure_of(cell)
+        if marked is not None:
+            return marked
+        if isinstance(cell, dict):
+            nested = next(
+                (
+                    marker
+                    for marker in map(failure_of, cell.values())
+                    if marker is not None
+                ),
+                None,
+            )
+            if nested is not None:
+                return nested
+    return None
+
+
 def reject_reserved_key(
     value: Any, op: str, row: int | None = None, originals: tuple[Any, ...] = ()
 ) -> None:

@@ -563,7 +563,14 @@ back to one value per row before the function sees its whole-list input.
 (same zip and length-1 broadcast as `row` mode) and expects a list back. The
 step emits the concatenation, in input order, one item per element, so each
 output's dependencies are known from the op alone; an empty list drops the row,
-and a non-list return fails with the op named.
+and a non-list return fails with the op named. Each emitted item also carries
+its parent's input-row index under `parent` and its own position under
+`child`, so a downstream op can tell which parent an item came from and two
+elements of one parent apart. A parent whose input row carries a failed record
+is not passed to the function: it emits one item carrying that marker, at
+`child: 0`, so every failed parent keeps a defined slot. A parent that returns
+an empty list emits nothing; the `parent` indices of the survivors are what
+tell "no children" from a lost row.
 
 ```yaml
 ops:

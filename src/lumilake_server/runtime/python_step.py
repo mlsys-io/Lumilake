@@ -59,6 +59,7 @@ decode = _RUNTIME.decode
 _walk_path = _RUNTIME._walk_path
 _rows = _RUNTIME._rows
 failure_of = _RUNTIME.failure_of
+carried_marker = _RUNTIME.carried_marker
 reject_reserved_key = _RUNTIME.reject_reserved_key
 _raw_seed = _RUNTIME._raw_seed
 materialize = _RUNTIME.materialize
@@ -303,24 +304,25 @@ def main(inputs):
                 % ({op_id!r}, len(seeds), len(rows))
             )
     items = []
-    for i, row in enumerate(rows):
-        marked = next(
-            (value for value in map(failure_of, row) if value is not None), None
-        )
-        if marked is None and seeds is not None and seeds[i] is None:
-            marked = failure_of(cells[i])
+    for index, row in enumerate(rows):
+        marked = carried_marker(row)
+        if marked is None and seeds is not None and seeds[index] is None:
+            marked = failure_of(cells[index])
         if marked is not None:
             # A marked row is not passed to the function: it keeps one defined
-            # slot and carries the marker onward.
-            items.append({{"output": marked}})
+            # slot, so its children are neither run nor lost.
+            items.append({{"output": marked, "parent": index, "child": 0}})
             continue
-        values = fn(row) if seeds is None else fn(row, seeds[i])
+        values = fn(row) if seeds is None else fn(row, seeds[index])
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"
                 % ({op_id!r}, _FN_NAME, type(values).__name__)
             )
-        items.extend({{"output": v}} for v in values)
+        items.extend(
+            {{"output": v, "parent": index, "child": child}}
+            for child, v in enumerate(values)
+        )
     return {{"items": items}}
 """
 

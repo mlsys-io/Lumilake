@@ -297,3 +297,30 @@ def test_a_user_function_returning_the_reserved_key_fails_the_task(
     writer = _lower(code="def f(row):\n    return {'_fail': 'mine'}\n")
     with pytest.raises(ValueError, match="reserved '_fail' key"):
         _run([_parse(format="json"), writer], {"Answer": ['{"a": 1}']}, tmp_path)
+
+
+def _expand(joined: str) -> dict[str, Any]:
+    code = f"def s(row):\n    return [p for p in row[0][{joined!r}].split(',') if p]\n"
+    return {
+        "id": "X",
+        "op": "LambdaOp",
+        "inputs": ["P"],
+        "mode": "expand",
+        "fn_name": "s",
+        "code": code,
+    }
+
+
+@pytest.mark.parametrize(
+    "answers, expected",
+    [
+        (['{"k": "a,b"}', "no idea", '{"k": ""}'], [(0, 0), (0, 1), (1, 0)]),
+        (['{"k": ""}', '{"k": "c"}'], [(1, 0)]),
+    ],
+    ids=["tombstone_and_identity", "no_children"],
+)
+def test_an_expand_parents_each_item_and_marks_one_tombstone(
+    answers: list[str], expected: list[tuple[int, int]], tmp_path: Path
+) -> None:
+    items = _run([_parse(format="json"), _expand("k")], {"Answer": answers}, tmp_path)
+    assert [(item["parent"], item["child"]) for item in items] == expected
