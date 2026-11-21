@@ -89,7 +89,7 @@ from typing import Any
 
 import yaml
 
-from ..ops.router_ops import expand_routers
+from ..ops.router_ops import expand_routers, reject_clears_markers
 from .common import make_id as _make_id
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
@@ -115,7 +115,6 @@ def parse_yaml_payload(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
-    expanded: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
@@ -125,8 +124,6 @@ def parse_yaml_payload(
             one; a keyed row seed derives its draw from it.
         template_ids: Rendered op id -> the id a template body wrote, so a
             keyed row seed keeps a draw across rounds.
-        expanded: The payload already holds a router's expanded branch entries,
-            which carry the ``clears_markers`` flag that expansion owns.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict,
@@ -149,7 +146,6 @@ def parse_yaml_payload(
         job_seed,
         round_number=round_number,
         template_ids=template_ids,
-        expanded=expanded,
     )
     return {
         graph_name: {
@@ -226,7 +222,6 @@ def _compile_workflow(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
-    expanded: bool = False,
 ) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
@@ -240,12 +235,9 @@ def _compile_workflow(
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
-    if not expanded:
-        _refuse_user_clears_markers(ops_block)
-    op_entries = [
-        _parse_op_entry(entry, idx)
-        for idx, entry in enumerate(expand_routers(ops_block))
-    ]
+    reject_clears_markers(ops_block, "the workflow")
+    expanded, clearing = expand_routers(ops_block)
+    op_entries = [_parse_op_entry(entry, idx) for idx, entry in enumerate(expanded)]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
     ]
@@ -301,6 +293,7 @@ def _compile_workflow(
                 job_seed,
                 round_number=round_number,
                 template_ids=template_ids,
+                clears_markers=entry.id in clearing,
             )
             for implicit in op_dict.pop("__implicit_ops__", []):
                 graph_ops[implicit["_id"]] = implicit
@@ -330,17 +323,6 @@ def _compile_workflow(
         graph_ops[op_id] = out_dict
 
     return _YamlGraphSpec(graph=graph_ops, inputs=inputs)
-
-
-def _refuse_user_clears_markers(ops_block: list[Any]) -> None:
-    """Refuse ``clears_markers`` on a user op entry: only a router branch the
-    parser expands sets it, and such an expansion is parsed with ``expanded``."""
-    for entry in ops_block:
-        if isinstance(entry, dict) and "clears_markers" in entry:
-            raise ValueError(
-                f"op '{entry.get('id')}' declares 'clears_markers', which is set"
-                " by a router's expansion and is not a workflow field"
-            )
 
 
 def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:
@@ -417,6 +399,7 @@ def _build_op_dict(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    clears_markers: bool = False,
 ) -> dict[str, Any]:
     internal_id = user_id_to_internal[entry.id]
     input_ids = [user_id_to_internal[ref] for ref in entry.inputs]
@@ -436,6 +419,7 @@ def _build_op_dict(
         job_seed=job_seed,
         round_number=round_number,
         template_ids=template_ids or {},
+        clears_markers=clears_markers,
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
     return op_dict

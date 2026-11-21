@@ -92,7 +92,7 @@ from lumilake_server.hooks.security import (
     resolve_accessible_ids,
     run_submission_guards,
 )
-from lumilake_server.ops.router_ops import expand_routers
+from lumilake_server.ops.router_ops import expand_routers, reject_clears_markers
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.parser.keyed_seed import rewrite_native_keys
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
@@ -587,6 +587,10 @@ def _dispatch_workflow_to_graph_specs(
             detail=f"workflow payload at index {idx} must be an object",
         )
     graph_payload = _native_graph_ops(workflow_payload)
+    reject_clears_markers(
+        [op for op in graph_payload.values() if isinstance(op, dict)],
+        f"the native graph at index {idx}",
+    )
     job_seed = _native_job_seed(workflow_payload)
     try:
         graph = rewrite_native_keys(graph_payload, job_seed=job_seed)
@@ -2095,7 +2099,9 @@ def _admit_subgraph(
     results: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Validate an emitted subgraph, resolve it, and register its nodes."""
-    plan = SubgraphPlan(ops=expand_routers(plan.ops), export=plan.export)
+    reject_clears_markers(plan.ops, "an emitted subgraph")
+    ops, _ = expand_routers(plan.ops)
+    plan = SubgraphPlan(ops=ops, export=plan.export)
     validate_emitted_subgraph(
         plan.ops,
         node_registry,

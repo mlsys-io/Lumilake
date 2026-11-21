@@ -30,6 +30,7 @@ class EmitContext:
     job_seed: int = 0
     round_number: int | None = None
     template_ids: dict[str, str] = field(default_factory=dict)
+    clears_markers: bool = False
 
 
 Emitter = Callable[[dict[str, Any], EmitContext], None]

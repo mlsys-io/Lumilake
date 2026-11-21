@@ -45,18 +45,21 @@ def _branch_rows(
     entry: dict[str, Any], branch_id: str, column: list[str]
 ) -> list[dict[str, Any]]:
     """Run one expanded branch's generated source over ``column``."""
-    op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
+    ops, _ = expand_routers([entry])
+    op = next(item for item in ops if item["id"] == branch_id)
     return materialize(op["code"], op["fn_name"])((column,))
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
-    for op in expand_routers([_router()]):
+    ops, clearing = expand_routers([_router()])
+    for op in ops:
         assert (op["op"], op["mode"], op["inputs"]) == ("LambdaOp", "list", ["norm"])
-    assert [op["id"] for op in expand_routers([_router()])] == [
+    assert [op["id"] for op in ops] == [
         "route.patient",
         "route.diagnose",
         "route.test",
     ]
+    assert clearing == {op["id"] for op in ops}
 
 
 def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
