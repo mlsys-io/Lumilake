@@ -12,6 +12,7 @@ from lumilake_server.ops import (
     Op,
     ParseOp,
 )
+from lumilake_server.runtime.lambda_task_helpers import failure_of
 from lumilake_server.runtime.runtime_graph.outputs import (
     OpOutput,
     op_output,
@@ -19,15 +20,28 @@ from lumilake_server.runtime.runtime_graph.outputs import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def _carries_markers(op: Op) -> bool:
+def _carries_markers(
+    op: Op, inputs_dict: dict[str, list[str]], cache: dict[str, bool]
+) -> bool:
     """Whether an op's output can hold a failed-record marker: a ``ParseOp``
-    emits one, and every other op passes on the markers of what it reads,
-    except a router branch that drops them (its rule and default branches)."""
+    emits one, an ``InputOp`` carries one of its literal values, and every
+    other op passes on the markers of what it reads, except a router branch
+    that drops them (its rule and default branches). ``cache`` holds each
+    op's answer for one build, so shared ancestors are walked once."""
+    if op.id in cache:
+        return cache[op.id]
     if isinstance(op, ParseOp):
-        return True
-    if isinstance(op, LambdaOp) and op.clears_markers:
-        return False
-    return any(_carries_markers(inp) for inp in op.inputs)
+        carries = True
+    elif isinstance(op, InputOp):
+        carries = any(
+            failure_of(value) is not None for value in inputs_dict.get(op.name, [])
+        )
+    elif isinstance(op, LambdaOp) and op.clears_markers:
+        carries = False
+    else:
+        carries = any(_carries_markers(inp, inputs_dict, cache) for inp in op.inputs)
+    cache[op.id] = carries
+    return carries
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -53,6 +67,9 @@ class _RuntimeGraphBuilderBase:
         # The workflow being built, so every read site describes the same one.
         self._inputs_dict: dict[str, list[str]] = {}
         self._graph_dict: dict[str, Op] = {}
+        # Each op's marker answer for one build, so guarded columns of a shared
+        # ancestor cost one walk.
+        self._marker_cache: dict[str, bool] = {}
 
     def _create_runtime_op(
         self,
@@ -351,7 +368,9 @@ class _RuntimeGraphBuilderBase:
     ) -> None:
         """Refuse a model-op column that reads a source carrying failed-record
         markers, which the model would render as an ordinary value."""
-        if upstream is None or not _carries_markers(upstream):
+        if upstream is None or not _carries_markers(
+            upstream, self._inputs_dict, self._marker_cache
+        ):
             return
         raise ValueError(
             f"Column '{label}' of model op '{consumer_id}' reads '{upstream.id}',"

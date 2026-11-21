@@ -27,6 +27,7 @@ class RuntimeGraphBuilder(_MessagesBuilder):
         input_ops_by_id = {op.id: op for op in compiled_graph.graph.input_ops.values()}
         self._inputs_dict = inputs_dict
         self._graph_dict = graph_dict
+        self._marker_cache = {}
         self._flattened_vlm_ids = self._flattened_vision_ids(graph_dict)
 
         visited: set[str] = set()

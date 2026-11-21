@@ -1074,6 +1074,11 @@ class _LLMBuilder(_EmbeddingBuilder):
                     }
                     if len(inputs_dict[op.name]) > 1:
                         ancestor_row_counts[op.id] = len(inputs_dict[op.name])
+                self._guard_marked_column(
+                    consumer_id=llm_op_id,
+                    label=op.name,
+                    upstream=op,
+                )
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, DataOp):

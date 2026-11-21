@@ -638,8 +638,10 @@ columns stay aligned.
   a rowwise seed or aggregate table) may not read such a source: the job is
   refused at submit when a rowwise column, aggregate table, rowwise seed or
   embedding content reads one. Read a router's rule or default branch instead,
-  so failed records never reach the model. A cross-round reference is refused
-  the same way when the bound value is a marker.
+  so failed records never reach the model. The rule covers an earlier round's
+  output as well: a reference that binds a marker is refused when a model op
+  reads it, directly or through any op except a router's rule or default
+  branch.
 
 `_fail` is reserved: a user function that returns an object carrying it fails
 the task, so a user value is never mistaken for a marker.
