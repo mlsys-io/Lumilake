@@ -499,13 +499,14 @@ def test_forward_grouped_list_aggregate_column_materializes():
     row = ops[0]["aggregate_table"][0]
     assert row["node"] == materializer_id
     assert row["path"] == "items.output"
-    # The materializer is a row-aligned LambdaOp decoding each row's JSON.
+    # The materializer is a row-aligned LambdaOp passing each row's decoded
+    # column through.
     materializer = ops[1]
     assert materializer["id"] == materializer_id
     assert materializer["op"] == "LambdaOp"
     assert materializer["inputs"] == [input_id]
     assert materializer["mode"] == "aligned"
-    assert "json.loads" in materializer["code"]
+    assert "return columns[0]" in materializer["code"]
 
 
 def test_forward_grouped_list_materializer_parses_through_yaml_parser():
