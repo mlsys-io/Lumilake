@@ -339,17 +339,19 @@ values are inlined as the seed list and take no `path`.
 
 `rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives
 each row's seed instead of reading one. The node and path name a column that
-holds each row's key. A key read under a path keeps its JSON type: a cell that
-is JSON object or array text is parsed, the path drills into it, and the
-drilled value is the key as it stands, the cell rule a `JoinOp` reads its `by`
-value under, so a key written `"123"` stays the string and draws a different
-seed from the number `123`, and a null key there fails the job. A key that is
-the whole cell, `items.output` and every forwarded key included, is read as its
-text, so a scalar whole-cell key is its string form and a null one is the text
-`null`, which draws like any other string. The seed is the first 8 bytes of
-SHA-256 over `[seed, op id, round, key]` as canonical JSON, read big-endian and
-reduced mod 2^31; canonical JSON here is `json.dumps` with sorted keys, no
-whitespace separators, non-ASCII characters left unescaped, encoded as UTF-8.
+holds each row's key, and the path names dict fields only, so it takes no list
+index, unlike a `JoinOp` `by`. A key read under a path keeps its JSON type: a
+cell that is JSON object or array text is parsed, the path drills into it, and
+the drilled value is the key as it stands, the cell rule a `JoinOp` reads its
+`by` value under, so a key written `"123"` stays the string and draws a
+different seed from the number `123`, and a null key there fails the job. A key
+that is the whole cell, `items.output` and every forwarded key included, is
+read as its text, so a scalar whole-cell key is its string form and a null one
+is the text `null`, which draws like any other string. The seed is the first 8
+bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON, read
+big-endian and reduced mod 2^31; canonical JSON here is `json.dumps` with
+sorted keys, no whitespace separators, non-ASCII characters left unescaped,
+encoded as UTF-8.
 The job's top-level `seed` (default 0), the op id as written and the dynamic
 round number when the op runs in a dynamic round are the other inputs, so two
 rows with the same key draw the same seed whatever their batch or position, and
