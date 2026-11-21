@@ -78,7 +78,7 @@ def _lower(**fields: Any) -> dict[str, Any]:
         "op": "LambdaOp",
         "inputs": ["P"],
         "fn_name": "f",
-        "code": "def f(row):\n    return 'ran ' + row[0]\n",
+        "code": "def f(row):\n    return 'ran ' + str(row[0])\n",
         **fields,
     }
 
@@ -211,14 +211,11 @@ def test_a_router_branch_clears_markers_only_where_its_own_expansion_set_it() ->
 @pytest.mark.parametrize(
     "carrying, key",
     [
-        (_lower(code="def f(row):\n    return 'ran ' + str(row[0])\n"), "value"),
+        (_lower(), "value"),
         (
             _lower(
                 mode="aligned",
-                code=(
-                    "def f(columns):\n"
-                    "    return ['ran ' + str(c) for c in columns[0]]\n"
-                ),
+                code="def f(c):\n    return ['ran ' + str(v) for v in c[0]]\n",
             ),
             "output",
         ),
@@ -228,8 +225,8 @@ def test_a_router_branch_clears_markers_only_where_its_own_expansion_set_it() ->
 def test_a_row_or_aligned_lambda_keeps_a_marked_row_in_place(
     carrying: dict[str, Any], key: str, tmp_path: Path
 ) -> None:
-    # Each column value arrives decoded, so a parsed record reaches the
-    # function as its object and only a returned marker stays a marker.
+    # Each column arrives decoded, so a parsed record reaches the function as
+    # its object and only a marker the function returns stays a marker.
     items = _run(
         [_parse(format="json"), carrying],
         {"Answer": ["no idea", '{"a": 1}', "bad"]},
