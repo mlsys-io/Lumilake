@@ -98,6 +98,11 @@ class _VisionBuilder(_RetrievalBuilder):
                             f" references node '{node_ref}' without a path;"
                             " only InputOp refs may omit it."
                         )
+                    self._guard_marked_column(
+                        consumer_id=llm_op_id,
+                        label=label,
+                        upstream=graph_dict.get(node_ref),
+                    )
                     columns.append(
                         self._node_ref_column(
                             consumer_id=llm_op_id,
