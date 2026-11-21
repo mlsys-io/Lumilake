@@ -240,7 +240,7 @@ def _refuse_non_string_yaml_keys(value: Any, idx: int, path: str) -> None:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
                         f"Invalid workflow YAML for index {idx}: mapping key "
-                        f"{key!r} at {path}.{key} is not a string; quote the key"
+                        f"{key!r} at {path} is not a string; quote the key"
                     ),
                 )
             _refuse_non_string_yaml_keys(item, idx, f"{path}.{key}")
