@@ -1106,17 +1106,17 @@ async def test_dynamic_api_planner_drives_two_rounds(
 
 
 @pytest.mark.anyio
-async def test_dynamic_api_first_dispatched_round_is_round_one(
-    app: FastAPI, job_routes: Any, fake_planner: Any
+async def test_dynamic_proposer_first_emitted_subgraph_is_round_one(
+    app: FastAPI, job_routes: Any
 ) -> None:
-    """The planner pass at index 0 dispatches no graph, so the first graph runs
-    as round 1, the number the template loop gives it, and a keyed seed in it
-    draws with 1."""
-    fake_planner([_SEEDED_SUBGRAPH_PLAN, {"next": "STOP"}])
-    record = await _submit_and_run(app, job_routes, _API_DYNAMIC_YAML)
+    """The proposer's opening round draws over an empty subgraph, so the first
+    subgraph it emits runs as round 1 and a keyed seed in it draws with 1."""
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [_SEEDED_SUBGRAPH_PLAN, {"next": "STOP"}]
+    record = await _submit_and_run(app, job_routes, _VALID_DYNAMIC_YAML)
 
     assert record.status == "completed", record.error
-    (dispatched,) = job_routes._fake_runtime_server.executed_graphs[0].values()
+    (dispatched,) = fake_server.executed_graphs[1].values()
     generated = next(
         op
         for op in dispatched.iter_ops(LambdaOp)

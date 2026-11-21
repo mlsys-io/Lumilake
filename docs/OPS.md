@@ -383,21 +383,19 @@ same seed, for example to compare two specs on one paired draw.
     pairing: shared
 ```
 
-The round is the semantic round a job's loop is on, counted one-based and
-counts only the rounds that dispatch a graph: a planning step that draws
-nothing does not take a round number, and the agent-driven and the template
-loops number their rounds the same way. Renumbering rounds changes every
-draw, so a rerun or any later coalescing must keep a job's semantic round
-numbers. A retry of a failed task recomputes the same `[seed, op id, round,
-key]` and so draws the same seed: it replays the computation, it does not ask
-for a new sample. A workflow that wants a fresh sample after a failure puts the
-attempt into its identity, as a later round or an explicit attempt field of the
-key. Two specs draw the same values exactly when they share the job seed, the
-logical op id, the round and the key; changing any of them is a deliberate
-unpairing. An op that draws `n > 1` samples in its one seeded request draws all
-n from that request, so the set is reproducible while the individual samples
-are not separately addressable: a per-sample seed would need a sample index the
-worker does not report.
+The round is the round a subgraph runs in, counted from one; the proposer's
+opening round and the API planner's opening pass run no user op, so no keyed
+draw takes their number. Renumbering rounds changes every draw, so a rerun or
+any later coalescing must keep a job's round numbers. A retry of a failed task
+recomputes the same `[seed, op id, round, key]` and so draws the same seed: it
+replays the computation, it does not ask for a new sample. A workflow that wants
+a fresh sample after a failure puts the attempt into its identity, as a later
+round or an explicit attempt field of the key. Two specs draw the same values
+exactly when they share the job seed, the logical op id, the round and the key;
+changing any of them is a deliberate unpairing. An op that draws `n > 1`
+samples in its one seeded request draws all n from that request, so the set is
+reproducible while the individual samples are not separately addressable: a
+per-sample seed would need a sample index the worker does not report.
 
 ```yaml
 - id: Answer
