@@ -1,5 +1,7 @@
 """Router expansion and template-driven rounds through the production path."""
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -15,7 +17,7 @@ from lumilake_server.dynamic.template import (
 )
 from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.utils.lambda_runtime import materialize
+from lumilake_server.runtime import python_step
 
 _ROWS = [
     {"case_id": "a", "text": "hello"},
@@ -41,11 +43,24 @@ def _router(**extra: Any) -> dict[str, Any]:
 
 
 def _branch_rows(
-    entry: dict[str, Any], branch_id: str, column: list[Any]
+    tmp_path: Path, entry: dict[str, Any], branch_id: str, column: list[Any]
 ) -> list[dict[str, Any]]:
-    """Run one expanded branch's generated source over ``column``."""
-    op = next(item for item in expand_routers([entry])[0] if item["id"] == branch_id)
-    return materialize(op["code"], op["fn_name"])((column,))
+    """Run one expanded branch through the generated list main over ``column``,
+    whose rows travel as the JSON text a workflow input carries."""
+    op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
+    values = [v if isinstance(v, str) else json.dumps(v) for v in column]
+    source = python_step.wrapper_source(
+        op["id"],
+        op["fn_name"],
+        op["code"],
+        [{"kind": "literal", "values": values}],
+        "list",
+    )
+    mount = tmp_path / "runtime.py"
+    mount.write_bytes(python_step.runtime_blob().body)
+    namespace: dict[str, Any] = {}
+    exec(source.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
+    return [item["output"] for item in namespace["main"]({})["items"]]
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
@@ -62,18 +77,20 @@ def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
     assert [op["id"] in error_cleared for op in error] == [True, True, True, False]
 
 
-def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
-    # A branch function is a list-mode LambdaOp, so its source column reaches it
-    # already decoded, one row object per element; no rows yields none.
-    assert _branch_rows(_router(), "route.patient", [_ROWS])[0] == _ROWS[0]
-    assert _branch_rows(_router(), "route.patient", []) == []
+def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest(
+    tmp_path: Path,
+) -> None:
+    # The generated list main hands a branch its source column decoded, one row
+    # object per element, from the JSON text a workflow input carries; no rows
+    # yields none.
     for branch_id, expected in (
         ("route.patient", ["a"]),
         ("route.diagnose", ["b"]),
         ("route.test", ["c", "d"]),
     ):
-        got = _branch_rows(_router(), branch_id, list(_ROWS))
+        got = _branch_rows(tmp_path, _router(), branch_id, list(_ROWS))
         assert [row["case_id"] for row in got] == expected
+    assert _branch_rows(tmp_path, _router(), "route.patient", []) == []
 
 
 def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
