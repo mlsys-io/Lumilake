@@ -112,6 +112,75 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
     )
 
 
+_SAMPLING_TASK_TYPES: frozenset[str] = frozenset(
+    {"inference", "diffusion", "omni_text2image"}
+)
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
+    """The sampler settings of a node that generates text or images, or
+    ``None`` when the node's output is a pure function of its inputs: a
+    Python step, a retrieval, an embedding, a classification, or an API
+    request other than a chat completion."""
+    if op.task_type in _SAMPLING_TASK_TYPES:
+        return op.inference_spec
+    if op.task_type == "api":
+        body = op.api_spec.get("json")
+        if isinstance(body, dict) and "messages" in body:
+            return body
+    return None
+
+
+def _decodes_deterministically(sampler: dict[str, Any]) -> bool:
+    """Whether the node's decoder is greedy or beam search. An absent
+    temperature is not greedy: the engine then samples at its own default, so
+    only an explicit ``temperature: 0`` or ``do_sample: false`` counts."""
+    if sampler.get("do_sample") is False:
+        return True
+    num_beams = _number(sampler.get("num_beams"))
+    if num_beams is not None and num_beams > 1:
+        return True
+    return _number(sampler.get("temperature")) == 0.0
+
+
+def _has_bound_seed(op: RuntimeOp, sampler: dict[str, Any]) -> bool:
+    """Whether every draw is pinned: a seed in the sampler settings, which a
+    ``null`` per-row entry falls back to, or a per-row seed column."""
+    if sampler.get("seed") is not None:
+        return True
+    seeds = op.data_spec.get("seeds")
+    if isinstance(seeds, dict):
+        return True
+    if isinstance(seeds, list):
+        return bool(seeds) and all(value is not None for value in seeds)
+    return False
+
+
+def _dedupe_scope(
+    op: RuntimeOp, logical_ops: dict[str, set[str]]
+) -> tuple[object, ...] | None:
+    """The per-node part of the dedupe key, or ``None`` when the node must not
+    be merged. A sampling node without a bound seed draws from a distribution
+    independently of its inputs, so it keeps its own key; a seeded node merges
+    only with the same logical op's nodes. Python steps stay eligible, as their
+    output function is the user's to keep pure."""
+    sampler = _sampling_spec(op)
+    if sampler is None or _decodes_deterministically(sampler):
+        return ("pure",)
+    if not _has_bound_seed(op, sampler):
+        return None
+    owners = logical_ops.get(op.node_id)
+    if not owners:
+        return None
+    return ("seeded", *sorted(owners))
+
+
 def _dedupe_ordered(items: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -167,10 +236,17 @@ def _dedupe_runtime_graph(
 ) -> tuple[RuntimeGraph, dict[str, str]]:
     """Merge identical runtime ops with identical dependencies (non-output nodes).
 
+    Only nodes whose output is a function of their inputs are merged, see
+    ``_dedupe_scope``.
+
     Returns the deduplicated graph and the ``node_id -> canonical node_id``
     mapping (identity for nodes that were not deduplicated).
     """
     output_nodes = set(graph.output_node_map)
+    logical_ops: dict[str, set[str]] = {}
+    for op_id, runtime_ids in graph.dsl_to_runtime.items():
+        for runtime_id in runtime_ids:
+            logical_ops.setdefault(runtime_id, set()).add(op_id)
     canonical_by_signature: dict[tuple[object, ...], str] = {}
     mapping: dict[str, str] = {}
 
@@ -178,7 +254,12 @@ def _dedupe_runtime_graph(
         if node_id in output_nodes:
             mapping[node_id] = node_id
             continue
-        signature = _runtime_signature(graph.nodes[node_id], mapping)
+        op = graph.nodes[node_id]
+        scope = _dedupe_scope(op, logical_ops)
+        if scope is None:
+            mapping[node_id] = node_id
+            continue
+        signature = (*scope, *_runtime_signature(op, mapping))
         canonical = canonical_by_signature.get(signature)
         if canonical is None:
             canonical_by_signature[signature] = node_id
