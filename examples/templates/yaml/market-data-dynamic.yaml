@@ -148,13 +148,13 @@ library:
     data_spec:
       type: lumid
       mode: sql
+      rows: one
       output_format: jsonl
       verify: false
       template: |-
         SELECT symbol, name, sector, industry, employees, market_cap
         FROM reference.profile
         WHERE symbol = '{symbol}'
-        ORDER BY symbol
       params:
         - label: symbol
           node: Symbols
