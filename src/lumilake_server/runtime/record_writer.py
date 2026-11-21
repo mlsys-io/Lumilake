@@ -13,11 +13,13 @@ A record key is declared once, on the op or input that carries it
 model op inherit their single keyed input's key by position. A list-mode op, a
 reduce or an op with no keyed input is one whole-op record.
 
-An entry names the signature digest of the record it read at the same position,
-so lineage walks a final record back through every record and value it depended
-on. Per-row data enters as those inputs, and a per-row seed enters as that
-record's realization; the op spec digest covers only the computation, so two
-slices of one op store the same records under the same keys.
+An entry names the signature digest of every record it read: a keyed record
+names the record at its own position, and a whole-op record names every record
+of every input in order. Lineage then walks a final record back through every
+record and value it depended on. Per-row data enters as those inputs, and a
+per-row seed enters as that record's realization; the op spec digest covers only
+the computation, so two slices of one op store the same records under the same
+keys.
 
 Writing is off unless the job asked for it, and an archive failure never fails a
 job whose values were already computed and returned.
@@ -250,7 +252,9 @@ class RecordWriter:
             value = node_records.value_at(position)
             failed = is_marker(value)
             value_hash = None if failed else digest_of(value)
-            input_digests, input_values = _position_inputs(inputs, position)
+            input_digests, input_values = _position_inputs(
+                inputs, position, keyed=plan.keyed
+            )
             realization = _realization(plan, node_records, position)
             signature = failed_record_digest if failed else entry_digest
             digest = signature(
@@ -325,28 +329,31 @@ def record_key_at(keys: list[str | None] | None, position: int) -> str | None:
 
 
 def _position_inputs(
-    inputs: Sequence[RecordInput], position: int
+    inputs: Sequence[RecordInput], position: int, *, keyed: bool
 ) -> tuple[list[str], list[str]]:
-    """What one record read: for each keyed input, the record at this row's
-    position; for each input of one whole-op record, that record.
+    """What one record read, in its inputs' declared order.
 
-    The digests are ordered by the node's declared inputs, then by position, so
-    a reader that probed before running computes the same signature."""
+    A keyed record reads one record of a keyed input, the one at its own
+    position, and every record of an input that carries none. A whole-op record
+    reads every record of every input, keyed or not, in order, so a change in
+    any input row moves its signature. The digests are ordered by the node's
+    declared inputs, then by position, so a reader that probed before running
+    computes the same signature."""
     digests: list[str] = []
     values: list[str] = []
+
+    def take(found: tuple[str, str] | None) -> None:
+        if found is None:
+            return
+        digests.append(found[0])
+        values.append(found[1])
+
     for input_node in inputs:
-        if input_node.keyed:
-            found = input_node.records[position]
-            if found is None:
-                continue
-            digests.append(found[0])
-            values.append(found[1])
+        if keyed and input_node.keyed:
+            take(input_node.records[position])
             continue
         for found in input_node.records:
-            if found is None:
-                continue
-            digests.append(found[0])
-            values.append(found[1])
+            take(found)
     return digests, values
 
 
