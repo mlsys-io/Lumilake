@@ -214,11 +214,14 @@ def test_a_router_branch_clears_markers_only_where_its_own_expansion_set_it() ->
 @pytest.mark.parametrize(
     "carrying, key",
     [
-        (_lower(), "value"),
+        (_lower(code="def f(row):\n    return 'ran ' + str(row[0])\n"), "value"),
         (
             _lower(
                 mode="aligned",
-                code="def f(columns):\n    return ['ran ' + c for c in columns[0]]\n",
+                code=(
+                    "def f(columns):\n"
+                    "    return ['ran ' + str(c) for c in columns[0]]\n"
+                ),
             ),
             "output",
         ),
@@ -228,13 +231,15 @@ def test_a_router_branch_clears_markers_only_where_its_own_expansion_set_it() ->
 def test_a_row_or_aligned_lambda_keeps_a_marked_row_in_place(
     carrying: dict[str, Any], key: str, tmp_path: Path
 ) -> None:
+    # Each column value arrives decoded, so a parsed record reaches the
+    # function as its object and only a returned marker stays a marker.
     items = _run(
         [_parse(format="json"), carrying],
         {"Answer": ["no idea", '{"a": 1}', "bad"]},
         tmp_path,
     )
     assert items[0][key]["_fail"]["reason"] == "no JSON object"
-    assert items[1][key] == 'ran {"a": 1}'
+    assert items[1][key] == "ran {'a': 1}"
     assert items[2][key]["_fail"]["reason"] == "no JSON object"
 
 
@@ -242,12 +247,15 @@ def test_a_list_lambda_emits_every_value_of_a_returned_generator(
     tmp_path: Path,
 ) -> None:
     lister = _lower(
-        mode="list", code="def f(items):\n    return (v.upper() for v in items[0])\n"
+        mode="list",
+        code="def f(items):\n    return (v['a'].upper() for v in items[0])\n",
     )
     items = _run(
-        [_parse(format="json"), lister], {"Answer": ['{"a": 1}', '{"b": 2}']}, tmp_path
+        [_parse(format="json"), lister],
+        {"Answer": ['{"a": "x"}', '{"a": "y"}']},
+        tmp_path,
     )
-    assert [item["output"] for item in items] == ['{"A": 1}', '{"B": 2}']
+    assert [item["output"] for item in items] == ["X", "Y"]
 
 
 @pytest.mark.parametrize(
@@ -280,9 +288,10 @@ def test_a_router_error_branch_passes_its_markers_and_refuses_a_new_one(
 
 
 def test_a_router_without_an_error_branch_sends_a_marked_row_nowhere() -> None:
+    # A branch is a list-mode LambdaOp, so its column reaches it decoded.
     ops, _ = expand_routers([_router()])
     for op in ops:
-        assert materialize(op["code"], op["fn_name"])(([_MARKED],)) == []
+        assert materialize(op["code"], op["fn_name"])(([json.loads(_MARKED)],)) == []
 
 
 def test_a_user_function_returning_the_reserved_key_fails_the_task(
