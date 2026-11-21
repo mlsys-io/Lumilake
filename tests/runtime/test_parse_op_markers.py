@@ -206,8 +206,9 @@ def test_a_router_branch_clears_markers_only_where_its_own_expansion_set_it() ->
     router = _router(inputs=["L"], error_branch=True)
     ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
     assert _build(ops, values) is not None
+    user = _lower(_clears_markers=True)
     with pytest.raises(ValueError, match="rule or default"):
-        _build([*ops[:-1], _model_reading("R.error")], values)
+        _build([_parse(format="json"), user, _model_reading("L")], values)
 
 
 @pytest.mark.parametrize(
