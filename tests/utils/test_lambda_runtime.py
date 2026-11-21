@@ -134,6 +134,10 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         )
     with pytest.raises(ValueError, match="imports 'os'"):
         lambda_runtime.validate_inline_source("import os\ndef f(a):\n    return a", "f")
+    with pytest.raises(ValueError, match="annotates a top-level assignment"):
+        lambda_runtime.validate_inline_source(
+            "PROMPT: str = 'x'\ndef f(a):\n    return a", "f"
+        )
 
 
 @pytest.mark.parametrize(

@@ -429,6 +429,14 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
         )
+    if any(isinstance(stmt, ast.AnnAssign) for stmt in tree.body):
+        raise ValueError(
+            "it annotates a top-level assignment, which a LambdaOp that feeds an"
+            " LLM cannot use inline: the generated wrapper runs the code as a"
+            " module, whose annotations land in the namespace before its"
+            " function does. Assign without an annotation, or move this logic to"
+            " a LambdaOp that runs as its own python task"
+        )
     top_level = _top_level_bindings(code)
     collisions = sorted(top_level & _INLINE_WRAPPER_NAMES)
     if collisions:
