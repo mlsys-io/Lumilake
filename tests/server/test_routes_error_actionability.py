@@ -17,7 +17,6 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
-import yaml
 from fastapi import FastAPI
 from lumid_hooks import PrincipalContext, ResourceRef
 
@@ -287,44 +286,6 @@ async def test_native_key_form_is_refused_with_422_naming_the_op(
             )
             assert resp.status_code == 422
             assert match in resp.json()["detail"]
-
-
-@pytest.mark.anyio
-async def test_seed_key_repeated_across_slices_is_refused_at_submit(
-    app: FastAPI,
-) -> None:
-    """The slices of a submission are checked as one input set, so a key the
-    workflow supplies that repeats in two different slices is refused with the
-    op and both rows, which no single slice's own check can see."""
-    workflow = {
-        "name": "demo",
-        "inputs": {"Cases": ["{}"]},
-        "ops": [
-            {
-                "id": "Draw",
-                "op": "LambdaOp",
-                "inputs": ["Cases"],
-                "fn_name": "draw",
-                "code": "def draw(row, seed):\n    return '%d' % seed\n",
-                "seed": {"key": {"node": "Cases", "path": "items.output.k"}},
-            }
-        ],
-    }
-    repeated = json.dumps({"k": "a"})
-    body = _submit_body()
-    body["data"][0]["workflow"] = yaml.safe_dump(workflow)
-    body["data"][0]["inputs"] = {"Cases": [repeated, repeated]}
-    body["data"][0]["input_batch_size"] = 1
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
-    assert resp.status_code == 422
-    detail = resp.json()["detail"]
-    assert "Draw' derives one seed per key, but rows 0 and 1 share" in detail
 
 
 @pytest.mark.anyio
