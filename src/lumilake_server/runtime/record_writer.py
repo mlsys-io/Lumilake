@@ -70,7 +70,7 @@ class RecordInput:
         records: Sequence[tuple[str, str] | None],
     ) -> None:
         self.keyed = keyed
-        self.records = list(records)
+        self.records = records
 
 
 class NodeRecords:
@@ -92,7 +92,7 @@ class NodeRecords:
     def value_at(self, position: int) -> Any:
         """The value of the record at ``position``; a node's unkeyed record is
         its whole value list."""
-        return self.values[position] if self.keyed else list(self.values)
+        return self.values[position] if self.keyed else self.values
 
     def identity_at(self, position: int) -> tuple[str, str] | None:
         """The record at ``position`` as a consumer names it: its signature
