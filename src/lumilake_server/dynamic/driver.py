@@ -33,11 +33,7 @@ from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
 )
-from lumilake_server.utils.retrieval_order import (
-    ROWS_KEY,
-    order_by_problem,
-    validate_rows,
-)
+from lumilake_server.utils.retrieval_order import row_order_problem
 
 _OBSERVATION_TEMPLATE_FILE = Path(__file__).with_name("observation_template.py")
 
@@ -191,12 +187,9 @@ def validate_library(library: dict[str, dict[str, Any]] | None) -> None:
         data_spec = template.get("data_spec")
         if not isinstance(data_spec, dict):
             continue
-        rows_problem = validate_rows(data_spec.get(ROWS_KEY))
-        order_problem = order_by_problem(data_spec)
-        if rows_problem is not None or order_problem is not None:
-            raise DriverProtocolError(
-                f"library entry {ref!r} {rows_problem or order_problem}"
-            )
+        problem = row_order_problem(data_spec)
+        if problem is not None:
+            raise DriverProtocolError(f"library entry {ref!r} {problem}")
 
 
 _LIBRARY_REF_OVERRIDES = frozenset({"id", "inputs", "op"})

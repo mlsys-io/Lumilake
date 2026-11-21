@@ -6,6 +6,8 @@ returns at most one row per parameter row declares ``rows: one`` instead; the
 runtime then checks that bound when it reads the result.
 """
 
+from typing import Any
+
 import sqlparse
 from sqlparse.sql import Parenthesis, TokenList
 from sqlparse.tokens import Keyword
@@ -17,32 +19,28 @@ ROWS_KEY = "rows"
 _ORDER_BY = "ORDER BY"
 
 
-def order_by_problem(data_spec: dict[str, object]) -> str | None:
-    """Describe why a retrieval spec lacks a deterministic row order, or
-    return ``None`` when its order is defined or does not matter."""
-    mode = data_spec.get("mode")
-    if mode not in {"sql", "agent"}:
+def row_order_problem(data_spec: dict[str, Any]) -> str | None:
+    """Describe the first problem a retrieval spec has with its row order.
+
+    Returns ``None`` when the declared ``rows`` value is valid and the spec's
+    order is either defined or does not matter.
+    """
+    rows = data_spec.get(ROWS_KEY)
+    if rows is not None and rows != ROWS_ONE:
+        return f"'rows' must be '{ROWS_ONE}' when declared (got {rows!r})"
+    if data_spec.get("mode") != "sql" or rows == ROWS_ONE:
         return None
-    if data_spec.get(ROWS_KEY) == ROWS_ONE:
-        return None
-    template = data_spec.get("template") if mode == "sql" else None
+    template = data_spec.get("template")
     if not isinstance(template, str):
         return None
     if sql_has_top_level_order_by(template):
         return None
     return (
-        f"a mode: {mode} retrieval returns rows in no defined order without a "
+        "a mode: sql retrieval returns rows in no defined order without a "
         "top-level ORDER BY. End the query with an ORDER BY that breaks ties "
         "(for example on the primary key), or declare 'rows: one' when each "
         "parameter row returns at most one row"
     )
-
-
-def validate_rows(value: object) -> str | None:
-    """Reject a ``rows`` value other than ``"one"``."""
-    if value is None or value == ROWS_ONE:
-        return None
-    return f"'rows' must be '{ROWS_ONE}' when declared (got {value!r})"
 
 
 def sql_has_top_level_order_by(query: str) -> bool:
@@ -76,6 +74,9 @@ def multi_row_item_indexes(items: object) -> list[int]:
         return []
     multi: list[int] = []
     for position, item in enumerate(items):
-        if isinstance(item, dict) and item.get("rows", 0) > 1:
+        if not isinstance(item, dict):
+            continue
+        rows = item.get("rows", 0)
+        if isinstance(rows, int) and rows > 1:
             multi.append(item.get("index", position))
     return multi

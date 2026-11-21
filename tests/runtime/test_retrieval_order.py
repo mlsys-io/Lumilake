@@ -24,8 +24,9 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
 
-def _spec(template: str, extra: str = "") -> dict:
-    """Parse one retrieval whose only param is the workflow's Stock input."""
+def _graph(template: str, extra: str = "") -> Graph:
+    """Parse one retrieval whose only param is the workflow's Stock input, and
+    load the graph a submit loads so the node-level row-order check runs."""
     doc = (
         "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
         '  - id: "Retrieve"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
@@ -34,7 +35,7 @@ def _spec(template: str, extra: str = "") -> dict:
         '      params:\n        - label: symbol\n          node: "Stock"\n'
         'outputs:\n  - name: out\n    ref: "Retrieve"\n'
     )
-    return parse_yaml_payload(doc)["order"]
+    return Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
 
 
 @pytest.mark.parametrize(
@@ -47,14 +48,14 @@ def _spec(template: str, extra: str = "") -> dict:
     ids=["no-order", "subquery-order", "window-order"],
 )
 def test_only_the_outer_order_by_counts(template: str) -> None:
-    with pytest.raises(ValueError, match="'Retrieve'"):
-        _spec(template)
+    with pytest.raises(ValueError, match="DataRetrievalOp '.*_Retrieve_.*'"):
+        _graph(template)
 
 
 def test_rows_one_survives_the_native_round_trip() -> None:
     """A declared single-row lookup needs no ORDER BY, and keeps its
     declaration through serialization and back."""
-    graph = Graph.from_json(_spec("SELECT a FROM t", "      rows: one\n")["graph"])
+    graph = _graph("SELECT a FROM t", "      rows: one\n")
     native = Graph.from_json(
         {oid: op.serialize() for oid, op in graph.as_dict().items()}
     )
@@ -64,14 +65,12 @@ def test_rows_one_survives_the_native_round_trip() -> None:
 
 def test_rows_value_is_checked() -> None:
     with pytest.raises(ValueError, match="'rows' must be 'one'"):
-        _spec("SELECT a FROM t", "      rows: all\n")
+        _graph("SELECT a FROM t", "      rows: all\n")
 
 
 def _rows_one_runtime() -> tuple[RuntimeGraph, str]:
     runtime = RuntimeGraphBuilder().build(
-        Graph.from_json(_spec("SELECT a FROM t", "      rows: one\n")["graph"]).compile(
-            Stock=["NVDA"]
-        )
+        _graph("SELECT a FROM t", "      rows: one\n").compile(Stock=["NVDA"])
     )
     (node_id,) = [
         nid for nid, n in runtime.nodes.items() if n.task_type == "data_retrieval"
