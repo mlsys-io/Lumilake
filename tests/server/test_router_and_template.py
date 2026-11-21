@@ -48,13 +48,11 @@ def _branch_rows(
     """Run a branch's list step over ``column`` as JSON text."""
     op = next(item for item in expand_routers([entry])[0] if item["id"] == branch_id)
     plan = [{"kind": "literal", "values": [json.dumps(v) for v in column]}]
-    source = python_step.wrapper_source(
-        op["id"], op["fn_name"], op["code"], plan, "list"
-    )
+    code = python_step.wrapper_source(op["id"], op["fn_name"], op["code"], plan, "list")
     mount = tmp_path / "runtime.py"
     mount.write_bytes(python_step.runtime_blob().body)
     namespace: dict[str, Any] = {}
-    exec(source.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
+    exec(code.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
     return [i["output"] for i in namespace["main"]({})["items"]]
 
 
@@ -95,8 +93,7 @@ def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch(
     rows = [{"case_id": "e", "text": 'the field "_fail" is reserved'}]
     field = [{"case_id": "f", "text": "x", "_fail": "a user field"}]
     for row in (*rows, *field):
-        got = _branch_rows(tmp_path, _router(), "route.patient", [row])
-        assert got == [row]
+        assert _branch_rows(tmp_path, _router(), "route.patient", [row]) == [row]
     rule = [{"branch": "error", "match": "equals", "value": "1"}]
     expand_routers([_router(rules=rule)])
     with pytest.raises(ValueError, match="error"):

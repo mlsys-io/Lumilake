@@ -598,10 +598,8 @@ def test_forward_grouped_list_materializer_parses_through_yaml_parser(
     )
     namespace: dict[str, Any] = {}
     exec(code.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
-    assert [i["output"] for i in namespace["main"]({})["items"]] == [
-        ["a", "b"],
-        ["c", "d"],
-    ]
+    items = namespace["main"]({})["items"]
+    assert [i["output"] for i in items] == [["a", "b"], ["c", "d"]]
 
 
 def test_forward_scalar_per_row_keeps_today_path():
