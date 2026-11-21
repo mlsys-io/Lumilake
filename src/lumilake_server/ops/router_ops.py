@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 ROUTER_OP = "RouterOp"
+ERROR_BRANCH = "error"
+FAIL_KEY = "_fail"
 
 _MATCHES = ("contains", "equals")
 _NAME_RE = re.compile(r"^\w+$")
@@ -73,13 +75,15 @@ class RouterRule:
 
 @dataclass(frozen=True)
 class RouterOp:
-    """A validated router entry: one source, ordered rules, a default branch."""
+    """A validated router entry: one source, ordered rules, a default branch,
+    and whether an ``error`` branch collects failed records."""
 
     id: str
     inputs: list[str]
     path: list[str]
     default_branch: str
     rules: list[RouterRule]
+    error_branch: bool = False
 
     def __post_init__(self) -> None:
         if not _NAME_RE.match(self.id):
@@ -100,6 +104,12 @@ class RouterOp:
         branches = [rule.branch for rule in self.rules]
         if len(set(branches)) != len(branches):
             raise ValueError(f"RouterOp {self.id!r} rule branches must be unique")
+        if ERROR_BRANCH in branches or self.default_branch == ERROR_BRANCH:
+            raise ValueError(
+                f"RouterOp {self.id!r} must not name {ERROR_BRANCH!r} as a rule"
+                " branch or the default branch; a declared error branch receives"
+                " failed records"
+            )
         if self.default_branch in branches:
             raise ValueError(
                 f"RouterOp {self.id!r} rules already name the default branch "
@@ -108,8 +118,10 @@ class RouterOp:
 
     @property
     def branches(self) -> tuple[str, ...]:
-        """The default branch first, then every rule branch in rule order."""
-        return (self.default_branch, *(rule.branch for rule in self.rules))
+        """The default branch first, then every rule branch in rule order, then
+        the ``error`` branch when one is declared."""
+        ordered = (self.default_branch, *(rule.branch for rule in self.rules))
+        return (*ordered, ERROR_BRANCH) if self.error_branch else ordered
 
     @classmethod
     def from_entry(cls, entry: dict[str, Any]) -> Self:
@@ -155,18 +167,36 @@ class RouterOp:
         default_branch = entry.get("default_branch")
         if not isinstance(default_branch, str):
             raise ValueError(f"RouterOp {router_id!r} requires a default_branch")
-        return cls(router_id, raw_inputs, path, default_branch, rules)
+        error_branch = entry.get("error_branch", False)
+        if not isinstance(error_branch, bool):
+            raise ValueError(
+                f"RouterOp {router_id!r} error_branch must be a boolean, got"
+                f" {error_branch!r}"
+            )
+        return cls(
+            router_id,
+            raw_inputs,
+            path,
+            default_branch,
+            rules,
+            error_branch=error_branch,
+        )
 
 
 def branch_lambda_code(router: RouterOp, branch: str) -> str:
     """The list-mode LambdaOp source selecting ``branch``'s rows from ``router``:
-    a rule branch keeps the rows its own rule matches and no earlier rule
-    matches, and the default branch keeps the rows no rule matches at all."""
+    a declared ``error`` branch keeps exactly the failed records, and every other
+    branch keeps the rows its own rule matches and no earlier rule matches; the
+    default branch keeps the rows no rule matches at all. A failed record reaches
+    no rule or default branch, so with no ``error`` branch it reaches none."""
     rules = router.rules
     names = [rule.branch for rule in rules]
+    is_error = branch == ERROR_BRANCH and router.error_branch
     own = names.index(branch) if branch in names else None
     tests = [rule.matches() for rule in rules]
-    if own is None:
+    if is_error:
+        skip, keep = tests, None
+    elif own is None:
         # The default branch keeps the rows no rule matched.
         skip, keep = tests, None
     else:
@@ -178,6 +208,13 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         "    out = []",
         "    for row in rows_of(items[0]) if items else []:",
     ]
+    if is_error:
+        lines.append(f'        if "{FAIL_KEY}" in row:')
+        lines.append("            out.append(row)")
+        lines.append("        continue")
+    else:
+        lines.append(f'        if "{FAIL_KEY}" in row:')
+        lines.append("            continue")
     if router.path:
         lines.append("        value = row")
         lines.append(f"        for part in {router.path!r}:")
