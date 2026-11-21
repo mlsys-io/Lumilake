@@ -5,12 +5,14 @@ YAML construct, not a runtime op: :func:`expand_routers` rewrites it, before
 any graph is built, into one ordinary list-mode ``LambdaOp`` per branch named
 ``<id>.<branch>``, so a consumer lists ``route.test`` in ``inputs`` like any
 other node and reads exactly that branch's rows; the generated function
-carries its own row decoder and ``path`` walk.
+decodes each input value with the shared Lambda decoder and walks its ``path``.
 """
 
 import re
 from dataclasses import dataclass
 from typing import Any, Self
+
+from lumilake_server.utils.lambda_runtime import DECODER_SOURCE
 
 ROUTER_OP = "RouterOp"
 
@@ -18,27 +20,24 @@ _MATCHES = ("contains", "equals")
 _NAME_RE = re.compile(r"^\w+$")
 _PATH_RE = re.compile(r"^\w+(\.\w+)*$")
 
-_DECODER = """\
-    def rows_of(column):
-        rows = []
-        for item in column:
-            while True:
-                if isinstance(item, list) and len(item) == 1:
-                    item = item[0]
-                elif isinstance(item, str):
-                    item = json.loads(item)
-                elif isinstance(item, dict) and isinstance(item.get("rows"), list):
-                    item = item["rows"]
-                else:
-                    break
-            if isinstance(item, dict):
-                rows.append(item)
-            elif isinstance(item, list) and all(isinstance(row, dict) for row in item):
-                rows.extend(item)
-            else:
-                raise ValueError(LABEL + " expected a row list or object")
-        return rows
+_ROWS = """\
+    rows = []
+    for value in items[0] if items else []:
+        decoded = _decode(value)
+        if isinstance(decoded, dict):
+            rows.append(decoded)
+        elif isinstance(decoded, list) and all(isinstance(r, dict) for r in decoded):
+            rows.extend(decoded)
+        else:
+            raise ValueError(LABEL + " expected a row list or object")
 """
+
+
+def _indent(source: str) -> str:
+    """One generated block of decoder source, indented to function level."""
+    return "\n".join(
+        f"    {line}" if line.strip() else "" for line in source.splitlines()
+    )
 
 
 @dataclass(frozen=True)
@@ -174,9 +173,10 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
     lines = [
         f"def route_{branch}(items):",
         f'    LABEL = "{router.id}.{branch}"',
-        _DECODER,
+        _indent(DECODER_SOURCE),
+        _ROWS,
         "    out = []",
-        "    for row in rows_of(items[0]) if items else []:",
+        "    for row in rows:",
     ]
     if router.path:
         lines.append("        value = row")
