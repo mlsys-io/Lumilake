@@ -74,22 +74,27 @@ def _documented_seed(
     keys: list[Any], op_id: str = "Answer", round_number: int | None = None
 ) -> list[int]:
     """The docs/OPS.md formula: SHA-256 over [seed, op id, round, key] as
-    canonical JSON, first 8 bytes big-endian, mod 2^31."""
+    canonical JSON (sorted keys, no whitespace, non-ASCII unescaped, UTF-8),
+    first 8 bytes big-endian, mod 2^31."""
 
     def one(key: Any) -> int:
-        text = json.dumps([7, op_id, round_number, key], separators=(",", ":"))
+        text = json.dumps(
+            [7, op_id, round_number, key],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
         return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big") % 2**31
 
     return [one(key) for key in keys]
 
 
-def _round_seed(body: dict[str, Any], results: dict[str, Any]) -> dict[str, Any]:
-    """The generated seed op of round 2 of a one-op template body."""
+def _round_build(body: dict[str, Any], results: dict[str, Any]) -> Any:
     template = DriverTemplate.model_validate(
         {"first": body, "next": body, "stop_when_empty": "x"}
     )
     plan = plan_for_round(template, 2)
-    build = build_round(
+    return build_round(
         plan.ops,
         node_registry={ref: {"op": "DataOp"} for ref in results},
         round_index=2,
@@ -104,7 +109,6 @@ def _round_seed(body: dict[str, Any], results: dict[str, Any]) -> dict[str, Any]
         job_seed=7,
         template_ids=plan.template_ids,
     )
-    return next(op for op in build.graph.values() if op.get("fn_name") == SEED_FN_NAME)
 
 
 def test_the_generated_function_matches_the_documented_seed() -> None:
@@ -133,11 +137,15 @@ def test_a_keyed_seed_keeps_slices_and_reads_the_chat_op() -> None:
 def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     """A template op keeps its unrendered id, and a later round's chat op keys
     on an earlier round's node, forwarded flat for the row function to read."""
-    key = {"key": {"node": "Cases", "path": "items.output.case_id"}}
-    body = {"ops": [{**_ANSWER, "id": "Answer{{round}}", "rowwise_seed": key}]}
-    generated = _round_seed(body, {"Cases": [{"output": row} for row in _ROWS]})
+    answer = {**_ANSWER, "id": "Answer{{round}}"}
+    results = {"Cases": [{"output": row} for row in _ROWS]}
+    build = _round_build({"ops": [answer]}, results)
+    generated = next(
+        op for op in build.graph.values() if op.get("fn_name") == SEED_FN_NAME
+    )
+    (producer,) = (build.graph[ref] for ref in generated["_inputs"])
+    assert (producer["_op"], producer["name"].startswith("Cases")) == ("InputOp", True)
     fn = lambda_runtime.materialize(generated["_code"], generated["fn_name"])
-    assert generated["_inputs"] == ["input_round_2_Cases_items_output_case_id_4420"]
     assert [fn(("c1",)), fn(("c2",))] == _documented_seed(
         ["c1", "c2"], "Answer{{round}}", 2
     )
@@ -146,26 +154,21 @@ def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
 def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:
     """The generated row function takes an id under the ``seed`` prefix, which
     no op type emits, so a user op named like it builds beside the key form."""
+    code = "def passthrough(row):\n    return row\n"
     payload = _payload()
     payload["ops"].append(
         {
             "id": "Answer__seed",
             "op": "LambdaOp",
             "inputs": [],
-            "fn_name": "passthrough",
-            "code": "def passthrough(row):\n    return row\n",
+            "fn_name": "p",
+            "code": code,
         }
     )
-    spec = next(iter(parse_yaml_payload(payload).values()))
-    seed_id = next(
-        op_id
-        for op_id, op in spec["graph"].items()
-        if op.get("fn_name") == SEED_FN_NAME
-    )
+    spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
     user_id = make_id("yaml_workflow", "lambda", "Answer__seed")
-    assert user_id in spec["graph"]
-    assert spec["graph"][user_id]["fn_name"] == "passthrough"
-    assert seed_id != user_id
+    assert spec[user_id]["fn_name"] == "p"
+    assert spec[make_id("yaml_workflow", "seed", "Answer")]["fn_name"] == SEED_FN_NAME
 
 
 def test_the_key_form_is_refused() -> None:
@@ -174,6 +177,12 @@ def test_the_key_form_is_refused() -> None:
         fn((json.dumps({"question": "q"}),))
     with pytest.raises(ValueError, match="Answer' has a null row key in .*case_id"):
         fn((json.dumps({"case_id": None}),))
+    # A literal ``%s`` in the op id is escaped before the value placeholder is
+    # added, so the error path still raises the documented ValueError.
+    payload = _payload()
+    payload["ops"][1]["id"] = "50%sale"
+    with pytest.raises(ValueError, match="50%sale' has no row key"):
+        _generated(payload)((json.dumps({"question": "q"}),))
     payloads = [_payload() for _ in range(3)]
     payloads[0]["ops"][1].pop("rowwise_template")
     payloads[1]["ops"][1]["config"]["api"] = {"url": "x"}
@@ -193,6 +202,9 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
     assert out[f"{chat_id}__seed"]["mode"] == "row"
     # The graph is built in insertion order, so the seed op comes first.
     assert list(out).index(f"{chat_id}__seed") < list(out).index(chat_id)
-    native[f"{chat_id}__seed"] = {"_op": "DataOp"}
+    native[f"{chat_id}__seed"] = {}
     with pytest.raises(ValueError, match="already holds"):
+        rewrite_native_keys(native, job_seed=7)
+    native[chat_id]["config"] = "m"
+    with pytest.raises(ValueError, match="config must be a mapping"):
         rewrite_native_keys(native, job_seed=7)
