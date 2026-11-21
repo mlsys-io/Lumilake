@@ -236,7 +236,7 @@ def _column(
                 else:
                     flat.append(text(out))
         return flat
-    return [
-        text(i["output"]) if isinstance(i, dict) and "output" in i else text(i)
-        for i in items
+    output = [
+        i["output"] if isinstance(i, dict) and "output" in i else i for i in items
     ]
+    return [text(v) if failure_of(v) is None else v for v in output]
