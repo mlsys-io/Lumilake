@@ -303,7 +303,8 @@ _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
         ),
         # One whose key cannot be read cannot be placed.
         (_DIAG, {0: _ALL, 1: [{"output": [_MARK]}]}, None, "cannot be placed"),
-        # A marked attach value marks the key its position pairs with.
+        # A marked attach value marks the key its position pairs with, whether
+        # the value column covers the live rows or every source row.
         (
             _ATTACH,
             {
@@ -315,6 +316,20 @@ _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
                 2: _LIVE,
             },
             [{**_ROWS[0], "reply": "hi"}, _MARK],
+            "",
+        ),
+        (
+            _ATTACH,
+            {
+                0: _ALL,
+                1: [
+                    {"output": "hi", "value": "hi"},
+                    {"output": json.dumps(_MARK), "value": _MARK},
+                    {"output": "bye", "value": "bye"},
+                ],
+                2: _ALL,
+            },
+            [{**_ROWS[0], "reply": "hi"}, _MARK, {**_ROWS[2], "reply": "bye"}],
             "",
         ),
         # fail_row marks only the rows the further input lacks, with its key.
@@ -336,7 +351,8 @@ _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
         "first_input",
         "further_keyed",
         "further_unkeyed",
-        "attach_value",
+        "attach_live",
+        "attach_all",
         "fail_row",
         "attach_length",
     ],

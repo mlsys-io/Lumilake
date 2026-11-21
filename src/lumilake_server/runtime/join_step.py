@@ -169,27 +169,29 @@ def _keyed(rows, where):
 
 
 def _attach(keyed, marked, name, source_index, values, rows, where):
-    """Merge one attach field's values onto the live source rows by position. A
+    """Merge one attach field's values onto the source rows by position. A
     source row or value that carries a failed record marks that key's output
-    instead of filling its field; a length mismatch cannot be attributed to
-    one row, so it fails the job."""
-    live = []
+    instead of filling its field. The value column pairs with every source row
+    when its length matches, or with the live rows only; any other length
+    cannot be attributed to one row, so it fails the job."""
+    live = [row for row in rows if _marked(row) is None]
     for row in rows:
-        carried = _marked(row)
-        if carried is None:
-            live.append(row)
+        if row in live:
             continue
         key = _key_of(row, where)
         if key is not None and key not in marked:
-            marked[key] = carried
-    if len(values) != len(live):
+            marked[key] = _marked(row)
+    if len(values) == len(rows):
+        pairs = list(zip(values, (_key_of(row, where) for row in rows)))
+    elif len(values) == len(live):
+        pairs = list(zip(values, (_key(row, where) for row in live)))
+    else:
         raise ValueError(
             "%s: %d values attached but %d rows from %r"
-            % (_NODE, len(values), len(live), _named(_PLAN[source_index]))
+            % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
         )
-    keys = [_key(row, where) for row in live]
-    _required(keyed, dict.fromkeys(keys), where)
-    for value, key in zip(values, keys):
+    _required(keyed, dict.fromkeys(key for _, key in pairs), where)
+    for value, key in pairs:
         if key in marked:
             continue
         carried = failure_of(value)
