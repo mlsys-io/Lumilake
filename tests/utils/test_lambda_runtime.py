@@ -568,5 +568,5 @@ def test_inline_wrapper_and_shared_decoder_agree() -> None:
     from lumilake_server.runtime.lambda_task_helpers import _decode as shared
 
     inline = _run_in_inline_namespace(lambda_runtime.DECODER_SOURCE, "_decode")
-    for value in ('{"a": 1}', "[1, 2]", "1", "plain"):
+    for value in ('{"a": 1}', "[1, 2]", "1", "plain", "{name} said hi"):
         assert inline(value) == shared(value)
