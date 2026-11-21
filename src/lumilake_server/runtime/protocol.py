@@ -70,7 +70,10 @@ class LumilakeRequestConfig(BaseModel):
     policies group items by it; other policies ignore it."""
     chain_round: int = Field(default=0, ge=0)
     """Zero-based round index within the chain; ``0`` for a standalone job. The
-    ``cohort_pack`` scheduling policy groups items by it."""
+    ``cohort_pack`` scheduling policy groups items by it, and a stored record
+    names it as its semantic round."""
+    store: bool = False
+    """Whether the job's records are written to the per-record store."""
 
 
 class LumilakeRequest(BaseModel):

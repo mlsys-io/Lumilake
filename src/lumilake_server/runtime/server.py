@@ -3057,6 +3057,8 @@ class LumilakeServer:
                 for worker in selected_workers
                 if worker_profiles[worker]["has_gpu"]
             },
+            store_records=batch.config.store,
+            round_number=batch.config.chain_round,
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph

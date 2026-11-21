@@ -55,6 +55,12 @@ class RequestInfo:
     profiles the optimizer scheduled with. CPU nodes offer every other
     selected worker, so an idle GPU worker never takes a CPU step."""
 
+    store_records: bool = False
+    """Whether every finished task's records are written to the record store."""
+    round_number: int = 0
+    """The semantic round this batch's ops belong to, ``0`` for a standalone
+    job."""
+
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)
     data_profile_graph: RuntimeGraph = field(init=False)
