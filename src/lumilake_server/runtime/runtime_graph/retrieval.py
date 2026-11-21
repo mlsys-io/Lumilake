@@ -303,6 +303,8 @@ class _RetrievalBuilder(_LLMBuilder):
                     data_spec[optional] = spec[optional]
         if "verify" in spec:
             data_spec["verify"] = spec["verify"]
+        if isinstance(spec.get("key"), dict):
+            data_spec["key"] = spec["key"]
 
         node = self._create_runtime_op(
             name=op_id,

@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from lumilake_server.utils.retrieval_key import retrieval_key_problem
+
 from .common import EmitContext
 
 
@@ -19,6 +21,9 @@ def emit_data_retrieval_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     data_spec = entry.fields.get("data_spec")
     if not isinstance(data_spec, dict):
         raise ValueError(f"DataRetrievalOp '{entry.id}' requires 'data_spec'")
+    problem = retrieval_key_problem(data_spec, entry.id)
+    if problem is not None:
+        raise ValueError(f"DataRetrievalOp '{entry.id}' {problem}")
     op_dict["data_spec"] = _resolve_data_spec(
         data_spec, entry.id, ctx.user_id_to_internal
     )
