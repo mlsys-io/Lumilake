@@ -611,8 +611,9 @@ serializes the function automatically via `dill.source.getsource` — see
 node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
 first rule that matches wins; `match` is `contains` or `equals`, optional
 `path` selects the field tested, and `default_branch` keeps unmatched rows.
-Each branch reads its rows through the same decode every `LambdaOp` mode uses,
-so a `path` walks a field of the decoded row object.
+Each branch is a list-mode `LambdaOp`, so its source column reaches it under
+the same decode every mode uses, and a `path` walks a field of the decoded row
+object.
 
 ```yaml
 ops:
