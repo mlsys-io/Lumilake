@@ -31,7 +31,6 @@ class EmitContext:
     job_seed: int = 0
     round_number: int | None = None
     template_ids: dict[str, str] = field(default_factory=dict)
-    input_values: dict[str, list[str]] = field(default_factory=dict)
 
 
 Emitter = Callable[[dict[str, Any], EmitContext], None]
@@ -87,19 +86,6 @@ def seed_input_id(op_id: str, node_ref: str, ctx: EmitContext, op_kind: str) -> 
             " producer is built before it"
         )
     return node_id
-
-
-def _literal_key_values(node_ref: str, ctx: EmitContext) -> list[str] | None:
-    """The rows a key column holds when it is a workflow input or a literal
-    data op, so duplicate keys are refused at submit; ``None`` for a column an
-    upstream op produces, whose rows are not known until it runs."""
-    values = ctx.input_values.get(node_ref)
-    if values is not None:
-        return values
-    producer = ctx.graph_ops.get(ctx.user_id_to_internal.get(node_ref, ""))
-    if producer is not None and producer.get("_op") == "DataOp":
-        return producer.get("data")
-    return None
 
 
 def emit_keyed_seed(
