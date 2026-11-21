@@ -28,7 +28,7 @@ class JoinSpec(BaseModel):
 
     by: list[StrictStr]
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
-    missing: Literal["null", "error"] = "null"
+    on_missing: Literal["null_fill", "fail_row"] = "null_fill"
 
     @field_validator("by", mode="before")
     @classmethod
@@ -98,8 +98,8 @@ class JoinOp(Op):
         return self.spec.by
 
     @property
-    def missing(self) -> Literal["null", "error"]:
-        return self.spec.missing
+    def on_missing(self) -> Literal["null_fill", "fail_row"]:
+        return self.spec.on_missing
 
     @property
     def columns(self) -> list[Op]:
@@ -130,7 +130,7 @@ class JoinOp(Op):
                 field: self.inputs[index].id
                 for field, index in self.attach_indices.items()
             },
-            "missing": self.missing,
+            "on_missing": self.on_missing,
         }
 
     @classmethod

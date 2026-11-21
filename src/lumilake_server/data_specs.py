@@ -149,7 +149,7 @@ class JoinDescription(DataSpecModel):
     by: list[str]
     inputs: list[int]
     attach: list[tuple[str, int, int]]
-    missing: Literal["null", "error"]
+    on_missing: Literal["null_fill", "fail_row"]
 
 
 class PythonData(DataSpecModel):
