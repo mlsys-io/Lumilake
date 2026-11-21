@@ -766,21 +766,38 @@ aligned `LambdaOp` over one non-broadcast input, an `HttpFetchOp`, a
 own, so a format op named directly as an attach target is refused at submit,
 naming the op, the attach field and that reason. List every attach target in
 `inputs:` too, so its producer is built before the join. Router branches are
-disjoint, so a case lands in one branch and `missing: null` leaves the other
-branch's fields out; `missing: error` also fails the job on a further input or
-attach row whose key is not in the first input, naming the key. A duplicate
-key, a field that differs between two inputs, and an attach whose values and
-source rows disagree on length each fail the job naming the join.
+disjoint, so a case lands in one branch and the other branch's fields are left
+out of the output row.
 
 `by` is one dotted field path, or a list of them for a composite key: the key
 is then the list of their values, so two rows that share only the first field
 stay distinct. An empty list or an entry that is not a dotted field name is
 refused at submit, naming the op.
 
+A first-input row that carries a failed record makes the output row that
+marker: the first input fixes one output row per key, and a marked row holds
+no key to merge by. A marked further-input or attach row whose key reads turns
+only its key's output into the marker; a marked further-input row whose key
+cannot be read fails the job, since it has no slot to keep.
+
+`on_missing` is the per-row policy and defaults to `null_fill`:
+
+- `null_fill` leaves out a field a further input or an attach source does not
+  carry, and fails the job when a further input carries a key the first input
+  does not, when an attach column does not pair one value with one row, or when
+  two inputs disagree on a field's value. Each error names the join.
+- `fail_row` turns a key a further input or an attach source lacks into one
+  marker for the output,
+  `{"_fail": {"op": "<op id>", "reason": "<what disagreed>"}}`, instead of
+  failing the job, so a single bad row costs neither its siblings nor the job.
+
+A duplicate key still fails the job under either policy, since two rows with
+one key cannot become one output row.
+
 ```yaml
 ops:
   - {id: Merge, op: JoinOp, inputs: [CaseState, Route.patient, PatientTurn],
-     by: case_id, attach: {patient_reply: PatientTurn}, missing: null}
+     by: case_id, attach: {patient_reply: PatientTurn}, on_missing: null_fill}
   - {id: Blocked, op: JoinOp, inputs: [Prompts, Scored], by: [unit, kind]}
 ```
 
@@ -848,6 +865,18 @@ columns stay aligned.
   sees every row and passes them on. A seeded row or expand `LambdaOp` draws no
   seed for a marked row, so a seed step that passes the marker on in that row's
   seed cell leaves the row marked instead of failing the task.
+- An expand `LambdaOp` emits one tombstone item carrying the marker for a
+  marked parent, and every item carries `parent` and `child`.
+- A reduce `LambdaOp` applies its `on_fail` policy: `fail_group` emits the
+  group's marker, `drop_failed` removes the failed rows first and marks a group
+  that loses every row `empty group`. See
+  [`LambdaOp`](#lambdaop).
+- A `JoinOp` makes the output row a first-input row's marker, and skips a
+  marked further input or attach row. Its `on_missing: fail_row` marks the
+  output where `null_fill` would fail the job. See [`JoinOp`](#joinop).
+- Downstream reads of an expand or join output see the marker under each
+  item's `output`, so a row Lambda or a parse step treats such an item as a
+  marked row.
 - A user function that raises fails the task; only a parse or a pass-through
   produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares

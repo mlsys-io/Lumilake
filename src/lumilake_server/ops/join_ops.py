@@ -17,7 +17,7 @@ JOIN_OP = "JoinOp"
 
 _FIELD_RE = re.compile(r"^\w+$")
 _PATH_RE = re.compile(r"^\w+(\.\w+)*$")
-_MISSING = ("null", "error")
+_MISSING = ("null_fill", "fail_row")
 
 
 def join_key_paths(by: Any, op_id: str) -> list[str]:
@@ -44,23 +44,23 @@ class JoinOp(Op):
     column_indices: list[int]
     attach_indices: dict[str, int]
     by: list[str]
-    missing: str
+    on_missing: str
 
     def __init__(
         self,
         inputs: list[Op],
         by: str | list[str],
         attach: dict[str, Op] | None = None,
-        missing: str = "null",
+        on_missing: str = "null_fill",
     ) -> None:
         if not inputs:
             raise ValueError("JoinOp requires at least one input")
         attach = {} if attach is None else attach
-        if missing not in _MISSING:
+        if on_missing not in _MISSING:
             raise ValueError(
-                f"JoinOp missing must be one of {_MISSING}, got {missing!r}"
+                f"JoinOp on_missing must be one of {_MISSING}, got {on_missing!r}"
             )
-        self.missing = missing
+        self.on_missing = on_missing
         joined: list[Op] = []
         for op in inputs:
             if op not in joined:
@@ -114,7 +114,7 @@ class JoinOp(Op):
                 field: self.inputs[index].id
                 for field, index in self.attach_indices.items()
             },
-            "missing": self.missing,
+            "on_missing": self.on_missing,
         }
 
     @classmethod
@@ -124,7 +124,7 @@ class JoinOp(Op):
             field: _built_before(other_ops, op_id, f"attach field {field!r}")
             for field, op_id in data["attach"].items()
         }
-        return cls(joined, data["by"], attach, data["missing"])
+        return cls(joined, data["by"], attach, data["on_missing"])
 
 
 def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":

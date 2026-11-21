@@ -374,3 +374,21 @@ def test_an_on_fail_policy_is_checked_where_it_is_set() -> None:
     }
     with pytest.raises(ValueError, match="only valid in reduce mode"):
         Graph.from_json(native)
+
+
+def _join(inputs: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "id": "J",
+        "op": "JoinOp",
+        "inputs": [name.strip() for name in inputs.split(",")],
+        "by": "k",
+        **fields,
+    }
+
+
+def test_a_join_turns_a_marked_first_input_row_into_the_output_row(
+    tmp_path: Path,
+) -> None:
+    items = _run([_parse(format="json"), _join("P")], {"Answer": ["no idea"]}, tmp_path)
+    (item,) = [entry["output"] for entry in items]
+    assert item["_fail"]["reason"] == "no JSON object"

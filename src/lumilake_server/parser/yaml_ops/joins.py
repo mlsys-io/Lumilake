@@ -19,13 +19,14 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         raise ValueError(
             f"JoinOp '{entry.id}' attach must map a field name to an op id"
         )
-    # ``missing: null`` spells the default in YAML.
-    missing = entry.fields.get("missing")
-    if missing is None:
-        missing = "null"
-    if missing not in ("null", "error"):
+    # ``on_missing: null_fill`` spells the default in YAML.
+    on_missing = entry.fields.get("on_missing")
+    if on_missing is None:
+        on_missing = "null_fill"
+    if on_missing not in ("null_fill", "fail_row"):
         raise ValueError(
-            f"JoinOp '{entry.id}' missing must be 'null' or 'error', got {missing!r}"
+            f"JoinOp '{entry.id}' on_missing must be 'null_fill' or 'fail_row',"
+            f" got {on_missing!r}"
         )
     resolved: dict[str, str] = {}
     for field, target in attach.items():
@@ -47,4 +48,4 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         resolved[field] = user_id_to_internal[target]
     op_dict["by"] = by
     op_dict["attach"] = resolved
-    op_dict["missing"] = missing
+    op_dict["on_missing"] = on_missing

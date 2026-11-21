@@ -207,7 +207,8 @@ def test_join_refuses_a_format_op_as_an_attach_target() -> None:
 
 
 def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
-    node = _join_node(_merge("State, Route.diagnose", "    missing: error\n"))
+    node = _join_node(_merge("State, Route.diagnose"))
+    stray = {"case_id": "z", "text": "not in the first input"}
     with pytest.raises(ValueError, match="duplicate key"):
         _run(
             tmp_path,
@@ -215,9 +216,6 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
             {0: [{"output": [_ROWS[1]] * 2}], 1: [{"output": []}]},
             name="duplicate",
         )
-    with pytest.raises(ValueError, match=r'key "a" is missing from'):
-        _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
-    stray = {"case_id": "z", "text": "not in the first input"}
     with pytest.raises(ValueError, match=r'key "z" is not in'):
         _run(
             tmp_path,
@@ -225,6 +223,32 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
             {0: [{"output": [_ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]},
             name="stray",
         )
+
+
+@pytest.mark.parametrize(
+    "ops, upstream",
+    [
+        (
+            _merge("State, Route.diagnose"),
+            {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]},
+        ),
+        (
+            _REPLY + _merge("State, Reply") + "    attach: {reply: Reply}\n",
+            {
+                0: [{"output": [_ROWS[0], _ROWS[2]]}],
+                1: [{"output": '{"n": 1}', "value": {"n": 1}}],
+            },
+        ),
+    ],
+    ids=["missing_key", "attach_length"],
+)
+def test_join_on_missing_fail_row_marks_the_output_the_job_would_fail(
+    ops: str, upstream: dict[int, list[dict[str, Any]]], tmp_path: Path
+) -> None:
+    node = _join_node(ops + "    on_missing: fail_row\n")
+    (item,) = _run(tmp_path, node, upstream)["items"]
+    assert item["output"]["_fail"]["op"] == node.node_id
+    assert item["output"]["_fail"]["reason"]
 
 
 def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(

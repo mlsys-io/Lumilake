@@ -41,12 +41,13 @@ _SPEC.loader.exec_module(_RUNTIME)
 _column = _RUNTIME._column
 _decoded_cell = _RUNTIME._decoded_cell
 _decoded_rows = _RUNTIME._decoded_rows
+failure_of = _RUNTIME.failure_of
 _PLAN = json.loads({plan!r})
 _JOIN = json.loads({join!r})
 
 _NODE = _JOIN["node"]
 _BY = _JOIN["by"]
-_MISSING = _JOIN["missing"]
+_ON_MISSING = _JOIN["on_missing"]
 
 
 def _named(entry):
@@ -87,26 +88,46 @@ def _value(row, path, where):
     return value
 
 
+def _marked(row):
+    """The marker ``row`` carries, or ``None`` when its record is ok. A first
+    input row is the marker itself; a source row carries it in one of its
+    fields, since a row's own fields never hold the reserved key."""
+    if isinstance(row, dict) and list(row) == ["_fail"]:
+        return row
+    values = row.values() if isinstance(row, dict) else ()
+    return next(
+        (marked for marked in map(failure_of, values) if marked is not None), None
+    )
+
+
+def _failed(reason):
+    """One marker for the whole output, naming the join and why."""
+    return {{"_fail": {{"op": _NODE, "reason": reason}}}}
+
+
 def _keyed(rows, where):
+    """The keyed rows of one input, with the marked rows kept aside. A marked
+    row holds no key to merge by, so it never joins a group; a duplicate key
+    still fails the job."""
     keyed = {{}}
+    marks = []
     for row in rows:
+        marked = _marked(row)
+        if marked is not None:
+            marks.append(marked)
+            continue
         key = _key(row, where)
         if key in keyed:
             raise ValueError("%s: duplicate key %s" % (where, key))
         keyed[key] = row
-    return keyed
+    return keyed, marks
 
 
-def _required(output, keys, where):
-    """Fail the job when ``error`` is set and one side carries a key the other
-    does not, so a stray or misspelt row never loses its fields unnoticed."""
-    if _MISSING != "error":
-        return
-    for key in output:
-        if key not in keys:
-            raise ValueError("%s: key %s is missing from %r" % (_NODE, key, where))
+def _required(keyed, keys, where):
+    """Fail the job when a further input carries a key the first input does
+    not, so a stray or misspelt row never loses its fields unnoticed."""
     for key in keys:
-        if key not in output:
+        if key not in keyed:
             raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
 
 
@@ -119,19 +140,62 @@ def _merged(merged, field, value, where):
     merged[field] = value
 
 
+def _merge_inputs(keyed, rows, where):
+    """Merge one further input's fields onto the rows with their key. A key it
+    lacks in a first-input row marks that row under ``fail_row`` instead of
+    failing the job; the row is marked on the first input's key."""
+    more, _marks = _keyed(rows, where)
+    missing = next((key for key in keyed if key not in more), None)
+    if missing is not None and _ON_MISSING == "fail_row":
+        return _failed("key %s is missing from %r" % (missing, where))
+    _required(keyed, more, where)
+    for key, row in more.items():
+        for name, value in row.items():
+            _merged(keyed[key], name, value, where)
+    return None
+
+
+def _attach_values(keyed, name, source_index, values, rows, where):
+    """Merge one attach field's values onto the live source rows. ``fail_row``
+    marks the output when the column pairs no value with one row; ``null_fill``
+    fails the job naming the source."""
+    live = [row for row in rows if _marked(row) is None]
+    if len(values) != len(live):
+        if _ON_MISSING == "fail_row":
+            return _failed(
+                "attach field %r has %d values but %d rows"
+                % (name, len(values), len(live))
+            )
+        raise ValueError(
+            "%s: %d values attached but %d rows from %r"
+            % (_NODE, len(values), len(live), _named(_PLAN[source_index]))
+        )
+    keys = [_key(row, where) for row in live]
+    _required(keyed, dict.fromkeys(keys), where)
+    for value, key in zip(values, keys):
+        _merged(keyed[key], name, value, where)
+    return None
+
+
 def main(inputs):
     indexes = _JOIN["inputs"]
     columns = [_column(_PLAN[index], inputs, _decoded_cell) for index in indexes]
     first = _where(_PLAN[indexes[0]])
-    output = _keyed(_rows(columns[0], first), first)
+    keyed, marks = _keyed(_rows(columns[0], first), first)
+    if marks:
+        # A first-input row that carries a failed record keeps no key, so the
+        # output is that marker: the first input fixes one row per key.
+        if len(marks) > 1:
+            raise ValueError(
+                "%s: carries %d failed records; the first input fixes one"
+                " output row per row key" % (first, len(marks))
+            )
+        return {{"items": [{{"output": marks[0]}}]}}
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
-        keyed = _keyed(_rows(column, where), where)
-        _required(output, keyed, where)
-        for key, row in keyed.items():
-            if key in output:
-                for name, value in row.items():
-                    _merged(output[key], name, value, where)
+        failed = _merge_inputs(keyed, _rows(column, where), where)
+        if failed is not None:
+            return {{"items": [{{"output": failed}}]}}
     for name, value_index, source_index in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
@@ -139,21 +203,8 @@ def main(inputs):
             for value in _column(_PLAN[value_index], inputs, _decoded_cell)
         ]
         rows = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
-        if len(values) != len(rows):
-            raise ValueError(
-                "%s: %d values from %r but %d rows from %r"
-                % (
-                    _NODE,
-                    len(values),
-                    _named(_PLAN[value_index]),
-                    len(rows),
-                    _named(_PLAN[source_index]),
-                )
-            )
-        keys = [_key(row, where) for row in rows]
-        _required(output, dict.fromkeys(keys), where)
-        for value, key in zip(values, keys):
-            if key in output:
-                _merged(output[key], name, value, where)
-    return {{"items": [{{"output": row}} for row in output.values()]}}
+        failed = _attach_values(keyed, name, source_index, values, rows, where)
+        if failed is not None:
+            return {{"items": [{{"output": failed}}]}}
+    return {{"items": [{{"output": row}} for row in keyed.values()]}}
 '''

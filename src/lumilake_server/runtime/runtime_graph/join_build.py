@@ -145,7 +145,7 @@ def build_join_step(
                 "by": op.by,
                 "inputs": columns,
                 "attach": attach,
-                "missing": op.missing,
+                "on_missing": op.on_missing,
             },
             "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
         },
