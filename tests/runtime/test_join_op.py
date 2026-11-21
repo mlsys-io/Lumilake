@@ -327,9 +327,9 @@ _TAG = """
 def test_join_reads_a_workflow_input_as_its_first_column(tmp_path: Path) -> None:
     node = _join_node(_TAG + _merge("Rows, Tag", "    attach: {tag: Tag}\n"))
     assert node.data_spec["plan"][0]["kind"] == "literal"
-    tag = [{"output": "A", "value": "A"}] * 3
+    tag = [{"output": value, "value": value} for value in "ABC"]
     out = _run(tmp_path, node, {1: tag})
-    assert [item["output"]["tag"] for item in out["items"]] == ["A", "A", "A"]
+    assert [item["output"]["tag"] for item in out["items"]] == ["A", "B", "C"]
 
 
 def test_join_keys_on_every_field_of_a_composite_key(tmp_path: Path) -> None:
