@@ -42,11 +42,7 @@ def _sql_config(op_id: str) -> dict:
         "id": op_id,
         "op": "DataRetrievalOp",
         "inputs": [],
-        "data_spec": {
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * ORDER BY 1",
-        },
+        "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
     }
 
 
@@ -275,11 +271,7 @@ def test_validate_rejects_export_not_in_subgraph():
             "id": "q1",
             "op": "DataRetrievalOp",
             "inputs": [],
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * ORDER BY 1",
-            },
+            "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
         }
     ]
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
@@ -292,11 +284,7 @@ def test_validate_accepts_export_in_subgraph():
             "id": "q1",
             "op": "DataRetrievalOp",
             "inputs": [],
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * ORDER BY 1",
-            },
+            "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
         }
     ]
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
@@ -310,11 +298,7 @@ def test_admit_subgraph_forwards_export_to_validation():
         "id": "q1",
         "op": "DataRetrievalOp",
         "inputs": [],
-        "data_spec": {
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * ORDER BY 1",
-        },
+        "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
     }
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
         _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
