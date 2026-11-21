@@ -70,11 +70,11 @@ def _parse(ops: str) -> dict[str, Any]:
     return parse_yaml_payload(_PRELUDE + ops)["j"]
 
 
-def _merge(inputs: str, rest: str = "") -> str:
-    """A join over ``inputs`` keyed by ``case_id``, followed by ``rest``."""
+def _merge(inputs: str, rest: str = "", by: str = "case_id") -> str:
+    """A join over ``inputs`` keyed by ``by``, followed by ``rest``."""
     return (
         f"  - id: Merge\n    op: JoinOp\n    inputs: [{inputs}]\n"
-        f"    by: case_id\n{rest}"
+        f"    by: {by}\n{rest}"
     )
 
 
@@ -334,7 +334,7 @@ def test_join_reads_a_workflow_input_as_its_first_column(tmp_path: Path) -> None
 
 def test_join_keys_on_every_field_of_a_composite_key(tmp_path: Path) -> None:
     """Rows sharing the first key field stay distinct under a composite key."""
-    node = _join_node(_merge("State, Route.diagnose", "    by: [case_id, text]\n"))
+    node = _join_node(_merge("State, Route.diagnose", by="[case_id, text]"))
     same = [dict(_ROWS[1], extra=1), dict(_ROWS[1], text="another row")]
     out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": same}]})
     assert [item["output"]["case_id"] for item in out["items"]] == ["a", "b", "c"]
