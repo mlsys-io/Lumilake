@@ -819,7 +819,9 @@ columns stay aligned.
   emits the first such marker for that row. An aligned `LambdaOp` calls the
   function on the live columns and merges the marked rows back by position. A
   list `LambdaOp` receives markers as ordinary values, so a whole-list function
-  sees every row and passes them on.
+  sees every row and passes them on. A seeded row or expand `LambdaOp` draws no
+  seed for a marked row, so a seed step that passes the marker on in that row's
+  seed cell leaves the row marked instead of failing the task.
 - A user function that raises fails the task; only a parse or a pass-through
   produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares

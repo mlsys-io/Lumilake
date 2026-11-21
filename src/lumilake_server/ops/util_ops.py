@@ -224,6 +224,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
     ) -> None: ...
 

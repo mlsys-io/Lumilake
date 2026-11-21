@@ -511,6 +511,24 @@ def test_wrapper_refuses_a_seed_it_cannot_use(
 
 
 @pytest.mark.parametrize("mode", ["row", "expand"])
+def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
+    """A marked row keeps its slot without calling the function or reading its
+    seed, so a seed step that forwards the marker in that row's seed cell does
+    not fail the task."""
+    marker = {"_fail": {"op": "Parse", "reason": "no JSON object"}}
+    code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
+    if mode == "expand":
+        code = "def draw(i, seed):\n    return ['%s: %d' % (i, seed)]\n"
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["a", json.dumps(marker)]},
+        {"kind": "literal", "values": ["5", json.dumps(marker)], "role": "seed"},
+    ]
+    out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
+    assert out["items"][0]["output"] == "('a',): 5"
+    assert out["items"][1]["output"] == marker
+
+
+@pytest.mark.parametrize("mode", ["row", "expand"])
 def test_wrapper_takes_one_seed_for_one_row(mode: str) -> None:
     """One row with one seed stays fine in both seeded modes."""
     code = "def draw(i, seed):\n    return '%d' % seed\n"
