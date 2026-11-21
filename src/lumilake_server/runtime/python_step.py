@@ -459,6 +459,12 @@ def main(inputs):
             failed = {{FAIL_KEY: {{"op": _NODE, "reason": reason}}}}
             items.append({{"output": failed, "value": failed}})
             continue
+        if isinstance(parsed, dict) and FAIL_KEY in parsed:
+            # The reply is model output, so its own _fail key must not forge or
+            # carry a marker.
+            failed = {{FAIL_KEY: {{"op": _NODE, "reason": "reserved key '_fail'"}}}}
+            items.append({{"output": failed, "value": failed}})
+            continue
         items.append({{"output": _text(parsed), "value": parsed}})
     return {{"items": items}}
 """
