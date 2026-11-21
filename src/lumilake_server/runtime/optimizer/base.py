@@ -9,7 +9,7 @@ from typing import Any, cast
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, merge_runtime_graphs
-from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.runtime_ops import SAMPLING_TASK_TYPES, RuntimeOp
 
 __all__ = ["BaseOptimizer", "Schedule"]
 
@@ -112,9 +112,7 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
     )
 
 
-_SAMPLING_TASK_TYPES: frozenset[str] = frozenset(
-    {"inference", "diffusion", "omni_text2image"}
-)
+_TEXT_TASK_TYPES: frozenset[str] = frozenset({"inference", "api"})
 
 
 def _number(value: Any) -> float | None:
@@ -128,7 +126,7 @@ def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
     ``None`` when the node's output is a pure function of its inputs: a
     Python step, a retrieval, an embedding, a classification, or an API
     request other than a chat completion."""
-    if op.task_type in _SAMPLING_TASK_TYPES:
+    if op.task_type in SAMPLING_TASK_TYPES:
         return op.inference_spec
     if op.task_type == "api":
         body = op.api_spec.get("json")
@@ -137,10 +135,13 @@ def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
     return None
 
 
-def _decodes_deterministically(sampler: dict[str, Any]) -> bool:
-    """Whether the node's decoder is greedy or beam search. An absent
+def _decodes_deterministically(op: RuntimeOp, sampler: dict[str, Any]) -> bool:
+    """Whether the node's text decoder is greedy or beam search. An absent
     temperature is not greedy: the engine then samples at its own default, so
-    only an explicit ``temperature: 0`` or a beam width above 1 counts."""
+    only an explicit ``temperature: 0`` or a beam width above 1 counts. Image
+    samplers read neither setting, so they never count."""
+    if op.task_type not in _TEXT_TASK_TYPES:
+        return False
     num_beams = _number(sampler.get("num_beams"))
     if num_beams is not None and num_beams > 1:
         return True
@@ -157,7 +158,7 @@ def _dedupe_scope(
     never with a different op of equal settings, seeded or not. Python steps
     stay eligible, as their output function is the user's to keep pure."""
     sampler = _sampling_spec(op)
-    if sampler is None or _decodes_deterministically(sampler):
+    if sampler is None or _decodes_deterministically(op, sampler):
         return ("pure",)
     if not owners:
         return None
