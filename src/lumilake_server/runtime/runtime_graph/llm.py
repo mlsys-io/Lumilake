@@ -13,6 +13,7 @@ from lumilake_server.ops import (
     LLMOp,
     MessageOp,
     Op,
+    ParseOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
@@ -21,7 +22,6 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
-from lumilake_server.ops.parse_ops import ParseOp
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
@@ -1313,9 +1313,9 @@ class _LLMBuilder(_EmbeddingBuilder):
             elif isinstance(op, ParseOp):
                 raise ValueError(
                     f"LLMOp '{llm_op_id}' consumes ParseOp '{op.id}' through its"
-                    " message chain; a parsed record must be read through a node"
-                    " column (rowwise_columns / aggregate_table), or through a"
-                    " LambdaOp that renders it."
+                    " message chain; a parsed record must be read through a"
+                    " router's rule or default branch, so a failed record never"
+                    " reaches the model."
                 )
 
             else:
