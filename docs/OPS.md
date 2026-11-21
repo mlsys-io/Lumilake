@@ -617,9 +617,10 @@ ops:
 
 `format: json` strips one surrounding fenced code block (```` ```json … ``` ````,
 any language tag) and any prose before the first `{` or `[`, then decodes the
-JSON, with `strict` off so a reply may carry literal control characters.
-`require` names top-level keys of the parsed object; a reply that parses to
-anything but an object fails it.
+JSON, with `strict` off so a reply may carry literal control characters. No
+further `{` or `[` may follow the record, so a reply citing a source after it
+fails. `require` names top-level keys of the parsed object; a reply that parses
+to anything but an object fails it.
 
 `format: regex` returns an object of the named groups of
 `pattern`'s first match; the pattern must name at least one group
@@ -653,7 +654,7 @@ columns stay aligned.
   emits the first such marker for that row. An aligned `LambdaOp` calls the
   function on the live columns and merges the marked rows back by position. A
   list `LambdaOp` receives markers as ordinary values, so a whole-list function
-  sees every row.
+  sees every row and passes them on.
 - A user function that raises fails the task; only a parse or a pass-through
   produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares
@@ -661,13 +662,14 @@ columns stay aligned.
   [`RouterOp`](#routerop).
 - Outputs archive the marker, so a job result shows which records failed and
   why.
-- A model op (`LLMChatOp` with `rowwise_template`, `LLMCompletionOp`,
-  `EmbeddingOp`, or a rowwise seed or aggregate table) may not read a source
-  that can carry failed records: the job is refused at submit when a rowwise
-  column, aggregate table or rowwise seed reads a `ParseOp`, or a row or
-  aligned `LambdaOp` that reads one. Read a router's non-error branch instead,
-  so failed records never reach the model. A list `LambdaOp`, including every
-  router branch, does not pass markers on.
+- A source carries markers when a `ParseOp` reaches it through any op except a
+  router's rule or default branch, which drop them. A model op (`LLMChatOp`
+  with `rowwise_template`, `LLMVisionOp`, `LLMCompletionOp`, `EmbeddingOp`, or
+  a rowwise seed or aggregate table) may not read such a source: the job is
+  refused at submit when a rowwise column, aggregate table, rowwise seed or
+  embedding content reads one. Read a router's rule or default branch instead,
+  so failed records never reach the model. A cross-round reference is refused
+  the same way when the bound value is a marker.
 
 `_fail` is reserved: a user function that returns an object carrying it fails
 the task, so a user value is never mistaken for a marker.
