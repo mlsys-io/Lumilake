@@ -345,30 +345,57 @@ def test_an_expand_parents_each_item_and_marks_one_tombstone(
     assert [(item["parent"], item["child"]) for item in items] == expected
 
 
-def _reduce(on_fail: str) -> dict[str, Any]:
-    code = "def f(rows):\n    return len(rows)\n"
-    return _lower(mode="reduce", by="group", code=code, on_fail=on_fail)
+def _reduce(on_fail: str, inputs: list[str] | None = None) -> dict[str, Any]:
+    return _lower(
+        mode="reduce",
+        by="group" if inputs is None else "unit",
+        code="def f(rows):\n    return len(rows)\n",
+        on_fail=on_fail,
+        inputs=["P"] if inputs is None else inputs,
+    )
+
+
+# A wrapper that puts the marker in a non-key field, so the key still reads
+# and the row joins its group instead of forming one of its own.
+_WRAPPED = {
+    "id": "W",
+    "op": "LambdaOp",
+    "inputs": ["P"],
+    "mode": "list",
+    "fn_name": "w",
+    "code": (
+        "def w(c):\n"
+        "    rows = [json.loads(v) if isinstance(v, str) else v for v in c[0]]\n"
+        "    return [{'unit': v.get('unit', 'u'), 'score': v} for v in rows]\n"
+    ),
+}
 
 
 @pytest.mark.parametrize(
-    "answers, on_fail, expected",
+    "answers, on_fail, expected, wrapped",
     [
-        (['{"group": "g"}', '{"group": "g"}'], "drop_failed", 2),
-        (["bad", '{"group": "g"}'], "drop_failed", "empty group"),
-        (['{"group": "g"}', "bad"], "fail_group", "no JSON object"),
+        (['{"group": "g"}', '{"group": "g"}'], "drop_failed", [2], False),
+        (["bad", '{"group": "g"}'], "drop_failed", ["no JSON object", 1], False),
+        (["bad", '{"unit": "u"}'], "fail_group", ["no JSON object"], True),
+        (["bad", '{"unit": "u"}'], "drop_failed", [1], True),
+        (["bad", "bad"], "drop_failed", ["empty group"], True),
+        (["bad", '{"unit": "v"}'], "fail_group", ["no JSON object", 1], True),
     ],
-    ids=["drops_the_failed_row", "emptied_group", "fails_the_group"],
+    ids=["kept", "own", "keyed_fails", "keyed_drops", "emptied", "keyed_own"],
 )
-def test_a_reduce_applies_its_on_fail_policy(
-    answers: list[str], on_fail: str, expected: Any, tmp_path: Path
+def test_a_reduce_groups_a_marked_row_by_its_key_under_its_policy(
+    answers: list[str],
+    on_fail: str,
+    expected: list[Any],
+    wrapped: bool,
+    tmp_path: Path,
 ) -> None:
-    ops = [_parse(format="json"), _reduce(on_fail)]
+    ops = [_parse(format="json")]
+    ops += [_WRAPPED, _reduce(on_fail, inputs=["W"])] if wrapped else [_reduce(on_fail)]
     outputs = [item["output"] for item in _run(ops, {"Answer": answers}, tmp_path)]
-    if isinstance(expected, int):
-        assert outputs == [expected]
-        return
-    (failed,) = [value for value in outputs if isinstance(value, dict)]
-    assert failed["_fail"]["reason"] == expected
+    assert len(outputs) == len(expected)
+    for got, want in zip(outputs, expected):
+        assert got == want if isinstance(want, int) else got["_fail"]["reason"] == want
 
 
 def test_an_on_fail_policy_is_checked_where_it_is_set() -> None:
