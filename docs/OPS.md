@@ -555,13 +555,87 @@ serializes the function automatically via `dill.source.getsource` — see
 `RouterOp` partitions one source op's rows into named branches, one ordinary
 node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
 first rule that matches wins; `match` is `contains` or `equals`, optional
-`path` selects the field tested, and `default_branch` keeps unmatched rows.
+`path` selects the field tested, and `default_branch` keeps unmatched rows. A
+router that declares `error_branch: true` also exposes an `error` branch, which
+receives exactly the [failed records](#failed-records); every rule and default
+branch skips them, so without an `error` branch a failed row reaches none.
 
 ```yaml
 ops:
   - {id: route, op: RouterOp, inputs: [norm], default_branch: patient,
+     error_branch: true,
      rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"},
              {branch: test, match: contains, value: "REQUEST TEST"}]}
 ```
+
+### ParseOp
+
+`ParseOp` reads one input column and emits one parsed record per row, so a
+reply that is JSON, fenced JSON, or JSON wrapped in prose becomes a field
+lookup instead of hand-written decoding in a `LambdaOp`. It runs as its own
+standalone `python` task, one value per input row, read at
+`value.items.output` (a textified `output` plus the raw `value`).
+
+```yaml
+ops:
+  - id: Verdict
+    op: ParseOp
+    inputs: [Answer]
+    format: json              # json | regex
+    require: [eligibility]    # optional top-level keys, json only
+```
+
+`format: json` strips one surrounding fenced code block (```` ```json … ``` ````,
+any language tag) and any prose before the first `{` or `[`, then decodes the
+JSON, with `strict` off so a reply may carry literal control characters.
+`require` names top-level keys that must be present, checked on the object or
+on any element of a list of objects.
+
+`format: regex` returns an object of the named groups of
+`pattern`'s first match; the pattern must name at least one group
+(`(?P<name>…)`). `flags` is any of `i`, `s`, `m`. `pattern`, `require` and
+`flags` are validated at submit, and every error names the op.
+
+```yaml
+ops:
+  - id: Score
+    op: ParseOp
+    inputs: [Answer]
+    format: regex
+    pattern: 'Score: (?P<score>\d+)/\d+'
+```
+
+A row the parse cannot handle becomes a failed record rather than failing the
+task: see [Failed records](#failed-records).
+
+### Failed records
+
+A record that fails becomes a marker instead of an error, so one bad row costs
+neither its siblings nor the job. A failed record's value is the object
+`{"_fail": {"op": "<op id>", "reason": "<text>"}}` and nothing else; an ok
+record has no `_fail` key. A failed record keeps its position, so parallel
+columns stay aligned.
+
+- `ParseOp` emits the marker for a row it cannot parse; the reason names what
+  went wrong, such as `no JSON object`, `missing key 'eligibility'` or
+  `pattern did not match`.
+- A row `LambdaOp` does not call the function for a row with a marked cell; it
+  emits the first such marker for that row. An aligned `LambdaOp` calls the
+  function on the live columns and merges the marked rows back by position. A
+  list `LambdaOp` receives markers as ordinary values, so a whole-list function
+  sees every row.
+- A user function that raises still fails the task, as before; only a parse or
+  a pass-through produces a marker.
+- `RouterOp` sends failed rows to an `error` branch when the op declares
+  `error_branch: true`; otherwise a failed row goes to no branch. See
+  [`RouterOp`](#routerop).
+- Outputs archive the marker as its object, so a job result shows which
+  records failed and why.
+- A rowwise model op (`LLMChatOp` with `rowwise_columns`, `LLMCompletionOp`,
+  `EmbeddingOp`) whose rowwise column reads a failed record fails the task,
+  naming the op and the row, rather than rendering the marker into a prompt.
+
+`_fail` is reserved: a user function that returns an object carrying it fails
+the task, so a user value is never mistaken for a marker.
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
