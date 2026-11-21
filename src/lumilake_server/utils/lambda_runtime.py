@@ -312,18 +312,18 @@ def _check_lambda(tree: ast.Expression) -> str:
     return "<lambda>"
 
 
-def _check_def(stmt: ast.FunctionDef, max_params: int = 1) -> str:
+def _check_def(stmt: ast.FunctionDef, params: int = 1) -> str:
     count = _param_count(stmt.args)
-    if count <= max_params:
+    if count == params:
         return stmt.name
-    if max_params == 1:
+    if params == 1:
         raise ValueError(
             "Function must accept exactly 1 parameter (a tuple), but has"
             f" {count} parameters. Expected signature:"
             " fn(args: tuple[str, ...]) -> str"
         )
     raise ValueError(
-        f"Function must accept at most {max_params} parameters, but has"
+        f"Function must accept exactly {params} parameters, but has"
         f" {count}. Expected signature: fn(args: tuple[str, ...], seed: int)"
     )
 
@@ -351,7 +351,7 @@ def _check_free_names(code: str) -> None:
         )
 
 
-def validate_source(code: str, fn_name: str | None = None, max_params: int = 1) -> str:
+def validate_source(code: str, fn_name: str | None = None, params: int = 1) -> str:
     """Check LambdaOp source without running any of it; return the function name.
 
     Parsing only: a ``def`` runs its decorators, defaults and annotations when
@@ -359,11 +359,11 @@ def validate_source(code: str, fn_name: str | None = None, max_params: int = 1) 
     never executes the code.
 
     ``fn_name`` is the name the LambdaOp declares: the code must define a
-    top-level one-parameter function of that name. Imports, constants and
-    helper functions may come before it. Without ``fn_name`` the first
-    top-level function is used. A lambda has no name, so ``fn_name`` labels it
-    only. Imports are not restricted here: a standalone task runs in its own
-    container, so the image is the only import boundary.
+    top-level function of that name taking ``params`` parameters. Imports,
+    constants and helper functions may come before it. Without ``fn_name`` the
+    first top-level function is used. A lambda has no name, so ``fn_name``
+    labels it only. Imports are not restricted here: a standalone task runs in
+    its own container, so the image is the only import boundary.
     """
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
@@ -392,7 +392,7 @@ def validate_source(code: str, fn_name: str | None = None, max_params: int = 1) 
         )
     if isinstance(target, ast.AsyncFunctionDef):
         raise ValueError("LambdaOp function must not be async")
-    return _check_def(target, max_params)
+    return _check_def(target, params)
 
 
 def validate_inline_source(code: str, fn_name: str | None = None) -> str:
@@ -481,14 +481,14 @@ _INLINE_WRAPPER_NAMES = _inline_names()
 
 
 def materialize(
-    code: str, fn_name: str | None = None, max_params: int = 1
+    code: str, fn_name: str | None = None, params: int = 1
 ) -> Callable[..., Any]:
     """Build the function from validated source in the LambdaOp namespace.
 
-    ``fn_name`` and ``max_params`` are checked against the source as in
+    ``fn_name`` and ``params`` are checked against the source as in
     ``validate_source``; a seeded LambdaOp declares two.
     """
-    defined_name = validate_source(code, fn_name, max_params)
+    defined_name = validate_source(code, fn_name, params)
     src = code.strip()
     used = {node.id for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Name)}
     namespace: dict[str, Any] = {
