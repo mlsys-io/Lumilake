@@ -185,7 +185,7 @@ class LLMChatOp(LLMOp):
         self.rowwise_seed = rowwise_seed
         self.system_messages = system_messages
         self.condition = condition
-        rowwise_seed_fits(rowwise_seed, rowwise_template, self.config)
+        check_rowwise_seed(rowwise_seed, rowwise_template, self.config, self.id)
 
     @property
     def messages(self) -> Op:
@@ -278,18 +278,17 @@ class LLMChatOp(LLMOp):
         )
 
 
-def rowwise_seed_fits(
+def check_rowwise_seed(
     rowwise_seed: RowwiseSeed | None,
     rowwise_template: str | None,
     config: GenerationConfig,
-    op_id: str | None = None,
+    op_id: str,
 ) -> None:
-    """A per-row seed column ref only fits a rowwise chat op on a backend that
-    accepts one seed per prompt. ``op_id`` names the op when the caller has it
-    before construction, as the parser does."""
+    """Refuse a per-row seed column ref that does not fit this rowwise chat op,
+    naming the op."""
     if rowwise_seed is None:
         return
-    named = f"LLMChatOp '{op_id}' " if op_id is not None else ""
+    named = f"LLMChatOp '{op_id}' "
     if rowwise_template is None:
         raise ValueError(
             f"{named}rowwise_seed needs a rowwise_template; only a rowwise"

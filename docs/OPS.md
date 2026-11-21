@@ -352,12 +352,11 @@ rows with the same key draw the same seed whatever their batch or position, and
 a spec edit that keeps the op id keeps its draws.
 The parser generates a row-mode `LambdaOp` whose id a user op cannot hold, and
 a native graph names it after its chat op and refuses that id if the graph
-already has it. The key form keeps
-`spec.data.seeds` and every check above applies, without pinning the whole input
-list the way a list-mode Lambda would. It needs `rowwise_template`, carries no
-other `rowwise_seed` field beside `key`, and a row with a missing or null key
-fails the job naming the op and row. A `{{round}}` in the op id stays literal in
-the seed inputs.
+already has it. The key form keeps `spec.data.seeds`, and every check above
+applies without pinning the whole input list the way a list-mode Lambda would.
+It needs `rowwise_template`, carries no other `rowwise_seed` field beside
+`key`, and a row with a missing or null key fails the job naming the op and
+row. A `{{round}}` in the op id stays literal in the seed inputs.
 
 ```yaml
 - id: Answer
