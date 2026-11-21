@@ -523,6 +523,29 @@ def test_wrapper_refuses_one_seed_for_several_rows(mode: str) -> None:
     assert [item["output"] for item in one] == ["7"]
 
 
+@pytest.mark.parametrize("mode", ["row", "expand"])
+def test_wrapper_refuses_a_seed_that_is_not_an_integer(mode: str) -> None:
+    """A float, a bool or other text is refused naming the op and the row
+    rather than being truncated into a different draw."""
+    code = "def draw(inputs, seed):\n    return '%d' % seed\n"
+    if mode == "expand":
+        code = "def draw(inputs, seed):\n    return ['%d' % seed]\n"
+    for bad in ("1.5", "true", "seven"):
+        with pytest.raises(
+            ValueError, match="op-1: seed row 0 is .*; a seed must be an integer"
+        ):
+            _run_wrapper(
+                code,
+                [
+                    {"kind": "literal", "values": ["a"]},
+                    {"kind": "literal", "values": [bad], "role": "seed"},
+                ],
+                {},
+                mode=mode,
+                seeded=True,
+            )
+
+
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     py_dir = _stage(tmp_path, "py", {"value": {"items": [{"output": "p"}]}})
     api_dir = _stage(tmp_path, "api", {"text": "t"})
