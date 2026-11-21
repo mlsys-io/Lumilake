@@ -15,16 +15,23 @@ def fail_marker(op: str, reason: str) -> dict[str, Any]:
     return {FAIL_KEY: {"op": op, "reason": reason}}
 
 
+def _is_marker(value: Any) -> bool:
+    """Whether a decoded value is a marker: an object whose only key is
+    ``_fail``, so a record that merely carries such a field stays ok."""
+    return isinstance(value, dict) and list(value) == [FAIL_KEY]
+
+
 def failure_of(value: Any) -> dict[str, Any] | None:
-    """The marker a value carries, or ``None`` when its record is ok."""
-    if isinstance(value, dict) and FAIL_KEY in value:
+    """The marker a value carries, or ``None`` when its record is ok. A text
+    value counts only when it decodes to the marker object itself."""
+    if _is_marker(value):
         return value
     if isinstance(value, str) and FAIL_KEY in value:
         try:
             decoded = json.loads(value)
         except ValueError:
             return None
-        if isinstance(decoded, dict) and FAIL_KEY in decoded:
+        if _is_marker(decoded):
             return decoded
     return None
 

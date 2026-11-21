@@ -73,6 +73,14 @@ def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
         assert [row["case_id"] for row in got] == expected
 
 
+def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
+    rows = [{"case_id": "e", "text": 'the field "_fail" is reserved'}]
+    column = [json.dumps(row) for row in rows]
+    assert _branch_rows(_router(), "route.patient", column) == rows
+    field = [{"case_id": "f", "text": "x", "_fail": "a user field"}]
+    assert _branch_rows(_router(), "route.patient", [json.dumps(field[0])]) == field
+
+
 def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
     with pytest.raises(ValueError, match="default branch"):
         RouterOp.from_entry(_router(default_branch="diagnose"))

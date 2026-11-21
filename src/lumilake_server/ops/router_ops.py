@@ -20,6 +20,11 @@ _MATCHES = ("contains", "equals")
 _NAME_RE = re.compile(r"^\w+$")
 _PATH_RE = re.compile(r"^\w+(\.\w+)*$")
 
+_MARKER = f"""\
+    def marked(row):
+        return isinstance(row, dict) and list(row) == ["{FAIL_KEY}"]
+"""
+
 _DECODER = """\
     def rows_of(column):
         rows = []
@@ -205,15 +210,16 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         f"def route_{branch}(items):",
         f'    LABEL = "{router.id}.{branch}"',
         _DECODER,
+        _MARKER,
         "    out = []",
         "    for row in rows_of(items[0]) if items else []:",
     ]
     if is_error:
-        lines.append(f'        if "{FAIL_KEY}" in row:')
+        lines.append("        if marked(row):")
         lines.append("            out.append(row)")
         lines.append("        continue")
     else:
-        lines.append(f'        if "{FAIL_KEY}" in row:')
+        lines.append("        if marked(row):")
         lines.append("            continue")
     if router.path:
         lines.append("        value = row")
