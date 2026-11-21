@@ -6,17 +6,20 @@ returns at most one row per parameter row declares ``rows: one`` instead; the
 runtime then checks that bound when it reads the result.
 """
 
+import re
 from typing import Any
 
 import sqlparse
-from sqlparse.sql import Parenthesis, TokenList
-from sqlparse.tokens import Keyword
+from sqlparse.sql import Parenthesis, Token, TokenList
+from sqlparse.tokens import Comment, Keyword, Punctuation
 
 ROWS_ONE = "one"
 
 ROWS_KEY = "rows"
 
 _ORDER_BY = "ORDER BY"
+
+_ORDER_BY_SPACING = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 
 
 def row_order_problem(data_spec: dict[str, Any]) -> str | None:
@@ -43,32 +46,53 @@ def row_order_problem(data_spec: dict[str, Any]) -> str | None:
     )
 
 
+def _carrying_tokens(tokens: list[Token]) -> list[Token]:
+    """The statement's tokens with whitespace, comments and ``;`` removed."""
+    return [
+        token
+        for token in tokens
+        if not (
+            token.is_whitespace
+            or token.ttype in Comment
+            or (token.ttype in Punctuation and token.value == ";")
+        )
+    ]
+
+
 def sql_has_top_level_order_by(query: str) -> bool:
     """Whether a SQL query orders its final result.
 
     The last statement's outer query counts, and so does a query wrapped whole
     in parentheses. An ``ORDER BY`` inside a subquery, a CTE, or an
-    aggregate's argument is not a check: sqlparse groups those under a
+    aggregate's argument does not count: sqlparse groups those under a
     ``Parenthesis`` or a function call, and the scan stops there.
+
+    Two rewrites make the scan see the keyword where a reader would: one
+    regular expression collapses whitespace inside ``ORDER BY`` itself, since
+    sqlparse's ``WHERE`` group only closes on the exact keyword and would
+    otherwise swallow an ``ORDER BY`` written across lines, and comments are
+    stripped so a trailing comment is not mistaken for another statement.
     """
-    statements = [s for s in sqlparse.parse(query) if s.value.strip()]
+    collapsed = _ORDER_BY_SPACING.sub(_ORDER_BY, query)
+    stripped = sqlparse.format(collapsed, strip_comments=True)
+    statements = [s for s in sqlparse.parse(stripped) if _carrying_tokens(s.tokens)]
     if not statements:
         return False
-    statement: TokenList = statements[-1]
-    if len(statement.tokens) == 1 and isinstance(statement.tokens[0], Parenthesis):
-        statement = statement.tokens[0]
+    last: TokenList = statements[-1]
+    tokens = _carrying_tokens(last.tokens)
+    while len(tokens) == 1 and isinstance(tokens[0], Parenthesis):
+        tokens = _carrying_tokens(tokens[0].tokens)
     return any(
-        token.ttype is Keyword and token.normalized == _ORDER_BY
-        for token in statement.tokens
+        token.ttype is Keyword and token.normalized == _ORDER_BY for token in tokens
     )
 
 
-def multi_row_item_indexes(items: object) -> list[int]:
+def multi_row_item_indexes(items: Any) -> list[int]:
     """The indexes of the retrieval items that returned more than one row.
 
     A ``rows: one`` retrieval fails when this list is non-empty: the declared
-    bound held for no item, so every row this item feeds downstream would be
-    silently reduced to its first.
+    bound failed for some item, so every row that item feeds downstream would
+    be silently reduced to its first.
     """
     if not isinstance(items, list):
         return []
