@@ -62,6 +62,10 @@ def op_spec_digest(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
 _DATA_KEYS = frozenset({"items", "seeds", "values", "seed", "lumid_cfg"})
 """Fields that hold per-row data or a secret, never the computation."""
 
+_SAMPLING_TASKS = frozenset({"inference", "api"})
+"""Task types whose decoding may draw tokens; classification takes an argmax
+and every other task computes without a model."""
+
 
 def _without_data(value: Any, logical_names: Mapping[str, str]) -> Any:
     """Replace every node reference and drop every per-row value, recursively.
@@ -88,11 +92,29 @@ def _without_data(value: Any, logical_names: Mapping[str, str]) -> Any:
 
 def declared_seed(op: RuntimeOp) -> int | None:
     """The seed the op itself declares, if any."""
-    for spec in (op.inference_spec, op.data_spec):
-        seed = spec.get("seed")
+    candidates: list[Any] = [op.inference_spec.get("seed"), op.data_spec.get("seed")]
+    body = op.api_spec.get("json")
+    if isinstance(body, Mapping):
+        candidates.append(body.get("seed"))
+    for seed in candidates:
         if isinstance(seed, int) and not isinstance(seed, bool):
             return seed
     return None
+
+
+def samples(op: RuntimeOp) -> bool:
+    """Whether the op draws tokens rather than decoding deterministically."""
+    if op.task_type not in _SAMPLING_TASKS:
+        return False
+    spec = op.inference_spec
+    if isinstance(spec.get("num_beams"), int) and not isinstance(
+        spec.get("num_beams"), bool
+    ):
+        return False
+    temperature = spec.get("temperature")
+    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
+        return temperature > 0
+    return True
 
 
 def is_marker(value: Any) -> bool:
@@ -122,9 +144,12 @@ class RecordRealization(BaseModel):
 
     seed: int | None = None
     attempt: int | None = None
+    production: str | None = None
+    """Set instead of a seed on a record no seed reproduces: the draw is unique
+    to its production, so it never shares a key with another run's."""
 
     def is_absent(self) -> bool:
-        return self.seed is None and self.attempt is None
+        return self.seed is None and self.attempt is None and self.production is None
 
 
 class EffectVersions(BaseModel):
