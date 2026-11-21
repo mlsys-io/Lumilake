@@ -343,3 +343,53 @@ def test_an_expand_parents_each_item_and_marks_one_tombstone(
 ) -> None:
     items = _run([_parse(format="json"), _expand("k")], {"Answer": answers}, tmp_path)
     assert [(item["parent"], item["child"]) for item in items] == expected
+
+
+def _reduce(on_fail: str) -> dict[str, Any]:
+    code = "def f(rows):\n    return len(rows)\n"
+    return _lower(mode="reduce", by="group", code=code, on_fail=on_fail)
+
+
+@pytest.mark.parametrize(
+    "answers, on_fail, expected",
+    [
+        (['{"group": "g"}', '{"group": "g"}'], "drop_failed", 2),
+        (["bad", '{"group": "g"}'], "drop_failed", "empty group"),
+        (['{"group": "g"}', "bad"], "fail_group", "no JSON object"),
+    ],
+    ids=["drops_the_failed_row", "emptied_group", "fails_the_group"],
+)
+def test_a_reduce_applies_its_on_fail_policy(
+    answers: list[str], on_fail: str, expected: Any, tmp_path: Path
+) -> None:
+    ops = [_parse(format="json"), _reduce(on_fail)]
+    outputs = [item["output"] for item in _run(ops, {"Answer": answers}, tmp_path)]
+    if isinstance(expected, int):
+        assert outputs == [expected]
+        return
+    (failed,) = [value for value in outputs if isinstance(value, dict)]
+    assert failed["_fail"]["reason"] == expected
+
+
+def test_an_on_fail_policy_is_checked_where_it_is_set() -> None:
+    payload = {
+        "name": "p",
+        "inputs": {"Answer": ["x"]},
+        "ops": [_parse(format="json"), _reduce("skip")],
+    }
+    with pytest.raises(ValueError, match="on_fail must be one of"):
+        parse_yaml_payload(json.dumps(payload))
+    native: dict[str, Any] = {
+        "L": {
+            "_id": "L",
+            "_op": "LambdaOp",
+            "_max_iter": None,
+            "_inputs": [],
+            "fn_name": "f",
+            "_code": "def f(row):\n    return row[0]\n",
+            "mode": "list",
+            "on_fail": "drop_failed",
+        }
+    }
+    with pytest.raises(ValueError, match="only valid in reduce mode"):
+        Graph.from_json(native)

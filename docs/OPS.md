@@ -491,7 +491,32 @@ failed parent keeps a defined slot. An empty list drops the row, so the
 path (compared as JSON text, so `1` and `"1"` differ) and calls the function
 once per group with that group's rows in input order, emitting one item per
 group in order of first appearance. A non-list expand return, or a row missing
-its `by` path, fails with the op named; `by` is accepted only in reduce mode.
+its `by` path, fails with the op named, unless the row carries a failed record,
+which holds no key to group by and forms a group of its own; `by` is accepted
+only in reduce mode.
+
+`on_fail` decides what a group that holds a failed record does; it defaults to
+`fail_group` and is accepted only in reduce mode:
+
+- `fail_group` emits that group's first marker as the group's item, so the
+  function does not see the failed row.
+- `drop_failed` removes the failed rows before grouping. A group that loses
+  every row emits the marker `{"_fail": {"op": "<op id>", "reason": "empty
+  group"}}`.
+
+```yaml
+ops:
+  - id: "TopThree"
+    op: LambdaOp
+    inputs: [Scores]
+    mode: reduce
+    by: patient_id
+    on_fail: drop_failed
+    fn_name: top_three
+    code: |
+      def top_three(rows):
+          return sorted(rows, key=lambda r: -r[0]["score"])[:3]
+```
 
 Both modes decode each column value once (JSON text is parsed, a serialized
 table becomes its row dicts) and always run as a standalone `python` task, so

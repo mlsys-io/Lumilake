@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from lumilake_server.data_specs import ExpandOnEmpty, ReduceOnFail
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.ops.spec_validation import validate_fields
@@ -28,8 +29,6 @@ MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
 
 LambdaMode = Literal["row", "list", "aligned", "expand", "reduce"]
-ReduceOnFail = Literal["drop_failed", "fail_group"]
-ExpandOnEmpty = Literal["drop", "fail"]
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
@@ -262,6 +261,7 @@ class LambdaOp(Op):
         on_empty: ExpandOnEmpty | None = None,
         clears_markers: bool = False,
         by: str | None = None,
+        on_fail: str = "fail_group",
     ) -> None:
         input_ops: list[Op] = [
             inp if isinstance(inp, Op) else DataOp(inp) for inp in inputs

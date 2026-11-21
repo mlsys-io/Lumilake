@@ -289,6 +289,7 @@ _REDUCE_MAIN = """\
 
 _BY = {by!r}
 _BY_PATH = _BY.split(".")
+_ON_FAIL = {on_fail!r}
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
@@ -296,8 +297,13 @@ def main(inputs):
         [_decode(v) for v in _column(entry, inputs, lambda v: v)]
         for entry in _PLAN
     ]
-    groups = {{}}
+    entries = []
+    by_key = {{}}
     for i, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
+        if carried_marker(row) is not None:
+            # A marked row keeps no key to group by, so its group is itself.
+            entries.append([None, [row]])
+            continue
         try:
             key = json.dumps(
                 _walk_path(row[0], _BY_PATH, "row %d" % i), sort_keys=True
@@ -307,8 +313,29 @@ def main(inputs):
                 "%s: reduce lambda cannot group row %d by %r: %s"
                 % ({op_id!r}, i, _BY, exc)
             ) from exc
-        groups.setdefault(key, []).append(row)
-    return {{"items": [{{"output": fn(rows)}} for rows in groups.values()]}}
+        if key not in by_key:
+            by_key[key] = len(entries)
+            entries.append([key, []])
+        entries[by_key[key]][1].append(row)
+    items = []
+    for _key, rows in entries:
+        markers = [m for m in map(carried_marker, rows) if m is not None]
+        if markers:
+            if _ON_FAIL == "fail_group":
+                items.append({{"output": markers[0]}})
+                continue
+            rows = [row for row in rows if carried_marker(row) is None]
+            if not rows:
+                items.append(
+                    {{
+                        "output": {{
+                            "_fail": {{"op": {op_id!r}, "reason": "empty group"}}
+                        }}
+                    }}
+                )
+                continue
+        items.append({{"output": fn(rows)}})
+    return {{"items": items}}
 """
 
 
@@ -565,6 +592,7 @@ def wrapper_source(
     plan: ColumnPlan,
     mode: str = "row",
     by: str | None = None,
+    on_fail: str = "fail_group",
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode == "list":
@@ -585,6 +613,7 @@ def wrapper_source(
         fn_name=fn_name,
         plan=plan_json(plan),
         by=by,
+        on_fail=on_fail,
     )
 
 
@@ -630,6 +659,7 @@ def flowmesh_spec(
             plan,
             mode,
             data_spec.by,
+            data_spec.on_fail or "fail_group",
         )
     spec: dict[str, Any] = {
         "taskType": PYTHON_TASK_TYPE,

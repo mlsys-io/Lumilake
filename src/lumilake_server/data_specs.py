@@ -29,6 +29,9 @@ PythonMode = Literal[
     "join",
 ]
 
+ReduceOnFail = Literal["drop_failed", "fail_group"]
+ExpandOnEmpty = Literal["drop", "fail"]
+
 
 class DataSpecModel(BaseModel):
     """Base model that refuses unknown keys."""
@@ -157,6 +160,7 @@ class PythonData(DataSpecModel):
     plan: list[ColumnPlanEntry] = Field(default_factory=list)
     mode: PythonMode | None = None
     by: str | None = None
+    on_fail: ReduceOnFail | None = None
     join: JoinDescription | None = None
     template: str | None = None
     timeout_s: int | float = 600
