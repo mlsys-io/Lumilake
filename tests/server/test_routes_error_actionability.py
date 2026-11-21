@@ -9,6 +9,7 @@ Exercises:
 """
 
 import datetime as dt
+import json
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -254,6 +255,48 @@ async def test_unsupported_workflow_format_returns_422(app: FastAPI) -> None:
             },
         )
     assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_native_key_form_is_refused_with_422_naming_the_op(
+    app: FastAPI,
+) -> None:
+    """A native graph whose keyed seed does not fit its chat op is refused with
+    the offending op named, and a malformed top-level seed is refused too."""
+    cases = {"_op": "DataOp", "_inputs": [], "_max_iter": None, "data": ["{}"]}
+    chat = {
+        "_op": "LLMChatOp",
+        "_inputs": ["cases"],
+        "_max_iter": None,
+        "config": {"model": "m"},
+        "messages": "msg",
+        "rowwise_seed": {"key": {"node": "cases", "path": "items.output.k"}},
+    }
+    body = _submit_body()
+    body["data"][0]["inputs"] = {"q": ["x"]}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for graph, match in [
+            ({"graph": {"chat": chat, "cases": cases}}, "LLMChatOp 'chat'"),
+            ({"graph": {"cases": cases}, "seed": "7"}, "'seed' must be an integer"),
+        ]:
+            body["data"][0]["workflow"] = json.dumps(graph)
+            resp = await client.post(
+                "/jobs", json=body, headers={"Authorization": "Bearer token"}
+            )
+            assert resp.status_code == 422
+            assert match in resp.json()["detail"]
+    # A bare graph takes its top-level seed out before its ops are read.
+    specs: dict[str, Any] = {}
+    job_routes_module._dispatch_workflow_to_graph_specs(
+        workflow_format="native",
+        workflow_payload={"seed": 7, "cases": cases},
+        batch_inputs={},
+        graph_name="g",
+        graph_specs=specs,
+        idx=0,
+    )
+    assert (specs["g"]["seed"], sorted(specs["g"]["graph"])) == (7, ["cases"])
 
 
 @pytest.mark.anyio

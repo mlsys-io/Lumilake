@@ -603,8 +603,9 @@ def _bind_seed_ref(
     bind_explicit: Callable[[str, str, str], tuple[str, str]],
 ) -> None:
     """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place. A
-    forwarded ref binds as a flat input, so both forms come back with a
-    ``path`` of ``""``."""
+    forwarded ref binds as a flat input, so its ``path`` usually comes back
+    empty; a non-empty one is a grouped reference's and reads a materializer,
+    which the chat op must list in its inputs."""
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:

@@ -5,7 +5,6 @@ import json
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
@@ -20,10 +19,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
-from lumilake_server.routes.jobs import (
-    _admit_subgraph,
-    _dispatch_workflow_to_graph_specs,
-)
+from lumilake_server.routes.jobs import _admit_subgraph
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
@@ -799,43 +795,6 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     )
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
     assert node.data_spec["seeds"] == [7, 9]
-
-
-def test_a_native_key_form_error_names_the_op_in_a_422():
-    """A native graph whose key form does not fit its chat op is refused with
-    the offending op named; an unwrapped graph's top-level seed is read as the
-    seed, not as an op."""
-    chat = {
-        "_op": "LLMChatOp",
-        "_inputs": ["cases"],
-        "_max_iter": None,
-        "config": {"model": "m"},
-        "messages": "msg",
-        "rowwise_seed": {"key": {"node": "cases", "path": "items.output.k"}},
-    }
-    cases = {"_op": "DataOp", "_inputs": [], "_max_iter": None, "data": ["{}"]}
-
-    def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
-        specs: dict[str, Any] = {}
-        _dispatch_workflow_to_graph_specs(
-            workflow_format="native",
-            workflow_payload=payload,
-            batch_inputs={},
-            graph_name="g",
-            graph_specs=specs,
-            idx=0,
-        )
-        return specs
-
-    with pytest.raises(HTTPException) as refusal:
-        dispatch({"graph": {"chat": copy.deepcopy(chat), "cases": cases}})
-    assert refusal.value.status_code == 422
-    assert "LLMChatOp 'chat'" in refusal.value.detail
-    specs = dispatch({"seed": 7, "cases": cases})
-    assert (specs["g"]["seed"], sorted(specs["g"]["graph"])) == (7, ["cases"])
-    native = {"chat": copy.deepcopy(chat), "cases": cases, "seed": "7"}
-    with pytest.raises(HTTPException, match="'seed' must be an integer"):
-        dispatch({"graph": native, "seed": "7"})
 
 
 def test_forward_aligned_materializers_are_row_cardinality():
