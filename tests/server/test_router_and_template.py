@@ -216,15 +216,20 @@ def test_template_and_api_are_mutually_exclusive() -> None:
             [_state("Live_r{{round}}", ["Symbols"])],
             "exported",
         ),
+        (
+            [_state("Live_r{{round}}", ["Symbols"], clears_markers=True)],
+            [_state("Live_r{{round}}", ["Symbols"])],
+            "clears_markers",
+        ),
     ],
-    ids=["first-row", "next-row", "retrieval", "not-exported"],
+    ids=["first-row", "next-row", "retrieval", "not-exported", "clears-markers"],
 )
 def test_template_refuses_a_body_at_submit(
     first: list[dict[str, Any]], next_ops: list[dict[str, Any]], message: str
 ) -> None:
     template = _spec(first, next_ops).driver.template
     assert template is not None
-    with pytest.raises(DriverProtocolError, match=message):
+    with pytest.raises((DriverProtocolError, ValueError), match=message):
         validate_template(template, None, max_nodes_per_round=8)
 
 

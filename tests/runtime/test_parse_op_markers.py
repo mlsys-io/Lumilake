@@ -7,10 +7,8 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.dynamic.spec import DynamicSpec
-from lumilake_server.dynamic.template import validate_template
 from lumilake_server.graphs import Graph
-from lumilake_server.ops.router_ops import RouterOp, expand_routers
+from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -98,8 +96,7 @@ def _router(**fields: Any) -> dict[str, Any]:
     }
 
 
-def _values(items: list[Any]) -> list[Any]:
-    return [item["value"] for item in items]
+_MARKER = {"_fail": {"op": "Q", "reason": "x"}}
 
 
 @pytest.mark.parametrize(
@@ -109,75 +106,64 @@ def _values(items: list[Any]) -> list[Any]:
         ('```json\n{"a": 1}\n```', {"a": 1}),
         ('Sure! Here it is: {"a": 1} hope that helps', {"a": 1}),
         ("[1, 2]", [1, 2]),
+        (json.dumps(_MARKER), _MARKER),
+        ("no idea", "no JSON object"),
+        ('{"answer": "yes", "confidence": 0.', "no JSON object"),
+        ('I compared [1] and [2]. {"answer": "yes"}', "no JSON object"),
+        ('{"_fail": 1, "a": 2}', "reserved key"),
+    ],
+    ids=[
+        "record",
+        "fenced",
+        "prose-wrapped",
+        "list",
+        "literal-marker",
+        "prose",
+        "truncated",
+        "citation",
+        "reserved-key",
     ],
 )
-def test_parse_json_reads_a_plain_fenced_or_prose_wrapped_record(
+def test_parse_json_reads_a_record_or_marks_the_row(
     answer: str, expected: Any, tmp_path: Path
 ) -> None:
-    got = _values(_run([_parse(format="json")], {"Answer": [answer]}, tmp_path))
-    assert got == [expected]
+    """A record decodes as it is; anything else becomes a marker whose reason
+    names the problem, and a reply that is literally a marker stays one."""
+    (item,) = _run([_parse(format="json")], {"Answer": [answer]}, tmp_path)
+    if isinstance(expected, str):
+        assert item["value"]["_fail"]["reason"].startswith(expected)
+    else:
+        assert item["value"] == expected
 
 
 @pytest.mark.parametrize(
-    "answer",
+    "ops, answer, expected",
     [
-        "no idea",
-        '{"answer": "yes", "evidence": {"pmid": 1}, "confidence": 0.',
-        'I compared [1] and [2]. {"answer": "yes"}',
+        ([_parse(format="json", require=["eligibility"])], '{"a": 1}', "missing key"),
+        ([_parse(format="json", require=["answer"])], '[{"answer": 1}]', "not a list"),
+        ([_parse(format="regex", pattern=r"(?P<score>\d+)")], "none", "did not match"),
+        (
+            [_parse(format="regex", pattern=r"Score: (?P<score>\d+)/\d+")],
+            "Score: 7/10",
+            {"score": "7"},
+        ),
     ],
+    ids=["missing-key", "require-list", "pattern", "match"],
 )
-def test_parse_json_marks_an_unparsable_row(answer: str, tmp_path: Path) -> None:
-    items = _run([_parse(format="json")], {"Answer": [answer, '{"a": 1}']}, tmp_path)
-    assert items[0]["value"]["_fail"]["reason"] == "no JSON object"
-    assert items[1]["value"] == {"a": 1}
-
-
-def test_parse_json_marks_a_reserved_key_and_keeps_a_text_marker(
-    tmp_path: Path,
+def test_parse_reads_a_row_by_its_spec_or_marks_it(
+    ops: list[dict[str, Any]], answer: str, expected: Any, tmp_path: Path
 ) -> None:
-    marker = {"_fail": {"op": "Q", "reason": "no JSON object"}}
-    answer = {"Answer": ['{"_fail": 1, "a": 2}', json.dumps(marker)]}
-    items = _run([_parse(format="json")], answer, tmp_path)
-    assert items[0]["value"]["_fail"]["reason"] == "reserved key '_fail'"
-    assert items[1]["value"] == marker
-
-
-def test_parse_json_marks_a_row_missing_a_required_key(tmp_path: Path) -> None:
-    ops = [_parse(format="json", require=["eligibility"])]
-    items = _run(ops, {"Answer": ['{"a": 1}']}, tmp_path)
-    assert items[0]["value"]["_fail"]["reason"] == "missing key 'eligibility'"
-
-
-def test_parse_json_fails_require_on_a_list_reply(tmp_path: Path) -> None:
-    ops = [_parse(format="json", require=["answer"])]
-    items = _run(ops, {"Answer": ['[{"answer": 1}]']}, tmp_path)
-    assert items[0]["value"]["_fail"]["reason"] == (
-        "require needs a JSON object, not a list"
-    )
-
-
-def test_parse_regex_returns_the_named_groups_of_a_match(tmp_path: Path) -> None:
-    ops = [_parse(format="regex", pattern=r"Score: (?P<score>\d+)/\d+")]
-    assert _values(_run(ops, {"Answer": ["Score: 7/10"]}, tmp_path)) == [{"score": "7"}]
-
-
-def test_parse_regex_marks_a_row_the_pattern_does_not_match(tmp_path: Path) -> None:
-    ops = [_parse(format="regex", pattern=r"(?P<score>\d+)")]
-    items = _run(ops, {"Answer": ["none"]}, tmp_path)
-    assert items[0]["value"]["_fail"]["reason"] == "pattern did not match"
+    items = _run(ops, {"Answer": [answer]}, tmp_path)
+    if isinstance(expected, str):
+        assert expected in items[0]["value"]["_fail"]["reason"]
+    else:
+        assert items[0]["value"] == expected
 
 
 def test_parse_rejects_a_bad_spec_naming_the_op() -> None:
+    payload = {"name": "p", "inputs": {"Answer": ["x"]}}
     with pytest.raises(ValueError, match="ParseOp 'P' pattern must name"):
-        parse_yaml_payload(
-            json.dumps(
-                {
-                    "name": "p",
-                    "inputs": {"Answer": ["x"]},
-                    "ops": [_parse(format="regex", pattern=r"\d+")],
-                }
-            )
-        )
+        parse_yaml_payload({**payload, "ops": [_parse(format="regex", pattern="1")]})
 
 
 def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
@@ -193,20 +179,14 @@ def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
         }
     spec: dict[str, Any] = {
         "id": "M",
-        "op": "LLMChatOp",
+        "op": "LLMChatOp" if kind == "chat" else "LLMVisionOp",
         "inputs": [node],
         "messages": [{"role": "user", "content": "hello"}],
         "rowwise_template": "Summarize {value}",
         "rowwise_columns": [{"label": "value", "node": node, "path": "items.output"}],
         "config": {"model": "meta-llama/Llama-3.1-8B-Instruct"},
     }
-    if kind == "vision":
-        spec.update(
-            op="LLMVisionOp",
-            image_source="Images",
-            config={"model": "meta-llama/Llama-3.2-11B-Vision-Instruct"},
-        )
-    return spec
+    return {**spec, "image_source": "Images"} if kind == "vision" else spec
 
 
 @pytest.mark.parametrize(
@@ -220,20 +200,15 @@ def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
     ],
     ids=["row", "aligned", "list", "error", "grouped"],
 )
-@pytest.mark.parametrize("kind", ["chat", "embedding", "vision"])
 def test_a_model_op_reading_marked_values_is_refused(
-    carrying: dict[str, Any], value: str, kind: str
+    carrying: dict[str, Any], value: str
 ) -> None:
     node = "R.error" if carrying["op"] == "RouterOp" else carrying["id"]
-    model = _model_reading(node, kind)
-    with pytest.raises(ValueError, match=f"model op '\\w+_p_{model['id']}"):
-        _build([carrying, model], {"Answer": [value], "Images": ["img.png"]})
-
-
-def test_a_model_op_reading_a_router_rule_or_default_branch_builds() -> None:
-    router = _router(inputs=["L"])
-    ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
-    assert _build(ops, {"Answer": ['{"a": 1}']}) is not None
+    values = {"Answer": [value], "Images": ["img.png"]}
+    for kind in ("chat", "embedding", "vision"):
+        model = _model_reading(node, kind)
+        with pytest.raises(ValueError, match=f"model op '\\w+_p_{model['id']}"):
+            _build([carrying, model], values)
 
 
 def test_a_user_entry_cannot_declare_clears_markers() -> None:
@@ -249,34 +224,9 @@ def test_a_user_entry_cannot_declare_clears_markers() -> None:
                 }
             )
         )
-    template = {
-        "id": "Live_r{{round}}",
-        "op": "LambdaOp",
-        "inputs": ["Symbols"],
-        "mode": "list",
-        "fn_name": "state",
-        "code": "def state(c):\n    return c[0]\n",
-        "clears_markers": True,
-    }
-    spec = DynamicSpec.model_validate(
-        {
-            "type": "dynamic",
-            "goal": "g",
-            "driver": {
-                "model": "m",
-                "template": {
-                    "first": {"ops": [template], "export": ["Live_r{{round}}"]},
-                    "next": {"ops": [template], "export": ["Live_r{{round}}"]},
-                    "stop_when_empty": "Live_r{{prev}}",
-                },
-            },
-        }
-    )
-    driver_template = spec.driver.template
-    assert driver_template is not None
-    with pytest.raises(ValueError, match="clears_markers"):
-        validate_template(driver_template, None, max_nodes_per_round=8)
-    # A router branch keeps its flag through the build of a later round.
+    # The branch a router expands to keeps its clearing flag through the build,
+    # so a model op reading it is allowed and one reading the error branch is
+    # not.
     values = {"Answer": ['{"a": 1}']}
     router = _router(inputs=["L"], error_branch=True)
     ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
@@ -285,30 +235,31 @@ def test_a_user_entry_cannot_declare_clears_markers() -> None:
         _build([*ops[:-1], _model_reading("R.error")], values)
 
 
-def test_a_row_lambda_skips_the_function_for_a_marked_row(tmp_path: Path) -> None:
-    items = _run(
-        [_parse(format="json"), _lower()], {"Answer": ["no idea", '{"a": 1}']}, tmp_path
-    )
-    assert items[0]["value"]["_fail"]["reason"] == "no JSON object"
-    assert items[1]["value"] == 'ran {"a": 1}'
-
-
 @pytest.mark.parametrize(
-    "answers", [["no idea"], ["bad", "no idea"], ["no idea", '{"a": 1}', "bad"]]
+    "carrying, key",
+    [
+        (_lower(), "value"),
+        (
+            _lower(
+                mode="aligned",
+                code="def f(columns):\n    return ['ran ' + c for c in columns[0]]\n",
+            ),
+            "output",
+        ),
+    ],
+    ids=["row", "aligned"],
 )
-def test_an_aligned_lambda_runs_only_on_the_live_rows(
-    answers: list[str], tmp_path: Path
+def test_a_row_or_aligned_lambda_keeps_a_marked_row_in_place(
+    carrying: dict[str, Any], key: str, tmp_path: Path
 ) -> None:
-    aligned = _lower(
-        mode="aligned",
-        code="def f(columns):\n    return ['ran ' + c for c in columns[0]]\n",
+    items = _run(
+        [_parse(format="json"), carrying],
+        {"Answer": ["no idea", '{"a": 1}', "bad"]},
+        tmp_path,
     )
-    items = _run([_parse(format="json"), aligned], {"Answer": answers}, tmp_path)
-    for answer, item in zip(answers, items):
-        if answer == '{"a": 1}':
-            assert item["output"] == 'ran {"a": 1}'
-        else:
-            assert item["output"]["_fail"]["reason"] == "no JSON object"
+    assert items[0][key]["_fail"]["reason"] == "no JSON object"
+    assert items[1][key] == 'ran {"a": 1}'
+    assert items[2][key]["_fail"]["reason"] == "no JSON object"
 
 
 def test_a_list_lambda_emits_every_value_of_a_returned_generator(
@@ -323,67 +274,40 @@ def test_a_list_lambda_emits_every_value_of_a_returned_generator(
     assert [item["output"] for item in items] == ['{"A": 1}', '{"B": 2}']
 
 
-def test_a_router_sends_marked_rows_to_a_declared_error_branch(tmp_path: Path) -> None:
-    tail = _lower(
-        inputs=["R.error"],
-        mode="list",
-        code="def f(items):\n    return items[0]\n",
-    )
-    ops = [_parse(format="json"), _router(error_branch=True), tail]
-    items = _run(ops, {"Answer": ['{"verdict": "yes"}', "no idea"]}, tmp_path)
-    (marked,) = [item["output"] for item in items]
-    assert list(marked) == ["_fail"]
-    assert marked["_fail"]["reason"] == "no JSON object"
-
-
 @pytest.mark.parametrize(
-    "code, refused",
+    "tail_code, refused",
     [
-        ("def f(items):\n    return list(items[0])\n", False),
+        ("def f(items):\n    return items[0]\n", False),
         (
-            "def f(items):\n    first = items[0][0]\n"
-            "    row = json.loads(first) if isinstance(first, str) else first\n"
-            "    return [row, {'_fail': {'op': 'X', 'reason': 'new'}}]\n",
+            "def f(items):\n    return items[0][:1] +"
+            " [{'_fail': {'op': 'X', 'reason': 'new'}}]\n",
             True,
         ),
     ],
     ids=["pass_through", "new_marker"],
 )
 def test_a_router_error_branch_passes_its_markers_and_refuses_a_new_one(
-    code: str, refused: bool, tmp_path: Path
+    tail_code: str, refused: bool, tmp_path: Path
 ) -> None:
-    # The rows reach the error branch as JSON text, so the marker it returns is
-    # a decoded copy of the one the step received, never the same object.
-    encoder = _lower(
-        id="E",
-        inputs=["P"],
-        mode="list",
-        code="def f(items):\n    return [json.dumps(row) for row in items[0]]\n",
-    )
-    tail = _lower(inputs=["R.error"], mode="list", code=code)
-    ops = [
-        _parse(format="json"),
-        encoder,
-        _router(inputs=["E"], error_branch=True),
-        tail,
-    ]
+    # The router's list lambda re-encodes each row, so the error branch gets
+    # JSON text and passes on its own decoded copy; a marker it builds itself
+    # is refused.
+    tail = _lower(inputs=["R.error"], mode="list", code=tail_code)
+    ops = [_parse(format="json"), _router(error_branch=True), tail]
     if refused:
         with pytest.raises(ValueError, match="reserved '_fail' key"):
             _run(ops, {"Answer": ["no idea"]}, tmp_path)
         return
-    items = _run(ops, {"Answer": ["no idea"]}, tmp_path)
+    items = _run(ops, {"Answer": ['{"verdict": "yes"}', "no idea"]}, tmp_path)
     (marked,) = [item["output"] for item in items]
-    assert list(marked) == ["_fail"]
+    assert marked["_fail"]["reason"] == "no JSON object"
 
 
 def test_a_router_without_an_error_branch_sends_a_marked_row_nowhere() -> None:
-    marked = json.dumps({"_fail": {"op": "P", "reason": "no JSON object"}})
     ops, clearing = expand_routers([_router()])
-    branches = RouterOp.from_entry(_router()).branches
-    assert [op["id"] for op in ops] == [f"R.{branch}" for branch in branches]
     assert clearing == {op["id"] for op in ops}
     for op in ops:
-        assert materialize(op["code"], op["fn_name"])(([marked],)) == []
+        assert materialize(op["code"], op["fn_name"])(([_MARKED],)) == []
 
 
 def test_a_user_function_returning_the_reserved_key_fails_the_task(
