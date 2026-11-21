@@ -233,6 +233,22 @@ def test_an_aligned_lambda_runs_on_the_live_rows_and_keeps_positions(
             assert item["output"] == want
 
 
+def test_a_list_lambda_emits_every_value_of_a_returned_generator(
+    tmp_path: Path,
+) -> None:
+    lister = {
+        "id": "L",
+        "op": "LambdaOp",
+        "inputs": ["P"],
+        "mode": "list",
+        "fn_name": "f",
+        "code": "def f(items):\n    return (v.upper() for v in items[0])\n",
+    }
+    ops = [_parse(format="json"), lister]
+    items = _run(ops, {"Answer": ['{"a": 1}', '{"b": 2}']}, tmp_path)
+    assert [item["output"] for item in items] == ['{"A": 1}', '{"B": 2}']
+
+
 def test_a_router_sends_marked_rows_to_a_declared_error_branch(tmp_path: Path) -> None:
     router = {
         "id": "R",
