@@ -18,6 +18,8 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.utils import lambda_runtime
+from lumilake_server.utils.lambda_runtime import INLINE_SAFE_BUILTINS
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -505,3 +507,47 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
         "node": explode_node.node_id,
         "path": "value.items.output.value",
     }
+
+
+def test_inlined_row_lambda_sees_the_decoded_value() -> None:
+    yaml_text = textwrap.dedent("""
+        name: inlined_decode
+        inputs:
+          payload: ['{"name": "nvda"}']
+        ops:
+          - id: read
+            op: LambdaOp
+            inputs: [payload]
+            fn_name: read
+            code: |
+              def read(row):
+                  return row[0]["name"]
+          - id: summarize
+            op: LLMChatOp
+            inputs: [read]
+            messages:
+              - role: user
+                content: read
+            config: { model: meta-llama/Llama-3.1-8B-Instruct }
+        outputs:
+          - { name: out, ref: summarize }
+        """)
+    runtime_graph = _build(yaml_text)
+
+    summarize = next(
+        n for n in runtime_graph.nodes.values() if n.task_type == "inference"
+    )
+    (step,) = [
+        step
+        for step in summarize.data_spec["template"]["options"]["format"]["steps"]
+        if step.get("function")
+    ]
+    namespace: dict[str, Any] = {"__builtins__": dict(INLINE_SAFE_BUILTINS)}
+    namespace.update({"json": lambda_runtime.json})
+    exec(step["function"], namespace)
+    (label,) = step["arguments"]
+    column = next(
+        c for c in summarize.data_spec["template"]["columns"] if c["label"] == label
+    )
+    (value,) = column["data"]["items"]
+    assert namespace["adapt"]((value,)) == "nvda"

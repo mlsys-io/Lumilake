@@ -83,6 +83,12 @@ EXCEPTION_BUILTIN_NAMES = (
 
 SAFE_BUILTIN_NAMES = _SAFE_BUILTIN_BASE_NAMES + EXCEPTION_BUILTIN_NAMES
 
+# The names FlowMesh's inline ``safe_eval`` namespace supplies, without its
+# exception classes; a generated inline wrapper must run under only these.
+INLINE_SAFE_BUILTINS = {
+    name: getattr(builtins, name) for name in _SAFE_BUILTIN_BASE_NAMES
+}
+
 # Names the standalone namespace exposes but FlowMesh's inline ``safe_eval``
 # namespace does not (its SAFE_BUILTINS has no exception classes), so inline
 # code that references them is rejected at submit.
@@ -94,6 +100,82 @@ INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
 
 _SOURCE_NAME = "<lambda_op>"
+
+DECODER_SOURCE = """\
+def _serialized_table(value):
+    if isinstance(value, str):
+        value = json.loads(value) if value.startswith(("{", "[")) else None
+    if (
+        isinstance(value, dict)
+        and list(value) == ["df"]
+        and isinstance(value["df"], str)
+    ):
+        table = json.loads(value["df"])
+        if isinstance(table, dict):
+            return table
+    return None
+
+
+def _table_rows(table):
+    rows = {}
+    for name, column in table.items():
+        if isinstance(column, dict):
+            for index, value in column.items():
+                rows.setdefault(index, {})[name] = value
+    if all(index.isdigit() for index in rows):
+        return [rows[index] for index in sorted(rows, key=int)]
+    return list(rows.values())
+
+
+def _decode(value):
+    if isinstance(value, str):
+        decoded = json.loads(value) if value.startswith(("{", "[")) else None
+        if isinstance(decoded, (dict, list)):
+            return _decode(decoded)
+        return value
+    if isinstance(value, dict):
+        table = _serialized_table(value)
+        if table is None and "table" in value:
+            table = _serialized_table(value["table"])
+        if table is not None:
+            return _table_rows(table)
+    return value
+"""
+
+# ``DECODER_SOURCE`` carries the same behaviour as the decoder in
+# ``lambda_task_helpers``, without annotations, docstrings or exception
+# classes, which FlowMesh's inline namespace cannot evaluate. An inlined row
+# Lambda and a router branch Lambda both embed it, so every mode decodes
+# alike; ``test_inline_decoder_matches_the_shared_one`` pins the parity.
+
+
+def inline_lambda_source(code: str, fn_name: str) -> str:
+    """The function step source for a row-mode LambdaOp an LLM inlines.
+
+    The worker hands every row argument over as text, so a generated wrapper
+    decodes each argument with the shared decoder before calling the op's own
+    function, which then sees what a standalone step gives it. The op's
+    definition moves inside the wrapper unchanged. When no argument decodes
+    differently the wrapper returns the row text as written, so a text-only
+    transform leaves its prompt unchanged.
+    """
+    body = "\n".join(
+        f"    {line}" if line.strip() else "" for line in code.strip().splitlines()
+    )
+    decoder = "\n".join(
+        f"    {line}" if line.strip() else "" for line in DECODER_SOURCE.splitlines()
+    )
+    return (
+        "def adapt(args):\n"
+        + body
+        + "\n\n"
+        + decoder
+        + "\n\n"
+        + "    row = tuple(_decode(v) for v in args)\n"
+        + "    if row == tuple(args):\n"
+        + "        return str(row[0])\n"
+        + f"    return {fn_name}(row)\n"
+    )
 
 
 def _lambda_import(
@@ -271,12 +353,12 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     """Check source for a LambdaOp the FlowMesh worker evaluates inline.
 
     A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
-    which the FlowMesh worker materializes in its own restricted namespace: no
-    ``__import__``, and it calls the first name the code binds at top level.
-    So the ``def`` named ``fn_name`` must be the first top-level statement,
-    with only a module docstring allowed before it. Code that a standalone
-    LambdaOp accepts but that namespace cannot run is rejected here, at
-    submit, with the reason.
+    which FlowMesh materializes in its own restricted namespace: no
+    ``__import__``, and it binds whichever names a generated wrapper defines.
+    The wrapper nests the op's definition inside an adapter that decodes its
+    rows first, so code a wrapper defines may be named by that function. Code
+    that a standalone LambdaOp accepts but that namespace cannot run is
+    rejected here, at submit, with the reason.
     """
     name = validate_source(code, fn_name)
     tree = _parse(code)
@@ -292,8 +374,9 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeds only other LambdaOps"
         )
     used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    wrapper_names = _inline_names(tree)
     unavailable = sorted(
-        used.intersection(INLINE_UNAVAILABLE_BUILTIN_NAMES),
+        used.intersection(INLINE_UNAVAILABLE_BUILTIN_NAMES) - wrapper_names,
         key=INLINE_UNAVAILABLE_BUILTIN_NAMES.index,
     )
     if unavailable:
@@ -304,17 +387,32 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
         )
-    for stmt in tree.body:
-        if _is_docstring(stmt):
-            continue
-        if isinstance(stmt, ast.FunctionDef) and stmt.name == name:
-            return name
-        break
-    raise ValueError(
-        f"a LambdaOp that feeds an LLM must define {name!r} as the first name"
-        " its code binds (the FlowMesh worker calls the first definition), so"
-        " move constants and helper functions inside it"
-    )
+    top_level = {
+        stmt.name
+        for stmt in tree.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    collisions = sorted(top_level & wrapper_names)
+    if collisions:
+        raise ValueError(
+            f"it defines {collisions[0]!r}, which a LambdaOp that feeds an LLM"
+            " cannot use inline: its function step nests the code in a generated"
+            " wrapper that already binds that name. Rename the definition or"
+            " move this logic to a LambdaOp that runs as its own python task"
+        )
+    return name
+
+
+def _inline_names(op_tree: ast.AST) -> set[str]:
+    """The names the generated inline wrapper adds around the op's function: the
+    adapter, its row, and the decoder functions it embeds."""
+    tree = ast.parse(DECODER_SOURCE)
+    return {
+        "adapt",
+        "args",
+        "row",
+        *(f.name for f in tree.body if isinstance(f, ast.FunctionDef)),
+    }
 
 
 def materialize(
