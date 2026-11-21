@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -565,7 +566,9 @@ def test_forward_grouped_list_aggregate_column_materializes():
     assert "return columns[0]" in materializer["code"]
 
 
-def test_forward_grouped_list_materializer_parses_through_yaml_parser(tmp_path):
+def test_forward_grouped_list_materializer_parses_through_yaml_parser(
+    tmp_path: Path,
+) -> None:
     sql_id = "s1"
     results = {sql_id: [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
     subgraph = [
