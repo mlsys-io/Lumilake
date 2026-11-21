@@ -70,10 +70,7 @@ def parse_row(spec: dict[str, Any], text: Any) -> Any:
         raise ValueError(f"input {text!r} is not text")
     fenced = _FENCE.search(text)
     body = fenced.group(1) if fenced else text
-    try:
-        value = json.loads(body, strict=False)
-    except ValueError:
-        value = _decode_trailing(text)
+    value = _decode_record(body)
     require = spec.get("require")
     if require:
         missing = next((key for key in require if not _has_key(value, key)), None)
@@ -82,19 +79,23 @@ def parse_row(spec: dict[str, Any], text: Any) -> Any:
     return value
 
 
-def _decode_trailing(text: str) -> Any:
-    """Decode the JSON record that starts after any prose, ignoring text after
-    it, so ``Here it is: {...} hope that helps`` yields the object."""
+def _decode_record(body: str) -> Any:
+    """Decode the JSON record that starts after any prose, ignoring trailing
+    prose, so ``Here it is: {...} hope that helps`` yields the object. Only the
+    first ``{`` or ``[`` is tried, and no further one may follow the record, so
+    a truncated reply or a bracketed citation before the record fails instead
+    of yielding a fragment."""
     decoder = json.JSONDecoder(strict=False)
-    for index, char in enumerate(text):
-        if char not in "{[":
-            continue
-        try:
-            value, _ = decoder.raw_decode(text, index)
-        except ValueError:
-            continue
-        return value
-    raise ValueError("no JSON object")
+    start = next((index for index, char in enumerate(body) if char in "{["), None)
+    if start is None:
+        raise ValueError("no JSON object")
+    try:
+        value, end = decoder.raw_decode(body, start)
+    except ValueError:
+        raise ValueError("no JSON object") from None
+    if any(char in "{[" for char in body[end:]):
+        raise ValueError("no JSON object")
+    return value
 
 
 def _has_key(value: Any, key: str) -> bool:

@@ -86,13 +86,18 @@ def test_parse_json_reads_a_plain_fenced_or_prose_wrapped_record(
     assert _values(_run(ops, {"Answer": [answer]}, tmp_path)) == [expected]
 
 
-def test_parse_json_marks_an_unparsable_row(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "no idea",
+        '{"answer": "yes", "evidence": {"pmid": 1}, "confidence": 0.',
+        'I compared [1] and [2]. {"answer": "yes"}',
+    ],
+)
+def test_parse_json_marks_an_unparsable_row(answer: str, tmp_path: Path) -> None:
     ops = [_parse(format="json")]
-    items = _run(ops, {"Answer": ["no idea", '{"a": 1}']}, tmp_path)
-    assert items[0]["value"]["_fail"] == {
-        "op": items[0]["value"]["_fail"]["op"],
-        "reason": "no JSON object",
-    }
+    items = _run(ops, {"Answer": [answer, '{"a": 1}']}, tmp_path)
+    assert items[0]["value"]["_fail"]["reason"] == "no JSON object"
     assert items[1]["value"] == {"a": 1}
 
 
