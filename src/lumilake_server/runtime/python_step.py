@@ -190,11 +190,17 @@ def main(inputs):
                 % (entry.get("node", "literal"), len(col), n)
             )
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
+    cells = None
     seeds = None
     if seed_entry is not None:
+        cells = _column(seed_entry, inputs, text)
+        # The seed step passes a row it cannot key through as its marker, so a
+        # marked seed cell marks its row and is never read as a draw.
         seeds = [
-            _raw_seed(v, {op_id!r}, i)
-            for i, v in enumerate(_column(seed_entry, inputs, text))
+            None
+            if failure_of(cells[i]) is not None
+            else _raw_seed(cells[i], {op_id!r}, i)
+            for i in range(len(cells))
         ]
         if len(seeds) != n:
             raise ValueError(
@@ -206,6 +212,8 @@ def main(inputs):
         marked = next(
             (value for value in map(failure_of, row) if value is not None), None
         )
+        if marked is None and seeds is not None and seeds[i] is None:
+            marked = failure_of(cells[i])
         if marked is not None:
             # A marked row keeps its position and passes the marker on.
             items.append({{"output": marked, "value": marked}})
@@ -286,11 +294,17 @@ def main(inputs):
     data = [entry for entry in _PLAN if entry.get("role") != "seed"]
     columns = [_column(entry, inputs, decode) for entry in data]
     rows = _rows(columns, data, {op_id!r})
+    cells = None
     seeds = None
     if seed_entry is not None:
+        cells = _column(seed_entry, inputs, text)
+        # The seed step passes a row it cannot key through as its marker, so a
+        # marked seed cell marks its row and is never read as a draw.
         seeds = [
-            _raw_seed(v, {op_id!r}, i)
-            for i, v in enumerate(_column(seed_entry, inputs, text))
+            None
+            if failure_of(cells[i]) is not None
+            else _raw_seed(cells[i], {op_id!r}, i)
+            for i in range(len(cells))
         ]
         if len(seeds) != len(rows):
             raise ValueError(
@@ -300,6 +314,8 @@ def main(inputs):
     items = []
     for index, row in enumerate(rows):
         marked = carried_marker(row)
+        if marked is None and seeds is not None and seeds[index] is None:
+            marked = failure_of(cells[index])
         if marked is not None:
             # A marked row keeps one defined slot, so no child is run or lost.
             items.append({{"output": marked, "parent": index, "child": 0}})
