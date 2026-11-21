@@ -1,5 +1,6 @@
 """A rowwise chat op derives each row's seed from that row's key."""
 
+import hashlib
 import json
 from typing import Any
 
@@ -10,7 +11,7 @@ from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.parser.keyed_seed import rewrite_native_keys, row_seed
+from lumilake_server.parser.keyed_seed import rewrite_native_keys, seed_op
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
@@ -76,6 +77,28 @@ def _seeds(spec: dict[str, Any], rows: list[Any]) -> list[Any]:
     return [fn((row,)) for row in rows]
 
 
+def _documented_seed(
+    job_seed: int, template_id: str, round_number: int | None, key: Any
+) -> int:
+    """The seed a row draws with, as ``docs/OPS.md`` states it: the first 8
+    bytes of SHA-256, big-endian, over ``[seed, op id, round, key]`` as
+    canonical JSON, reduced mod 2^31."""
+    payload = json.dumps(
+        [job_seed, template_id, round_number, key],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % 2**31
+
+
+def test_the_generated_function_matches_the_documented_seed() -> None:
+    spec = _seed_spec(_payload())
+    assert _seeds(spec, _COLUMN) == [
+        _documented_seed(7, "Answer", None, row["case_id"]) for row in _ROWS
+    ]
+
+
 def test_a_key_gives_the_same_seed_wherever_the_row_sits() -> None:
     spec = _seed_spec(_payload())
     rows = list(_COLUMN)
@@ -124,9 +147,24 @@ def test_a_different_job_seed_op_id_or_round_gives_a_different_seed() -> None:
     base = _seeds(_seed_spec(_payload()), column)
     assert _seeds(_seed_spec(_payload(seed=8)), column) != base
     key = _ROWS[0]["case_id"]
-    direct = row_seed(7, "Answer", None, key)
-    assert row_seed(7, "Other", None, key) != direct
-    assert row_seed(7, "Answer", 1, key) != direct
+    direct = _materialized_seed("Answer", None, key)
+    assert direct == _documented_seed(7, "Answer", None, key)
+    assert _materialized_seed("Other", None, key) != direct
+    assert _materialized_seed("Answer", 1, key) != direct
+
+
+def _materialized_seed(template_id: str, round_number: int | None, key: str) -> int:
+    """The seed the production function draws for one key, with the op id and
+    round it bakes in."""
+    op = seed_op(
+        "Answer",
+        "Cases",
+        "items.output",
+        job_seed=7,
+        round_number=round_number,
+        template_id=template_id,
+    )
+    return _seeds({"code": op["_code"], "fn_name": op["fn_name"]}, [key])[0]
 
 
 def test_a_template_op_keeps_its_unrendered_id_across_rounds() -> None:
@@ -206,7 +244,7 @@ def test_a_later_round_keys_on_an_earlier_rounds_node() -> None:
     assert forwarded == ["c1", "c2", "c1"]
     spec = {"code": generated["_code"], "fn_name": generated["fn_name"]}
     assert _seeds(spec, forwarded) == [
-        row_seed(7, "Answer{{round}}", 2, key) for key in forwarded
+        _documented_seed(7, "Answer{{round}}", 2, key) for key in forwarded
     ]
 
 
