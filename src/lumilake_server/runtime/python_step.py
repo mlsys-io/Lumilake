@@ -183,9 +183,10 @@ def main(inputs):
     seeds = None
     if seed_entry is not None:
         seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
-        if len(seeds) not in (1, n):
+        if len(seeds) != n:
             raise ValueError(
-                "seed column has %d rows; expected 1 or %d" % (len(seeds), n)
+                "%s: seed column has %d rows; expected one per row, so %d"
+                % ({op_id!r}, len(seeds), n)
             )
     items = []
     for i, row in enumerate(rows):
@@ -197,10 +198,7 @@ def main(inputs):
             # record keeps its position and carries the marker onward.
             items.append({{"output": marked, "value": marked}})
             continue
-        if seeds is None:
-            value = fn(row)
-        else:
-            value = fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
+        value = fn(row) if seeds is None else fn(row, seeds[i])
         reject_reserved_key(value, _NODE)
         items.append({{"output": text(value), "value": value}})
     return {{"items": items}}
@@ -279,17 +277,14 @@ def main(inputs):
     seeds = None
     if seed_entry is not None:
         seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
-        if len(seeds) not in (1, len(rows)):
+        if len(seeds) != len(rows):
             raise ValueError(
-                "%s: seed column has %d rows; expected 1 or %d"
+                "%s: seed column has %d rows; expected one per row, so %d"
                 % ({op_id!r}, len(seeds), len(rows))
             )
     items = []
     for i, row in enumerate(rows):
-        if seeds is None:
-            values = fn(row)
-        else:
-            values = fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
+        values = fn(row) if seeds is None else fn(row, seeds[i])
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"

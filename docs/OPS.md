@@ -584,8 +584,11 @@ a second argument, so the function can draw from `random.Random(seed)`. A
 function that declares only the input tuple keeps working unchanged: the second
 argument exists only when `seed` is declared, and a seeded op's function must
 accept exactly two parameters. The key's node must be listed in `inputs:`, as
-for a seed column. A `list`, `aligned` or `reduce` mode sees whole columns or
-groups rather than one row, so it takes no `seed`.
+for a seed column. The seed column carries exactly one seed per row: one seed
+handed to several rows would give every row the same draw, so the step fails
+naming the op and both counts, while one row with one seed stays fine. A
+`list`, `aligned` or `reduce` mode sees whole columns or groups rather than one
+row, so it takes no `seed`.
 
 ```yaml
 ops:
