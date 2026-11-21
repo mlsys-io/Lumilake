@@ -22,7 +22,6 @@ from lumilake_server.ops import (
     Op,
     OpMessage,
     RowwiseMessages,
-    SingleDtype,
     as_output,
     input_placeholder,
 )
@@ -1756,7 +1755,7 @@ def test_two_output_ops_on_one_list_lambda_rejected() -> None:
         RuntimeGraphBuilder().build(compiled)
 
 
-def _row_lambda_fn(row: tuple[SingleDtype, ...]) -> str:
+def _row_lambda_fn(row):
     return str(row[0]).upper()
 
 
