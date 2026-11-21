@@ -21,6 +21,7 @@ from lumilake_server.ops.llm_ops import (
     LLMCompletionOp,
     LLMVisionOp,
 )
+from lumilake_server.ops.parse_ops import ParseOp
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
@@ -1293,6 +1294,14 @@ class _LLMBuilder(_EmbeddingBuilder):
                     label = f"lambda_{op.id}"
                     steps[label] = (op.code, fn_args_serialized, True)
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
+
+            elif isinstance(op, ParseOp):
+                raise ValueError(
+                    f"LLMOp '{llm_op_id}' consumes ParseOp '{op.id}' through its"
+                    " message chain; a parsed record must be read through a node"
+                    " column (rowwise_columns / aggregate_table), or through a"
+                    " LambdaOp that renders it."
+                )
 
             else:
                 raise NotImplementedError(
