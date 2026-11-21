@@ -24,6 +24,7 @@ from lumilake_server.routes.jobs import (
     _admit_subgraph,
     _dispatch_workflow_to_graph_specs,
 )
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
@@ -555,8 +556,7 @@ def test_forward_grouped_list_aggregate_column_materializes():
     row = ops[0]["aggregate_table"][0]
     assert row["node"] == materializer_id
     assert row["path"] == "items.output"
-    # The materializer is a row-aligned LambdaOp passing each row's decoded
-    # column through.
+    # The materializer is a row-aligned LambdaOp passing decoded rows through.
     materializer = ops[1]
     assert materializer["id"] == materializer_id
     assert materializer["op"] == "LambdaOp"
@@ -565,17 +565,9 @@ def test_forward_grouped_list_aggregate_column_materializes():
     assert "return columns[0]" in materializer["code"]
 
 
-def test_forward_grouped_list_materializer_parses_through_yaml_parser():
-    # The rewritten op plus the appended materializer must parse as a valid
-    # workflow, with the materializer's input resolvable from the inputs block.
+def test_forward_grouped_list_materializer_parses_through_yaml_parser(tmp_path):
     sql_id = "s1"
-    results = {
-        sql_id: [
-            {"output": ["a", "b"]},
-            {"output": ["c", "d"]},
-        ]
-    }
-    configs = {sql_id: _sql_config(sql_id)}
+    results = {sql_id: [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
     subgraph = [
         {
             "id": "q4",
@@ -589,15 +581,24 @@ def test_forward_grouped_list_materializer_parses_through_yaml_parser():
             ],
         }
     ]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
-    workflow = {
-        "name": "round_1",
-        "inputs": inputs,
-        "ops": ops,
-        "outputs": [],
-    }
-    parsed = parse_yaml_payload(workflow)
-    assert parsed
+    ops, inputs = forward_refs(subgraph, results, {sql_id: _sql_config(sql_id)}, rows=2)
+    spec = parse_yaml_payload({"name": "r1", "inputs": inputs, "ops": ops})["r1"]
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    (node,) = [n for n in graph.nodes.values() if n.task_type == "python"]
+    d = node.data_spec
+    mount = tmp_path / "runtime.py"
+    mount.write_bytes(python_step.runtime_blob().body)
+    code = python_step.wrapper_source(
+        node.node_id, d["fn_name"], d["code"], d["plan"], d["mode"]
+    )
+    namespace: dict[str, Any] = {}
+    exec(code.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
+    assert [i["output"] for i in namespace["main"]({})["items"]] == [
+        ["a", "b"],
+        ["c", "d"],
+    ]
 
 
 def test_forward_scalar_per_row_keeps_today_path():

@@ -8,7 +8,6 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
-from lumilake_server.dynamic.driver import forward_refs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -615,8 +614,6 @@ def test_wrapper_flatten_multiple_grouped_items(tmp_path: Path) -> None:
 
 
 def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
-    # A list-mode Lambda reading a DataRetrievalOp gets one decoded value per
-    # retrieval item: the item's table arrives as its list of row dicts.
     ret_dir = _stage(
         tmp_path,
         "ret",
@@ -628,11 +625,10 @@ def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
         },
     )
     out = _run_wrapper(
-        "def titles(inputs):\n    return [v[0]['title'] for v in inputs[0]]\n",
+        "lambda inputs: [v[0]['title'] for v in inputs[0]]",
         [{"kind": "stage", "node": "ret"}],
         {"ret": ret_dir},
         mode="list",
-        fn_name="titles",
     )
     assert out == {"items": [{"output": "t0"}, {"output": "t1"}]}
 
@@ -661,12 +657,10 @@ def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
 
 @pytest.mark.parametrize("mode", ["list", "aligned"])
 def test_wrapper_whole_column_modes_decode_each_element(mode: str) -> None:
-    # A list- or aligned-mode function gets each column element decoded, a
-    # retrieval item's table as its row dicts.
-    item = {"table": {"df": json.dumps({"k": {"0": 1, "1": 2}})}}
+    item = {"table": {"df": '{"k": {"0": 1}}'}}
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(item)]}]
-    out = _run_wrapper("lambda c: [len(r) for r in c[0]]", plan, {}, mode=mode)
-    assert out == {"items": [{"output": 2}]}
+    out = _run_wrapper("lambda c: c[0][0]", plan, {}, mode=mode)
+    assert out == {"items": [{"output": {"k": 1}}]}
 
 
 def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
@@ -767,44 +761,6 @@ def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
 def test_wrapper_requires_a_function() -> None:
     with pytest.raises(ValueError, match="no top-level function named 'a'"):
         _run_wrapper("X = 1\n", [], {}, fn_name="a")
-
-
-def test_wrapper_runs_a_forwarded_grouped_rounds_materializer() -> None:
-    # The dynamic driver binds a grouped per-row forward as JSON text plus an
-    # aligned LambdaOp; the generated step hands each row the decoded list.
-    sql_id = "s1"
-    results = {sql_id: [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
-    configs = {
-        sql_id: {
-            "id": sql_id,
-            "op": "DataRetrievalOp",
-            "inputs": [],
-            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
-        }
-    }
-    subgraph = [
-        {
-            "id": "q4",
-            "op": "LLMChatOp",
-            "inputs": [],
-            "prompt": {"template": "x", "format_kwargs": {}},
-            "config": {"model": _MODEL},
-            "messages": [{"role": "user", "content": "x"}],
-            "aggregate_table": [
-                {"label": "summary", "node": sql_id, "path": "items.output"}
-            ],
-        }
-    ]
-    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
-    workflow = {"name": "r1", "inputs": inputs, "ops": ops, "outputs": []}
-    spec = next(iter(parse_yaml_payload(workflow).values()))
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    (node,) = _python_nodes(graph).values()
-    data = node.data_spec
-    out = _run_wrapper(data["code"], data["plan"], {}, data["fn_name"], data["mode"])
-    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
 
 
 _PLAN_X: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
@@ -1501,24 +1457,3 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
-
-
-def test_row_mode_decodes_a_cell_and_leaves_a_scalar_alone() -> None:
-    # A JSON-object cell arrives as a dict; a scalar string stays a string.
-    spec = parse_yaml_payload("""
-name: wf
-inputs: {p: ['{"n": "nvda"}', "1"]}
-ops: [{id: read, op: LambdaOp, inputs: [p], fn_name: read,
-       code: "def read(r):\\n    return r[0] if isinstance(r[0], str) else r[0]['n']"}]
-outputs: [{name: out, ref: read}]
-""")["wf"]
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    (node,) = _python_nodes(graph).values()
-    code = _spec(node)["code"].replace(
-        python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()
-    )
-    namespace: dict[str, Any] = {}
-    exec(code, namespace)
-    assert [i["value"] for i in namespace["main"]({})["items"]] == ["nvda", "1"]

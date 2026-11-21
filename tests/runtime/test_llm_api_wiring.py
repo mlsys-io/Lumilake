@@ -473,15 +473,14 @@ def test_image_generation_op_downstream_of_api_node_uses_text_path() -> None:
 
 
 def test_api_lambda_op_message_input_renders_literal() -> None:
-    """A LambdaOp message input must render in API mode: the server evaluates
-    the function at build time when its inputs are literal."""
+    """A LambdaOp message input renders in API mode over decoded literals."""
     stock = input_placeholder("Stock")
-    greeting = FormatOp("Hello, {name}!", name=stock)
+    greeting = FormatOp('{{"name": "{name}"}}', name=stock)
 
-    def _shout(inputs: tuple[str | list[Message], ...]) -> str:
-        (greeting_text,) = inputs
-        assert isinstance(greeting_text, str)
-        return greeting_text.upper()
+    def _shout(inputs: tuple[str | list[Message], ...]) -> Any:
+        (greeting,) = inputs
+        assert isinstance(greeting, dict)
+        return {"name": greeting["name"].upper()}
 
     shout = LambdaOp([greeting], fn=_shout)
     llm = LLMChatOp(
@@ -498,35 +497,6 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
     node = runtime_graph.nodes[llm.id]
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
     columns = node.data_spec["template"]["columns"]
-    lambda_cols = [col for col in columns if col.get("label", "").startswith("lambda_")]
-    assert lambda_cols and lambda_cols[0]["data"]["items"] == ["HELLO, NVDA!"]
-
-
-def test_api_lambda_op_message_input_is_decoded_like_a_row_step() -> None:
-    """The server hands an evaluated LambdaOp the same decoded values a row
-    step hands it, so a JSON-text literal arrives as the object it holds, and a
-    non-string return is archived as its JSON text."""
-    stock = input_placeholder("Stock")
-    payload = FormatOp('{{"name": "{name}"}}', name=stock)
-
-    def _name(inputs: tuple[str | list[Message], ...]) -> Any:
-        (value,) = inputs
-        assert isinstance(value, dict)
-        return {"name": str(value["name"]).upper()}
-
-    shout = LambdaOp([payload], fn=_name)
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=shout)],
-        config=GenerationConfig(
-            model="meta-llama/Llama-3.1-8B-Instruct",
-            api=ApiConfig(),
-        ),
-    )
-    output = as_output("result", llm)
-    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled)
-
-    columns = runtime_graph.nodes[llm.id].data_spec["template"]["columns"]
     lambda_cols = [col for col in columns if col.get("label", "").startswith("lambda_")]
     assert lambda_cols and lambda_cols[0]["data"]["items"] == ['{"name": "NVDA"}']
 

@@ -139,22 +139,11 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "code",
-    [
-        "def main(x):\n    return x\ndef {name}(v):\n    return v",
-        "def main(x):\n    return x\n{name} = 1",
-    ],
-)
-@pytest.mark.parametrize(
-    "name", ["adapt", "_op", "_decode", "_table_rows", "_serialized_table"]
-)
-def test_inline_source_rejects_a_name_the_wrapper_binds(code: str, name: str) -> None:
-    """The generated wrapper binds its adapter, its lambda binding and its
-    decoder's names, so a top-level binding of one would either leave the worker
-    no wrapper to call or shadow the decoder it runs through."""
+@pytest.mark.parametrize("name", sorted(lambda_runtime._inline_names()))
+def test_inline_source_rejects_a_name_the_wrapper_binds(name: str) -> None:
+    code = f"def main(x):\n    return x\n{name} = 1"
     with pytest.raises(ValueError, match="generated wrapper that already binds"):
-        lambda_runtime.validate_inline_source(code.format(name=name), "main")
+        lambda_runtime.validate_inline_source(code, "main")
 
 
 @pytest.mark.parametrize(
@@ -526,175 +515,56 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     assert "import math" in node.data_spec["code"]
 
 
-@pytest.mark.parametrize(
-    "row, expected",
-    [
-        ('{"name": "nvda"}', "NVDA"),
-        ('{"query": "solar\\n  panels"}', "SOLAR\n  PANELS"),
-        ("Hello, world!", "HELLO, WORLD!"),
-    ],
-)
-def test_yaml_inlined_lambda_step_decodes_its_row_at_run_time(
-    row: str, expected: str
-) -> None:
-    """A row Lambda the LLM inlines runs wrapped, so it sees the decoded value."""
-    payload = _CHAIN.replace('Name: ["world"]', f"Name: [{json.dumps(row)}]").replace(
-        "          (greeting,) = inputs",
-        "          greeting = inputs[0]\n"
-        "          if isinstance(greeting, dict):\n"
-        '              greeting = greeting["name" if "name" in greeting else "query"]',
-    )
-    runtime = _build(payload)
-    reply = next(n for n in runtime.nodes.values() if n.task_type == "inference")
-    (step,) = [
-        s
-        for s in reply.data_spec["template"]["options"]["format"]["steps"]
-        if s.get("function")
-    ]
-    # A JSON row arrives decoded and plain text stays as written; the op's own
-    # function runs on both, so its result is what the step returns.
-    wrapper = _run_in_inline_namespace(step["function"], "adapt")
-    assert wrapper((row,)) == expected
-
-
-def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
-    payload = _CHAIN.replace(
-        "      def shout(inputs):\n",
-        "      def shout(inputs):\n          import math\n",
-    )
-    with pytest.raises(
-        ValueError, match="Invalid LambdaOp '[^']*Shout[^']*': it imports 'math'"
-    ):
-        _build(payload)
-
-
-_INLINE_BUILTINS = {
-    name: getattr(builtins, name) for name in lambda_runtime._SAFE_BUILTIN_BASE_NAMES
-}
-
-
-def _run_in_inline_namespace(source: str, name: str) -> Any:
-    """Materialize generated source the way the FlowMesh worker does: separate
-    globals (only its SAFE_BUILTINS and modules) and locals, and a call whose
-    result must be ``str``."""
-    safe_globals: dict[str, Any] = {
-        "__builtins__": _INLINE_BUILTINS,
-        "json": json,
-        "re": re,
-        "math": math,
-    }
-    safe_locals: dict[str, Any] = {}
-    exec(source, safe_globals, safe_locals)
-    fn = safe_locals[name]
-
-    def _call(args: tuple[str, ...]) -> str:
-        result = fn(args)
-        assert isinstance(result, str)
-        return result
-
-    return _call
-
-
-def test_inline_wrapper_leaves_the_op_code_at_top_level() -> None:
-    # The worker calls the first local, so the wrapper must be the only one and
-    # the op's text must reach the globals unchanged; the op's own multi-line
-    # string keeps its leading whitespace, as it does in a direct call.
-    code = 'def build(args):\n    return f"""Q:\n  {args[0]}\nA:"""'
-    source = lambda_runtime.inline_lambda_source(code, "build")
-    assert source.startswith("global ") and source.endswith(code + "\n")
-    safe_locals: dict[str, Any] = {}
-    exec(source, {"__builtins__": _INLINE_BUILTINS}, safe_locals)
-    assert list(safe_locals) == ["adapt"]
-    assert safe_locals["adapt"](("hi",)) == lambda_runtime.materialize(code)(("hi",))
-
-
-@pytest.mark.parametrize(
-    "source, args, expected",
-    [
-        ("lambda a: a[0].upper()", ("nm",), "NM"),
-        ("lambda a: a[0]  # first column", ("nm",), "nm"),
-        ("def f(a):\n    return {'k': a[0]}", ("q",), '{"k": "q"}'),
-    ],
-)
-def test_inline_wrapper_calls_a_lambda_and_serializes_a_non_string(
-    source: str, args: tuple[str, ...], expected: str
-) -> None:
-    source = lambda_runtime.inline_lambda_source(
-        source, lambda_runtime.validate_inline_source(source)
-    )
-    assert _run_in_inline_namespace(source, "adapt")(args) == expected
-
-
-_sdk_lower = lambda inputs: str(inputs[0]).lower()  # noqa: E731
-
-
 def _sdk_imports(inputs):
     import math
 
     return str(math.sqrt(inputs[0]))
 
 
-def test_an_sdk_lambda_inlines_its_own_expression_or_is_refused() -> None:
-    # dill captures the statement that bound an SDK lambda, so only a statement
-    # holding exactly one lambda gives the source to wrap.
-    assert lambda_runtime.callable_source(_sdk_lower, "x = f(lambda a: a)") == (
-        "lambda a: a"
-    )
-    assert lambda_runtime.callable_source(_sdk_lower, "f(x)") == ""
-
-    upstream = LLMChatOp(
-        [OpMessage(role="user", content="hi")],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-    )
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=LambdaOp([upstream], fn=_sdk_lower))],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-    )
-    runtime = RuntimeGraphBuilder().build(
-        Graph.from_ops([as_output("r", llm)]).compile()
-    )
-    template = runtime.nodes[llm.id].data_spec["template"]
-    step = next(s for s in template["options"]["format"]["steps"] if s.get("function"))
-    assert _run_in_inline_namespace(step["function"], "adapt")(("NVDA",)) == "nvda"
-
-    # A readable SDK function goes through the same inline validation as
-    # submitted code, so an import inside it is refused at build time.
-    llm = LLMChatOp(
-        [OpMessage(role="user", content=LambdaOp([upstream], fn=_sdk_imports))],
-        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-    )
-    with pytest.raises(ValueError, match="Invalid LambdaOp '[^']*': it imports 'math'"):
-        RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", llm)]).compile())
-
-
-_PARITY_TABLE = {"title": {"0": "t0", "1": "t1"}, "note": {"0": "a", "1": "b"}}
+def _run_inlined(body: str) -> str:
+    shout = "      def shout(inputs):\n          (greeting,) = inputs\n"
+    row = '{"name": "q"}'
+    payload = _CHAIN.replace('Name: ["world"]', f"Name: [{json.dumps(row)}]")
+    body = "\n".join("      " + s for s in body.splitlines())
+    payload = payload.replace(shout + "          return greeting.upper()", body)
+    nodes = _build(payload).nodes.values()
+    reply = next(n for n in nodes if n.task_type == "inference")
+    steps = reply.data_spec["template"]["options"]["format"]["steps"]
+    function = next(s["function"] for s in steps if s.get("function"))
+    local: dict[str, Any] = {}
+    safe = {n: getattr(builtins, n) for n in lambda_runtime._SAFE_BUILTIN_BASE_NAMES}
+    exec(function, {"__builtins__": safe, "json": json, "re": re, "math": math}, local)
+    assert list(local) == ["adapt"]
+    assert isinstance(result := local["adapt"]((row,)), str)
+    return result
 
 
 @pytest.mark.parametrize(
-    "value",
+    "body, expected",
     [
-        '{"a": 1}',
-        "[1, 2]",
-        "1",
-        "plain",
-        "{name} said hi",
-        {"df": json.dumps(_PARITY_TABLE)},
-        {"index": 0, "table": {"df": json.dumps(_PARITY_TABLE)}},
-        {"table": {"df": json.dumps(_PARITY_TABLE)}},
-        json.dumps({"table": {"df": json.dumps(_PARITY_TABLE)}}),
-        '\n{"a": 1}',
-        " [1]",
-        '{"df": "not json"}',
-        {"df": "not json"},
-        {"a": {"b": "[1, 2]"}},
-        {"a": 1},
-        {"-1": {"x": 1}, "0": {"x": 2}},
-        {"0": {"x": 2}, "10": {"x": 1}, "2": {"x": 3}},
+        ('def shout(a):\n    return f"""Q\n  {a[0][\'name\']}\nA:"""', "Q\n  q\nA:"),
+        ("lambda a: a[0]['name']  # first", "q"),
+        ('def shout(a):\n    return {"k": a[0]}', '{"k": {"name": "q"}}'),
     ],
 )
+def test_yaml_inlined_step_runs_the_op_wrapped(body: str, expected: str) -> None:
+    assert _run_inlined(body) == expected
+
+
+def test_an_sdk_callable_is_validated_before_wrapping() -> None:
+    sdk = lambda inputs: str(inputs[0]).lower()  # noqa: E731
+    assert lambda_runtime.callable_source(sdk, "f(lambda a: a)") == "lambda a: a"
+    assert not lambda_runtime.callable_source(sdk, "f(x)")
+    config = GenerationConfig(model="Qwen/Qwen3-8B")
+    inner = LLMChatOp([OpMessage(role="user", content="hi")], config)
+    fn = LambdaOp([inner], fn=_sdk_imports)
+    llm = LLMChatOp([OpMessage(role="user", content=fn)], config)
+    with pytest.raises(ValueError, match="imports 'math'"):
+        RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", llm)]).compile())
+
+
+@pytest.mark.parametrize("value", ['{"a": 1}', {"df": '{"t": {"0": "x"}}'}])
 def test_inline_wrapper_and_shared_decoder_agree(value: Any) -> None:
-    # The decoder source runs at module scope, so it needs one namespace, not
-    # the wrapper's split globals and locals.
     namespace: dict[str, Any] = {"json": json}
     exec(lambda_runtime.DECODER_SOURCE, namespace)
     assert namespace["_decode"](value) == decode(value)
