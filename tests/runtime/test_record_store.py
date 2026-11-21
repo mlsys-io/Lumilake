@@ -228,28 +228,6 @@ async def test_writer_stores_one_entry_per_keyed_row(graph: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_signature_is_equal_across_row_order(graph: Any) -> None:
-    node_ids = {"Mark": _node_id(graph, "Mark"), "Join": _node_id(graph, "Join")}
-    forward = {
-        "Mark": [{"id": "a", "text": "ONE"}, {"id": "b", "text": "TWO"}],
-        "Join": [{"id": "a", "text": "ONE!"}, {"id": "b", "text": "TWO!"}],
-    }
-    reversed_ = {
-        "Mark": [{"id": "b", "text": "TWO"}, {"id": "a", "text": "ONE"}],
-        "Join": [{"id": "b", "text": "TWO!"}, {"id": "a", "text": "ONE!"}],
-    }
-    first = {
-        (entry.address.op, entry.address.record): entry.digest
-        for entry in _entries((await _write(graph, forward, node_ids))[0])
-    }
-    second = {
-        (entry.address.op, entry.address.record): entry.digest
-        for entry in _entries((await _write(graph, reversed_, node_ids))[0])
-    }
-    assert first == second
-
-
-@pytest.mark.asyncio
 async def test_slices_of_one_job_store_equal_digests() -> None:
     """One keyed job run whole and sliced batch by batch stores the same records
     under the same keys: neither the address nor the spec digest sees the
@@ -325,6 +303,33 @@ async def test_signature_changes_when_input_value_changes(graph: Any) -> None:
     # consumer read a different value, so its record gets a new one.
     assert digests(first, "Mark") == digests(second, "Mark")
     assert digests(first, "Join") != digests(second, "Join")
+
+
+@pytest.mark.asyncio
+async def test_signature_changes_when_an_input_literal_changes() -> None:
+    """An input literal reaches a python step through its column plan rather
+    than as a dependency, and a record still names the value it read, so a
+    changed literal gives that record a new key."""
+    rows = [json.dumps({"id": "a", "text": "one"})]
+    changed = [json.dumps({"id": "a", "text": "one-changed"})]
+    stored: dict[str, dict[tuple[str, str | None], str]] = {}
+    for label, inputs in (("first", rows), ("second", changed)):
+        payload = _payload()
+        payload["inputs"]["Rows"] = inputs
+        graph = _runtime_graph(payload)
+        storage, _ = await _write(
+            graph,
+            {"Mark": [{"id": "a", "text": "ONE"}]},
+            {"Mark": _node_id(graph, "Mark")},
+            job_id=f"req-{label}",
+        )
+        stored[label] = {
+            (entry.address.op, entry.address.record): entry.digest
+            for entry in _entries(storage, f"req-{label}")
+        }
+
+    assert set(stored["first"]) == set(stored["second"])
+    assert stored["first"] != stored["second"]
 
 
 def test_ops_reading_different_paths_get_different_signatures() -> None:

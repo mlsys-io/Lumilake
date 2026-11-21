@@ -345,9 +345,11 @@ def _record_inputs(
 ) -> list[RecordInput]:
     """The inputs a node reads, in its declared order.
 
-    An input this batch did not store (a literal input, a node outside the
-    stored graph) is named by the values it read, so a changed literal still
-    moves the signature."""
+    An input this batch did not store (a node outside the stored graph) is
+    named by the spec side it declares. A literal input is one dependency the
+    op never declares, because it reaches the task through the column plan
+    instead, and it is named by its own value at this row's position, so a
+    changed literal moves that record's signature."""
     inputs: list[RecordInput] = []
     for node in _input_nodes(plan):
         produced = records.get(node)
@@ -369,7 +371,29 @@ def _record_inputs(
                 ],
             )
         )
+    for entry in _literal_entries(plan):
+        inputs.append(
+            RecordInput(
+                keyed=True,
+                records=[
+                    (digest_of({"values": value}), digest_of(value))
+                    for value in entry.get("values", [])
+                ],
+            )
+        )
     return inputs
+
+
+def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
+    """The plan entries that inline literal values a python step reads."""
+    entries = plan.op.data_spec.get("plan")
+    if not isinstance(entries, list):
+        return []
+    return [
+        entry
+        for entry in entries
+        if isinstance(entry, Mapping) and entry.get("kind") == "literal"
+    ]
 
 
 def _input_nodes(plan: RecordPlan) -> list[str]:
