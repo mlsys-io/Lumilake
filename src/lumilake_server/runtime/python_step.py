@@ -200,9 +200,11 @@ def main(inputs):
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
     originals = tuple(value for column in columns for value in column)
+    items = []
     for value in values:
         reject_reserved_key(value, _NODE, originals=originals)
-    return {{"items": [{{"output": v}} for v in values]}}
+        items.append({{"output": value}})
+    return {{"items": items}}
 """
 
 _ALIGNED_MAIN = """\
