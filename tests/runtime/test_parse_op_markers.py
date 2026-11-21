@@ -322,6 +322,46 @@ def test_a_router_sends_marked_rows_to_a_declared_error_branch(tmp_path: Path) -
     assert marked["_fail"]["reason"] == "no JSON object"
 
 
+@pytest.mark.parametrize(
+    "code, refused",
+    [
+        ("def f(items):\n    return list(items[0])\n", False),
+        (
+            "def f(items):\n    first = items[0][0]\n"
+            "    row = json.loads(first) if isinstance(first, str) else first\n"
+            "    return [row, {'_fail': {'op': 'X', 'reason': 'new'}}]\n",
+            True,
+        ),
+    ],
+    ids=["pass_through", "new_marker"],
+)
+def test_a_router_error_branch_passes_its_markers_and_refuses_a_new_one(
+    code: str, refused: bool, tmp_path: Path
+) -> None:
+    # The rows reach the error branch as JSON text, so the marker it returns is
+    # a decoded copy of the one the step received, never the same object.
+    encoder = _lower(
+        id="E",
+        inputs=["P"],
+        mode="list",
+        code="def f(items):\n    return [json.dumps(row) for row in items[0]]\n",
+    )
+    tail = _lower(inputs=["R.error"], mode="list", code=code)
+    ops = [
+        _parse(format="json"),
+        encoder,
+        _router(inputs=["E"], error_branch=True),
+        tail,
+    ]
+    if refused:
+        with pytest.raises(ValueError, match="reserved '_fail' key"):
+            _run(ops, {"Answer": ["no idea"]}, tmp_path)
+        return
+    items = _run(ops, {"Answer": ["no idea"]}, tmp_path)
+    (marked,) = [item["output"] for item in items]
+    assert list(marked) == ["_fail"]
+
+
 def test_a_router_without_an_error_branch_sends_a_marked_row_nowhere() -> None:
     marked = json.dumps({"_fail": {"op": "P", "reason": "no JSON object"}})
     ops = expand_routers([_router()])
