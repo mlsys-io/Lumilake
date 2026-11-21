@@ -659,25 +659,34 @@ def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
 
 
 def test_wrapper_list_mode_hands_each_element_to_the_function_decoded() -> None:
-    # A list-mode function gets the whole column, each element already decoded
-    # from its JSON text to the list it holds, one group per row.
-    code = "def first(columns):\n    return [v[0] for v in columns[0]]\n"
+    # A list-mode function gets the whole column, each JSON-text element decoded
+    # to the object it holds.
+    code = "def keys(columns):\n    return [row['k'] for row in columns[0]]\n"
     plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+        {"kind": "literal", "values": ['{"k": 1}', '{"k": 2}']}
     ]
-    out = _run_wrapper(code, plan, {}, fn_name="first", mode="list")
-    assert out == {"items": [{"output": "a"}, {"output": "c"}]}
+    out = _run_wrapper(code, plan, {}, fn_name="keys", mode="list")
+    assert out == {"items": [{"output": 1}, {"output": 2}]}
 
 
 def test_wrapper_aligned_mode_returns_one_value_per_row(tmp_path: Path) -> None:
-    # An aligned function gets whole columns, each element already decoded, and
-    # returns one value per input row; the wrapper emits one item per row.
-    code = "def rows(columns):\n    return columns[0]\n"
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
-    ]
-    out = _run_wrapper(code, plan, {}, fn_name="rows", mode="aligned")
-    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
+    # An aligned function gets whole columns, each element already decoded —
+    # here a retrieval item's table as its row dicts — and returns one value
+    # per row, emitted one item per row.
+    ret_dir = _stage(
+        tmp_path,
+        "ret",
+        {"items": [{"table": {"df": json.dumps({"t": {"0": "a", "1": "b"}})}}]},
+    )
+    code = "def rows(columns):\n    return [len(v) for v in columns[0]]\n"
+    out = _run_wrapper(
+        code,
+        [{"kind": "stage", "node": "ret"}],
+        {"ret": ret_dir},
+        fn_name="rows",
+        mode="aligned",
+    )
+    assert out == {"items": [{"output": 2}]}
 
 
 def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
@@ -1474,3 +1483,37 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
+
+
+def _run_yaml_step(payload: str) -> Any:
+    """Build one YAML workflow and run its python step's generated main."""
+    spec = parse_yaml_payload(payload)["wf"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    (node,) = _python_nodes(RuntimeGraphBuilder().build(compiled)).values()
+    code = _spec(node)["code"].replace(
+        python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime()
+    )
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
+    return namespace["main"]({})
+
+
+def test_row_mode_decodes_a_cell_and_leaves_a_scalar_alone() -> None:
+    # A JSON-object cell arrives as a dict; a scalar string stays a string.
+    payload = """
+name: wf
+inputs: {payload: ['{"name": "nvda"}', "1"]}
+ops:
+  - id: read
+    op: LambdaOp
+    inputs: [payload]
+    fn_name: read
+    code: |
+      def read(row):
+          value = row[0]
+          return value["name"] if isinstance(value, dict) else value
+outputs:
+  - {name: out, ref: read}
+"""
+    out = _run_yaml_step(payload)
+    assert [item["value"] for item in out["items"]] == ["nvda", "1"]
