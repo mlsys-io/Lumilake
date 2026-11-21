@@ -392,14 +392,17 @@ def _run_wrapper(
     fn_name: str | None = None,
     mode: str = "row",
     by: str | None = None,
+    seeded: bool = False,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
-    declared = fn_name or lambda_runtime.validate_source(code)
+    declared = fn_name or lambda_runtime.validate_source(
+        code, max_params=2 if seeded else 1
+    )
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
     exec(
         python_step.wrapper_source(
-            "op-1", declared, code, _entries(plan), mode, by
+            "op-1", declared, code, _entries(plan), mode, by, seeded
         ).replace(python_step.TASK_RUNTIME_MOUNT, runtime_mount),
         namespace,
     )
@@ -467,6 +470,31 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
         [{"kind": "literal", "file": str(mounted)}],
         {},
     ) == {"items": [{"output": "mounted", "value": "mounted"}]}
+
+
+def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
+    """A seeded wrapper takes the tagged seed column from its plan and calls
+    the function with each row's seed as a second argument."""
+    llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
+    out = _run_wrapper(
+        "def seeded(inputs, seed):\n    return '%s-%d' % (inputs[0], seed)\n",
+        [
+            {"kind": "stage", "node": "llm"},
+            {
+                "kind": "literal",
+                "values": ["11", "22"],
+                "role": "seed",
+            },
+        ],
+        {"llm": llm_dir},
+        seeded=True,
+    )
+    assert out == {
+        "items": [
+            {"output": "a-11", "value": "a-11"},
+            {"output": "b-22", "value": "b-22"},
+        ]
+    }
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:

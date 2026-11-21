@@ -33,6 +33,9 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
+# A row or expand Lambda may declare a keyed seed, which its generated step
+# derives per row and passes as the function's second argument.
+SEED_MODES = ("row", "expand")
 CLEARS_KEY = "_clears_markers"
 """The private serialized key for ``LambdaOp.clears_markers``."""
 
@@ -55,6 +58,7 @@ class LambdaSpec(BaseModel):
     cache: StrictBool | None = None
     on_fail: ReduceOnFail | None = None
     on_empty: ExpandOnEmpty | None = None
+    seed: dict[str, Any] | None = None
     clears_markers: StrictBool | None = Field(default=None, alias="_clears_markers")
 
     @field_validator("image")
@@ -89,6 +93,15 @@ class LambdaSpec(BaseModel):
         if self.on_empty is not None and self.mode != "expand":
             raise ValueError(
                 f"'on_empty' is only valid in expand mode (got mode {self.mode!r})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _seed_needs_a_per_row_mode(self) -> Self:
+        if self.seed is not None and self.mode not in SEED_MODES:
+            raise ValueError(
+                f"'seed' is available in modes {SEED_MODES}, where the function"
+                f" runs once per row (got mode {self.mode!r})"
             )
         return self
 
@@ -157,8 +170,8 @@ class SubmittedFunction:
     (``runtime/python_step.py``).
     """
 
-    def __init__(self, code: str, fn_name: str) -> None:
-        validate_source(code, fn_name)
+    def __init__(self, code: str, fn_name: str, max_params: int = 1) -> None:
+        validate_source(code, fn_name, max_params)
         self.code = code
         self.__name__ = fn_name
 
@@ -259,6 +272,7 @@ class LambdaOp(Op):
         by: str | None = None,
         on_fail: ReduceOnFail | None = None,
         on_empty: ExpandOnEmpty | None = None,
+        seed: dict[str, Any] | None = None,
         clears_markers: bool = False,
     ) -> None:
         input_ops: list[Op] = [
@@ -281,6 +295,7 @@ class LambdaOp(Op):
                 "cache": cache,
                 "on_fail": on_fail,
                 "on_empty": on_empty,
+                "seed": seed,
                 CLEARS_KEY: clears_markers or None,
             },
             "LambdaOp",
@@ -326,6 +341,11 @@ class LambdaOp(Op):
         return self.spec.on_empty or self.ON_EMPTY_DROP
 
     @property
+    def seed(self) -> dict[str, Any] | None:
+        """The keyed seed a row or expand step derives per row."""
+        return self.spec.seed
+
+    @property
     def clears_markers(self) -> bool:
         """Parser-owned: set on generated router branches, never a workflow field."""
         return bool(self.spec.clears_markers)
@@ -346,7 +366,9 @@ class LambdaOp(Op):
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "LambdaOp":
         spec = build_lambda_spec(data, f"LambdaOp '{data['_id']}'")
         try:
-            fn: Callable[..., Any] = SubmittedFunction(spec.code, spec.fn_name)
+            fn: Callable[..., Any] = SubmittedFunction(
+                spec.code, spec.fn_name, 1 if spec.seed is None else 2
+            )
         except ValueError as exc:
             raise ValueError(
                 f"Invalid LambdaOp function '{spec.fn_name}': {exc}"
@@ -365,6 +387,7 @@ class LambdaOp(Op):
             sample_value=data.get("sample_value"),
             on_fail=spec.on_fail,
             on_empty=spec.on_empty,
+            seed=spec.seed,
             clears_markers=bool(spec.clears_markers),
         )
         return op

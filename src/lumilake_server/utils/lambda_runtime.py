@@ -289,14 +289,20 @@ def _check_lambda(tree: ast.Expression) -> str:
     return "<lambda>"
 
 
-def _check_def(stmt: ast.FunctionDef) -> str:
-    if _param_count(stmt.args) != 1:
+def _check_def(stmt: ast.FunctionDef, max_params: int = 1) -> str:
+    count = _param_count(stmt.args)
+    if count <= max_params:
+        return stmt.name
+    if max_params == 1:
         raise ValueError(
             "Function must accept exactly 1 parameter (a tuple), but has"
-            f" {_param_count(stmt.args)} parameters. Expected signature:"
+            f" {count} parameters. Expected signature:"
             " fn(args: tuple[str, ...]) -> str"
         )
-    return stmt.name
+    raise ValueError(
+        f"Function must accept at most {max_params} parameters, but has"
+        f" {count}. Expected signature: fn(args: tuple[str, ...], seed: int)"
+    )
 
 
 def _check_free_names(code: str) -> None:
@@ -322,7 +328,7 @@ def _check_free_names(code: str) -> None:
         )
 
 
-def validate_source(code: str, fn_name: str | None = None) -> str:
+def validate_source(code: str, fn_name: str | None = None, max_params: int = 1) -> str:
     """Check LambdaOp source without running any of it; return the function name.
 
     Parsing only: a ``def`` runs its decorators, defaults and annotations when
@@ -363,7 +369,7 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
         )
     if isinstance(target, ast.AsyncFunctionDef):
         raise ValueError("LambdaOp function must not be async")
-    return _check_def(target)
+    return _check_def(target, max_params)
 
 
 def validate_inline_source(code: str, fn_name: str | None = None) -> str:
@@ -441,13 +447,14 @@ _INLINE_WRAPPER_NAMES = _inline_names()
 
 
 def materialize(
-    code: str, fn_name: str | None = None
-) -> Callable[[tuple[Any, ...]], Any]:
+    code: str, fn_name: str | None = None, max_params: int = 1
+) -> Callable[..., Any]:
     """Build the function from validated source in the LambdaOp namespace.
 
-    ``fn_name`` is checked against the source as in ``validate_source``.
+    ``fn_name`` and ``max_params`` are checked against the source as in
+    ``validate_source``; a seeded LambdaOp declares two.
     """
-    defined_name = validate_source(code, fn_name)
+    defined_name = validate_source(code, fn_name, max_params)
     src = code.strip()
     used = {node.id for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Name)}
     namespace: dict[str, Any] = {
