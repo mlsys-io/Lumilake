@@ -1,6 +1,8 @@
 """Submitted LambdaOp code is parsed by the server, never executed by it."""
 
 import json
+import math
+import re
 from typing import Any
 
 import pytest
@@ -520,13 +522,23 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     assert "import math" in wire(node)["code"]
 
 
-def test_yaml_inlined_lambda_step_decodes_its_row_at_run_time() -> None:
+@pytest.mark.parametrize(
+    "row, expected",
+    [
+        ('{"name": "nvda"}', "NVDA"),
+        ('{"query": "solar\\n  panels"}', "SOLAR\n  PANELS"),
+        ("Hello, world!", "HELLO, WORLD!"),
+    ],
+)
+def test_yaml_inlined_lambda_step_decodes_its_row_at_run_time(
+    row: str, expected: str
+) -> None:
     """A row Lambda the LLM inlines runs wrapped, so it sees the decoded value."""
-    payload = _CHAIN.replace('Name: ["world"]', 'Name: [\'{"name": "nvda"}\']').replace(
+    payload = _CHAIN.replace('Name: ["world"]', f"Name: [{json.dumps(row)}]").replace(
         "          (greeting,) = inputs",
         "          greeting = inputs[0]\n"
         "          if isinstance(greeting, dict):\n"
-        '              greeting = greeting["name"]',
+        '              greeting = greeting["name" if "name" in greeting else "query"]',
     )
     runtime = _build(payload)
     reply = next(n for n in runtime.nodes.values() if n.task_type == "inference")
@@ -538,8 +550,7 @@ def test_yaml_inlined_lambda_step_decodes_its_row_at_run_time() -> None:
     # A JSON row arrives decoded and plain text stays as written; the op's own
     # function runs on both, so its result is what the step returns.
     wrapper = _run_in_inline_namespace(step["function"], "adapt")
-    assert wrapper(('{"name": "nvda"}',)) == "NVDA"
-    assert wrapper(("Hello, world!",)) == "HELLO, WORLD!"
+    assert wrapper((row,)) == expected
 
 
 def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
@@ -553,20 +564,82 @@ def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
         _build(payload)
 
 
-def _run_in_inline_namespace(source: str, name: str):
-    """Run generated source the way the FlowMesh worker does: one namespace of
-    whitelisted names and modules, with no exception classes."""
-    namespace: dict[str, Any] = {
-        "__builtins__": dict(lambda_runtime.INLINE_SAFE_BUILTINS)
+def _run_in_inline_namespace(source: str, name: str) -> Any:
+    """Materialize generated source the way the FlowMesh worker does: separate
+    globals (only its SAFE_BUILTINS and modules) and locals, and a call whose
+    result must be ``str``."""
+    safe_globals: dict[str, Any] = {
+        "__builtins__": lambda_runtime.INLINE_SAFE_BUILTINS,
+        "json": json,
+        "re": re,
+        "math": math,
     }
-    namespace.update({"json": json})
-    exec(source, namespace)
-    return namespace[name]
+    safe_locals: dict[str, Any] = {}
+    exec(source, safe_globals, safe_locals)
+    fn = safe_locals[name]
+
+    def _call(args: tuple[str, ...]) -> str:
+        result = fn(args)
+        assert isinstance(result, str)
+        return result
+
+    return _call
+
+
+def test_inline_wrapper_leaves_the_op_code_at_top_level() -> None:
+    # The worker calls the first local, so the wrapper must be the only one and
+    # the op's text must reach the globals unchanged.
+    code = 'def build(args):\n    return f"""Q:\n{args[0]}\nA:"""'
+    source = lambda_runtime.inline_lambda_source(code, "build")
+    assert source.startswith("global ") and source.endswith(code + "\n")
+    safe_locals: dict[str, Any] = {}
+    exec(source, {"__builtins__": lambda_runtime.INLINE_SAFE_BUILTINS}, safe_locals)
+    assert list(safe_locals) == ["adapt"]
+
+
+def test_inline_wrapper_matches_a_direct_call_on_a_multi_line_prompt() -> None:
+    from lumilake_server.runtime.lambda_task_helpers import _decode as shared
+
+    code = (
+        "def build(args):\n"
+        "    (q,) = args\n"
+        '    return f"""Question:\n{q}\nAnswer:"""'
+    )
+    wrapper = _run_in_inline_namespace(
+        lambda_runtime.inline_lambda_source(code, "build"), "adapt"
+    )
+    row = '{"q": "hi"}'
+    assert wrapper((row,)) == lambda_runtime.materialize(code)((shared(row),))
+
+
+@pytest.mark.parametrize(
+    "source, args, expected",
+    [
+        ("lambda a: a[0].upper()", ("nm",), "NM"),
+        (
+            "def f(a):\n    return {'name': a[0], 'n': 2}",
+            ("q",),
+            '{"name": "q", "n": 2}',
+        ),
+    ],
+)
+def test_inline_wrapper_calls_a_lambda_and_serializes_a_non_string(
+    source: str, args: tuple[str, ...], expected: str
+) -> None:
+    name = lambda_runtime.validate_inline_source(source)
+    wrapper = _run_in_inline_namespace(
+        lambda_runtime.inline_lambda_source(source, name), "adapt"
+    )
+    assert wrapper(args) == expected
 
 
 def test_inline_wrapper_and_shared_decoder_agree() -> None:
     from lumilake_server.runtime.lambda_task_helpers import _decode as shared
 
-    inline = _run_in_inline_namespace(lambda_runtime.DECODER_SOURCE, "_decode")
+    # The decoder source runs at module scope, so it needs one namespace, not
+    # the wrapper's split globals and locals.
+    namespace: dict[str, Any] = {"json": json}
+    exec(lambda_runtime.DECODER_SOURCE, namespace)
+    inline = namespace["_decode"]
     for value in ('{"a": 1}', "[1, 2]", "1", "plain", "{name} said hi"):
         assert inline(value) == shared(value)

@@ -156,28 +156,46 @@ def _decode(value):
 # pins the parity.
 
 
+def _top_level_bindings(code: str) -> set[str]:
+    """Every name the code's own top-level scope binds: a definition, an
+    import alias, an assignment, ``for`` and ``with ... as`` targets, an
+    ``except ... as`` name, and so on."""
+    table = symtable.symtable(code.strip(), _SOURCE_NAME, "exec")
+    return {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_assigned() or symbol.is_imported()
+    }
+
+
 def inline_lambda_source(code: str, fn_name: str) -> str:
     """The function step source for a row-mode LambdaOp an LLM inlines.
 
     The worker hands every row argument over as text, so a generated wrapper
     decodes each argument with the shared decoder before calling the op's own
-    function, which then sees what a standalone step gives it. The op's
-    definition moves inside the wrapper unchanged, and every row calls it.
+    function, which then sees what a standalone step gives it. The worker runs
+    the source with separate globals and locals and calls the first local, so
+    the wrapper is the only local binding: the op's code stays at top level,
+    byte for byte, and a ``global`` line keeps its names, the decoder's and a
+    lambda's ``_op`` out of the locals.
     """
-    body = "\n".join(
-        f"    {line}" if line.strip() else "" for line in code.strip().splitlines()
-    )
-    decoder = "\n".join(
-        f"    {line}" if line.strip() else "" for line in DECODER_SOURCE.splitlines()
-    )
+    src = code.strip()
+    tree = _parse(src)
+    if isinstance(tree, ast.Expression):
+        src = f"_op = ({src})"
+        globals_ = {"_op"}
+        call = "_op(row)"
+    else:
+        globals_ = _top_level_bindings(src)
+        call = f"{fn_name}(row)"
+    globals_ |= {"_decode", "_serialized_table", "_table_rows"}
     return (
+        "global " + ", ".join(sorted(globals_)) + "\n"
         "def adapt(args):\n"
-        + body
-        + "\n\n"
-        + decoder
-        + "\n\n"
-        + "    row = tuple(_decode(v) for v in args)\n"
-        + f"    return {fn_name}(row)\n"
+        "    row = tuple(_decode(v) for v in args)\n"
+        f"    value = {call}\n"
+        "    return value if isinstance(value, str) else json.dumps(value)\n"
+        "\n\n" + DECODER_SOURCE + "\n\n" + src + "\n"
     )
 
 
