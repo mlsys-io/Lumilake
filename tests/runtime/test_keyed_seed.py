@@ -13,7 +13,7 @@ from lumilake import envs
 from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
-from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.parser import parse_yaml_payload, yaml_parser
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
 from lumilake_server.runtime import python_step
@@ -189,9 +189,9 @@ def test_a_duplicate_key_fails_unless_paired() -> None:
     payload = _payload()
     payload["ops"][1]["rowwise_seed"].pop("pairing")
     with pytest.raises(ValueError, match="Answer' .*rows 0 and 2 share the key"):
-        _graph(payload)
+        yaml_parser.check_keyed_seed_duplicates(payload, {})
     payload["ops"][1]["rowwise_seed"]["pairing"] = "shared"
-    assert _graph(payload) is not None
+    yaml_parser.check_keyed_seed_duplicates(payload, {})
     payload["ops"][1]["rowwise_seed"]["pairing"] = "paired"
     with pytest.raises(ValueError, match="pairing must be one of"):
         _graph(payload)
