@@ -320,7 +320,8 @@ def _resolve_table_nodes(
 def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     """Fill in the ``rowwise_seed`` column and add its node to the op's
     inputs, as a rowwise column node is added. The ``key`` form becomes a
-    generated row function, ``<op id>__seed``, that reads the row's key."""
+    generated row function, named like every other implicit op, that reads the
+    row's key."""
     entry = ctx.entry
     seed = entry.fields.get("rowwise_seed")
     if seed is None:
@@ -363,7 +364,9 @@ def _seed_input_id(op_id: str, node_ref: str, ctx: EmitContext) -> str:
     return node_id
 
 
-def _emit_keyed_seed(op_dict: dict[str, Any], ctx: EmitContext, seed: Any) -> None:
+def _emit_keyed_seed(
+    op_dict: dict[str, Any], ctx: EmitContext, seed: dict[str, Any]
+) -> None:
     """Derive each row's seed from its key: queue a row function over the
     key column and bind the chat op to its output."""
     entry = ctx.entry
@@ -381,6 +384,7 @@ def _emit_keyed_seed(op_dict: dict[str, Any], ctx: EmitContext, seed: Any) -> No
         job_seed=ctx.job_seed,
         round_number=ctx.round_number,
         template_id=ctx.template_ids.get(entry.id, entry.id),
+        scope=ctx.scope,
     )
     op_dict.setdefault("__implicit_ops__", []).append(seed_dict)
     op_dict["rowwise_seed"] = {"node": seed_dict["_id"], "path": "items.output"}

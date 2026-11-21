@@ -294,26 +294,29 @@ def _validate_rowwise_seed(
     rowwise_seed: RowwiseSeed | None,
     rowwise_template: str | None,
     config: GenerationConfig,
+    op_id: str | None = None,
 ) -> None:
     """A per-row seed column ref only fits a rowwise chat op on a backend that
-    accepts one seed per prompt."""
+    accepts one seed per prompt. ``op_id`` names the op when the caller has it
+    before construction, as the parser does."""
     if rowwise_seed is None:
         return
+    named = f"LLMChatOp '{op_id}' " if op_id is not None else ""
     if rowwise_template is None:
         raise ValueError(
-            "rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
-            " seeds each row separately"
+            f"{named}rowwise_seed needs a rowwise_template; only a rowwise"
+            " LLMChatOp seeds each row separately"
         )
     num_beams = config.num_beams
     if num_beams is not None and num_beams > 1:
         raise ValueError(
-            "rowwise_seed is not supported with num_beams > 1: the beam path"
-            " takes no per-row seed"
+            f"{named}rowwise_seed is not supported with num_beams > 1: the beam"
+            " path takes no per-row seed"
         )
     if config.api is not None:
         raise ValueError(
-            "rowwise_seed is available only for local vLLM generation, not API"
-            " mode, which takes no per-row seed"
+            f"{named}rowwise_seed is available only for local vLLM generation,"
+            " not API mode, which takes no per-row seed"
         )
 
 

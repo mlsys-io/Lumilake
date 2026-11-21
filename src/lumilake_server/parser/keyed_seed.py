@@ -9,6 +9,10 @@ key column and returns one seed per row, and binds the chat op to its output.
 
 from typing import Any
 
+from lumilake_server.common import GenerationConfig
+from lumilake_server.ops.llm_ops import RowwiseSeed, _validate_rowwise_seed
+from lumilake_server.parser.common import make_id
+
 SEED_SUFFIX = "__seed"
 SEED_FN_NAME = "seed_for_row"
 _OUTPUT = "output"
@@ -59,9 +63,13 @@ def key_parts(path: str) -> list[str]:
     return parts
 
 
-def seed_op_id(chat_op_id: str) -> str:
-    """The id of the row function generated for one chat op."""
-    return f"{chat_op_id}{SEED_SUFFIX}"
+def seed_op_id(chat_op_id: str, scope: str | None = None) -> str:
+    """The id of the row function generated for one chat op. The parser names
+    it from the op id as it names every implicit op; a native graph, whose op
+    ids are already internal, names it from the chat op's own id."""
+    if scope is None:
+        return f"{chat_op_id}{SEED_SUFFIX}"
+    return make_id(scope, "lambda", f"{chat_op_id}{SEED_SUFFIX}")
 
 
 def seed_source(
@@ -79,14 +87,25 @@ def seed_source(
     return _SEED_FN.format(
         fn_name=fn_name,
         parts=parts,
-        missing=f"LLMChatOp '{template_id}' has no row key in '%s' with path"
-        f" {'.'.join(parts) or '<the value itself>'}",
-        null=f"LLMChatOp '{template_id}' has a null row key in '%s'",
+        missing=_seed_message(
+            f"LLMChatOp '{template_id}' has no row key in the value with path"
+            f" {'.'.join(parts) or '<the value itself>'}:"
+        ),
+        null=_seed_message(
+            f"LLMChatOp '{template_id}' has a null row key in"
+            f" {'.'.join(parts) or '<the value itself>'}:"
+        ),
         job_seed=job_seed,
         template_id=template_id,
         round_number=round_number,
         modulus=SEED_MODULUS,
     )
+
+
+def _seed_message(message: str) -> str:
+    """One runtime message, with its value placeholder and any ``%`` in the
+    baked op id or path escaped, so the function fills in just the value."""
+    return (message + " %s").replace("%", "%%").replace("%%s", "%s")
 
 
 def key_target(
@@ -97,32 +116,26 @@ def key_target(
     config: dict[str, Any],
 ) -> tuple[str, str]:
     """The ``(node, path)`` a key form reads, after checking the form fits
-    this chat op."""
+    this chat op, with the op named in the refusal."""
     key = seed.get("key")
     if not isinstance(key, dict):
         raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must be a mapping")
-    if rowwise_template is None:
+    beside = sorted(set(seed) - {"key"})
+    if beside:
         raise ValueError(
-            f"LLMChatOp '{op_id}' rowwise_seed key needs a rowwise_template;"
-            " only a rowwise LLMChatOp seeds each row separately"
-        )
-    num_beams = config.get("num_beams")
-    if num_beams is not None and num_beams > 1:
-        raise ValueError(
-            f"LLMChatOp '{op_id}' rowwise_seed is not supported with num_beams"
-            " > 1: the beam path takes no per-row seed"
-        )
-    if config.get("api") is not None:
-        raise ValueError(
-            f"LLMChatOp '{op_id}' rowwise_seed is available only for local vLLM"
-            " generation, not API mode, which takes no per-row seed"
+            f"LLMChatOp '{op_id}' rowwise_seed combines a key with {beside};"
+            " the key form derives each row's seed, so the node and path it"
+            " reads must sit inside 'key'"
         )
     node_ref = key.get("node")
-    path = key.get("path")
     if not isinstance(node_ref, str):
         raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must name a node")
+    path = key.get("path")
     if not isinstance(path, str):
         raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must name a path")
+    _validate_rowwise_seed(
+        RowwiseSeed(node_ref, path), rowwise_template, GenerationConfig(**config), op_id
+    )
     return node_ref, path
 
 
@@ -134,12 +147,13 @@ def seed_op(
     job_seed: int,
     round_number: int | None,
     template_id: str | None = None,
+    scope: str | None = None,
 ) -> dict[str, Any]:
     """The row-mode ``LambdaOp`` that returns each row's seed from its key.
     ``template_id`` is the op id as the user wrote it; it defaults to the
     internal id."""
     return {
-        "_id": seed_op_id(chat_op_id),
+        "_id": seed_op_id(chat_op_id, scope),
         "_op": "LambdaOp",
         "_max_iter": None,
         "_inputs": [key_node],
