@@ -444,12 +444,18 @@ def test_forward_per_row_explicit_reference_aligns_items_to_rows():
 
 def test_forward_per_row_splits_one_item_holding_the_whole_list():
     # A template round forwards its export as one item whose output is the list
-    # the list-mode export returned, so a later round reads its rows one each.
+    # the list-mode export returned, so a later round reads its rows one each;
+    # a one-row run keeps a one-element list as that row's value.
     lister_id = "l1"
-    results = {lister_id: [{"output": ["a", "b", "c"]}]}
     configs = {lister_id: {"id": lister_id, "op": "LambdaOp", "inputs": []}}
-    _, inputs = forward_refs(_three_row_subgraph(lister_id), results, configs, rows=3)
+    subgraph = _three_row_subgraph(lister_id)
+    results = {lister_id: [{"output": ["a", "b", "c"]}]}
+    _, inputs = forward_refs(subgraph, results, configs, rows=3)
     assert inputs == {lister_id: ["a", "b", "c"]}
+    _, inputs = forward_refs(
+        _three_row_subgraph(lister_id), {lister_id: [{"output": ["a"]}]}, configs
+    )
+    assert inputs == {lister_id: ['["a"]']}
 
 
 def test_forward_per_row_rejects_item_count_that_is_not_the_row_count():
