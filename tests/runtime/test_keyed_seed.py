@@ -249,9 +249,5 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
         _graph(
             {"ops": [cases, {**draw, "code": "def draw(row):\n    return row[0]\n"}]}
         )
-    node = next(
-        n
-        for n in _graph(payload).nodes.values()
-        if n.data_spec.get("fn_name") == "draw"
-    )
-    assert [e.get("role") for e in node.data_spec["plan"]] == [None, "seed"]
+    draw_node = _graph(payload).nodes[make_id("yaml_workflow", "lambda", "Draw")]
+    assert [e.get("role") for e in draw_node.data_spec["plan"]] == [None, "seed"]
