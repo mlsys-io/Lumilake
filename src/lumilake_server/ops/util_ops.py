@@ -233,6 +233,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        clears_markers: bool = False,
         by: str | None = None,
     ) -> None: ...
 
@@ -248,8 +249,8 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
-        by: str | None = None,
         clears_markers: bool = False,
+        by: str | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(

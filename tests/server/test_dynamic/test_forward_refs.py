@@ -340,7 +340,7 @@ def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
         )
         return graph_specs
 
-    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}}}
+    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}, "seed": 0}}
     with pytest.raises(HTTPException, match="clears_markers"):
         specs()
 
