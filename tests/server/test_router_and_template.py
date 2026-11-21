@@ -46,7 +46,7 @@ def _branch_rows(
     tmp_path: Path, entry: dict[str, Any], branch_id: str, column: list[Any]
 ) -> list[Any]:
     """Run a branch's list step over ``column`` as JSON text."""
-    op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
+    op = next(item for item in expand_routers([entry])[0] if item["id"] == branch_id)
     plan = [{"kind": "literal", "values": [json.dumps(v) for v in column]}]
     source = python_step.wrapper_source(
         op["id"], op["fn_name"], op["code"], plan, "list"
@@ -82,16 +82,21 @@ def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest(
     ):
         got = _branch_rows(tmp_path, _router(), branch_id, list(_ROWS))
         assert [row["case_id"] for row in got] == expected
+    # A wrapped whole list is unwrapped by the same decoder.
+    assert _branch_rows(tmp_path, _router(), "route.patient", [_ROWS])[0] == _ROWS[0]
     assert _branch_rows(tmp_path, _router(), "route.patient", []) == []
 
 
-def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
+def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch(
+    tmp_path: Path,
+) -> None:
     # Only an object whose sole key is `_fail` is a marker, and `error` is a
     # branch name only when the op declares the branch.
     rows = [{"case_id": "e", "text": 'the field "_fail" is reserved'}]
     field = [{"case_id": "f", "text": "x", "_fail": "a user field"}]
     for row in (*rows, *field):
-        assert _branch_rows(_router(), "route.patient", [json.dumps(row)]) == [row]
+        got = _branch_rows(tmp_path, _router(), "route.patient", [row])
+        assert got == [row]
     rule = [{"branch": "error", "match": "equals", "value": "1"}]
     RouterOp.from_entry(_router(rules=rule))
     with pytest.raises(ValueError, match="error"):
