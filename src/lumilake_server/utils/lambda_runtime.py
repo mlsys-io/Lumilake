@@ -155,9 +155,7 @@ def inline_lambda_source(code: str, fn_name: str) -> str:
     The worker hands every row argument over as text, so a generated wrapper
     decodes each argument with the shared decoder before calling the op's own
     function, which then sees what a standalone step gives it. The op's
-    definition moves inside the wrapper unchanged. When no argument decodes
-    differently the wrapper returns the row text as written, so a text-only
-    transform leaves its prompt unchanged.
+    definition moves inside the wrapper unchanged, and every row calls it.
     """
     body = "\n".join(
         f"    {line}" if line.strip() else "" for line in code.strip().splitlines()
@@ -172,8 +170,6 @@ def inline_lambda_source(code: str, fn_name: str) -> str:
         + decoder
         + "\n\n"
         + "    row = tuple(_decode(v) for v in args)\n"
-        + "    if row == tuple(args):\n"
-        + "        return str(row[0])\n"
         + f"    return {fn_name}(row)\n"
     )
 
