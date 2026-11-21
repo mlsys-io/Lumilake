@@ -506,6 +506,7 @@ def _dispatch_workflow_to_graph_specs(
     graph_specs: dict[str, dict[str, Any]],
     idx: int,
     parser_scope: str | None = None,
+    internal: bool = False,
 ) -> None:
     """Parse one workflow slice and merge it into ``graph_specs`` in place.
 
@@ -525,6 +526,10 @@ def _dispatch_workflow_to_graph_specs(
     :func:`lumilake_server.parser.common.make_id`. The submit path uses
     this to keep DSL ids stable across slices of the same parent
     workflow, which the multi-batch data-profile path depends on.
+
+    ``internal`` marks a graph this server assembled itself, such as a
+    dynamic round's: its ops may carry the marker-clearing key a router's
+    expansion set, so that key is not refused here.
     """
     if workflow_format == "n8n":
         payload = {
@@ -587,10 +592,11 @@ def _dispatch_workflow_to_graph_specs(
             detail=f"workflow payload at index {idx} must be an object",
         )
     graph_payload = _native_graph_ops(workflow_payload)
-    reject_user_clears_markers(
-        [op for op in graph_payload.values() if isinstance(op, dict)],
-        f"the native graph at index {idx}",
-    )
+    if not internal:
+        reject_user_clears_markers(
+            [op for op in graph_payload.values() if isinstance(op, dict)],
+            f"the native graph at index {idx}",
+        )
     job_seed = _native_job_seed(workflow_payload)
     try:
         graph = rewrite_native_keys(graph_payload, job_seed=job_seed)
@@ -1893,6 +1899,7 @@ async def _submit_dynamic_child(
             graph_name=slice_name,
             graph_specs=graph_specs,
             idx=0,
+            internal=True,
         )
         slice_start += slice_length
     # An api-driven run checks hardware.gpu == 0 per real round.
