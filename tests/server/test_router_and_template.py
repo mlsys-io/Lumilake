@@ -81,6 +81,13 @@ def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
     assert _branch_rows(_router(), "route.patient", [json.dumps(field[0])]) == field
 
 
+def test_a_router_names_the_error_branch_only_when_it_declares_one() -> None:
+    rule = [{"branch": "error", "match": "equals", "value": "1"}]
+    RouterOp.from_entry(_router(rules=rule))
+    with pytest.raises(ValueError, match="error"):
+        RouterOp.from_entry(_router(rules=rule, error_branch=True))
+
+
 def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
     with pytest.raises(ValueError, match="default branch"):
         RouterOp.from_entry(_router(default_branch="diagnose"))

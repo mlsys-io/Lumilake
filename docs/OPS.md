@@ -654,13 +654,13 @@ columns stay aligned.
   function on the live columns and merges the marked rows back by position. A
   list `LambdaOp` receives markers as ordinary values, so a whole-list function
   sees every row.
-- A user function that raises still fails the task, as before; only a parse or
-  a pass-through produces a marker.
+- A user function that raises fails the task; only a parse or a pass-through
+  produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares
   `error_branch: true`; otherwise a failed row goes to no branch. See
   [`RouterOp`](#routerop).
-- Outputs archive the marker as its object, so a job result shows which
-  records failed and why.
+- Outputs archive the marker, so a job result shows which records failed and
+  why.
 - A model op (`LLMChatOp` with `rowwise_template`, `LLMCompletionOp`,
   `EmbeddingOp`, or a rowwise seed or aggregate table) may not read a source
   that can carry failed records: the job is refused at submit when a rowwise
