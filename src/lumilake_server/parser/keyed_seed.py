@@ -270,7 +270,9 @@ def rewrite_native_keys(
     output, just ahead of the op that reads it."""
     rewritten: dict[str, dict[str, Any]] = {}
     for op_id, op in graph.items():
-        op_kind = op["_op"]
+        # Native payloads reach here before graph validation, so an op may not
+        # name its kind; leave it for the graph builder to refuse.
+        op_kind = op.get("_op")
         field = "seed" if op_kind == "LambdaOp" else "rowwise_seed"
         seed = op.get(field)
         if (
