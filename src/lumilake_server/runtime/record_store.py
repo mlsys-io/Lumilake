@@ -9,7 +9,7 @@ ids, workers and row positions never enter the digest.
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -178,7 +178,7 @@ class RecordEntry(BaseModel):
         return job_id == self.source.job or job_id in self.source.member_jobs
 
     @classmethod
-    def from_body(cls, body: bytes) -> "RecordEntry":
+    def from_body(cls, body: bytes) -> Self:
         return cls.model_validate(json.loads(body.decode("utf-8")))
 
 
@@ -258,7 +258,7 @@ class RecordIndex(BaseModel):
         return canonical_json(self.model_dump(mode="json")).encode("utf-8")
 
     @classmethod
-    def from_body(cls, body: bytes) -> "RecordIndex":
+    def from_body(cls, body: bytes) -> Self:
         return cls.model_validate(json.loads(body.decode("utf-8")))
 
     def rounds(self) -> list[int]:
