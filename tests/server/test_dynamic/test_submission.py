@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import types
@@ -24,12 +25,13 @@ from lumilake_server.dynamic.driver import (
 )
 from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.middleware import TraceIdMiddleware
-from lumilake_server.ops import OutputOp
+from lumilake_server.ops import LambdaOp, OutputOp
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
+from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _DEMO_PRINCIPAL = PrincipalContext(
@@ -68,6 +70,23 @@ _SUBGRAPH_PLAN: dict[str, Any] = {
                 "template": "SELECT * FROM x",
                 "params": [{"label": "s", "node": "Symbols"}],
             },
+        }
+    ],
+}
+
+
+# A subgraph whose single op draws a keyed seed, so the round it runs in is
+# visible in the graph that dispatches.
+_SEEDED_SUBGRAPH_PLAN: dict[str, Any] = {
+    "next": "subgraph",
+    "ops": [
+        {
+            "id": "Sample",
+            "op": "LambdaOp",
+            "inputs": ["Symbols"],
+            "fn_name": "sample",
+            "code": "def sample(row, seed):\n    return '%d' % seed\n",
+            "seed": {"key": {"node": "Symbols", "path": "items.output"}},
         }
     ],
 }
@@ -1084,6 +1103,41 @@ async def test_dynamic_api_planner_drives_two_rounds(
     assert second["messages"][1]["role"] == "user"
     assert second["messages"][1]["content"].startswith(f"{user}\n\n")
     assert "market_cap" in second["messages"][1]["content"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_api_first_dispatched_round_is_round_one(
+    app: FastAPI, job_routes: Any, fake_planner: Any
+) -> None:
+    """The planner pass at index 0 dispatches no graph, so the first graph runs
+    as round 1, the number the template loop gives it, and a keyed seed in it
+    draws with 1."""
+    fake_planner([_SEEDED_SUBGRAPH_PLAN, {"next": "STOP"}])
+    record = await _submit_and_run(app, job_routes, _API_DYNAMIC_YAML)
+
+    assert record.status == "completed", record.error
+    (dispatched,) = job_routes._fake_runtime_server.executed_graphs[0].values()
+    generated = next(
+        op
+        for op in dispatched.iter_ops(LambdaOp)
+        if op.code.startswith("import hashlib")
+    )
+    fn = lambda_runtime.materialize(generated.code)
+    first_round = (
+        int.from_bytes(
+            hashlib.sha256(
+                json.dumps(
+                    [0, "Sample", 1, "NVDA"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode()
+            ).digest()[:8],
+            "big",
+        )
+        % 2**31
+    )
+    assert [fn(("NVDA",))] == [first_round]
 
 
 @pytest.mark.anyio
