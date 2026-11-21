@@ -631,12 +631,13 @@ columns stay aligned.
   [`RouterOp`](#routerop).
 - Outputs archive the marker as its object, so a job result shows which
   records failed and why.
-- A rowwise model op (`LLMChatOp` with `rowwise_template`, `LLMCompletionOp`,
-  `EmbeddingOp`) does not skip a failed record. FlowMesh renders the rowwise
-  column like any other value, so a column reading the whole record hands the
-  model the marker as text, and a column reading a field of a marked record
-  fails the task at the column read. Skipping marked rows is the next change;
-  until then, route the `error` branch away from the model op.
+- A model op (`LLMChatOp` with `rowwise_template`, `LLMCompletionOp`,
+  `EmbeddingOp`, or a rowwise seed or aggregate table) may not read a source
+  that can carry failed records: the job is refused at submit when a rowwise
+  column, aggregate table or rowwise seed reads a `ParseOp`, or a row or
+  aligned `LambdaOp` that reads one. Read a router's non-error branch instead,
+  so failed records never reach the model. A list `LambdaOp`, including every
+  router branch, does not pass markers on.
 
 `_fail` is reserved: a user function that returns an object carrying it fails
 the task, so a user value is never mistaken for a marker.
