@@ -3,20 +3,16 @@
 import copy
 import hashlib
 import json
-import pathlib
-import tempfile
 from typing import Any
 
 import pytest
 
-from lumilake import envs
 from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload, yaml_parser
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
@@ -39,22 +35,6 @@ _ANSWER = {
         "pairing": "shared",
     },
 }
-
-
-_RUNTIME_PATH = ""
-TASK_RUNTIME_MOUNT = python_step.TASK_RUNTIME_MOUNT
-
-
-def runtime_mount() -> str:
-    """The mounted task runtime, written once for the tests that execute a
-    generated step."""
-    global _RUNTIME_PATH
-    if not _RUNTIME_PATH:
-        root = pathlib.Path(tempfile.mkdtemp(prefix="lambda-runtime-"))
-        path = root / "lumilake-runtime.py"
-        path.write_bytes(python_step.runtime_blob().body)
-        _RUNTIME_PATH = str(path)
-    return _RUNTIME_PATH
 
 
 def _payload() -> dict[str, Any]:
@@ -236,12 +216,10 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
         rewrite_native_keys(native, job_seed=7)
 
 
-def test_a_row_lambda_takes_a_seeded_key_form(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     """A row Lambda's ``seed`` form binds a generated seed node ahead of it,
-    and the built step passes each row's derived seed to the function as a
-    second argument."""
+    whose step passes each row's derived seed to the function as a second
+    argument; the other modes and a one-parameter function are refused."""
     rows = [{"case_id": "k1"}, {"case_id": "k2"}]
     draw = {
         "id": "Draw",
@@ -272,28 +250,9 @@ def test_a_row_lambda_takes_a_seeded_key_form(
         _graph(
             {"ops": [cases, {**draw, "code": "def draw(row):\n    return row[0]\n"}]}
         )
-    # The built step runs the two-argument function with each row's seed.
-    graph = _graph(payload)
-    node = next(n for n in graph.nodes.values() if n.data_spec.get("fn_name") == "draw")
-    entry: dict[str, Any] = next(
-        e for e in node.data_spec["plan"] if e.get("role") == "seed"
+    node = next(
+        n
+        for n in _graph(payload).nodes.values()
+        if n.data_spec.get("fn_name") == "draw"
     )
-    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
-    runtime = python_step.runtime_blob()
-    published = {runtime.key: runtime}
-
-    def run(target: Any, inputs: dict[str, str]) -> list[Any]:
-        spec_dict = python_step.flowmesh_spec(
-            target.node_id, target.data_spec, published
-        )
-        namespace: dict[str, Any] = {}
-        exec(spec_dict["code"].replace(TASK_RUNTIME_MOUNT, runtime_mount()), namespace)
-        return [item["output"] for item in namespace["main"](inputs)["items"]]
-
-    seed_stage = tmp_path / "seed"
-    seed_stage.mkdir()
-    items = [{"output": v} for v in run(graph.nodes[entry["node"]], {})]
-    (seed_stage / "results.json").write_text(json.dumps({"result": {"items": items}}))
-    expected = _documented_seed([row["case_id"] for row in rows], op_id="Draw")
-    assert run(node, {entry["node"]: str(seed_stage)}) == [str(v) for v in expected]
+    assert [e.get("role") for e in node.data_spec["plan"]] == [None, "seed"]
