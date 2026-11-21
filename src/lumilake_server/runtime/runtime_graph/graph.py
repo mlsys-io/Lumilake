@@ -171,6 +171,27 @@ class RuntimeGraph:
                 list_lambda_dependent.add(node_id)
         return list_lambda_dependent
 
+    def list_lambda_fanout_nodes(self) -> set[str]:
+        """Node ids whose output count a list-mode Lambda's fan-out sets, not
+        the job's input rows: every node below a list-mode Lambda that is not
+        itself whole-list. A row step keeps its input's cardinality, so below a
+        fan-out it emits one value per list element."""
+        seeds = {
+            node_id
+            for node_id, node in self.nodes.items()
+            if node.task_type == python_step.TASK_TYPE
+            and node.data_spec.get("mode") == "list"
+        }
+        reached: set[str] = set()
+        for node_id in self.node_order:
+            node = self.nodes[node_id]
+            if node_id in seeds:
+                reached.add(node_id)
+                continue
+            if any(dep in reached for dep in node.dependencies):
+                reached.add(node_id)
+        return reached - self.list_lambda_cardinality_nodes()
+
     def list_lambda_direct_read_nodes(self) -> set[str]:
         """Node ids whose list column binds a list-mode ``LambdaOp`` one hop
         away. FlowMesh runs such a task once per element, so the task's items
