@@ -342,11 +342,13 @@ def _position_inputs(
     """What one record read, in its inputs' declared order.
 
     A keyed record reads one record of a keyed input, the one at its own
-    position, and every record of an input that carries none. A whole-op record
-    reads every record of every input, keyed or not, in order, so a change in
-    any input row moves its signature. The digests are ordered by the node's
-    declared inputs, then by position, so a reader that probed before running
-    computes the same signature."""
+    position, and every record of an input that carries none. An input too
+    short for that position (a broadcast one-row literal, a shorter keyed
+    input) contributes its whole list rather than failing the write. A whole-op
+    record reads every record of every input, keyed or not, in order, so a
+    change in any input row moves its signature. The digests are ordered by the
+    node's declared inputs, then by position, so a reader that probed before
+    running computes the same signature."""
     digests: list[str] = []
     values: list[str] = []
 
@@ -357,7 +359,7 @@ def _position_inputs(
         values.append(found[1])
 
     for input_node in inputs:
-        if keyed and input_node.keyed:
+        if keyed and input_node.keyed and position < len(input_node.records):
             take(input_node.records[position])
             continue
         for found in input_node.records:

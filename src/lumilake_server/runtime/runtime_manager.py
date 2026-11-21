@@ -1849,8 +1849,10 @@ class FlowmeshRuntimeManager:
         workflow_id: str,
         results: Mapping[str, Any],
     ) -> None:
-        """Write this batch's records once, without failing the job on an
-        archive error: the values the job returns are already computed."""
+        """Write this batch's records once, without failing the job: the values
+        the job returns are already computed, so neither an archive error nor a
+        graph the writer cannot key (a seed count that does not match its rows)
+        may fail it."""
         writer = RecordWriter(
             storage=get_job_storage(),
             enabled=request_info.store_records,
@@ -1868,7 +1870,7 @@ class FlowmeshRuntimeManager:
                 task_worker=workers,
                 results=results,
             )
-        except ArchiveError as exc:
+        except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(
                 "Record store write failed for job %s (%s); job results are"
                 " unaffected",
