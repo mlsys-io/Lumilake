@@ -142,7 +142,7 @@ def test_forwarded_sql_param_resolves_from_round_input() -> None:
                 "type": "lumid",
                 "mode": "sql",
                 "rows": "one",
-                "template": ("SELECT * FROM market WHERE start_date = '{start_date}'"),
+                "template": "SELECT * FROM market WHERE start_date = '{start_date}'",
                 "params": [
                     {
                         "label": "start_date",
@@ -194,7 +194,7 @@ def test_forwarded_sql_param_is_literal_in_execution_graph() -> None:
                 "type": "lumid",
                 "mode": "sql",
                 "rows": "one",
-                "template": ("SELECT * FROM market WHERE start_date = '{start_date}'"),
+                "template": "SELECT * FROM market WHERE start_date = '{start_date}'",
                 "params": [
                     {
                         "label": "start_date",
