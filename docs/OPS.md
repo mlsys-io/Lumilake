@@ -603,24 +603,28 @@ are left out. A duplicate key or a misaligned attach fails the job.
 `value.items.output`.
 
 ```yaml
-- {id: Verdict, op: ParseOp, inputs: [Answer], format: json, require: [eligibility]}
+- {id: Verdict, op: ParseOp, inputs: [Answer], format: json, require: [eligibility], on_fail: marker}
 ```
 
 `format: json` strips one fenced block and any prose before the first `{` or
 `[`, then decodes the JSON, which must end the reply; `require` names top-level
 keys it must carry. `format: regex` returns the named groups of `pattern`'s
 first match; `flags` is any of `i`, `s`, `m`. Invalid fields are refused at
-submit. A row the parse cannot handle becomes a failed record.
+submit. A row the parse cannot handle becomes a failed record, or keeps its
+text under `on_fail: raw`, so a downstream op must accept both shapes.
 
 ### Failed records
 
 A failed record's value is `{"_fail": {"op": <op id>, "reason": <text>}}`,
-which keeps its position; an ok record has no `_fail` key. A row `LambdaOp`
+which keeps its position; an ok record has no `_fail` key. A `ParseOp` emits
+one for a row it cannot parse, naming the reason, and none under `on_fail:
+raw`, where a reply whose own key is `_fail` stays text. A row `LambdaOp`
 passes the row's marker on without calling its function, an aligned one merges
 the marked rows back by position, and a list one sees markers as ordinary
 values. A function that raises, or returns an object carrying `_fail`, fails
 the task. `RouterOp` with `error_branch: true` sends failed rows to its `error`
 branch; otherwise they reach none. A model op may not read a source carrying
-markers, so read a router's rule or default branch.
+markers — a `ParseOp` that emits them or an input whose value is one — so read
+a router's rule or default branch.
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
