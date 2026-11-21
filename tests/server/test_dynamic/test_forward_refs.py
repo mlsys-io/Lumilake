@@ -460,6 +460,26 @@ def test_forward_per_row_rejects_variable_length_row_value():
         forward_refs(_three_row_subgraph(llm_id), results, configs, rows=3)
 
 
+def test_forward_refuses_a_failed_record_bound_to_a_model_op():
+    # A round-1 ParseOp's marker is archived like any value; a round-2 model op
+    # reading it would render it as an ordinary prompt value.
+    results = {"s0": [{"output": {"_fail": {"op": "P", "reason": "no JSON"}}}]}
+    configs = {"s0": {"id": "s0", "op": "ParseOp", "inputs": []}}
+    with pytest.raises(DriverProtocolError, match="q2.*s0.*rule or default branch"):
+        forward_refs(
+            [
+                {
+                    "id": "q2",
+                    "op": "LLMChatOp",
+                    "inputs": ["s0"],
+                    "prompt": {"template": "x", "format_kwargs": {}},
+                }
+            ],
+            results,
+            configs,
+        )
+
+
 def test_forward_grouped_list_aggregate_column_materializes():
     # A per-row LIST (the symbol's news summaries) cannot ride a workflow input
     # literal (which is ungrouped on the worker), so an explicit aggregate

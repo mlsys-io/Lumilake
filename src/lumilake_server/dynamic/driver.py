@@ -30,6 +30,7 @@ from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import SUPPORTED_OPS, parse_yaml_payload
+from lumilake_server.runtime.lambda_task_helpers import failure_of
 from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
@@ -429,6 +430,46 @@ def walk_archived_items(
     return walked
 
 
+def _is_model_op(op_type: Any) -> bool:
+    """Whether an op type renders its inputs into a model request, so a failed
+    record bound as an ordinary value would reach the model."""
+    if not isinstance(op_type, str):
+        return False
+    try:
+        op_cls = ops_pkg.Op.registry.get_class(op_type)
+    except KeyError:
+        return False
+    return issubclass(op_cls, LLMOp)
+
+
+def _holds_marker(values: Sequence[Any]) -> bool:
+    """Whether any forwarded value is a failed record, or a per-row list of
+    values holding one."""
+    return any(
+        failure_of(value) is not None
+        or (
+            isinstance(value, list)
+            and any(failure_of(item) is not None for item in value)
+        )
+        for value in values
+    )
+
+
+def _refuse_forwarded_markers(
+    consumer: str, consumer_type: Any, ref: str, values: Sequence[Any]
+) -> None:
+    """Refuse a model op that reads an earlier round's failed records, mirroring
+    the build-time rule that a model op may not read a marker."""
+    if not _is_model_op(consumer_type):
+        return
+    if _holds_marker(values):
+        raise DriverProtocolError(
+            f"op {consumer!r} reads {ref!r}, whose failed records would reach"
+            " the model as ordinary values; read a router's rule or default"
+            " branch instead"
+        )
+
+
 def forward_refs(
     subgraph: list[dict[str, Any]],
     results: dict[str, list[dict[str, Any]]],
@@ -444,11 +485,14 @@ def forward_refs(
     materializers: list[dict[str, Any]] = []
     materialized: set[str] = set()
 
-    def add_materializer(ref: str, path: str, walked: list[Any]) -> str:
+    def add_materializer(
+        ref: str, path: str, walked: list[Any], consumer_type: Any
+    ) -> str:
         """Bind a JSON input per row plus a LambdaOp that decodes each row's
         JSON back to its list; returns the materializer id."""
         input_id = f"{ref} | {path}"
         if input_id not in materialized:
+            _refuse_forwarded_markers(input_id, consumer_type, ref, walked)
             inputs[input_id] = [_coerce_output_value(v) for v in walked]
             materializers.append(
                 {
@@ -467,7 +511,7 @@ def forward_refs(
         return f"{input_id} | rows"
 
     def bind_implicit(
-        ref: str, consumer: str, *, image_source: bool = False
+        ref: str, consumer: str, consumer_type: Any, *, image_source: bool = False
     ) -> str | None:
         """Bind an implicit reference; returns the rewritten ref (a materializer
         id) when the per-row value is a grouped list, else None to leave it
@@ -491,13 +535,18 @@ def forward_refs(
                         f"op {consumer!r} image_source {ref!r} holds a list per "
                         "row and cannot be forwarded as JSON"
                     )
-                return add_materializer(ref, default_path, walked)
+                return add_materializer(ref, default_path, walked, consumer_type)
+            _refuse_forwarded_markers(consumer, consumer_type, ref, walked)
             inputs[ref] = [_coerce_output_value(v) for v in walked]
         else:
-            inputs[ref] = _forward_values(results[ref], parts, ref)
+            walked = _forward_values(results[ref], parts, ref)
+            _refuse_forwarded_markers(consumer, consumer_type, ref, walked)
+            inputs[ref] = walked
         return None
 
-    def bind_explicit(ref: str, path: str, consumer: str) -> tuple[str, str]:
+    def bind_explicit(
+        ref: str, path: str, consumer: str, consumer_type: Any
+    ) -> tuple[str, str]:
         """Forward an explicit ``(node, path)`` reference, returning the
         ``(node, path)`` the consumer should read.
 
@@ -517,18 +566,23 @@ def forward_refs(
                             "a list and some a scalar at "
                             f"{'.'.join(parts)!r}, which cannot be forwarded"
                         )
-                    return add_materializer(ref, path, walked), "items.output"
+                    materializer = add_materializer(ref, path, walked, consumer_type)
+                    return materializer, "items.output"
+                _refuse_forwarded_markers(consumer, consumer_type, ref, walked)
                 inputs[input_id] = [_coerce_output_value(v) for v in walked]
             else:
-                inputs[input_id] = _forward_values_flattened(results[ref], parts, ref)
+                walked = _forward_values_flattened(results[ref], parts, ref)
+                _refuse_forwarded_markers(consumer, consumer_type, ref, walked)
+                inputs[input_id] = walked
         return input_id, ""
 
     for op in subgraph:
         op = copy.deepcopy(op)
         consumer = str(op.get("id"))
+        consumer_type = op.get("op")
         for index, ref in enumerate(op.get("inputs", [])):
             if isinstance(ref, str):
-                rewritten = bind_implicit(ref, consumer)
+                rewritten = bind_implicit(ref, consumer, consumer_type)
                 if rewritten is not None:
                     op["inputs"][index] = rewritten
         prompt = op.get("prompt")
@@ -537,19 +591,19 @@ def forward_refs(
             if isinstance(format_kwargs, dict):
                 for key, ref in format_kwargs.items():
                     if isinstance(ref, str):
-                        rewritten = bind_implicit(ref, consumer)
+                        rewritten = bind_implicit(ref, consumer, consumer_type)
                         if rewritten is not None:
                             format_kwargs[key] = rewritten
         format_kwargs = op.get("format_kwargs")
         if isinstance(format_kwargs, dict):
             for key, ref in format_kwargs.items():
                 if isinstance(ref, str):
-                    rewritten = bind_implicit(ref, consumer)
+                    rewritten = bind_implicit(ref, consumer, consumer_type)
                     if rewritten is not None:
                         format_kwargs[key] = rewritten
         image_source = op.get("image_source")
         if isinstance(image_source, str):
-            bind_implicit(image_source, consumer, image_source=True)
+            bind_implicit(image_source, consumer, consumer_type, image_source=True)
         aggregate_table = op.get("aggregate_table")
         if isinstance(aggregate_table, list):
             for row in aggregate_table:
@@ -558,7 +612,9 @@ def forward_refs(
                 node = row.get("node")
                 path = row.get("path")
                 if isinstance(node, str) and isinstance(path, str) and node in results:
-                    row["node"], row["path"] = bind_explicit(node, path, consumer)
+                    row["node"], row["path"] = bind_explicit(
+                        node, path, consumer, consumer_type
+                    )
         rowwise_columns = op.get("rowwise_columns")
         if isinstance(rowwise_columns, list):
             for column in rowwise_columns:
@@ -567,13 +623,15 @@ def forward_refs(
                 node = column.get("node")
                 path = column.get("path")
                 if isinstance(node, str) and isinstance(path, str) and node in results:
-                    column["node"], column["path"] = bind_explicit(node, path, consumer)
+                    column["node"], column["path"] = bind_explicit(
+                        node, path, consumer, consumer_type
+                    )
         rowwise_seed = op.get("rowwise_seed")
         if isinstance(rowwise_seed, dict):
-            _bind_seed_ref(rowwise_seed, consumer, results, bind_explicit)
+            _bind_seed_ref(rowwise_seed, consumer, consumer_type, results, bind_explicit)
             key = rowwise_seed.get("key")
             if isinstance(key, dict):
-                _bind_seed_ref(key, consumer, results, bind_explicit)
+                _bind_seed_ref(key, consumer, consumer_type, results, bind_explicit)
         data_spec = op.get("data_spec")
         if isinstance(data_spec, dict):
             params = data_spec.get("params")
@@ -589,7 +647,7 @@ def forward_refs(
                         and node in results
                     ):
                         param["node"], param["path"] = bind_explicit(
-                            node, path, consumer
+                            node, path, consumer, consumer_type
                         )
         ops.append(op)
     ops.extend(materializers)
@@ -599,8 +657,9 @@ def forward_refs(
 def _bind_seed_ref(
     ref: dict[str, Any],
     consumer: str,
+    consumer_type: Any,
     results: dict[str, list[dict[str, Any]]],
-    bind_explicit: Callable[[str, str, str], tuple[str, str]],
+    bind_explicit: Callable[[str, str, str, Any], tuple[str, str]],
 ) -> None:
     """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place. A
     forwarded ref binds as a flat input, so its ``path`` usually comes back
@@ -609,7 +668,7 @@ def _bind_seed_ref(
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:
-        ref["node"], ref["path"] = bind_explicit(node, path, consumer)
+        ref["node"], ref["path"] = bind_explicit(node, path, consumer, consumer_type)
 
 
 def _validate_declared_inputs(
