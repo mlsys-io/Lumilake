@@ -54,6 +54,11 @@ class _EmbeddingBuilder(_LambdaBuilder):
                     upstream=content_op,
                     kind="content",
                 )
+            self._guard_marked_column(
+                consumer_id=llm_op_id,
+                label="content",
+                upstream=content_op,
+            )
             content_path = self._op_output(content_op).path
             data_spec = {
                 "type": "list",

@@ -194,16 +194,46 @@ _ALIGNED = {"mode": "aligned", "code": "def f(columns):\n    return list(columns
 _LIST = {"mode": "list", "code": "def f(items):\n    return list(items[0])\n"}
 
 
+def _vision_reading(node: str) -> dict[str, Any]:
+    return {
+        "id": "V",
+        "op": "LLMVisionOp",
+        "inputs": [node],
+        "image_source": "Images",
+        "messages": [{"role": "user", "content": "hello"}],
+        "rowwise_template": "Describe {value}",
+        "rowwise_columns": [{"label": "value", "node": node, "path": "items.output"}],
+        "config": {"model": "meta-llama/Llama-3.2-11B-Vision-Instruct"},
+    }
+
+
+def _embedding_reading(node: str) -> dict[str, Any]:
+    return {
+        "id": "E",
+        "op": "EmbeddingOp",
+        "inputs": [node],
+        "input": node,
+        "config": {"model": "BAAI/bge-small-en-v1.5"},
+    }
+
+
 @pytest.mark.parametrize(
     "carrying",
     [_lower(), _lower(**_ALIGNED), _lower(**_LIST), _router(error_branch=True)],
     ids=["row", "aligned", "list", "error"],
 )
-def test_a_model_op_reading_marked_values_is_refused(carrying: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    "model",
+    [_model_reading, _vision_reading, _embedding_reading],
+    ids=["chat", "vision", "embedding"],
+)
+def test_a_model_op_reading_marked_values_is_refused(
+    carrying: dict[str, Any], model: Any
+) -> None:
     node = "R.error" if carrying["op"] == "RouterOp" else "L"
-    ops = [_parse(format="json"), carrying, _model_reading(node)]
+    ops = [_parse(format="json"), carrying, model(node)]
     with pytest.raises(ValueError, match="rule or default"):
-        _build(ops, {"Answer": ["no idea"]})
+        _build(ops, {"Answer": ["no idea"], "Images": ["img.png"]})
 
 
 def test_a_model_op_reading_a_router_rule_or_default_branch_builds() -> None:
