@@ -3534,6 +3534,7 @@ async def submit_job(
             )
         if is_dynamic:
             dynamic_spec = _decode_dynamic_spec(entry.workflow, idx)
+            store_records = store_records or dynamic_spec.store
             workflow_payload, dynamic_output_location = _render_dynamic_round0(
                 dynamic_spec
             )

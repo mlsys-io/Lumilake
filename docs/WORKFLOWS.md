@@ -46,7 +46,8 @@ Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp
 A workflow can ask the server to store every computed record, so a later read can
 name what produced a value. Set `store: true` at the top level of a YAML
 document, or beside `graph` in a native payload. It defaults to off, so existing
-workflows are unchanged.
+workflows are unchanged. A dynamic workflow sets it at its top level beside
+`type: dynamic`, and then every round writes its records.
 
 A record key is declared once, on the op or input that carries it:
 `key: {node, path}` names the op or input that holds the keys, and `path` drills

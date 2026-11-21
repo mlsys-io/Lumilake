@@ -85,6 +85,8 @@ class DynamicSpec(BaseModel):
     type: Literal["dynamic"] = "dynamic"
     name: StrictStr | None = None
     goal: StrictStr
+    store: bool = False
+    """Whether each round writes its records to the per-record store."""
     driver: DriverSettings
     library: dict[StrictStr, dict[StrictStr, Any]] | None = None
 

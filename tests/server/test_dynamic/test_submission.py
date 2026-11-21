@@ -1639,3 +1639,28 @@ async def test_template_round_forwards_one_value_per_live_row(
     for slices in fake_server.workflow_slices_calls:
         (meta,) = slices.values()
         assert (meta.whole_set, meta.slice_length, meta.total_length) == (True, 1, 1)
+
+
+@pytest.mark.anyio
+async def test_dynamic_spec_store_flag_reaches_the_job(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """A dynamic spec that asks for the store carries the flag to the job, so
+    its rounds write records."""
+    body = _submit_body(
+        _TEMPLATE_DYNAMIC_YAML.replace("type: dynamic", "type: dynamic\nstore: true")
+    )
+    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    fake_server.leaf_item = lambda row: {"output": []}
+    await _run_background(app)
+    assert job_routes.jobs[job_id].store is True
