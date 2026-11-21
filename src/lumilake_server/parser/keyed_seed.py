@@ -197,6 +197,12 @@ def rewrite_native_keys(
                 " producer is built before the chat op"
             )
         generated = seed_op(op_id, node_ref, path, job_seed=job_seed, round_number=None)
+        if generated["_id"] in graph:
+            raise ValueError(
+                f"LLMChatOp '{op_id}' keyed rowwise_seed generates the id"
+                f" '{generated['_id']}', which the graph already holds; rename"
+                " that op so the generated row function has its own id"
+            )
         rewritten[op_id] = {
             **op,
             "rowwise_seed": {"node": generated["_id"], "path": "items.output"},
