@@ -9,7 +9,7 @@ import ast
 import copy
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +144,7 @@ class RoundBuild(BaseModel):
     export_output_names: list[str] = []
     export_user_ids: list[str] = []
     forwarded_inputs: dict[str, list[str]] = {}
+    cleared_native_ids: list[str] = []
 
 
 def round_output_location(
@@ -666,7 +667,7 @@ def _validate_declared_inputs(
         "outputs": [],
     }
     try:
-        parsed = parse_yaml_payload(workflow, expanded=True)
+        parsed = parse_yaml_payload(workflow)
     except ValueError as exc:
         raise DriverProtocolError(
             f"subgraph op {op_id!r} references a node not in its declared "
@@ -1118,11 +1119,14 @@ def build_round(
     extra_engine_kwargs: dict[str, Any] | None = None,
     include_proposer: bool = True,
     rows: int = 1,
+    cleared_ids: Collection[str] = (),
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
+    ``cleared_ids`` are the router branches this round's expansion dropped
+    markers on, which its parse keeps the flag for.
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
@@ -1136,7 +1140,7 @@ def build_round(
         "ops": forwarded,
         "outputs": [],
     }
-    parsed = parse_yaml_payload(workflow, expanded=True)
+    parsed = parse_yaml_payload(workflow, cleared_ids=cleared_ids)
     graph_name = next(iter(parsed))
     native = parsed[graph_name]["graph"]
     leaves = _current_leaves(subgraph)
@@ -1154,6 +1158,9 @@ def build_round(
     )
     export_ids = [internal for internal, _ in export_pairs]
     export_user_ids = [user for _, user in export_pairs]
+    cleared_native_ids = [
+        _internal_id(graph_name, "LambdaOp", user_id) for user_id in sorted(cleared_ids)
+    ]
     system, user = planner_messages(
         goal=goal,
         observations=observations,
@@ -1186,6 +1193,7 @@ def build_round(
         export_output_names=[f"export_{export_id}" for export_id in export_ids],
         export_user_ids=export_user_ids,
         forwarded_inputs=inputs,
+        cleared_native_ids=cleared_native_ids,
     )
 
 

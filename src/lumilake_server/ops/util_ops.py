@@ -30,16 +30,14 @@ MAX_MEMORY_MB = 8192
 LambdaMode = Literal["row", "list", "aligned", "expand", "reduce"]
 ReduceOnFail = Literal["drop_failed", "fail_group"]
 ExpandOnEmpty = Literal["drop", "fail"]
-CLEARS_KEY = "_clears_markers"
-"""The private serialized key for ``LambdaOp.clears_markers``."""
-
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
 CLEARS_KEY = "_clears_markers"
-"""The private serialized key for ``LambdaOp.clears_markers``, which only a
-router's expansion sets; a user payload cannot declare it."""
+"""The private serialized key for ``LambdaOp.clears_markers``, which the parser
+sets on the branches a router's expansion produced; a user payload cannot
+declare it."""
 
 
 class LambdaSpec(BaseModel):
