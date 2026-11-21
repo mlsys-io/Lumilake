@@ -396,7 +396,7 @@ def _run_wrapper(
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
     declared = fn_name or lambda_runtime.validate_source(
-        code, max_params=2 if seeded else 1
+        code, params=2 if seeded else 1
     )
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
