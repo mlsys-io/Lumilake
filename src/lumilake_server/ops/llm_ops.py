@@ -260,7 +260,7 @@ class LLMChatOp(LLMOp):
                     f"LLMChatOp rowwise_seed references '{seed.node}', which is"
                     " not built before it; list it in the op's inputs"
                 )
-        return cls(
+        op = cls(
             message,
             config,
             return_history,
@@ -276,6 +276,28 @@ class LLMChatOp(LLMOp):
             seed,
             seed_op,
         )
+        op._add_column_producers(aggregate_table, rowwise_columns, other_ops)
+        return op
+
+    def _add_column_producers(
+        self,
+        aggregate_table: list[dict[str, Any]] | None,
+        rowwise_columns: list[dict[str, Any]] | None,
+        other_ops: dict[str, "Op"],
+    ) -> None:
+        """Keep every column's producer in the graph traversal, the way a
+        message or seed producer is kept: a producer read only through a column
+        feeds no message, so nothing else would reach it."""
+        for table in (aggregate_table, rowwise_columns):
+            for col in table or []:
+                if not isinstance(col, dict):
+                    continue
+                node_ref = col.get("node")
+                if not isinstance(node_ref, str):
+                    continue
+                producer = other_ops.get(node_ref)
+                if producer is not None and producer not in self.inputs:
+                    self.inputs.append(producer)
 
 
 def _validate_rowwise_seed(
@@ -438,7 +460,7 @@ class LLMVisionOp(LLMChatOp):
         rowwise_columns = data.get("rowwise_columns")
         system_messages = data.get("system_messages")
         image_source_op = other_ops.get(image_source)
-        return cls(
+        op = cls(
             message,
             image_source=image_source,
             image_path=image_path,
@@ -450,6 +472,8 @@ class LLMVisionOp(LLMChatOp):
             system_messages=system_messages,
             cacheable=cacheable,
         )
+        op._add_column_producers(None, rowwise_columns, other_ops)
+        return op
 
 
 def llm_vision(
