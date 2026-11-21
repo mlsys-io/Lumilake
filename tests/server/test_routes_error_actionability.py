@@ -206,6 +206,28 @@ async def test_invalid_yaml_workflow_keeps_400_with_line_col(app: FastAPI) -> No
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("key_line", ["on: case_id", "3: case_id"])
+async def test_non_string_yaml_mapping_key_returns_400(
+    app: FastAPI, key_line: str
+) -> None:
+    body = _submit_body()
+    body["data"][0]["workflow"] = f"name: demo\nops:\n  - id: A\n    {key_line}\n"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={
+                "Authorization": "Bearer token",
+                "Workflow-Format": "yaml",
+            },
+        )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "$.ops[0]" in detail and "quote the key" in detail
+
+
+@pytest.mark.anyio
 async def test_pydantic_validation_returns_422(app: FastAPI) -> None:
     body = _submit_body()
     body["data"][0]["inputs"] = {"q": "single-string-not-list"}
