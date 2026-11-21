@@ -104,7 +104,10 @@ _SOURCE_NAME = "<lambda_op>"
 DECODER_SOURCE = """\
 def _serialized_table(value):
     if isinstance(value, str):
-        value = json.loads(value) if value.startswith(("{", "[")) else None
+        try:
+            value = json.loads(value) if value.startswith(("{", "[")) else None
+        except:
+            value = None
     if (
         isinstance(value, dict)
         and list(value) == ["df"]
@@ -129,7 +132,10 @@ def _table_rows(table):
 
 def _decode(value):
     if isinstance(value, str):
-        decoded = json.loads(value) if value.startswith(("{", "[")) else None
+        try:
+            decoded = json.loads(value) if value.startswith(("{", "[")) else None
+        except:
+            return value
         if isinstance(decoded, (dict, list)):
             return _decode(decoded)
         return value
