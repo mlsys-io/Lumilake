@@ -1,6 +1,7 @@
 """Submitted LambdaOp code is parsed by the server, never executed by it."""
 
 import builtins
+import inspect
 import json
 import math
 import re
@@ -9,9 +10,8 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LambdaOp, LLMChatOp, OpMessage, as_output
+from lumilake_server.ops import LambdaOp, as_output
 from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.lambda_task_helpers import decode
@@ -529,15 +529,14 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     assert "import math" in wire(node)["code"]
 
 
-def _sdk_imports(inputs):
+def _sdk_imports(inputs: tuple[float, ...]) -> str:
     import math
 
     return str(math.sqrt(inputs[0]))
 
 
-def _run_inlined(body: str) -> str:
+def _run_inlined(body: str, row: str) -> str:
     shout = "      def shout(inputs):\n          (greeting,) = inputs\n"
-    row = '{"name": "q"}'
     payload = _CHAIN.replace('Name: ["world"]', f"Name: [{json.dumps(row)}]")
     body = "\n".join("      " + s for s in body.splitlines())
     payload = payload.replace(shout + "          return greeting.upper()", body)
@@ -562,22 +561,25 @@ def _run_inlined(body: str) -> str:
     ],
 )
 def test_yaml_inlined_step_runs_the_op_wrapped(body: str, expected: str) -> None:
-    assert _run_inlined(body) == expected
+    assert _run_inlined(body, '{"name": "q"}') == expected
+    assert _run_inlined("lambda a: a[0].upper()", "hi") == "HI"
 
 
 def test_an_sdk_callable_is_validated_before_wrapping() -> None:
     sdk = lambda inputs: str(inputs[0]).lower()  # noqa: E731
     assert lambda_runtime.callable_source(sdk, "f(lambda a: a)") == "lambda a: a"
-    assert not lambda_runtime.callable_source(sdk, "f(x)")
-    config = GenerationConfig(model="Qwen/Qwen3-8B")
-    inner = LLMChatOp([OpMessage(role="user", content="hi")], config)
-    fn = LambdaOp([inner], fn=_sdk_imports)
-    llm = LLMChatOp([OpMessage(role="user", content=fn)], config)
+    code = lambda_runtime.callable_source(_sdk_imports, inspect.getsource(_sdk_imports))
     with pytest.raises(ValueError, match="imports 'math'"):
-        RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", llm)]).compile())
+        lambda_runtime.validate_inline_source(code, _sdk_imports.__name__)
 
 
-@pytest.mark.parametrize("value", ['{"a": 1}', {"df": '{"t": {"0": "x"}}'}])
+_TABLE = json.dumps({"name": {"0": "a", "2": "b", "10": "c"}, "tag": "x"})
+_VALUES = ['{"a": 1}', "plain {x", "1", "[1, 2]", {"table": {"df": _TABLE}}]
+_VALUES += [{"table": json.dumps({"df": _TABLE})}, {"df": "not json"}]
+_VALUES += [{"df": "[1]"}, {"df": _TABLE}]
+
+
+@pytest.mark.parametrize("value", _VALUES)
 def test_inline_wrapper_and_shared_decoder_agree(value: Any) -> None:
     namespace: dict[str, Any] = {"json": json}
     exec(lambda_runtime.DECODER_SOURCE, namespace)
