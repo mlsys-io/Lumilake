@@ -107,6 +107,53 @@ def test_parse_json_marks_a_row_missing_a_required_key(tmp_path: Path) -> None:
     assert items[0]["value"]["_fail"]["reason"] == "missing key 'eligibility'"
 
 
+def _build(ops: list[dict[str, Any]], values: dict[str, list[str]]) -> Any:
+    payload = {
+        "name": "p",
+        "inputs": values,
+        "ops": ops,
+        "outputs": [{"name": "out", "ref": ops[-1]["id"]}],
+    }
+    spec = parse_yaml_payload(json.dumps(payload))["p"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    return RuntimeGraphBuilder().build(compiled)
+
+
+def _model_reads(node: str, path: str) -> dict[str, Any]:
+    return {
+        "id": "M",
+        "op": "LLMChatOp",
+        "inputs": [node],
+        "messages": [{"role": "user", "content": "hello"}],
+        "rowwise_template": "Summarize {value}",
+        "rowwise_columns": [{"label": "value", "node": node, "path": path}],
+        "config": {"model": "meta-llama/Llama-3.1-8B-Instruct"},
+    }
+
+
+def test_a_model_op_reading_a_marked_source_is_refused_at_build() -> None:
+    ops = [_parse(format="json"), _lower(), _model_reads("L", "items.output")]
+    with pytest.raises(ValueError, match="non-error branch"):
+        _build(ops, {"Answer": ['{"a": 1}']})
+
+
+def test_a_model_op_reading_a_router_branch_still_builds() -> None:
+    router = {
+        "id": "R",
+        "op": "RouterOp",
+        "inputs": ["L"],
+        "default_branch": "ok",
+        "rules": [{"branch": "no", "match": "equals", "value": "no"}],
+    }
+    ops = [
+        _parse(format="json"),
+        _lower(),
+        router,
+        _model_reads("R.ok", "items.output"),
+    ]
+    assert _build(ops, {"Answer": ['{"a": 1}']}) is not None
+
+
 def test_parse_regex_returns_the_named_groups_of_a_match(tmp_path: Path) -> None:
     ops = [_parse(format="regex", pattern=r"Score: (?P<score>\d+)/\d+")]
     assert _values(_run(ops, {"Answer": ["Score: 7/10"]}, tmp_path)) == [{"score": "7"}]

@@ -7,14 +7,38 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
 from lumilake_server.ops import (
     InputOp,
+    LambdaOp,
     LLMOp,
     Op,
+    ParseOp,
 )
 from lumilake_server.runtime.runtime_graph.outputs import (
     OpOutput,
     op_output,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+
+
+def _carries_markers(
+    op: Op,
+    graph_dict: dict[str, Op],
+    inputs_dict: dict[str, list[str]],
+    seen: set[str],
+) -> bool:
+    """Whether an op's output can hold a failed-record marker: a ``ParseOp``
+    emits one, and a row or aligned ``LambdaOp`` passes the markers of what it
+    reads. A list ``LambdaOp``, including every router branch, receives its
+    values whole and is not counted."""
+    if isinstance(op, ParseOp):
+        return True
+    if not isinstance(op, LambdaOp) or op.takes_whole_columns:
+        return False
+    if op.id in seen:
+        return False
+    seen.add(op.id)
+    return any(
+        _carries_markers(inp, graph_dict, inputs_dict, seen) for inp in op.inputs
+    )
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -328,6 +352,28 @@ class _RuntimeGraphBuilderBase:
                 " only carry one row, so wiring this to the single unsuffixed"
                 " output would silently drop every row but the first."
             )
+
+    def _guard_marked_column(
+        self,
+        *,
+        consumer_id: str,
+        label: str,
+        upstream: Op | None,
+        inputs_dict: dict[str, list[str]],
+        graph_dict: dict[str, Op],
+    ) -> None:
+        """Refuse a model-op column that reads a source carrying failed-record
+        markers, which the model would render as an ordinary value."""
+        if upstream is None or not _carries_markers(
+            upstream, graph_dict, inputs_dict, set()
+        ):
+            return
+        raise ValueError(
+            f"Column '{label}' of model op '{consumer_id}' reads '{upstream.id}',"
+            " which carries failed-record markers; a model op would render a"
+            " marker as an ordinary value. Read a router's non-error branch,"
+            " so failed records never reach the model."
+        )
 
     def _op_output(self, op: Op) -> OpOutput:
         """How a consumer reads the op's values."""

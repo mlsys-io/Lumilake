@@ -610,6 +610,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                         f" references node '{node_ref}' without a path;"
                         " only InputOp refs may omit it."
                     )
+                self._guard_marked_column(
+                    consumer_id=llm_op_id,
+                    label=label,
+                    upstream=graph_dict.get(node_ref),
+                    inputs_dict=inputs_dict,
+                    graph_dict=graph_dict,
+                )
                 columns.append(
                     self._node_ref_column(
                         consumer_id=llm_op_id,
@@ -669,6 +676,13 @@ class _LLMBuilder(_EmbeddingBuilder):
         # The seed's producer feeds no chat message, so the graph traversal
         # never reaches it on its own.
         visited_node_ids.add(node_ref)
+        self._guard_marked_column(
+            consumer_id=llm_op_id,
+            label="rowwise_seed",
+            upstream=upstream,
+            inputs_dict=inputs_dict,
+            graph_dict=graph_dict,
+        )
         if isinstance(upstream, InputOp):
             self._inline_seed_values(
                 data_spec,
@@ -766,6 +780,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                 and isinstance(path, str)
             ):
                 continue
+            self._guard_marked_column(
+                consumer_id=llm_op_id,
+                label=label,
+                upstream=graph_dict.get(node_ref),
+                inputs_dict=inputs_dict,
+                graph_dict=graph_dict,
+            )
             table_columns.append(
                 self._node_ref_column(
                     consumer_id=llm_op_id,
