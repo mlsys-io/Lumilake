@@ -23,7 +23,8 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             "on_fail": entry.fields.get("on_fail"),
             "on_empty": entry.fields.get("on_empty"),
             # Set on the branches a router's expansion generated, never a
-            # workflow field.
+            # workflow field. The leading underscore keeps it parser-owned
+            # through serialization.
             CLEARS_KEY: True if ctx.clears_markers else None,
         },
         f"LambdaOp '{entry.id}'",
