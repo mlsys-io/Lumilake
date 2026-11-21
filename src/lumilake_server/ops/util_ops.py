@@ -20,8 +20,9 @@ ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
 CLEARS_KEY = "_clears_markers"
-"""The private serialized key for ``LambdaOp.clears_markers``, which only a
-router's expansion sets; a user payload cannot declare it."""
+"""The private serialized key for ``LambdaOp.clears_markers``, which the parser
+sets on the branches a router's expansion produced; a user payload cannot
+declare it."""
 
 
 def _validate_limits(
@@ -291,8 +292,8 @@ class LambdaOp(Op):
         # A representative value for data-profile preflight placeholders; never
         # executed at runtime.
         self.sample_value = sample_value
-        # A router branch that keeps only the rows its rule or the default
-        # matched never emits a failed record.
+        # Set by the parser on the router branches it generated; never a
+        # workflow field.
         self.clears_markers = clears_markers
         if code:
             self.code: str = code

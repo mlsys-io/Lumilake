@@ -305,14 +305,16 @@ def test_admit_subgraph_forwards_export_to_validation():
     }
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
         _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
-    resolved = _admit_subgraph(SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {})
+    resolved, _ = _admit_subgraph(
+        SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {}
+    )
     assert [r["id"] for r in resolved] == ["q1"]
 
 
 def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
     # A dynamic round submits the native graph it just built, whose router
-    # branches carry the expansion's clearing key; only a user native payload
-    # is refused for declaring it.
+    # branches carry the clearing key; the round names exactly those ops from
+    # its own expansion, and any other graph declaring the key is refused.
     native = {
         "L": {
             "_id": "L",
@@ -338,8 +340,8 @@ def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
         )
         return graph_specs
 
-    assert specs(internal=True) == {"g": {"graph": native, "inputs": {}}}
-    with pytest.raises((HTTPException, ValueError), match="clears_markers"):
+    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}}}
+    with pytest.raises(HTTPException, match="clears_markers"):
         specs()
 
 

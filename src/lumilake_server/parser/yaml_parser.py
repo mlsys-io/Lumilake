@@ -84,12 +84,14 @@ Users with an existing n8n workflow should submit it as
 YAML equivalent of the n8n wire format exists in this parser.
 """
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
 import yaml
 
-from ..ops.router_ops import expand_routers, reject_user_clears_markers
+from ..ops.router_ops import expand_routers
+from ..ops.util_ops import CLEARS_KEY
 from .common import make_id as _make_id
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
@@ -115,7 +117,7 @@ def parse_yaml_payload(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
-    expanded: bool = False,
+    cleared_ids: Collection[str] = (),
 ) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
@@ -125,8 +127,8 @@ def parse_yaml_payload(
             one; a keyed row seed derives its draw from it.
         template_ids: Rendered op id -> the id a template body wrote, so a
             keyed row seed keeps a draw across rounds.
-        expanded: The payload already holds a router's expanded branch entries,
-            which carry the marker-clearing key that expansion owns.
+        cleared_ids: The ids ``expand_routers`` returned as cleared, so a round
+            that re-parses its own expansion keeps the flag on those branches.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict,
@@ -149,7 +151,7 @@ def parse_yaml_payload(
         job_seed,
         round_number=round_number,
         template_ids=template_ids,
-        expanded=expanded,
+        cleared_ids=cleared_ids,
     )
     return {
         graph_name: {
@@ -226,7 +228,7 @@ def _compile_workflow(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
-    expanded: bool = False,
+    cleared_ids: Collection[str] = (),
 ) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
@@ -240,12 +242,9 @@ def _compile_workflow(
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
-    if not expanded:
-        reject_user_clears_markers(ops_block, "the workflow")
-    op_entries = [
-        _parse_op_entry(entry, idx)
-        for idx, entry in enumerate(expand_routers(ops_block))
-    ]
+    expanded, cleared = expand_routers(ops_block)
+    cleared = cleared | frozenset(cleared_ids)
+    op_entries = [_parse_op_entry(entry, idx) for idx, entry in enumerate(expanded)]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
     ]
@@ -302,6 +301,8 @@ def _compile_workflow(
                 round_number=round_number,
                 template_ids=template_ids,
             )
+            if user_id in cleared:
+                op_dict[CLEARS_KEY] = True
             for implicit in op_dict.pop("__implicit_ops__", []):
                 graph_ops[implicit["_id"]] = implicit
             graph_ops[op_dict["_id"]] = op_dict
