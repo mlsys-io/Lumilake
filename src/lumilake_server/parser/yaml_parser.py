@@ -115,6 +115,7 @@ def parse_yaml_payload(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    expanded: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
@@ -124,6 +125,8 @@ def parse_yaml_payload(
             one; a keyed row seed derives its draw from it.
         template_ids: Rendered op id -> the id a template body wrote, so a
             keyed row seed keeps a draw across rounds.
+        expanded: The payload already holds a router's expanded branch entries,
+            which carry the ``clears_markers`` flag that expansion owns.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict,
@@ -146,6 +149,7 @@ def parse_yaml_payload(
         job_seed,
         round_number=round_number,
         template_ids=template_ids,
+        expanded=expanded,
     )
     return {
         graph_name: {
@@ -222,6 +226,7 @@ def _compile_workflow(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    expanded: bool = False,
 ) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
@@ -235,7 +240,8 @@ def _compile_workflow(
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
-    _refuse_user_clears_markers(ops_block)
+    if not expanded:
+        _refuse_user_clears_markers(ops_block)
     op_entries = [
         _parse_op_entry(entry, idx)
         for idx, entry in enumerate(expand_routers(ops_block))
@@ -328,7 +334,7 @@ def _compile_workflow(
 
 def _refuse_user_clears_markers(ops_block: list[Any]) -> None:
     """Refuse ``clears_markers`` on a user op entry: only a router branch the
-    parser expands sets it, so a user value never switches the guard off."""
+    parser expands sets it, and such an expansion is parsed with ``expanded``."""
     for entry in ops_block:
         if isinstance(entry, dict) and "clears_markers" in entry:
             raise ValueError(
