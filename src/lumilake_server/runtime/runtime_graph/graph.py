@@ -225,6 +225,11 @@ class RuntimeGraph:
         value such as the job's input rows or a data op's own values."""
         plan = node.data_spec.get("plan")
         if not isinstance(plan, list):
+            if node.data_spec.get("type") == "dataframe" and any(
+                isinstance(column, dict) and "data" in column
+                for column in node.data_spec.get("columns") or ()
+            ):
+                return None
             return set(node.dependencies)
         if any(entry["kind"] != "stage" for entry in plan):
             return None
