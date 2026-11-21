@@ -546,11 +546,12 @@ def _run_inlined(body: str, row: str) -> str:
         ('def shout(a):\n    return f"""Q\n  {a[0][\'name\']}\nA:"""', "Q\n  q\nA:"),
         ("lambda a: a[0]['name']  # first", "q"),
         ('def shout(a):\n    return {"k": a[0]}', '{"k": {"name": "q"}}'),
+        ("lambda a: a[0].upper()", "HI"),
     ],
 )
 def test_yaml_inlined_step_runs_the_op_wrapped(body: str, expected: str) -> None:
-    assert _run_inlined(body, '{"name": "q"}') == expected
-    assert _run_inlined("lambda a: a[0].upper()", "hi") == "HI"
+    row = "hi" if expected == "HI" else '{"name": "q"}'
+    assert _run_inlined(body, row) == expected
 
 
 def test_an_sdk_callable_is_validated_before_wrapping() -> None:
