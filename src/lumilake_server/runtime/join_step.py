@@ -66,11 +66,15 @@ def _rows(column, where):
 
 
 def _key(row, where):
-    """A row's join key, from its dotted key path; a row without it fails the job."""
-    value = _value(row, ".".join(_BY))
-    if value is None:
-        raise ValueError("%s: row has no key field %r" % (where, ".".join(_BY)))
-    return _encoded(value, where)
+    """A row's join key: one path's value, or a composite key's value list."""
+    values = []
+    for path in _BY:
+        value = _value(row, path)
+        if value is None:
+            raise ValueError("%s: row has no key field %r" % (where, path))
+        values.append(value)
+    key = values[0] if len(values) == 1 else values
+    return _encoded(key, where)
 
 
 def _encoded(value, where):
@@ -98,11 +102,12 @@ def _failed(reason):
 
 
 def _key_of(row, where):
-    """The row's key, or ``None`` when a failed record leaves the row without one."""
-    value = _value(row, ".".join(_BY))
-    if value is None:
+    """The row's key, or ``None`` when a failed record leaves it without one."""
+    values = [_value(row, path) for path in _BY]
+    if any(value is None for value in values):
         return None
-    return _encoded(value, where)
+    key = values[0] if len(values) == 1 else values
+    return _encoded(key, where)
 
 
 def _merged(merged, field, value, where):

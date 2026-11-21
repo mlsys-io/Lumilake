@@ -8,7 +8,7 @@ from .common import EmitContext
 
 
 def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
-    """Fill in a join's key path, attach targets and per-row policy."""
+    """Fill in a join's key paths, attach targets and per-row policy."""
     entry = ctx.entry
     user_id_to_internal = ctx.user_id_to_internal
     if not entry.inputs:
