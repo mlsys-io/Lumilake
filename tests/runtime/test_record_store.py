@@ -189,6 +189,41 @@ def _rows(text: str = "ONE") -> dict[str, list[Any]]:
     }
 
 
+_BROADCAST_WORKFLOW: dict[str, Any] = {
+    "name": "broadcast",
+    "inputs": {
+        "Rows": [
+            json.dumps({"id": "a", "text": "one"}),
+            json.dumps({"id": "b", "text": "two"}),
+        ],
+        "Cfg": ["shared"],
+    },
+    "ops": [
+        {
+            "id": "Mark",
+            "op": "LambdaOp",
+            "inputs": ["Rows"],
+            "fn_name": "keyed",
+            "mode": "row",
+            "code": _CODE_KEYED,
+            "key": {"node": "Rows", "path": "id"},
+        },
+        {
+            "id": "Join",
+            "op": "LambdaOp",
+            "inputs": ["Mark", "Cfg"],
+            "fn_name": "second",
+            "mode": "row",
+            "code": _CODE_SECOND,
+            "key": {"node": "Mark", "path": "id"},
+        },
+    ],
+    "outputs": [{"name": "joined", "ref": "Join"}],
+}
+
+_SAMPLING_TASK_TYPES = {"inference", "api"}
+
+
 @pytest.fixture
 def graph() -> Any:
     return _runtime_graph(_payload())
@@ -382,6 +417,20 @@ async def test_api_chats_with_different_seeds_get_different_keys() -> None:
         assert entry.realization.seed == seed
         digests[seed] = entry.digest
     assert digests[7] != digests[8]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_literal_yields_when_the_row_is_past_it() -> None:
+    """A keyed row Lambda that also reads a one-row literal has no second row
+    in it: the write takes the literal's whole list instead of failing the
+    job, and both rows keep their own entry."""
+    graph = _runtime_graph(_BROADCAST_WORKFLOW)
+    join = _declared_name(graph, "Join")
+    rows = [{"id": "a", "text": "ONE!"}, {"id": "b", "text": "TWO!"}]
+    entries = await _store(graph, {"Mark": rows, "Join": rows})
+    pair = sorted(entry.digest for entry in entries if entry.address.op == join)
+    assert len(pair) == 2
+    assert len(set(pair)) == 2
 
 
 def test_ops_reading_different_paths_get_different_signatures() -> None:
