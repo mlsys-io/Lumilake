@@ -279,6 +279,19 @@ def test_a_row_lambda_takes_a_seeded_key_form(
     }
     with pytest.raises(ValueError, match="seed is available in modes"):
         parse_yaml_payload({"ops": [payload["ops"][0], {**draw, "mode": "list"}]})
+    with pytest.raises(ValueError, match="exactly 2 parameters"):
+        _graph(
+            {
+                "ops": [
+                    payload["ops"][0],
+                    {
+                        **draw,
+                        "fn_name": "draw",
+                        "code": "def draw(row):\n    return row[0]\n",
+                    },
+                ]
+            }
+        )
     # The built step runs the two-argument function with each row's seed.
     graph = _graph(payload)
     node = next(n for n in graph.nodes.values() if n.data_spec.get("fn_name") == "draw")

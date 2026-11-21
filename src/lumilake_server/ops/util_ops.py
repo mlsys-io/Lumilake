@@ -170,8 +170,8 @@ class SubmittedFunction:
     (``runtime/python_step.py``).
     """
 
-    def __init__(self, code: str, fn_name: str, max_params: int = 1) -> None:
-        validate_source(code, fn_name, max_params)
+    def __init__(self, code: str, fn_name: str, params: int = 1) -> None:
+        validate_source(code, fn_name, params)
         self.code = code
         self.__name__ = fn_name
 
