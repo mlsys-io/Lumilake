@@ -1291,9 +1291,18 @@ class _LLMBuilder(_EmbeddingBuilder):
                             raise ValueError(
                                 f"Invalid LambdaOp '{op.id}': {exc}"
                             ) from exc
+                    code = lambda_runtime.callable_source(op.fn, op.code)
+                    if not code:
+                        raise ValueError(
+                            f"LambdaOp '{op.id}': the source of its function"
+                            " cannot be read, so it cannot be inlined into the"
+                            " LLM that consumes it. Define it with a top-level"
+                            " def and pass its code, or make it a workflow output"
+                            " so it runs as its own python task"
+                        )
                     label = f"lambda_{op.id}"
                     steps[label] = (
-                        lambda_runtime.inline_lambda_source(op.code, op.fn.__name__),
+                        lambda_runtime.inline_lambda_source(code, op.fn.__name__),
                         fn_args_serialized,
                         True,
                     )

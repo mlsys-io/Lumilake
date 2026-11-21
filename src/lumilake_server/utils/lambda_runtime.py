@@ -1,11 +1,14 @@
 """The LambdaOp function contract: source validation and the function namespace.
 
-A LambdaOp function is ``fn(row: tuple[str, ...]) -> str``, written as a lambda
-or as module source that defines a one-parameter ``def`` named by ``fn_name``.
-The source may put imports, constants and helper functions before that ``def``.
-It sees a fixed namespace: a small set of builtins plus ``json``, ``re``,
-``math``, ``np`` and ``pd`` (``np``/``pd`` imported only when the code names
-them), and it may ``import`` any module the container image provides.
+A LambdaOp function takes one argument, its row as a tuple of decoded values,
+and returns a string; a non-string return is archived as its JSON text. JSON
+object or array text arrives as the object or list it holds, and a serialized
+table as its rows. The function is written as a lambda, or as module source
+that defines a one-parameter ``def`` named by ``fn_name``, optionally after
+imports, constants and helpers. It sees a fixed namespace: a small set of
+builtins plus ``json``, ``re``, ``math``, ``np`` and ``pd`` (``np``/``pd``
+imported only when the code names them), and it may ``import`` any module the
+container image provides.
 
 The namespace fixes what names resolve; it is not a security boundary, because
 the object graph reaches every class without a single builtin. Caller-supplied
@@ -17,7 +20,7 @@ imports safe.
 
 A LambdaOp that feeds an LLM is different: it is inlined into the LLM's FlowMesh
 task as a ``graph_template`` function and evaluated by the FlowMesh worker's own
-``safe_eval`` namespace, which has no ``__import__`` and binds the first name the
+``safe_eval`` namespace, which has no ``__import__`` and calls the first name the
 code defines. ``validate_inline_source`` holds such code to that stricter
 grammar so it fails at submit with a clear message rather than at run time.
 
@@ -83,12 +86,6 @@ EXCEPTION_BUILTIN_NAMES = (
 
 SAFE_BUILTIN_NAMES = _SAFE_BUILTIN_BASE_NAMES + EXCEPTION_BUILTIN_NAMES
 
-# The names FlowMesh's inline ``safe_eval`` namespace supplies, without its
-# exception classes; a generated inline wrapper must run under only these.
-INLINE_SAFE_BUILTINS = {
-    name: getattr(builtins, name) for name in _SAFE_BUILTIN_BASE_NAMES
-}
-
 # Names the standalone namespace exposes but FlowMesh's inline ``safe_eval``
 # namespace does not (its SAFE_BUILTINS has no exception classes), so inline
 # code that references them is rejected at submit.
@@ -101,6 +98,12 @@ NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
 
 _SOURCE_NAME = "<lambda_op>"
 
+# ``DECODER_SOURCE`` carries the same behaviour as the decoder in
+# ``lambda_task_helpers``, without annotations, docstrings or exception
+# classes, which FlowMesh's inline namespace cannot evaluate. The generated
+# wrapper of an inlined row Lambda embeds it, so the function sees what a
+# standalone step gives it, and ``test_inline_wrapper_and_shared_decoder_agree``
+# pins the parity.
 DECODER_SOURCE = """\
 def _serialized_table(value):
     if isinstance(value, str):
@@ -153,13 +156,6 @@ def _decode(value):
     return value
 """
 
-# ``DECODER_SOURCE`` carries the same behaviour as the decoder in
-# ``lambda_task_helpers``, without annotations, docstrings or exception
-# classes, which FlowMesh's inline namespace cannot evaluate. The generated
-# wrapper of an inlined row Lambda embeds it, so the function sees what a
-# standalone step gives it, and ``test_inline_wrapper_and_shared_decoder_agree``
-# pins the parity.
-
 
 def _top_level_bindings(code: str) -> set[str]:
     """Every name the code's own top-level scope binds: a definition, an
@@ -202,6 +198,28 @@ def inline_lambda_source(code: str, fn_name: str) -> str:
         "    return value if isinstance(value, str) else json.dumps(value)\n"
         "\n\n" + DECODER_SOURCE + "\n\n" + src + "\n"
     )
+
+
+def callable_source(fn: Callable[..., Any], code: str) -> str:
+    """The function source behind an SDK callable, or ``""`` when the callable's
+    own code cannot be read.
+
+    ``dill`` captures the statement that bound an SDK lambda, so an
+    ``LambdaOp([...], fn=lambda inputs: ...)`` carries that whole statement
+    rather than the lambda alone. A lambda's text is recoverable when the
+    statement holds exactly one lambda.
+    """
+    stripped = code.strip()
+    if fn.__name__ != "<lambda>":
+        return stripped
+    try:
+        tree = ast.parse(stripped, mode="exec")
+    except SyntaxError:
+        return ""
+    lambdas = [node for node in ast.walk(tree) if isinstance(node, ast.Lambda)]
+    if len(lambdas) != 1:
+        return ""
+    return ast.get_source_segment(stripped, lambdas[0]) or ""
 
 
 def _lambda_import(

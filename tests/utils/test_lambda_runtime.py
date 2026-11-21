@@ -1,5 +1,6 @@
 """Submitted LambdaOp code is parsed by the server, never executed by it."""
 
+import builtins
 import json
 import math
 import re
@@ -8,10 +9,12 @@ from typing import Any
 import pytest
 
 from lumilake import envs
+from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LambdaOp, as_output
+from lumilake_server.ops import LambdaOp, LLMChatOp, OpMessage, as_output
 from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime.lambda_task_helpers import _decode as _shared_decode
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
@@ -558,12 +561,17 @@ def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
         _build(payload)
 
 
+_INLINE_BUILTINS = {
+    name: getattr(builtins, name) for name in lambda_runtime._SAFE_BUILTIN_BASE_NAMES
+}
+
+
 def _run_in_inline_namespace(source: str, name: str) -> Any:
     """Materialize generated source the way the FlowMesh worker does: separate
     globals (only its SAFE_BUILTINS and modules) and locals, and a call whose
     result must be ``str``."""
     safe_globals: dict[str, Any] = {
-        "__builtins__": lambda_runtime.INLINE_SAFE_BUILTINS,
+        "__builtins__": _INLINE_BUILTINS,
         "json": json,
         "re": re,
         "math": math,
@@ -582,49 +590,58 @@ def _run_in_inline_namespace(source: str, name: str) -> Any:
 
 def test_inline_wrapper_leaves_the_op_code_at_top_level() -> None:
     # The worker calls the first local, so the wrapper must be the only one and
-    # the op's text must reach the globals unchanged.
-    code = 'def build(args):\n    return f"""Q:\n{args[0]}\nA:"""'
+    # the op's text must reach the globals unchanged; the op's own multi-line
+    # string keeps its leading whitespace, as it does in a direct call.
+    code = 'def build(args):\n    return f"""Q:\n  {args[0]}\nA:"""'
     source = lambda_runtime.inline_lambda_source(code, "build")
     assert source.startswith("global ") and source.endswith(code + "\n")
     safe_locals: dict[str, Any] = {}
-    exec(source, {"__builtins__": lambda_runtime.INLINE_SAFE_BUILTINS}, safe_locals)
+    exec(source, {"__builtins__": _INLINE_BUILTINS}, safe_locals)
     assert list(safe_locals) == ["adapt"]
-
-
-def test_inline_wrapper_matches_a_direct_call_on_a_multi_line_prompt() -> None:
-    from lumilake_server.runtime.lambda_task_helpers import _decode as shared
-
-    code = (
-        "def build(args):\n"
-        "    (q,) = args\n"
-        '    return f"""Question:\n{q}\nAnswer:"""'
-    )
-    wrapper = _run_in_inline_namespace(
-        lambda_runtime.inline_lambda_source(code, "build"), "adapt"
-    )
-    row = '{"q": "hi"}'
-    assert wrapper((row,)) == lambda_runtime.materialize(code)((shared(row),))
+    assert safe_locals["adapt"](("hi",)) == lambda_runtime.materialize(code)(("hi",))
 
 
 @pytest.mark.parametrize(
     "source, args, expected",
     [
         ("lambda a: a[0].upper()", ("nm",), "NM"),
-        (
-            "def f(a):\n    return {'name': a[0], 'n': 2}",
-            ("q",),
-            '{"name": "q", "n": 2}',
-        ),
+        ("def f(a):\n    return {'k': a[0]}", ("q",), '{"k": "q"}'),
     ],
 )
 def test_inline_wrapper_calls_a_lambda_and_serializes_a_non_string(
     source: str, args: tuple[str, ...], expected: str
 ) -> None:
-    name = lambda_runtime.validate_inline_source(source)
-    wrapper = _run_in_inline_namespace(
-        lambda_runtime.inline_lambda_source(source, name), "adapt"
+    source = lambda_runtime.inline_lambda_source(
+        source, lambda_runtime.validate_inline_source(source)
     )
-    assert wrapper(args) == expected
+    assert _run_in_inline_namespace(source, "adapt")(args) == expected
+
+
+_sdk_lower = lambda inputs: str(inputs[0]).lower()  # noqa: E731
+
+
+def test_an_sdk_lambda_inlines_its_own_expression_or_is_refused() -> None:
+    # dill captures the statement that bound an SDK lambda, so only a statement
+    # holding exactly one lambda gives the source to wrap.
+    assert lambda_runtime.callable_source(_sdk_lower, "x = f(lambda a: a)") == (
+        "lambda a: a"
+    )
+    assert lambda_runtime.callable_source(_sdk_lower, "f(x)") == ""
+
+    upstream = LLMChatOp(
+        [OpMessage(role="user", content="hi")],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=LambdaOp([upstream], fn=_sdk_lower))],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    runtime = RuntimeGraphBuilder().build(
+        Graph.from_ops([as_output("r", llm)]).compile()
+    )
+    template = runtime.nodes[llm.id].data_spec["template"]
+    step = next(s for s in template["options"]["format"]["steps"] if s.get("function"))
+    assert _run_in_inline_namespace(step["function"], "adapt")(("NVDA",)) == "nvda"
 
 
 _PARITY_TABLE = {"title": {"0": "t0", "1": "t1"}, "note": {"0": "a", "1": "b"}}
@@ -653,10 +670,8 @@ _PARITY_TABLE = {"title": {"0": "t0", "1": "t1"}, "note": {"0": "a", "1": "b"}}
     ],
 )
 def test_inline_wrapper_and_shared_decoder_agree(value: Any) -> None:
-    from lumilake_server.runtime.lambda_task_helpers import _decode as shared
-
     # The decoder source runs at module scope, so it needs one namespace, not
     # the wrapper's split globals and locals.
     namespace: dict[str, Any] = {"json": json}
     exec(lambda_runtime.DECODER_SOURCE, namespace)
-    assert namespace["_decode"](value) == shared(value)
+    assert namespace["_decode"](value) == _shared_decode(value)
