@@ -193,10 +193,13 @@ def entry_digest(
 ) -> str:
     """The signature digest: the key of the record these inputs decide.
 
-    It covers the op spec, the record address, what each input record was and
-    what it returned, the realization and the effect versions. A consumer that
-    probed before running can compute it, and a recomputed input whose value is
-    unchanged leaves its consumers' signatures unchanged."""
+    It covers the op spec, the record address, each input record's signature,
+    the value that input returned, the realization and the effect versions. A
+    consumer that probed before running can compute it. An input record's own
+    signature names what that input read, so recomputing an input with changed
+    inputs gives it a new signature even when its value comes out equal, and
+    its consumers' signatures change with it: the key cuts off by signature,
+    never by value."""
     return digest_of(
         {
             "digest_version": DIGEST_VERSION,

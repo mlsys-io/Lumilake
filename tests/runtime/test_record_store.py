@@ -41,6 +41,13 @@ _CODE_SECOND = (
     "    return r['text'] + '!'\n"
 )
 
+_CODE_CONSTANT = (
+    "def constant(c):\n"
+    "    import json\n"
+    "    rows = [json.loads(v) for v in c[0]]\n"
+    "    return [{'id': r['id'], 'text': 'SAME'} for r in rows]\n"
+)
+
 _ROWS = [
     json.dumps({"id": "a", "text": "one"}),
     json.dumps({"id": "b", "text": "two"}),
@@ -303,6 +310,38 @@ async def test_signature_changes_when_input_value_changes(graph: Any) -> None:
     # consumer read a different value, so its record gets a new one.
     assert digests(first, "Mark") == digests(second, "Mark")
     assert digests(first, "Join") != digests(second, "Join")
+
+
+@pytest.mark.asyncio
+async def test_consumer_key_changes_when_an_upstream_input_changes() -> None:
+    """An input literal reaches a python step through its column plan rather
+    than as a dependency, and a record names the value it read. So an upstream
+    whose input changed gets a new key even when its value comes out equal, and
+    its consumer's key changes with it: the key cuts off by signature, never by
+    value."""
+    results = {
+        "Mark": [{"id": "a", "text": "SAME"}],
+        "Join": [{"id": "a", "text": "SAME!"}],
+    }
+    stored: list[dict[tuple[str, str | None], RecordEntry]] = []
+    for literal in ("one", "changed"):
+        payload = _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
+        payload["ops"][0].update(fn_name="constant", code=_CODE_CONSTANT)
+        graph = _runtime_graph(payload)
+        node_ids = {"Mark": _node_id(graph, "Mark"), "Join": _node_id(graph, "Join")}
+        storage, _ = await _write(graph, results, node_ids)
+        stored.append(
+            {
+                (entry.address.op, entry.address.record): entry
+                for entry in _entries(storage)
+            }
+        )
+    first, second = stored
+    mark = _declared_name(graph, "Mark")
+    join = _declared_name(graph, "Join")
+    assert first[(mark, "a")].value_digest == second[(mark, "a")].value_digest
+    assert first[(mark, "a")].digest != second[(mark, "a")].digest
+    assert first[(join, "a")].digest != second[(join, "a")].digest
 
 
 @pytest.mark.asyncio
