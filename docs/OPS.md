@@ -733,24 +733,25 @@ ops:
 
 `JoinOp` merges row columns back by a key field. The first input fixes the
 output: one row per its row, in its order. Every further input contributes the
-fields of the row carrying the same `by` value, so the key and any copied
-context must be equal on both sides. Each `attach` field joins one node's
-per-row output to the row it was computed from; the node whose rows those
-values belong to is resolved at submit, so no user code positions values. An
-attach target must be 1:1 over rows: a rowwise `LLMChatOp` (including one with
-a `rowwise_messages` column), a `LLMCompletionOp` or `EmbeddingOp` whose
-columns read one node, a row-mode or aligned `LambdaOp` over one non-broadcast
-input, an `HttpFetchOp`, a `ClassificationOp`, another `JoinOp`, or a chain of
-these that reaches one. A `FormatOp` counts only as a hop on such a chain: it
-has no runtime node of its own, so a format op named directly as an attach
-target is refused at submit, naming the op, the attach field and that reason.
-List every attach target in `inputs:` too, so its producer is built before the
-join. Router branches are disjoint, so a case lands in one branch and
-`missing: null` leaves the other branch's fields out; `missing: error` also
-fails the job on a further input or attach row whose key is not in the first
-input, naming the key. A duplicate key, a field that differs between two
-inputs, and an attach whose values and source rows disagree on length each
-fail the job naming the join.
+fields of the row carrying the same key, so the key and any copied context must
+be equal on both sides. A row column is any op with a runtime node, or a
+workflow input or `DataOp`, whose literal values are the column's rows. Each
+`attach` field joins one node's per-row output to the row it was computed from;
+the node whose rows those values belong to is resolved at submit, so no user
+code positions values. An attach target must be 1:1 over rows: a rowwise
+`LLMChatOp` (including one with a `rowwise_messages` column), a
+`LLMCompletionOp` or `EmbeddingOp` whose columns read one node, a row-mode or
+aligned `LambdaOp` over one non-broadcast input, an `HttpFetchOp`, a
+`ClassificationOp`, another `JoinOp`, or a chain of these that reaches one. A
+`FormatOp` counts only as a hop on such a chain: it has no runtime node of its
+own, so a format op named directly as an attach target is refused at submit,
+naming the op, the attach field and that reason. List every attach target in
+`inputs:` too, so its producer is built before the join. Router branches are
+disjoint, so a case lands in one branch and `missing: null` leaves the other
+branch's fields out; `missing: error` also fails the job on a further input or
+attach row whose key is not in the first input, naming the key. A duplicate
+key, a field that differs between two inputs, and an attach whose values and
+source rows disagree on length each fail the job naming the join.
 
 ```yaml
 ops:
