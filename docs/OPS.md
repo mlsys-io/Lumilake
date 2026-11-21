@@ -755,8 +755,8 @@ source rows disagree on length each fail the job naming the join.
 
 `by` is one dotted field path, or a list of them for a composite key: the key
 is then the list of their values, so two rows that share only the first field
-stay distinct. An empty list or a non-string entry is refused at submit,
-naming the op.
+stay distinct. An empty list or an entry that is not a dotted field name is
+refused at submit, naming the op.
 
 ```yaml
 ops:
