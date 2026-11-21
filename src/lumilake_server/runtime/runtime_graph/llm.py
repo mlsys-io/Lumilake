@@ -614,8 +614,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                     consumer_id=llm_op_id,
                     label=label,
                     upstream=graph_dict.get(node_ref),
-                    inputs_dict=inputs_dict,
-                    graph_dict=graph_dict,
                 )
                 columns.append(
                     self._node_ref_column(
@@ -680,8 +678,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             consumer_id=llm_op_id,
             label="rowwise_seed",
             upstream=upstream,
-            inputs_dict=inputs_dict,
-            graph_dict=graph_dict,
         )
         if isinstance(upstream, InputOp):
             self._inline_seed_values(
@@ -784,8 +780,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                 consumer_id=llm_op_id,
                 label=label,
                 upstream=graph_dict.get(node_ref),
-                inputs_dict=inputs_dict,
-                graph_dict=graph_dict,
             )
             table_columns.append(
                 self._node_ref_column(

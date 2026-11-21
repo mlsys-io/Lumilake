@@ -257,7 +257,9 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
 def expand_routers(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Expand every ``RouterOp`` entry into one list-mode LambdaOp per branch,
     each reading the router's single input, so a consumer that names
-    ``<router id>.<branch>`` in its ``inputs`` gets exactly that branch's rows."""
+    ``<router id>.<branch>`` in its ``inputs`` gets exactly that branch's rows.
+    A rule or default branch keeps only the rows it matched, so it never emits
+    a failed record; the ``error`` branch is exactly the failed records."""
     expanded: list[dict[str, Any]] = []
     for entry in ops:
         if not isinstance(entry, dict) or entry.get("op") != ROUTER_OP:
@@ -272,6 +274,7 @@ def expand_routers(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "mode": "list",
                 "fn_name": f"route_{branch}",
                 "code": branch_lambda_code(router, branch),
+                "clears_markers": branch != ERROR_BRANCH,
             }
             for branch in router.branches
         )

@@ -19,26 +19,15 @@ from lumilake_server.runtime.runtime_graph.outputs import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def _carries_markers(
-    op: Op,
-    graph_dict: dict[str, Op],
-    inputs_dict: dict[str, list[str]],
-    seen: set[str],
-) -> bool:
+def _carries_markers(op: Op) -> bool:
     """Whether an op's output can hold a failed-record marker: a ``ParseOp``
-    emits one, and a row or aligned ``LambdaOp`` passes the markers of what it
-    reads. A list ``LambdaOp``, including every router branch, receives its
-    values whole and is not counted."""
+    emits one, and every other op passes on the markers of what it reads,
+    except a router branch that drops them (its rule and default branches)."""
     if isinstance(op, ParseOp):
         return True
-    if not isinstance(op, LambdaOp) or op.takes_whole_columns:
+    if isinstance(op, LambdaOp) and op.clears_markers:
         return False
-    if op.id in seen:
-        return False
-    seen.add(op.id)
-    return any(
-        _carries_markers(inp, graph_dict, inputs_dict, seen) for inp in op.inputs
-    )
+    return any(_carries_markers(inp) for inp in op.inputs)
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -359,20 +348,16 @@ class _RuntimeGraphBuilderBase:
         consumer_id: str,
         label: str,
         upstream: Op | None,
-        inputs_dict: dict[str, list[str]],
-        graph_dict: dict[str, Op],
     ) -> None:
         """Refuse a model-op column that reads a source carrying failed-record
         markers, which the model would render as an ordinary value."""
-        if upstream is None or not _carries_markers(
-            upstream, graph_dict, inputs_dict, set()
-        ):
+        if upstream is None or not _carries_markers(upstream):
             return
         raise ValueError(
             f"Column '{label}' of model op '{consumer_id}' reads '{upstream.id}',"
             " which carries failed-record markers; a model op would render a"
-            " marker as an ordinary value. Read a router's non-error branch,"
-            " so failed records never reach the model."
+            " marker as an ordinary value. Read a router's rule or default"
+            " branch, so failed records never reach the model."
         )
 
     def _op_output(self, op: Op) -> OpOutput:
