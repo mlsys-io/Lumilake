@@ -173,13 +173,18 @@ def rewrite_native_keys(
     graph: dict[str, dict[str, Any]], *, job_seed: int
 ) -> dict[str, dict[str, Any]]:
     """Rewrite every key-form ``rowwise_seed`` of a serialized native graph,
-    adding each generated seed op and binding the chat op to it."""
-    rewritten = graph.copy()
+    adding each generated seed op and binding the chat op to it. The graph is
+    built in insertion order, so a generated op is placed just ahead of the op
+    that reads it."""
+    rewritten: dict[str, dict[str, Any]] = {}
     for op_id, op in graph.items():
-        if op.get("_op") != "LLMChatOp":
-            continue
         seed = op.get("rowwise_seed")
-        if not isinstance(seed, dict) or "key" not in seed:
+        if (
+            op.get("_op") != "LLMChatOp"
+            or not isinstance(seed, dict)
+            or "key" not in seed
+        ):
+            rewritten[op_id] = op
             continue
         node_ref, path = key_target(
             op_id,
@@ -200,10 +205,10 @@ def rewrite_native_keys(
                 f" '{generated['_id']}', which the graph already holds; rename"
                 " that op so the generated row function has its own id"
             )
+        rewritten[generated["_id"]] = generated
         rewritten[op_id] = {
             **op,
             "rowwise_seed": {"node": generated["_id"], "path": "items.output"},
             "_inputs": [*op.get("_inputs", []), generated["_id"]],
         }
-        rewritten[generated["_id"]] = generated
     return rewritten
