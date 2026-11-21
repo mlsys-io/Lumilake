@@ -20,6 +20,22 @@ _PATH_RE = re.compile(r"^\w+(\.\w+)*$")
 _MISSING = ("null", "error")
 
 
+def join_key_paths(by: Any, op_id: str) -> list[str]:
+    """The join key as its paths, each one dotted field name: a single string
+    is one path, a list of them is a composite key."""
+    paths = [by] if isinstance(by, str) else by
+    if not isinstance(paths, list) or not paths:
+        raise ValueError(
+            f"JoinOp '{op_id}' requires 'by', a dotted field name or a list of them"
+        )
+    for path in paths:
+        if not isinstance(path, str) or not _PATH_RE.match(path):
+            raise ValueError(
+                f"JoinOp '{op_id}' by must be dotted field names, got {path!r}"
+            )
+    return paths.copy()
+
+
 @Op.registry.register(JOIN_OP)
 class JoinOp(Op):
     """A keyed join: one row per first-input row, further inputs merged by
@@ -40,7 +56,6 @@ class JoinOp(Op):
         if not inputs:
             raise ValueError("JoinOp requires at least one input")
         attach = {} if attach is None else attach
-        self.by = _as_path(by)
         if missing not in _MISSING:
             raise ValueError(
                 f"JoinOp missing must be one of {_MISSING}, got {missing!r}"
@@ -50,6 +65,8 @@ class JoinOp(Op):
         for op in inputs:
             if op not in joined:
                 joined.append(op)
+        super().__init__(joined)
+        self.by = join_key_paths(by, self.id)
         self.attach_indices = {}
         target_indices = set()
         for field, target in attach.items():
@@ -67,7 +84,6 @@ class JoinOp(Op):
         ]
         if not self.column_indices:
             raise ValueError("JoinOp needs a row column besides its attach targets")
-        super().__init__(joined)
 
     @property
     def columns(self) -> list[Op]:
@@ -120,17 +136,6 @@ def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
             " list it in the op's inputs"
         )
     return op
-
-
-def _as_path(by: str | list[str]) -> list[str]:
-    """The key as its paths, each one dotted field name: a single string is one
-    path, a list of them is a composite key."""
-    paths = [by] if isinstance(by, str) else by.copy()
-    if not paths or not all(
-        isinstance(path, str) and _PATH_RE.match(path) for path in paths
-    ):
-        raise ValueError(f"JoinOp by must be a dotted field name, got {by!r}")
-    return paths
 
 
 def _validate_field(field: str) -> None:

@@ -1,18 +1,17 @@
 """YAML emitter for the keyed join op."""
 
-import re
 from typing import Any
 
-from .common import EmitContext
+from lumilake_server.ops.join_ops import join_key_paths
 
-_PATH_RE = re.compile(r"^\w+(\.\w+)*$")
+from .common import EmitContext
 
 
 def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     """Fill in a join's key paths, attach targets and missing-field policy."""
     entry = ctx.entry
     user_id_to_internal = ctx.user_id_to_internal
-    by = _key_paths(entry.fields.get("by"), entry.id)
+    by = join_key_paths(entry.fields.get("by"), entry.id)
     if not entry.inputs:
         raise ValueError(f"JoinOp '{entry.id}' requires at least one input")
     attach = entry.fields.get("attach", {})
@@ -49,20 +48,3 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     op_dict["by"] = by
     op_dict["attach"] = resolved
     op_dict["missing"] = missing
-
-
-def _key_paths(by: Any, entry_id: str) -> list[str]:
-    """The join key as its paths: one dotted field name, or a list of them for
-    a composite key."""
-    paths = [by] if isinstance(by, str) else by
-    if not isinstance(paths, list) or not paths:
-        raise ValueError(
-            f"JoinOp '{entry_id}' requires 'by', a dotted field name or a list"
-            " of them"
-        )
-    for path in paths:
-        if not isinstance(path, str) or not _PATH_RE.match(path):
-            raise ValueError(
-                f"JoinOp '{entry_id}' by must be dotted field names, got {path!r}"
-            )
-    return paths
