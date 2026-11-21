@@ -273,12 +273,14 @@ def get_blob(key: str) -> tuple[bytes, str]:
 
 
 async def alist_blob_keys(prefix: str, *, recursive: bool) -> list[str]:
-    """Return absolute blob keys under ``prefix``.
+    """Return absolute blob keys under ``prefix``, in lexicographic order.
 
     ``recursive=True`` lists all keys (no delimiter); ``recursive=False`` uses
     delimiter ``"/"`` for a single level. The ``/blobs`` endpoint has no cursor,
     so this requests the server's max page and raises if the listing is still
-    truncated rather than silently dropping keys.
+    truncated rather than silently dropping keys. The listing is sorted here
+    so a prefix expansion yields the same key order whatever the store
+    returns.
     """
     delimiter = "" if recursive else "/"
     url = f"{_base_url()}/blobs"
@@ -312,7 +314,7 @@ async def alist_blob_keys(prefix: str, *, recursive: bool) -> list[str]:
         k = obj.get("key")
         if isinstance(k, str) and k:
             keys.append(k)
-    return keys
+    return sorted(keys)
 
 
 async def acatalog_column_exists(schema: str, table: str, column: str) -> bool:
