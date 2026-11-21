@@ -617,19 +617,24 @@ ops:
 by the value at the required `by` dotted path into the first input's value
 (compared as JSON text, so `1` and `"1"` differ), and calls the function once
 per group with that group's row tuples in input order. The step emits one item
-per group, groups ordered by first appearance; a row missing the `by` path
+per group, groups ordered by first appearance. A row missing the `by` path
 fails with the op and the row index named, unless the row carries a failed
 record, which holds no key to group by and forms a group of its own. `by` is
 accepted only in reduce mode.
+
+A failed record's key is read first: a row whose key reads joins its group even
+when another of its fields is a marker, and only a row whose key cannot be read
+(one that is itself a marker, or whose key path reaches one) is its own group
+and emits its marker.
 
 `on_fail` decides what a group that holds a failed record does; it defaults to
 `fail_group` and is accepted only in reduce mode:
 
 - `fail_group` emits that group's first marker as the group's item, so the
   function does not see the failed row.
-- `drop_failed` removes the failed rows before grouping. A group that loses
-  every row emits the marker `{"_fail": {"op": "<op id>", "reason": "empty
-  group"}}`.
+- `drop_failed` removes the failed rows before calling the function. A group
+  that loses every row emits the marker `{"_fail": {"op": "<op id>", "reason":
+  "empty group"}}`.
 
 ```yaml
 ops:
@@ -774,25 +779,28 @@ is then the list of their values, so two rows that share only the first field
 stay distinct. An empty list or an entry that is not a dotted field name is
 refused at submit, naming the op.
 
-A first-input row that carries a failed record makes the output row that
-marker: the first input fixes one output row per key, and a marked row holds
-no key to merge by. A marked further-input or attach row whose key reads turns
-only its key's output into the marker; a marked further-input row whose key
-cannot be read fails the job, since it has no slot to keep.
+A first-input row that carries a failed record makes that row's output its
+marker: the first input fixes one output row per its row, in its order, and
+every other row keeps its fields. A marked row in a further input or an attach
+source turns the output row of its key into that marker instead of filling the
+field; a marked further-input row whose key cannot be read fails the job,
+naming the input, since it cannot be placed. A marked attach row pairs by
+position with the live source rows as before.
 
 `on_missing` is the per-row policy and defaults to `null_fill`:
 
-- `null_fill` leaves out a field a further input or an attach source does not
+- `null_fill` leaves out the fields a further input or attach source does not
   carry, and fails the job when a further input carries a key the first input
   does not, when an attach column does not pair one value with one row, or when
   two inputs disagree on a field's value. Each error names the join.
-- `fail_row` turns a key a further input or an attach source lacks into one
-  marker for the output,
-  `{"_fail": {"op": "<op id>", "reason": "<what disagreed>"}}`, instead of
+- `fail_row` marks the rows a further input or attach source lacks a key for,
+  one marker per such row naming the join and the absent key, instead of
   failing the job, so a single bad row costs neither its siblings nor the job.
 
 A duplicate key still fails the job under either policy, since two rows with
-one key cannot become one output row.
+one key cannot become one output row. An attach column whose length does not
+match its source rows cannot be attributed to one row, so it fails the job
+under either policy.
 
 ```yaml
 ops:
@@ -867,13 +875,14 @@ columns stay aligned.
   seed cell leaves the row marked instead of failing the task.
 - An expand `LambdaOp` emits one tombstone item carrying the marker for a
   marked parent, and every item carries `parent` and `child`.
-- A reduce `LambdaOp` applies its `on_fail` policy: `fail_group` emits the
-  group's marker, `drop_failed` removes the failed rows first and marks a group
-  that loses every row `empty group`. See
-  [`LambdaOp`](#lambdaop).
-- A `JoinOp` makes the output row a first-input row's marker, and skips a
-  marked further input or attach row. Its `on_missing: fail_row` marks the
-  output where `null_fill` would fail the job. See [`JoinOp`](#joinop).
+- A reduce `LambdaOp` reads each row's key first: a marked row whose key reads
+  joins its group, and `on_fail` decides that group. A row whose key cannot be
+  read is its own group and emits its marker. See [`LambdaOp`](#lambdaop).
+- A `JoinOp` keeps one output row per first-input row, in order: a marked
+  first-input row is that row's marker, and a marked further input or attach
+  row turns its key's output into the marker. No other row is affected. Its
+  `on_missing: fail_row` marks the rows a further input lacks, and an attach
+  length mismatch fails the job under either policy. See [`JoinOp`](#joinop).
 - Downstream reads of an expand or join output see the marker under each
   item's `output`, so a row Lambda or a parse step treats such an item as a
   marked row.
