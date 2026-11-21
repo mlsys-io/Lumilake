@@ -345,36 +345,65 @@ def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         op_dict["_inputs"].append(node_id)
 
 
-def _seed_input_id(op_id: str, node_ref: str, ctx: EmitContext) -> str:
-    """The internal id of a node a ``rowwise_seed`` reads."""
+def _seed_input_id(
+    op_id: str, node_ref: str, ctx: EmitContext, *, op_kind: str = "LLMChatOp"
+) -> str:
+    """The internal id of a node a keyed seed reads."""
     if node_ref not in ctx.user_id_to_internal:
-        raise ValueError(
-            f"LLMChatOp '{op_id}' rowwise_seed references unknown id '{node_ref}'"
-        )
+        raise ValueError(f"{op_kind} '{op_id}' seed references unknown id '{node_ref}'")
     node_id = ctx.user_id_to_internal[node_ref]
     producer = ctx.graph_ops.get(node_id)
     is_workflow_input = producer is not None and producer.get("_op") == "InputOp"
     if node_ref not in ctx.entry.inputs and not is_workflow_input:
         raise ValueError(
-            f"LLMChatOp '{op_id}' rowwise_seed reads '{node_ref}', which is"
+            f"{op_kind} '{op_id}' seed reads '{node_ref}', which is"
             " not listed in the op's inputs; add it there so the seed's"
-            " producer is built before the chat op"
+            " producer is built before it"
         )
     return node_id
 
 
+def _literal_key_values(node_ref: str, ctx: EmitContext) -> list[str] | None:
+    """The rows a key column holds when it is a workflow input or a literal
+    data op, so duplicate keys are refused at submit; ``None`` for a column an
+    upstream op produces, whose rows are not known until it runs."""
+    values = ctx.input_values.get(node_ref)
+    if values is not None:
+        return values
+    producer = ctx.graph_ops.get(ctx.user_id_to_internal.get(node_ref, ""))
+    if producer is not None and producer.get("_op") == "DataOp":
+        return producer.get("data")
+    return None
+
+
 def _emit_keyed_seed(
-    op_dict: dict[str, Any], ctx: EmitContext, seed: dict[str, Any]
+    op_dict: dict[str, Any],
+    ctx: EmitContext,
+    seed: dict[str, Any],
+    *,
+    field: str = "rowwise_seed",
+    op_kind: str = "LLMChatOp",
 ) -> None:
-    """Derive each row's seed from its key."""
+    """Derive each row's seed from its key; a key column supplied as a
+    workflow input is checked for duplicate keys here, where every row is
+    visible."""
     entry = ctx.entry
     node_ref, path = keyed_seed.key_target(
         entry.id,
         seed,
+        op_kind=op_kind,
         rowwise_template=entry.fields.get("rowwise_template"),
         config=entry.fields.get("config", {}),
     )
-    node_id = _seed_input_id(entry.id, node_ref, ctx)
+    node_id = _seed_input_id(entry.id, node_ref, ctx, op_kind=op_kind)
+    values = _literal_key_values(node_ref, ctx)
+    if values is not None:
+        keyed_seed.check_unique(
+            entry.id,
+            op_kind,
+            keyed_seed.key_cells(values, keyed_seed.key_parts(path)),
+            keyed_seed.key_pairing(seed, entry.id, op_kind),
+        )
     seed_dict = keyed_seed.seed_op(
         entry.id,
         node_id,
@@ -383,9 +412,10 @@ def _emit_keyed_seed(
         round_number=ctx.round_number,
         template_id=ctx.template_ids.get(entry.id, entry.id),
         scope=ctx.scope,
+        op_kind=op_kind,
     )
     op_dict.setdefault("__implicit_ops__", []).append(seed_dict)
-    op_dict["rowwise_seed"] = {"node": seed_dict["_id"], "path": "items.output"}
+    op_dict[field] = {"node": seed_dict["_id"], "path": "items.output"}
     if seed_dict["_id"] not in op_dict["_inputs"]:
         op_dict["_inputs"].append(seed_dict["_id"])
 

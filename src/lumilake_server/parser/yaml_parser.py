@@ -304,6 +304,7 @@ def _compile_workflow(
                 job_seed,
                 round_number=round_number,
                 template_ids=template_ids,
+                input_values=inputs,
             )
             if user_id in cleared:
                 op_dict[CLEARS_KEY] = True
@@ -413,6 +414,7 @@ def _build_op_dict(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    input_values: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     internal_id = user_id_to_internal[entry.id]
     input_ids = [user_id_to_internal[ref] for ref in entry.inputs]
@@ -432,6 +434,7 @@ def _build_op_dict(
         job_seed=job_seed,
         round_number=round_number,
         template_ids=template_ids or {},
+        input_values=input_values or {},
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
     return op_dict
