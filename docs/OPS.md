@@ -369,13 +369,12 @@ the op and row. A `{{round}}` in the op id stays literal in the seed inputs.
 Two rows of one op that carry the same key draw the same seed, so a key that
 repeats turns independent samples into one shared draw. A key column the
 submission can see in full, a workflow input or a literal data op, is checked
-when the workflow is parsed: a repeated key fails with the op and the two row
-indices, and the generated seed step repeats that check over the rows one task
-sees, so a column an upstream op produces still fails when that task holds the
-repeating rows. A job whose input is split across slices checks each slice on
-its own, so a repeat split between two slices is not one task's to see. Write
-`pairing: shared` on the key form to declare that the same key should draw the
-same seed, for example to compare two specs on one paired draw.
+over the whole input set before the job is split into slices, so a repeat fails
+with the op and the two row indices whatever slices the rows land in, and the
+generated seed step repeats that check over the rows one task sees, so a column
+an upstream op produces still fails when that task holds the repeating rows.
+Write `pairing: shared` on the key form to declare that the same key should draw
+the same seed, for example to compare two specs on one paired draw.
 
 ```yaml
   rowwise_seed:

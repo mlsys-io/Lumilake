@@ -110,9 +110,7 @@ def emit_keyed_seed(
     op_kind: str,
 ) -> None:
     """Derive each row's seed from its key: queue a row function over the
-    key column and bind the op that draws with it to its output. A key column
-    supplied as a workflow input is checked for duplicate keys here, where every
-    row is visible."""
+    key column and bind the op that draws with it to its output."""
     entry = ctx.entry
     node_ref, path = keyed_seed.key_target(
         entry.id,
@@ -122,14 +120,6 @@ def emit_keyed_seed(
         entry.fields.get("config", {}),
     )
     node_id = seed_input_id(entry.id, node_ref, ctx, op_kind)
-    values = _literal_key_values(node_ref, ctx)
-    if values is not None:
-        keyed_seed.check_unique(
-            entry.id,
-            op_kind,
-            keyed_seed.key_cells(values, keyed_seed.key_parts(path)),
-            keyed_seed.key_pairing(seed, entry.id, op_kind),
-        )
     seed_dict = keyed_seed.seed_op(
         entry.id,
         node_id,
@@ -145,3 +135,36 @@ def emit_keyed_seed(
     op_dict[field] = {"node": seed_dict["_id"], "path": "items.output"}
     if seed_dict["_id"] not in op_dict["_inputs"]:
         op_dict["_inputs"].append(seed_dict["_id"])
+
+
+def keyed_seeds(
+    spec: dict[str, Any], inputs: dict[str, list[str]]
+) -> list[tuple[str, str, str, str, bool]]:
+    """Every key form a workflow declares whose key column the workflow
+    supplies, as ``(op id, op kind, node, path, shared)``, so the submission
+    can check them for duplicate keys over the whole input set before it splits
+    that set into slices. A column is the workflow's when it is an input or a
+    literal data op, which the caller resolves against ``inputs``; any other
+    producer's rows are not known until it runs."""
+    declared: list[tuple[str, str, str, str, bool]] = []
+    ops = spec.get("ops")
+    if not isinstance(ops, list):
+        return declared
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        op_kind = op.get("op")
+        if op_kind not in ("LLMChatOp", "LambdaOp"):
+            continue
+        field = "seed" if op_kind == "LambdaOp" else "rowwise_seed"
+        seed = op.get(field)
+        if not isinstance(seed, dict):
+            continue
+        key = seed.get("key")
+        node = key.get("node") if isinstance(key, dict) else None
+        path = key.get("path") if isinstance(key, dict) else None
+        if not isinstance(node, str) or not isinstance(path, str):
+            continue
+        shared = seed.get("pairing") == "shared"
+        declared.append((str(op.get("id")), op_kind, node, path, shared))
+    return declared

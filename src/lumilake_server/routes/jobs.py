@@ -96,6 +96,7 @@ from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.ops.util_ops import CLEARS_KEY
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.parser.keyed_seed import rewrite_native_keys
+from lumilake_server.parser.yaml_parser import check_keyed_seed_duplicates
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
 from lumilake_server.runtime.optimizer import (
@@ -406,6 +407,22 @@ def _render_dynamic_round0(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid dynamic workflow spec for index: {exc}",
+        ) from exc
+
+
+def _refuse_repeated_seed_keys(
+    workflow_format: str, workflow_payload: Any, inputs: dict[str, list[str]]
+) -> None:
+    """Refuse a repeated seed key over the whole input set, before slicing
+    splits it, so a repeat across two slices cannot pass one slice's check."""
+    if workflow_format != "yaml" or not isinstance(workflow_payload, dict):
+        return
+    try:
+        check_keyed_seed_duplicates(workflow_payload, inputs)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
         ) from exc
 
 
@@ -3279,6 +3296,8 @@ async def preview_job(
         if is_dynamic:
             _validate_dynamic_submission({name: inputs})
 
+        _refuse_repeated_seed_keys(workflow_format, workflow_payload, inputs)
+
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
             raise HTTPException(
@@ -3645,6 +3664,8 @@ async def submit_job(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=str(exc),
             ) from exc
+
+        _refuse_repeated_seed_keys(workflow_format, workflow_payload, inputs)
 
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
