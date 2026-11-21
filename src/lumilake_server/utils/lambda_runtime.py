@@ -418,7 +418,7 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
         )
     used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     unavailable = sorted(
-        used.intersection(INLINE_UNAVAILABLE_BUILTIN_NAMES) - _INLINE_WRAPPER_NAMES,
+        used.intersection(INLINE_UNAVAILABLE_BUILTIN_NAMES),
         key=INLINE_UNAVAILABLE_BUILTIN_NAMES.index,
     )
     if unavailable:
@@ -442,23 +442,22 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     if collisions:
         raise ValueError(
             f"it binds {collisions[0]!r}, which a LambdaOp that feeds an LLM"
-            " cannot use inline: its function step nests the code in a generated"
-            " wrapper that already binds that name. Rename the binding or move"
-            " this logic to a LambdaOp that runs as its own python task"
+            " cannot use inline: its function step embeds a generated wrapper"
+            " that already binds that name. Rename the binding or move this"
+            " logic to a LambdaOp that runs as its own python task"
         )
     return name
 
 
 def _inline_names() -> frozenset[str]:
     """The names the generated inline wrapper binds around the op's code: the
-    adapter, the arguments and row it decodes, and the decoder functions it
-    embeds."""
+    adapter it is called through, the ``_op`` a lambda expression is bound to,
+    and the decoder functions it embeds."""
     tree = ast.parse(DECODER_SOURCE)
     return frozenset(
         (
             "adapt",
-            "args",
-            "row",
+            "_op",
             *(f.name for f in tree.body if isinstance(f, ast.FunctionDef)),
         )
     )

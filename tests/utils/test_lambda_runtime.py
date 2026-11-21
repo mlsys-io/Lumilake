@@ -142,14 +142,17 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
 @pytest.mark.parametrize(
     "code",
     [
-        "def {name}(v):\n    return v\ndef main(x):\n    return x",
-        "{name} = 1\ndef main(x):\n    return x",
+        "def main(x):\n    return x\ndef {name}(v):\n    return v",
+        "def main(x):\n    return x\n{name} = 1",
     ],
 )
-@pytest.mark.parametrize("name", ["_decode", "_table_rows", "_serialized_table"])
+@pytest.mark.parametrize(
+    "name", ["adapt", "_op", "_decode", "_table_rows", "_serialized_table"]
+)
 def test_inline_source_rejects_a_name_the_wrapper_binds(code: str, name: str) -> None:
-    """The generated wrapper binds its decoder's names and its adapter's, so a
-    definition or an assignment that reuses one would shadow it on the worker."""
+    """The generated wrapper binds its adapter, its lambda binding and its
+    decoder's names, so a top-level binding of one would either leave the worker
+    no wrapper to call or shadow the decoder it runs through."""
     with pytest.raises(ValueError, match="generated wrapper that already binds"):
         lambda_runtime.validate_inline_source(code.format(name=name), "main")
 
