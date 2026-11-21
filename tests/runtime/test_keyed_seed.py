@@ -98,7 +98,7 @@ def _round_build(body: dict[str, Any], results: dict[str, Any]) -> Any:
 
 
 def test_the_generated_function_matches_the_documented_seed() -> None:
-    """The parsed step draws the documented seed by key, and every input counts."""
+    """The parsed step draws the documented seed by key."""
     fn = _generated(_payload())
     keys = [row["case_id"] for row in _ROWS]
     assert [fn((row,)) for row in _COLUMN] == _documented_seed(keys)
@@ -180,8 +180,8 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
     seed_key = {"key": {"node": cases_id, "path": "items.output.case_id"}}
     native[chat_id] = {**native[chat_id], "rowwise_seed": seed_key}
     out = rewrite_native_keys(native, job_seed=7)
-    # The graph is built in insertion order, so the seed op comes first.
     assert out[f"{chat_id}__seed"]["mode"] == "row"
+    # The graph is built in insertion order, so the seed op comes first.
     assert list(out).index(f"{chat_id}__seed") < list(out).index(chat_id)
     native[f"{chat_id}__seed"] = {}
     with pytest.raises(ValueError, match="already holds"):
