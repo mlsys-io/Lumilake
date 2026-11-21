@@ -101,7 +101,7 @@ def _decode_record(body: str) -> Any:
     return value
 
 
-def _text(value: Any) -> str:
+def text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
@@ -228,7 +228,7 @@ def _serialized_table(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _decode(value: Any) -> Any:
+def decode(value: Any) -> Any:
     """Decode one column value for a per-row or per-group function: JSON object
     or array text is parsed, a serialized table becomes its rows (also when a
     retrieval item carries it under ``table``), and anything else is passed as
@@ -238,7 +238,7 @@ def _decode(value: Any) -> Any:
             decoded = json.loads(value)
         except ValueError:
             return value
-        return _decode(decoded) if isinstance(decoded, (dict, list)) else value
+        return decode(decoded) if isinstance(decoded, (dict, list)) else value
     if isinstance(value, dict):
         table = _serialized_table(value)
         if table is None and "table" in value:

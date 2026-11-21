@@ -14,7 +14,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, LLMChatOp, OpMessage, as_output
 from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.lambda_task_helpers import _decode as _shared_decode
+from lumilake_server.runtime.lambda_task_helpers import decode
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
@@ -697,4 +697,4 @@ def test_inline_wrapper_and_shared_decoder_agree(value: Any) -> None:
     # the wrapper's split globals and locals.
     namespace: dict[str, Any] = {"json": json}
     exec(lambda_runtime.DECODER_SOURCE, namespace)
-    assert namespace["_decode"](value) == _shared_decode(value)
+    assert namespace["_decode"](value) == decode(value)

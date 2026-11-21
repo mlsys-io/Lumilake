@@ -53,9 +53,9 @@ import json
 _SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
 _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
-_text = _RUNTIME._text
+text = _RUNTIME.text
 _column = _RUNTIME._column
-_decode = _RUNTIME._decode
+decode = _RUNTIME.decode
 _walk_path = _RUNTIME._walk_path
 _rows = _RUNTIME._rows
 failure_of = _RUNTIME.failure_of
@@ -76,7 +76,7 @@ import json
 _SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
 _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
-_text = _RUNTIME._text
+text = _RUNTIME.text
 _column = _RUNTIME._column
 failure_of = _RUNTIME.failure_of
 _NODE = {op_id!r}
@@ -88,7 +88,7 @@ _FLATTEN_MAIN = """\
 _TEMPLATE = {template!r}
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     grouped = [c for c, e in zip(columns, _PLAN) if e.get("grouped")]
     row_level = [c for c, e in zip(columns, _PLAN) if not e.get("grouped")]
     n = len(grouped[0])
@@ -128,7 +128,7 @@ def main(inputs):
                 else:
                     values[label] = col[i] if len(col) == n else col[0]
             prompt = _TEMPLATE.format_map(
-                {{k: _text(v) for k, v in values.items()}}
+                {{k: text(v) for k, v in values.items()}}
             )
             items.append({{"output": prompt, "row": i}})
     return {{"items": items}}
@@ -137,7 +137,7 @@ def main(inputs):
 _REGROUP_MAIN = """\
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     values = columns[0]
     rows = columns[1]
     groups = columns[2]
@@ -168,7 +168,7 @@ _ROW_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     n = max((len(c) for c in columns), default=1)
     for entry, col in zip(_PLAN, columns):
         if len(col) not in (1, n):
@@ -189,7 +189,7 @@ def main(inputs):
             continue
         value = fn(row)
         reject_reserved_key(value, _NODE)
-        items.append({{"output": _text(value), "value": value}})
+        items.append({{"output": text(value), "value": value}})
     return {{"items": items}}
 """
 
@@ -197,7 +197,7 @@ _LIST_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     values = fn(tuple(columns))
     # A marker the step received may reach the function as its JSON text and be
     # returned decoded, so the marker each received value holds counts as a
@@ -217,7 +217,7 @@ _ALIGNED_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     n = max((len(c) for c in columns), default=0)
     for entry, col in zip(_PLAN, columns):
         if len(col) not in (1, n):
@@ -259,7 +259,7 @@ _EXPAND_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     items = []
     for row in _rows(columns, _PLAN, {op_id!r}):
         values = fn(row)
@@ -279,7 +279,7 @@ _BY_PATH = _BY.split(".")
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     groups = {{}}
     for i, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
         try:
@@ -342,9 +342,9 @@ def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
 _FLATTEN_STEP_MAIN = """\
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     (values,) = columns
-    return {{"items": [_text(value) for value in values]}}
+    return {{"items": [text(value) for value in values]}}
 """
 
 
@@ -486,7 +486,7 @@ import json
 _SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
 _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
-_text = _RUNTIME._text
+text = _RUNTIME.text
 _column = _RUNTIME._column
 failure_of = _RUNTIME.failure_of
 parse_row = _RUNTIME.parse_row
@@ -499,7 +499,7 @@ _PARSER = json.loads({parser!r})
 _PARSE_MAIN = """\
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     items = []
     for value in columns[0]:
         marked = failure_of(value)
@@ -521,7 +521,7 @@ def main(inputs):
             failed = {{FAIL_KEY: {{"op": _NODE, "reason": "reserved key '_fail'"}}}}
             items.append({{"output": failed, "value": failed}})
             continue
-        items.append({{"output": _text(parsed), "value": parsed}})
+        items.append({{"output": text(parsed), "value": parsed}})
     return {{"items": items}}
 """
 
