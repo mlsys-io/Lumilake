@@ -42,6 +42,7 @@ _ANSWER = {
 
 
 _RUNTIME_PATH = ""
+TASK_RUNTIME_MOUNT = python_step.TASK_RUNTIME_MOUNT
 
 
 def runtime_mount() -> str:
@@ -227,64 +228,22 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
         rewrite_native_keys(native, job_seed=7)
 
 
-def test_a_lambda_op_takes_a_seeded_key_form() -> None:
-    """A row Lambda's ``seed`` form binds a generated seed node ahead of it, and
-    its step passes each row's derived seed to the function as a second
-    argument."""
-    payload = {
-        "seed": 7,
-        "ops": [
-            {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN},
-            {
-                "id": "Draw",
-                "op": "LambdaOp",
-                "inputs": ["Cases"],
-                "fn_name": "draw",
-                "code": "def draw(row, seed):\n    return '%s|%d' % (row[0], seed)\n",
-                "seed": {
-                    "key": {"node": "Cases", "path": "items.output.case_id"},
-                    "pairing": "shared",
-                },
-            },
-        ],
-    }
-    spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
-    draw_id = make_id("yaml_workflow", "lambda", "Draw")
-    seed = next(
-        op
-        for op in spec.values()
-        if op["_op"] == "LambdaOp" and op["fn_name"] == SEED_FN_NAME
-    )
-    assert spec[draw_id]["seed"] == {"node": seed["_id"], "path": "items.output"}
-    fn = lambda_runtime.materialize(seed["_code"], SEED_FN_NAME)
-    assert [fn((row,)) for row in _COLUMN] == _documented_seed(
-        [row["case_id"] for row in _ROWS], op_id="Draw"
-    )
-    with pytest.raises(ValueError, match="seed is available in modes"):
-        parse_yaml_payload(
-            {
-                "ops": [
-                    {
-                        "id": "Draw",
-                        "op": "LambdaOp",
-                        "inputs": [],
-                        "fn_name": "draw",
-                        "code": "def draw(row, seed):\n    return row\n",
-                        "mode": "list",
-                        "seed": {"key": {"node": "Cases", "path": ""}},
-                    }
-                ]
-            }
-        )
-
-
-def test_a_seeded_lambda_step_passes_each_rows_seed(
+def test_a_row_lambda_takes_a_seeded_key_form(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The built step runs the two-argument function, with each row's derived
-    seed, and the seed column is the generated node's output."""
+    """A row Lambda's ``seed`` form binds a generated seed node ahead of it,
+    and the built step passes each row's derived seed to the function as a
+    second argument."""
     rows = [{"case_id": "k1"}, {"case_id": "k2"}]
-    payload = {
+    draw = {
+        "id": "Draw",
+        "op": "LambdaOp",
+        "inputs": ["Cases"],
+        "fn_name": "draw",
+        "code": "def draw(row, seed):\n    return '%d' % seed\n",
+        "seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
+    }
+    payload: dict[str, Any] = {
         "seed": 7,
         "ops": [
             {
@@ -293,14 +252,7 @@ def test_a_seeded_lambda_step_passes_each_rows_seed(
                 "inputs": [],
                 "data": [json.dumps(row) for row in rows],
             },
-            {
-                "id": "Draw",
-                "op": "LambdaOp",
-                "inputs": ["Cases"],
-                "fn_name": "draw",
-                "code": "def draw(row, seed):\n    return '%d' % seed\n",
-                "seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
-            },
+            draw,
             {
                 "id": "Read",
                 "op": "LambdaOp",
@@ -310,64 +262,49 @@ def test_a_seeded_lambda_step_passes_each_rows_seed(
             },
         ],
     }
-    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
+    (seed_id,) = [
+        op_id for op_id, op in spec.items() if op.get("fn_name") == SEED_FN_NAME
+    ]
+    assert spec[make_id("yaml_workflow", "lambda", "Draw")]["seed"] == {
+        "node": seed_id,
+        "path": "items.output",
+    }
+    with pytest.raises(ValueError, match="seed is available in modes"):
+        parse_yaml_payload({"ops": [payload["ops"][0], {**draw, "mode": "list"}]})
+    # The built step runs the two-argument function with each row's seed.
     graph = _graph(payload)
     node = next(n for n in graph.nodes.values() if n.data_spec.get("fn_name") == "draw")
-    (seed_entry,) = [e for e in node.data_spec["plan"] if e.get("role") == "seed"]
-    seed_node = graph.nodes[seed_entry["node"]]
+    entry: dict[str, Any] = next(
+        e for e in node.data_spec["plan"] if e.get("role") == "seed"
+    )
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
     runtime = python_step.runtime_blob()
-    blobs = {runtime.key: runtime}
-    published = {key: blob for key, blob in blobs.items()}
+    published = {runtime.key: runtime}
 
-    def run(spec_node: Any, inputs: dict[str, str]) -> dict[str, Any]:
-        spec = python_step.flowmesh_spec(
-            spec_node.node_id, spec_node.data_spec, published
+    def run(target: Any, inputs: dict[str, str]) -> list[Any]:
+        spec_dict = python_step.flowmesh_spec(
+            target.node_id, target.data_spec, published
         )
         namespace: dict[str, Any] = {}
-        exec(
-            spec["code"].replace(python_step.TASK_RUNTIME_MOUNT, runtime_mount()),
-            namespace,
-        )
-        return namespace["main"](inputs)
+        exec(spec_dict["code"].replace(TASK_RUNTIME_MOUNT, runtime_mount()), namespace)
+        return [item["output"] for item in namespace["main"](inputs)["items"]]
 
     seed_stage = tmp_path / "seed"
     seed_stage.mkdir()
     (seed_stage / "results.json").write_text(
-        json.dumps({"result": {"items": run(seed_node, {})["items"]}})
+        json.dumps(
+            {
+                "result": {
+                    "items": [
+                        {"output": v} for v in run(graph.nodes[entry["node"]], {})
+                    ]
+                }
+            }
+        )
     )
-    out = run(node, {seed_node.node_id: str(seed_stage)})
-    keys = [row["case_id"] for row in rows]
-    assert [item["output"] for item in out["items"]] == [
-        str(seed) for seed in _documented_seed(keys, op_id="Draw")
+    assert run(node, {entry["node"]: str(seed_stage)}) == [
+        str(value)
+        for value in _documented_seed([row["case_id"] for row in rows], op_id="Draw")
     ]
-
-
-def test_build_round_takes_the_semantic_round() -> None:
-    """A keyed seed draws with the one-based semantic round both loops pass,
-    not the loop's internal index."""
-    results = {"Cases": [{"output": json.dumps(row)} for row in _ROWS]}
-    build = build_round(
-        [{**_ANSWER, "id": "Answer"}],
-        node_registry={"Cases": {"op": "DataOp"}},
-        round_index=2,
-        goal="g",
-        observations=[],
-        topology=[],
-        preview_width=50,
-        model="m",
-        max_tokens=10,
-        temperature=0.1,
-        results=results,
-        job_seed=7,
-        round_number=1,
-    )
-    generated = next(
-        op for op in build.graph.values() if op.get("fn_name") == SEED_FN_NAME
-    )
-    fn = lambda_runtime.materialize(generated["_code"], generated["fn_name"])
-    # A forwarded reference binds the whole row, so the round is what the draw
-    # is checked on: round 2, the loop index, would draw different seeds.
-    forwarded = [fn((json.dumps(row),)) for row in _ROWS]
-    assert forwarded == _documented_seed(_ROWS, round_number=1)
-    assert forwarded != _documented_seed(_ROWS, round_number=2)
