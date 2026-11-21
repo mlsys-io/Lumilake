@@ -220,7 +220,6 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     """A row Lambda's ``seed`` form binds a generated seed node ahead of it,
     whose step passes each row's derived seed to the function as a second
     argument; the other modes and a one-parameter function are refused."""
-    rows = [{"case_id": "k1"}, {"case_id": "k2"}]
     draw = {
         "id": "Draw",
         "op": "LambdaOp",
@@ -233,7 +232,7 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
         "id": "Cases",
         "op": "DataOp",
         "inputs": [],
-        "data": [json.dumps(row) for row in rows],
+        "data": [json.dumps({"case_id": k}) for k in ("k1", "k2")],
     }
     payload: dict[str, Any] = {"seed": 7, "ops": [cases, draw]}
     spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
