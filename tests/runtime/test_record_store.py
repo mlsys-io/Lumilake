@@ -332,6 +332,58 @@ async def test_whole_op_record_names_every_input_row() -> None:
     assert keys[0][1] != keys[1][1]
 
 
+def _paths_graph(**changes: Any) -> Any:
+    """The paths workflow with its two chat ops' runtime nodes replaced."""
+    graph = _runtime_graph(_PATHS_WORKFLOW)
+    for field in ("AskX", "AskY"):
+        node_id = _node_id(graph, field)
+        graph.nodes[node_id] = replace(graph.nodes[node_id], **changes)
+    return graph
+
+
+@pytest.mark.asyncio
+async def test_unseeded_sampling_runs_get_different_keys() -> None:
+    """An op that samples with no seed draws a value no key reproduces, so each
+    run's record is its own: a second run never shares the first one's entry."""
+    graph = _paths_graph(task_type="inference", inference_spec={"temperature": 0.7})
+    listed = []
+    for job_id in ("req-one", "req-two"):
+        entries = await _store(
+            graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
+        )
+        listed.append(
+            next(
+                entry
+                for entry in entries
+                if entry.address.op == _declared_name(graph, "AskX")
+            )
+        )
+    first, second = listed
+    assert first.realization.production == "req-one/task-AskX"
+    assert second.realization.production == "req-two/task-AskX"
+    assert first.digest != second.digest
+
+
+@pytest.mark.asyncio
+async def test_api_chats_with_different_seeds_get_different_keys() -> None:
+    """A hosted chat carries its seed in the request body, which enters the
+    record's realization: seeds 7 and 8 are different draws of one op."""
+    digests = {}
+    for seed in (7, 8):
+        api_spec = {"json": {"model": "m", "messages": "{{prompt}}", "seed": seed}}
+        graph = _paths_graph(
+            task_type="api", model_spec={}, inference_spec={}, api_spec=api_spec
+        )
+        entry = next(
+            entry
+            for entry in await _store(graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]})
+            if entry.address.op == _declared_name(graph, "AskX")
+        )
+        assert entry.realization.seed == seed
+        digests[seed] = entry.digest
+    assert digests[7] != digests[8]
+
+
 def test_ops_reading_different_paths_get_different_signatures() -> None:
     """Two chat ops whose prompt columns read different paths of one producer
     compute different values, so they never share a signature."""
