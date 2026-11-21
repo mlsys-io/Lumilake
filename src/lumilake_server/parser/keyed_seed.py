@@ -27,6 +27,8 @@ _SEED_FN = """\
 import hashlib
 import json
 
+_SEEN = {{}}
+
 
 def {fn_name}(row):
     value = row[0]
@@ -44,6 +46,12 @@ def {fn_name}(row):
             raise ValueError({missing!r} % (row[0],))
     if value is None:
         raise ValueError({null!r} % (row[0],))
+    if {unique!r}:
+        identity = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        seen = _SEEN.get(identity)
+        if seen is not None:
+            raise ValueError({duplicate!r} % (seen, len(_SEEN)))
+        _SEEN[identity] = len(_SEEN)
     payload = json.dumps(
         [{job_seed!r}, {template_id!r}, {round_number!r}, value],
         sort_keys=True,
@@ -130,6 +138,7 @@ def seed_source(
     parts: list[str],
     *,
     op_kind: str = "LLMChatOp",
+    shared: bool = False,
 ) -> str:
     """The source of a keyed-seed row function: it reads one row's key and
     returns the seed that row draws with."""
@@ -145,6 +154,8 @@ def seed_source(
             f"{named} has a null row key in"
             f" {'.'.join(parts) or '<the value itself>'}:"
         ),
+        duplicate=_duplicate_message(named),
+        unique=not shared,
         job_seed=job_seed,
         template_id=template_id,
         round_number=round_number,
@@ -156,6 +167,16 @@ def _seed_message(message: str) -> str:
     """A runtime message with its value placeholder appended, any ``%`` in the
     baked text escaped."""
     return message.replace("%", "%%") + " %s"
+
+
+def _duplicate_message(named: str) -> str:
+    """The refusal for a second row carrying a key an earlier row of the same
+    task already carried; it names the op and both row positions in the task."""
+    return (
+        named.replace("%", "%%")
+        + " derives one seed per key, but rows %r and %r of this task share a"
+        " key; declare pairing: shared if the same key should draw the same seed"
+    )
 
 
 def key_target(
@@ -221,6 +242,7 @@ def seed_op(
     template_id: str | None = None,
     scope: str | None = None,
     op_kind: str = "LLMChatOp",
+    pairing: str = PAIRINGS[0],
 ) -> dict[str, Any]:
     """The row-mode ``LambdaOp`` that returns each row's seed from its key.
     ``op_kind`` names the op that draws in the refusals."""
@@ -237,6 +259,7 @@ def seed_op(
             round_number,
             key_parts(key_path),
             op_kind=op_kind,
+            shared=pairing == "shared",
         ),
         "mode": "row",
     }
@@ -276,6 +299,7 @@ def rewrite_native_keys(
             job_seed=job_seed,
             round_number=None,
             op_kind=op_kind,
+            pairing=key_pairing(seed, op_id, op_kind),
         )
         if generated["_id"] in graph:
             raise ValueError(
