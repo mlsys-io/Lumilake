@@ -173,8 +173,9 @@ def test_a_text_cell_is_the_key_as_it_stands() -> None:
         "Answer",
         "Cases",
         "items.output",
-        job_seed=7,
-        round_number=None,
+        7,
+        None,
+        "LLMChatOp",
         pairing="shared",
     )
     fn = lambda_runtime.materialize(op["_code"], op["fn_name"])
