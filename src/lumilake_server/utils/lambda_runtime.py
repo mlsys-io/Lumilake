@@ -91,6 +91,11 @@ SAFE_BUILTIN_NAMES = _SAFE_BUILTIN_BASE_NAMES + EXCEPTION_BUILTIN_NAMES
 # code that references them is rejected at submit.
 INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 
+# The standalone namespace binds ``Message`` and ``ops`` only so an SDK
+# callable's annotations resolve when its ``def`` runs. The inline namespace
+# lacks both, so a ``def`` there evaluates such an annotation and raises.
+INLINE_UNAVAILABLE_ANNOTATION_NAMES = ("Message", "ops")
+
 # Names the standalone LambdaOp namespace provides beyond the safe builtins.
 # ``np``/``pd`` are provided only when the code names them, so they are checked
 # separately; the rest are always present.
@@ -428,6 +433,20 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " is not defined. Use the standalone LambdaOp form (a workflow"
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
+        )
+    annotations = sorted(
+        set(_unbound_global_names(code)).intersection(
+            INLINE_UNAVAILABLE_ANNOTATION_NAMES
+        ),
+        key=INLINE_UNAVAILABLE_ANNOTATION_NAMES.index,
+    )
+    if annotations:
+        raise ValueError(
+            f"it references {annotations[0]!r}, which a LambdaOp that feeds an"
+            " LLM cannot use inline: the FlowMesh worker evaluates the"
+            " function's annotations, and its namespace has no Message or ops."
+            " Annotate with builtin types, or move this logic to a LambdaOp"
+            " that runs as its own python task"
         )
     if any(isinstance(stmt, ast.AnnAssign) for stmt in tree.body):
         raise ValueError(
