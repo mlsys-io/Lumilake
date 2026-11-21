@@ -341,3 +341,33 @@ def test_a_seeded_lambda_step_passes_each_rows_seed(
     assert [item["output"] for item in out["items"]] == [
         str(seed) for seed in _documented_seed(keys, op_id="Draw")
     ]
+
+
+def test_build_round_takes_the_semantic_round() -> None:
+    """A keyed seed draws with the one-based semantic round both loops pass,
+    not the loop's internal index."""
+    results = {"Cases": [{"output": json.dumps(row)} for row in _ROWS]}
+    build = build_round(
+        [{**_ANSWER, "id": "Answer"}],
+        node_registry={"Cases": {"op": "DataOp"}},
+        round_index=2,
+        goal="g",
+        observations=[],
+        topology=[],
+        preview_width=50,
+        model="m",
+        max_tokens=10,
+        temperature=0.1,
+        results=results,
+        job_seed=7,
+        round_number=1,
+    )
+    generated = next(
+        op for op in build.graph.values() if op.get("fn_name") == SEED_FN_NAME
+    )
+    fn = lambda_runtime.materialize(generated["_code"], generated["fn_name"])
+    # A forwarded reference binds the whole row, so the round is what the draw
+    # is checked on: round 2, the loop index, would draw different seeds.
+    forwarded = [fn((json.dumps(row),)) for row in _ROWS]
+    assert forwarded == _documented_seed(_ROWS, round_number=1)
+    assert forwarded != _documented_seed(_ROWS, round_number=2)

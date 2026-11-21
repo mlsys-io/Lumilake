@@ -1125,6 +1125,9 @@ def build_round(
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
+    ``round_number`` is the semantic, one-based round a keyed seed draws with;
+    it defaults to the loop's ``round_index``, which the template loop already
+    numbers from one.
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
@@ -1141,7 +1144,7 @@ def build_round(
     }
     parsed = parse_yaml_payload(
         workflow,
-        round_number=round_index,
+        round_number=round_index if round_number is None else round_number,
         template_ids=template_ids,
         cleared_ids=cleared_ids,
     )
