@@ -461,23 +461,53 @@ def test_forward_per_row_rejects_variable_length_row_value():
         forward_refs(_three_row_subgraph(llm_id), results, configs, rows=3)
 
 
-def test_forward_refuses_a_failed_record_bound_to_a_model_op():
+@pytest.mark.parametrize("intermediate", [False, True], ids=["direct", "row_lambda"])
+def test_round_two_refuses_a_forwarded_failed_record_reaching_a_model_op(
+    intermediate: bool,
+) -> None:
     # A round-1 ParseOp's marker is archived like any value; a round-2 model op
-    # reading it would render it as an ordinary prompt value.
-    subgraph = [
+    # reading it, directly or through a row Lambda, would render it as an
+    # ordinary prompt value.
+    source = "s0"
+    read = source
+    subgraph: list[dict[str, Any]] = []
+    if intermediate:
+        read = "l2"
+        subgraph.append(
+            {
+                "id": "l2",
+                "op": "LambdaOp",
+                "inputs": [source],
+                "fn_name": "f",
+                "code": "def f(row):\n    return row[0]\n",
+            }
+        )
+    subgraph.append(
         {
             "id": "q2",
             "op": "LLMChatOp",
-            "inputs": ["s0"],
-            "prompt": {"template": "x", "format_kwargs": {}},
+            "inputs": [read],
+            "messages": [{"role": "user", "content": "x"}],
+            "rowwise_template": "Summarize {value}",
+            "rowwise_columns": [
+                {"label": "value", "node": read, "path": "items.output"}
+            ],
+            "config": {"model": "m"},
         }
-    ]
-    configs = {"s0": {"id": "s0", "op": "ParseOp", "inputs": []}}
-    with pytest.raises(DriverProtocolError, match="q2.*s0.*rule or default branch"):
-        forward_refs(
+    )
+    with pytest.raises(DriverProtocolError, match="q2.*rule or default branch"):
+        build_round(
             subgraph,
-            {"s0": [{"output": {"_fail": {"op": "P", "reason": "x"}}}]},
-            configs,
+            node_registry={"s0": {"id": "s0", "op": "ParseOp", "inputs": []}},
+            round_index=1,
+            goal="g",
+            observations=[],
+            topology=[],
+            preview_width=100,
+            model="m",
+            max_tokens=10,
+            temperature=0.0,
+            results={"s0": [{"output": {"_fail": {"op": "P", "reason": "x"}}}]},
         )
 
 
