@@ -394,7 +394,10 @@ for a new sample. A workflow that wants a fresh sample after a failure puts the
 attempt into its identity, as a later round or an explicit attempt field of the
 key. Two specs draw the same values exactly when they share the job seed, the
 logical op id, the round and the key; changing any of them is a deliberate
-unpairing.
+unpairing. An op that draws `n > 1` samples in its one seeded request draws all
+n from that request, so the set is reproducible while the individual samples
+are not separately addressable: a per-sample seed would need a sample index the
+worker does not report.
 
 ```yaml
 - id: Answer
