@@ -24,7 +24,6 @@ def validate_parse(
     pattern: Any,
     require: Any,
     flags: Any,
-    *,
     where: str,
 ) -> None:
     """Check a parse spec, naming the op in ``where``; the parser and the
@@ -70,8 +69,6 @@ class ParseOp(FunctionalOp):
     """Parse each row's value with ``format``; an unparsable row carries a
     failed-record marker."""
 
-    FORMATS = FORMATS
-
     def __init__(
         self,
         inputs: list[str] | list[Op] | Op,
@@ -92,16 +89,12 @@ class ParseOp(FunctionalOp):
             )
             for inp in inputs
         ]
-        validate_parse(format, pattern, require, flags, where=PARSE_OP)
+        validate_parse(format, pattern, require, flags, PARSE_OP)
         super().__init__(input_ops)
         self.format = format
         self.pattern = pattern
         self.require = require
         self.flags = flags
-
-    @property
-    def takes_whole_columns(self) -> bool:
-        return False
 
     @property
     def row_source(self) -> Op:
