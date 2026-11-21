@@ -3,7 +3,9 @@
 A SQL result has no defined row order without an ``ORDER BY``, so a spec that
 returns several rows from one parameter row must declare one. A lookup that
 returns at most one row per parameter row declares ``rows: one`` instead; the
-runtime then checks that bound when it reads the result.
+runtime then checks that bound when it reads the result. A retrieval whose
+whole result is one value declares ``rows: table``, which needs no order: no
+downstream op reads a position inside it as an identity.
 """
 
 import re
@@ -15,7 +17,11 @@ from sqlparse.tokens import Comment, Keyword, Punctuation
 
 ROWS_ONE = "one"
 
+ROWS_TABLE = "table"
+
 ROWS_KEY = "rows"
+
+ROWS_VALUES = (ROWS_ONE, ROWS_TABLE)
 
 _ORDER_BY = "ORDER BY"
 
@@ -29,9 +35,12 @@ def row_order_problem(data_spec: dict[str, Any]) -> str | None:
     order is either defined or does not matter.
     """
     rows = data_spec.get(ROWS_KEY)
-    if rows is not None and rows != ROWS_ONE:
-        return f"'rows' must be '{ROWS_ONE}' when declared (got {rows!r})"
-    if data_spec.get("mode") != "sql" or rows == ROWS_ONE:
+    if rows is not None and rows not in ROWS_VALUES:
+        return (
+            f"'rows' must be '{ROWS_ONE}' or '{ROWS_TABLE}' when declared"
+            f" (got {rows!r})"
+        )
+    if data_spec.get("mode") != "sql" or rows in ROWS_VALUES:
         return None
     template = data_spec.get("template")
     if not isinstance(template, str):
@@ -41,8 +50,9 @@ def row_order_problem(data_spec: dict[str, Any]) -> str | None:
     return (
         "a mode: sql retrieval returns rows in no defined order without a "
         "top-level ORDER BY. End the query with an ORDER BY that breaks ties "
-        "(for example on the primary key), or declare 'rows: one' when each "
-        "parameter row returns at most one row"
+        "(for example on the primary key), declare 'rows: one' when each "
+        "parameter row returns at most one row, or declare 'rows: table' when "
+        "the whole result is one value"
     )
 
 
