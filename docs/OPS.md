@@ -7,7 +7,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `InputOp` | Generated from workflow-level inputs. |
 | `OutputOp` | Generated from workflow-level outputs. |
 | `DataOp` | Inline static data. |
-| `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). A `sql` retrieval declares its row order with a top-level `ORDER BY` or `rows: one` (see below). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
+| `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). A `sql` retrieval declares its row order with a top-level `ORDER BY`, `rows: one` for a lookup whose result is one row per parameter row, or `rows: table` for a result read whole (see below). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
 | `LLMCompletionOp` | Run rendered string prompts through local generation without a chat template. |
@@ -44,6 +44,14 @@ those rows come back in:
   parameter row returns more than one row, the job fails naming the op and
   the parameter rows that broke the bound. An n8n Postgres node declares it
   with `"rows": "one"` in its `notes`.
+- A retrieval whose whole result is one value declares `rows: table`. Each
+  parameter row then emits exactly one record whose value is the whole
+  result: the table, with its columns and rows in the order the database
+  returned them. The result is one value rather than a set of records, so
+  the `ORDER BY` rule does not apply, and the order inside it is whatever
+  the query gives. A downstream op must not treat a position inside that
+  value as an identity, because nothing fixes it. An empty result is one
+  record holding an empty table, not a failure.
 - An `agent` retrieval replays SQL it writes at run time, so its order is
   not visible at submit and is not checked.
 - A library template entry (`library:` in a dynamic workflow) is checked at
@@ -88,6 +96,18 @@ ops:
       params:
         - label: symbol
           node: "Stock"
+
+  - id: "Model-written search"
+    op: DataRetrievalOp
+    inputs: [SearchSQL]
+    data_spec:
+      type: lumid
+      mode: sql
+      rows: table
+      template: "{sql}"
+      params:
+        - label: sql
+          node: "SearchSQL"
 ```
 
 ### FormatOp

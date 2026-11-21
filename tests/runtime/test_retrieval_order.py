@@ -71,3 +71,13 @@ def test_rows_one_checks_its_bound() -> None:
     with pytest.raises(RuntimeError, match=r"_Retrieve_.*\[3\] of this batch"):
         manager._assert_rows_one(runtime, node_id, {"items": items})
     manager._assert_rows_one(runtime, node_id, {"items": [{}]})
+
+
+@pytest.mark.parametrize("template", ["SELECT a FROM t", "SELECT a FROM t ORDER BY a"])
+def test_rows_table_carries_the_whole_result(template: str) -> None:
+    runtime = RuntimeGraphBuilder().build(
+        _graph(template, "      rows: table\n").compile(Stock=["NVDA"])
+    )
+    (node,) = [n for n in runtime.nodes.values() if n.task_type == "data_retrieval"]
+    assert node.data_spec["rows"] == "table"
+    assert node.data_spec["require_non_empty_rows"] is False
