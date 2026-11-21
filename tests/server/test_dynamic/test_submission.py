@@ -1111,33 +1111,21 @@ async def test_dynamic_proposer_first_emitted_subgraph_is_round_one(
 ) -> None:
     """The proposer's opening round draws over an empty subgraph, so the first
     subgraph it emits runs as round 1 and a keyed seed in it draws with 1."""
-    fake_server = job_routes._fake_runtime_server
-    fake_server.plans = [_SEEDED_SUBGRAPH_PLAN, {"next": "STOP"}]
+    job_routes._fake_runtime_server.plans = [_SEEDED_SUBGRAPH_PLAN, {"next": "STOP"}]
     record = await _submit_and_run(app, job_routes, _VALID_DYNAMIC_YAML)
 
     assert record.status == "completed", record.error
-    (dispatched,) = fake_server.executed_graphs[1].values()
+    (dispatched,) = job_routes._fake_runtime_server.executed_graphs[1].values()
     generated = next(
         op
         for op in dispatched.iter_ops(LambdaOp)
         if op.code.startswith("import hashlib")
     )
-    fn = lambda_runtime.materialize(generated.code)
-    first_round = (
-        int.from_bytes(
-            hashlib.sha256(
-                json.dumps(
-                    [0, "Sample", 1, "NVDA"],
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode()
-            ).digest()[:8],
-            "big",
-        )
-        % 2**31
+    text = json.dumps([0, "Sample", 1, "NVDA"], separators=(",", ":"))
+    assert (
+        lambda_runtime.materialize(generated.code)(("NVDA",))
+        == int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big") % 2**31
     )
-    assert [fn(("NVDA",))] == [first_round]
 
 
 @pytest.mark.anyio
