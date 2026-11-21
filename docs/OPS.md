@@ -648,16 +648,19 @@ every other row keeps its fields. A marked row in a further input or an attach
 source turns the output row of its key into that marker instead of filling the
 field; a marked further-input row whose key cannot be read fails the job,
 naming the input, since it cannot be placed. A marked attach row pairs by
-position with the live source rows as before.
+position with the live source rows as before. An attach value column that
+covers every source row pairs each value with its own row, so a marked source
+row keeps its marker and its value there is that marker passed through.
 
 `on_missing` is the per-row policy and defaults to `null_fill`:
 
-- `null_fill` leaves out the fields a further input or attach source does not
-  carry, and fails the job when a further input carries a key the first input
-  does not, when an attach column does not pair one value with one row, or when
-  two inputs disagree on a field's value. Each error names the join.
-- `fail_row` marks the rows a further input or attach source lacks a key for,
-  one marker per such row naming the join and the absent key, instead of
+- `null_fill` leaves out the fields a further input or an attach source does
+  not carry for a row, and fails the job when a further input carries a key the
+  first input does not, when an attach column does not pair one value with one
+  row, or when two inputs disagree on a field's value. Each error names the
+  join.
+- `fail_row` marks the rows a further input or an attach source lacks a key
+  for, one marker per such row naming the join and the absent key, instead of
   failing the job, so a single bad row costs neither its siblings nor the job.
 
 A duplicate key still fails the job under either policy, since two rows with
