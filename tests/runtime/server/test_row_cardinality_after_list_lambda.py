@@ -1,6 +1,6 @@
 """A row step below a list-mode Lambda keeps the fan-out's cardinality."""
 
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import yaml
@@ -90,7 +90,7 @@ async def test_row_cardinality_below_a_list_lambda(
     spec = next(iter(parse_yaml_payload(yaml.safe_load(workflow)).values()))
     compiled: CompiledGraph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     server = server_factory()
-    server.runtime_manager = cast(Any, _OutputValuesManager(values))
+    server.runtime_manager = _OutputValuesManager(values)
 
     workflows = [
         make_workflow(
