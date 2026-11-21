@@ -44,23 +44,18 @@ def _router(**extra: Any) -> dict[str, Any]:
 
 def _branch_rows(
     tmp_path: Path, entry: dict[str, Any], branch_id: str, column: list[Any]
-) -> list[dict[str, Any]]:
-    """Run one expanded branch through the generated list main over ``column``,
-    whose rows travel as the JSON text a workflow input carries."""
+) -> list[Any]:
+    """Run a branch's list step over ``column`` as JSON text."""
     op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
-    values = [v if isinstance(v, str) else json.dumps(v) for v in column]
+    plan = [{"kind": "literal", "values": [json.dumps(v) for v in column]}]
     source = python_step.wrapper_source(
-        op["id"],
-        op["fn_name"],
-        op["code"],
-        [{"kind": "literal", "values": values}],
-        "list",
+        op["id"], op["fn_name"], op["code"], plan, "list"
     )
     mount = tmp_path / "runtime.py"
     mount.write_bytes(python_step.runtime_blob().body)
     namespace: dict[str, Any] = {}
     exec(source.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
-    return [item["output"] for item in namespace["main"]({})["items"]]
+    return [i["output"] for i in namespace["main"]({})["items"]]
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
@@ -77,12 +72,7 @@ def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
     assert [op["id"] in error_cleared for op in error] == [True, True, True, False]
 
 
-def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest(
-    tmp_path: Path,
-) -> None:
-    # The generated list main hands a branch its source column decoded, one row
-    # object per element, from the JSON text a workflow input carries; no rows
-    # yields none.
+def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest(tmp_path) -> None:
     for branch_id, expected in (
         ("route.patient", ["a"]),
         ("route.diagnose", ["b"]),
