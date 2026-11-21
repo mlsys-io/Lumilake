@@ -413,6 +413,7 @@ def _emit_keyed_seed(
         template_id=ctx.template_ids.get(entry.id, entry.id),
         scope=ctx.scope,
         op_kind=op_kind,
+        pairing=keyed_seed.key_pairing(seed, entry.id, op_kind),
     )
     op_dict.setdefault("__implicit_ops__", []).append(seed_dict)
     op_dict[field] = {"node": seed_dict["_id"], "path": "items.output"}
