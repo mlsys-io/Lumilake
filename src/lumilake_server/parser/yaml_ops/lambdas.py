@@ -5,6 +5,7 @@ from typing import Any
 from lumilake_server.ops.util_ops import build_lambda_spec
 
 from .common import EmitContext
+from .llm import _emit_keyed_seed
 
 
 def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
@@ -22,7 +23,15 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             "cache": entry.fields.get("cache"),
             "on_fail": entry.fields.get("on_fail"),
             "on_empty": entry.fields.get("on_empty"),
+            "seed": entry.fields.get("seed"),
         },
         f"LambdaOp '{entry.id}'",
     )
     op_dict.update(spec.model_dump(by_alias=True, exclude_none=True))
+    if spec.seed is not None:
+        if "key" not in spec.seed:
+            raise ValueError(
+                f"LambdaOp '{entry.id}' seed must take the key form"
+                " '{key: {node, path}}', which derives each row's seed"
+            )
+        _emit_keyed_seed(op_dict, ctx, spec.seed, field="seed", op_kind="LambdaOp")

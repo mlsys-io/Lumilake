@@ -70,6 +70,7 @@ _rows = _RUNTIME._rows
 failure_of = _RUNTIME.failure_of
 carried_marker = _RUNTIME.carried_marker
 reject_reserved_key = _RUNTIME.reject_reserved_key
+_raw_seed = _RUNTIME._raw_seed
 materialize = _RUNTIME.materialize
 
 _USER_CODE = {code!r}
@@ -202,6 +203,38 @@ def main(inputs):
     return {{"items": items}}
 """
 
+_SEEDED_ROW_MAIN = """\
+
+def main(inputs):
+    fn = materialize(_USER_CODE, _FN_NAME, 2)
+    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    (seed_entry,) = [entry for entry in _PLAN if entry.get("role") == "seed"]
+    columns = [_column(entry, inputs, text) for entry in data]
+    n = max((len(c) for c in columns), default=1)
+    for entry, col in zip(data, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                "input %r has %d rows; expected 1 or %d"
+                % (entry.get("node", "literal"), len(col), n)
+            )
+    rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
+    seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
+    if len(seeds) not in (1, n):
+        raise ValueError(
+            "seed column has %d rows; expected 1 or %d" % (len(seeds), n)
+        )
+    return {{
+        "items": [
+            {{"output": text(r), "value": r}}
+            for r in (
+                fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
+                for i, row in enumerate(rows)
+            )
+        ]
+    }}
+"""
+
+
 _LIST_MAIN = """\
 
 def main(inputs):
@@ -300,6 +333,36 @@ def main(inputs):
         )
     return {{"items": items}}
 """
+
+_SEEDED_EXPAND_MAIN = """\
+
+def main(inputs):
+    fn = materialize(_USER_CODE, _FN_NAME, 2)
+    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    (seed_entry,) = [entry for entry in _PLAN if entry.get("role") == "seed"]
+    columns = [
+        _column(entry, inputs, decode)
+        for entry in data
+    ]
+    seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
+    rows = _rows(columns, data, {op_id!r})
+    if len(seeds) not in (1, len(rows)):
+        raise ValueError(
+            "%s: seed column has %d rows; expected 1 or %d"
+            % ({op_id!r}, len(seeds), len(rows))
+        )
+    items = []
+    for i, row in enumerate(rows):
+        values = fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
+        if not isinstance(values, list):
+            raise ValueError(
+                "%s: expand lambda %r returned %s; expected a list"
+                % ({op_id!r}, _FN_NAME, type(values).__name__)
+            )
+        items.extend({{"output": v}} for v in values)
+    return {{"items": items}}
+"""
+
 
 _REDUCE_MAIN = """\
 
@@ -618,9 +681,14 @@ def wrapper_source(
     by: str | None = None,
     on_fail: str = "fail_group",
     on_empty: str = LambdaOp.ON_EMPTY_DROP,
+    seeded: bool = False,
 ) -> str:
-    """The python-task code for one standalone LambdaOp."""
-    if mode == "list":
+    """The python-task code for one standalone LambdaOp. A ``seeded`` step
+    carries its derived-seed column in the plan, tagged ``role: seed``, and
+    passes each row's seed to the function as a second argument."""
+    if seeded:
+        main = _SEEDED_EXPAND_MAIN if mode == "expand" else _SEEDED_ROW_MAIN
+    elif mode == "list":
         main = _LIST_MAIN
     elif mode == "aligned":
         main = _ALIGNED_MAIN
@@ -687,6 +755,7 @@ def flowmesh_spec(
             data_spec.by,
             data_spec.on_fail or "fail_group",
             data_spec.on_empty or LambdaOp.ON_EMPTY_DROP,
+            any(entry.role == "seed" for entry in plan),
         )
     spec: dict[str, Any] = {
         "taskType": PYTHON_TASK_TYPE,
