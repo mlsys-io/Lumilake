@@ -7,8 +7,6 @@ parser turns the key form into a generated row-mode ``LambdaOp`` that reads the
 key column and returns one seed per row, and binds the chat op to its output.
 """
 
-import hashlib
-import json
 from typing import Any
 
 SEED_SUFFIX = "__seed"
@@ -66,21 +64,6 @@ def seed_op_id(chat_op_id: str) -> str:
     return f"{chat_op_id}{SEED_SUFFIX}"
 
 
-def row_seed(
-    job_seed: int, template_id: str, round_number: int | None, key: object
-) -> int:
-    """The seed one row draws with: a pseudo-random function of the job seed,
-    the op's template id, the round and the row key, so the same four values
-    give the same draw wherever the row runs."""
-    payload = json.dumps(
-        [job_seed, template_id, round_number, key],
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % SEED_MODULUS
-
-
 def seed_source(
     fn_name: str,
     job_seed: int,
@@ -91,8 +74,8 @@ def seed_source(
     """The source of a keyed-seed row function: it reads one row's key out of
     its input column and returns the seed that row draws with. The job seed,
     template id, round and key path are constants of the generated code, so the
-    body never runs user code; ``row_seed`` is the same hash over the same
-    inputs, so both sides of the runtime share one definition."""
+    body never runs user code, and the hash is the one ``docs/OPS.md``
+    documents."""
     return _SEED_FN.format(
         fn_name=fn_name,
         parts=parts,
