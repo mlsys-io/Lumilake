@@ -288,3 +288,33 @@ def test_a_user_function_returning_the_reserved_key_fails_the_task(
     writer = _lower(code="def f(row):\n    return {'_fail': 'mine'}\n")
     with pytest.raises(ValueError, match="reserved '_fail' key"):
         _run([_parse(format="json"), writer], {"Answer": ['{"a": 1}']}, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "answer, kept",
+    [
+        ('{"a": 1}', '{"a": 1}'),
+        ('```json\n{"a": 1}\n```', '{"a": 1}'),
+        ('Here: {"a": 1} done', '{"a": 1}'),
+        ("no idea", "no idea"),
+        ('{"_fail": 1, "a": 2}', '{"_fail": 1, "a": 2}'),
+    ],
+    ids=["record", "fenced", "prose", "unparsable", "reserved"],
+)
+def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
+    answer: str, kept: str, tmp_path: Path
+) -> None:
+    """With `on_fail: raw` a row reaches the next op as the record it parsed
+    to, or as its own text when it does not parse; the op is no marker source,
+    so a model op may read it while the default ParseOp is still refused."""
+    ops = [
+        _parse(format="json", on_fail="raw"),
+        _lower(code="def f(row):\n    return row[0]\n"),
+    ]
+    items = _run(ops, {"Answer": [answer]}, tmp_path)
+    assert items[0]["value"] == kept
+    values = {"Answer": [answer], "Images": ["img.png"]}
+    raw = [_parse(format="json", on_fail="raw"), _model_reading("P")]
+    assert _build(raw, values) is not None
+    with pytest.raises(ValueError, match="rule or default"):
+        _build([_parse(format="json"), _model_reading("P")], values)
