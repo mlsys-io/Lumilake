@@ -1415,7 +1415,7 @@ class FlowmeshRuntimeManager:
             node_id,
             response_uri,
         )
-        return response_uri
+        return response_data
 
     async def process_request(
         self,
