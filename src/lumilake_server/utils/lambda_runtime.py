@@ -183,7 +183,7 @@ def inline_lambda_source(code: str, fn_name: str) -> str:
     src = code.strip()
     tree = _parse(src)
     if isinstance(tree, ast.Expression):
-        src = f"_op = ({src})"
+        src = f"_op = (\n{src}\n)"
         globals_ = {"_op"}
         call = "_op(row)"
     else:
