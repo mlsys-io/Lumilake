@@ -40,6 +40,7 @@ _column = _RUNTIME._column
 _decoded_cell = _RUNTIME._decoded_cell
 _decoded_rows = _RUNTIME._decoded_rows
 failure_of = _RUNTIME.failure_of
+carried_marker = _RUNTIME.carried_marker
 _PLAN = json.loads({plan!r})
 _JOIN = json.loads({join!r})
 
@@ -90,19 +91,6 @@ def _encoded(value, where):
         raise ValueError("%s: key %r is not a JSON value" % (where, value))
 
 
-def _marked(row):
-    """The marker ``row`` carries, or ``None`` when its record is ok. A row is
-    the marker itself when its only key is ``_fail``; a row object carries it
-    in one of its fields, since a row's own fields never hold the reserved key.
-    """
-    if isinstance(row, dict) and list(row) == ["_fail"]:
-        return row
-    values = row.values() if isinstance(row, dict) else ()
-    return next(
-        (marked for marked in map(failure_of, values) if marked is not None), None
-    )
-
-
 def _failed(reason):
     """One marker for a row the join cannot place, naming the join and why."""
     return {{"_fail": {{"op": _NODE, "reason": reason}}}}
@@ -112,7 +100,7 @@ def _key_of(row, where):
     """The row's key, or ``None`` when a failed record leaves it without one:
     the row is itself a marker, or its key path reaches one. A row whose key
     reads keeps that key even when another of its fields is a marker."""
-    if _marked(row) is None:
+    if carried_marker((row,)) is None:
         return _key(row, where)
     value = row
     for part in _BY:
@@ -160,7 +148,7 @@ def _keyed(rows, where):
         if key in keyed:
             raise ValueError("%s: duplicate key %s" % (where, key))
         keyed[key] = row
-        carried = _marked(row)
+        carried = carried_marker((row,))
         if carried is not None:
             marked[key] = carried
     return keyed, marked
@@ -174,13 +162,16 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
     cannot be attributed to one row, so it fails the job. A first-input key no
     pair reaches is marked under ``fail_row`` and keeps its field out under
     ``null_fill``."""
-    live = [row for row in rows if _marked(row) is None]
+    live = []
     for row in rows:
-        if row in live:
+        carried = carried_marker((row,))
+        if carried is None:
+            live.append(row)
             continue
         key = _key_of(row, where)
-        if key is not None and key not in marked:
-            marked[key] = _marked(row)
+        if key is not None:
+            # The source row's own failed record is its key's output.
+            marked[key] = carried
     if len(values) == len(rows):
         # A row whose key cannot be read is already its own marker, and its
         # value is the marker passed through: there is no key to pair it with.
@@ -225,7 +216,7 @@ def main(inputs):
         if key in keyed:
             raise ValueError("%s: duplicate key %s" % (first, key))
         keyed[key] = row
-        carried = _marked(row)
+        carried = carried_marker((row,))
         if carried is not None:
             marked[key] = carried
     for index, column in zip(indexes[1:], columns[1:]):
@@ -265,7 +256,7 @@ def main(inputs):
     items = []
     for row in rows:
         key = _key_of(row, first)
-        output = _marked(row) if key is None else marked.get(key, keyed[key])
+        output = carried_marker((row,)) if key is None else marked.get(key, keyed[key])
         items.append({{"output": output}})
     return {{"items": items}}
 '''
