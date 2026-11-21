@@ -578,10 +578,12 @@ def forward_refs(
                 path = column.get("path")
                 if isinstance(node, str) and isinstance(path, str) and node in results:
                     column["node"], column["path"] = bind_explicit(node, path, consumer)
-        rowwise_seed = op.get("rowwise_seed")
-        if isinstance(rowwise_seed, dict):
-            _bind_seed_ref(rowwise_seed, consumer, results, bind_explicit)
-            key = rowwise_seed.get("key")
+        for seed_field in ("rowwise_seed", "seed"):
+            seed = op.get(seed_field)
+            if not isinstance(seed, dict):
+                continue
+            _bind_seed_ref(seed, consumer, results, bind_explicit)
+            key = seed.get("key")
             if isinstance(key, dict):
                 _bind_seed_ref(key, consumer, results, bind_explicit)
         data_spec = op.get("data_spec")
@@ -612,7 +614,8 @@ def _bind_seed_ref(
     results: dict[str, list[dict[str, Any]]],
     bind_explicit: Callable[[str, str, str], tuple[str, str]],
 ) -> None:
-    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place."""
+    """Forward one ``{node, path}`` a seed reads, in place, whether it is a
+    chat op's ``rowwise_seed`` or a Lambda op's ``seed``."""
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:
