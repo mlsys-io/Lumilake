@@ -297,6 +297,41 @@ async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
     assert len({first.digest, second.digest, ok.digest}) == 3
 
 
+@pytest.mark.asyncio
+async def test_whole_op_record_names_every_input_row() -> None:
+    """A list-mode Lambda reads its whole keyed input, so its one record names
+    every input record: a change in the second row gives it a new digest, while
+    the first row's own record keeps its key."""
+    payload = _payload()
+    payload["ops"].append(
+        {
+            "id": "Read",
+            "op": "LambdaOp",
+            "inputs": ["Mark"],
+            "fn_name": "read",
+            "mode": "list",
+            "code": "def read(c):\n    return c[0]\n",
+        }
+    )
+    payload["outputs"].append({"name": "read", "ref": "Read"})
+    keys = []
+    for second in ("TWO", "CHANGED"):
+        graph = _runtime_graph(payload)
+        mark = [{"id": "a", "text": "ONE"}, {"id": "b", "text": second}]
+        entries = {
+            (entry.address.op, entry.address.record): entry.digest
+            for entry in await _store(graph, {"Mark": mark, "Read": [mark]})
+        }
+        keys.append(
+            [
+                entries[(_declared_name(graph, "Mark"), "a")],
+                entries[(_declared_name(graph, "Read"), None)],
+            ]
+        )
+    assert keys[0][0] == keys[1][0]
+    assert keys[0][1] != keys[1][1]
+
+
 def test_ops_reading_different_paths_get_different_signatures() -> None:
     """Two chat ops whose prompt columns read different paths of one producer
     compute different values, so they never share a signature."""
