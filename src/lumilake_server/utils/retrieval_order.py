@@ -81,7 +81,7 @@ def sql_has_top_level_order_by(query: str) -> bool:
     last: TokenList = statements[-1]
     tokens = _carrying_tokens(last.tokens)
     while len(tokens) == 1 and isinstance(tokens[0], Parenthesis):
-        tokens = _carrying_tokens(tokens[0].tokens)
+        tokens = _carrying_tokens(tokens[0].tokens[1:-1])
     return any(
         token.ttype is Keyword and token.normalized == _ORDER_BY for token in tokens
     )

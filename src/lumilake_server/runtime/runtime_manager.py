@@ -1390,10 +1390,10 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         tid: str,
         node_id: str,
-    ) -> Any:
+    ) -> dict[str, Any]:
         """Fetch a task's raw FlowMesh response and archive it as a job
         artifact, redacting the untrusted body before persisting it. Returns
-        the archived response."""
+        the archived response when it is a JSON object, and ``{}`` otherwise."""
         try:
             response_data = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1402,6 +1402,8 @@ class FlowmeshRuntimeManager:
             raise _sanitize_flowmesh_api_error(e) from None
         if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
+        if not isinstance(response_data, dict):
+            response_data = {}
         response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1419,7 +1421,7 @@ class FlowmeshRuntimeManager:
         self,
         runtime_graph: RuntimeGraph,
         node_id: str,
-        response_data: Any,
+        response_data: dict[str, Any],
     ) -> None:
         """Fail a ``rows: one`` retrieval whose query returned more than one
         row for a parameter row, naming the op and that parameter row of this
@@ -1428,8 +1430,6 @@ class FlowmeshRuntimeManager:
         if node is None or node.task_type != "data_retrieval":
             return
         if node.data_spec.get(ROWS_KEY) != ROWS_ONE:
-            return
-        if not isinstance(response_data, dict):
             return
         multi = multi_row_item_indexes(response_data.get("items"))
         if not multi:

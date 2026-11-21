@@ -21,6 +21,7 @@ ORDERED = [
     "-- latest first\nSELECT a FROM t ORDER BY a",
     "SELECT a FROM t WHERE b = 1 ORDER\n  BY a",
     "(SELECT a FROM t ORDER BY a);",
+    "((SELECT a FROM t ORDER BY a))",
     "SELECT a FROM t ORDER BY a; -- latest first",
 ]
 UNORDERED = [
@@ -81,10 +82,11 @@ def test_rows_one_checks_its_bound() -> None:
     (node_id,) = [
         nid for nid, n in runtime.nodes.items() if n.task_type == "data_retrieval"
     ]
+    manager = FlowmeshRuntimeManager()
     items = [{"index": 0, "rows": 1}, {"index": 3, "rows": 2}]
     with pytest.raises(RuntimeError, match=r"_Retrieve_.*\[3\] of this batch"):
-        FlowmeshRuntimeManager()._assert_rows_one(runtime, node_id, {"items": items})
-    FlowmeshRuntimeManager()._assert_rows_one(runtime, node_id, {"items": [{}]})
+        manager._assert_rows_one(runtime, node_id, {"items": items})
+    manager._assert_rows_one(runtime, node_id, {"items": [{}]})
 
 
 @pytest.mark.asyncio
