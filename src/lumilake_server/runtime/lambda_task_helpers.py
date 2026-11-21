@@ -2,10 +2,12 @@
 
 import json
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 
 FAIL_KEY = "_fail"
+_FENCE = re.compile(r"```[\w-]*\n(.*?)\n?```", re.DOTALL)
 
 
 def fail_marker(op: str, reason: str) -> dict[str, Any]:
@@ -36,6 +38,48 @@ def reject_reserved_key(value: Any, op: str, row: int | None = None) -> None:
             f"{op!r}{where} returned an object with the reserved {FAIL_KEY!r}"
             " key; failed records carry that key and user functions must not"
         )
+
+
+def parse_row(spec: dict[str, Any], text: Any) -> Any:
+    """Parse one record's text by a ParseOp's spec; raise a ``ValueError``
+    saying why the parse failed. ``json`` drops one code fence and
+    any prose before the first ``{`` or ``[``; ``regex`` returns the named
+    groups of the first match."""
+    if spec["format"] == "regex":
+        mask = 0
+        for name, flag in (("i", re.IGNORECASE), ("s", re.DOTALL), ("m", re.MULTILINE)):
+            if name in (spec.get("flags") or ""):
+                mask |= flag
+        match = re.compile(spec["pattern"] or "", mask).search(str(text))
+        if match is None:
+            raise ValueError("pattern did not match")
+        return match.groupdict()
+    if not isinstance(text, str):
+        raise ValueError(f"input {text!r} is not text")
+    fenced = _FENCE.search(text)
+    body = fenced.group(1) if fenced else text
+    try:
+        value = json.loads(body, strict=False)
+    except ValueError:
+        start = min((i for i in (body.find("{"), body.find("[")) if i >= 0), default=-1)
+        if start < 0:
+            raise ValueError("no JSON object")
+        try:
+            value = json.loads(body[start:], strict=False)
+        except ValueError:
+            raise ValueError("no JSON object")
+    require = spec.get("require")
+    if require:
+        missing = next((key for key in require if not _has_key(value, key)), None)
+        if missing is not None:
+            raise ValueError(f"missing key '{missing}'")
+    return value
+
+
+def _has_key(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        return key in value
+    return isinstance(value, list) and any(_has_key(item, key) for item in value)
 
 
 def _text(value: Any) -> str:

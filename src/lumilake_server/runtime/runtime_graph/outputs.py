@@ -20,6 +20,7 @@ from lumilake_server.ops.llm_ops import (
     LLMVisionOp,
 )
 from lumilake_server.ops.ops import RowShape
+from lumilake_server.ops.parse_ops import ParseOp
 
 
 def item_relative_path(path: str) -> str:
@@ -142,6 +143,8 @@ def op_output(
         kind = (
             OutputKind.LIST_LAMBDA if op.takes_whole_columns else OutputKind.ROW_LAMBDA
         )
+    elif isinstance(op, ParseOp):
+        kind = OutputKind.ROW_LAMBDA
     else:
         kind = OutputKind.DECLARED
     default_path: str | None
@@ -189,6 +192,8 @@ def output_row_count(
     if isinstance(op, (LLMCompletionOp, EmbeddingOp, ImageGenerationOp)):
         content = op.prompt if isinstance(op, LLMCompletionOp) else op.content
         return output_row_count(content, inputs_dict, graph_dict)
+    if isinstance(op, ParseOp):
+        return output_row_count(op.inputs[0], inputs_dict, graph_dict)
     if isinstance(op, LLMChatOp):
         return _llm_row_count(op, inputs_dict, graph_dict)
     return None
