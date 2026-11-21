@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
@@ -19,7 +20,10 @@ from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
-from lumilake_server.routes.jobs import _admit_subgraph
+from lumilake_server.routes.jobs import (
+    _admit_subgraph,
+    _dispatch_workflow_to_graph_specs,
+)
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from tests.support.data_specs import wire
 
@@ -304,6 +308,40 @@ def test_admit_subgraph_forwards_export_to_validation():
         _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
     resolved = _admit_subgraph(SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {})
     assert [r["id"] for r in resolved] == ["q1"]
+
+
+def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
+    # A dynamic round submits the native graph it just built, whose router
+    # branches carry the expansion's clearing key; only a user native payload
+    # is refused for declaring it.
+    native = {
+        "L": {
+            "_id": "L",
+            "_op": "LambdaOp",
+            "_max_iter": None,
+            "_inputs": [],
+            "fn_name": "f",
+            "_code": "def f(row):\n    return row[0]\n",
+            "_clears_markers": True,
+        }
+    }
+
+    def specs(**kwargs: Any) -> dict[str, Any]:
+        graph_specs: dict[str, Any] = {}
+        _dispatch_workflow_to_graph_specs(
+            workflow_format="native",
+            workflow_payload={"graph": native},
+            batch_inputs={},
+            graph_name="g",
+            graph_specs=graph_specs,
+            idx=0,
+            **kwargs,
+        )
+        return graph_specs
+
+    assert specs(internal=True) == {"g": {"graph": native, "inputs": {}}}
+    with pytest.raises((HTTPException, ValueError), match="clears_markers"):
+        specs()
 
 
 def test_build_round_round2_graph_has_no_round1_op():
