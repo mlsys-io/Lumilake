@@ -147,36 +147,50 @@ def _decodes_deterministically(sampler: dict[str, Any]) -> bool:
     return _number(sampler.get("temperature")) == 0.0
 
 
-def _has_bound_seed(op: RuntimeOp, sampler: dict[str, Any]) -> bool:
-    """Whether every draw is pinned: a seed in the sampler settings, which a
-    ``null`` per-row entry falls back to, or a per-row seed column."""
-    if sampler.get("seed") is not None:
-        return True
-    seeds = op.data_spec.get("seeds")
-    if isinstance(seeds, dict):
-        return True
-    if isinstance(seeds, list):
-        return bool(seeds) and all(value is not None for value in seeds)
-    return False
-
-
 def _dedupe_scope(
-    op: RuntimeOp, logical_ops: dict[str, set[str]]
+    op: RuntimeOp, owners: tuple[tuple[str, str], ...] | None
 ) -> tuple[Any, ...] | None:
     """The per-node part of the dedupe key, or ``None`` when the node must not
-    be merged. A sampling node without a bound seed draws from a distribution
-    independently of its inputs, so it keeps its own key; a seeded node merges
-    only with the same logical op's nodes. Python steps stay eligible, as their
-    output function is the user's to keep pure."""
+    be merged. A node that samples draws from a distribution rather than
+    computing a function of its inputs, so it merges only with the copies of
+    its own logical op (``owners``: one ``(workflow, op id)`` pair per copy),
+    never with a different op of equal settings, seeded or not. Python steps
+    stay eligible, as their output function is the user's to keep pure."""
     sampler = _sampling_spec(op)
     if sampler is None or _decodes_deterministically(sampler):
         return ("pure",)
-    if not _has_bound_seed(op, sampler):
-        return None
-    owners = logical_ops.get(op.node_id)
     if not owners:
         return None
-    return ("seeded", *sorted(owners))
+    return ("sampled", *owners)
+
+
+def _workflow_scope(group_name: str) -> str:
+    """The parent workflow a graph group was built for. A request whose slices
+    were split into chunk groups ``parent``, ``parent::1``, … is one workflow,
+    so its chunk groups share a scope."""
+    parent, _, chunk = group_name.rpartition("::")
+    if parent and chunk.isdigit():
+        return parent
+    return group_name
+
+
+def _logical_ops(
+    graphs: dict[str, RuntimeGraph],
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Map each runtime node to the ``(workflow, op id)`` pairs it was built
+    from. Read from the per-group graphs, before ``merge_runtime_graphs``
+    folds their ``dsl_to_runtime`` by bare op id, so two workflows that both
+    name an op ``Ask`` keep separate owners."""
+    owners: dict[str, list[tuple[str, str]]] = {}
+    for group_name, graph in graphs.items():
+        scope = _workflow_scope(group_name)
+        for op_id, runtime_ids in graph.dsl_to_runtime.items():
+            for runtime_id in runtime_ids:
+                entry = (scope, op_id)
+                pairs = owners.setdefault(runtime_id, [])
+                if entry not in pairs:
+                    pairs.append(entry)
+    return {node_id: tuple(sorted(pairs)) for node_id, pairs in owners.items()}
 
 
 def _dedupe_ordered(items: list[str]) -> list[str]:
@@ -231,20 +245,18 @@ def _remap_node_spec(spec: dict[str, Any], mapping: dict[str, str]) -> dict[str,
 
 def _dedupe_runtime_graph(
     graph: RuntimeGraph,
+    logical_ops: dict[str, tuple[tuple[str, str], ...]],
 ) -> tuple[RuntimeGraph, dict[str, str]]:
     """Merge identical runtime ops with identical dependencies (non-output nodes).
 
-    Only nodes whose output is a function of their inputs are merged, see
-    ``_dedupe_scope``.
+    ``logical_ops`` maps a runtime node to the ``(workflow, op id)`` pairs it
+    was built from; ``_dedupe_scope`` needs it to keep sampling nodes of
+    different ops apart.
 
     Returns the deduplicated graph and the ``node_id -> canonical node_id``
     mapping (identity for nodes that were not deduplicated).
     """
     output_nodes = set(graph.output_node_map)
-    logical_ops: dict[str, set[str]] = {}
-    for op_id, runtime_ids in graph.dsl_to_runtime.items():
-        for runtime_id in runtime_ids:
-            logical_ops.setdefault(runtime_id, set()).add(op_id)
     canonical_by_signature: dict[tuple[object, ...], str] = {}
     mapping: dict[str, str] = {}
 
@@ -253,7 +265,7 @@ def _dedupe_runtime_graph(
             mapping[node_id] = node_id
             continue
         op = graph.nodes[node_id]
-        scope = _dedupe_scope(op, logical_ops)
+        scope = _dedupe_scope(op, logical_ops.get(node_id))
         if scope is None:
             mapping[node_id] = node_id
             continue
@@ -370,6 +382,9 @@ class BaseOptimizer(ABC):
         Returns the merged, deduplicated graph, the output mapping, and the
         dedup ``node_id -> canonical node_id`` mapping (identity for nodes
         that were not deduplicated)."""
+        logical_ops = _logical_ops(graphs)
         merged_graph, output_mapping = merge_runtime_graphs(graphs)
-        optimized_graph, dedup_mapping = _dedupe_runtime_graph(merged_graph)
+        optimized_graph, dedup_mapping = _dedupe_runtime_graph(
+            merged_graph, logical_ops
+        )
         return optimized_graph, output_mapping, dedup_mapping
