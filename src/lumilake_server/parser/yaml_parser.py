@@ -96,7 +96,7 @@ from ..ops.util_ops import CLEARS_KEY
 from . import keyed_seed
 from .common import make_id as _make_id
 from .repeat import unroll_repeats
-from .yaml_ops.common import EmitContext, OpEntry, keyed_seeds
+from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
 
 SUPPORTED_OPS: frozenset[str] = frozenset(EMITTERS)
@@ -230,15 +230,33 @@ def check_keyed_seed_duplicates(
     """Refuse a repeated key in a key form whose column this input set
     supplies, before the set is split into slices: a key repeated across two
     slices would otherwise pass each slice's own check and draw one shared
-    seed."""
-    ops_block = spec.get("ops", []) or []
+    seed. A column is the input set's when it is an input or a literal data op;
+    any other producer's rows are not known until it runs."""
+    ops_block = spec.get("ops")
+    if not isinstance(ops_block, list):
+        return
     literal: dict[str, list[Any]] = {}
-    for op in ops_block if isinstance(ops_block, list) else []:
-        data = op.get("data") if isinstance(op, dict) else None
-        if isinstance(op, dict) and op.get("op") == "DataOp":
-            if isinstance(op.get("id"), str) and isinstance(data, list):
+    declared: list[tuple[str, str, str, str, dict[str, Any]]] = []
+    for op in ops_block:
+        if not isinstance(op, dict):
+            continue
+        op_kind = op.get("op")
+        data = op.get("data")
+        if op_kind == "DataOp" and isinstance(op.get("id"), str):
+            if isinstance(data, list):
                 literal[op["id"]] = data
-    for op_id, op_kind, node, path, shared in keyed_seeds(spec, inputs):
+        if op_kind not in ("LLMChatOp", "LambdaOp"):
+            continue
+        field = "seed" if op_kind == "LambdaOp" else "rowwise_seed"
+        seed = op.get(field)
+        if not isinstance(seed, dict):
+            continue
+        key = seed.get("key")
+        node = key.get("node") if isinstance(key, dict) else None
+        path = key.get("path") if isinstance(key, dict) else None
+        if isinstance(node, str) and isinstance(path, str):
+            declared.append((str(op.get("id")), op_kind, node, path, seed))
+    for op_id, op_kind, node, path, seed in declared:
         values = inputs.get(node, literal.get(node))
         if values is None:
             continue
@@ -246,7 +264,7 @@ def check_keyed_seed_duplicates(
             op_id,
             op_kind,
             keyed_seed.key_cells(values, keyed_seed.key_parts(path)),
-            "shared" if shared else keyed_seed.PAIRINGS[0],
+            keyed_seed.key_pairing(seed, op_id, op_kind),
         )
 
 
