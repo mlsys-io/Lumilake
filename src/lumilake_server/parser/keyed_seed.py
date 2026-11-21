@@ -27,14 +27,14 @@ def {fn_name}(row):
     value = row[0]
     if isinstance(value, str):
         try:
-            value = json.loads(value)
+            decoded = json.loads(value)
         except ValueError:
-            pass
+            decoded = value
+        if isinstance(decoded, (dict, list)):
+            value = decoded
     for part in {parts!r}:
         if isinstance(value, dict) and part in value:
             value = value[part]
-        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
-            value = value[int(part)]
         else:
             raise ValueError({missing!r} % (row[0],))
     if value is None:
