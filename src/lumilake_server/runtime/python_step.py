@@ -225,8 +225,12 @@ def main(inputs):
         for row in rows
     ]
     live = [i for i, marker in enumerate(marked) if marker is None]
+    if not live:
+        # Every row is marked: the function has no live row to run on.
+        return {{"items": [{{"output": marker}} for marker in marked]}}
     live_columns = tuple(
-        col if len(col) == 1 else [col[i] for i in live] for col in columns
+        col if len(col) == 1 and n > 1 else [col[i] for i in live]
+        for col in columns
     )
     values = fn(live_columns)
     if len(values) != len(live):
