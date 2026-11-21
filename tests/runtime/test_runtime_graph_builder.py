@@ -1715,11 +1715,11 @@ def test_chat_column_referencing_dataop_binds_literal_list(form: str) -> None:
         "label": "topic",
         "data": {"type": "list", "items": ["a database index", "a lunar eclipse"]},
     }
-    # A DataOp never becomes a runtime node, so nothing may depend on it.
     assert not node.dependencies
 
 
 def test_aggregate_column_referencing_input_rejects_drill_path() -> None:
+    """A non-empty ``path`` on an InputOp aggregate column is rejected."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],

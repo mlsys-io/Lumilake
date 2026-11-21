@@ -222,19 +222,13 @@ class _RuntimeGraphBuilderBase:
                 )
             return {
                 "label": label,
-                "data": {"type": "list", "items": list(upstream.data)},
+                "data": {"type": "list", "items": upstream.data.copy()},
             }
         if upstream is not None:
             path = self._op_output(upstream).read(
                 path, f"Column '{label}' of consumer '{consumer_id}'"
             )
         return {"label": label, "node": node_ref, "path": path}
-
-    @staticmethod
-    def _column_producer_is_literal(upstream: Op | None) -> bool:
-        """Whether a column's producer binds as a literal (no runtime node), so
-        it must neither become a dependency nor be recorded as materialized."""
-        return isinstance(upstream, (InputOp, DataOp))
 
     def _mark_literal_column_producers_visited(
         self, columns: list[dict[str, Any]] | None, visited_node_ids: set[str]
@@ -246,8 +240,8 @@ class _RuntimeGraphBuilderBase:
             if not isinstance(col, dict):
                 continue
             node_ref = col.get("node")
-            if isinstance(node_ref, str) and self._column_producer_is_literal(
-                self._graph_dict.get(node_ref)
+            if isinstance(node_ref, str) and isinstance(
+                self._graph_dict.get(node_ref), (InputOp, DataOp)
             ):
                 visited_node_ids.add(node_ref)
 
