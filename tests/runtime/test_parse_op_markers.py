@@ -108,8 +108,8 @@ def _values(items: list[Any]) -> list[Any]:
 def test_parse_json_reads_a_plain_fenced_or_prose_wrapped_record(
     answer: str, expected: Any, tmp_path: Path
 ) -> None:
-    ops = [_parse(format="json")]
-    assert _values(_run(ops, {"Answer": [answer]}, tmp_path)) == [expected]
+    got = _values(_run([_parse(format="json")], {"Answer": [answer]}, tmp_path))
+    assert got == [expected]
 
 
 @pytest.mark.parametrize(
@@ -121,23 +121,19 @@ def test_parse_json_reads_a_plain_fenced_or_prose_wrapped_record(
     ],
 )
 def test_parse_json_marks_an_unparsable_row(answer: str, tmp_path: Path) -> None:
-    ops = [_parse(format="json")]
-    items = _run(ops, {"Answer": [answer, '{"a": 1}']}, tmp_path)
+    items = _run([_parse(format="json")], {"Answer": [answer, '{"a": 1}']}, tmp_path)
     assert items[0]["value"]["_fail"]["reason"] == "no JSON object"
     assert items[1]["value"] == {"a": 1}
 
 
-def test_parse_json_marks_a_reply_carrying_the_reserved_key(tmp_path: Path) -> None:
-    ops = [_parse(format="json")]
-    items = _run(ops, {"Answer": ['{"_fail": 1, "a": 2}']}, tmp_path)
-    assert items[0]["value"]["_fail"]["reason"] == "reserved key '_fail'"
-
-
-def test_parse_json_leaves_a_text_marker_as_the_marker_object(tmp_path: Path) -> None:
+def test_parse_json_marks_a_reserved_key_and_keeps_a_text_marker(
+    tmp_path: Path,
+) -> None:
     marker = {"_fail": {"op": "Q", "reason": "no JSON object"}}
-    ops = [_parse(format="json")]
-    items = _run(ops, {"Answer": [json.dumps(marker)]}, tmp_path)
-    assert items[0]["value"] == marker
+    answer = {"Answer": ['{"_fail": 1, "a": 2}', json.dumps(marker)]}
+    items = _run([_parse(format="json")], answer, tmp_path)
+    assert items[0]["value"]["_fail"]["reason"] == "reserved key '_fail'"
+    assert items[1]["value"] == marker
 
 
 def test_parse_json_marks_a_row_missing_a_required_key(tmp_path: Path) -> None:
@@ -178,10 +174,14 @@ def test_parse_rejects_a_bad_spec_naming_the_op() -> None:
         )
 
 
-_ALIGNED = {"mode": "aligned", "code": "def f(columns):\n    return list(columns[0])\n"}
-_LIST = {"mode": "list", "code": "def f(items):\n    return list(items[0])\n"}
-
 _MODEL_KINDS = ("chat", "vision", "embedding")
+_WHOLE = "def f(columns):\n    return list(columns[0])\n"
+_CARRYING = [
+    (_lower(), "L"),
+    (_lower(mode="aligned", code=_WHOLE), "L"),
+    (_lower(mode="list", code=_WHOLE), "L"),
+    (_router(error_branch=True), "R.error"),
+]
 
 
 def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
@@ -214,15 +214,12 @@ def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "carrying",
-    [_lower(), _lower(**_ALIGNED), _lower(**_LIST), _router(error_branch=True)],
-    ids=["row", "aligned", "list", "error"],
+    "carrying, node", _CARRYING, ids=["row", "aligned", "list", "error"]
 )
 @pytest.mark.parametrize("kind", _MODEL_KINDS)
 def test_a_model_op_reading_marked_values_is_refused(
-    carrying: dict[str, Any], kind: str
+    carrying: dict[str, Any], node: str, kind: str
 ) -> None:
-    node = "R.error" if carrying["op"] == "RouterOp" else "L"
     ops = [_parse(format="json"), carrying, _model_reading(node, kind)]
     with pytest.raises(ValueError, match="rule or default"):
         _build(ops, {"Answer": ["no idea"], "Images": ["img.png"]})
@@ -235,8 +232,9 @@ def test_a_model_op_reading_a_router_rule_or_default_branch_builds() -> None:
 
 
 def test_a_row_lambda_skips_the_function_for_a_marked_row(tmp_path: Path) -> None:
-    ops = [_parse(format="json"), _lower()]
-    items = _run(ops, {"Answer": ["no idea", '{"a": 1}']}, tmp_path)
+    items = _run(
+        [_parse(format="json"), _lower()], {"Answer": ["no idea", '{"a": 1}']}, tmp_path
+    )
     assert items[0]["value"]["_fail"]["reason"] == "no JSON object"
     assert items[1]["value"] == 'ran {"a": 1}'
 
@@ -262,31 +260,23 @@ def test_an_aligned_lambda_runs_only_on_the_live_rows(
 def test_a_list_lambda_emits_every_value_of_a_returned_generator(
     tmp_path: Path,
 ) -> None:
-    lister = {
-        "id": "L",
-        "op": "LambdaOp",
-        "inputs": ["P"],
-        "mode": "list",
-        "fn_name": "f",
-        "code": "def f(items):\n    return (v.upper() for v in items[0])\n",
-    }
-    ops = [_parse(format="json"), lister]
-    items = _run(ops, {"Answer": ['{"a": 1}', '{"b": 2}']}, tmp_path)
+    lister = _lower(
+        mode="list", code="def f(items):\n    return (v.upper() for v in items[0])\n"
+    )
+    items = _run(
+        [_parse(format="json"), lister], {"Answer": ['{"a": 1}', '{"b": 2}']}, tmp_path
+    )
     assert [item["output"] for item in items] == ['{"A": 1}', '{"B": 2}']
 
 
 def test_a_router_sends_marked_rows_to_a_declared_error_branch(tmp_path: Path) -> None:
-    tail = {
-        "id": "Out",
-        "op": "LambdaOp",
-        "inputs": ["R.error"],
-        "mode": "list",
-        "fn_name": "first",
-        "code": "def first(items):\n    return items[0]\n",
-    }
+    tail = _lower(
+        inputs=["R.error"],
+        mode="list",
+        code="def f(items):\n    return items[0]\n",
+    )
     ops = [_parse(format="json"), _router(error_branch=True), tail]
-    values = {"Answer": ['{"verdict": "yes"}', "no idea"]}
-    items = _run(ops, values, tmp_path)
+    items = _run(ops, {"Answer": ['{"verdict": "yes"}', "no idea"]}, tmp_path)
     (marked,) = [item["output"] for item in items]
     assert list(marked) == ["_fail"]
     assert marked["_fail"]["reason"] == "no JSON object"
@@ -294,8 +284,10 @@ def test_a_router_sends_marked_rows_to_a_declared_error_branch(tmp_path: Path) -
 
 def test_a_router_without_an_error_branch_sends_a_marked_row_nowhere() -> None:
     marked = json.dumps({"_fail": {"op": "P", "reason": "no JSON object"}})
-    for branch in RouterOp.from_entry(_router()).branches:
-        op = next(o for o in expand_routers([_router()]) if o["id"] == f"R.{branch}")
+    ops = expand_routers([_router()])
+    branches = RouterOp.from_entry(_router()).branches
+    assert [op["id"] for op in ops] == [f"R.{branch}" for branch in branches]
+    for op in ops:
         assert materialize(op["code"], op["fn_name"])(([marked],)) == []
 
 
