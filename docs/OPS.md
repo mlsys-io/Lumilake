@@ -361,10 +361,38 @@ The parser generates a row-mode `LambdaOp` whose id a user op cannot hold, and
 a native graph names it after its chat op and refuses that id if the graph
 already has it. The key form keeps `spec.data.seeds`, and every check above
 applies without pinning the whole input list the way a list-mode Lambda would.
-It needs `rowwise_template`, carries no other `rowwise_seed` field beside
-`key`, and a row with a missing key, or a null one where the key is read under
-a path, fails the job naming the op and row. A `{{round}}` in the op id stays
-literal in the seed inputs.
+It needs `rowwise_template` and carries no other `rowwise_seed` field beside
+`key` (and the optional `pairing` covered below), and a row with a missing
+key, or a null one where the key is read under a path, fails the job naming
+the op and row. A `{{round}}` in the op id stays literal in the seed inputs.
+
+Two rows of one op that carry the same key draw the same seed, so a key that
+repeats turns independent samples into one shared draw. A key column the
+submission can see in full, a workflow input or a literal data op, is checked
+when the workflow is parsed: a repeated key fails with the op and the two row
+indices. A column an upstream op produces is not known until it runs, so its
+repeats are only checked where the op's whole input reaches one worker. Write
+`pairing: shared` on the key form to declare that the same key should draw the
+same seed, for example to compare two specs on one paired draw.
+
+```yaml
+  rowwise_seed:
+    key: {node: Cases, path: items.output.case_id}
+    pairing: shared
+```
+
+The round is the semantic round a job's loop is on, counted one-based and
+counts only the rounds that dispatch a graph: a planning step that draws
+nothing does not take a round number, and the agent-driven and the template
+loops number their rounds the same way. Renumbering rounds changes every
+draw, so a rerun or any later coalescing must keep a job's semantic round
+numbers. A retry of a failed task recomputes the same `[seed, op id, round,
+key]` and so draws the same seed: it replays the computation, it does not ask
+for a new sample. A workflow that wants a fresh sample after a failure puts the
+attempt into its identity, as a later round or an explicit attempt field of the
+key. Two specs draw the same values exactly when they share the job seed, the
+logical op id, the round and the key; changing any of them is a deliberate
+unpairing.
 
 ```yaml
 - id: Answer
@@ -543,6 +571,31 @@ ops:
     code: |
       def split(row):
           return [k for k in row[0].split(",") if k.strip()]
+```
+
+A `row` or `expand` `LambdaOp` takes an optional keyed `seed`, shaped and
+checked exactly like a chat op's `rowwise_seed` key form (`{key: {node, path}}`
+with the optional `pairing`, the same decode rule for a key cell, and the same
+duplicate-key refusal). The op's generated step derives one seed per row, hashes
+`[seed, op id, round, key]` the same way, and passes the seed to the function as
+a second argument, so the function can draw from `random.Random(seed)`. A
+function that declares only the input tuple keeps working unchanged: the second
+argument exists only when `seed` is declared, and a seeded op's function must
+accept exactly two parameters. The key's node must be listed in `inputs:`, as
+for a seed column. A `list`, `aligned` or `reduce` mode sees whole columns or
+groups rather than one row, so it takes no `seed`.
+
+```yaml
+ops:
+  - id: "Sample"
+    op: LambdaOp
+    inputs: [Cases]
+    fn_name: sample
+    code: |
+      def sample(row, seed):
+          rng = random.Random(seed)
+          return rng.choice(["positive", "negative"])
+    seed: {key: {node: Cases, path: items.output.case_id}}
 ```
 
 `mode: reduce` zips its inputs into row tuples as `row` mode does, groups them

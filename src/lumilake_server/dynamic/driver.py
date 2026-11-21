@@ -1129,13 +1129,16 @@ def build_round(
     job_seed: int = 0,
     template_ids: dict[str, str] | None = None,
     cleared_ids: Collection[str] = (),
+    round_number: int | None = None,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
     ``cleared_ids`` are the router branches this round's expansion dropped
-    markers on, which its parse keeps the flag for.
+    markers on, which its parse keeps the flag for. ``round_number`` is the
+    semantic, one-based round a keyed seed draws with; it defaults to the
+    loop's ``round_index``, which the template loop already numbers from one.
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
@@ -1152,7 +1155,7 @@ def build_round(
     }
     parsed = parse_yaml_payload(
         workflow,
-        round_number=round_index,
+        round_number=round_index if round_number is None else round_number,
         template_ids=template_ids,
         cleared_ids=cleared_ids,
     )
