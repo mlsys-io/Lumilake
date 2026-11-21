@@ -1910,10 +1910,11 @@ async def test_list_lambda_output_two_values_for_one_row_slice_fails_closed(
 
 
 @pytest.mark.parametrize(
-    "slice_lengths, mixed_read",
+    "slice_lengths, mixed_read, literal_column",
     [
-        pytest.param([2], False, id="list-lambda-fanout"),
-        pytest.param([1, 1], True, id="input-rows-beside-a-list-lambda"),
+        pytest.param([2], False, False, id="list-lambda-fanout"),
+        pytest.param([1, 1], True, False, id="input-rows-beside-a-list-lambda"),
+        pytest.param([1, 1], False, True, id="input-column-beside-a-list-lambda"),
     ],
 )
 @pytest.mark.asyncio
@@ -1922,12 +1923,14 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
     monkeypatch: pytest.MonkeyPatch,
     slice_lengths: list[int],
     mixed_read: bool,
+    literal_column: bool,
 ) -> None:
     """A row-mode python step downstream of a list-mode Lambda runs once per
     upstream element and emits one output per element. Its output must surface
     every value (one per input row), not be forced into the list-Lambda
     one-whole-list path and rejected as a length mismatch. A step that also
-    reads the job's input rows keeps the input's row count across slices."""
+    reads the job's input rows, through a plan or through a dataframe column,
+    keeps the input's row count across slices."""
     server = server_factory()
     server.runtime_manager = cast(
         Any,
@@ -1958,16 +1961,26 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
         lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
     )
     _install_rowwise_python_downstream_build_and_schedule(server, "out")
-    if mixed_read:
+    if mixed_read or literal_column:
         build = server._runtime_builder.build
 
         def _mixed_read(compiled_graph: Any, **kwargs: Any) -> RuntimeGraph:
             graph = build(compiled_graph, **kwargs)
             (row,) = [node for node in graph.nodes.values() if node.dependencies]
-            row.data_spec["plan"] = [
-                {"kind": "literal", "values": []},
-                {"kind": "stage", "node": row.dependencies[0]},
-            ]
+            if literal_column:
+                row.data_spec["type"] = "dataframe"
+                row.data_spec["columns"] = [
+                    {
+                        "label": "input",
+                        "data": {"type": "list", "items": ["NVDA", "AAPL"]},
+                    },
+                    {"label": "tag", "node": row.dependencies[0], "path": "items"},
+                ]
+            else:
+                row.data_spec["plan"] = [
+                    {"kind": "literal", "values": []},
+                    {"kind": "stage", "node": row.dependencies[0]},
+                ]
             return graph
 
         monkeypatch.setattr(server._runtime_builder, "build", _mixed_read)
