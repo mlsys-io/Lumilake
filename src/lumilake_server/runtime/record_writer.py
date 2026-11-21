@@ -422,12 +422,15 @@ def _resolve_plans(
 
 
 def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
-    """The logical op name of each runtime node, so no record address or spec
-    digest carries a job id, a prefix or a slice suffix."""
+    """Each runtime node's op name, so no record address or spec digest carries
+    a job id, a prefix, a slice suffix or a graph scope.
+
+    A node takes the name its workflow declares; a node whose op the workflow
+    did not name (an implicit step, a lowering helper) takes its DSL op id."""
     names: dict[str, str] = {}
     for op_name, node_ids in runtime_graph.dsl_to_runtime.items():
         for node_id in node_ids:
-            names[node_id] = op_name
+            names[node_id] = runtime_graph.op_names.get(node_id, op_name)
     return names
 
 

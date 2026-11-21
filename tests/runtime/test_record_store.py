@@ -118,15 +118,11 @@ def _runtime_graph(payload: dict[str, Any], node_prefix: str | None = None) -> A
 
 
 def _node_id(graph: Any, op_suffix: str) -> str:
-    return next(node_id for node_id in graph.dsl_to_runtime if op_suffix in node_id)
-
-
-def _runtime_node_id(graph: Any, op_suffix: str) -> str:
-    """The one runtime node a DSL op lowered to."""
+    """The one runtime node the DSL op ``op_suffix`` lowered to."""
     return next(
         node_ids[0]
         for op_id, node_ids in graph.dsl_to_runtime.items()
-        if op_suffix in op_id
+        if f"_{op_suffix}_" in op_id
     )
 
 
@@ -198,8 +194,10 @@ def graph() -> Any:
     return _runtime_graph(_payload())
 
 
-def _op_id(graph: Any, name: str) -> str:
-    return next(op_id for op_id in graph.dsl_to_runtime if f"_{name}_" in op_id)
+def _declared_name(graph: Any, name: str) -> str:
+    """The name a record of the DSL op ``name`` carries: the one its workflow
+    declares, never the scoped node id."""
+    return graph.op_names[_node_id(graph, name)]
 
 
 @pytest.mark.asyncio
@@ -218,10 +216,10 @@ async def test_writer_stores_one_entry_per_keyed_row(graph: Any) -> None:
         (entry.address.op, entry.address.record) for entry in _entries(storage)
     ) == sorted(
         [
-            (_op_id(graph, "Join"), "a"),
-            (_op_id(graph, "Join"), "b"),
-            (_op_id(graph, "Mark"), "a"),
-            (_op_id(graph, "Mark"), "b"),
+            (_declared_name(graph, "Join"), "a"),
+            (_declared_name(graph, "Join"), "b"),
+            (_declared_name(graph, "Mark"), "a"),
+            (_declared_name(graph, "Mark"), "b"),
         ]
     )
     for entry in _entries(storage):
@@ -253,14 +251,15 @@ async def test_signature_is_equal_across_row_order(graph: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_slices_of_one_job_store_equal_digests() -> None:
-    """The same keyed job run whole and one row per batch stores the same
-    records under the same keys: the spec digest never sees the slice."""
+    """One keyed job run whole and sliced batch by batch stores the same records
+    under the same keys: neither the address nor the spec digest sees the
+    slice, whose graph name and so op ids differ."""
     payload = _payload()
     whole = _runtime_graph(payload)
     rows = payload["inputs"]["Rows"]
     per_digest: dict[tuple[str, str | None], str] = {}
-    for batch in _batches(payload["inputs"], size=1):
-        graph = _runtime_graph(_payload(batch))
+    for batch_index, batch in enumerate(_batches(payload["inputs"], size=1)):
+        graph = _runtime_graph(_payload(batch), node_prefix=f"slice-{batch_index}")
         node_ids = {
             "Mark": _node_id(graph, "Mark"),
             "Join": _node_id(graph, "Join"),
@@ -280,10 +279,7 @@ async def test_slices_of_one_job_store_equal_digests() -> None:
         {"Mark": _node_id(whole, "Mark"), "Join": _node_id(whole, "Join")},
     )
     whole_digests = {
-        (
-            _op_id(whole, entry.address.op.rsplit("_", 2)[1]),
-            entry.address.record,
-        ): entry.digest
+        (entry.address.op, entry.address.record): entry.digest
         for entry in _entries(whole_storage)
     }
     assert len(whole_digests) == 4
@@ -322,7 +318,7 @@ async def test_signature_changes_when_input_value_changes(graph: Any) -> None:
         return {
             entry.digest
             for entry in entries
-            if entry.address.op == _op_id(graph, op_name)
+            if entry.address.op == _declared_name(graph, op_name)
         }
 
     # The upstream op read the same literal, so its record keeps its key; the
@@ -336,10 +332,12 @@ def test_ops_reading_different_paths_get_different_signatures() -> None:
     compute different values, so they never share a signature."""
     graph = _runtime_graph(_PATHS_WORKFLOW)
     names: dict[str, str] = {
-        node_id: op for op, ids in graph.dsl_to_runtime.items() for node_id in ids
+        node_id: graph.op_names.get(node_id, op)
+        for op, ids in graph.dsl_to_runtime.items()
+        for node_id in ids
     }
     digests = {
-        field: op_spec_digest(graph.nodes[_op_id(graph, field)], names)
+        field: op_spec_digest(graph.nodes[_node_id(graph, field)], names)
         for field in ("AskX", "AskY")
     }
     assert digests["AskX"] != digests["AskY"]
@@ -375,13 +373,13 @@ async def test_lineage_walks_a_chain_from_the_archive(graph: Any) -> None:
     chain = lineage(
         storage,
         index=index,
-        op=_op_id(graph, "Join"),
+        op=_declared_name(graph, "Join"),
         record="a",
         round_number=0,
     )
     assert [entry.address.record for entry in chain] == ["a", "a"]
-    assert chain[0].address.op == _op_id(graph, "Join")
-    assert chain[1].address.op == _op_id(graph, "Mark")
+    assert chain[0].address.op == _declared_name(graph, "Join")
+    assert chain[1].address.op == _declared_name(graph, "Mark")
     assert chain[0].source.task_id == "task-Join"
     assert chain[1].source.worker == "worker-1"
 
@@ -394,7 +392,7 @@ async def test_index_outlives_the_server_that_wrote_it(graph: Any) -> None:
     fresh = read_index(storage, "req-1")
     assert fresh is not None
     assert fresh.rounds() == [0]
-    assert [entry.op for entry in fresh.entries] == [_op_id(graph, "Mark")]
+    assert [entry.op for entry in fresh.entries] == [_declared_name(graph, "Mark")]
 
 
 @pytest.mark.asyncio
@@ -448,35 +446,6 @@ async def test_unversioned_retrieval_flows_downstream(graph: Any) -> None:
         plan_graph, {"Mark": [{"id": "a", "text": "ONE"}]}, node_ids
     )
     assert all(entry.versions.unversioned for entry in _entries(storage))
-
-
-@pytest.mark.asyncio
-async def test_stored_key_names_the_logical_op_across_jobs() -> None:
-    """A record's key never carries a job id, prefix or slice suffix, so two
-    jobs of one workflow store their records under the same keys."""
-    payload = _payload()
-    results = {
-        "Mark": [{"id": "a", "text": "ONE"}],
-        "Join": [{"id": "a", "text": "ONE!"}],
-    }
-    stored: dict[str, dict[tuple[str, str | None], str]] = {}
-    for job_id, prefix in (("req-one", "job-one"), ("req-two", "job-two")):
-        graph = _runtime_graph(payload, node_prefix=prefix)
-        storage, _ = await _write(
-            graph,
-            results,
-            {
-                "Mark": _runtime_node_id(graph, "Mark"),
-                "Join": _runtime_node_id(graph, "Join"),
-            },
-            job_id=job_id,
-        )
-        stored[job_id] = {
-            (entry.address.op, entry.address.record): entry.digest
-            for entry in _entries(storage, job_id)
-        }
-
-    assert stored["req-one"] == stored["req-two"]
 
 
 def test_record_key_rides_the_graph() -> None:

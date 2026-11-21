@@ -117,12 +117,18 @@ def _parse_n8n_workflow(
         model_specs=model_specs,
     )
 
-    def add_op(op: dict[str, Any] | None) -> None:
+    def add_op(
+        op: dict[str, Any] | None,
+        primary_id: str | None = None,
+        declared_name: str | None = None,
+    ) -> None:
         if not op:
             return
         op_id = op["_id"]
         if op_id in graph_ops:
             return
+        if primary_id is not None and op_id == primary_id:
+            op["_declared_id"] = declared_name
         graph_ops[op_id] = op
         ordered_ops.append(op)
 
@@ -132,7 +138,7 @@ def _parse_n8n_workflow(
             continue
         ops, op_id = NODE_TRANSLATORS[node["type"]].make(node, ctx, node_name)
         for op in ops:
-            add_op(op)
+            add_op(op, op_id, node_name)
         op_ids[node_name] = op_id
 
     pending = {name for name, node in node_map.items() if node["type"] in WORK_TYPES}
@@ -148,7 +154,7 @@ def _parse_n8n_workflow(
 
             ops, op_id = NODE_TRANSLATORS[node["type"]].make(node, ctx, node_name)
             for op in ops:
-                add_op(op)
+                add_op(op, op_id, node_name)
             op_ids[node_name] = op_id
             pending.remove(node_name)
             progress = True
@@ -180,7 +186,7 @@ def _parse_n8n_workflow(
             )
         output_owners[output_name] = node_name
         output_op = make_output_op(scope, output_name, upstream)
-        add_op(output_op)
+        add_op(output_op, output_op["_id"], output_name)
 
     graph = {op["_id"]: op for op in ordered_ops}
     return N8NGraphSpec(graph=graph, inputs=inputs)

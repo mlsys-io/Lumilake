@@ -45,6 +45,11 @@ class Op(ABC):
     id: str
     inputs: list["Op"]
     registry: OpRegistry = OpRegistry()
+    declared_id: str | None = None
+    """The id the workflow declared for this op, when it declared one.
+
+    ``id`` is derived from the graph's scope, so it changes with the workflow
+    name and the slice. A name that must survive those reads this one."""
 
     @property
     def row_shape(self) -> RowShape:
@@ -144,6 +149,8 @@ class Op(ABC):
         serialized["_op"] = self.__class__.__name__
         serialized["_max_iter"] = self._max_iter
         serialized["_inputs"] = [op.id for op in self.inputs]
+        if self.declared_id is not None:
+            serialized["_declared_id"] = self.declared_id
         if self.key is not None:
             serialized["key"] = self.key.copy()
         return serialized
@@ -152,6 +159,7 @@ class Op(ABC):
     def from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "Op":
         op = cls._from_json(data, other_ops)
         op.id = data["_id"]
+        op.declared_id = data.get("_declared_id")
         max_iter = data["_max_iter"]
         op.set_looping(max_iter is not None, max_iter)
         key = data.get("key")

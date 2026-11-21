@@ -32,6 +32,7 @@ class RuntimeGraphSchema(BaseModel):
     output_paths: dict[str, str] = Field(default_factory=dict)
     dsl_to_runtime: dict[str, list[str]] = Field(default_factory=dict)
     record_keys: dict[str, dict[str, str]] = Field(default_factory=dict)
+    op_names: dict[str, str] = Field(default_factory=dict)
 
 
 class Roles(Enum):
@@ -63,6 +64,11 @@ class RuntimeGraph:
 
     The path is drilled into the node's own item, so the keys are read off the
     values the task produced. A node absent here stores one whole-op entry."""
+    op_names: dict[str, str] = field(default_factory=dict)
+    """Node id -> the op name its record address carries.
+
+    A record names the op the workflow declares, never the node id, which
+    carries the graph scope and so the workflow name and the slice."""
 
     @property
     def node_count(self) -> int:
@@ -79,6 +85,7 @@ class RuntimeGraph:
             output_paths=self.output_paths,
             dsl_to_runtime=self.dsl_to_runtime,
             record_keys=self.record_keys,
+            op_names=self.op_names,
         ).model_dump(exclude_none=True)
         return redact_sensitive(payload)
 
@@ -98,6 +105,7 @@ class RuntimeGraph:
             output_paths=schema.output_paths,
             dsl_to_runtime=schema.dsl_to_runtime,
             record_keys=schema.record_keys,
+            op_names=schema.op_names,
         )
 
     @classmethod
@@ -276,6 +284,12 @@ class RuntimeGraph:
             if node_id in mapping
         }
 
+        op_names = {
+            mapping[node_id]: name
+            for node_id, name in self.op_names.items()
+            if node_id in mapping
+        }
+
         return type(self)(
             nodes=nodes,
             node_order=node_order,
@@ -283,6 +297,7 @@ class RuntimeGraph:
             output_paths=output_paths,
             dsl_to_runtime=dsl_to_runtime,
             record_keys=record_keys,
+            op_names=op_names,
         )
 
 
@@ -295,6 +310,7 @@ def merge_runtime_graphs(
     output_paths: dict[str, str] = {}
     dsl_to_runtime: dict[str, list[str]] = {}
     record_keys: dict[str, dict[str, str]] = {}
+    op_names: dict[str, str] = {}
     output_mapping: dict[str, tuple[str, str]] = {}
 
     for graph_name, graph in graphs.items():
@@ -318,6 +334,8 @@ def merge_runtime_graphs(
             output_paths[node_id] = path
         for node_id, key in graph.record_keys.items():
             record_keys[node_id] = key.copy()
+        for node_id, name in graph.op_names.items():
+            op_names[node_id] = name
 
     return (
         RuntimeGraph(
@@ -327,6 +345,7 @@ def merge_runtime_graphs(
             output_paths=output_paths,
             dsl_to_runtime=dsl_to_runtime,
             record_keys=record_keys,
+            op_names=op_names,
         ),
         output_mapping,
     )

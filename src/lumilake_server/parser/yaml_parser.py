@@ -221,6 +221,7 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         op_id = _make_id(scope, "input", input_name)
         graph_ops[op_id] = {
             "_id": op_id,
+            "_declared_id": input_name,
             "_op": "InputOp",
             "_max_iter": None,
             "_inputs": [],
@@ -272,6 +273,7 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
             raise ValueError(f"duplicate output id derived for '{out.name}'")
         out_dict: dict[str, Any] = {
             "_id": op_id,
+            "_declared_id": out.name,
             "_op": "OutputOp",
             "_max_iter": None,
             "_inputs": [user_id_to_internal[out.ref]],
@@ -379,6 +381,7 @@ def _build_op_dict(
 
     op_dict: dict[str, Any] = {
         "_id": internal_id,
+        "_declared_id": entry.id,
         "_op": entry.op,
         "_max_iter": entry.max_iter,
         "_inputs": input_ids,
