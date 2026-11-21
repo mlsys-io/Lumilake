@@ -11,6 +11,7 @@ from lumilake_server.data_specs import (
     ListData,
 )
 from lumilake_server.ops import (
+    DataOp,
     InputOp,
     LLMOp,
     Op,
@@ -215,11 +216,44 @@ class _RuntimeGraphBuilderBase:
                     "target field, or drop the ``path`` for scalar inputs."
                 )
             return Column(label=label, data=ListData(items=list(values)))
+        if isinstance(upstream, DataOp):
+            # A DataOp never materializes a runtime envelope, so its values bind
+            # as a literal column. ``items.output`` names that whole value; any
+            # deeper path would drill an envelope that does not exist.
+            if path not in (None, "", "items.output"):
+                raise ValueError(
+                    f"Column '{label}' of consumer '{consumer_id}' references"
+                    f" DataOp '{node_ref}' with drill path {path!r}; a"
+                    " DataOp-derived column binds its values whole, so the only"
+                    " paths it accepts are none and 'items.output'."
+                )
+            return Column(label=label, data=ListData(items=list(upstream.data)))
         if upstream is not None:
             path = self._op_output(upstream).read(
                 path, f"Column '{label}' of consumer '{consumer_id}'"
             )
         return Column(label=label, node=node_ref, path=path)
+
+    @staticmethod
+    def _column_producer_is_literal(upstream: Op | None) -> bool:
+        """Whether a column's producer binds as a literal (no runtime node), so
+        it must neither become a dependency nor be recorded as materialized."""
+        return isinstance(upstream, (InputOp, DataOp))
+
+    def _mark_literal_column_producers_visited(
+        self, columns: list[dict[str, Any]] | None, visited_node_ids: set[str]
+    ) -> None:
+        """Mark every literal column producer visited. It feeds no chat message
+        on its own, so the message traversal never reaches it and the orphan
+        check would otherwise reject a legitimate column-only read."""
+        for col in columns or []:
+            if not isinstance(col, dict):
+                continue
+            node_ref = col.get("node")
+            if isinstance(node_ref, str) and self._column_producer_is_literal(
+                self._graph_dict.get(node_ref)
+            ):
+                visited_node_ids.add(node_ref)
 
     def _project_input_field(
         self, values: list[str], path: str, input_name: str

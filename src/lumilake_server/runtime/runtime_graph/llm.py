@@ -612,11 +612,12 @@ class _LLMBuilder(_EmbeddingBuilder):
                 columns.append(Column.model_validate({"label": label, "data": data}))
                 continue
             if isinstance(label, str) and isinstance(node_ref, str):
-                if path is None and not isinstance(graph_dict.get(node_ref), InputOp):
+                upstream = graph_dict.get(node_ref)
+                if path is None and not isinstance(upstream, (InputOp, DataOp)):
                     raise ValueError(
                         f"Column '{label}' of consumer '{llm_op_id}'"
                         f" references node '{node_ref}' without a path;"
-                        " only InputOp refs may omit it."
+                        " only InputOp and DataOp refs may omit it."
                     )
                 columns.append(
                     self._node_ref_column(
@@ -624,15 +625,14 @@ class _LLMBuilder(_EmbeddingBuilder):
                         label=label,
                         node_ref=node_ref,
                         path=path if isinstance(path, str) else "",
-                        upstream=graph_dict.get(node_ref),
+                        upstream=upstream,
                         inputs_dict=inputs_dict,
                     )
                 )
-                # An InputOp ref is bound as a literal column (no runtime node),
-                # so it must not become a dependency on a node that does not
-                # exist.
+                # A literal-backed column binds its values inline and has no
+                # runtime node, so it must not become a dependency.
                 if node_ref not in dependencies and not isinstance(
-                    graph_dict.get(node_ref), InputOp
+                    upstream, (InputOp, DataOp)
                 ):
                     dependencies.append(node_ref)
                 continue
@@ -766,10 +766,10 @@ class _LLMBuilder(_EmbeddingBuilder):
                     inputs_dict=inputs_dict,
                 )
             )
-            # An InputOp ref is bound as a literal column (no runtime node), so
-            # it must not become a dependency on a node that does not exist.
+            # A literal-backed column binds its values inline and has no
+            # runtime node, so it must not become a dependency.
             if node_ref not in dependencies and not isinstance(
-                graph_dict.get(node_ref), InputOp
+                graph_dict.get(node_ref), (InputOp, DataOp)
             ):
                 dependencies.append(node_ref)
         for dep in self._collect_graph_template_dependencies(
@@ -905,6 +905,11 @@ class _LLMBuilder(_EmbeddingBuilder):
     def _lower_llm(self, op: LLMOp, ctx: LoweringContext) -> LoweringResult | None:
         """Lower an LLM op, through the API task when it targets an external
         endpoint and through the local inference task otherwise."""
+        if isinstance(op, LLMChatOp):
+            # A literal column producer feeds no chat message, so the message
+            # traversal never reaches it; mark it visited here.
+            self._mark_literal_column_producers_visited(op.rowwise_columns, ctx.visited)
+            self._mark_literal_column_producers_visited(op.aggregate_table, ctx.visited)
         if op.config.api is not None:
             upstream_llm_ids, template_spec = self._infer_structural_messages(
                 op.id,
