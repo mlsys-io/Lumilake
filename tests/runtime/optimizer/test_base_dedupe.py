@@ -30,7 +30,7 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
             },
         },
         model_spec={},
-        inference_spec={"echo": True},
+        inference_spec={"echo": True, "temperature": 0.0},
         dependencies=(),
     )
     child = RuntimeOp(
@@ -53,7 +53,7 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
             },
         },
         model_spec={},
-        inference_spec={"echo": True},
+        inference_spec={"echo": True, "temperature": 0.0},
         dependencies=(root_id,),
     )
     return RuntimeGraph(
@@ -91,7 +91,7 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
                     model="dummy-model",
                     data_spec={"type": "list", "items": ["a", "b"]},
                     model_spec={},
-                    inference_spec={},
+                    inference_spec={"temperature": 0.0},
                     dependencies=(),
                 ),
                 infer_id: RuntimeOp(
@@ -114,7 +114,7 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
                         },
                     },
                     model_spec={},
-                    inference_spec={},
+                    inference_spec={"temperature": 0.0},
                     dependencies=(seed_id,),
                 ),
             },
@@ -141,7 +141,12 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         data_spec={},
         model_spec={},
         inference_spec={},
-        api_spec={"json": {"messages": [{"role": "user", "content": "hello"}]}},
+        api_spec={
+            "json": {
+                "temperature": 0.0,
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+        },
         dependencies=(),
     )
     api1 = RuntimeOp(
@@ -152,7 +157,12 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         data_spec={},
         model_spec={},
         inference_spec={},
-        api_spec={"json": {"messages": [{"role": "user", "content": "hello"}]}},
+        api_spec={
+            "json": {
+                "temperature": 0.0,
+                "messages": [{"role": "user", "content": "hello"}],
+            }
+        },
         dependencies=(),
     )
     downstream = RuntimeOp(
@@ -165,7 +175,8 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         inference_spec={},
         api_spec={
             "json": {
-                "messages": [{"role": "user", "content": "${Api1.items.0.output}"}]
+                "temperature": 0.0,
+                "messages": [{"role": "user", "content": "${Api1.items.0.output}"}],
             }
         },
         dependencies=("Api1",),
@@ -199,7 +210,7 @@ def test_dedupe_keys_on_condition_and_preserves_it() -> None:
             model="model-a",
             data_spec={},
             model_spec={},
-            inference_spec={},
+            inference_spec={"temperature": 0.0},
             dependencies=(),
             condition={"node": "gate", "expr": expr},
         )
@@ -233,7 +244,7 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
             model="model-a",
             data_spec={},
             model_spec={},
-            inference_spec={},
+            inference_spec={"temperature": 0.0},
             dependencies=(),
             condition={"node": "gate", "expr": "gate == 'on'"},
             skip_when_all_inputs_empty=True,
@@ -267,7 +278,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
             model="model-a",
             data_spec={},
             model_spec={},
-            inference_spec={},
+            inference_spec={"temperature": 0.0},
             dependencies=(),
         )
 
@@ -280,7 +291,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
         model="model-a",
         data_spec={},
         model_spec={},
-        inference_spec={},
+        inference_spec={"temperature": 0.0},
         dependencies=("B",),
         condition={"node": "B", "expr": "B == 'ok'"},
     )
@@ -299,7 +310,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
 
 def test_dedupe_keys_on_output_enforcement() -> None:
-    base = RuntimeOp("A", "inference", "vllm", "m", {}, {}, {})
+    base = RuntimeOp("A", "inference", "vllm", "m", {}, {}, {"temperature": 0.0})
     nodes = {
         n: replace(base, node_id=n, output_enforcement={"text_regex": r})
         for n, r in (("A", "a"), ("B", "a"), ("F", "F"))
