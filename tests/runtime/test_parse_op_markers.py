@@ -190,13 +190,23 @@ def _model_reading(node: str) -> dict[str, Any]:
     }
 
 
-def test_a_model_op_reading_a_marked_column_is_refused() -> None:
-    ops = [_parse(format="json"), _lower(), _model_reading("L")]
-    with pytest.raises(ValueError, match="non-error branch"):
-        _build(ops, {"Answer": ['{"a": 1}']})
+_ALIGNED = {"mode": "aligned", "code": "def f(columns):\n    return list(columns[0])\n"}
+_LIST = {"mode": "list", "code": "def f(items):\n    return list(items[0])\n"}
 
 
-def test_a_model_op_reading_a_column_not_carrying_markers_builds() -> None:
+@pytest.mark.parametrize(
+    "carrying",
+    [_lower(), _lower(**_ALIGNED), _lower(**_LIST), _router(error_branch=True)],
+    ids=["row", "aligned", "list", "error"],
+)
+def test_a_model_op_reading_marked_values_is_refused(carrying: dict[str, Any]) -> None:
+    node = "R.error" if carrying["op"] == "RouterOp" else "L"
+    ops = [_parse(format="json"), carrying, _model_reading(node)]
+    with pytest.raises(ValueError, match="rule or default"):
+        _build(ops, {"Answer": ["no idea"]})
+
+
+def test_a_model_op_reading_a_router_rule_or_default_branch_builds() -> None:
     router = _router(inputs=["L"])
     ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
     assert _build(ops, {"Answer": ['{"a": 1}']}) is not None

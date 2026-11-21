@@ -149,6 +149,7 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
+    clears_markers: bool
 
     LAMBDA_MODES = ("row", "list", "aligned", "expand", "reduce")
 
@@ -165,6 +166,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        clears_markers: bool = False,
     ) -> None: ...
 
     @overload
@@ -180,6 +182,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        clears_markers: bool = False,
     ) -> None: ...
 
     @overload
@@ -195,6 +198,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        clears_markers: bool = False,
     ) -> None: ...
 
     @overload
@@ -241,6 +245,7 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         by: str | None = None,
+        clears_markers: bool = False,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -283,6 +288,9 @@ class LambdaOp(Op):
         # A representative value for data-profile preflight placeholders; never
         # executed at runtime.
         self.sample_value = sample_value
+        # A router branch that keeps only the rows its rule or the default
+        # matched never emits a failed record.
+        self.clears_markers = clears_markers
         if code:
             self.code: str = code
         else:
@@ -341,6 +349,8 @@ class LambdaOp(Op):
             data["cache"] = self.cache
         if self.sample_value is not None:
             data["sample_value"] = self.sample_value
+        if self.clears_markers:
+            data["clears_markers"] = True
         return data
 
     @classmethod
@@ -375,6 +385,7 @@ class LambdaOp(Op):
                 expected_runtime_s=expected_runtime_s,
                 cache=cache,
                 sample_value=sample_value,
+                clears_markers=bool(data.get("clears_markers", False)),
             )
         except ValueError as exc:
             raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc
