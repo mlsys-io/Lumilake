@@ -173,7 +173,9 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
     source row or value that carries a failed record marks that key's output
     instead of filling its field. The value column pairs with every source row
     when its length matches, or with the live rows only; any other length
-    cannot be attributed to one row, so it fails the job."""
+    cannot be attributed to one row, so it fails the job. A first-input key no
+    pair reaches is marked under ``fail_row`` and keeps its field out under
+    ``null_fill``."""
     live = [row for row in rows if _marked(row) is None]
     for row in rows:
         if row in live:
@@ -196,7 +198,8 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
             "%s: %d values attached but %d rows from %r"
             % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
         )
-    _required(keyed, dict.fromkeys(key for _, key in pairs), where)
+    paired = dict.fromkeys(key for _, key in pairs)
+    _required(keyed, paired, where)
     for value, key in pairs:
         if key in marked:
             continue
@@ -205,6 +208,7 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
             marked[key] = carried
             continue
         _merged(keyed[key], name, value, where)
+    return paired
 
 
 def main(inputs):
@@ -253,7 +257,13 @@ def main(inputs):
             for value in _column(_PLAN[value_index], inputs, _decoded_cell)
         ]
         more = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
-        _attach(keyed, marked, name, source_index, values, more, where)
+        paired = _attach(keyed, marked, name, source_index, values, more, where)
+        if _ON_MISSING == "fail_row":
+            # Only a row the attach source lacks a key for becomes a marker;
+            # under null_fill its field is simply left out.
+            for key in keyed:
+                if key not in paired and key not in marked:
+                    marked[key] = _failed("key %s is missing from %r" % (key, where))
     items = []
     for row in rows:
         key = _key_of(row, first)

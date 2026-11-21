@@ -284,6 +284,17 @@ _ALL = [{"output": list(_ROWS)}]
 _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
 _GAPPED = [{"output": [_ROWS[0], _MARK, _ROWS[2]]}]
 _GAPPED_VALUES = [{"output": v, "value": v} for v in ("hi", _MARK, "bye")]
+# An attach over a branch of the first input, so its source covers that branch's
+# keys only. The plan reads State, Route.diagnose, Reply, then Route.diagnose.
+_DIAG_ATTACH = _REPLY.replace("[State]", "[Route.diagnose]") + _merge(
+    "State, Route.diagnose, Reply", "    attach: {reply: Reply}\n"
+)
+_DIAG_UPSTREAM = {
+    0: _ALL,
+    1: [{"output": [_ROWS[1]]}],
+    2: [{"output": 1, "value": 1}],
+    3: [{"output": [_ROWS[1]]}],
+}
 
 
 @pytest.mark.parametrize(
@@ -327,6 +338,14 @@ _GAPPED_VALUES = [{"output": v, "value": v} for v in ("hi", _MARK, "bye")]
             "fail_row",
             "",
         ),
+        # An attach key the source lacks is marked under fail_row and keeps its
+        # field out under null_fill.
+        (
+            _DIAG_ATTACH + "    on_missing: fail_row\n",
+            _DIAG_UPSTREAM,
+            "attach_fail_row",
+            "",
+        ),
         # An attach length mismatch is a job failure under either policy.
         (
             _ATTACH + "    on_missing: fail_row\n",
@@ -342,6 +361,7 @@ _GAPPED_VALUES = [{"output": v, "value": v} for v in ("hi", _MARK, "bye")]
         "attach_live",
         "attach_all",
         "fail_row",
+        "attach_fail_row",
         "attach_length",
     ],
 )
@@ -366,6 +386,16 @@ def test_a_marked_join_row_keeps_its_key_and_every_other_row(
             True,
         ]
         assert got[1]["case_id"] == "b"
+        return
+    if expected == "attach_fail_row":
+        # Only the key the attach source reaches keeps the value; the other
+        # rows are marked, each naming this join.
+        assert got[1] == {**_ROWS[1], "reply": 1}
+        assert [row.get("_fail", {}).get("op") == node.node_id for row in got] == [
+            True,
+            False,
+            True,
+        ]
         return
     assert got == expected
 
