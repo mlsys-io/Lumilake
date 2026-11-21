@@ -308,6 +308,12 @@ class RetrievalParam(DataSpecModel):
         return value
 
 
+class RetrievalKey(DataSpecModel):
+    """The column whose value is each emitted row's record key."""
+
+    column: str
+
+
 class RetrievalData(DataSpecModel):
     """A lumid-data backend retrieval."""
 
@@ -327,6 +333,7 @@ class RetrievalData(DataSpecModel):
     max_steps: int | None = None
     model: str | None = None
     verify: bool | None = None
+    key: RetrievalKey | None = None
 
 
 class SqlProfileData(DataSpecModel):

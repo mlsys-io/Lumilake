@@ -15,7 +15,7 @@ from pydantic import (
 from sqlparse.sql import Parenthesis, Token, TokenList
 from sqlparse.tokens import Comment, Keyword, Punctuation
 
-from lumilake_server.data_specs import RetrievalData
+from lumilake_server.data_specs import RetrievalData, RetrievalKey
 
 ROWS_ONE = "one"
 
@@ -36,6 +36,7 @@ class RetrievalSpec(RetrievalData):
     sample_value: Any = None
     verify: StrictBool | None = None
     max_steps: StrictInt | None = None
+    key: RetrievalKey | None = None
 
     @model_validator(mode="after")
     def _rows_sql_only(self) -> Self:

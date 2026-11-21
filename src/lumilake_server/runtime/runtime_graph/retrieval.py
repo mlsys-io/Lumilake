@@ -287,6 +287,7 @@ class _RetrievalBuilder(_LLMBuilder):
             max_steps=max_steps,
             model=agent_model,
             verify=spec.verify,
+            key=spec.key,
         )
 
         node = self._create_runtime_op(
