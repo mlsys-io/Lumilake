@@ -169,15 +169,15 @@ def _rows(
 
 
 def _column(
-    entry: dict[str, Any], inputs: dict[str, str], text: Callable[[Any], str]
-) -> list[str]:
+    entry: dict[str, Any], inputs: dict[str, str], read: Callable[[Any], Any]
+) -> list[Any]:
     if entry["kind"] == "literal":
         if "file" in entry:
             with open(entry["file"], encoding="utf-8") as fh:
                 values = json.load(fh)
         else:
             values = entry["values"]
-        return [text(v) for v in values]
+        return [read(v) for v in values]
     with open(os.path.join(inputs[entry["node"]], "results.json")) as fh:
         envelope = json.load(fh)
     result = envelope.get("result", envelope)
@@ -200,15 +200,15 @@ def _column(
         for i in items:
             if isinstance(i, dict) and "rows" in i:
                 for row in i["rows"]:
-                    flat.append(text(_row_content(row)))
+                    flat.append(read(_row_content(row)))
             else:
                 out = i["output"] if isinstance(i, dict) and "output" in i else i
                 if isinstance(out, list):
-                    flat.extend(text(v) for v in out)
+                    flat.extend(read(v) for v in out)
                 else:
-                    flat.append(text(out))
+                    flat.append(read(out))
         return flat
     return [
-        text(i["output"]) if isinstance(i, dict) and "output" in i else text(i)
+        read(i["output"]) if isinstance(i, dict) and "output" in i else read(i)
         for i in items
     ]
