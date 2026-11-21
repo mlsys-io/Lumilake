@@ -302,7 +302,7 @@ def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:
 def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
     if not isinstance(entry, dict):
         raise ValueError(f"op entry at index {idx} must be a mapping")
-    reserved = {"id", "op", "inputs", "max_iter"}
+    reserved = {"id", "op", "inputs", "max_iter", "key"}
     user_id = entry.get("id")
     op_type = entry.get("op")
     if not isinstance(user_id, str) or not user_id.strip():
@@ -327,7 +327,26 @@ def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
         inputs=list(raw_inputs),
         fields=fields_dict,
         max_iter=max_iter,
+        key=_parse_key(entry.get("key"), user_id.strip()),
     )
+
+
+def _parse_key(key: Any, op_id: str) -> dict[str, str] | None:
+    """A `key: {node, path}` record-key declaration, or `key: none`.
+
+    The node names the op (or input) that carries the row keys and the path
+    drills into it, the same shape a rowwise column uses."""
+    if key is None:
+        return None
+    if not isinstance(key, dict):
+        raise ValueError(f"op '{op_id}' key must be a mapping of node and path")
+    node = key.get("node")
+    path = key.get("path", "")
+    if not isinstance(node, str) or not node.strip():
+        raise ValueError(f"op '{op_id}' key must name a node")
+    if not isinstance(path, str):
+        raise ValueError(f"op '{op_id}' key path must be a string")
+    return {"node": node.strip(), "path": path}
 
 
 def _parse_output_entry(entry: Any, idx: int) -> _OutputEntry:
@@ -372,4 +391,12 @@ def _build_op_dict(
         graph_ops=graph_ops,
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
+    if entry.key is not None:
+        node_ref = entry.key["node"]
+        if node_ref not in user_id_to_internal:
+            raise ValueError(f"op '{entry.id}' key references unknown id '{node_ref}'")
+        op_dict["key"] = {
+            "node": user_id_to_internal[node_ref],
+            "path": entry.key["path"],
+        }
     return op_dict

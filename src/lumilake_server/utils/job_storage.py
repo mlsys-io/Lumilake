@@ -87,6 +87,9 @@ class JobStorage:
     def save_blob(self, key: str, data: bytes, content_type: str) -> str:
         raise NotImplementedError
 
+    def load_blob(self, key: str) -> tuple[bytes, str]:
+        raise NotImplementedError
+
     def list_summaries(
         self,
         *,
@@ -243,6 +246,11 @@ class InMemoryJobStorage(JobStorage):
     def save_blob(self, key: str, data: bytes, content_type: str) -> str:
         self._blobs[key] = (data, content_type)
         return key
+
+    def load_blob(self, key: str) -> tuple[bytes, str]:
+        if key not in self._blobs:
+            raise KeyError(key)
+        return self._blobs[key]
 
     def list_summaries(
         self,
@@ -423,6 +431,10 @@ class PersistentJobStorage(JobStorage):
         object_name = f"{self.key_prefix}/{key}" if self.key_prefix else key
         self._put_blob(object_name, data, content_type)
         return object_name
+
+    def load_blob(self, key: str) -> tuple[bytes, str]:
+        object_name = f"{self.key_prefix}/{key}" if self.key_prefix else key
+        return self._get_blob(object_name)
 
     def _put_json(self, object_name: str, body: bytes) -> None:
         self._put_blob(object_name, body, "application/json")

@@ -69,6 +69,7 @@ class RuntimeGraphBuilder(_MessagesBuilder):
             output_node_map=output_node_map,
             output_paths=output_paths,
             dsl_to_runtime=dsl_to_runtime,
+            record_keys=self._record_keys(graph_dict, dsl_to_runtime),
         )
         runtime_graph.node_order = runtime_graph.topological_order()
         if node_prefix:
@@ -76,6 +77,22 @@ class RuntimeGraphBuilder(_MessagesBuilder):
                 make_node_prefix(node_prefix)
             )
         return runtime_graph
+
+    @staticmethod
+    def _record_keys(
+        graph_dict: dict[str, Op], dsl_to_runtime: dict[str, list[str]]
+    ) -> dict[str, dict[str, str]]:
+        """Each node whose op declares a record key, with that key."""
+        keys: dict[str, dict[str, str]] = {}
+        for op in graph_dict.values():
+            if op.key is None:
+                continue
+            node_ids = dsl_to_runtime.get(op.id) or []
+            if not node_ids:
+                continue
+            for node_id in node_ids:
+                keys[node_id] = dict(op.key)
+        return keys
 
     def _collect_outputs(
         self,
