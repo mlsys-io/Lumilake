@@ -196,18 +196,25 @@ def test_a_row_lambda_skips_the_function_for_a_marked_row(tmp_path: Path) -> Non
     assert items[1]["value"] == 'ran {"a": 1}'
 
 
+@pytest.mark.parametrize(
+    "answers",
+    [["no idea", '{"a": 1}', "bad"], ["no idea"], ["bad", "no idea"]],
+)
 def test_an_aligned_lambda_runs_on_the_live_rows_and_keeps_positions(
-    tmp_path: Path,
+    answers: list[str], tmp_path: Path
 ) -> None:
     aligned = _lower(
         mode="aligned",
         code="def f(columns):\n    return ['ran ' + c for c in columns[0]]\n",
     )
     ops = [_parse(format="json"), aligned]
-    items = _run(ops, {"Answer": ["no idea", '{"a": 1}', "bad"]}, tmp_path)
-    assert items[0]["output"]["_fail"]["reason"] == "no JSON object"
-    assert items[1]["output"] == 'ran {"a": 1}'
-    assert items[2]["output"]["_fail"]["reason"] == "no JSON object"
+    items = _run(ops, {"Answer": answers}, tmp_path)
+    expected = ["ran " + a if a == '{"a": 1}' else {"_fail": None} for a in answers]
+    for item, want in zip(items, expected):
+        if want == {"_fail": None}:
+            assert item["output"]["_fail"]["reason"] == "no JSON object"
+        else:
+            assert item["output"] == want
 
 
 def test_a_router_sends_marked_rows_to_a_declared_error_branch(tmp_path: Path) -> None:
