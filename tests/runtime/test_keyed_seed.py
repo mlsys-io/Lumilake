@@ -249,5 +249,7 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
         _graph(
             {"ops": [cases, {**draw, "code": "def draw(row):\n    return row[0]\n"}]}
         )
+    with pytest.raises(ValueError, match="exactly 2 parameters"):
+        _graph({"ops": [cases, {**draw, "code": "lambda row: row[0]"}]})
     draw_node = _graph(payload).nodes[make_id("yaml_workflow", "lambda", "Draw")]
     assert [e.get("role") for e in draw_node.data_spec["plan"]] == [None, "seed"]

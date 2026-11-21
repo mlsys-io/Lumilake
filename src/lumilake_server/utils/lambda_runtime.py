@@ -281,18 +281,10 @@ def _parse(code: str) -> ast.Expression | ast.Module:
         raise ValueError(f"LambdaOp code does not parse: {exc}") from exc
 
 
-def _check_lambda(tree: ast.Expression) -> str:
-    if not isinstance(tree.body, ast.Lambda):
-        raise ValueError("LambdaOp code is not a lambda expression")
-    if _param_count(tree.body.args) != 1:
-        raise ValueError("Function must accept exactly 1 parameter (a tuple)")
-    return "<lambda>"
-
-
-def _check_def(stmt: ast.FunctionDef, params: int = 1) -> str:
-    count = _param_count(stmt.args)
+def _check_params(args: ast.arguments, params: int) -> None:
+    count = _param_count(args)
     if count == params:
-        return stmt.name
+        return
     if params == 1:
         raise ValueError(
             "Function must accept exactly 1 parameter (a tuple), but has"
@@ -303,6 +295,18 @@ def _check_def(stmt: ast.FunctionDef, params: int = 1) -> str:
         f"Function must accept exactly {params} parameters, but has"
         f" {count}. Expected signature: fn(args: tuple[str, ...], seed: int)"
     )
+
+
+def _check_lambda(tree: ast.Expression, params: int = 1) -> str:
+    if not isinstance(tree.body, ast.Lambda):
+        raise ValueError("LambdaOp code is not a lambda expression")
+    _check_params(tree.body.args, params)
+    return "<lambda>"
+
+
+def _check_def(stmt: ast.FunctionDef, params: int = 1) -> str:
+    _check_params(stmt.args, params)
+    return stmt.name
 
 
 def _check_free_names(code: str) -> None:
@@ -345,7 +349,7 @@ def validate_source(code: str, fn_name: str | None = None, params: int = 1) -> s
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
         _check_free_names(code)
-        return _check_lambda(tree)
+        return _check_lambda(tree, params)
     for name, level in _imported_names(tree):
         if level != 0:
             raise ValueError("LambdaOp code must not use relative imports")
