@@ -105,17 +105,22 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             raise ValueError(
                 f"LambdaOp '{op.id}' seed references unknown node '{seed_node}'"
             )
+        path = op.seed["path"]
+        for index, entry in enumerate(plan):
+            if entry.node != seed_node:
+                continue
+            seeded = entry.model_copy(update={"role": "seed"})
+            if path and path != "items.output":
+                seeded.path = item_relative_path(path)
+            break
+        else:
+            raise ValueError(
+                f"LambdaOp '{op.id}' seed node '{seed_node}' is not one of its"
+                " inputs; add it there so the step reads its column"
+            )
         if seed_node not in dependencies:
             dependencies.append(seed_node)
-        path = op.seed["path"]
-        tagged: python_step.ColumnPlan = []
-        for entry in plan:
-            if entry.node == seed_node:
-                entry = entry.model_copy(update={"role": "seed"})
-                if path and path != "items.output":
-                    entry.path = item_relative_path(path)
-            tagged.append(entry)
-        return tagged
+        return [*plan[:index], seeded, *plan[index + 1 :]]
 
     def _python_step(
         self,
