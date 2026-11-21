@@ -753,10 +753,16 @@ attach row whose key is not in the first input, naming the key. A duplicate
 key, a field that differs between two inputs, and an attach whose values and
 source rows disagree on length each fail the job naming the join.
 
+`by` is one dotted field path, or a list of them for a composite key: the key
+is then the list of their values, so two rows that share only the first field
+stay distinct. An empty list or a non-string entry is refused at submit,
+naming the op.
+
 ```yaml
 ops:
   - {id: Merge, op: JoinOp, inputs: [CaseState, Route.patient, PatientTurn],
      by: case_id, attach: {patient_reply: PatientTurn}, missing: null}
+  - {id: Blocked, op: JoinOp, inputs: [Prompts, Scored], by: [unit, kind]}
 ```
 
 A join runs as one standalone `python` task, and its output reads like a list

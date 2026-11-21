@@ -123,13 +123,14 @@ def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
 
 
 def _as_path(by: str | list[str]) -> list[str]:
-    """The key path as parts, refusing anything but a dotted field name."""
-    parts = by.split(".") if isinstance(by, str) else by.copy()
-    if not parts or not all(isinstance(part, str) for part in parts):
+    """The key as its paths, each one dotted field name: a single string is one
+    path, a list of them is a composite key."""
+    paths = [by] if isinstance(by, str) else by.copy()
+    if not paths or not all(
+        isinstance(path, str) and _PATH_RE.match(path) for path in paths
+    ):
         raise ValueError(f"JoinOp by must be a dotted field name, got {by!r}")
-    if not _PATH_RE.match(".".join(parts)):
-        raise ValueError(f"JoinOp by must be a dotted field name, got {by!r}")
-    return parts
+    return paths
 
 
 def _validate_field(field: str) -> None:

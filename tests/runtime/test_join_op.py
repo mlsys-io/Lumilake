@@ -266,6 +266,22 @@ def test_join_reads_a_workflow_input_as_its_first_column(tmp_path: Path) -> None
     assert [item["output"]["tag"] for item in out["items"]] == ["A", "A", "A"]
 
 
+def test_join_keys_on_every_field_of_a_composite_key(tmp_path: Path) -> None:
+    """Rows sharing the first key field stay distinct under a composite key."""
+    node = _join_node(_merge("State, Route.diagnose", "    by: [case_id, text]\n"))
+    same = [dict(_ROWS[1], extra=1), dict(_ROWS[1], text="another row")]
+    out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": same}]})
+    assert [item["output"]["case_id"] for item in out["items"]] == ["a", "b", "c"]
+    assert out["items"][1]["output"]["extra"] == 1
+
+
+def test_join_refuses_a_composite_key_that_is_empty_or_not_a_field_name() -> None:
+    with pytest.raises(ValueError, match="Merge.*requires 'by'"):
+        _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: []}\n")
+    with pytest.raises(ValueError, match="Merge.*by must be dotted field names"):
+        _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: [case_id, 3]}\n")
+
+
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
     runtime = _build(
         _merge(

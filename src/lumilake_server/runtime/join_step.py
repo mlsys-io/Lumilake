@@ -67,15 +67,24 @@ def _rows(column, where):
 
 
 def _key(row, where):
-    value = row
-    for part in _BY:
-        if not isinstance(value, dict) or part not in value:
-            raise ValueError("%s: row has no key field %r" % (where, part))
-        value = value[part]
+    """A row's join key: one path's value, or, for a composite key, the list of
+    their values, so rows sharing only some fields still differ."""
+    values = [_value(row, path, where) for path in _BY]
+    key = values[0] if len(values) == 1 else values
     try:
-        return json.dumps(value, sort_keys=True)
+        return json.dumps(key, sort_keys=True)
     except TypeError:
-        raise ValueError("%s: key %r is not a JSON value" % (where, value))
+        raise ValueError("%s: key %r is not a JSON value" % (where, key))
+
+
+def _value(row, path, where):
+    """The value a dotted field path names in one row."""
+    value = row
+    for part in path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            raise ValueError("%s: row has no key field %r" % (where, path))
+        value = value[part]
+    return value
 
 
 def _keyed(rows, where):
