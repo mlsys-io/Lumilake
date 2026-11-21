@@ -110,15 +110,25 @@ class _OutputEntry:
     path: str | None = None
 
 
-def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
+def parse_yaml_payload(
+    payload: dict | str,
+    *,
+    round_number: int | None = None,
+    template_ids: dict[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
     Args:
         payload: Either the raw YAML text, or an already-parsed dict.
+        round_number: The dynamic round the ops run in, when they run inside
+            one; a keyed row seed derives its draw from it.
+        template_ids: Rendered op id -> the id a template body wrote, so a
+            keyed row seed keeps a draw across rounds.
 
     Returns:
-        ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict}}``,
-        matching the shape produced by ``parse_n8n_payload``.
+        ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict,
+        "seed": job_seed}}``, matching the shape produced by
+        ``parse_n8n_payload``.
 
     Raises:
         ValueError: on any schema / reference / duplicate id problem.
@@ -129,11 +139,19 @@ def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
     if "ops" not in spec_dict:
         raise ValueError("YAML workflow must declare an 'ops:' list at the top level")
 
-    compiled_ops = _compile_workflow(spec_dict, graph_name)
+    job_seed = _get_job_seed(spec_dict)
+    compiled_ops = _compile_workflow(
+        spec_dict,
+        graph_name,
+        job_seed,
+        round_number=round_number,
+        template_ids=template_ids,
+    )
     return {
         graph_name: {
             "graph": compiled_ops.graph,
             "inputs": compiled_ops.inputs,
+            "seed": job_seed,
         }
     }
 
@@ -189,7 +207,22 @@ def _get_graph_name(spec: dict[str, Any]) -> str:
     return name.strip()
 
 
-def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
+def _get_job_seed(spec: dict[str, Any]) -> int:
+    """The workflow's job seed, which every keyed row seed derives from."""
+    value = spec.get("seed", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"workflow 'seed' must be an integer, got {value!r}")
+    return value
+
+
+def _compile_workflow(
+    spec: dict[str, Any],
+    scope: str,
+    job_seed: int,
+    *,
+    round_number: int | None = None,
+    template_ids: dict[str, str] | None = None,
+) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
     outputs_block = spec.get("outputs", []) or []
@@ -253,7 +286,15 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
             unresolved = [ref for ref in entry.inputs if ref in pending]
             if unresolved:
                 continue
-            op_dict = _build_op_dict(entry, user_id_to_internal, scope, graph_ops)
+            op_dict = _build_op_dict(
+                entry,
+                user_id_to_internal,
+                scope,
+                graph_ops,
+                job_seed,
+                round_number=round_number,
+                template_ids=template_ids,
+            )
             for implicit in op_dict.pop("__implicit_ops__", []):
                 graph_ops[implicit["_id"]] = implicit
             graph_ops[op_dict["_id"]] = op_dict
@@ -354,6 +395,10 @@ def _build_op_dict(
     user_id_to_internal: dict[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
+    job_seed: int,
+    *,
+    round_number: int | None = None,
+    template_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     internal_id = user_id_to_internal[entry.id]
     input_ids = [user_id_to_internal[ref] for ref in entry.inputs]
@@ -370,6 +415,9 @@ def _build_op_dict(
         user_id_to_internal=user_id_to_internal,
         scope=scope,
         graph_ops=graph_ops,
+        job_seed=job_seed,
+        round_number=round_number,
+        template_ids=template_ids or {},
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
     return op_dict

@@ -10,10 +10,11 @@ Pass the format with the CLI `--format` option or the `Workflow-Format` HTTP hea
 
 ## YAML Structure
 
-A YAML workflow is a top-level mapping with optional `name`, optional `inputs`, required `ops`, and optional `outputs`.
+A YAML workflow is a top-level mapping with optional `name`, optional `seed`, optional `inputs`, required `ops`, and optional `outputs`.
 
 ```yaml
 name: example
+seed: 7
 inputs:
   Stock: []
 
@@ -37,6 +38,8 @@ outputs:
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
 YAML reads unquoted `on`, `off`, `yes`, `no` and bare numbers as non-string keys, so the server refuses a workflow carrying one with a 400 naming the key and its path; quote such keys.
+
+`seed` is the job seed, an integer that defaults to 0 and is recorded with the job. A rowwise chat op's keyed `rowwise_seed` derives each row's seed from it, so two jobs that share the seed, the op id, the round and a row's key make the same draw for that row; see [`docs/OPS.md`](OPS.md). A native graph payload takes the same top-level `seed` field. A job carries one seed: workflows submitted together must share it, and submitting them with different seeds is refused.
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `RouterOp`, and `JoinOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 

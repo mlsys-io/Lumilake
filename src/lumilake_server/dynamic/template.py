@@ -73,8 +73,13 @@ def render_body(body: DriverRoundBody, round_number: int) -> SubgraphPlan:
             if op.get("op") == "LambdaOp" and key in {"code", "_code"}:
                 continue
             op[key] = _render_value(value, suffix)
+    template_ids = {
+        op["id"]: original["id"]
+        for original, op in zip(body.ops, ops)
+        if op["id"] != original["id"]
+    }
     export = [_render_string(value, suffix) for value in body.export]
-    return SubgraphPlan(ops=ops, export=export)
+    return SubgraphPlan(ops=ops, export=export, template_ids=template_ids)
 
 
 def plan_for_round(template: DriverTemplate, round_number: int) -> SubgraphPlan:

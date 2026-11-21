@@ -337,6 +337,30 @@ values are inlined as the seed list and take no `path`.
   rowwise_seed: {node: Seeds, path: items.output.seed}
 ```
 
+`rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives
+each row's seed instead of reading one. The node and path name a column that
+holds each row's key, decoded once as the join decodes a cell; the seed is the
+first 8 bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON,
+reduced mod 2^31. The job's top-level `seed` (default 0), the op id as written
+and the dynamic round number when the op runs in a template round are the other
+inputs, so two rows with the same key draw the same seed whatever their batch
+or position, and a spec edit that keeps the op id keeps its draws. The parser
+generates a `<op id>__seed` list-mode `LambdaOp` for the column, so the key form
+keeps `spec.data.seeds` and every check above applies. It needs
+`rowwise_template`, and a row with a missing or null key fails the job naming
+the op and row. A `{{round}}` in the op id stays literal in the seed inputs.
+
+```yaml
+- id: Answer
+  op: LLMChatOp
+  inputs: [Cases]
+  messages: [{role: user, content: placeholder}]
+  rowwise_template: "{question}"
+  rowwise_columns:
+    - {label: question, node: Cases, path: items.output.question}
+  rowwise_seed: {key: {node: Cases, path: items.output.case_id}}
+```
+
 When every upstream column a per-row chat reads is empty, FlowMesh completes
 the task with an empty result without dispatching a worker.
 

@@ -27,6 +27,9 @@ class EmitContext:
     user_id_to_internal: dict[str, str]
     scope: str
     graph_ops: dict[str, dict[str, Any]]
+    job_seed: int = 0
+    round_number: int | None = None
+    template_ids: dict[str, str] = field(default_factory=dict)
 
 
 Emitter = Callable[[dict[str, Any], EmitContext], None]

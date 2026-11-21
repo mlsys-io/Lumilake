@@ -94,6 +94,7 @@ from lumilake_server.hooks.security import (
 )
 from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
+from lumilake_server.parser.keyed_seed import rewrite_native_keys
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
 from lumilake_server.runtime.optimizer import (
@@ -397,6 +398,7 @@ def _render_dynamic_round0(
             gpu_memory_utilization=spec.driver.gpu_memory_utilization,
             dtype=spec.driver.dtype,
             extra_engine_kwargs=spec.driver.extra_engine_kwargs,
+            job_seed=spec.seed,
         )
         return round_build.graph, declared_output_location
     except Exception as exc:
@@ -587,10 +589,40 @@ def _dispatch_workflow_to_graph_specs(
     graph_payload = (
         workflow_payload["graph"] if "graph" in workflow_payload else workflow_payload
     )
+    job_seed = _native_job_seed(workflow_payload)
     graph_specs[graph_name] = {
-        "graph": graph_payload,
+        "graph": rewrite_native_keys(graph_payload, job_seed=job_seed),
         "inputs": batch_inputs,
+        "seed": job_seed,
     }
+
+
+def _native_job_seed(workflow_payload: dict[str, Any]) -> int:
+    """A native payload's job seed, which a keyed row seed derives from."""
+    value = workflow_payload.get("seed", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"workflow 'seed' must be an integer, got {value!r}",
+        )
+    return value
+
+
+def _submitted_job_seed(
+    graph_specs: dict[str, dict[str, Any]], dynamic_spec: DynamicSpec | None
+) -> int:
+    """The job seed to record for a submission: the dynamic spec's, else the
+    seed of the one workflow it submits."""
+    if dynamic_spec is not None:
+        return dynamic_spec.seed
+    seeds = {spec.get("seed", 0) for spec in graph_specs.values()}
+    if len(seeds) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="one job carries workflows with different seeds; submit each"
+            " seed as its own job",
+        )
+    return seeds.pop() if seeds else 0
 
 
 @dataclass
@@ -602,6 +634,7 @@ class JobRecord:
     output_location: dict[str, IOLocation]
     org_id: str = "default"
     user_id: str = "local"
+    seed: int = 0
     started_at: str | None = None
     finished_at: str | None = None
     optimization_seconds: float | None = None
@@ -2203,6 +2236,7 @@ async def _run_dynamic_job(
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
                     rows=len(symbols),
+                    job_seed=spec.seed,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2522,6 +2556,8 @@ async def _run_template_job(
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=False,
                     rows=1,
+                    job_seed=spec.seed,
+                    template_ids=template_round.plan.template_ids,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -3673,6 +3709,7 @@ async def submit_job(
         submitted_at=_now(),
         inputs=resolved_inputs,
         output_location=output_locations,
+        seed=_submitted_job_seed(graph_specs, dynamic_spec),
         org_id=principal.org_id,
         user_id=principal.external_id,
         progress=JobProgress(),

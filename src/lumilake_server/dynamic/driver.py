@@ -117,6 +117,9 @@ class SubgraphPlan(BaseModel):
 
     ops: list[dict[str, Any]]
     export: list[str] = []
+    template_ids: dict[str, str] = {}
+    """Rendered op id -> the id as the template body wrote it, for an op whose
+    id carried a round placeholder."""
 
 
 class _RawPlan(BaseModel):
@@ -1094,6 +1097,8 @@ def build_round(
     extra_engine_kwargs: dict[str, Any] | None = None,
     include_proposer: bool = True,
     rows: int = 1,
+    job_seed: int = 0,
+    template_ids: dict[str, str] | None = None,
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
@@ -1108,11 +1113,14 @@ def build_round(
     workflow_inputs.update(inputs)
     workflow = {
         "name": f"round_{round_index}",
+        "seed": job_seed,
         "inputs": workflow_inputs,
         "ops": forwarded,
         "outputs": [],
     }
-    parsed = parse_yaml_payload(workflow)
+    parsed = parse_yaml_payload(
+        workflow, round_number=round_index, template_ids=template_ids
+    )
     graph_name = next(iter(parsed))
     native = parsed[graph_name]["graph"]
     leaves = _current_leaves(subgraph)
