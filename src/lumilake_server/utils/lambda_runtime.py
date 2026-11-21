@@ -461,27 +461,62 @@ def row_seed(
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % SEED_MODULUS
 
 
+_SEED_TEMPLATE = """\
+def {fn_name}(columns):
+    seeds = []
+    for index, value in enumerate(columns[0]):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        found = True
+        for part in {parts!r}:
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                value = value[int(part)]
+            else:
+                found = False
+                break
+        if not found:
+            raise ValueError("{template_id} row %d has no key" % index)
+        if value is None:
+            raise ValueError("{template_id} row %d has a null key" % index)
+        seeds.append(
+            _seed([{job_seed!r}, {template_id!r}, {round_number!r}, value])
+        )
+    return seeds
+
+
+def _seed(values):
+    payload = json.dumps(
+        values, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % {modulus}
+"""
+
+
 def seed_source(
-    fn_name: str, job_seed: int, template_id: str, round_number: int | None
+    fn_name: str,
+    job_seed: int,
+    template_id: str,
+    round_number: int | None,
+    parts: list[str],
 ) -> str:
-    """The LambdaOp source of a keyed-seed row function, which reads the row's
-    key from its input column and returns the seed it draws with. The job
-    seed, template id and round are constants of the generated code."""
-    return (
-        f"def {fn_name}(row):\n"
-        "    value = row[0]\n"
-        "    if isinstance(value, str):\n"
-        "        try:\n"
-        "            value = json.loads(value)\n"
-        "        except ValueError:\n"
-        "            pass\n"
-        "    if value is None:\n"
-        "        raise ValueError('the row key is null')\n"
-        f"    payload = json.dumps([{job_seed!r}, {template_id!r},"
-        f" {round_number!r}, value], sort_keys=True,"
-        " separators=(',', ':'), ensure_ascii=False).encode('utf-8')\n"
-        "    return int.from_bytes(hashlib.sha256(payload).digest()[:8], 'big')"
-        f" % {SEED_MODULUS}\n"
+    """The LambdaOp source of a keyed-seed function, which reads every row's
+    key out of its input column and returns the seed each row draws with, in
+    row order. It takes whole columns so a bad row names its index; the job
+    seed, template id, round and key path are baked in as constants, so the
+    body never runs user code. ``_seed`` is ``row_seed`` over one row's
+    inputs, so both sides of the runtime share one definition."""
+    return _SEED_TEMPLATE.format(
+        fn_name=fn_name,
+        parts=parts,
+        template_id=template_id,
+        job_seed=job_seed,
+        round_number=round_number,
+        modulus=SEED_MODULUS,
     )
 
 
