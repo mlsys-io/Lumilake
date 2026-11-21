@@ -582,6 +582,9 @@ def forward_refs(
         rowwise_seed = op.get("rowwise_seed")
         if isinstance(rowwise_seed, dict):
             _bind_seed_ref(rowwise_seed, consumer, results, bind_explicit)
+            key = rowwise_seed.get("key")
+            if isinstance(key, dict):
+                _bind_seed_ref(key, consumer, results, bind_explicit)
         data_spec = op.get("data_spec")
         if isinstance(data_spec, dict):
             params = data_spec.get("params")
@@ -610,7 +613,9 @@ def _bind_seed_ref(
     results: dict[str, list[dict[str, Any]]],
     bind_explicit: Callable[[str, str, str], tuple[str, str]],
 ) -> None:
-    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place."""
+    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place. A
+    forwarded ref binds as a flat input, so both forms come back with a
+    ``path`` of ``""``."""
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:

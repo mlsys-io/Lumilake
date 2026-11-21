@@ -48,8 +48,11 @@ def {fn_name}(row):
 
 
 def key_parts(path: str) -> list[str]:
-    """The field names a key path drills below ``items.output``: the whole
-    output is the value itself, so it drills nothing."""
+    """The field names a key path drills below ``items``: the whole output is
+    the value itself, so it drills nothing. A forwarded reference binds to a
+    flat input, whose whole value is the key."""
+    if not path:
+        return []
     if not path.startswith("items."):
         raise ValueError(f"key path must start with 'items.', got '{path}'")
     parts = [part for part in path[len("items.") :].split(".") if part]
@@ -135,7 +138,7 @@ def key_target(
     path = key.get("path")
     if not isinstance(node_ref, str):
         raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must name a node")
-    if not isinstance(path, str) or not path:
+    if not isinstance(path, str):
         raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must name a path")
     return node_ref, path
 
