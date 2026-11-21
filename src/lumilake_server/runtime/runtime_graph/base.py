@@ -12,12 +12,28 @@ from lumilake_server.ops import (
     Op,
     ParseOp,
 )
-from lumilake_server.runtime.lambda_task_helpers import failure_of
+from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY, failure_of
 from lumilake_server.runtime.runtime_graph.outputs import (
     OpOutput,
     op_output,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+
+
+def _holds_marker(value: Any) -> bool:
+    """Whether a literal value is a marker, or decodes to a list holding one:
+    a grouped value reaches a consumer as the JSON text of its per-row list."""
+    if not isinstance(value, str):
+        return failure_of(value) is not None
+    if FAIL_KEY not in value:
+        return False
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return False
+    if isinstance(decoded, list):
+        return any(failure_of(item) is not None for item in decoded)
+    return failure_of(decoded) is not None
 
 
 def _carries_markers(
@@ -33,9 +49,7 @@ def _carries_markers(
     if isinstance(op, ParseOp):
         carries = True
     elif isinstance(op, InputOp):
-        carries = any(
-            failure_of(value) is not None for value in inputs_dict.get(op.name, [])
-        )
+        carries = any(_holds_marker(value) for value in inputs_dict.get(op.name, []))
     elif isinstance(op, LambdaOp) and op.clears_markers:
         carries = False
     else:
