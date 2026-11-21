@@ -401,6 +401,25 @@ async def test_index_outlives_the_server_that_wrote_it(graph: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_record_is_written_once(graph: Any) -> None:
+    """A second job that computes the same record adds its index entry but
+    leaves the record object as the first job wrote it, so the stored source
+    still names where the value was first produced."""
+    node_ids = {"Mark": _node_id(graph, "Mark")}
+    storage = InMemoryJobStorage()
+    results = {"Mark": [{"id": "a", "text": "ONE"}]}
+    await _write(graph, results, node_ids, storage=storage, job_id="req-one")
+    (first,) = _entries(storage, "req-one")
+    await _write(graph, results, node_ids, storage=storage, job_id="req-two")
+    (second,) = _entries(storage, "req-two")
+
+    assert first.digest == second.digest
+    stored = read_entry(storage, first.digest)
+    assert stored is not None
+    assert stored.source.job == "req-one"
+
+
+@pytest.mark.asyncio
 async def test_failed_marker_keeps_its_address(graph: Any) -> None:
     node_ids = {"Mark": _node_id(graph, "Mark")}
     storage, _ = await _write(

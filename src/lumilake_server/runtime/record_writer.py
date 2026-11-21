@@ -202,10 +202,8 @@ class RecordWriter:
             )
         for entry in entries:
             await asyncio.to_thread(
-                self._storage.save_blob,
-                entry_object_name(entry.digest),
-                entry.body(),
-                "application/json",
+                self._save_entry_once,
+                entry,
             )
         if entries:
             await self._write_indexes(member_job_ids or [job_id], entries)
@@ -216,6 +214,21 @@ class RecordWriter:
                 round_number,
             )
         return len(entries)
+
+    def _save_entry_once(self, entry: RecordEntry) -> None:
+        """Write an entry unless its object already exists.
+
+        Objects are content-addressed by the decisions that produce the value,
+        so an object already there is the same record: a job that computes it
+        again adds itself to the entry's sources instead of replacing the
+        record of where it was first produced."""
+        if read_entry(self._storage, entry.digest) is not None:
+            return
+        self._storage.save_blob(
+            entry_object_name(entry.digest),
+            entry.body(),
+            "application/json",
+        )
 
     def _node_entries(
         self,
