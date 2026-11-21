@@ -375,9 +375,8 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
 
     A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
     which FlowMesh materializes in its own restricted namespace: no
-    ``__import__``, and it binds whichever names a generated wrapper defines.
-    The wrapper nests the op's definition inside an adapter that decodes its
-    rows first, so code a wrapper defines may be named by that function. Code
+    ``__import__``, and it calls the first name the generated wrapper binds.
+    The wrapper decodes each row and then calls the op's own function, so code
     that a standalone LambdaOp accepts but that namespace cannot run is
     rejected here, at submit, with the reason.
     """
@@ -395,9 +394,8 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeds only other LambdaOps"
         )
     used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    wrapper_names = _inline_names(tree)
     unavailable = sorted(
-        used.intersection(INLINE_UNAVAILABLE_BUILTIN_NAMES) - wrapper_names,
+        used.intersection(INLINE_UNAVAILABLE_BUILTIN_NAMES) - _INLINE_WRAPPER_NAMES,
         key=INLINE_UNAVAILABLE_BUILTIN_NAMES.index,
     )
     if unavailable:
@@ -408,32 +406,34 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
         )
-    top_level = {
-        stmt.name
-        for stmt in tree.body
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-    }
-    collisions = sorted(top_level & wrapper_names)
+    top_level = _top_level_bindings(code)
+    collisions = sorted(top_level & _INLINE_WRAPPER_NAMES)
     if collisions:
         raise ValueError(
-            f"it defines {collisions[0]!r}, which a LambdaOp that feeds an LLM"
+            f"it binds {collisions[0]!r}, which a LambdaOp that feeds an LLM"
             " cannot use inline: its function step nests the code in a generated"
-            " wrapper that already binds that name. Rename the definition or"
-            " move this logic to a LambdaOp that runs as its own python task"
+            " wrapper that already binds that name. Rename the binding or move"
+            " this logic to a LambdaOp that runs as its own python task"
         )
     return name
 
 
-def _inline_names(op_tree: ast.AST) -> set[str]:
-    """The names the generated inline wrapper adds around the op's function: the
-    adapter, its row, and the decoder functions it embeds."""
+def _inline_names() -> frozenset[str]:
+    """The names the generated inline wrapper binds around the op's code: the
+    adapter, the arguments and row it decodes, and the decoder functions it
+    embeds."""
     tree = ast.parse(DECODER_SOURCE)
-    return {
-        "adapt",
-        "args",
-        "row",
-        *(f.name for f in tree.body if isinstance(f, ast.FunctionDef)),
-    }
+    return frozenset(
+        (
+            "adapt",
+            "args",
+            "row",
+            *(f.name for f in tree.body if isinstance(f, ast.FunctionDef)),
+        )
+    )
+
+
+_INLINE_WRAPPER_NAMES = _inline_names()
 
 
 def materialize(
