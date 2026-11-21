@@ -168,39 +168,10 @@ def main(inputs):
 _ROW_MAIN = """\
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, decode) for entry in _PLAN]
-    n = max((len(c) for c in columns), default=1)
-    for entry, col in zip(_PLAN, columns):
-        if len(col) not in (1, n):
-            raise ValueError(
-                "input %r has %d rows; expected 1 or %d"
-                % (entry.get("node", "literal"), len(col), n)
-            )
-    rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
-    items = []
-    for row in rows:
-        marked = next(
-            (value for value in map(failure_of, row) if value is not None), None
-        )
-        if marked is not None:
-            # A row with a marked cell is not passed to the function: the
-            # record keeps its position and carries the marker onward.
-            items.append({{"output": marked, "value": marked}})
-            continue
-        value = fn(row)
-        reject_reserved_key(value, _NODE)
-        items.append({{"output": text(value), "value": value}})
-    return {{"items": items}}
-"""
-
-_SEEDED_ROW_MAIN = """\
-
-def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME, 2)
+    (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
+    fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
     data = [entry for entry in _PLAN if entry.get("role") != "seed"]
-    (seed_entry,) = [entry for entry in _PLAN if entry.get("role") == "seed"]
-    columns = [_column(entry, inputs, _text) for entry in data]
+    columns = [_column(entry, inputs, decode) for entry in data]
     n = max((len(c) for c in columns), default=1)
     for entry, col in zip(data, columns):
         if len(col) not in (1, n):
@@ -209,22 +180,31 @@ def main(inputs):
                 % (entry.get("node", "literal"), len(col), n)
             )
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
-    seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, _text)]
-    if len(seeds) not in (1, n):
-        raise ValueError(
-            "seed column has %d rows; expected 1 or %d" % (len(seeds), n)
-        )
-    return {{
-        "items": [
-            {{"output": _text(r), "value": r}}
-            for r in (
-                fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
-                for i, row in enumerate(rows)
+    seeds = None
+    if seed_entry is not None:
+        seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
+        if len(seeds) not in (1, n):
+            raise ValueError(
+                "seed column has %d rows; expected 1 or %d" % (len(seeds), n)
             )
-        ]
-    }}
+    items = []
+    for i, row in enumerate(rows):
+        marked = next(
+            (value for value in map(failure_of, row) if value is not None), None
+        )
+        if marked is not None:
+            # A row with a marked cell is not passed to the function: the
+            # record keeps its position and carries the marker onward.
+            items.append({{"output": marked, "value": marked}})
+            continue
+        if seeds is None:
+            value = fn(row)
+        else:
+            value = fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
+        reject_reserved_key(value, _NODE)
+        items.append({{"output": text(value), "value": value}})
+    return {{"items": items}}
 """
-
 
 _LIST_MAIN = """\
 
@@ -291,40 +271,25 @@ def main(inputs):
 _EXPAND_MAIN = """\
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, decode) for entry in _PLAN]
-    items = []
-    for row in _rows(columns, _PLAN, {op_id!r}):
-        values = fn(row)
-        if not isinstance(values, list):
-            raise ValueError(
-                "%s: expand lambda %r returned %s; expected a list"
-                % ({op_id!r}, _FN_NAME, type(values).__name__)
-            )
-        items.extend({{"output": v}} for v in values)
-    return {{"items": items}}
-"""
-
-_SEEDED_EXPAND_MAIN = """\
-
-def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME, 2)
+    (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
+    fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
     data = [entry for entry in _PLAN if entry.get("role") != "seed"]
-    (seed_entry,) = [entry for entry in _PLAN if entry.get("role") == "seed"]
-    columns = [
-        [_decode(v) for v in _column(entry, inputs, lambda v: v)]
-        for entry in data
-    ]
-    seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, _text)]
+    columns = [_column(entry, inputs, decode) for entry in data]
     rows = _rows(columns, data, {op_id!r})
-    if len(seeds) not in (1, len(rows)):
-        raise ValueError(
-            "%s: seed column has %d rows; expected 1 or %d"
-            % ({op_id!r}, len(seeds), len(rows))
-        )
+    seeds = None
+    if seed_entry is not None:
+        seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
+        if len(seeds) not in (1, len(rows)):
+            raise ValueError(
+                "%s: seed column has %d rows; expected 1 or %d"
+                % ({op_id!r}, len(seeds), len(rows))
+            )
     items = []
     for i, row in enumerate(rows):
-        values = fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
+        if seeds is None:
+            values = fn(row)
+        else:
+            values = fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"
@@ -608,14 +573,12 @@ def wrapper_source(
     plan: ColumnPlan,
     mode: str = "row",
     by: str | None = None,
-    seeded: bool = False,
 ) -> str:
-    """The python-task code for one standalone LambdaOp. A ``seeded`` step
-    carries its derived-seed column in the plan, tagged ``role: seed``, and
-    passes each row's seed to the function as a second argument."""
-    if seeded:
-        main = _SEEDED_EXPAND_MAIN if mode == "expand" else _SEEDED_ROW_MAIN
-    elif mode == "list":
+    """The python-task code for one standalone LambdaOp. A seeded step carries
+    its derived-seed column in the plan, tagged ``role: seed``, and passes each
+    row's seed to the function as a second argument; the row and expand mains
+    take it when the plan has one and call a one-argument function otherwise."""
+    if mode == "list":
         main = _LIST_MAIN
     elif mode == "aligned":
         main = _ALIGNED_MAIN
@@ -666,7 +629,6 @@ def flowmesh_spec(
             plan,
             mode,
             data_spec.get("by"),
-            any(entry.get("role") == "seed" for entry in plan),
         )
     spec: dict[str, Any] = {
         "taskType": TASK_TYPE,
