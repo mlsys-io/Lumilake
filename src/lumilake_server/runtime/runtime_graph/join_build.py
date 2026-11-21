@@ -116,6 +116,11 @@ def build_join_step(
     attach: list[list[Any]] = []
     for field, target in op.attach_ops.items():
         consumer = f"JoinOp '{op.id}' attach field {field!r} reading '{target.id}'"
+        if isinstance(target, FormatOp):
+            raise ValueError(
+                f"{consumer}, but a format op is a row source only as a hop on"
+                " a chain; it has no runtime node to read directly"
+            )
         source = resolve_row_source(target, set(op.column_ids), ctx, consumer)
         attach.append(
             [
@@ -158,17 +163,6 @@ def _planned(
 ) -> int:
     """The plan index reading one column's values, one per row."""
     ctx.visited.add(column.id)
-    if isinstance(column, FormatOp):
-        field = next(
-            (name for name, target in join.attach_ops.items() if target is column),
-            None,
-        )
-        role = "row column" if field is None else f"attach field {field!r}"
-        raise ValueError(
-            f"JoinOp '{join.id}' {role} reads FormatOp '{column.id}', which the"
-            " join cannot read directly; a format op is a row source only as a"
-            " hop on a chain"
-        )
     runtime_ids = ctx.dsl_to_runtime.get(column.id)
     if not runtime_ids:
         raise ValueError(

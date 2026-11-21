@@ -253,7 +253,6 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                     refs.add(dep)
         for op in ctx.graph_dict.values():
             if isinstance(op, JoinOp):
-                # A join reads every one of its inputs in the join phase.
                 refs.update(inp.id for inp in op.inputs)
         return refs
 

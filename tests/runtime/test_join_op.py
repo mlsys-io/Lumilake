@@ -205,7 +205,7 @@ def test_join_refuses_a_format_op_as_an_attach_target() -> None:
         "     format_args: [State]}\n"
         + _merge("State, Prompt", "    attach: {prompt: Prompt}\n")
     )
-    with pytest.raises(ValueError, match="attach field 'prompt' reads FormatOp"):
+    with pytest.raises(ValueError, match="attach field 'prompt' reading .*hop on a"):
         _join_node(ops)
 
 
@@ -240,17 +240,15 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
 ) -> None:
     node = _join_node(_REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n"))
     table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
+    reply = [{"output": '{"n": 1}', "value": '{"n": 1}'}] * 2
     out = _run(
         tmp_path,
         node,
-        {
-            0: [{"output": [{"df": json.dumps(table)}]}],
-            1: [{"output": "1", "value": 1}, {"output": "1", "value": 1}],
-        },
+        {0: [{"output": [{"df": json.dumps(table)}]}], 1: reply},
     )
     assert [item["output"] for item in out["items"]] == [
-        {"case_id": "a", "text": "x", "reply": 1},
-        {"case_id": "c", "text": "z", "reply": 1},
+        {"case_id": "a", "text": "x", "reply": {"n": 1}},
+        {"case_id": "c", "text": "z", "reply": {"n": 1}},
     ]
     with pytest.raises(ValueError, match="table is not a column table"):
         _run(tmp_path, node, {0: [{"output": [{"df": "[1, 2]"}]}]}, name="bad")
