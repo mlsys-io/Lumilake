@@ -2199,7 +2199,6 @@ async def _run_dynamic_job(
         await asyncio.to_thread(_job_storage.save, record)
 
         round_index = 0
-        dispatched_rounds = 0
         current_subgraph: list[dict[str, Any]] = []
         current_export: list[str] = []
         current_cleared: frozenset[str] = frozenset()
@@ -2209,9 +2208,7 @@ async def _run_dynamic_job(
             topology = list(node_registry.keys())
             if api is not None and round_index == 0:
                 # Round 0 dispatches no graph: the planner is asked for the
-                # first subgraph directly, which round 1 then runs. The
-                # dispatched-round counter below stays where it is, so it also
-                # numbers the first graph 1.
+                # first subgraph directly, which round 1 then runs.
                 try:
                     system, user = planner_messages(
                         goal=spec.goal,
@@ -2279,7 +2276,6 @@ async def _run_dynamic_job(
                     rows=len(symbols),
                     job_seed=spec.seed,
                     cleared_ids=current_cleared,
-                    round_number=dispatched_rounds + 1,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2290,7 +2286,6 @@ async def _run_dynamic_job(
                     record.finished_at = _now()
                 await asyncio.to_thread(_job_storage.save, record)
                 return
-            dispatched_rounds += 1
             try:
                 child_job_id = await _submit_dynamic_child(
                     parent_job_id=parent_job_id,
