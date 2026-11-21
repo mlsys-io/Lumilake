@@ -62,6 +62,7 @@ _decode = _RUNTIME._decode
 _walk_path = _RUNTIME._walk_path
 _rows = _RUNTIME._rows
 failure_of = _RUNTIME.failure_of
+carried_marker = _RUNTIME.carried_marker
 reject_reserved_key = _RUNTIME.reject_reserved_key
 materialize = _RUNTIME.materialize
 
@@ -264,14 +265,23 @@ def main(inputs):
         for entry in _PLAN
     ]
     items = []
-    for row in _rows(columns, _PLAN, {op_id!r}):
+    for index, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
+        marked = carried_marker(row)
+        if marked is not None:
+            # A marked row keeps one defined slot, so its children are neither
+            # run nor lost.
+            items.append({{"output": marked, "parent": index, "child": 0}})
+            continue
         values = fn(row)
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"
                 % ({op_id!r}, _FN_NAME, type(values).__name__)
             )
-        items.extend({{"output": v}} for v in values)
+        items.extend(
+            {{"output": v, "parent": index, "child": child}}
+            for child, v in enumerate(values)
+        )
     return {{"items": items}}
 """
 

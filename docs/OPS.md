@@ -478,8 +478,14 @@ item internally, and the standalone `python` step flattens that grouped item
 back to one value per row before the function sees its whole-list input.
 
 `mode: expand` calls the function once per input row, as `row` mode does, and
-expects a list back: the step emits one item per element, in input order, and
-an empty list drops the row.
+expects a list back, so each output's dependencies are known from the op alone;
+a non-list return fails with the op named. Each emitted item carries its
+parent's input-row index under `parent` and its own position under `child`, so
+a downstream op can tell which parent an item came from and two elements of one
+parent apart. A parent whose input row carries a failed record is not passed to
+the function: it emits one item carrying that marker at `child: 0`, so every
+failed parent keeps a defined slot. An empty list drops the row, so the
+`parent` indices of the survivors are what tell "no children" from a lost row.
 
 `mode: reduce` groups the row tuples by the value at the required `by` dotted
 path (compared as JSON text, so `1` and `"1"` differ) and calls the function
