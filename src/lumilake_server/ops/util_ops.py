@@ -311,8 +311,9 @@ class LambdaOp(Op):
         self.mode = mode
         self.by = by
         self.seed = seed
-        # A reduce group that holds a failed record is dropped or failed
-        # whole; any other mode carries it as a pass-through.
+        # What a reduce group that holds a failed record does: fail it as a
+        # whole, or drop its failed rows. Every other mode carries a failed
+        # row through untouched.
         self.on_fail = on_fail
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s

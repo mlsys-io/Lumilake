@@ -75,6 +75,11 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         emit_keyed_seed(op_dict, ctx, seed, "seed", "LambdaOp")
     on_fail = entry.fields.get("on_fail")
     if on_fail is not None:
+        if mode != "reduce":
+            raise ValueError(
+                f"LambdaOp '{entry.id}' on_fail is only valid in reduce mode"
+                f" (got mode {mode!r})"
+            )
         if on_fail not in LambdaOp.REDUCE_ON_FAIL:
             raise ValueError(
                 f"LambdaOp '{entry.id}' on_fail must be one of"
