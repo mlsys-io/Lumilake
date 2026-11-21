@@ -48,6 +48,7 @@ from lumilake_server.runtime.record_store import (
     is_marker,
     op_spec_digest,
     row_key,
+    samples,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -186,6 +187,7 @@ class RecordWriter:
                 node in unversioned for node in _input_nodes(plan)
             ):
                 unversioned.add(node_id)
+            versions = EffectVersions(unversioned=node_id in unversioned)
             source = RecordSource(
                 job=job_id,
                 round=round_number,
@@ -198,7 +200,7 @@ class RecordWriter:
                     plan=plan,
                     node_records=node_records,
                     inputs=inputs,
-                    versions=EffectVersions(unversioned=node_id in unversioned),
+                    versions=versions,
                     source=source,
                 )
             )
@@ -255,7 +257,13 @@ class RecordWriter:
             input_digests, input_values = _position_inputs(
                 inputs, position, keyed=plan.keyed
             )
-            realization = _realization(plan, node_records, position)
+            realization = _realization(
+                plan,
+                node_records,
+                position,
+                source,
+                unversioned=versions.unversioned,
+            )
             signature = failed_record_digest if failed else entry_digest
             digest = signature(
                 spec_digest=plan.spec_digest,
@@ -425,10 +433,19 @@ def _reads_unversioned(plan: RecordPlan) -> bool:
 
 
 def _realization(
-    plan: RecordPlan, node_records: NodeRecords, position: int
+    plan: RecordPlan,
+    node_records: NodeRecords,
+    position: int,
+    source: RecordSource,
+    *,
+    unversioned: bool,
 ) -> RecordRealization:
     """The draw a record used: its own seed row when the op declares per-row
-    seeds, else the op's declared seed."""
+    seeds, else the op's declared seed.
+
+    A record whose value no seed or snapshot fixes (a sampling op with no seed,
+    or an unversioned read) names its own production instead, so it never
+    shares a key with another run's draw."""
     seeds = plan.op.data_spec.get("seeds")
     if isinstance(seeds, list) and plan.keyed:
         keyed_rows = sum(1 for key in node_records.keys or [] if key is not None)
@@ -439,9 +456,19 @@ def _realization(
             )
         seed = seeds[position]
         if isinstance(seed, bool) or not isinstance(seed, int):
-            return RecordRealization()
+            return _draw_unique_to(source) if samples(plan.op) else RecordRealization()
         return RecordRealization(seed=seed)
-    return RecordRealization(seed=declared_seed(plan.op))
+    seed = declared_seed(plan.op)
+    if seed is not None:
+        return RecordRealization(seed=seed)
+    if unversioned or samples(plan.op):
+        return _draw_unique_to(source)
+    return RecordRealization()
+
+
+def _draw_unique_to(source: RecordSource) -> RecordRealization:
+    """A draw nothing reproduces: it names the production that made it."""
+    return RecordRealization(production=f"{source.job}/{source.task_id}")
 
 
 def _resolve_plans(
