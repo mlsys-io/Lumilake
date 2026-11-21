@@ -11,6 +11,7 @@ from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.parser.common import make_id
 from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
@@ -140,6 +141,31 @@ def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     assert [fn(("c1",)), fn(("c2",))] == _documented_seed(
         ["c1", "c2"], "Answer{{round}}", 2
     )
+
+
+def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:
+    """The generated row function takes an id under the ``seed`` prefix, which
+    no op type emits, so a user op named like it builds beside the key form."""
+    payload = _payload()
+    payload["ops"].append(
+        {
+            "id": "Answer__seed",
+            "op": "LambdaOp",
+            "inputs": [],
+            "fn_name": "passthrough",
+            "code": "def passthrough(row):\n    return row\n",
+        }
+    )
+    spec = next(iter(parse_yaml_payload(payload).values()))
+    seed_id = next(
+        op_id
+        for op_id, op in spec["graph"].items()
+        if op.get("fn_name") == SEED_FN_NAME
+    )
+    user_id = make_id("yaml_workflow", "lambda", "Answer__seed")
+    assert user_id in spec["graph"]
+    assert spec["graph"][user_id]["fn_name"] == "passthrough"
+    assert seed_id != user_id
 
 
 def test_the_key_form_is_refused() -> None:
