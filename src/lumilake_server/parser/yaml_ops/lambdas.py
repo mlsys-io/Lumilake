@@ -20,6 +20,7 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             "image": entry.fields.get("image"),
             "expected_runtime_s": entry.fields.get("expected_runtime_s"),
             "cache": entry.fields.get("cache"),
+            "clears_markers": entry.fields.get("clears_markers"),
         },
         f"LambdaOp '{entry.id}'",
     )

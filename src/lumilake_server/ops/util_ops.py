@@ -51,6 +51,7 @@ class LambdaSpec(BaseModel):
     image: StrictStr | None = None
     expected_runtime_s: StrictFloat | None = Field(default=None, gt=0)
     cache: StrictBool | None = None
+    clears_markers: StrictBool | None = None
 
     @field_validator("image")
     @classmethod
@@ -238,6 +239,7 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         by: str | None = None,
+        clears_markers: bool = False,
     ) -> None:
         input_ops: list[Op] = [
             inp if isinstance(inp, Op) else DataOp(inp) for inp in inputs
@@ -257,6 +259,7 @@ class LambdaOp(Op):
                 "image": image,
                 "expected_runtime_s": expected_runtime_s,
                 "cache": cache,
+                "clears_markers": clears_markers or None,
             },
             "LambdaOp",
         )
@@ -291,6 +294,12 @@ class LambdaOp(Op):
         return self.spec.cache
 
     @property
+    def clears_markers(self) -> bool:
+        """Whether a router branch that keeps only the rows its rule or the
+        default matched, so it never emits a failed record."""
+        return bool(self.spec.clears_markers)
+
+    @property
     def takes_whole_columns(self) -> bool:
         """List and aligned Lambdas receive whole columns and return a list."""
         return self.mode in ("list", "aligned")
@@ -323,6 +332,7 @@ class LambdaOp(Op):
             expected_runtime_s=spec.expected_runtime_s,
             cache=spec.cache,
             sample_value=data.get("sample_value"),
+            clears_markers=bool(spec.clears_markers),
         )
         return op
 
