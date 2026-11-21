@@ -214,6 +214,9 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
     native[chat_id]["config"] = ""
     with pytest.raises(ValueError, match="config must be a mapping"):
         rewrite_native_keys(native, job_seed=7)
+    # An op that names no kind is the graph builder's to refuse, not this pass's.
+    untyped = {"_inputs": [], "_max_iter": None, "data": ["{}"]}
+    assert rewrite_native_keys({"op": untyped}, job_seed=7) == {"op": untyped}
 
 
 def test_a_row_lambda_takes_a_seeded_key_form() -> None:
