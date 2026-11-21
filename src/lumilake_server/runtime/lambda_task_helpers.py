@@ -51,27 +51,63 @@ def _walk_path(value: Any, parts: list[str], where: str) -> Any:
     return value
 
 
+def _decoded_cell(value: Any) -> Any:
+    """Decode one cell of a column: JSON object or array text becomes the
+    object or list it holds, and any other value passes through."""
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return value
+        if isinstance(decoded, (dict, list)):
+            return decoded
+    return value
+
+
+def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
+    """A column-major table, a mapping from row index to cell per column, as
+    one row per index in index order."""
+    rows: dict[str, dict[str, Any]] = {}
+    for name, column in table.items():
+        if not isinstance(column, dict):
+            continue
+        for index, value in column.items():
+            rows.setdefault(index, {})[name] = value
+    try:
+        indexes = sorted(rows, key=int)
+    except ValueError:
+        indexes = list(rows)
+    return [rows[index] for index in indexes]
+
+
+def _decoded_rows(value: Any, where: str) -> list[Any]:
+    """The rows one decoded cell carries: a table's ``{"df": "<json>"}``
+    envelope, a row object, or a list of any of these."""
+    if (
+        isinstance(value, dict)
+        and list(value) == ["df"]
+        and isinstance(value["df"], str)
+    ):
+        try:
+            table = json.loads(value["df"])
+        except ValueError:
+            raise ValueError(f"{where}: table is not JSON")
+        if not isinstance(table, dict):
+            raise ValueError(f"{where}: table is not a column table")
+        return _table_rows(table)
+    if isinstance(value, list):
+        rows: list[Any] = []
+        for item in value:
+            rows.extend(_decoded_rows(_decoded_cell(item), where))
+        return rows
+    return [value]
+
+
 def _row_content(row: Any) -> Any:
     try:
         return row["json"]["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return row.get("text", row)
-
-
-def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
-    """A serialized table of ``column -> row index -> value`` as one dict per
-    row, in row-index order."""
-    rows: dict[str, dict[str, Any]] = {}
-    for column, values in table.items():
-        if not isinstance(values, dict):
-            continue
-        for index, value in values.items():
-            rows.setdefault(index, {})[column] = value
-    try:
-        ordered = sorted(rows, key=int)
-    except ValueError:
-        ordered = list(rows)
-    return [rows[index] for index in ordered]
 
 
 def _serialized_table(value: Any) -> dict[str, Any] | None:

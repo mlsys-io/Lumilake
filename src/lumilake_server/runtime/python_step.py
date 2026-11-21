@@ -14,7 +14,7 @@ from functools import cache
 from typing import Any
 
 from lumilake import envs
-from lumilake_server.runtime import lambda_task_helpers
+from lumilake_server.runtime import join_step, lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.lumid_data_client import encode_blob_key
 
@@ -479,7 +479,11 @@ def flowmesh_spec(
     """The FlowMesh ``python`` task spec for a runtime python step."""
     plan, literal_mounts = resolve_plan(data_spec["plan"], published_blobs)
     mode = data_spec.get("mode", "row")
-    if mode == "flatten":
+    if mode == "join":
+        code = join_step.join_source(
+            node_id, data_spec["join"], plan, TASK_RUNTIME_MOUNT
+        )
+    elif mode == "flatten":
         code = flatten_source(node_id, plan, data_spec["template"])
     elif mode == "regroup":
         code = regroup_source(node_id, plan)

@@ -167,19 +167,22 @@ def _require_export(plan: SubgraphPlan, export_id: str, round_number: int) -> No
         )
 
 
-def _require_list_lambda(op: dict[str, Any], export_id: str) -> None:
-    """Require the stop export to be a LambdaOp whose archived export collapses
-    to a single value."""
+def _require_row_list_export(op: dict[str, Any], export_id: str) -> None:
+    """Require the stop export to be a whole-result LambdaOp or a JoinOp, the
+    ops whose archived export collapses to one list or one item per row."""
     op_type = op.get("op", "")
+    if op_type == "JoinOp":
+        return
     if op_type != "LambdaOp":
         raise DriverProtocolError(
-            f"stop_when_empty {export_id!r} must be a LambdaOp, got {op_type!r}"
+            f"stop_when_empty {export_id!r} must be a LambdaOp or JoinOp, got "
+            f"{op_type!r}"
         )
     if op.get("mode") not in WHOLE_RESULT_MODES:
         raise DriverProtocolError(
             f"stop_when_empty {export_id!r} must be a list, expand or reduce"
-            f" mode LambdaOp, got mode {op.get('mode')!r}: only those exports"
-            " read as an empty list"
+            f" mode LambdaOp or a JoinOp, got mode {op.get('mode')!r}: only"
+            " those exports read as an empty list"
         )
 
 
@@ -191,7 +194,7 @@ def validate_template(
 ) -> None:
     """Validate a template at submit: render rounds 1-3, validate each against
     the nodes the earlier rounds registered, and require the stop export to be
-    a whole-result LambdaOp that round exported."""
+    a row list that round exported."""
     plans = {number: plan_for_round(template, number) for number in (1, 2, 3)}
     _require_export(plans[1], stop_export(template, 2), 1)
     _require_export(plans[2], stop_export(template, 3), 2)
@@ -210,4 +213,4 @@ def validate_template(
         registry.update({op["id"]: op for op in resolve_subgraph(ops, library)})
     for number in (2, 3):
         export_id = stop_export(template, number)
-        _require_list_lambda(registry[export_id], export_id)
+        _require_row_list_export(registry[export_id], export_id)

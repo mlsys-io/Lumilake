@@ -13,6 +13,7 @@ from lumilake_server.ops import (
     Op,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
@@ -47,9 +48,12 @@ class OutputKind(Enum):
     API_ITEM = "api_item"
     LIST_LAMBDA = "list_lambda"
     ROW_LAMBDA = "row_lambda"
+    JOIN = "join"
 
 
-_LAMBDA_KINDS = frozenset({OutputKind.LIST_LAMBDA, OutputKind.ROW_LAMBDA})
+_LAMBDA_KINDS = frozenset(
+    {OutputKind.LIST_LAMBDA, OutputKind.ROW_LAMBDA, OutputKind.JOIN}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +91,11 @@ class OpOutput:
             return (
                 f"{head} per-row VLM '{self.node}'; only 'items.output' is supported."
             )
-        noun = "Lambda" if self.kind in _LAMBDA_KINDS else "API upstream"
+        noun = (
+            "join"
+            if self.kind is OutputKind.JOIN
+            else "Lambda" if self.kind in _LAMBDA_KINDS else "API upstream"
+        )
         return (
             f"{head} {noun} '{self.node}';"
             " only 'items.output' (the whole output) is supported."
@@ -140,6 +148,10 @@ def op_output(
         kind = OutputKind.API_ROW if rowwise else OutputKind.API_ITEM
     elif isinstance(op, LambdaOp):
         kind = OutputKind.LIST_LAMBDA if op.mode != "row" else OutputKind.ROW_LAMBDA
+    elif isinstance(op, JoinOp):
+        # A join's result is enveloped like a list Lambda's: one item per row,
+        # each carrying that row's merged fields under ``output``.
+        kind = OutputKind.JOIN
     else:
         kind = OutputKind.DECLARED
     default_path: str | None
@@ -153,7 +165,9 @@ def op_output(
         path = default_path = _API_ITEM_PATH
     else:
         path = _WHOLE if kind is OutputKind.DECLARED else _VALUE_ROOT
-        default_path = _WHOLE if kind is OutputKind.LIST_LAMBDA else None
+        default_path = (
+            _WHOLE if kind in (OutputKind.LIST_LAMBDA, OutputKind.JOIN) else None
+        )
     return OpOutput(
         node=op.id,
         path=path,

@@ -76,8 +76,8 @@ templating is done by upstream `FormatOp`s.
 Supported op types: ``InputOp`` (auto-generated from ``inputs:`` block),
 ``DataOp``, ``DataRetrievalOp``, ``MessageOp``, ``LLMChatOp``,
 ``LLMCompletionOp``, ``LLMVisionOp``, ``ImageGenerationOp``, ``EmbeddingOp``,
-``FormatOp``, ``LambdaOp``, ``RouterOp``, ``OutputOp`` (auto-generated from
-``outputs:`` block).
+``FormatOp``, ``LambdaOp``, ``RouterOp``, ``JoinOp``, ``OutputOp``
+(auto-generated from ``outputs:`` block).
 
 Users with an existing n8n workflow should submit it as
 ``Workflow-Format: n8n`` rather than transliterating it into YAML — no
