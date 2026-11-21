@@ -1,6 +1,7 @@
 """Unit tests for cross-round reference forwarding in dynamic rounds."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from lumilake_server.dynamic.driver import (
 )
 from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
+from lumilake_server.parser.keyed_seed import SEED_FN_NAME
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.routes.jobs import (
@@ -27,6 +29,7 @@ from lumilake_server.routes.jobs import (
 )
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.utils import lambda_runtime
 from tests.support.data_specs import wire
 
 
@@ -854,6 +857,46 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     )
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
     assert wire(node)["seeds"] == [7, 9]
+
+    # A Lambda's keyed seed binds the same way: the earlier round's key column
+    # becomes a flat input, and the generated row function reads it per row.
+    draw_id = "d1"
+    lambda_subgraph = [
+        {
+            "id": draw_id,
+            "op": "LambdaOp",
+            "inputs": [seed_id],
+            "fn_name": "draw",
+            "code": "def draw(row, seed):\n    return '%d' % seed\n",
+            "seed": {"key": {"node": seed_id, "path": "items.output"}},
+        }
+    ]
+    configs[draw_id] = {"id": draw_id, "op": "LambdaOp", "inputs": [seed_id]}
+    ops, inputs = forward_refs(lambda_subgraph, results, configs, rows=2)
+    assert ops[0]["seed"]["key"] == {"node": f"{seed_id} | items.output", "path": ""}
+    payload = {"inputs": inputs, "ops": ops, "outputs": [{"name": "o", "ref": draw_id}]}
+    spec = next(iter(parse_yaml_payload(payload).values()))
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    node = next(n for n in graph.nodes.values() if n.data_spec.get("fn_name") == "draw")
+    seed_entry = next(e for e in node.data_spec["plan"] if e.get("role") == "seed")
+    seed_fn = next(
+        n for n in graph.nodes.values() if n.data_spec.get("fn_name") == SEED_FN_NAME
+    )
+    fn = lambda_runtime.materialize(seed_fn.data_spec["code"], SEED_FN_NAME)
+
+    def documented(key: str) -> int:
+        text = json.dumps(
+            [0, draw_id, None, key], sort_keys=True, separators=(",", ":")
+        )
+        return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big") % 2**31
+
+    assert [fn((v,)) for v in inputs[f"{seed_id} | items.output"]] == [
+        documented("7"),
+        documented("9"),
+    ]
+    assert seed_entry["node"] == seed_fn.node_id
 
 
 def test_forward_aligned_materializers_are_row_cardinality():
