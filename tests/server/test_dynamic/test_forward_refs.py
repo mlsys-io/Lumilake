@@ -857,6 +857,48 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     assert wire(node)["seeds"] == [7, 9]
 
 
+def test_a_native_key_form_error_names_the_op_in_a_422():
+    """A native graph whose key form does not fit its chat op is refused with
+    the offending op named, on the route's own dispatch path."""
+    native = {
+        "chat": {
+            "_id": "chat",
+            "_op": "LLMChatOp",
+            "_inputs": ["cases"],
+            "_max_iter": None,
+            "config": {"model": "m"},
+            "messages": "msg",
+            "rowwise_template": None,
+            "rowwise_seed": {"key": {"node": "cases", "path": "items.output.k"}},
+        },
+        "cases": {
+            "_id": "cases",
+            "_op": "DataOp",
+            "_inputs": [],
+            "_max_iter": None,
+            "data": ["{}"],
+        },
+        "msg": {
+            "_id": "msg",
+            "_op": "MessageOp",
+            "_inputs": [],
+            "_max_iter": None,
+            "messages": [{"role": "user", "content": "x"}],
+        },
+    }
+    with pytest.raises(HTTPException) as refusal:
+        _dispatch_workflow_to_graph_specs(
+            workflow_format="native",
+            workflow_payload={"graph": native},
+            batch_inputs={},
+            graph_name="g",
+            graph_specs={},
+            idx=0,
+        )
+    assert refusal.value.status_code == 422
+    assert "LLMChatOp 'chat'" in refusal.value.detail
+
+
 def test_forward_aligned_materializers_are_row_cardinality():
     # A forwarded round where News Report reads two materializers compiles as a
     # multi-row group: the materializer runtime nodes are aligned (not list),
