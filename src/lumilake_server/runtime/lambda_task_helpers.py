@@ -5,6 +5,38 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+FAIL_KEY = "_fail"
+
+
+def fail_marker(op: str, reason: str) -> dict[str, Any]:
+    """The value of a failed record: the op that failed and why."""
+    return {FAIL_KEY: {"op": op, "reason": reason}}
+
+
+def failure_of(value: Any) -> dict[str, Any] | None:
+    """The marker a value carries, or ``None`` when its record is ok."""
+    if isinstance(value, dict) and FAIL_KEY in value:
+        return value
+    if isinstance(value, str) and FAIL_KEY in value:
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return None
+        if isinstance(decoded, dict) and FAIL_KEY in decoded:
+            return decoded
+    return None
+
+
+def reject_reserved_key(value: Any, op: str, row: int | None = None) -> None:
+    """Refuse a user value that carries the reserved ``_fail`` key, so it is
+    never mistaken for a failed record."""
+    if isinstance(value, dict) and FAIL_KEY in value:
+        where = f" for row {row}" if row is not None else ""
+        raise ValueError(
+            f"{op!r}{where} returned an object with the reserved {FAIL_KEY!r}"
+            " key; failed records carry that key and user functions must not"
+        )
+
 
 def _text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
