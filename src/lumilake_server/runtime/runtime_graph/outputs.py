@@ -216,8 +216,6 @@ def output_row_count(
     if isinstance(op, (LLMCompletionOp, EmbeddingOp, ImageGenerationOp)):
         content = op.prompt if isinstance(op, LLMCompletionOp) else op.content
         return output_row_count(content, inputs_dict, graph_dict)
-    if isinstance(op, ParseOp):
-        return output_row_count(op.inputs[0], inputs_dict, graph_dict)
     if isinstance(op, LLMChatOp):
         return _llm_row_count(op, inputs_dict, graph_dict)
     return None

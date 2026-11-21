@@ -502,8 +502,11 @@ def main(inputs):
     columns = [_column(entry, inputs, _text) for entry in _PLAN]
     items = []
     for value in columns[0]:
-        if failure_of(value) is not None:
-            items.append({{"output": value, "value": value}})
+        marked = failure_of(value)
+        if marked is not None:
+            # A marker reaching the column as its JSON text still leaves the
+            # step as the decoded marker object, as the row step does.
+            items.append({{"output": marked, "value": marked}})
             continue
         try:
             parsed = parse_row(_PARSER, value)

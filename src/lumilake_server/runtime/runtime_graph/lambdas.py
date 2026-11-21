@@ -272,7 +272,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         plan, dependencies = self._parse_plan(op, ctx)
         row_count = self._python_step_row_count(
             op.id,
-            [(op.inputs[0].id, self._parse_input_row_count(op, ctx))],
+            [(op.inputs[0].id, self._op_output(op.inputs[0]).row_count)],
             combines_rows=False,
         )
         data_spec: dict[str, Any] = {
@@ -326,15 +326,6 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         elif output.path:
             entry["path"] = item_relative_path(output.path)
         return [entry], [runtime_ids[0]]
-
-    def _parse_input_row_count(self, op: ParseOp, ctx: LoweringContext) -> int | None:
-        source = op.inputs[0]
-        if isinstance(source, InputOp):
-            values = ctx.inputs_dict.get(source.name)
-            return len(values) if values is not None else None
-        if isinstance(source, DataOp):
-            return len(source.data)
-        return self._op_output(source).row_count
 
     @after_phase(Phase.ROW_LAMBDA)
     def _check_inlined_lambda_refs(self, ctx: LoweringContext) -> None:

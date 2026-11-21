@@ -18,7 +18,7 @@ def emit_parse_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     unknown = set(entry.fields) - {"format", "pattern", "require", "flags"}
     if unknown:
         raise ValueError(f"ParseOp '{entry.id}' has unknown fields: {sorted(unknown)}")
-    validate_parse(form, pattern, require, flags, where=f"ParseOp '{entry.id}'")
+    validate_parse(form, pattern, require, flags, f"ParseOp '{entry.id}'")
     op_dict["format"] = form
     if pattern is not None:
         op_dict["pattern"] = pattern

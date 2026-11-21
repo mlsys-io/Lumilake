@@ -12,9 +12,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Self
 
+from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY
+
 ROUTER_OP = "RouterOp"
 ERROR_BRANCH = "error"
-FAIL_KEY = "_fail"
 
 _MATCHES = ("contains", "equals")
 _NAME_RE = re.compile(r"^\w+$")
@@ -109,12 +110,6 @@ class RouterOp:
         branches = [rule.branch for rule in self.rules]
         if len(set(branches)) != len(branches):
             raise ValueError(f"RouterOp {self.id!r} rule branches must be unique")
-        if ERROR_BRANCH in branches or self.default_branch == ERROR_BRANCH:
-            raise ValueError(
-                f"RouterOp {self.id!r} must not name {ERROR_BRANCH!r} as a rule"
-                " branch or the default branch; a declared error branch receives"
-                " failed records"
-            )
         if self.default_branch in branches:
             raise ValueError(
                 f"RouterOp {self.id!r} rules already name the default branch "
@@ -178,6 +173,15 @@ class RouterOp:
                 f"RouterOp {router_id!r} error_branch must be a boolean, got"
                 f" {error_branch!r}"
             )
+        if error_branch and (
+            ERROR_BRANCH in [rule.branch for rule in rules]
+            or default_branch == ERROR_BRANCH
+        ):
+            raise ValueError(
+                f"RouterOp {router_id!r} must not name {ERROR_BRANCH!r} as a rule"
+                " branch or the default branch; its declared error branch receives"
+                " failed records"
+            )
         return cls(
             router_id,
             raw_inputs,
@@ -196,31 +200,36 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
     no rule or default branch, so with no ``error`` branch it reaches none."""
     rules = router.rules
     names = [rule.branch for rule in rules]
-    is_error = branch == ERROR_BRANCH and router.error_branch
+    header = [f"def route_{branch}(items):", f'    LABEL = "{router.id}.{branch}"']
+    if branch == ERROR_BRANCH and router.error_branch:
+        return (
+            "\n".join(
+                [
+                    *header,
+                    _DECODER,
+                    _MARKER,
+                    "    return [row for row in (rows_of(items[0]) if items else [])"
+                    " if marked(row)]",
+                ]
+            )
+            + "\n"
+        )
     own = names.index(branch) if branch in names else None
     tests = [rule.matches() for rule in rules]
-    if is_error:
-        skip, keep = tests, None
-    elif own is None:
+    if own is None:
         # The default branch keeps the rows no rule matched.
         skip, keep = tests, None
     else:
         skip, keep = tests[:own], [tests[own]]
     lines = [
-        f"def route_{branch}(items):",
-        f'    LABEL = "{router.id}.{branch}"',
+        *header,
         _DECODER,
         _MARKER,
         "    out = []",
         "    for row in rows_of(items[0]) if items else []:",
+        "        if marked(row):",
+        "            continue",
     ]
-    if is_error:
-        lines.append("        if marked(row):")
-        lines.append("            out.append(row)")
-        lines.append("        continue")
-    else:
-        lines.append("        if marked(row):")
-        lines.append("            continue")
     if router.path:
         lines.append("        value = row")
         lines.append(f"        for part in {router.path!r}:")
