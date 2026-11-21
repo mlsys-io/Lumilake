@@ -282,6 +282,8 @@ _DIAG = _merge("State, Route.diagnose")
 _ATTACH = _REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n")
 _ALL = [{"output": list(_ROWS)}]
 _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
+_GAPPED = [{"output": [_ROWS[0], _MARK, _ROWS[2]]}]
+_GAPPED_VALUES = [{"output": v, "value": v} for v in ("hi", _MARK, "bye")]
 
 
 @pytest.mark.parametrize(
@@ -304,31 +306,17 @@ _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
         # One whose key cannot be read cannot be placed.
         (_DIAG, {0: _ALL, 1: [{"output": [_MARK]}]}, None, "cannot be placed"),
         # A marked attach value marks the key its position pairs with, whether
-        # the value column covers the live rows or every source row.
+        # the value column covers the live rows or every source row. A source
+        # row that is itself a marker keeps it, and its value is paired with it.
         (
             _ATTACH,
-            {
-                0: _LIVE,
-                1: [
-                    {"output": "hi", "value": "hi"},
-                    {"output": json.dumps(_MARK), "value": _MARK},
-                ],
-                2: _LIVE,
-            },
+            {0: _LIVE, 1: _GAPPED_VALUES[:2], 2: _LIVE},
             [{**_ROWS[0], "reply": "hi"}, _MARK],
             "",
         ),
         (
             _ATTACH,
-            {
-                0: _ALL,
-                1: [
-                    {"output": "hi", "value": "hi"},
-                    {"output": json.dumps(_MARK), "value": _MARK},
-                    {"output": "bye", "value": "bye"},
-                ],
-                2: _ALL,
-            },
+            {0: _GAPPED, 1: _GAPPED_VALUES, 2: _GAPPED},
             [{**_ROWS[0], "reply": "hi"}, _MARK, {**_ROWS[2], "reply": "bye"}],
             "",
         ),
