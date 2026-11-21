@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from lumilake_server.ops.parse_ops import validate_parse
+from lumilake_server.ops.parse_ops import MARKER, validate_parse
 
 from .common import EmitContext
 
@@ -15,7 +15,7 @@ def emit_parse_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     pattern = entry.fields.get("pattern")
     require = entry.fields.get("require")
     flags = entry.fields.get("flags")
-    on_fail = entry.fields.get("on_fail", "marker")
+    on_fail = entry.fields.get("on_fail", MARKER)
     unknown = set(entry.fields) - {"format", "pattern", "require", "flags", "on_fail"}
     if unknown:
         raise ValueError(f"ParseOp '{entry.id}' has unknown fields: {sorted(unknown)}")

@@ -19,6 +19,7 @@ PARSE_OP = "ParseOp"
 FORMATS = ("json", "regex")
 FLAGS = "ism"
 ON_FAIL = ("marker", "raw")
+MARKER = ON_FAIL[0]
 
 
 def validate_parse(
@@ -81,7 +82,7 @@ class ParseOp(FunctionalOp):
         pattern: str | None = None,
         require: list[str] | None = None,
         flags: str | None = None,
-        on_fail: str = "marker",
+        on_fail: str = MARKER,
     ) -> None:
         if isinstance(inputs, (Op, str)):
             inputs = [inputs]
@@ -110,7 +111,7 @@ class ParseOp(FunctionalOp):
     @property
     def emits_markers(self) -> bool:
         """Whether an unparsable row becomes a failed-record marker."""
-        return self.on_fail == "marker"
+        return self.on_fail == MARKER
 
     @property
     def parse_spec(self) -> dict[str, Any]:
@@ -136,7 +137,7 @@ class ParseOp(FunctionalOp):
             pattern=data.get("pattern"),
             require=data.get("require"),
             flags=data.get("flags"),
-            on_fail=data.get("on_fail", "marker"),
+            on_fail=data.get("on_fail", MARKER),
         )
 
 
@@ -146,6 +147,6 @@ def parse_op(
     pattern: str | None = None,
     require: list[str] | None = None,
     flags: str | None = None,
-    on_fail: str = "marker",
+    on_fail: str = MARKER,
 ) -> ParseOp:
     return ParseOp(inputs, format, pattern, require, flags, on_fail)
