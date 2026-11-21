@@ -30,7 +30,10 @@ _ANSWER = {
     "rowwise_columns": [
         {"label": "question", "node": "Cases", "path": "items.output.question"}
     ],
-    "rowwise_seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
+    "rowwise_seed": {
+        "key": {"node": "Cases", "path": "items.output.case_id"},
+        "pairing": "shared",
+    },
 }
 
 
@@ -150,6 +153,20 @@ def test_a_text_cell_is_the_key_as_it_stands() -> None:
     fn = lambda_runtime.materialize(op["_code"], op["fn_name"])
     assert fn(("7",)) == _documented_seed(["7"])[0]
     assert fn(("7",)) != _documented_seed([7])[0]
+
+
+def test_a_duplicate_key_fails_unless_paired() -> None:
+    """Two rows of one key draw one seed, so the key form refuses them and
+    names the op and both rows, and ``pairing: shared`` declares it."""
+    payload = _payload()
+    payload["ops"][1]["rowwise_seed"].pop("pairing")
+    with pytest.raises(ValueError, match="Answer' .*rows 0 and 2 share the key"):
+        _graph(payload)
+    payload["ops"][1]["rowwise_seed"]["pairing"] = "shared"
+    assert _graph(payload) is not None
+    payload["ops"][1]["rowwise_seed"]["pairing"] = "paired"
+    with pytest.raises(ValueError, match="pairing must be one of"):
+        _graph(payload)
 
 
 def test_the_key_form_is_refused() -> None:

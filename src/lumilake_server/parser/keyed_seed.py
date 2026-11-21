@@ -1,12 +1,20 @@
-"""Deriving a rowwise chat op's per-row seed from a row key.
+"""Deriving a per-row seed from a row key.
 
 ``rowwise_seed: {key: {node, path}}`` names a column that holds each row's key;
 the seed is then a pseudo-random function of the job seed, the op's id, the
 round and that key, so it does not depend on batch position or worker. The
 parser turns the key form into a generated row-mode ``LambdaOp`` that reads the
-key column and returns one seed per row, and binds the chat op to its output.
+key column and returns one seed per row, and binds the op that draws with it to
+its output. A row or expand ``LambdaOp`` takes the same key form under ``seed``
+and receives the derived seed as its second argument.
+
+Two rows of one op that carry the same key draw the same seed. That turns two
+independent draws into one shared draw without saying so, so the key form is
+refused unless it declares ``pairing: shared``; the refusal names the op and the
+two rows, and it is checked over the whole input set at submit.
 """
 
+import json
 from typing import Any
 
 from lumilake_server.common import GenerationConfig
@@ -17,6 +25,7 @@ SEED_SUFFIX = "__seed"
 SEED_FN_NAME = "seed_for_row"
 _OUTPUT = "output"
 SEED_MODULUS = 2**31
+PAIRINGS = ("unique", "shared")
 
 _SEED_FN = """\
 import hashlib
@@ -63,11 +72,58 @@ def key_parts(path: str) -> list[str]:
     return parts
 
 
+def key_cells(values: list[str], parts: list[str]) -> list[Any]:
+    """The key each row of a literal or forwarded key column carries, read the
+    way the generated row function reads a cell: JSON object or array text is
+    parsed, and any other cell is the key as it stands. A row with no key or a
+    null key is the generated function's refusal, not this one's."""
+    return [_decode_cell(value, parts) for value in values]
+
+
+def _decode_cell(value: Any, parts: list[str]) -> Any:
+    """One row's key out of its raw column cell, or ``None`` when the cell
+    carries no key to compare."""
+    for index, part in enumerate(parts):
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except ValueError:
+                return None
+            value = decoded if isinstance(decoded, (dict, list)) else value
+            if index and isinstance(value, str):
+                return None
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        else:
+            return None
+    return value
+
+
+def check_unique(op_id: str, op_kind: str, keys: list[Any], pairing: str) -> None:
+    """Refuse two rows of one key form that carry the same key unless the form
+    declares shared pairing, naming the op and the first such row pair."""
+    if pairing == "shared":
+        return
+    seen: dict[str, int] = {}
+    for index, key in enumerate(keys):
+        if key is None:
+            continue
+        identity = json.dumps(key, sort_keys=True, separators=(",", ":"))
+        first = seen.get(identity)
+        if first is not None:
+            raise ValueError(
+                f"{op_kind} '{op_id}' derives one seed per key, but rows"
+                f" {first} and {index} share the key {identity}; declare"
+                " 'pairing: shared' if the same key should draw the same seed"
+            )
+        seen[identity] = index
+
+
 def seed_op_id(chat_op_id: str, scope: str | None = None) -> str:
-    """The id of the row function generated for one chat op. The parser names
-    it with the ``seed`` prefix, which no op type emits, so no user op can hold
+    """The id of the row function generated for one op. The parser names it
+    with the ``seed`` prefix, which no op type emits, so no user op can hold
     that id; a native graph, whose op ids are already internal, names it from
-    the chat op's own id."""
+    the op's own id."""
     if scope is None:
         return f"{chat_op_id}{SEED_SUFFIX}"
     return make_id(scope, "seed", chat_op_id)
@@ -79,21 +135,24 @@ def seed_source(
     template_id: str,
     round_number: int | None,
     parts: list[str],
+    *,
+    op_kind: str = "LLMChatOp",
 ) -> str:
     """The source of a keyed-seed row function: it reads one row's key out of
     its input column and returns the seed that row draws with. The job seed,
     template id, round and key path are constants of the generated code, so the
     body never runs user code, and the hash is the one ``docs/OPS.md``
     documents."""
+    named = f"{op_kind} '{template_id}'"
     return _SEED_FN.format(
         fn_name=fn_name,
         parts=parts,
         missing=_seed_message(
-            f"LLMChatOp '{template_id}' has no row key in the value with path"
+            f"{named} has no row key in the value with path"
             f" {'.'.join(parts) or '<the value itself>'}:"
         ),
         null=_seed_message(
-            f"LLMChatOp '{template_id}' has a null row key in"
+            f"{named} has a null row key in"
             f" {'.'.join(parts) or '<the value itself>'}:"
         ),
         job_seed=job_seed,
@@ -114,41 +173,57 @@ def key_target(
     op_id: str,
     seed: dict[str, Any],
     *,
-    rowwise_template: str | None,
-    config: Any,
+    op_kind: str = "LLMChatOp",
+    rowwise_template: str | None = None,
+    config: Any = None,
 ) -> tuple[str, str]:
-    """The ``(node, path)`` a key form reads, after checking the form fits
-    this chat op, with the op named in the refusal."""
+    """The ``(node, path)`` a key form reads, after checking the form fits this
+    op, with the op named in the refusal. ``rowwise_template`` applies to a chat
+    op only; a Lambda draws once per row by construction."""
     key = seed.get("key")
     if not isinstance(key, dict):
-        raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must be a mapping")
-    beside = sorted(set(seed) - {"key"})
+        raise ValueError(f"{op_kind} '{op_id}' seed key must be a mapping")
+    beside = sorted(set(seed) - {"key", "pairing"})
     if beside:
         raise ValueError(
-            f"LLMChatOp '{op_id}' rowwise_seed combines a key with {beside};"
+            f"{op_kind} '{op_id}' seed combines a key with {beside};"
             " the key form derives each row's seed, so the node and path it"
             " reads must sit inside 'key'"
         )
+    key_pairing(seed, op_id, op_kind)
     node_ref = key.get("node")
     if not isinstance(node_ref, str):
-        raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must name a node")
+        raise ValueError(f"{op_kind} '{op_id}' seed key must name a node")
     path = key.get("path")
     if not isinstance(path, str):
-        raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must name a path")
+        raise ValueError(f"{op_kind} '{op_id}' seed key must name a path")
+    if op_kind != "LLMChatOp":
+        return node_ref, path
     if not isinstance(config, dict):
-        raise ValueError(f"LLMChatOp '{op_id}' config must be a mapping")
+        raise ValueError(f"{op_kind} '{op_id}' config must be a mapping")
     try:
         generation_config = GenerationConfig(**config)
     except TypeError as exc:
-        raise ValueError(f"LLMChatOp '{op_id}' config is not valid: {exc}") from exc
+        raise ValueError(f"{op_kind} '{op_id}' config is not valid: {exc}") from exc
     check_rowwise_seed(
         RowwiseSeed(node_ref, path), rowwise_template, generation_config, op_id
     )
     return node_ref, path
 
 
+def key_pairing(seed: dict[str, Any], op_id: str, op_kind: str = "LLMChatOp") -> str:
+    """The key form's pairing, which is ``unique`` unless declared shared."""
+    pairing = seed.get("pairing", PAIRINGS[0])
+    if pairing not in PAIRINGS:
+        raise ValueError(
+            f"{op_kind} '{op_id}' seed pairing must be one of {PAIRINGS},"
+            f" got {pairing!r}"
+        )
+    return pairing
+
+
 def seed_op(
-    chat_op_id: str,
+    op_id: str,
     key_node: str,
     key_path: str,
     *,
@@ -156,12 +231,13 @@ def seed_op(
     round_number: int | None,
     template_id: str | None = None,
     scope: str | None = None,
+    op_kind: str = "LLMChatOp",
 ) -> dict[str, Any]:
     """The row-mode ``LambdaOp`` that returns each row's seed from its key.
     ``template_id`` is the op id as the user wrote it; it defaults to the
-    internal id."""
+    internal id. ``op_kind`` names the op that draws in the refusals."""
     return {
-        "_id": seed_op_id(chat_op_id, scope),
+        "_id": seed_op_id(op_id, scope),
         "_op": "LambdaOp",
         "_max_iter": None,
         "_inputs": [key_node],
@@ -169,9 +245,10 @@ def seed_op(
         "_code": seed_source(
             SEED_FN_NAME,
             job_seed,
-            chat_op_id if template_id is None else template_id,
+            op_id if template_id is None else template_id,
             round_number,
             key_parts(key_path),
+            op_kind=op_kind,
         ),
         "mode": "row",
     }
@@ -180,43 +257,49 @@ def seed_op(
 def rewrite_native_keys(
     graph: dict[str, dict[str, Any]], *, job_seed: int
 ) -> dict[str, dict[str, Any]]:
-    """Rewrite every key-form ``rowwise_seed`` of a serialized native graph,
-    adding each generated seed op and binding the chat op to it. The graph is
-    built in insertion order, so a generated op is placed just ahead of the op
-    that reads it."""
+    """Rewrite every key-form seed of a serialized native graph, adding each
+    generated seed op and binding the op that draws with it to the seed op's
+    output. The graph is built in insertion order, so a generated op is placed
+    just ahead of the op that reads it."""
     rewritten: dict[str, dict[str, Any]] = {}
     for op_id, op in graph.items():
-        seed = op.get("rowwise_seed")
-        if (
-            op.get("_op") != "LLMChatOp"
-            or not isinstance(seed, dict)
-            or "key" not in seed
-        ):
+        field = "seed" if op.get("_op") == "LambdaOp" else "rowwise_seed"
+        seed = op.get(field)
+        if not isinstance(seed, dict) or "key" not in seed:
             rewritten[op_id] = op
             continue
+        op_kind = op["_op"]
         node_ref, path = key_target(
             op_id,
             seed,
+            op_kind=op_kind,
             rowwise_template=op.get("rowwise_template"),
             config=op.get("config", {}),
         )
         if node_ref not in op.get("_inputs", []):
             raise ValueError(
-                f"LLMChatOp '{op_id}' rowwise_seed reads '{node_ref}', which is"
-                " not listed in the op's inputs; add it there so the seed's"
-                " producer is built before the chat op"
+                f"{op_kind} '{op_id}' seed reads '{node_ref}', which is not"
+                " listed in the op's inputs; add it there so the seed's"
+                " producer is built before it"
             )
-        generated = seed_op(op_id, node_ref, path, job_seed=job_seed, round_number=None)
+        generated = seed_op(
+            op_id,
+            node_ref,
+            path,
+            job_seed=job_seed,
+            round_number=None,
+            op_kind=op_kind,
+        )
         if generated["_id"] in graph:
             raise ValueError(
-                f"LLMChatOp '{op_id}' keyed rowwise_seed generates the id"
+                f"{op_kind} '{op_id}' keyed seed generates the id"
                 f" '{generated['_id']}', which the graph already holds; rename"
                 " that op so the generated row function has its own id"
             )
         rewritten[generated["_id"]] = generated
         rewritten[op_id] = {
             **op,
-            "rowwise_seed": {"node": generated["_id"], "path": "items.output"},
+            field: {"node": generated["_id"], "path": "items.output"},
             "_inputs": [*op.get("_inputs", []), generated["_id"]],
         }
     return rewritten
