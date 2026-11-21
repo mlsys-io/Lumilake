@@ -512,14 +512,15 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
 
 def test_api_lambda_op_message_input_is_decoded_like_a_row_step() -> None:
     """The server hands an evaluated LambdaOp the same decoded values a row
-    step hands it, so a JSON-text literal arrives as the object it holds."""
+    step hands it, so a JSON-text literal arrives as the object it holds, and a
+    non-string return is archived as its JSON text."""
     stock = input_placeholder("Stock")
     payload = FormatOp('{{"name": "{name}"}}', name=stock)
 
-    def _name(inputs: tuple[str | list[Message], ...]) -> str:
+    def _name(inputs: tuple[str | list[Message], ...]) -> Any:
         (value,) = inputs
         assert isinstance(value, dict)
-        return str(value["name"]).upper()
+        return {"name": str(value["name"]).upper()}
 
     shout = LambdaOp([payload], fn=_name)
     llm = LLMChatOp(
@@ -535,7 +536,7 @@ def test_api_lambda_op_message_input_is_decoded_like_a_row_step() -> None:
 
     columns = runtime_graph.nodes[llm.id].data_spec["template"]["columns"]
     lambda_cols = [col for col in columns if col.get("label", "").startswith("lambda_")]
-    assert lambda_cols and lambda_cols[0]["data"]["items"] == ["NVDA"]
+    assert lambda_cols and lambda_cols[0]["data"]["items"] == ['{"name": "NVDA"}']
 
 
 def test_api_lambda_over_runtime_output_fails_closed() -> None:
