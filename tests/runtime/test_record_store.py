@@ -459,14 +459,31 @@ async def test_a_record_is_written_once(graph: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_marker_keeps_its_address(graph: Any) -> None:
-    node_ids = {"Mark": _node_id(graph, "Mark")}
-    storage, _ = await _write(
-        graph, {"Mark": [{"id": "a", "_fail": {"reason": "boom"}}]}, node_ids
-    )
-    (entry,) = _entries(storage)
-    assert entry.status == "failed"
-    assert entry.address.record == "a"
+async def test_failed_record_keys_on_its_own_inputs() -> None:
+    """A failed record keeps its address and never answers a request for a
+    success, and two failures on different inputs get different keys, so each
+    failure's lineage names the inputs it read."""
+    stored: list[RecordEntry] = []
+    for literal, join in (
+        ("one", {"id": "a", "_fail": {"reason": "boom"}}),
+        ("two", {"id": "a", "_fail": {"reason": "boom"}}),
+        ("one", {"id": "a"}),
+    ):
+        payload = _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
+        graph = _runtime_graph(payload)
+        node_ids = {"Mark": _node_id(graph, "Mark"), "Join": _node_id(graph, "Join")}
+        storage, _ = await _write(
+            graph, {"Mark": [{"id": "a", "text": "SAME"}], "Join": [join]}, node_ids
+        )
+        join_name = _declared_name(graph, "Join")
+        stored.append(
+            next(entry for entry in _entries(storage) if entry.address.op == join_name)
+        )
+    first, second, ok = stored
+    assert first.status == "failed"
+    assert first.address.record == "a"
+    assert first.input_digests != second.input_digests
+    assert len({first.digest, second.digest, ok.digest}) == 3
 
 
 @pytest.mark.asyncio

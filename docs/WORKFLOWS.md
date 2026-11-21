@@ -89,10 +89,11 @@ batch positions, job ids and workers never enter the digest.
 
 The round is the semantic one: one-based for a round of a dynamic job, `0` for a
 standalone job. A reader trusts an object only when the digest recorded inside it
-equals its key. A failed record keeps its address with `status: failed` and never
-answers a request for a success. An op that reads a retrieval or fetch that
-records no snapshot is marked `versions.unversioned`, because such a read is
-never reusable.
+equals its key. A failed record carries the same inputs, realization and versions
+a success would, with `status: failed` added, so it never answers a request for a
+success and two failures on different inputs never share a key. An op that reads a
+retrieval or fetch that records no snapshot is marked `versions.unversioned`,
+because such a read is never reusable.
 
 Read a record's chain back with `GET /api/v1/jobs/{job_id}/lineage`; see
 [`docs/API.md`](API.md).

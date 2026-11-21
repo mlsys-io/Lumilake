@@ -252,17 +252,14 @@ class RecordWriter:
             value_hash = None if failed else digest_of(value)
             input_digests, input_values = _position_inputs(inputs, position)
             realization = _realization(plan, node_records, position)
-            digest = (
-                failed_record_digest(spec_digest=plan.spec_digest, address=address)
-                if failed
-                else entry_digest(
-                    spec_digest=plan.spec_digest,
-                    address=address,
-                    input_digests=input_digests,
-                    input_values=input_values,
-                    realization=realization,
-                    versions=versions,
-                )
+            signature = failed_record_digest if failed else entry_digest
+            digest = signature(
+                spec_digest=plan.spec_digest,
+                address=address,
+                input_digests=input_digests,
+                input_values=input_values,
+                realization=realization,
+                versions=versions,
             )
             node_records.digests[record] = (digest, value_hash)
             entries.append(

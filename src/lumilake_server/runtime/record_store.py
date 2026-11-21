@@ -182,6 +182,28 @@ class RecordEntry(BaseModel):
         return cls.model_validate(json.loads(body.decode("utf-8")))
 
 
+def _record_body(
+    *,
+    spec_digest: str,
+    address: RecordAddress,
+    input_digests: list[str],
+    input_values: list[str],
+    realization: RecordRealization,
+    versions: EffectVersions,
+) -> dict[str, Any]:
+    """What a record's key covers, before the status tells a success from a
+    failure."""
+    return {
+        "digest_version": DIGEST_VERSION,
+        "spec": spec_digest,
+        "address": address.model_dump(mode="json"),
+        "inputs": input_digests,
+        "input_values": input_values,
+        "realization": realization.model_dump(mode="json"),
+        "versions": versions.model_dump(mode="json"),
+    }
+
+
 def entry_digest(
     *,
     spec_digest: str,
@@ -201,26 +223,39 @@ def entry_digest(
     its consumers' signatures change with it: the key cuts off by signature,
     never by value."""
     return digest_of(
-        {
-            "digest_version": DIGEST_VERSION,
-            "spec": spec_digest,
-            "address": address.model_dump(mode="json"),
-            "inputs": input_digests,
-            "input_values": input_values,
-            "realization": realization.model_dump(mode="json"),
-            "versions": versions.model_dump(mode="json"),
-        }
+        _record_body(
+            spec_digest=spec_digest,
+            address=address,
+            input_digests=input_digests,
+            input_values=input_values,
+            realization=realization,
+            versions=versions,
+        )
     )
 
 
-def failed_record_digest(*, spec_digest: str, address: RecordAddress) -> str:
-    """A failed attempt has its own key, so it never answers a request for a
-    success."""
+def failed_record_digest(
+    *,
+    spec_digest: str,
+    address: RecordAddress,
+    input_digests: list[str],
+    input_values: list[str],
+    realization: RecordRealization,
+    versions: EffectVersions,
+) -> str:
+    """A failed attempt's key: the success key's own inputs, realization and
+    versions, with the status added, so it never answers a request for a
+    success and two failures on different inputs never share a key."""
     return digest_of(
         {
-            "digest_version": DIGEST_VERSION,
-            "spec": spec_digest,
-            "address": address.model_dump(mode="json"),
+            **_record_body(
+                spec_digest=spec_digest,
+                address=address,
+                input_digests=input_digests,
+                input_values=input_values,
+                realization=realization,
+                versions=versions,
+            ),
             "status": "failed",
         }
     )
