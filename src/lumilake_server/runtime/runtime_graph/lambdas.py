@@ -140,6 +140,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             data_spec["mode"] = op.mode
         if op.by is not None:
             data_spec["by"] = op.by
+        if op.mode == "reduce":
+            data_spec["on_fail"] = op.on_fail
         if op.memory_mb is not None:
             data_spec["memory_mb"] = op.memory_mb
         if op.image is not None:

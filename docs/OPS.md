@@ -618,7 +618,18 @@ by the value at the required `by` dotted path into the first input's value
 (compared as JSON text, so `1` and `"1"` differ), and calls the function once
 per group with that group's row tuples in input order. The step emits one item
 per group, groups ordered by first appearance; a row missing the `by` path
-fails with the op and the row index named. `by` is accepted only in reduce mode.
+fails with the op and the row index named, unless the row carries a failed
+record, which holds no key to group by and forms a group of its own. `by` is
+accepted only in reduce mode.
+
+`on_fail` decides what a group that holds a failed record does; it defaults to
+`fail_group` and is accepted only in reduce mode:
+
+- `fail_group` emits that group's first marker as the group's item, so the
+  function does not see the failed row.
+- `drop_failed` removes the failed rows before grouping. A group that loses
+  every row emits the marker `{"_fail": {"op": "<op id>", "reason": "empty
+  group"}}`.
 
 ```yaml
 ops:
@@ -627,6 +638,7 @@ ops:
     inputs: [Scores]
     mode: reduce
     by: patient_id
+    on_fail: drop_failed
     fn_name: top_three
     code: |
       def top_three(rows):

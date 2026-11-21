@@ -154,11 +154,13 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
     clears_markers: bool
+    on_fail: str
 
     LAMBDA_MODES = ("row", "list", "aligned", "expand", "reduce")
     # A row or expand Lambda may declare a keyed seed, which its generated step
     # derives per row and passes as the function's second argument.
     SEED_MODES = ("row", "expand")
+    REDUCE_ON_FAIL = ("drop_failed", "fail_group")
 
     @overload
     def __init__(
@@ -244,6 +246,7 @@ class LambdaOp(Op):
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
         by: str | None = None,
+        on_fail: str = "fail_group",
     ) -> None: ...
 
     def __init__(
@@ -261,6 +264,7 @@ class LambdaOp(Op):
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
         by: str | None = None,
+        on_fail: str = "fail_group",
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -270,6 +274,11 @@ class LambdaOp(Op):
             raise ValueError(
                 f"LambdaOp seed is available in modes {self.SEED_MODES}, where"
                 f" the function runs once per row (got mode {mode!r})"
+            )
+        if on_fail not in self.REDUCE_ON_FAIL:
+            raise ValueError(
+                f"LambdaOp 'on_fail' must be one of {self.REDUCE_ON_FAIL}"
+                f" (got {on_fail!r})"
             )
         if mode == "reduce":
             parts = by.split(".") if isinstance(by, str) else []
@@ -281,6 +290,10 @@ class LambdaOp(Op):
         elif by is not None:
             raise ValueError(
                 f"LambdaOp 'by' is only valid in reduce mode (got mode {mode!r})"
+            )
+        if on_fail != "fail_group" and mode != "reduce":
+            raise ValueError(
+                f"LambdaOp 'on_fail' is only valid in reduce mode (got mode {mode!r})"
             )
         if image is not None and not image.strip():
             raise ValueError("LambdaOp image must be a non-empty string")
@@ -298,6 +311,9 @@ class LambdaOp(Op):
         self.mode = mode
         self.by = by
         self.seed = seed
+        # A reduce group that holds a failed record is dropped or failed
+        # whole; any other mode carries it as a pass-through.
+        self.on_fail = on_fail
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
@@ -360,6 +376,8 @@ class LambdaOp(Op):
             data["by"] = self.by
         if self.seed is not None:
             data["seed"] = self.seed
+        if self.on_fail != "fail_group":
+            data["on_fail"] = self.on_fail
         if self.timeout_s is not None:
             data["timeout_s"] = self.timeout_s
         if self.memory_mb is not None:
@@ -412,6 +430,7 @@ class LambdaOp(Op):
                 sample_value=sample_value,
                 clears_markers=data.get(CLEARS_KEY, False),
                 seed=data.get("seed"),
+                on_fail=data.get("on_fail", "fail_group"),
             )
         except ValueError as exc:
             raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc

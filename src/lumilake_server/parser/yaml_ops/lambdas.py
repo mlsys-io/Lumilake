@@ -58,19 +58,26 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     if by is not None:
         op_dict["by"] = by
     seed = entry.fields.get("seed")
-    if seed is None:
-        return
-    if not isinstance(seed, dict):
-        raise ValueError(f"LambdaOp '{entry.id}' seed must be a mapping")
-    if "key" not in seed:
-        raise ValueError(
-            f"LambdaOp '{entry.id}' seed must take the key form"
-            " '{key: {node, path}}', which derives each row's seed"
-        )
-    if mode not in LambdaOp.SEED_MODES:
-        raise ValueError(
-            f"LambdaOp '{entry.id}' seed is available in modes"
-            f" {LambdaOp.SEED_MODES}, where the function runs once per row"
-        )
-    op_dict["seed"] = seed
-    emit_keyed_seed(op_dict, ctx, seed, "seed", "LambdaOp")
+    if seed is not None:
+        if not isinstance(seed, dict):
+            raise ValueError(f"LambdaOp '{entry.id}' seed must be a mapping")
+        if "key" not in seed:
+            raise ValueError(
+                f"LambdaOp '{entry.id}' seed must take the key form"
+                " '{key: {node, path}}', which derives each row's seed"
+            )
+        if mode not in LambdaOp.SEED_MODES:
+            raise ValueError(
+                f"LambdaOp '{entry.id}' seed is available in modes"
+                f" {LambdaOp.SEED_MODES}, where the function runs once per row"
+            )
+        op_dict["seed"] = seed
+        emit_keyed_seed(op_dict, ctx, seed, "seed", "LambdaOp")
+    on_fail = entry.fields.get("on_fail")
+    if on_fail is not None:
+        if on_fail not in LambdaOp.REDUCE_ON_FAIL:
+            raise ValueError(
+                f"LambdaOp '{entry.id}' on_fail must be one of"
+                f" {LambdaOp.REDUCE_ON_FAIL} (got {on_fail!r})"
+            )
+        op_dict["on_fail"] = on_fail
