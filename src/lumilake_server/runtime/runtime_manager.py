@@ -36,6 +36,7 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
+    RetrievalData,
 )
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -56,6 +57,10 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.retrieval_order import (
+    ROWS_ONE,
+    multi_row_item_indexes,
+)
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
@@ -1402,6 +1407,7 @@ class FlowmeshRuntimeManager:
             raise _sanitize_flowmesh_api_error(e) from None
         if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
+        self._assert_rows_one(request_info.runtime_graph, node_id, response_data)
         response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1414,6 +1420,33 @@ class FlowmeshRuntimeManager:
             response_uri,
         )
         return response_uri
+
+    def _assert_rows_one(
+        self,
+        runtime_graph: RuntimeGraph,
+        node_id: str,
+        response_data: Any,
+    ) -> None:
+        """Fail a ``rows: one`` retrieval whose query returned more than one
+        row for a parameter row, naming the op and that parameter row."""
+        node = runtime_graph.nodes.get(node_id)
+        if node is None or node.task_type != "data_retrieval":
+            return
+        if not isinstance(node.data_spec, RetrievalData):
+            return
+        if node.data_spec.rows != ROWS_ONE:
+            return
+        if not isinstance(response_data, dict):
+            return
+        multi = multi_row_item_indexes(response_data.get("items"))
+        if not multi:
+            return
+        raise RuntimeError(
+            f"DataRetrievalOp '{node_id}' declares rows: one but returned more "
+            f"than one row for parameter row(s) {multi}; the step needs at most "
+            "one row per parameter row. Make the query select one row, or drop "
+            "the rows: one declaration and order the query instead."
+        )
 
     async def process_request(
         self,

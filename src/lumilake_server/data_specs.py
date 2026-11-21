@@ -162,6 +162,7 @@ class RetrievalData(DataSpecModel):
 
     type: Literal["lumid"]
     mode: Literal["sql", "s3", "agent"]
+    rows: Literal["one"] | None = None
     lumid_data_url: str | None = None
     lumid_data_token: str | None = None
     params: list[RetrievalParam] = Field(default_factory=list)
