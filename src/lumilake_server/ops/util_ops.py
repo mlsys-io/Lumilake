@@ -17,6 +17,8 @@ MAX_MEMORY_MB = 8192
 
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
+ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
+ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
 
 
 def _validate_limits(
@@ -146,9 +148,9 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
-    fn: RowLambdaFn | ListLambdaFn
+    fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
 
-    LAMBDA_MODES = ("row", "list", "aligned")
+    LAMBDA_MODES = ("row", "list", "aligned", "expand", "reduce")
 
     @overload
     def __init__(
@@ -195,10 +197,41 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
     ) -> None: ...
 
+    @overload
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
-        fn: RowLambdaFn | ListLambdaFn,
+        fn: ExpandLambdaFn,
+        code: str | None = None,
+        mode: Literal["expand"] = "expand",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+        image: str | None = None,
+        expected_runtime_s: float | None = None,
+        cache: bool | None = None,
+        sample_value: Any | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: ReduceLambdaFn,
+        code: str | None = None,
+        mode: Literal["reduce"] = "reduce",
+        timeout_s: float | None = None,
+        memory_mb: int | None = None,
+        image: str | None = None,
+        expected_runtime_s: float | None = None,
+        cache: bool | None = None,
+        sample_value: Any | None = None,
+        by: str | None = None,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        inputs: Sequence[list[str] | Op],
+        fn: Callable[..., Any],
         code: str | None = None,
         mode: str = "row",
         timeout_s: float | None = None,
@@ -207,10 +240,22 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        by: str | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
                 f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
+            )
+        if mode == "reduce":
+            parts = by.split(".") if isinstance(by, str) else []
+            if not parts or any(not part or part != part.strip() for part in parts):
+                raise ValueError(
+                    "LambdaOp reduce mode requires 'by' to be a dotted path of"
+                    f" non-empty segments (got {by!r})"
+                )
+        elif by is not None:
+            raise ValueError(
+                f"LambdaOp 'by' is only valid in reduce mode (got mode {mode!r})"
             )
         if image is not None and not image.strip():
             raise ValueError("LambdaOp image must be a non-empty string")
@@ -226,6 +271,7 @@ class LambdaOp(Op):
         super().__init__(input_ops)
         self.fn = fn
         self.mode = mode
+        self.by = by
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
@@ -281,6 +327,8 @@ class LambdaOp(Op):
             "_inputs": [inp.id for inp in self.inputs],
             "mode": self.mode,
         }
+        if self.by is not None:
+            data["by"] = self.by
         if self.timeout_s is not None:
             data["timeout_s"] = self.timeout_s
         if self.memory_mb is not None:
@@ -309,23 +357,27 @@ class LambdaOp(Op):
         cache = data.get("cache")
         sample_value = data.get("sample_value")
         try:
-            fn = SubmittedFunction(code, fn_name)
+            fn: Callable[..., Any] = SubmittedFunction(code, fn_name)
         except ValueError as exc:
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
-        return cls(
-            inputs=input_ops,
-            fn=fn,
-            code=code,
-            mode=data.get("mode", "row"),
-            timeout_s=timeout_s,
-            memory_mb=memory_mb,
-            image=image,
-            expected_runtime_s=expected_runtime_s,
-            cache=cache,
-            sample_value=sample_value,
-        )
+        try:
+            return cls(
+                inputs=input_ops,
+                fn=fn,
+                code=code,
+                mode=data.get("mode", "row"),
+                by=data.get("by"),
+                timeout_s=timeout_s,
+                memory_mb=memory_mb,
+                image=image,
+                expected_runtime_s=expected_runtime_s,
+                cache=cache,
+                sample_value=sample_value,
+            )
+        except ValueError as exc:
+            raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc
 
 
 def lambda_op(inputs: list[list[str] | Op], fn: RowLambdaFn) -> LambdaOp:

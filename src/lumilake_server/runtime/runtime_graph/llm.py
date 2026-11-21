@@ -1189,11 +1189,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                         " so read it through a node column (rowwise_columns /"
                         " aggregate_table) instead."
                     )
-                if op.takes_whole_columns:
+                if op.mode != "row":
                     raise ValueError(
-                        f"LLMOp '{llm_op_id}' consumes list-mode LambdaOp '{op.id}' "
-                        "through its message chain; a list Lambda must be read "
-                        "through a node column (rowwise_columns / aggregate_table)."
+                        f"LLMOp '{llm_op_id}' consumes the"
+                        f" {op.mode}-mode LambdaOp '{op.id}' through its message"
+                        " chain; a list, aligned, expand or reduce Lambda must be"
+                        " read through a node column"
+                        " (rowwise_columns / aggregate_table)."
                     )
                 message_labels = {
                     inp_op.id: _trace_ancestors(inp_op) for inp_op in op.inputs

@@ -466,9 +466,17 @@ async def test_api_output_node_reads_content(
     assert result_["flat_outputs"][row_id] == expected
 
 
-def _build_list_lambda_output_request() -> tuple[RequestInfo, str]:
+def _split_fn(row: tuple[Any, ...]) -> list[dict[str, str]]:
+    return [{"value": v} for v in str(row[0]).split(",")]
+
+
+def _build_list_lambda_output_request(mode: str) -> tuple[RequestInfo, str]:
     stock = input_placeholder("Stock")
-    explode = LambdaOp([stock], _explode_fn, mode="list")
+    explode = (
+        LambdaOp([stock], _explode_fn, mode="list")
+        if mode == "list"
+        else LambdaOp([stock], _split_fn, mode="expand")
+    )
     output = as_output("observations", explode)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
@@ -488,8 +496,9 @@ def _build_list_lambda_output_request() -> tuple[RequestInfo, str]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["list", "expand"])
 async def test_list_lambda_output_aggregates_whole_list_into_one_value(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     """A list-mode Lambda output node runs once over the whole input lists,
     so its python step's several items must collapse into ONE output value
@@ -501,7 +510,7 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
         lambda: InMemoryJobStorage(),
     )
 
-    request_info, row_id = _build_list_lambda_output_request()
+    request_info, row_id = _build_list_lambda_output_request(mode)
 
     class _FakeWorkflows:
         async def submit(self, task_yaml: str) -> Any:
@@ -557,7 +566,7 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
         lambda: InMemoryJobStorage(),
     )
 
-    request_info, row_id = _build_list_lambda_output_request()
+    request_info, row_id = _build_list_lambda_output_request("list")
 
     class _FakeWorkflows:
         async def submit(self, task_yaml: str) -> Any:

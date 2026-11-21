@@ -54,3 +54,6 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         if not isinstance(cache, bool):
             raise ValueError(f"LambdaOp '{entry.id}' 'cache' must be a bool")
         op_dict["cache"] = cache
+    by = entry.fields.get("by")
+    if by is not None:
+        op_dict["by"] = by

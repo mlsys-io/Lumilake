@@ -139,9 +139,7 @@ def op_output(
         rowwise = isinstance(op, LLMChatOp) and op.rowwise_template is not None
         kind = OutputKind.API_ROW if rowwise else OutputKind.API_ITEM
     elif isinstance(op, LambdaOp):
-        kind = (
-            OutputKind.LIST_LAMBDA if op.takes_whole_columns else OutputKind.ROW_LAMBDA
-        )
+        kind = OutputKind.LIST_LAMBDA if op.mode != "row" else OutputKind.ROW_LAMBDA
     else:
         kind = OutputKind.DECLARED
     default_path: str | None
@@ -182,7 +180,9 @@ def output_row_count(
     row_source = op.row_source
     if row_source is not None:
         return output_row_count(row_source, inputs_dict, graph_dict)
-    if isinstance(op, FormatOp) or (isinstance(op, LambdaOp) and op.mode != "list"):
+    if isinstance(op, FormatOp) or (
+        isinstance(op, LambdaOp) and op.mode in ("row", "aligned")
+    ):
         return _max_known(
             [output_row_count(inp, inputs_dict, graph_dict) for inp in op.inputs]
         )

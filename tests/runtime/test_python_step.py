@@ -305,6 +305,34 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     assert len(_python_nodes(graph)) == 1
 
 
+@pytest.mark.parametrize("mode", ["expand", "reduce"])
+def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> None:
+    """An expand or reduce LambdaOp always compiles to its own python task
+    after every producer, and its mode and ``by`` reach the task spec."""
+    stock = input_placeholder("Stock")
+    source = LambdaOp([stock], fn=lambda row: [row[0], row[0]])
+    llm = LLMChatOp(
+        [OpMessage(role="user", content="Reply {r}")],
+        config=GenerationConfig(model=_MODEL),
+        rowwise_template="Say {v}",
+        rowwise_columns=[{"label": "v", "node": source.id, "path": "items.output"}],
+    )
+    llm.inputs.append(source)
+    if mode == "reduce":
+        reading = LambdaOp([llm], fn=lambda rows: len(rows), mode="reduce", by="v")
+    else:
+        reading = LambdaOp([llm], fn=lambda row: [row[0], row[0]], mode="expand")
+    compiled = Graph.from_ops([as_output("out", reading)]).compile(Stock=["a", "b"])
+    graph = RuntimeGraphBuilder().build(compiled)
+
+    node = _python_nodes(graph)[reading.id]
+    assert node.data_spec["mode"] == mode
+    assert node.data_spec["plan"] == [
+        {"kind": "stage", "node": llm.id, "flatten": True}
+    ]
+    assert node.dependencies == (llm.id,)
+
+
 def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     a = input_placeholder("A")
     b = input_placeholder("B")
@@ -357,13 +385,14 @@ def _run_wrapper(
     inputs: dict[str, str],
     fn_name: str | None = None,
     mode: str = "row",
+    by: str | None = None,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
     declared = fn_name or lambda_runtime.validate_source(code)
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
     exec(
-        python_step.wrapper_source("op-1", declared, code, plan, mode).replace(
+        python_step.wrapper_source("op-1", declared, code, plan, mode, by).replace(
             python_step.TASK_RUNTIME_MOUNT, runtime_mount
         ),
         namespace,
@@ -674,6 +703,74 @@ def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
     ]
     with pytest.raises(ValueError, match="expected 1 or 3"):
         _run_wrapper(code, plan, {}, fn_name="f", mode="aligned")
+
+
+def test_wrapper_expand_mode_emits_one_item_per_element_and_drops_empty() -> None:
+    code = "def split(row):\n    return [k for k in row[0].split(',') if k]\n"
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["a,b", "", "c"]}]
+    out = _run_wrapper(code, plan, {}, fn_name="split", mode="expand")
+    assert out == {"items": [{"output": "a"}, {"output": "b"}, {"output": "c"}]}
+
+
+def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
+    code = "def best(rows):\n    return sorted(rows, key=lambda r: -r[0]['s'])[:2]\n"
+    pairs = (("p1", 5), ("p2", 9), ("p1", 7), (1, 2), ("1", 3), ("p1", 1))
+    rows = [json.dumps({"id": i, "s": s}) for i, s in pairs]
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": rows}]
+    out = _run_wrapper(code, plan, {}, fn_name="best", mode="reduce", by="id")
+    scores = [[row[0]["s"] for row in item["output"]] for item in out["items"]]
+    assert scores == [[7, 5], [9], [2], [3]]
+
+
+_DF = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
+_DF_ROWS = [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}]
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ({"df": json.dumps(_DF)}, _DF_ROWS),
+        ({"index": 0, "table": {"df": json.dumps(_DF)}}, _DF_ROWS),
+        (
+            {"table": "[1, 2]", "note": "x"},
+            [{"output": {"table": "[1, 2]", "note": "x"}}],
+        ),
+    ],
+)
+def test_wrapper_expand_mode_decodes_only_a_serialized_table(
+    value: dict[str, Any], expected: list[dict[str, Any]]
+) -> None:
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(value)]}]
+    code = "def rows(r):\n    return r[0] if isinstance(r[0], list) else [r[0]]\n"
+    out = _run_wrapper(code, plan, {}, fn_name="rows", mode="expand")
+    assert out == {"items": expected}
+
+
+def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ['{"x": 1}']}]
+    with pytest.raises(ValueError, match="group row 0 by 'patient_id'"):
+        _run_wrapper("lambda rows: 0", plan, {}, "f", "reduce", "patient_id")
+
+
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ("mode: reduce", "Group.* reduce mode requires 'by'"),
+        ("mode: row, by: id", "Group.* 'by' is only valid in reduce mode"),
+    ],
+)
+def test_a_bad_by_names_the_op(fields: str, expected: str) -> None:
+    payload = f"""
+name: shapes
+inputs: {{K: ["a"]}}
+ops:
+  - {{id: Group, op: LambdaOp, inputs: [K], {fields}, fn_name: f,
+     code: "def f(rows):\\n    return rows\\n"}}
+outputs: [{{name: out, ref: Group}}]
+"""
+    spec = parse_yaml_payload(payload)
+    with pytest.raises(ValueError, match=expected):
+        Graph.from_json(spec["shapes"]["graph"])
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:

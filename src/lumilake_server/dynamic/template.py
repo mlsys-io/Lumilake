@@ -21,6 +21,7 @@ from lumilake_server.dynamic.driver import (
     validate_emitted_subgraph,
 )
 from lumilake_server.ops.router_ops import expand_routers
+from lumilake_server.runtime.python_step import WHOLE_RESULT_MODES
 
 _ROUND = "{{round}}"
 _PREV = "{{prev}}"
@@ -91,9 +92,9 @@ def stop_export(template: DriverTemplate, round_number: int) -> str:
 
 def archive_result_items(decoded: list[Any]) -> list[Any]:
     """Flatten a decoded archive value into the whole result items it holds: a
-    list-mode export archives one value whose ``output`` is the whole list its
-    step returned, so its items sit one level down from where the stop count and
-    a later round's forwarding read them."""
+    whole-result export archives one value whose ``output`` is the whole list
+    its step returned, so its items sit one level down from where the stop
+    count and a later round's forwarding read them."""
     items: list[Any] = []
     for value in decoded:
         if isinstance(value, list):
@@ -104,8 +105,8 @@ def archive_result_items(decoded: list[Any]) -> list[Any]:
 
 
 def archived_element_count(items: list[Any]) -> int:
-    """Count the rows an archived export holds: a list-mode Lambda archives one
-    item whose ``output`` is the list its step returned, so an export that
+    """Count the rows an archived export holds: a whole-result Lambda archives
+    one item whose ``output`` is the list its step returned, so an export that
     returned no rows counts 0."""
     total = 0
     for item in items:
@@ -167,18 +168,18 @@ def _require_export(plan: SubgraphPlan, export_id: str, round_number: int) -> No
 
 
 def _require_list_lambda(op: dict[str, Any], export_id: str) -> None:
-    """Require the stop export to be a list-mode LambdaOp, the one op whose
-    archived export collapses to a single list."""
+    """Require the stop export to be a LambdaOp whose archived export collapses
+    to a single value."""
     op_type = op.get("op", "")
     if op_type != "LambdaOp":
         raise DriverProtocolError(
             f"stop_when_empty {export_id!r} must be a LambdaOp, got {op_type!r}"
         )
-    if op.get("mode") != "list":
+    if op.get("mode") not in WHOLE_RESULT_MODES:
         raise DriverProtocolError(
-            f"stop_when_empty {export_id!r} must be a list-mode LambdaOp, got "
-            f"mode {op.get('mode')!r}: each element it returns is one row, so "
-            "only a list-mode export can read as empty"
+            f"stop_when_empty {export_id!r} must be a list, expand or reduce"
+            f" mode LambdaOp, got mode {op.get('mode')!r}: only those exports"
+            " read as an empty list"
         )
 
 
@@ -190,7 +191,7 @@ def validate_template(
 ) -> None:
     """Validate a template at submit: render rounds 1-3, validate each against
     the nodes the earlier rounds registered, and require the stop export to be
-    a list-mode LambdaOp that round exported."""
+    a whole-result LambdaOp that round exported."""
     plans = {number: plan_for_round(template, number) for number in (1, 2, 3)}
     _require_export(plans[1], stop_export(template, 2), 1)
     _require_export(plans[2], stop_export(template, 3), 2)
