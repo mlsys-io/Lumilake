@@ -105,15 +105,18 @@ DECODER_SOURCE = """\
 def _serialized_table(value):
     if isinstance(value, str):
         try:
-            value = json.loads(value) if value.startswith(("{", "[")) else None
+            value = json.loads(value)
         except:
-            value = None
+            return None
     if (
         isinstance(value, dict)
         and list(value) == ["df"]
         and isinstance(value["df"], str)
     ):
-        table = json.loads(value["df"])
+        try:
+            table = json.loads(value["df"])
+        except:
+            return None
         if isinstance(table, dict):
             return table
     return None
@@ -125,15 +128,17 @@ def _table_rows(table):
         if isinstance(column, dict):
             for index, value in column.items():
                 rows.setdefault(index, {})[name] = value
-    if all(index.isdigit() for index in rows):
-        return [rows[index] for index in sorted(rows, key=int)]
-    return list(rows.values())
+    try:
+        indexes = sorted(rows, key=int)
+    except:
+        indexes = list(rows)
+    return [rows[index] for index in indexes]
 
 
 def _decode(value):
     if isinstance(value, str):
         try:
-            decoded = json.loads(value) if value.startswith(("{", "[")) else None
+            decoded = json.loads(value)
         except:
             return value
         if isinstance(decoded, (dict, list)):
