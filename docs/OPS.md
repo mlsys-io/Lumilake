@@ -7,7 +7,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `InputOp` | Generated from workflow-level inputs. |
 | `OutputOp` | Generated from workflow-level outputs. |
 | `DataOp` | Inline static data. |
-| `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). A `sql` retrieval declares its row order with a top-level `ORDER BY` or `rows: one` (see below). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
+| `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). A `sql` retrieval declares its row order with a top-level `ORDER BY`, `rows: one` for a lookup whose result is one row per parameter row, or `rows: table` for a result read whole (see below). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
 | `LLMCompletionOp` | Run rendered string prompts through local generation without a chat template. |
@@ -32,6 +32,8 @@ YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` 
 - A `sql` retrieval ends its query with a top-level `ORDER BY`, or declares `rows: one` when a lookup returns at most one row per parameter row. Submit refuses a query with neither, naming the op; only the outer query of the last statement counts.
 - The `ORDER BY` breaks ties on a column no two returned rows share, such as the primary key. Submit reads the template only, so the author keeps ties unique.
 - `rows: one` is checked at run time: a parameter row that returns more than one row fails the job. An n8n Postgres node declares it as `"rows": "one"` in its `notes`.
+- A retrieval whose whole result is one value declares `rows: table` instead. Each parameter row then emits one record holding the whole table, and an empty result is one record holding an empty table. A consumer reads the whole value or a column of it, so submit refuses a path that drills a numeric index under the result field, naming the consumer, the op and the path; an all-digit column name reads as a position, so rename it in the query (`AS y2024`). An n8n Postgres node declares it as `"rows": "table"` in its `notes`.
+- `rows` is accepted only on a `sql` retrieval; submit rejects it elsewhere, naming the op.
 - An `agent` retrieval replays SQL it writes at run time, so its order is the run-time SQL's. An `s3` retrieval reads one key per parameter row, in parameter-row order; a workflow `S3Location` input naming a prefix is expanded to its keys in lexicographic order.
 
 ```yaml
@@ -50,6 +52,21 @@ ops:
         LIMIT 5
       params:
         - {label: symbol, node: "Stock"}
+
+  - id: "Instrument lookup"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: sql
+      rows: one
+      template: |-
+        SELECT symbol, sector, industry
+        FROM reference.profile
+        WHERE symbol = '{symbol}'
+      params:
+        - label: symbol
+          node: "Stock"
 ```
 
 ### FormatOp
