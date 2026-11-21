@@ -3308,26 +3308,24 @@ class LumilakeServer:
             if node_id in list_lambda_fanout_nodes
         }
         whole_run_outputs = list_lambda_outputs | list_lambda_fanout_outputs
-        for group_key, output_name in list_lambda_outputs:
-            group_slices = grouped_workflows.get(group_key, [])
-            if len(group_slices) != 1:
-                continue
-            (single_workflow,) = group_slices
-            state = self._requests.get(single_workflow.request_id)
-            if state is not None:
-                state.list_lambda_outputs.setdefault(
-                    single_workflow.workflow_id, set()
-                ).add(output_name)
-        for group_key, output_name in list_lambda_fanout_outputs:
-            group_slices = grouped_workflows.get(group_key, [])
-            if len(group_slices) != 1:
-                continue
-            (single_workflow,) = group_slices
-            state = self._requests.get(single_workflow.request_id)
-            if state is not None:
-                state.list_fanout_outputs.setdefault(
-                    single_workflow.workflow_id, set()
-                ).add(output_name)
+        for outputs, fanout in (
+            (list_lambda_outputs, False),
+            (list_lambda_fanout_outputs, True),
+        ):
+            for group_key, output_name in outputs:
+                group_slices = grouped_workflows.get(group_key, [])
+                if len(group_slices) != 1:
+                    continue
+                (single_workflow,) = group_slices
+                state = self._requests.get(single_workflow.request_id)
+                if state is not None:
+                    if fanout:
+                        registered = state.list_fanout_outputs
+                    else:
+                        registered = state.list_lambda_outputs
+                    registered.setdefault(single_workflow.workflow_id, set()).add(
+                        output_name
+                    )
 
         for node_id, outputs in flat_outputs.items():
             mapping = output_mapping.get(node_id)
