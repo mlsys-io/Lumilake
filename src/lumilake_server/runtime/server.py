@@ -67,6 +67,7 @@ from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     RuntimeGraphBuilder,
     RuntimeOp,
+    make_chunk_group_key,
 )
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
@@ -1476,8 +1477,7 @@ class LumilakeServer:
                 ),
             )
             for idx, chunk in enumerate(cls._chunk_within_python_timeouts(ordered)):
-                key = parent_workflow_id if idx == 0 else f"{parent_workflow_id}::{idx}"
-                grouped[key] = chunk
+                grouped[make_chunk_group_key(parent_workflow_id, idx)] = chunk
         return grouped
 
     @staticmethod
