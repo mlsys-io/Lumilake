@@ -80,8 +80,37 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dependencies.append(dep)
 
         row_count = self._python_step_row_count(op.id, row_counts, combines_rows=True)
-        nodes.append(self._python_step(op, plan, row_count, dependencies))
+        nodes.append(self._python_step(op, plan, row_count, dependencies, ctx))
         return nodes
+
+    def _tag_seed_entry(
+        self,
+        op: LambdaOp,
+        plan: python_step.ColumnPlan,
+        ctx: LoweringContext,
+        dependencies: list[str],
+    ) -> python_step.ColumnPlan:
+        """Tag the plan entry a seeded Lambda reads its key column from, so its
+        step passes each row's seed as a second argument. The seed node is one
+        of the op's declared inputs, so its entry is already in the plan."""
+        if op.seed is None:
+            return plan
+        seed_node = op.seed["node"]
+        if seed_node not in ctx.graph_dict:
+            raise ValueError(
+                f"LambdaOp '{op.id}' seed references unknown node '{seed_node}'"
+            )
+        if seed_node not in dependencies:
+            dependencies.append(seed_node)
+        path = op.seed["path"]
+        tagged: python_step.ColumnPlan = []
+        for entry in plan:
+            if entry.get("node") == seed_node:
+                entry = {**entry, "role": "seed"}
+                if path and path != "items.output":
+                    entry["path"] = item_relative_path(path)
+            tagged.append(entry)
+        return tagged
 
     def _python_step(
         self,
@@ -89,6 +118,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         plan: python_step.ColumnPlan,
         row_count: int | None,
         dependencies: list[str],
+        ctx: LoweringContext,
     ) -> RuntimeOp:
         """Build the python task for one LambdaOp from its resolved plan."""
         data_spec: dict[str, Any] = {
@@ -101,6 +131,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 else op.timeout_s
             ),
         }
+        data_spec["plan"] = self._tag_seed_entry(op, plan, ctx, dependencies)
         if op.mode != "row":
             data_spec["mode"] = op.mode
         if op.by is not None:

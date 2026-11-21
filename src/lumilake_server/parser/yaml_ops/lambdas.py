@@ -5,6 +5,7 @@ from typing import Any
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import EmitContext
+from .llm import _emit_keyed_seed
 
 
 def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
@@ -57,3 +58,20 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     by = entry.fields.get("by")
     if by is not None:
         op_dict["by"] = by
+    seed = entry.fields.get("seed")
+    if seed is None:
+        return
+    if not isinstance(seed, dict):
+        raise ValueError(f"LambdaOp '{entry.id}' seed must be a mapping")
+    if "key" not in seed:
+        raise ValueError(
+            f"LambdaOp '{entry.id}' seed must take the key form"
+            " '{key: {node, path}}', which derives each row's seed"
+        )
+    if mode not in LambdaOp.SEED_MODES:
+        raise ValueError(
+            f"LambdaOp '{entry.id}' seed is available in modes"
+            f" {LambdaOp.SEED_MODES}, where the function runs once per row"
+        )
+    op_dict["seed"] = seed
+    _emit_keyed_seed(op_dict, ctx, seed, field="seed", op_kind="LambdaOp")

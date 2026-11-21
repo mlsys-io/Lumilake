@@ -69,8 +69,8 @@ class SubmittedFunction:
     (``runtime/python_step.py``).
     """
 
-    def __init__(self, code: str, fn_name: str) -> None:
-        validate_source(code, fn_name)
+    def __init__(self, code: str, fn_name: str, max_params: int = 1) -> None:
+        validate_source(code, fn_name, max_params)
         self.code = code
         self.__name__ = fn_name
 
@@ -156,6 +156,9 @@ class LambdaOp(Op):
     clears_markers: bool
 
     LAMBDA_MODES = ("row", "list", "aligned", "expand", "reduce")
+    # A row or expand Lambda may declare a keyed seed, which its generated step
+    # derives per row and passes as the function's second argument.
+    SEED_MODES = ("row", "expand")
 
     @overload
     def __init__(
@@ -171,6 +174,7 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         clears_markers: bool = False,
+        seed: dict[str, Any] | None = None,
     ) -> None: ...
 
     @overload
@@ -187,6 +191,7 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         clears_markers: bool = False,
+        seed: dict[str, Any] | None = None,
     ) -> None: ...
 
     @overload
@@ -203,6 +208,7 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         clears_markers: bool = False,
+        seed: dict[str, Any] | None = None,
     ) -> None: ...
 
     @overload
@@ -218,6 +224,7 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
+        seed: dict[str, Any] | None = None,
     ) -> None: ...
 
     @overload
@@ -234,6 +241,7 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         clears_markers: bool = False,
+        seed: dict[str, Any] | None = None,
         by: str | None = None,
     ) -> None: ...
 
@@ -250,11 +258,17 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         clears_markers: bool = False,
+        seed: dict[str, Any] | None = None,
         by: str | None = None,
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
                 f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
+            )
+        if seed is not None and mode not in self.SEED_MODES:
+            raise ValueError(
+                f"LambdaOp seed is available in modes {self.SEED_MODES}, where"
+                f" the function runs once per row (got mode {mode!r})"
             )
         if mode == "reduce":
             parts = by.split(".") if isinstance(by, str) else []
@@ -282,6 +296,7 @@ class LambdaOp(Op):
         self.fn = fn
         self.mode = mode
         self.by = by
+        self.seed = seed
         # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
@@ -342,6 +357,8 @@ class LambdaOp(Op):
         }
         if self.by is not None:
             data["by"] = self.by
+        if self.seed is not None:
+            data["seed"] = self.seed
         if self.timeout_s is not None:
             data["timeout_s"] = self.timeout_s
         if self.memory_mb is not None:
@@ -372,7 +389,9 @@ class LambdaOp(Op):
         cache = data.get("cache")
         sample_value = data.get("sample_value")
         try:
-            fn: Callable[..., Any] = SubmittedFunction(code, fn_name)
+            fn: Callable[..., Any] = SubmittedFunction(
+                code, fn_name, 2 if data.get("seed") is not None else 1
+            )
         except ValueError as exc:
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
@@ -391,6 +410,7 @@ class LambdaOp(Op):
                 cache=cache,
                 sample_value=sample_value,
                 clears_markers=data.get(CLEARS_KEY, False),
+                seed=data.get("seed"),
             )
         except ValueError as exc:
             raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc
