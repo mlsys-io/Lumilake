@@ -58,11 +58,6 @@ def _where(entry):
     return "%s input %r" % (_NODE, _named(entry))
 
 
-def _cell(value):
-    """A column value kept as it arrives, for a caller that decodes it."""
-    return value
-
-
 def _rows(column, where):
     """The row objects a column holds, one per row."""
     rows = []
@@ -132,7 +127,7 @@ def main(inputs):
         where = "%s attach field %r" % (_NODE, name)
         values = [
             _decoded_cell(value)
-            for value in _column(_PLAN[value_index], inputs, _cell)
+            for value in _column(_PLAN[value_index], inputs, _decoded_cell)
         ]
         rows = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
         if len(values) != len(rows):
