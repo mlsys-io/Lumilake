@@ -192,7 +192,10 @@ def main(inputs):
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
     seeds = None
     if seed_entry is not None:
-        seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
+        seeds = [
+            _raw_seed(v, {op_id!r}, i)
+            for i, v in enumerate(_column(seed_entry, inputs, text))
+        ]
         if len(seeds) != n:
             raise ValueError(
                 "%s: seed column has %d rows; expected one per row, so %d"
@@ -285,7 +288,10 @@ def main(inputs):
     rows = _rows(columns, data, {op_id!r})
     seeds = None
     if seed_entry is not None:
-        seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
+        seeds = [
+            _raw_seed(v, {op_id!r}, i)
+            for i, v in enumerate(_column(seed_entry, inputs, text))
+        ]
         if len(seeds) != len(rows):
             raise ValueError(
                 "%s: seed column has %d rows; expected one per row, so %d"
