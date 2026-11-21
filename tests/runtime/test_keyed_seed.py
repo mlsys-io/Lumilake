@@ -247,3 +247,8 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
         "node": f"{chat_id}__seed",
         "path": "items.output",
     }
+    taken = native.copy()
+    taken[chat_id] = rewritten[chat_id]
+    taken[f"{chat_id}__seed"] = {"_id": f"{chat_id}__seed", "_op": "DataOp"}
+    with pytest.raises(ValueError, match="already holds"):
+        rewrite_native_keys(taken, job_seed=7)
