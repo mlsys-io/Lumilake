@@ -180,7 +180,13 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
         if key is not None and key not in marked:
             marked[key] = _marked(row)
     if len(values) == len(rows):
-        pairs = list(zip(values, (_key_of(row, where) for row in rows)))
+        # A row whose key cannot be read is already its own marker, and its
+        # value is the marker passed through: there is no key to pair it with.
+        pairs = [
+            (value, key)
+            for value, key in zip(values, (_key_of(row, where) for row in rows))
+            if key is not None
+        ]
     elif len(values) == len(live):
         pairs = list(zip(values, (_key(row, where) for row in live)))
     else:
