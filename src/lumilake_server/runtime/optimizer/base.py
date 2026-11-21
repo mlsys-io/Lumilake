@@ -169,23 +169,17 @@ def _dedupe_scope(
     return ("sampled", *owners)
 
 
-def _workflow_scope(group_name: str) -> str:
-    """The parent workflow a graph group was built for. A request whose slices
-    were split into chunk groups ``parent``, ``parent::1``, … is one workflow,
-    so its chunk groups share a scope."""
-    return chunk_group_parent(group_name)
-
-
 def _logical_ops(
     graphs: dict[str, RuntimeGraph],
 ) -> dict[str, tuple[tuple[str, str], ...]]:
-    """Map each runtime node to the ``(workflow, op id)`` pairs it was built
-    from. Read from the per-group graphs, before ``merge_runtime_graphs``
+    """Map each runtime node to its ``(workflow, op id)`` owners. A request
+    split into chunk groups is one workflow, so its chunk groups share a
+    scope. Read from the per-group graphs, before ``merge_runtime_graphs``
     folds their ``dsl_to_runtime`` by bare op id, so two workflows that both
     name an op ``Ask`` keep separate owners."""
     owners: dict[str, list[tuple[str, str]]] = {}
     for group_name, graph in graphs.items():
-        scope = _workflow_scope(group_name)
+        scope = chunk_group_parent(group_name)
         for op_id, runtime_ids in graph.dsl_to_runtime.items():
             for runtime_id in runtime_ids:
                 entry = (scope, op_id)
