@@ -1859,7 +1859,7 @@ class FlowmeshRuntimeManager:
             enabled=request_info.store_records,
             logger=self.logger,
         )
-        workers: dict[str, str | None] = dict(self._task_workers.get(workflow_id, {}))
+        workers: dict[str, str | None] = self._task_workers.get(workflow_id, {}).copy()
         job_ids = sorted(request_info.member_request_ids) or [request_info.request_id]
         try:
             await writer.write(

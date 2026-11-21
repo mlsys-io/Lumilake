@@ -317,7 +317,7 @@ def merge_runtime_graphs(
         for node_id, path in graph.output_paths.items():
             output_paths[node_id] = path
         for node_id, key in graph.record_keys.items():
-            record_keys[node_id] = dict(key)
+            record_keys[node_id] = key.copy()
 
     return (
         RuntimeGraph(

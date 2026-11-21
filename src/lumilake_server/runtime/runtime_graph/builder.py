@@ -91,7 +91,7 @@ class RuntimeGraphBuilder(_MessagesBuilder):
             if not node_ids:
                 continue
             for node_id in node_ids:
-                keys[node_id] = dict(op.key)
+                keys[node_id] = op.key.copy()
         return keys
 
     def _collect_outputs(

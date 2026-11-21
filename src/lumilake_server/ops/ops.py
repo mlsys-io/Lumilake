@@ -94,7 +94,7 @@ class Op(ABC):
             new_op.id = unique_id()
         new_op.inputs = new_op.inputs.copy()
         if new_op.key is not None:
-            new_op.key = dict(new_op.key)
+            new_op.key = new_op.key.copy()
         return new_op
 
     def set_looping(self, looping: bool = True, max_iter: int | None = None) -> None:
@@ -145,7 +145,7 @@ class Op(ABC):
         serialized["_max_iter"] = self._max_iter
         serialized["_inputs"] = [op.id for op in self.inputs]
         if self.key is not None:
-            serialized["key"] = dict(self.key)
+            serialized["key"] = self.key.copy()
         return serialized
 
     @classmethod
@@ -155,7 +155,7 @@ class Op(ABC):
         max_iter = data["_max_iter"]
         op.set_looping(max_iter is not None, max_iter)
         key = data.get("key")
-        op.key = None if key is None else dict(key)
+        op.key = None if key is None else key.copy()
         return op
 
     def __hash__(self) -> int:
