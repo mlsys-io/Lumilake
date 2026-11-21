@@ -138,6 +138,8 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         lambda_runtime.validate_inline_source(
             "PROMPT: str = 'x'\ndef f(a):\n    return a", "f"
         )
+    with pytest.raises(ValueError, match="references 'Message'"):
+        lambda_runtime.validate_inline_source("def f(a: Message):\n    return a", "f")
 
 
 @pytest.mark.parametrize("name", sorted(lambda_runtime._inline_names()))
