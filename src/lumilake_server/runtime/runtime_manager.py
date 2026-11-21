@@ -18,7 +18,6 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
@@ -41,7 +40,7 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
-from lumilake_server.runtime.record_writer import RecordStore, RecordWriter
+from lumilake_server.runtime.record_writer import RecordWriter
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
@@ -51,7 +50,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
-from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.job_storage import ArchiveError, get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error", "assigned_worker"]
@@ -343,7 +342,6 @@ class FlowmeshRuntimeManager:
         # so threading lock, not asyncio.
         self._dispatch_tokens: dict[str, DispatchCredentials] = {}
         self._dispatch_tokens_lock = threading.Lock()
-        self.store = RecordStore(self.logger)
 
     @property
     def fm(self):
@@ -1395,9 +1393,9 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         tid: str,
         node_id: str,
-    ) -> str:
-        """Fetch a task's raw FlowMesh response and archive it as a job
-        artifact, redacting the untrusted body before persisting it."""
+    ) -> Any:
+        """Fetch a task's raw FlowMesh response, archive it as a job artifact
+        with the untrusted body redacted, and return the response."""
         try:
             response_data = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1655,11 +1653,11 @@ class FlowmeshRuntimeManager:
                                 "Missing task->node mapping for task "
                                 f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                             )
-                        await self._archive_task_response(request_info, tid, node_id)
+                        response = await self._archive_task_response(
+                            request_info, tid, node_id
+                        )
                         if request_info.store_records:
-                            stored_responses[tid] = await _retry_transient_read(
-                                partial(self.fm.results.retrieve, tid), f"task {tid}"
-                            )
+                            stored_responses[tid] = response
                         downloaded_tasks.add(tid)
 
                 # Count statuses for all nodes and output nodes
@@ -1851,11 +1849,10 @@ class FlowmeshRuntimeManager:
         workflow_id: str,
         results: Mapping[str, Any],
     ) -> None:
-        """Write this batch's records once, without failing the job on a store
-        error: the values the job returns are already computed."""
+        """Write this batch's records once, without failing the job on an
+        archive error: the values the job returns are already computed."""
         writer = RecordWriter(
             storage=get_job_storage(),
-            store=self.store,
             enabled=request_info.store_records,
             logger=self.logger,
         )
@@ -1871,10 +1868,12 @@ class FlowmeshRuntimeManager:
                 task_worker=workers,
                 results=results,
             )
-        except Exception:
-            self.logger.exception(
-                "Record store write failed for job %s; job results are unaffected",
+        except ArchiveError as exc:
+            self.logger.warning(
+                "Record store write failed for job %s (%s); job results are"
+                " unaffected",
                 job_ids[0],
+                exc,
             )
         finally:
             self._task_workers.pop(workflow_id, None)

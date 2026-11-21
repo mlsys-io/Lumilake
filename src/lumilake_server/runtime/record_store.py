@@ -34,44 +34,62 @@ def digest_of(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def op_spec_digest(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
+def op_spec_digest(op: RuntimeOp) -> str:
     """The op's computation: task, code, prompt, config, model and decoding.
 
-    Every runtime node id in the spec is replaced by the logical name the
-    consumers know it by, and a declared sampling seed is left out because it
-    belongs to the record's realization, not to the computation. The digest is
-    therefore the same however the graph was sliced, prefixed or ordered.
+    Only the computation enters: runtime node ids, a declared sampling seed and
+    the per-row data the op reads (literal rows and per-row seeds) are left out,
+    because physical ids belong nowhere in a digest, and a seed belongs to the
+    record's realization while per-row data belongs to that record's inputs. The
+    digest is therefore the same however the graph was sliced, prefixed or
+    ordered, and however many rows a slice holds.
     """
     spec = {
         "task_type": op.task_type,
         "backend": op.backend,
         "model": op.model,
-        "model_spec": _named(op.model_spec, logical_names),
-        "inference_spec": _named(_without_seed(op.inference_spec), logical_names),
-        "api_spec": _named(op.api_spec, logical_names),
-        "output_enforcement": _named(op.output_enforcement, logical_names),
-        "data_spec": _named(_without_seed(op.data_spec), logical_names),
+        "model_spec": _without_data(op.model_spec),
+        "inference_spec": _without_data(op.inference_spec),
+        "api_spec": _without_data(op.api_spec),
+        "output_enforcement": _without_data(op.output_enforcement),
+        "data_spec": _without_data(op.data_spec),
     }
     return digest_of({"digest_version": DIGEST_VERSION, "spec": spec})
 
 
-def _without_seed(value: dict[str, Any]) -> dict[str, Any]:
-    if "seed" not in value:
-        return value
-    return {key: item for key, item in value.items() if key != "seed"}
+_DATA_KEYS = frozenset(
+    {
+        "node",
+        "path",
+        "items",
+        "seeds",
+        "plan",
+        "values",
+        "columns",
+        "rows",
+        "seed",
+        "lumid_cfg",
+    }
+)
+"""Fields that name per-row data, a physical node or a secret, never the
+computation."""
 
 
-def _named(value: Any, logical_names: Mapping[str, str]) -> Any:
-    if isinstance(value, dict):
-        renamed: dict[str, Any] = {}
+def _without_data(value: Any) -> Any:
+    """Drop every data-carrying and physical-node field, recursively.
+
+    A spec entry that is only data (a node reference or a per-row cell) becomes
+    a marker instead of vanishing, so a column that reads different rows stays
+    distinct from one that reads none."""
+    if isinstance(value, Mapping):
+        kept: dict[str, Any] = {}
         for key, item in value.items():
-            if key == "node" and isinstance(item, str) and item in logical_names:
-                renamed[key] = logical_names[item]
-            else:
-                renamed[key] = _named(item, logical_names)
-        return renamed
+            if not isinstance(key, str) or key in _DATA_KEYS:
+                continue
+            kept[key] = _without_data(item)
+        return kept
     if isinstance(value, list):
-        return [_named(item, logical_names) for item in value]
+        return [_without_data(item) for item in value]
     return value
 
 
@@ -214,6 +232,56 @@ def failed_record_digest(*, spec_digest: str, address: RecordAddress) -> str:
 
 def entry_object_name(digest: str) -> str:
     return f"{RECORD_PREFIX}/{digest}.json"
+
+
+def index_object_name(job_id: str) -> str:
+    return f"{RECORD_PREFIX}/jobs/{job_id}.json"
+
+
+class RecordIndexEntry(BaseModel):
+    """One entry a job's index lists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: str
+    record: str | None = None
+    round: int = 0
+    digest: str
+
+
+class RecordIndex(BaseModel):
+    """A job's entries, by op, key and round, so a lineage read needs no scan.
+
+    Each batch read-modify-writes the object at
+    ``records/jobs/<job id>.json``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    job: str
+    entries: list[RecordIndexEntry] = Field(default_factory=list)
+
+    def body(self) -> bytes:
+        return canonical_json(self.model_dump(mode="json")).encode("utf-8")
+
+    @classmethod
+    def from_body(cls, body: bytes) -> "RecordIndex":
+        return cls.model_validate(json.loads(body.decode("utf-8")))
+
+    def rounds(self) -> list[int]:
+        return sorted({entry.round for entry in self.entries})
+
+    def find(
+        self, *, op: str, record: str | None, round_number: int
+    ) -> RecordIndexEntry | None:
+        for entry in self.entries:
+            if (
+                entry.op == op
+                and entry.record == record
+                and entry.round == round_number
+            ):
+                return entry
+        return None
 
 
 def row_key(value: Any, path: str) -> str | None:

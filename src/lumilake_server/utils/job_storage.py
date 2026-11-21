@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any, Literal
 
+import requests
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from lumilake import envs
@@ -18,6 +19,11 @@ from lumilake_server.utils import lumid_data_client
 
 class ArchiveNotFound(Exception):
     """Raised by archive backends when a key is missing."""
+
+
+class ArchiveError(Exception):
+    """Raised by archive backends when a put or get fails on the store side: a
+    rejected upload, or an unreachable or erroring lumid-data endpoint."""
 
 
 def _normalize_payload(value: Any) -> Any:
@@ -293,13 +299,18 @@ class PersistentJobStorage(JobStorage):
         self._index_lock = threading.Lock()
 
     def _put_blob(self, key: str, body: bytes, content_type: str) -> None:
-        lumid_data_client.put_blob(key, body, content_type)
+        try:
+            lumid_data_client.put_blob(key, body, content_type)
+        except (requests.RequestException, RuntimeError) as exc:
+            raise ArchiveError(f"put {key!r}: {exc}") from exc
 
     def _get_blob(self, key: str) -> tuple[bytes, str]:
         try:
             return lumid_data_client.get_blob(key)
         except lumid_data_client.BlobNotFound as exc:
             raise ArchiveNotFound(key) from exc
+        except (requests.RequestException, RuntimeError) as exc:
+            raise ArchiveError(f"get {key!r}: {exc}") from exc
 
     def _object_name(self, job_id: str) -> str:
         if self.key_prefix:

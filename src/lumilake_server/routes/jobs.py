@@ -107,7 +107,10 @@ from lumilake_server.runtime.protocol import (
     Priority,
     RequestCancelledError,
 )
-from lumilake_server.runtime.record_writer import lineage
+from lumilake_server.runtime.record_lineage import (
+    JobLineageResponse,
+    build_lineage_payload,
+)
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
@@ -4085,53 +4088,6 @@ async def get_job_result(
     }
 
 
-class JobLineageEntry(BaseModel):
-    digest: str = Field(description="Record signature digest, its store key.")
-    op: str = Field(description="Logical op the record belongs to.")
-    record: str | None = Field(
-        default=None, description="The record's key at that op, when it has one."
-    )
-    round: int = Field(description="Semantic round the record belongs to.")
-    status: Literal["ok", "failed"] = Field(
-        description="Whether the record is a result or a failure marker."
-    )
-    job_id: str = Field(description="Job that produced the record.")
-    task_id: str = Field(description="Physical FlowMesh task that computed it.")
-    worker: str | None = Field(
-        default=None, description="Worker the task ran on, when known."
-    )
-    input_digests: list[str] = Field(
-        default_factory=list, description="Signature digests the record read."
-    )
-
-
-class JobLineagePayload(BaseModel):
-    job_id: str = Field(description="Job identifier.")
-    op: str = Field(description="Logical op the requested record belongs to.")
-    record: str | None = Field(
-        default=None, description="Requested record key, when the op has keys."
-    )
-    entries: list[JobLineageEntry] = Field(
-        default_factory=list,
-        description=(
-            "The record's chain: the record itself, then each input it read,"
-            " level by level."
-        ),
-    )
-
-
-class JobLineageResponse(BaseModel):
-    ok: bool = Field(description="Whether the request succeeded.")
-    data: JobLineagePayload = Field(description="Lineage payload.")
-
-
-def _lineage_round(requested: int | None, stored: list[int]) -> int:
-    """The round a lineage read starts at: the one asked for, else the newest."""
-    if requested is not None:
-        return requested
-    return stored[-1] if stored else 0
-
-
 @router.get(
     "/jobs/{job_id}/lineage",
     summary="Get a record's lineage",
@@ -4163,49 +4119,25 @@ async def get_job_lineage(
     ),
     principal: PrincipalContext = Depends(authenticate_request),
 ) -> dict[str, Any]:
-    hook_logger = request.app.state.logger
     await _load_authorized_job_record(
         job_id,
         principal,
         ResourceAction.READ,
-        hook_logger,
+        request.app.state.logger,
     )
-    store = LumilakeServer.get_started_instance().runtime_manager.store
-    entries = lineage(
+    payload = build_lineage_payload(
         _job_storage,
         job_id=job_id,
         op=op,
         record=record,
-        round_number=_lineage_round(round_number, store.rounds_for(job_id)),
-        entries=store.entries_for(job_id),
+        round_number=round_number,
     )
-    if not entries:
+    if payload is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="record not found in the store; submit the job with 'store: true'",
         )
-    return {
-        "ok": True,
-        "data": JobLineagePayload(
-            job_id=job_id,
-            op=op,
-            record=record,
-            entries=[
-                JobLineageEntry(
-                    digest=entry.digest,
-                    op=entry.address.op,
-                    record=entry.address.record,
-                    round=entry.address.round,
-                    status=entry.status,
-                    job_id=entry.source.job,
-                    task_id=entry.source.task_id,
-                    worker=entry.source.worker,
-                    input_digests=entry.input_digests,
-                )
-                for entry in entries
-            ],
-        ).model_dump(mode="json"),
-    }
+    return {"ok": True, "data": payload}
 
 
 @router.get(
