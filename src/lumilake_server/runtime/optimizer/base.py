@@ -140,9 +140,7 @@ def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
 def _decodes_deterministically(sampler: dict[str, Any]) -> bool:
     """Whether the node's decoder is greedy or beam search. An absent
     temperature is not greedy: the engine then samples at its own default, so
-    only an explicit ``temperature: 0`` or ``do_sample: false`` counts."""
-    if sampler.get("do_sample") is False:
-        return True
+    only an explicit ``temperature: 0`` or a beam width above 1 counts."""
     num_beams = _number(sampler.get("num_beams"))
     if num_beams is not None and num_beams > 1:
         return True
