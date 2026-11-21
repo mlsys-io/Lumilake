@@ -524,8 +524,7 @@ def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
         {"kind": "literal", "values": ["5", json.dumps(marker)], "role": "seed"},
     ]
     out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
-    assert out["items"][0]["output"] == "('a',): 5"
-    assert out["items"][1]["output"] == marker
+    assert [item["output"] for item in out["items"]] == ["('a',): 5", marker]
 
 
 @pytest.mark.parametrize("mode", ["row", "expand"])
