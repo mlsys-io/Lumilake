@@ -111,14 +111,23 @@ _PATHS_WORKFLOW: dict[str, Any] = {
 }
 
 
-def _runtime_graph(payload: dict[str, Any]) -> Any:
+def _runtime_graph(payload: dict[str, Any], node_prefix: str | None = None) -> Any:
     spec = next(iter(parse_yaml_payload(payload).values()))
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    return RuntimeGraphBuilder().build(compiled)
+    return RuntimeGraphBuilder().build(compiled, node_prefix=node_prefix)
 
 
 def _node_id(graph: Any, op_suffix: str) -> str:
     return next(node_id for node_id in graph.dsl_to_runtime if op_suffix in node_id)
+
+
+def _runtime_node_id(graph: Any, op_suffix: str) -> str:
+    """The one runtime node a DSL op lowered to."""
+    return next(
+        node_ids[0]
+        for op_id, node_ids in graph.dsl_to_runtime.items()
+        if op_suffix in op_id
+    )
 
 
 def _batches(inputs: dict[str, list[str]], size: int) -> list[dict[str, list[str]]]:
@@ -439,6 +448,35 @@ async def test_unversioned_retrieval_flows_downstream(graph: Any) -> None:
         plan_graph, {"Mark": [{"id": "a", "text": "ONE"}]}, node_ids
     )
     assert all(entry.versions.unversioned for entry in _entries(storage))
+
+
+@pytest.mark.asyncio
+async def test_stored_key_names_the_logical_op_across_jobs() -> None:
+    """A record's key never carries a job id, prefix or slice suffix, so two
+    jobs of one workflow store their records under the same keys."""
+    payload = _payload()
+    results = {
+        "Mark": [{"id": "a", "text": "ONE"}],
+        "Join": [{"id": "a", "text": "ONE!"}],
+    }
+    stored: dict[str, dict[tuple[str, str | None], str]] = {}
+    for job_id, prefix in (("req-one", "job-one"), ("req-two", "job-two")):
+        graph = _runtime_graph(payload, node_prefix=prefix)
+        storage, _ = await _write(
+            graph,
+            results,
+            {
+                "Mark": _runtime_node_id(graph, "Mark"),
+                "Join": _runtime_node_id(graph, "Join"),
+            },
+            job_id=job_id,
+        )
+        stored[job_id] = {
+            (entry.address.op, entry.address.record): entry.digest
+            for entry in _entries(storage, job_id)
+        }
+
+    assert stored["req-one"] == stored["req-two"]
 
 
 def test_record_key_rides_the_graph() -> None:

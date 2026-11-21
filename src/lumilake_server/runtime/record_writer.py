@@ -414,7 +414,7 @@ def _resolve_plans(
         op = runtime_graph.nodes[node_id]
         plans[node_id] = RecordPlan(
             op=op,
-            op_name=node_id,
+            op_name=names.get(node_id, node_id),
             key_path=_key_path(runtime_graph, node_id, plans),
             logical_names=names,
         )
@@ -422,7 +422,8 @@ def _resolve_plans(
 
 
 def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
-    """The logical op name of each runtime node, so no digest sees a prefix."""
+    """The logical op name of each runtime node, so no record address or spec
+    digest carries a job id, a prefix or a slice suffix."""
     names: dict[str, str] = {}
     for op_name, node_ids in runtime_graph.dsl_to_runtime.items():
         for node_id in node_ids:

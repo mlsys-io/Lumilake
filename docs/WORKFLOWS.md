@@ -83,7 +83,8 @@ at the same position and that record's value, the per-row seed it drew with when
 it declares one, and the effect versions. Per-row data enters as the record's
 inputs and a per-row seed as its realization, never through the op's own spec, so
 two slices of one op at any `input_batch_size` store the same records under the
-same keys. Physical node ids, batch positions and workers never enter the digest.
+same keys. The address names the op the workflow declares. Physical node ids,
+batch positions, job ids and workers never enter the digest.
 
 The round is the semantic one: one-based for a round of a dynamic job, `0` for a
 standalone job. A reader trusts an object only when the digest recorded inside it
