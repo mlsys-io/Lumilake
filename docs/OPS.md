@@ -654,8 +654,9 @@ first rule that matches wins; `match` is `contains` or `equals`, optional
 router that declares `error_branch: true` also exposes an `error` branch, which
 receives exactly the [failed records](#failed-records); every rule and default
 branch skips them, so without an `error` branch a failed row reaches none.
-Each branch reads its rows through the same decode every `LambdaOp` mode uses,
-so a `path` walks a field of the decoded row object.
+Each branch is a list-mode `LambdaOp`, so its source column reaches it under
+the same decode every mode uses, and a `path` walks a field of the decoded row
+object.
 
 ```yaml
 ops:

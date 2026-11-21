@@ -1,6 +1,5 @@
 """Router expansion and template-driven rounds through the production path."""
 
-import json
 from typing import Any
 
 import pytest
@@ -42,7 +41,7 @@ def _router(**extra: Any) -> dict[str, Any]:
 
 
 def _branch_rows(
-    entry: dict[str, Any], branch_id: str, column: list[str]
+    entry: dict[str, Any], branch_id: str, column: list[Any]
 ) -> list[dict[str, Any]]:
     """Run one expanded branch's generated source over ``column``."""
     op = next(item for item in expand_routers([entry])[0] if item["id"] == branch_id)
@@ -64,16 +63,16 @@ def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
 
 
 def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
-    column = [json.dumps(row) for row in _ROWS]
-    # A wrapped whole list is unwrapped by the same decoder; no rows yields none.
-    assert _branch_rows(_router(), "route.patient", [json.dumps(_ROWS)])[0] == _ROWS[0]
+    # A branch function is a list-mode LambdaOp, so its source column reaches it
+    # already decoded, one row object per element; no rows yields none.
+    assert _branch_rows(_router(), "route.patient", [_ROWS])[0] == _ROWS[0]
     assert _branch_rows(_router(), "route.patient", []) == []
     for branch_id, expected in (
         ("route.patient", ["a"]),
         ("route.diagnose", ["b"]),
         ("route.test", ["c", "d"]),
     ):
-        got = _branch_rows(_router(), branch_id, column)
+        got = _branch_rows(_router(), branch_id, list(_ROWS))
         assert [row["case_id"] for row in got] == expected
 
 

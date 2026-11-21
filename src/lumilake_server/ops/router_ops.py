@@ -4,8 +4,9 @@
 YAML construct, not a runtime op: :func:`expand_routers` rewrites it, before
 any graph is built, into one ordinary list-mode ``LambdaOp`` per branch named
 ``<id>.<branch>``, so a consumer lists ``route.test`` in ``inputs`` like any
-other node and reads exactly that branch's rows; the generated function
-decodes each input value with the shared Lambda decoder and walks its ``path``.
+other node and reads exactly that branch's rows; the generated function reads
+its already-decoded values (a list-mode ``LambdaOp``'s input contract) and
+walks its ``path``.
 """
 
 import re
@@ -13,7 +14,6 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY
-from lumilake_server.utils.lambda_runtime import DECODER_SOURCE
 
 ROUTER_OP = "RouterOp"
 ERROR_BRANCH = "error"
@@ -30,21 +30,13 @@ _MARKER = f"""\
 _ROWS = """\
     rows = []
     for value in items[0] if items else []:
-        decoded = _decode(value)
-        if isinstance(decoded, dict):
-            rows.append(decoded)
-        elif isinstance(decoded, list) and all(isinstance(r, dict) for r in decoded):
-            rows.extend(decoded)
+        if isinstance(value, dict):
+            rows.append(value)
+        elif isinstance(value, list) and all(isinstance(r, dict) for r in value):
+            rows.extend(value)
         else:
             raise ValueError(LABEL + " expected a row list or object")
 """
-
-
-def _indent(source: str) -> str:
-    """One generated block of decoder source, indented to function level."""
-    return "\n".join(
-        f"    {line}" if line.strip() else "" for line in source.splitlines()
-    )
 
 
 @dataclass(frozen=True)
@@ -204,7 +196,6 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
             "\n".join(
                 [
                     *header,
-                    _indent(DECODER_SOURCE),
                     _ROWS,
                     _MARKER,
                     "    return [row for row in rows if marked(row)]",
@@ -221,7 +212,6 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         skip, keep = tests[:own], [tests[own]]
     lines = [
         *header,
-        _indent(DECODER_SOURCE),
         _ROWS,
         _MARKER,
         "    out = []",

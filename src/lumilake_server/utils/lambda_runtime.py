@@ -150,9 +150,10 @@ def _decode(value):
 
 # ``DECODER_SOURCE`` carries the same behaviour as the decoder in
 # ``lambda_task_helpers``, without annotations, docstrings or exception
-# classes, which FlowMesh's inline namespace cannot evaluate. An inlined row
-# Lambda and a router branch Lambda both embed it, so every mode decodes
-# alike; ``test_inline_decoder_matches_the_shared_one`` pins the parity.
+# classes, which FlowMesh's inline namespace cannot evaluate. The generated
+# wrapper of an inlined row Lambda embeds it, so the function sees what a
+# standalone step gives it, and ``test_inline_wrapper_and_shared_decoder_agree``
+# pins the parity.
 
 
 def inline_lambda_source(code: str, fn_name: str) -> str:
