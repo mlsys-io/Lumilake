@@ -632,8 +632,8 @@ columns stay aligned.
 - Outputs archive the marker as its object, so a job result shows which
   records failed and why.
 - A rowwise model op (`LLMChatOp` with `rowwise_columns`, `LLMCompletionOp`,
-  `EmbeddingOp`) whose rowwise column reads a failed record fails the task,
-  naming the op and the row, rather than rendering the marker into a prompt.
+  `EmbeddingOp`) whose rowwise column reads a failed record fails the task at
+  the column read, instead of rendering the marker into a prompt.
 
 `_fail` is reserved: a user function that returns an object carrying it fails
 the task, so a user value is never mistaken for a marker.

@@ -195,8 +195,9 @@ def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
+    originals = tuple(value for column in columns for value in column)
     for value in values:
-        reject_reserved_key(value, _NODE)
+        reject_reserved_key(value, _NODE, originals=originals)
     return {{"items": [{{"output": v}} for v in values]}}
 """
 
@@ -230,8 +231,9 @@ def main(inputs):
             % (len(values), len(live))
         )
     merged = marked.copy()
+    originals = tuple(value for column in columns for value in column)
     for i, value in zip(live, values):
-        reject_reserved_key(value, _NODE, i)
+        reject_reserved_key(value, _NODE, i, originals)
         merged[i] = value
     return {{"items": [{{"output": v}} for v in merged]}}
 """
