@@ -733,7 +733,7 @@ def _validate_declared_inputs(
         "outputs": [],
     }
     try:
-        parsed = parse_yaml_payload(workflow)
+        parsed = parse_yaml_payload(workflow, expanded=True)
     except ValueError as exc:
         raise DriverProtocolError(
             f"subgraph op {op_id!r} references a node not in its declared "
@@ -1200,7 +1200,7 @@ def build_round(
         "ops": forwarded,
         "outputs": [],
     }
-    parsed = parse_yaml_payload(workflow)
+    parsed = parse_yaml_payload(workflow, expanded=True)
     graph_name = next(iter(parsed))
     native = parsed[graph_name]["graph"]
     leaves = _current_leaves(subgraph)

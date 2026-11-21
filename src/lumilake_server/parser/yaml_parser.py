@@ -110,11 +110,15 @@ class _OutputEntry:
     path: str | None = None
 
 
-def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
+def parse_yaml_payload(
+    payload: dict | str, *, expanded: bool = False
+) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
     Args:
         payload: Either the raw YAML text, or an already-parsed dict.
+        expanded: The payload already holds a router's expanded branch entries,
+            which carry the ``clears_markers`` flag that expansion owns.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict}}``,
@@ -129,7 +133,7 @@ def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
     if "ops" not in spec_dict:
         raise ValueError("YAML workflow must declare an 'ops:' list at the top level")
 
-    compiled_ops = _compile_workflow(spec_dict, graph_name)
+    compiled_ops = _compile_workflow(spec_dict, graph_name, expanded=expanded)
     return {
         graph_name: {
             "graph": compiled_ops.graph,
@@ -189,7 +193,9 @@ def _get_graph_name(spec: dict[str, Any]) -> str:
     return name.strip()
 
 
-def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
+def _compile_workflow(
+    spec: dict[str, Any], scope: str, *, expanded: bool = False
+) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
     outputs_block = spec.get("outputs", []) or []
@@ -202,7 +208,8 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
-    _refuse_user_clears_markers(ops_block)
+    if not expanded:
+        _refuse_user_clears_markers(ops_block)
     op_entries = [
         _parse_op_entry(entry, idx)
         for idx, entry in enumerate(expand_routers(ops_block))
@@ -287,7 +294,7 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
 
 def _refuse_user_clears_markers(ops_block: list[Any]) -> None:
     """Refuse ``clears_markers`` on a user op entry: only a router branch the
-    parser expands sets it, so a user value never switches the guard off."""
+    parser expands sets it, and such an expansion is parsed with ``expanded``."""
     for entry in ops_block:
         if isinstance(entry, dict) and "clears_markers" in entry:
             raise ValueError(

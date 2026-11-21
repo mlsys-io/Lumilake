@@ -256,6 +256,21 @@ def test_a_user_entry_cannot_declare_clears_markers() -> None:
         Graph.from_json({"L": native})
 
 
+def test_a_router_branch_built_again_keeps_its_clearing_flag() -> None:
+    # A round's build re-parses the expanded branch entries, whose flag passes
+    # when the payload is marked expanded and is refused from a user payload.
+    ops = expand_routers([_router(error_branch=True)])
+    payload = {
+        "name": "p",
+        "inputs": {"Answer": ["x"]},
+        "ops": [_parse(format="json"), *ops],
+        "outputs": [],
+    }
+    assert parse_yaml_payload(json.dumps(payload), expanded=True) is not None
+    with pytest.raises(ValueError, match="clears_markers"):
+        parse_yaml_payload(json.dumps(payload))
+
+
 def test_a_row_lambda_skips_the_function_for_a_marked_row(tmp_path: Path) -> None:
     items = _run(
         [_parse(format="json"), _lower()], {"Answer": ["no idea", '{"a": 1}']}, tmp_path
