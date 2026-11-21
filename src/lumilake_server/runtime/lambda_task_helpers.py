@@ -29,10 +29,15 @@ def failure_of(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def reject_reserved_key(value: Any, op: str, row: int | None = None) -> None:
+def reject_reserved_key(
+    value: Any, op: str, row: int | None = None, originals: tuple[Any, ...] = ()
+) -> None:
     """Refuse a user value that carries the reserved ``_fail`` key, so it is
-    never mistaken for a failed record."""
+    never mistaken for a failed record. A value the step received itself is a
+    pass-through, not a user value, and is kept."""
     if isinstance(value, dict) and FAIL_KEY in value:
+        if any(value is original for original in originals):
+            return
         where = f" for row {row}" if row is not None else ""
         raise ValueError(
             f"{op!r}{where} returned an object with the reserved {FAIL_KEY!r}"
@@ -61,19 +66,28 @@ def parse_row(spec: dict[str, Any], text: Any) -> Any:
     try:
         value = json.loads(body, strict=False)
     except ValueError:
-        start = min((i for i in (body.find("{"), body.find("[")) if i >= 0), default=-1)
-        if start < 0:
-            raise ValueError("no JSON object")
-        try:
-            value = json.loads(body[start:], strict=False)
-        except ValueError:
-            raise ValueError("no JSON object")
+        value = _decode_trailing(text)
     require = spec.get("require")
     if require:
         missing = next((key for key in require if not _has_key(value, key)), None)
         if missing is not None:
             raise ValueError(f"missing key '{missing}'")
     return value
+
+
+def _decode_trailing(text: str) -> Any:
+    """Decode the JSON record that starts after any prose, ignoring text after
+    it, so ``Here it is: {...} hope that helps`` yields the object."""
+    decoder = json.JSONDecoder(strict=False)
+    for index, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, index)
+        except ValueError:
+            continue
+        return value
+    raise ValueError("no JSON object")
 
 
 def _has_key(value: Any, key: str) -> bool:
