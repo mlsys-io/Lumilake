@@ -282,3 +282,13 @@ def test_template_accepts_a_join_as_the_round_export_and_stop_leaf() -> None:
     template.next.export = ["Merged_r{{round}}"]
     template.stop_when_empty = "Merged_r{{prev}}"
     validate_template(template, None, max_nodes_per_round=8)
+
+
+def test_router_rule_matches_a_field_of_json_text_rows() -> None:
+    # A router reads its path off rows that arrive as JSON text: the shared
+    # decoder turns each one into the row object the path walks.
+    column = [json.dumps(row) for row in _ROWS]
+    column.append(json.dumps({"case_id": "e", "text": "REQUEST TEST"}))
+    assert [
+        row["case_id"] for row in _branch_rows(_router(), "route.test", column)
+    ] == ["c", "d", "e"]
