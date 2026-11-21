@@ -171,6 +171,14 @@ def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:
     assert spec[make_id("yaml_workflow", "seed", "Answer")]["fn_name"] == SEED_FN_NAME
 
 
+def test_a_scalar_key_stays_a_string() -> None:
+    """A key that is not JSON object text is read as it stands, so ``"7"`` and
+    ``7`` draw different seeds, as a JoinOp's ``by`` tells them apart."""
+    fn = _built()
+    assert fn(("7",)) == _documented_seed(["7"])[0]
+    assert fn(("7",)) != _documented_seed([7])[0]
+
+
 def test_the_key_form_is_refused() -> None:
     fn = _generated(_payload())
     with pytest.raises(ValueError, match="Answer' has no row key in .*case_id"):
