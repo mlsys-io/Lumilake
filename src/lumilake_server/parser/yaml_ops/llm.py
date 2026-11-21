@@ -374,7 +374,7 @@ def _emit_keyed_seed(
         entry.id,
         seed,
         rowwise_template=entry.fields.get("rowwise_template"),
-        config=entry.fields.get("config") or {},
+        config=entry.fields.get("config", {}),
     )
     node_id = _seed_input_id(entry.id, node_ref, ctx)
     seed_dict = keyed_seed.seed_op(

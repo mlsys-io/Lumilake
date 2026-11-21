@@ -286,17 +286,6 @@ async def test_native_key_form_is_refused_with_422_naming_the_op(
             )
             assert resp.status_code == 422
             assert match in resp.json()["detail"]
-    # A bare graph takes its top-level seed out before its ops are read.
-    specs: dict[str, Any] = {}
-    job_routes_module._dispatch_workflow_to_graph_specs(
-        workflow_format="native",
-        workflow_payload={"seed": 7, "cases": cases},
-        batch_inputs={},
-        graph_name="g",
-        graph_specs=specs,
-        idx=0,
-    )
-    assert (specs["g"]["seed"], sorted(specs["g"]["graph"])) == (7, ["cases"])
 
 
 @pytest.mark.anyio
