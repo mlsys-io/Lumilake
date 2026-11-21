@@ -41,6 +41,51 @@ Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 
+## Per-record store (`store:`)
+
+A workflow can ask the server to store every computed record, so a later read can
+name what produced a value. Set `store: true` at the top level of a YAML
+document, or beside `graph` in a native payload. It defaults to off, so existing
+workflows are unchanged.
+
+Each op that declares a record key gets one entry per key; an op without one gets
+a single whole-op entry. A record key is `key: {node, path}` on any op: `node`
+names the op or input that carries the keys, and `path` drills into it, the same
+shape a rowwise column uses.
+
+```yaml
+name: keyed
+store: true
+inputs:
+  Cases: ['{"case_id": "c1", "q": "first"}', '{"case_id": "c2", "q": "second"}']
+ops:
+  - id: Answer
+    op: LambdaOp
+    inputs: [Cases]
+    fn_name: answer
+    mode: row
+    code: "def answer(c):\n    return c[0]\n"
+    key: {node: Cases, path: case_id}
+outputs:
+  - name: answer
+    ref: Answer
+```
+
+Each entry is written once, as one object under the archive prefix at
+`records/<digest>.json`. The digest is a SHA-256 over the op's computation (code,
+prompt, config, model id and decoding), the record's address (op, key, semantic
+round), the records and values it read, its sampling seed when it declares one,
+and the effect versions. Physical node ids, batch positions and workers never
+enter it, so slicing or reordering a job's rows leaves the same records under the
+same keys. A reader trusts an object only when the digest recorded inside it
+equals its key. A failed record keeps its address with `status: failed` and never
+answers a request for a success. An op that reads a retrieval or fetch that
+records no snapshot is marked `versions.unversioned`, because such a read is
+never reusable.
+
+Read a record's chain back with `GET /api/v1/jobs/{job_id}/lineage`; see
+[`docs/API.md`](API.md).
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its

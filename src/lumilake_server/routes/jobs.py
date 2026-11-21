@@ -107,6 +107,7 @@ from lumilake_server.runtime.protocol import (
     Priority,
     RequestCancelledError,
 )
+from lumilake_server.runtime.record_writer import lineage
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
@@ -572,6 +573,24 @@ def _dispatch_workflow_to_graph_specs(
     }
 
 
+def _workflow_store_flag(workflow_payload: Any, graph_name: str) -> bool:
+    """Whether the workflow asks for its records to be stored.
+
+    The flag sits at the top level of a YAML document or beside ``graph`` in a
+    native payload, and defaults to off so existing workflows are unchanged."""
+    if not isinstance(workflow_payload, dict):
+        return False
+    flag = workflow_payload.get("store")
+    if flag is None:
+        return False
+    if not isinstance(flag, bool):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"workflow '{graph_name}' field 'store' must be a boolean",
+        )
+    return flag
+
+
 @dataclass
 class JobRecord:
     job_id: str
@@ -596,6 +615,7 @@ class JobRecord:
     workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
+    store: bool = False
 
     def __post_init__(self) -> None:
         if not self.output_location:
@@ -1769,6 +1789,7 @@ async def _submit_dynamic_child(
     hardware_requirements: HardwareRequirements | None = None,
     job_timeout: float = 600.0,
     one_slice: bool = False,
+    store_records: bool = False,
 ) -> str | None:
     """Create and dispatch one dynamic round as a child job, returning its id.
 
@@ -1855,6 +1876,7 @@ async def _submit_dynamic_child(
         user_id=principal.external_id,
         progress=JobProgress(),
         parent_job_id=parent_job_id,
+        store=store_records,
     )
     async with jobs_lock:
         parent_record = jobs.get(parent_job_id)
@@ -1889,6 +1911,7 @@ async def _submit_dynamic_child(
             suppress_hooks=True,
             chain_id=parent_job_id,
             chain_round=round_index,
+            store=store_records,
         )
     )
     try:
@@ -2211,6 +2234,7 @@ async def _run_dynamic_job(
                     optimizer_type=optimizer_type,
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,
+                    store_records=record.store,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:
@@ -2531,6 +2555,7 @@ async def _run_template_job(
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,
                     one_slice=True,
+                    store_records=record.store,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:
@@ -2711,6 +2736,7 @@ async def _run_job(
     suppress_hooks: bool = False,
     chain_id: str | None = None,
     chain_round: int = 0,
+    store: bool = False,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -2774,6 +2800,7 @@ async def _run_job(
                 hardware_requirements=hardware_requirements,
                 chain_id=chain_id,
                 chain_round=chain_round,
+                store=store,
             ),
             workflow_slices=workflow_slices,
         )
@@ -3488,6 +3515,7 @@ async def submit_job(
     output_locations: dict[str, IOLocation] = {}
     seen_public_names: set[str] = set()
     dynamic_spec: DynamicSpec | None = None
+    store_records = False
     for idx, entry in enumerate(entries):
         dynamic_output_location: dict[str, Any] | None = None
         workflow_payload = _decode_workflow_body(entry.workflow, workflow_format, idx)
@@ -3514,6 +3542,7 @@ async def submit_job(
                 detail=f"duplicate workflow name: {name}",
             )
         seen_public_names.add(name)
+        store_records = store_records or _workflow_store_flag(workflow_payload, name)
         inputs: dict[str, list[str]] = {}
         output_location = _effective_dynamic_output_location(
             dynamic_output_location, entry.output_location
@@ -3655,6 +3684,7 @@ async def submit_job(
         org_id=principal.org_id,
         user_id=principal.external_id,
         progress=JobProgress(),
+        store=store_records,
     )
 
     async with jobs_lock:
@@ -3701,6 +3731,7 @@ async def submit_job(
                 optimizer,
                 hardware,
                 graphs,
+                store=record.store,
             )
         )
     request.app.state.background_tasks.add(task)
@@ -4051,6 +4082,129 @@ async def get_job_result(
             "job_id": job_id,
             "result": result_model,
         },
+    }
+
+
+class JobLineageEntry(BaseModel):
+    digest: str = Field(description="Record signature digest, its store key.")
+    op: str = Field(description="Logical op the record belongs to.")
+    record: str | None = Field(
+        default=None, description="The record's key at that op, when it has one."
+    )
+    round: int = Field(description="Semantic round the record belongs to.")
+    status: Literal["ok", "failed"] = Field(
+        description="Whether the record is a result or a failure marker."
+    )
+    job_id: str = Field(description="Job that produced the record.")
+    task_id: str = Field(description="Physical FlowMesh task that computed it.")
+    worker: str | None = Field(
+        default=None, description="Worker the task ran on, when known."
+    )
+    input_digests: list[str] = Field(
+        default_factory=list, description="Signature digests the record read."
+    )
+
+
+class JobLineagePayload(BaseModel):
+    job_id: str = Field(description="Job identifier.")
+    op: str = Field(description="Logical op the requested record belongs to.")
+    record: str | None = Field(
+        default=None, description="Requested record key, when the op has keys."
+    )
+    entries: list[JobLineageEntry] = Field(
+        default_factory=list,
+        description=(
+            "The record's chain: the record itself, then each input it read,"
+            " level by level."
+        ),
+    )
+
+
+class JobLineageResponse(BaseModel):
+    ok: bool = Field(description="Whether the request succeeded.")
+    data: JobLineagePayload = Field(description="Lineage payload.")
+
+
+def _lineage_round(requested: int | None, stored: list[int]) -> int:
+    """The round a lineage read starts at: the one asked for, else the newest."""
+    if requested is not None:
+        return requested
+    return stored[-1] if stored else 0
+
+
+@router.get(
+    "/jobs/{job_id}/lineage",
+    summary="Get a record's lineage",
+    description=(
+        "Walk one stored record's input digests back through the records it was"
+        " computed from. The first entry is the record itself; each entry names"
+        " the job, round, task and worker that produced it."
+    ),
+    response_description="Record lineage payload.",
+    status_code=status.HTTP_200_OK,
+    response_model=JobLineageResponse,
+    openapi_extra={
+        "responses": {
+            "404": {"description": "Job not found, or the record was not stored."},
+        },
+    },
+)
+async def get_job_lineage(
+    job_id: str,
+    request: Request,
+    op: str = Query(description="Logical op id the record belongs to."),
+    record: str | None = Query(
+        default=None, description="Record key; omit for an op stored whole."
+    ),
+    round_number: int | None = Query(
+        default=None,
+        alias="round",
+        description="Semantic round; defaults to the newest round stored.",
+    ),
+    principal: PrincipalContext = Depends(authenticate_request),
+) -> dict[str, Any]:
+    hook_logger = request.app.state.logger
+    await _load_authorized_job_record(
+        job_id,
+        principal,
+        ResourceAction.READ,
+        hook_logger,
+    )
+    store = LumilakeServer.get_started_instance().runtime_manager.store
+    entries = lineage(
+        _job_storage,
+        job_id=job_id,
+        op=op,
+        record=record,
+        round_number=_lineage_round(round_number, store.rounds_for(job_id)),
+        entries=store.entries_for(job_id),
+    )
+    if not entries:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="record not found in the store; submit the job with 'store: true'",
+        )
+    return {
+        "ok": True,
+        "data": JobLineagePayload(
+            job_id=job_id,
+            op=op,
+            record=record,
+            entries=[
+                JobLineageEntry(
+                    digest=entry.digest,
+                    op=entry.address.op,
+                    record=entry.address.record,
+                    round=entry.address.round,
+                    status=entry.status,
+                    job_id=entry.source.job,
+                    task_id=entry.source.task_id,
+                    worker=entry.source.worker,
+                    input_digests=entry.input_digests,
+                )
+                for entry in entries
+            ],
+        ).model_dump(mode="json"),
     }
 
 

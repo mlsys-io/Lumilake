@@ -53,8 +53,11 @@ class RecordStore:
         self._records: dict[str, list[RecordEntry]] = {}
 
     def register(self, entry: RecordEntry) -> None:
+        """Keep an entry under every job that shared the task, and the one that
+        owns it, so a lineage read finds it from either."""
+        jobs = [entry.source.job, *entry.source.member_jobs]
         with self._lock:
-            for job_id in entry.source.member_jobs:
+            for job_id in dict.fromkeys(jobs):
                 self._records.setdefault(job_id, []).append(entry)
 
     def entries_for(self, job_id: str) -> list[RecordEntry]:
