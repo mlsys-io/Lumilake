@@ -35,11 +35,7 @@ def _sql_config(op_id: str) -> dict:
         "id": op_id,
         "op": "DataRetrievalOp",
         "inputs": [],
-        "data_spec": {
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * ORDER BY 1",
-        },
+        "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
     }
 
 
@@ -144,10 +140,8 @@ def test_forwarded_sql_param_resolves_from_round_input() -> None:
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": (
-                    "SELECT * FROM market WHERE start_date = '{start_date}'"
-                    " ORDER BY 1"
-                ),
+                "rows": "one",
+                "template": ("SELECT * FROM market WHERE start_date = '{start_date}'"),
                 "params": [
                     {
                         "label": "start_date",
@@ -198,10 +192,8 @@ def test_forwarded_sql_param_is_literal_in_execution_graph() -> None:
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": (
-                    "SELECT * FROM market WHERE start_date = '{start_date}'"
-                    " ORDER BY 1"
-                ),
+                "rows": "one",
+                "template": ("SELECT * FROM market WHERE start_date = '{start_date}'"),
                 "params": [
                     {
                         "label": "start_date",
