@@ -75,6 +75,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.runtime.worker_capability import worker_profile
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.retrieval_key import key_problem
 from lumilake_server.utils.retrieval_spec import ROWS_ONE
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
@@ -1470,8 +1471,11 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         tid: str,
         node_id: str,
-    ) -> AnyExecutorResult:
-        """Archive a task's redacted FlowMesh response and return the result."""
+    ) -> dict[str, Any]:
+        """Fetch a task's raw FlowMesh response and archive it as a job
+        artifact, redacting the untrusted body before persisting it. Returns
+        the archived response when its body is a JSON object, and ``{}``
+        otherwise."""
         try:
             result = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1490,13 +1494,32 @@ class FlowmeshRuntimeManager:
             node_id,
             response_uri,
         )
-        return result
+        return response_data if isinstance(response_data, dict) else {}
+
+    def _assert_retrieval_key(
+        self,
+        runtime_graph: RuntimeGraph,
+        node_ids: list[str],
+        response_data: dict[str, Any],
+    ) -> None:
+        """Fail a keyed retrieval whose result breaks its declared key,
+        naming the op, the key column and both row positions of a repeat."""
+        for node_id in node_ids:
+            node = runtime_graph.nodes.get(node_id)
+            if node is None or not isinstance(node.data_spec, RetrievalData):
+                continue
+            column = node.data_spec.key.column if node.data_spec.key else None
+            if column is None:
+                continue
+            problem = key_problem(node_id, response_data.get("items"), column)
+            if problem is not None:
+                raise RuntimeError(problem)
 
     def _assert_rows_one(
         self,
         runtime_graph: RuntimeGraph,
         node_id: str,
-        result: AnyExecutorResult,
+        response_data: dict[str, Any],
     ) -> None:
         """Fail a ``rows: one`` retrieval whose parameter row returned several rows."""
         node = runtime_graph.nodes.get(node_id)
@@ -1504,12 +1527,10 @@ class FlowmeshRuntimeManager:
             return
         if node.data_spec.rows != ROWS_ONE:
             return
-        if not isinstance(result, DataRetrievalResult):
-            return
         multi = [
-            item.index if item.index is not None else position
-            for position, item in enumerate(result.items)
-            if item.rows is not None and item.rows > 1
+            item.get("index", position)
+            for position, item in enumerate(response_data.get("items") or [])
+            if isinstance(item, dict) and (item.get("rows") or 0) > 1
         ]
         if not multi:
             return
@@ -1743,11 +1764,14 @@ class FlowmeshRuntimeManager:
                                 "Missing task->node mapping for task "
                                 f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                             )
-                        task_result = await self._archive_task_response(
+                        response_data = await self._archive_task_response(
                             request_info, tid, node_id
                         )
                         self._assert_rows_one(
-                            request_info.runtime_graph, node_id, task_result
+                            request_info.runtime_graph, node_id, response_data
+                        )
+                        self._assert_retrieval_key(
+                            request_info.runtime_graph, [node_id], response_data
                         )
                         downloaded_tasks.add(tid)
 

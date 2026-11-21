@@ -323,6 +323,36 @@ A `LambdaOp` with `gpu` is placed on a GPU worker that advertises the `python` t
 
 When a job's input slices are coalesced into one workflow, the task runs their rows in sequence, so Lumilake coalesces only as many slices as keep `expected_runtime_s` times the rows within `timeout_s`; the rest run as separate copies of the workflow in the same batch. A slice whose row count is unknown before it runs is never coalesced.
 
+### DataRetrievalOp
+
+A retrieval may declare the record key of the rows it emits as
+`key: {column: <name>}`. The named column's value is each emitted row's
+record key, and a consumer reads it at `items.table.<name>` like any other
+column; a join's `by` and a keyed `rowwise_seed` read it there without a
+second key form. Without the declaration a row has no logical key, and a
+position is the only thing that names it.
+
+```yaml
+- id: Cases
+  op: DataRetrievalOp
+  data_spec:
+    type: lumid
+    mode: sql
+    template: SELECT case_id, text FROM cases ORDER BY case_id
+    key: {column: case_id}
+```
+
+The key is declared on a `sql` retrieval only, since only it emits one row
+per table row: an `s3` or `agent` retrieval is refused at submit. A submitted
+`key` naming no column, or naming more than a column, is refused at submit
+too.
+
+The key is checked when the result arrives. A row whose column is missing, a
+row whose key is null, and two rows carrying the same key each fail the job,
+naming the op, the key column and, for a repeat, both row positions. One
+retrieval emits one record per key, so a query that repeats a key must first
+group by it or declare a column that is unique.
+
 ### RouterOp
 
 `RouterOp` partitions one source op's rows into named branches, one ordinary node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The first rule that matches wins; `match` is `contains` or `equals`, optional `path` selects the field tested, and `default_branch` keeps unmatched rows.

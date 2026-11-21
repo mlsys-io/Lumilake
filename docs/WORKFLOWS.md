@@ -142,6 +142,12 @@ params:
     path: items.table.id
 ```
 
+A `sql` retrieval may name each emitted row's record key as
+`key: {column: <name>}` inside its `data_spec`; a consumer then reads the key
+at `items.table.<name>`, the same column a `path` reads. See
+[`docs/OPS.md`](OPS.md#dataretrievalop) for the declaration and the checks
+that run when the result arrives.
+
 For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns. For a `LambdaOp` upstream, set `sample_value` on the op (or the Code node's `sample-value` note) the same way — preflight never executes user code, so it needs a representative value to resolve the placeholder.
 
 An `aggregate_table` or `rowwise_columns` column may reference a workflow input or a `DataOp` by `node` alone: the column carries that op's literal values whole and takes no `path`.

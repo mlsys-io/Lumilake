@@ -1,7 +1,6 @@
 """The SQL row-order rule at submit and the `rows` bounds at run time."""
 
 import pytest
-from flowmesh.models.result import DataRetrievalResult
 
 from lumilake import envs
 from lumilake_server.dynamic.driver import DriverProtocolError, validate_library
@@ -74,8 +73,8 @@ def test_rows_one_checks_its_bound() -> None:
     manager = FlowmeshRuntimeManager()
     items = [{"index": 0, "rows": 1}, {"index": 3, "rows": 2}]
     with pytest.raises(RuntimeError, match=r"_Retrieve_.*\[3\] of this batch"):
-        manager._assert_rows_one(runtime, node_id, DataRetrievalResult(items=items))
-    manager._assert_rows_one(runtime, node_id, DataRetrievalResult(items=[{}]))
+        manager._assert_rows_one(runtime, node_id, {"items": items})
+    manager._assert_rows_one(runtime, node_id, {"items": [{}]})
 
 
 @pytest.mark.parametrize("template", ["SELECT a FROM t", "SELECT a FROM t ORDER BY a"])
