@@ -1136,6 +1136,7 @@ def build_round(
     job_seed: int = 0,
     template_ids: dict[str, str] | None = None,
     cleared_ids: Collection[str] = (),
+    symbols: Sequence[str] = (),
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
@@ -1159,7 +1160,11 @@ def build_round(
     }
     # A round never passes through submit_job's whole-input check, so check its
     # keyed seeds here, over the run input and the values it forwards.
-    check_keyed_seed_duplicates(workflow, workflow_inputs)
+    seed_inputs: dict[str, list[str]] = {
+        **workflow_inputs,
+        INPUT_NODE_ID: list(symbols),
+    }
+    check_keyed_seed_duplicates(workflow, seed_inputs)
     parsed = parse_yaml_payload(
         workflow,
         round_number=round_index,
