@@ -1269,17 +1269,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                         fn_arg if len(fn_arg) > 1 else fn_arg[0]["content"]
                         for fn_arg in fn_args
                     ]
-                    if isinstance(op.fn, SubmittedFunction):
-                        # Inlined steps run in the FlowMesh worker's safe_eval
-                        # namespace, stricter than a standalone python task.
-                        try:
-                            lambda_runtime.validate_inline_source(
-                                op.code, op.fn.__name__
-                            )
-                        except ValueError as exc:
-                            raise ValueError(
-                                f"Invalid LambdaOp '{op.id}': {exc}"
-                            ) from exc
                     code = lambda_runtime.callable_source(op.fn, op.code)
                     if not code:
                         raise ValueError(
@@ -1289,6 +1278,15 @@ class _LLMBuilder(_EmbeddingBuilder):
                             " def and pass its code, or make it a workflow output"
                             " so it runs as its own python task"
                         )
+                    # Inlined steps run in the FlowMesh worker's safe_eval
+                    # namespace, stricter than a standalone python task.
+                    try:
+                        lambda_runtime.validate_inline_source(
+                            code,
+                            None if op.fn.__name__ == "<lambda>" else op.fn.__name__,
+                        )
+                    except ValueError as exc:
+                        raise ValueError(f"Invalid LambdaOp '{op.id}': {exc}") from exc
                     label = f"lambda_{op.id}"
                     steps[label] = (
                         lambda_runtime.inline_lambda_source(code, op.fn.__name__),

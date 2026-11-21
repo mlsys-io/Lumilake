@@ -640,6 +640,12 @@ def test_inline_wrapper_calls_a_lambda_and_serializes_a_non_string(
 _sdk_lower = lambda inputs: str(inputs[0]).lower()  # noqa: E731
 
 
+def _sdk_imports(inputs):
+    import math
+
+    return str(math.sqrt(inputs[0]))
+
+
 def test_an_sdk_lambda_inlines_its_own_expression_or_is_refused() -> None:
     # dill captures the statement that bound an SDK lambda, so only a statement
     # holding exactly one lambda gives the source to wrap.
@@ -662,6 +668,15 @@ def test_an_sdk_lambda_inlines_its_own_expression_or_is_refused() -> None:
     template = runtime.nodes[llm.id].data_spec["template"]
     step = next(s for s in template["options"]["format"]["steps"] if s.get("function"))
     assert _run_in_inline_namespace(step["function"], "adapt")(("NVDA",)) == "nvda"
+
+    # A readable SDK function goes through the same inline validation as
+    # submitted code, so an import inside it is refused at build time.
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=LambdaOp([upstream], fn=_sdk_imports))],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    with pytest.raises(ValueError, match="Invalid LambdaOp '[^']*': it imports 'math'"):
+        RuntimeGraphBuilder().build(Graph.from_ops([as_output("r", llm)]).compile())
 
 
 _PARITY_TABLE = {"title": {"0": "t0", "1": "t1"}, "note": {"0": "a", "1": "b"}}
