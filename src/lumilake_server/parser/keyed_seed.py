@@ -65,11 +65,12 @@ def key_parts(path: str) -> list[str]:
 
 def seed_op_id(chat_op_id: str, scope: str | None = None) -> str:
     """The id of the row function generated for one chat op. The parser names
-    it from the op id as it names every implicit op; a native graph, whose op
-    ids are already internal, names it from the chat op's own id."""
+    it with the ``seed`` prefix, which no op type emits, so no user op can hold
+    that id; a native graph, whose op ids are already internal, names it from
+    the chat op's own id."""
     if scope is None:
         return f"{chat_op_id}{SEED_SUFFIX}"
-    return make_id(scope, "lambda", f"{chat_op_id}{SEED_SUFFIX}")
+    return make_id(scope, "seed", chat_op_id)
 
 
 def seed_source(
