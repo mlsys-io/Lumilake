@@ -8,6 +8,12 @@ from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
 
+# Task types that carry an ``inference`` spec, whose output a model sampler
+# draws.
+SAMPLING_TASK_TYPES: frozenset[str] = frozenset(
+    {"inference", "diffusion", "omni_text2image"}
+)
+
 
 class RuntimeOpSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeOp``.
@@ -111,7 +117,7 @@ class RuntimeOp:
             "omni_text2image",
         }:
             spec_payload["model"] = self.model_spec
-        if self.task_type in {"inference", "diffusion", "omni_text2image"}:
+        if self.task_type in SAMPLING_TASK_TYPES:
             spec_payload["inference"] = self.inference_spec
         if self.output_enforcement is not None:
             spec_payload["output_enforcement"] = self.output_enforcement
