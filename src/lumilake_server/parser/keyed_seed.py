@@ -174,7 +174,7 @@ def rewrite_native_keys(
 ) -> dict[str, dict[str, Any]]:
     """Rewrite every key-form ``rowwise_seed`` of a serialized native graph,
     adding each generated seed op and binding the chat op to it."""
-    rewritten = dict(graph)
+    rewritten = graph.copy()
     for op_id, op in graph.items():
         if op.get("_op") != "LLMChatOp":
             continue
