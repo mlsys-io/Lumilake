@@ -318,109 +318,76 @@ def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
         _build([_parse(format="json"), _model_reading("P")], values)
 
 
-def _expand(joined: str) -> dict[str, Any]:
-    code = f"def s(row):\n    return [p for p in row[0][{joined!r}].split(',') if p]\n"
-    return {
-        "id": "X",
-        "op": "LambdaOp",
-        "inputs": ["P"],
-        "mode": "expand",
-        "fn_name": "s",
-        "code": code,
-    }
+def _lowering(mode: str, code: str, **fields: Any) -> dict[str, Any]:
+    return _lower(mode=mode, fn_name="f", code=code, **fields)
 
 
-@pytest.mark.parametrize(
-    "answers, expected",
-    [
-        (['{"k": "a,b"}', "no idea", '{"k": ""}'], [(0, 0), (0, 1), (1, 0)]),
-        (['{"k": ""}', '{"k": "c"}'], [(1, 0)]),
-    ],
-    ids=["tombstone_and_identity", "no_children"],
+_EXPAND = _lowering(
+    "expand", "def f(row):\n    return [p for p in row[0]['unit'].split(',') if p]\n"
 )
-def test_an_expand_parents_each_item_and_marks_one_tombstone(
-    answers: list[str], expected: list[tuple[int, int]], tmp_path: Path
-) -> None:
-    items = _run([_parse(format="json"), _expand("k")], {"Answer": answers}, tmp_path)
-    assert [(item["parent"], item["child"]) for item in items] == expected
 
 
-def _reduce(on_fail: str, inputs: list[str] | None = None) -> dict[str, Any]:
-    return _lower(
-        mode="reduce",
-        by="group" if inputs is None else "unit",
-        code="def f(rows):\n    return len(rows)\n",
+def _group(on_fail: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A reduce by unit, over a wrapper that moves a row's marker into a
+    non-key field so its key still reads and it joins its group."""
+    wrapper = _lowering(
+        "list",
+        "def f(c):\n"
+        "    rows = [json.loads(v) if isinstance(v, str) else v for v in c[0]]\n"
+        "    return [{'unit': v.get('unit', 'u'), 'score': v} for v in rows]\n",
+        id="W",
+    )
+    return wrapper, _lowering(
+        "reduce",
+        "def f(rows):\n    return len(rows)\n",
+        by="unit",
         on_fail=on_fail,
-        inputs=["P"] if inputs is None else inputs,
+        inputs=["W"],
     )
 
 
-# A wrapper that puts the marker in a non-key field, so the key still reads
-# and the row joins its group instead of forming one of its own.
-_WRAPPED = {
-    "id": "W",
-    "op": "LambdaOp",
-    "inputs": ["P"],
-    "mode": "list",
-    "fn_name": "w",
-    "code": (
-        "def w(c):\n"
-        "    rows = [json.loads(v) if isinstance(v, str) else v for v in c[0]]\n"
-        "    return [{'unit': v.get('unit', 'u'), 'score': v} for v in rows]\n"
-    ),
-}
-
-
 @pytest.mark.parametrize(
-    "answers, on_fail, expected, wrapped",
+    "tail, answers, expected",
     [
-        (['{"group": "g"}', '{"group": "g"}'], "drop_failed", [2], False),
-        (["bad", '{"group": "g"}'], "drop_failed", ["no JSON object", 1], False),
-        (["bad", '{"unit": "u"}'], "fail_group", ["no JSON object"], True),
-        (["bad", '{"unit": "u"}'], "drop_failed", [1], True),
-        (["bad", "bad"], "drop_failed", ["empty group"], True),
-        (["bad", '{"unit": "v"}'], "fail_group", ["no JSON object", 1], True),
+        # A row whose key cannot be read is its own group and emits its marker.
+        (
+            [
+                _lowering(
+                    "reduce",
+                    "def f(rows):\n    return len(rows)\n",
+                    by="unit",
+                    on_fail="fail_group",
+                )
+            ],
+            ["bad", '{"unit": "u"}'],
+            ["marker", 1],
+        ),
+        # A row whose key reads joins its group; the policy decides that group.
+        (_group("fail_group"), ['{"unit": "u"}', "bad"], ["marker"]),
+        (_group("drop_failed"), ['{"unit": "u"}', "bad"], [1]),
+        # An expand emits one tombstone for a marked parent at child zero, and
+        # every item names its parent and child.
+        ([_EXPAND], ['{"unit": "a,b"}', "bad"], ["a@0.0", "b@0.1", "marker@1.0"]),
     ],
-    ids=["kept", "own", "keyed_fails", "keyed_drops", "emptied", "keyed_own"],
 )
-def test_a_reduce_groups_a_marked_row_by_its_key_under_its_policy(
+def test_a_marked_row_keeps_its_group_or_its_slot(
+    tail: list[dict[str, Any]],
     answers: list[str],
-    on_fail: str,
     expected: list[Any],
-    wrapped: bool,
     tmp_path: Path,
 ) -> None:
-    ops = [_parse(format="json")]
-    ops += [_WRAPPED, _reduce(on_fail, inputs=["W"])] if wrapped else [_reduce(on_fail)]
-    outputs = [item["output"] for item in _run(ops, {"Answer": answers}, tmp_path)]
-    assert len(outputs) == len(expected)
-    for got, want in zip(outputs, expected):
-        assert got == want if isinstance(want, int) else got["_fail"]["reason"] == want
+    got = []
+    for item in _run([_parse(format="json"), *tail], {"Answer": answers}, tmp_path):
+        output = item["output"]
+        if isinstance(output, dict) and list(output) == ["_fail"]:
+            output = "marker"
+        got.append(
+            f"{output}@{item['parent']}.{item['child']}" if "parent" in item else output
+        )
+    assert got == expected
 
 
 def test_an_on_fail_policy_is_refused_outside_reduce_mode() -> None:
-    payload = {
-        "name": "p",
-        "inputs": {"Answer": ["x"]},
-        "ops": [_parse(format="json"), _lower(on_fail="drop_failed")],
-    }
+    ops = [_parse(format="json"), _lower(on_fail="drop_failed")]
     with pytest.raises(ValueError, match="only valid in reduce mode"):
-        parse_yaml_payload(json.dumps(payload))
-
-
-def _join(inputs: str, **fields: Any) -> dict[str, Any]:
-    return {
-        "id": "J",
-        "op": "JoinOp",
-        "inputs": [name.strip() for name in inputs.split(",")],
-        "by": "k",
-        **fields,
-    }
-
-
-def test_a_join_turns_a_marked_first_input_row_into_the_output_row(
-    tmp_path: Path,
-) -> None:
-    items = _run([_parse(format="json"), _join("P")], {"Answer": ["no idea"]}, tmp_path)
-    (item,) = [entry["output"] for entry in items]
-    assert item["_fail"]["reason"] == "no JSON object"
+        _build(ops, {"Answer": ["x"]})

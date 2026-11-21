@@ -246,126 +246,86 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
 
 
 _MARK = {"_fail": {"op": "P", "reason": "no JSON object"}}
+_KEY_MARK = {"_fail": {"op": "join", "reason": 'key "b" is missing from'}}
 _DIAG = _merge("State, Route.diagnose")
 _ATTACH = _REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n")
 _ALL = [{"output": list(_ROWS)}]
 _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
 _GAPPED = [{"output": [_ROWS[0], _MARK, _ROWS[2]]}]
 _GAPPED_VALUES = [{"output": v, "value": v} for v in ("hi", _MARK, "bye")]
-# An attach over a branch of the first input, so its source covers that branch's
-# keys only. The plan reads State, Route.diagnose, Reply, then Route.diagnose.
-_DIAG_ATTACH = _REPLY.replace("[State]", "[Route.diagnose]") + _merge(
-    "State, Route.diagnose, Reply", "    attach: {reply: Reply}\n"
+_MERGED = {**_ROWS[1], "part": 1}
+# A row Lambda over the diagnose branch, so its values cover only that branch's
+# key: the plan reads State, Route.diagnose, Reply, Route.diagnose.
+_PART = _REPLY.replace("[State]", "[Route.diagnose]") + _merge(
+    "State, Route.diagnose, Reply", "    attach: {part: Reply}\n"
 )
-_DIAG_UPSTREAM = {
-    0: _ALL,
-    1: [{"output": [_ROWS[1]]}],
-    2: [{"output": 1, "value": 1}],
-    3: [{"output": [_ROWS[1]]}],
-}
+_PART_UPSTREAM = [{"output": [_ROWS[1]]}]
+_PART_VALUES = [{"output": 1, "value": 1}]
 
 
 @pytest.mark.parametrize(
-    "ops, upstream, expected, fails",
+    "ops, upstream, expected",
     [
         # A marked first-input row keeps its position; every other row is whole.
         (
             _DIAG,
             {0: [{"output": [_ROWS[0], _MARK, _ROWS[1]]}], 1: [{"output": [_ROWS[1]]}]},
             [_ROWS[0], _MARK, _ROWS[1]],
-            "",
         ),
         # A marked further input keeps its key and marks that key's output.
         (
             _DIAG,
             {0: _ALL, 1: [{"output": [{"case_id": "b", "text": _MARK}]}]},
             [_ROWS[0], _MARK, _ROWS[2]],
-            "",
         ),
         # One whose key cannot be read cannot be placed.
-        (_DIAG, {0: _ALL, 1: [{"output": [_MARK]}]}, None, "cannot be placed"),
+        (_DIAG, {0: _ALL, 1: [{"output": [_MARK]}]}, "cannot be placed"),
         # A marked attach value marks the key its position pairs with, whether
-        # the value column covers the live rows or every source row. A source
-        # row that is itself a marker keeps it, and its value is paired with it.
+        # the value column covers the live rows only or every source row.
         (
             _ATTACH,
             {0: _LIVE, 1: _GAPPED_VALUES[:2], 2: _LIVE},
             [{**_ROWS[0], "reply": "hi"}, _MARK],
-            "",
         ),
         (
             _ATTACH,
             {0: _GAPPED, 1: _GAPPED_VALUES, 2: _GAPPED},
             [{**_ROWS[0], "reply": "hi"}, _MARK, {**_ROWS[2], "reply": "bye"}],
-            "",
         ),
-        # fail_row marks only the rows the further input lacks, with its key.
+        # Only the key the attach source reaches keeps its value; the others
+        # are marked under fail_row and keep the field out under null_fill.
         (
-            _DIAG + "    on_missing: fail_row\n",
-            {0: _ALL, 1: [{"output": [_ROWS[1]]}]},
-            "fail_row",
-            "",
+            _PART + "    on_missing: fail_row\n",
+            {0: _ALL, 1: _PART_UPSTREAM, 2: _PART_VALUES, 3: _PART_UPSTREAM},
+            [_KEY_MARK, _MERGED, _KEY_MARK],
         ),
-        # An attach key the source lacks is marked under fail_row and keeps its
-        # field out under null_fill.
         (
-            _DIAG_ATTACH + "    on_missing: fail_row\n",
-            _DIAG_UPSTREAM,
-            "attach_fail_row",
-            "",
+            _PART,
+            {0: _ALL, 1: _PART_UPSTREAM, 2: _PART_VALUES, 3: _PART_UPSTREAM},
+            [_ROWS[0], _MERGED, _ROWS[2]],
         ),
-        # An attach length mismatch is a job failure under either policy.
-        (
-            _ATTACH + "    on_missing: fail_row\n",
-            {0: _LIVE, 1: [{"output": "hi", "value": "hi"}]},
-            None,
-            "values attached but",
-        ),
-    ],
-    ids=[
-        "first_input",
-        "further_keyed",
-        "further_unkeyed",
-        "attach_live",
-        "attach_all",
-        "fail_row",
-        "attach_fail_row",
-        "attach_length",
+        # An attach length mismatch is a job failure under both policies.
+        (_ATTACH, {0: _LIVE, 1: _GAPPED_VALUES[:1]}, "values attached but"),
     ],
 )
 def test_a_marked_join_row_keeps_its_key_and_every_other_row(
     ops: str,
     upstream: dict[int, list[dict[str, Any]]],
     expected: Any,
-    fails: str,
     tmp_path: Path,
 ) -> None:
     node = _join_node(ops)
-    if fails:
-        with pytest.raises(ValueError, match=fails):
+    if isinstance(expected, str):
+        with pytest.raises(ValueError, match=expected):
             _run(tmp_path, node, upstream)
         return
     got = [item["output"] for item in _run(tmp_path, node, upstream)["items"]]
-    if expected == "fail_row":
-        # The join names itself and the absent key on each row it lacks.
-        assert [row.get("_fail", {}).get("op") == node.node_id for row in got] == [
-            True,
-            False,
-            True,
-        ]
-        assert got[1]["case_id"] == "b"
-        return
-    if expected == "attach_fail_row":
-        # Only the key the attach source reaches keeps the value; the other
-        # rows are marked, each naming this join.
-        assert got[1] == {**_ROWS[1], "reply": 1}
-        assert [row.get("_fail", {}).get("op") == node.node_id for row in got] == [
-            True,
-            False,
-            True,
-        ]
-        return
-    assert got == expected
+    # A fail_row marker names the join by its own node id; expected rows carry
+    # the stand-in _KEY_MARK for it.
+    assert [
+        _KEY_MARK if row.get("_fail", {}).get("op") == node.node_id else row
+        for row in got
+    ] == expected
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
