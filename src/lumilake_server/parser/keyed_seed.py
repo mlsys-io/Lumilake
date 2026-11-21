@@ -10,7 +10,7 @@ key column and returns one seed per row, and binds the chat op to its output.
 from typing import Any
 
 from lumilake_server.common import GenerationConfig
-from lumilake_server.ops.llm_ops import RowwiseSeed, rowwise_seed_fits
+from lumilake_server.ops.llm_ops import RowwiseSeed, check_rowwise_seed
 from lumilake_server.parser.common import make_id
 
 SEED_SUFFIX = "__seed"
@@ -141,7 +141,7 @@ def key_target(
         generation_config = GenerationConfig(**config)
     except TypeError as exc:
         raise ValueError(f"LLMChatOp '{op_id}' config is not valid: {exc}") from exc
-    rowwise_seed_fits(
+    check_rowwise_seed(
         RowwiseSeed(node_ref, path), rowwise_template, generation_config, op_id
     )
     return node_ref, path
@@ -198,7 +198,7 @@ def rewrite_native_keys(
             op_id,
             seed,
             rowwise_template=op.get("rowwise_template"),
-            config=op.get("config") or {},
+            config=op.get("config", {}),
         )
         if node_ref not in op.get("_inputs", []):
             raise ValueError(
