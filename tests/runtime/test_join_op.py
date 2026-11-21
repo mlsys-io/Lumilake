@@ -118,12 +118,12 @@ def _run(
     plan = node.data_spec.plan
     stages: dict[str, str] = {}
     for index, items in upstream.items():
-        stage = tmp_path / name / f"{plan[index].node}-{index}"
+        stage = tmp_path / name / f"{plan[index].node or 'literal'}-{index}"
         stage.mkdir(parents=True)
         (stage / "results.json").write_text(
             json.dumps({"task_id": "t", "result": {"items": items}})
         )
-        stages[str(plan[index].node)] = str(stage)
+        stages[plan[index].node or "literal"] = str(stage)
     code = join_step.join_source(
         node.node_id, node.data_spec.join, plan, python_step.TASK_RUNTIME_MOUNT
     ).replace(python_step.TASK_RUNTIME_MOUNT, _RUNTIME_MOUNT["path"])
@@ -311,6 +311,25 @@ def test_a_marked_join_row_keeps_its_key_and_every_other_row(
             row = "marked"
         got.append(row)
     assert got == expected
+
+_TAG = """
+  - id: Tag
+    op: LambdaOp
+    mode: row
+    inputs: [Rows]
+    fn_name: tag
+    code: |
+      def tag(row):
+          return row["case_id"].upper()
+"""
+
+
+def test_join_reads_a_workflow_input_as_its_first_column(tmp_path: Path) -> None:
+    node = _join_node(_TAG + _merge("Rows, Tag", "    attach: {tag: Tag}\n"))
+    assert node.data_spec["plan"][0]["kind"] == "literal"
+    tag = [{"output": "A", "value": "A"}] * 3
+    out = _run(tmp_path, node, {1: tag})
+    assert [item["output"]["tag"] for item in out["items"]] == ["A", "A", "A"]
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:

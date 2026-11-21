@@ -1,8 +1,10 @@
 """Building one join's python step.
 
-An attach target's row source is resolved here, so the step pairs values with
-keys by position. Consumers in an earlier phase read the join by its op id,
-which is its runtime node id, so only the join phase builds the step.
+A row column that is a workflow input or a data op has no runtime node, so its
+literal values are inlined into the plan instead. An attach target's row source
+is resolved here, so the step pairs values with keys by position. Consumers in
+an earlier phase read the join by its op id, which is its runtime node id, so
+only the join phase builds the step.
 """
 
 from lumilake_server.data_specs import (
@@ -66,7 +68,10 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
 
 
 def _non_literal(op: Op) -> list[Op]:
-    return [inp for inp in op.inputs if not isinstance(inp, (InputOp, DataOp))]
+    """The op's inputs that compile to a runtime node, or every input when it
+    reads only literal columns, which are 1:1 over their own rows too."""
+    inputs = [inp for inp in op.inputs if not isinstance(inp, (InputOp, DataOp))]
+    return inputs or op.inputs
 
 
 def _drop_broadcasts(inputs: list[Op], ctx: LoweringContext) -> list[Op]:
@@ -162,6 +167,8 @@ def _planned(
 ) -> int:
     """The plan index reading one column's values, one per row."""
     ctx.visited.add(column.id)
+    if isinstance(column, (InputOp, DataOp)):
+        return _literal(column, ctx, plan)
     runtime_ids = ctx.dsl_to_runtime.get(column.id)
     if not runtime_ids:
         raise ValueError(
@@ -181,4 +188,18 @@ def _planned(
     plan.append(entry)
     if node not in dependencies:
         dependencies.append(node)
+    return len(plan) - 1
+
+
+def _literal(
+    column: InputOp | DataOp,
+    ctx: LoweringContext,
+    plan: list[dict[str, Any]],
+) -> int:
+    """The plan index reading a literal column's values, one per row."""
+    if isinstance(column, InputOp):
+        values = ctx.inputs_dict[column.name]
+    else:
+        values = column.data.copy()
+    plan.append({"kind": "literal", "values": values})
     return len(plan) - 1
