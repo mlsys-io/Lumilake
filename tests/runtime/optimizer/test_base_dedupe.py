@@ -4,12 +4,11 @@ from typing import Any
 import pytest
 
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, make_chunk_group_key
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeGraph:
-    """One graph whose chat nodes each come from their own workflow op."""
     nodes = {
         f"{scope}__{op_id}": RuntimeOp(
             f"{scope}__{op_id}",
@@ -35,16 +34,9 @@ def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeG
     [
         (("wf",), ["AskA", "AskB"], {}, 2),
         (("wf",), ["AskA", "AskB"], {"seed": 7}, 2),
-        (("wf", "wf::1"), ["Ask"], {"seed": 7}, 1),
-        (("wf", "wf::1"), ["Ask"], {}, 1),
+        (("wf", make_chunk_group_key("wf", 1)), ["Ask"], {}, 1),
+        (("wf", make_chunk_group_key("wf", 1)), ["Ask"], {"seed": 7}, 1),
         (("wf_a", "wf_b"), ["Ask"], {"seed": 7}, 2),
-    ],
-    ids=[
-        "unseeded-ops-keep-their-draws",
-        "seeded-ops-keep-their-draws",
-        "chunk-copies-of-a-seeded-op-share-a-draw",
-        "chunk-copies-of-an-unseeded-op-share-a-draw",
-        "equal-ops-of-different-workflows-keep-their-draws",
     ],
 )
 def test_dedupe_scopes_a_draw_to_its_logical_op(
