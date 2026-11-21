@@ -803,81 +803,39 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
 
 def test_a_native_key_form_error_names_the_op_in_a_422():
     """A native graph whose key form does not fit its chat op is refused with
-    the offending op named, on the route's own dispatch path."""
-    native = {
-        "chat": {
-            "_id": "chat",
-            "_op": "LLMChatOp",
-            "_inputs": ["cases"],
-            "_max_iter": None,
-            "config": {"model": "m"},
-            "messages": "msg",
-            "rowwise_template": None,
-            "rowwise_seed": {"key": {"node": "cases", "path": "items.output.k"}},
-        },
-        "cases": {
-            "_id": "cases",
-            "_op": "DataOp",
-            "_inputs": [],
-            "_max_iter": None,
-            "data": ["{}"],
-        },
-        "msg": {
-            "_id": "msg",
-            "_op": "MessageOp",
-            "_inputs": [],
-            "_max_iter": None,
-            "messages": [{"role": "user", "content": "x"}],
-        },
+    the offending op named; an unwrapped graph's top-level seed is read as the
+    seed, not as an op."""
+    chat = {
+        "_op": "LLMChatOp",
+        "_inputs": ["cases"],
+        "_max_iter": None,
+        "config": {"model": "m"},
+        "messages": "msg",
+        "rowwise_seed": {"key": {"node": "cases", "path": "items.output.k"}},
     }
-    with pytest.raises(HTTPException) as refusal:
+    cases = {"_op": "DataOp", "_inputs": [], "_max_iter": None, "data": ["{}"]}
+
+    def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
+        specs: dict[str, Any] = {}
         _dispatch_workflow_to_graph_specs(
             workflow_format="native",
-            workflow_payload={"graph": native},
+            workflow_payload=payload,
             batch_inputs={},
             graph_name="g",
-            graph_specs={},
+            graph_specs=specs,
             idx=0,
         )
+        return specs
+
+    with pytest.raises(HTTPException) as refusal:
+        dispatch({"graph": {"chat": copy.deepcopy(chat), "cases": cases}})
     assert refusal.value.status_code == 422
     assert "LLMChatOp 'chat'" in refusal.value.detail
-
-
-def test_a_bare_native_graph_takes_its_top_level_seed():
-    """An unwrapped native graph carries the job seed beside its ops, and that
-    field is read as the seed rather than as an op."""
-    graph_specs: dict[str, Any] = {}
-    _dispatch_workflow_to_graph_specs(
-        workflow_format="native",
-        workflow_payload={
-            "seed": 7,
-            "cases": {
-                "_id": "cases",
-                "_op": "DataOp",
-                "_inputs": [],
-                "_max_iter": None,
-                "data": ["{}"],
-            },
-        },
-        batch_inputs={},
-        graph_name="g",
-        graph_specs=graph_specs,
-        idx=0,
-    )
-    assert graph_specs["g"]["seed"] == 7
-    assert list(graph_specs["g"]["graph"]) == ["cases"]
-
-
-def test_the_native_seed_must_be_an_integer():
+    specs = dispatch({"seed": 7, "cases": cases})
+    assert (specs["g"]["seed"], sorted(specs["g"]["graph"])) == (7, ["cases"])
+    native = {"chat": copy.deepcopy(chat), "cases": cases, "seed": "7"}
     with pytest.raises(HTTPException, match="'seed' must be an integer"):
-        _dispatch_workflow_to_graph_specs(
-            workflow_format="native",
-            workflow_payload={"graph": {"cases": {"_op": "DataOp"}}, "seed": "7"},
-            batch_inputs={},
-            graph_name="g",
-            graph_specs={},
-            idx=0,
-        )
+        dispatch({"graph": native, "seed": "7"})
 
 
 def test_forward_aligned_materializers_are_row_cardinality():

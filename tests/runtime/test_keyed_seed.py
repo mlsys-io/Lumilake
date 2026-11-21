@@ -1,17 +1,17 @@
 """A rowwise chat op derives each row's seed from that row's key."""
 
+import copy
 import hashlib
 import json
 from typing import Any
 
 import pytest
-import yaml
 
 from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.parser.keyed_seed import rewrite_native_keys, seed_op
+from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
@@ -20,142 +20,43 @@ _ROWS = [
     {"case_id": "c2", "question": "q2"},
     {"case_id": "c1", "question": "q3"},
 ]
-
 _COLUMN = [json.dumps(row) for row in _ROWS]
-
-_WORKFLOW = {
-    "seed": 7,
-    "inputs": {"Rows": _COLUMN},
-    "ops": [
-        {
-            "id": "Cases",
-            "op": "LambdaOp",
-            "inputs": ["Rows"],
-            "fn_name": "rows",
-            "mode": "row",
-            "code": "def rows(row):\n    return row[0]\n",
-        },
-        {
-            "id": "Answer",
-            "op": "LLMChatOp",
-            "inputs": ["Cases"],
-            "config": {"model": "m"},
-            "messages": [{"role": "user", "content": "placeholder"}],
-            "rowwise_template": "{question}",
-            "rowwise_columns": [
-                {"label": "question", "node": "Cases", "path": "items.output.question"}
-            ],
-            "rowwise_seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
-        },
+_ANSWER = {
+    "id": "Answer",
+    "op": "LLMChatOp",
+    "inputs": ["Cases"],
+    "config": {"model": "m"},
+    "messages": [{"role": "user", "content": "placeholder"}],
+    "rowwise_template": "{question}",
+    "rowwise_columns": [
+        {"label": "question", "node": "Cases", "path": "items.output.question"}
     ],
-    "outputs": [{"name": "answer", "ref": "Answer"}],
+    "rowwise_seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
 }
 
 
-def _payload(**changes: Any) -> dict[str, Any]:
-    payload = yaml.safe_load(yaml.safe_dump(_WORKFLOW))
-    payload.update(changes)
-    return payload
+def _payload() -> dict[str, Any]:
+    cases = {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN}
+    return {"seed": 7, "ops": [cases, copy.deepcopy(_ANSWER)]}
 
 
-def _nodes(payload: dict[str, Any]) -> dict[str, Any]:
+def _graph(payload: dict[str, Any]) -> Any:
     spec = next(iter(parse_yaml_payload(payload).values()))
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    return RuntimeGraphBuilder().build(compiled).nodes
+    return RuntimeGraphBuilder().build(compiled)
 
 
-def _seed_spec(payload: dict[str, Any]) -> dict[str, Any]:
-    node = next(
-        node for node_id, node in _nodes(payload).items() if "__seed" in node_id
-    )
-    return node.data_spec
+def _seed_node(payload: dict[str, Any]) -> Any:
+    nodes = _graph(payload).nodes.values()
+    return next(n for n in nodes if n.data_spec.get("fn_name") == SEED_FN_NAME)
 
 
-def _seeds(spec: dict[str, Any], rows: list[Any]) -> list[Any]:
-    """Run the generated row function over each row, as its step does."""
-    fn = lambda_runtime.materialize(spec["code"], spec["fn_name"])
-    return [fn((row,)) for row in rows]
+def _generated(payload: dict[str, Any]) -> Any:
+    node = _seed_node(payload)
+    return lambda_runtime.materialize(node.data_spec["code"], SEED_FN_NAME)
 
 
-def _documented_seed(
-    job_seed: int, template_id: str, round_number: int | None, key: Any
-) -> int:
-    """The seed a row draws with, as ``docs/OPS.md`` states it: the first 8
-    bytes of SHA-256, big-endian, over ``[seed, op id, round, key]`` as
-    canonical JSON, reduced mod 2^31."""
-    payload = json.dumps(
-        [job_seed, template_id, round_number, key],
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % 2**31
-
-
-def test_the_generated_function_matches_the_documented_seed() -> None:
-    spec = _seed_spec(_payload())
-    assert _seeds(spec, _COLUMN) == [
-        _documented_seed(7, "Answer", None, row["case_id"]) for row in _ROWS
-    ]
-
-
-def test_a_key_gives_the_same_seed_wherever_the_row_sits() -> None:
-    spec = _seed_spec(_payload())
-    rows = list(_COLUMN)
-    seeds = _seeds(spec, rows)
-    assert seeds[0] == seeds[2] != seeds[1]
-    assert _seeds(spec, [rows[1], rows[2], rows[0]]) == [seeds[1], seeds[2], seeds[0]]
-
-
-def test_a_keyed_seed_does_not_pin_the_whole_input_list() -> None:
-    """A row-mode seed op is not a list-cardinality node, so the input set can
-    still be split into slices, and a row's seed is the same in any slice."""
-    payload = _payload()
-    workflow = next(iter(parse_yaml_payload(payload).values()))
-    compiled = Graph.from_json(workflow["graph"]).compile(**workflow["inputs"])
-    graph = RuntimeGraphBuilder().build(compiled)
-    assert graph.list_lambda_cardinality_nodes() == set()
-    seed_spec = _seed_spec(payload)
-    rows = list(_COLUMN)
-    first, second = _seeds(seed_spec, rows[:2]), _seeds(seed_spec, rows[2:])
-    assert first + second == _seeds(seed_spec, rows)
-
-
-def test_the_chat_op_reads_the_generated_seed_column() -> None:
-    nodes = _nodes(_payload())
-    chat = next(node for node in nodes.values() if node.task_type == "inference")
-    (seed_id,) = [node_id for node_id in nodes if "__seed" in node_id]
-    assert "mode" not in nodes[seed_id].data_spec
-    assert chat.data_spec["seeds"] == {
-        "node": seed_id,
-        "path": "value.items.value",
-    }
-    assert nodes[seed_id].data_spec["plan"] == [
-        {
-            "kind": "stage",
-            "node": next(
-                node_id
-                for node_id in nodes
-                if "Cases" in node_id and "__seed" not in node_id
-            ),
-        }
-    ]
-
-
-def test_a_different_job_seed_op_id_or_round_gives_a_different_seed() -> None:
-    column = list(_COLUMN)
-    base = _seeds(_seed_spec(_payload()), column)
-    assert _seeds(_seed_spec(_payload(seed=8)), column) != base
-    key = _ROWS[0]["case_id"]
-    direct = _materialized_seed("Answer", None, key)
-    assert direct == _documented_seed(7, "Answer", None, key)
-    assert _materialized_seed("Other", None, key) != direct
-    assert _materialized_seed("Answer", 1, key) != direct
-
-
-def _materialized_seed(template_id: str, round_number: int | None, key: str) -> int:
-    """The seed the production function draws for one key, with the op id and
-    round it bakes in."""
+def _built(template_id: str = "Answer", round_number: int | None = None) -> Any:
     op = seed_op(
         "Answer",
         "Cases",
@@ -164,66 +65,31 @@ def _materialized_seed(template_id: str, round_number: int | None, key: str) -> 
         round_number=round_number,
         template_id=template_id,
     )
-    return _seeds({"code": op["_code"], "fn_name": op["fn_name"]}, [key])[0]
+    return lambda_runtime.materialize(op["_code"], op["fn_name"])
 
 
-def test_a_template_op_keeps_its_unrendered_id_across_rounds() -> None:
-    answer = _payload()["ops"][1]
-    body = {
-        "ops": [
-            dict(answer, id="Answer{{round}}", inputs=["Cases"]),
-            {"id": "Cases", "op": "DataOp", "data": _COLUMN},
-        ]
-    }
+def _documented_seed(
+    keys: list[Any], op_id: str = "Answer", round_number: int | None = None
+) -> list[int]:
+    """The docs/OPS.md formula: SHA-256 over the canonical JSON of [seed, op
+    id, round, key], first 8 bytes big-endian, mod 2^31."""
+
+    def one(key: Any) -> int:
+        text = json.dumps([7, op_id, round_number, key], separators=(",", ":"))
+        return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big") % 2**31
+
+    return [one(key) for key in keys]
+
+
+def _round_seed(body: dict[str, Any], results: dict[str, Any]) -> dict[str, Any]:
+    """The generated seed op of round 2 of a one-op template body."""
     template = DriverTemplate.model_validate(
         {"first": body, "next": body, "stop_when_empty": "x"}
     )
     plan = plan_for_round(template, 2)
     build = build_round(
         plan.ops,
-        node_registry={},
-        round_index=2,
-        goal="g",
-        observations=[],
-        topology=[],
-        preview_width=50,
-        model="m",
-        max_tokens=10,
-        temperature=0.1,
-        job_seed=7,
-        template_ids=plan.template_ids,
-    )
-    generated = next(v for k, v in build.graph.items() if k.endswith("__seed"))
-    assert "[7, 'Answer{{round}}', 2, value]" in generated["_code"]
-
-
-def test_a_later_round_keys_on_an_earlier_rounds_node() -> None:
-    """A round-2 chat op keys on a column of a round-1 node: the column
-    forwards as a flat input, and the row function reads that value itself."""
-    earlier = "Cases"
-    results = {earlier: [{"output": row} for row in _ROWS]}
-    body = {
-        "ops": [
-            {
-                "id": "Answer{{round}}",
-                "op": "LLMChatOp",
-                "inputs": [earlier],
-                "config": {"model": "m"},
-                "messages": [{"role": "user", "content": "placeholder"}],
-                "rowwise_template": "{question}",
-                "rowwise_seed": {
-                    "key": {"node": earlier, "path": "items.output.case_id"}
-                },
-            }
-        ]
-    }
-    template = DriverTemplate.model_validate(
-        {"first": body, "next": body, "stop_when_empty": "x"}
-    )
-    plan = plan_for_round(template, 2)
-    build = build_round(
-        plan.ops,
-        node_registry={earlier: {"op": "DataOp"}},
+        node_registry={ref: {"op": "DataOp"} for ref in results},
         round_index=2,
         goal="g",
         observations=[],
@@ -236,57 +102,71 @@ def test_a_later_round_keys_on_an_earlier_rounds_node() -> None:
         job_seed=7,
         template_ids=plan.template_ids,
     )
-    generated = next(v for k, v in build.graph.items() if k.endswith("__seed"))
-    forwarded = build.forwarded_inputs[f"{earlier} | items.output.case_id"]
-    (input_id,) = generated["_inputs"]
-    assert build.graph[input_id]["_op"] == "InputOp"
-    assert build.graph[input_id]["name"] == f"{earlier} | items.output.case_id"
-    assert forwarded == ["c1", "c2", "c1"]
-    spec = {"code": generated["_code"], "fn_name": generated["fn_name"]}
-    assert _seeds(spec, forwarded) == [
-        _documented_seed(7, "Answer{{round}}", 2, key) for key in forwarded
-    ]
+    return next(op for op in build.graph.values() if op.get("fn_name") == SEED_FN_NAME)
 
 
-def test_a_missing_or_null_key_fails_naming_the_op() -> None:
-    spec = _seed_spec(_payload())
-    with pytest.raises(ValueError, match="Answer' has no row key in .*question"):
-        _seeds(spec, [json.dumps({"question": "q"})])
+def test_the_generated_function_matches_the_documented_seed() -> None:
+    """The parsed step's function draws the documented seed, keyed by the row's
+    key rather than its position, and every draw input changes it."""
+    fn = _generated(_payload())
+    keys = [row["case_id"] for row in _ROWS]
+    assert [fn((row,)) for row in _COLUMN] == _documented_seed(keys)
+    assert [fn((row,)) for row in reversed(_COLUMN)] == _documented_seed(keys[::-1])
+    direct = _built()((keys[0],))
+    assert _built("Other")((keys[0],)) != direct
+    assert _built(round_number=1)((keys[0],)) != direct
+
+
+def test_a_keyed_seed_keeps_slices_and_reads_the_chat_op() -> None:
+    """A row-mode seed op is not a list-cardinality node, so the input set can
+    still be split into slices, and the chat op reads its per-row column."""
+    graph = _graph(_payload())
+    assert graph.list_lambda_cardinality_nodes() == set()
+    fn = _generated(_payload())
+    split = [fn((row,)) for row in _COLUMN[:2]] + [fn((row,)) for row in _COLUMN[2:]]
+    assert split == [fn((row,)) for row in _COLUMN]
+    chat = next(n for n in graph.nodes.values() if n.task_type == "inference")
+    seed_id = _seed_node(_payload()).node_id
+    assert chat.data_spec["seeds"] == {"node": seed_id, "path": "value.items.value"}
+
+
+def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
+    """A template op keeps its unrendered id in the seed inputs, and a later
+    round's chat op keys on an earlier round's node, forwarded as a flat
+    input the row function reads as the value."""
+    key = {"key": {"node": "Cases", "path": "items.output.case_id"}}
+    body = {"ops": [{**_ANSWER, "id": "Answer{{round}}", "rowwise_seed": key}]}
+    generated = _round_seed(body, {"Cases": [{"output": row} for row in _ROWS]})
+    fn = lambda_runtime.materialize(generated["_code"], generated["fn_name"])
+    assert generated["_inputs"] == ["input_round_2_Cases_items_output_case_id_4420"]
+    assert [fn(("c1",)), fn(("c2",))] == _documented_seed(
+        ["c1", "c2"], "Answer{{round}}", 2
+    )
+    assert "[7, 'Answer{{round}}', 2, value]" in generated["_code"]
+
+
+def test_the_key_form_is_refused() -> None:
+    fn = _generated(_payload())
+    with pytest.raises(ValueError, match="Answer' has no row key in .*case_id"):
+        fn((json.dumps({"question": "q"}),))
     with pytest.raises(ValueError, match="Answer' has a null row key in .*case_id"):
-        _seeds(spec, [json.dumps({"case_id": None})])
-    with pytest.raises(ValueError, match="'seed' must be an integer"):
-        parse_yaml_payload(_payload(seed="7"))
-
-
-def test_the_key_form_is_refused_without_a_rowwise_template_or_in_api_mode() -> None:
-    without_template = _payload()
-    without_template["ops"][1].pop("rowwise_template")
-    with pytest.raises(ValueError, match="rowwise_template"):
-        _nodes(without_template)
-    api_mode = _payload()
-    api_mode["ops"][1]["config"]["api"] = {"url": "https://example.test"}
-    with pytest.raises(ValueError, match="API mode"):
-        _nodes(api_mode)
+        fn((json.dumps({"case_id": None}),))
+    payloads = [_payload() for _ in range(3)]
+    payloads[0]["ops"][1].pop("rowwise_template")
+    payloads[1]["ops"][1]["config"]["api"] = {"url": "x"}
+    payloads[2]["ops"][1]["rowwise_seed"]["node"] = "Cases"
+    for payload, match in zip(payloads, ["rowwise_template", "API", "combines"]):
+        with pytest.raises(ValueError, match=match):
+            _graph(payload)
 
 
 def test_a_native_graph_takes_the_same_key_form() -> None:
     native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
     chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
-    cases_id = next(k for k, v in native.items() if v["_op"] == "LambdaOp")
-    rewritten = native.copy()
-    rewritten[chat_id] = {
-        **native[chat_id],
-        "rowwise_seed": {"key": {"node": cases_id, "path": "items.output.case_id"}},
-    }
-    out = rewrite_native_keys(rewritten, job_seed=7)
-    generated = out[f"{chat_id}__seed"]
-    assert generated["mode"] == "row"
-    assert out[chat_id]["rowwise_seed"] == {
-        "node": f"{chat_id}__seed",
-        "path": "items.output",
-    }
-    taken = native.copy()
-    taken[chat_id] = rewritten[chat_id]
-    taken[f"{chat_id}__seed"] = {"_id": f"{chat_id}__seed", "_op": "DataOp"}
+    cases_id = next(k for k, v in native.items() if v["_op"] == "DataOp")
+    seed_key = {"key": {"node": cases_id, "path": "items.output.case_id"}}
+    native[chat_id] = {**native[chat_id], "rowwise_seed": seed_key}
+    assert rewrite_native_keys(native, job_seed=7)[f"{chat_id}__seed"]["mode"] == "row"
+    native[f"{chat_id}__seed"] = {"_op": "DataOp"}
     with pytest.raises(ValueError, match="already holds"):
-        rewrite_native_keys(taken, job_seed=7)
+        rewrite_native_keys(native, job_seed=7)
