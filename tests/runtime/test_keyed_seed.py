@@ -235,7 +235,7 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
     native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
     chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
     cases_id = next(k for k, v in native.items() if v["_op"] == "LambdaOp")
-    rewritten = dict(native)
+    rewritten = native.copy()
     rewritten[chat_id] = {
         **native[chat_id],
         "rowwise_seed": {"key": {"node": cases_id, "path": "items.output.case_id"}},
