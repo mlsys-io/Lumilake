@@ -305,7 +305,7 @@ For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)` serializes the
 
 ### RouterOp
 
-`RouterOp` partitions one source op's rows into named branches, one ordinary node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The first rule that matches wins; `match` is `contains`, `equals` or `empty`, optional `path` selects the field tested, and `default_branch` keeps unmatched rows. `error_branch: true` adds an `error` branch that receives the [failed records](#failed-records); every other branch skips them. Each branch reads its rows through the same decode every `LambdaOp` mode uses, so a `path` walks a field of the decoded row object.
+`RouterOp` partitions one source op's rows into named branches, one ordinary node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The first rule that matches wins; `match` is `contains`, `equals` or `empty`, optional `path` selects the field tested, and `default_branch` keeps unmatched rows. `error_branch: true` adds an `error` branch that receives the [failed records](#failed-records); every other branch skips them. Each branch is a list-mode `LambdaOp`, so its source column reaches it under the same decode every mode uses, and a `path` walks a field of the decoded row object.
 
 `match: empty` takes no `value` and matches `null`, `""`, `[]` or `{}`.
 
