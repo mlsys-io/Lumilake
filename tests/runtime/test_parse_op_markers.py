@@ -101,6 +101,14 @@ def test_parse_json_marks_an_unparsable_row(answer: str, tmp_path: Path) -> None
     assert items[1]["value"] == {"a": 1}
 
 
+def test_parse_json_marks_a_reply_carrying_the_reserved_key(tmp_path: Path) -> None:
+    ops = [_parse(format="json")]
+    items = _run(ops, {"Answer": ['{"_fail": 1, "a": 2}']}, tmp_path)
+    marker = items[0]["value"]["_fail"]
+    assert marker["op"].split("_")[2] == "P"
+    assert marker["reason"] == "reserved key '_fail'"
+
+
 def test_parse_json_marks_a_row_missing_a_required_key(tmp_path: Path) -> None:
     ops = [_parse(format="json", require=["eligibility"])]
     items = _run(ops, {"Answer": ['{"a": 1}']}, tmp_path)
