@@ -178,8 +178,24 @@ def test_parse_rejects_a_bad_spec_naming_the_op() -> None:
         )
 
 
-def _model_reading(node: str) -> dict[str, Any]:
-    return {
+_ALIGNED = {"mode": "aligned", "code": "def f(columns):\n    return list(columns[0])\n"}
+_LIST = {"mode": "list", "code": "def f(items):\n    return list(items[0])\n"}
+
+_MODEL_KINDS = ("chat", "vision", "embedding")
+
+
+def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
+    """A model op of ``kind`` reading ``node`` through its rowwise column or
+    its embedding content."""
+    if kind == "embedding":
+        return {
+            "id": "E",
+            "op": "EmbeddingOp",
+            "inputs": [node],
+            "input": node,
+            "config": {"model": "BAAI/bge-small-en-v1.5"},
+        }
+    spec: dict[str, Any] = {
         "id": "M",
         "op": "LLMChatOp",
         "inputs": [node],
@@ -188,33 +204,13 @@ def _model_reading(node: str) -> dict[str, Any]:
         "rowwise_columns": [{"label": "value", "node": node, "path": "items.output"}],
         "config": {"model": "meta-llama/Llama-3.1-8B-Instruct"},
     }
-
-
-_ALIGNED = {"mode": "aligned", "code": "def f(columns):\n    return list(columns[0])\n"}
-_LIST = {"mode": "list", "code": "def f(items):\n    return list(items[0])\n"}
-
-
-def _vision_reading(node: str) -> dict[str, Any]:
-    return {
-        "id": "V",
-        "op": "LLMVisionOp",
-        "inputs": [node],
-        "image_source": "Images",
-        "messages": [{"role": "user", "content": "hello"}],
-        "rowwise_template": "Describe {value}",
-        "rowwise_columns": [{"label": "value", "node": node, "path": "items.output"}],
-        "config": {"model": "meta-llama/Llama-3.2-11B-Vision-Instruct"},
-    }
-
-
-def _embedding_reading(node: str) -> dict[str, Any]:
-    return {
-        "id": "E",
-        "op": "EmbeddingOp",
-        "inputs": [node],
-        "input": node,
-        "config": {"model": "BAAI/bge-small-en-v1.5"},
-    }
+    if kind == "vision":
+        spec.update(
+            op="LLMVisionOp",
+            image_source="Images",
+            config={"model": "meta-llama/Llama-3.2-11B-Vision-Instruct"},
+        )
+    return spec
 
 
 @pytest.mark.parametrize(
@@ -222,16 +218,12 @@ def _embedding_reading(node: str) -> dict[str, Any]:
     [_lower(), _lower(**_ALIGNED), _lower(**_LIST), _router(error_branch=True)],
     ids=["row", "aligned", "list", "error"],
 )
-@pytest.mark.parametrize(
-    "model",
-    [_model_reading, _vision_reading, _embedding_reading],
-    ids=["chat", "vision", "embedding"],
-)
+@pytest.mark.parametrize("kind", _MODEL_KINDS)
 def test_a_model_op_reading_marked_values_is_refused(
-    carrying: dict[str, Any], model: Any
+    carrying: dict[str, Any], kind: str
 ) -> None:
     node = "R.error" if carrying["op"] == "RouterOp" else "L"
-    ops = [_parse(format="json"), carrying, model(node)]
+    ops = [_parse(format="json"), carrying, _model_reading(node, kind)]
     with pytest.raises(ValueError, match="rule or default"):
         _build(ops, {"Answer": ["no idea"], "Images": ["img.png"]})
 

@@ -74,14 +74,12 @@ def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
 
 
 def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
+    # Only an object whose sole key is `_fail` is a marker, and `error` is a
+    # branch name only when the op declares the branch.
     rows = [{"case_id": "e", "text": 'the field "_fail" is reserved'}]
-    column = [json.dumps(row) for row in rows]
-    assert _branch_rows(_router(), "route.patient", column) == rows
     field = [{"case_id": "f", "text": "x", "_fail": "a user field"}]
-    assert _branch_rows(_router(), "route.patient", [json.dumps(field[0])]) == field
-
-
-def test_a_router_names_the_error_branch_only_when_it_declares_one() -> None:
+    for row in (*rows, *field):
+        assert _branch_rows(_router(), "route.patient", [json.dumps(row)]) == [row]
     rule = [{"branch": "error", "match": "equals", "value": "1"}]
     RouterOp.from_entry(_router(rules=rule))
     with pytest.raises(ValueError, match="error"):
