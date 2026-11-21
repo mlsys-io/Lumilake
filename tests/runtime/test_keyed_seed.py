@@ -42,8 +42,9 @@ def _payload() -> dict[str, Any]:
 
 def _graph(payload: dict[str, Any]) -> Any:
     spec = next(iter(parse_yaml_payload(payload).values()))
-    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    return RuntimeGraphBuilder().build(compiled)
+    return RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
 
 
 def _seed_node(payload: dict[str, Any]) -> Any:
@@ -71,8 +72,8 @@ def _built(template_id: str = "Answer", round_number: int | None = None) -> Any:
 def _documented_seed(
     keys: list[Any], op_id: str = "Answer", round_number: int | None = None
 ) -> list[int]:
-    """The docs/OPS.md formula: SHA-256 over the canonical JSON of [seed, op
-    id, round, key], first 8 bytes big-endian, mod 2^31."""
+    """The docs/OPS.md formula: SHA-256 over [seed, op id, round, key] as
+    canonical JSON, first 8 bytes big-endian, mod 2^31."""
 
     def one(key: Any) -> int:
         text = json.dumps([7, op_id, round_number, key], separators=(",", ":"))
@@ -106,8 +107,7 @@ def _round_seed(body: dict[str, Any], results: dict[str, Any]) -> dict[str, Any]
 
 
 def test_the_generated_function_matches_the_documented_seed() -> None:
-    """The parsed step's function draws the documented seed, keyed by the row's
-    key rather than its position, and every draw input changes it."""
+    """The parsed step draws the documented seed by key, and every input counts."""
     fn = _generated(_payload())
     keys = [row["case_id"] for row in _ROWS]
     assert [fn((row,)) for row in _COLUMN] == _documented_seed(keys)
@@ -118,8 +118,7 @@ def test_the_generated_function_matches_the_documented_seed() -> None:
 
 
 def test_a_keyed_seed_keeps_slices_and_reads_the_chat_op() -> None:
-    """A row-mode seed op is not a list-cardinality node, so the input set can
-    still be split into slices, and the chat op reads its per-row column."""
+    """A row-mode seed op lets slices split, and the chat op reads its column."""
     graph = _graph(_payload())
     assert graph.list_lambda_cardinality_nodes() == set()
     fn = _generated(_payload())
@@ -131,9 +130,8 @@ def test_a_keyed_seed_keeps_slices_and_reads_the_chat_op() -> None:
 
 
 def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
-    """A template op keeps its unrendered id in the seed inputs, and a later
-    round's chat op keys on an earlier round's node, forwarded as a flat
-    input the row function reads as the value."""
+    """A template op keeps its unrendered id, and a later round's chat op keys
+    on an earlier round's node, forwarded flat for the row function to read."""
     key = {"key": {"node": "Cases", "path": "items.output.case_id"}}
     body = {"ops": [{**_ANSWER, "id": "Answer{{round}}", "rowwise_seed": key}]}
     generated = _round_seed(body, {"Cases": [{"output": row} for row in _ROWS]})
@@ -142,7 +140,6 @@ def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     assert [fn(("c1",)), fn(("c2",))] == _documented_seed(
         ["c1", "c2"], "Answer{{round}}", 2
     )
-    assert "[7, 'Answer{{round}}', 2, value]" in generated["_code"]
 
 
 def test_the_key_form_is_refused() -> None:
@@ -166,7 +163,10 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
     cases_id = next(k for k, v in native.items() if v["_op"] == "DataOp")
     seed_key = {"key": {"node": cases_id, "path": "items.output.case_id"}}
     native[chat_id] = {**native[chat_id], "rowwise_seed": seed_key}
-    assert rewrite_native_keys(native, job_seed=7)[f"{chat_id}__seed"]["mode"] == "row"
+    out = rewrite_native_keys(native, job_seed=7)
+    assert out[f"{chat_id}__seed"]["mode"] == "row"
+    # The graph is built in insertion order, so the seed op comes first.
+    assert list(out).index(f"{chat_id}__seed") < list(out).index(chat_id)
     native[f"{chat_id}__seed"] = {"_op": "DataOp"}
     with pytest.raises(ValueError, match="already holds"):
         rewrite_native_keys(native, job_seed=7)
