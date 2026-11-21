@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from lumilake_server.ops.util_ops import build_lambda_spec
+from lumilake_server.ops.util_ops import CLEARS_KEY, build_lambda_spec
 
 from .common import EmitContext
 
@@ -20,9 +20,11 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             "image": entry.fields.get("image"),
             "expected_runtime_s": entry.fields.get("expected_runtime_s"),
             "cache": entry.fields.get("cache"),
-            # Set by a router's expansion, never by a user entry: the parser
-            # refuses a user value before expansion.
-            "clears_markers": entry.fields.get("clears_markers"),
+            "on_fail": entry.fields.get("on_fail"),
+            "on_empty": entry.fields.get("on_empty"),
+            # Set on the branches a router's expansion generated, never a
+            # workflow field.
+            CLEARS_KEY: True if ctx.clears_markers else None,
         },
         f"LambdaOp '{entry.id}'",
     )

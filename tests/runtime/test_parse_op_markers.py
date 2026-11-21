@@ -7,6 +7,8 @@ from typing import Any
 import pytest
 
 from lumilake import envs
+from lumilake_server.dynamic.spec import DynamicSpec
+from lumilake_server.dynamic.template import validate_template
 from lumilake_server.graphs import Graph
 from lumilake_server.ops.router_ops import RouterOp, expand_routers
 from lumilake_server.parser import parse_yaml_payload
@@ -254,8 +256,8 @@ def test_a_model_op_reading_a_router_rule_or_default_branch_builds() -> None:
 
 
 def test_a_user_entry_cannot_declare_clears_markers() -> None:
-    # The flag is set by a router's expansion only; a native payload can still
-    # name it, so it is validated as a bool there.
+    # The flag is set by a router's expansion only, on the branches it
+    # generates, so it is not a workflow field anywhere it could be declared.
     with pytest.raises(ValueError, match="clears_markers"):
         parse_yaml_payload(
             json.dumps(
@@ -266,32 +268,40 @@ def test_a_user_entry_cannot_declare_clears_markers() -> None:
                 }
             )
         )
-    native: dict[str, Any] = {
-        "_id": "L",
-        "_op": "LambdaOp",
-        "_max_iter": None,
-        "_inputs": [],
-        "fn_name": "f",
-        "_code": "def f(row):\n    return row[0]\n",
-        "clears_markers": "false",
+    template = {
+        "id": "Live_r{{round}}",
+        "op": "LambdaOp",
+        "inputs": ["Symbols"],
+        "mode": "list",
+        "fn_name": "state",
+        "code": "def state(c):\n    return c[0]\n",
+        "clears_markers": True,
     }
-    with pytest.raises(ValueError, match="must be a bool"):
-        Graph.from_json({"L": native})
-
-
-def test_a_router_branch_built_again_keeps_its_clearing_flag() -> None:
-    # A round's build re-parses the expanded branch entries, whose flag passes
-    # when the payload is marked expanded and is refused from a user payload.
-    ops = expand_routers([_router(error_branch=True)])
-    payload = {
-        "name": "p",
-        "inputs": {"Answer": ["x"]},
-        "ops": [_parse(format="json"), *ops],
-        "outputs": [],
-    }
-    assert parse_yaml_payload(json.dumps(payload), expanded=True) is not None
+    spec = DynamicSpec.model_validate(
+        {
+            "type": "dynamic",
+            "goal": "g",
+            "driver": {
+                "model": "m",
+                "template": {
+                    "first": {"ops": [template], "export": ["Live_r{{round}}"]},
+                    "next": {"ops": [template], "export": ["Live_r{{round}}"]},
+                    "stop_when_empty": "Live_r{{prev}}",
+                },
+            },
+        }
+    )
+    driver_template = spec.driver.template
+    assert driver_template is not None
     with pytest.raises(ValueError, match="clears_markers"):
-        parse_yaml_payload(json.dumps(payload))
+        validate_template(driver_template, None, max_nodes_per_round=8)
+    # A router branch keeps its flag through the build of a later round.
+    values = {"Answer": ['{"a": 1}']}
+    router = _router(inputs=["L"], error_branch=True)
+    ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
+    assert _build(ops, values) is not None
+    with pytest.raises(ValueError, match="rule or default"):
+        _build([*ops[:-1], _model_reading("R.error")], values)
 
 
 def test_a_row_lambda_skips_the_function_for_a_marked_row(tmp_path: Path) -> None:
@@ -387,9 +397,10 @@ def test_a_router_error_branch_passes_its_markers_and_refuses_a_new_one(
 
 def test_a_router_without_an_error_branch_sends_a_marked_row_nowhere() -> None:
     marked = json.dumps({"_fail": {"op": "P", "reason": "no JSON object"}})
-    ops = expand_routers([_router()])
+    ops, clearing = expand_routers([_router()])
     branches = RouterOp.from_entry(_router()).branches
     assert [op["id"] for op in ops] == [f"R.{branch}" for branch in branches]
+    assert clearing == {op["id"] for op in ops}
     for op in ops:
         assert materialize(op["code"], op["fn_name"])(([marked],)) == []
 

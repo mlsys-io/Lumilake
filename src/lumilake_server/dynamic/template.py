@@ -20,7 +20,7 @@ from lumilake_server.dynamic.driver import (
     resolve_subgraph,
     validate_emitted_subgraph,
 )
-from lumilake_server.ops.router_ops import expand_routers
+from lumilake_server.ops.router_ops import expand_routers, reject_clears_markers
 from lumilake_server.runtime.python_step import WHOLE_RESULT_MODES
 
 _ROUND = "{{round}}"
@@ -192,12 +192,14 @@ def validate_template(
     the nodes the earlier rounds registered, and require the stop export to be
     a row list that round exported."""
     plans = {number: plan_for_round(template, number) for number in (1, 2, 3)}
+    for plan in plans.values():
+        reject_clears_markers(plan.ops, "a template round")
     _require_export(plans[1], stop_export(template, 2), 1)
     _require_export(plans[2], stop_export(template, 3), 2)
     registry: dict[str, dict[str, Any]] = {}
     for number in (1, 2, 3):
         plan = plans[number]
-        ops = expand_routers(plan.ops)
+        ops, _ = expand_routers(plan.ops)
         validate_emitted_subgraph(
             ops,
             registry,

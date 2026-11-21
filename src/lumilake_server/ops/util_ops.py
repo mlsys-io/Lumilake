@@ -28,6 +28,10 @@ MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
 
 LambdaMode = Literal["row", "list", "aligned", "expand", "reduce"]
+ReduceOnFail = Literal["drop_failed", "fail_group"]
+ExpandOnEmpty = Literal["drop", "fail"]
+CLEARS_KEY = "_clears_markers"
+"""The private serialized key for ``LambdaOp.clears_markers``."""
 
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
@@ -51,7 +55,9 @@ class LambdaSpec(BaseModel):
     image: StrictStr | None = None
     expected_runtime_s: StrictFloat | None = Field(default=None, gt=0)
     cache: StrictBool | None = None
-    clears_markers: StrictBool | None = None
+    on_fail: ReduceOnFail | None = None
+    on_empty: ExpandOnEmpty | None = None
+    clears_markers: StrictBool | None = Field(default=None, alias=CLEARS_KEY)
 
     @field_validator("image")
     @classmethod
@@ -73,6 +79,18 @@ class LambdaSpec(BaseModel):
             raise ValueError(
                 "reduce mode requires 'by' to be a dotted path of non-empty"
                 f" segments (got {self.by!r})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _policy_needs_its_mode(self) -> Self:
+        if self.on_fail is not None and self.mode != "reduce":
+            raise ValueError(
+                f"'on_fail' is only valid in reduce mode (got mode {self.mode!r})"
+            )
+        if self.on_empty is not None and self.mode != "expand":
+            raise ValueError(
+                f"'on_empty' is only valid in expand mode (got mode {self.mode!r})"
             )
         return self
 
@@ -226,6 +244,8 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
 
+    ON_EMPTY_DROP: ExpandOnEmpty = "drop"
+
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
@@ -239,6 +259,8 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         by: str | None = None,
+        on_fail: ReduceOnFail | None = None,
+        on_empty: ExpandOnEmpty | None = None,
         clears_markers: bool = False,
     ) -> None:
         input_ops: list[Op] = [
@@ -259,7 +281,9 @@ class LambdaOp(Op):
                 "image": image,
                 "expected_runtime_s": expected_runtime_s,
                 "cache": cache,
-                "clears_markers": clears_markers or None,
+                "on_fail": on_fail,
+                "on_empty": on_empty,
+                CLEARS_KEY: clears_markers or None,
             },
             "LambdaOp",
         )
@@ -294,9 +318,19 @@ class LambdaOp(Op):
         return self.spec.cache
 
     @property
+    def on_fail(self) -> ReduceOnFail:
+        """What a reduce group holding a failed record does."""
+        return self.spec.on_fail or "fail_group"
+
+    @property
+    def on_empty(self) -> ExpandOnEmpty:
+        """What a parent expanding to no children does."""
+        return self.spec.on_empty or self.ON_EMPTY_DROP
+
+    @property
     def clears_markers(self) -> bool:
-        """Whether a router branch that keeps only the rows its rule or the
-        default matched, so it never emits a failed record."""
+        """Whether a router branch keeps only the rows its rule or the default
+        matched, so it never emits a failed record."""
         return bool(self.spec.clears_markers)
 
     @property
@@ -332,6 +366,8 @@ class LambdaOp(Op):
             expected_runtime_s=spec.expected_runtime_s,
             cache=spec.cache,
             sample_value=data.get("sample_value"),
+            on_fail=spec.on_fail,
+            on_empty=spec.on_empty,
             clears_markers=bool(spec.clears_markers),
         )
         return op

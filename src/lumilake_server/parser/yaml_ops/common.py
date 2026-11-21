@@ -27,6 +27,7 @@ class EmitContext:
     user_id_to_internal: Mapping[str, str]
     scope: str
     graph_ops: dict[str, dict[str, Any]]
+    clears_markers: bool = False
 
 
 Emitter = Callable[[dict[str, Any], EmitContext], None]
