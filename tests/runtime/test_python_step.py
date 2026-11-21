@@ -476,16 +476,10 @@ def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
     """A seeded wrapper takes the tagged seed column from its plan and calls
     the function with each row's seed as a second argument."""
     llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
+    seed = {"kind": "literal", "values": ["11", "22"], "role": "seed"}
     out = _run_wrapper(
         "def seeded(inputs, seed):\n    return '%s-%d' % (inputs[0], seed)\n",
-        [
-            {"kind": "stage", "node": "llm"},
-            {
-                "kind": "literal",
-                "values": ["11", "22"],
-                "role": "seed",
-            },
-        ],
+        [{"kind": "stage", "node": "llm"}, seed],
         {"llm": llm_dir},
         seeded=True,
     )

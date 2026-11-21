@@ -99,7 +99,7 @@ def _round_build(
         results=results,
         job_seed=7,
         template_ids=plan.template_ids,
-        symbols=symbols if symbols is not None else [],
+        symbols=symbols or [],
     )
 
 
@@ -123,7 +123,7 @@ def test_a_keyed_seed_reads_the_chat_op() -> None:
 def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     """A template op keeps its unrendered id, and a later round's chat op keys
     on an earlier round's node, forwarded flat for the row function to read;
-    a key that repeats over the round's own values is refused when it is built."""
+    a key that repeats over the round's own values or the run input is refused."""
     answer = {**_ANSWER, "id": "Answer{{round}}"}
     results = {"Cases": [{"output": row} for row in _ROWS]}
     build = _round_build({"ops": [answer]}, results)
@@ -140,22 +140,10 @@ def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
     del repeated["rowwise_seed"]["pairing"]
     with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
         _round_build({"ops": [repeated]}, {"Cases": [{"output": row} for row in _ROWS]})
-
-
-def test_a_round_refuses_a_repeated_key_in_its_run_input() -> None:
-    """A round's key column may be the run input, whose symbols the round
-    builder is given, so a repeated symbol is refused when the round is built."""
-    sample = {
-        "id": "Sample",
-        "op": "LambdaOp",
-        "inputs": ["Symbols"],
-        "fn_name": "sample",
-        "code": "def sample(row, seed):\n    return '%d' % seed\n",
-        "seed": {"key": {"node": "Symbols", "path": "items.output"}},
-    }
+    # The run input is a round's key column too, over the symbols it was given.
+    repeated["rowwise_seed"] = {"key": {"node": "Symbols", "path": "items.output"}}
     with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
-        _round_build({"ops": [sample]}, {}, symbols=["AAA", "BBB", "AAA"])
-    _round_build({"ops": [sample]}, {}, symbols=["AAA", "BBB", "CCC"])
+        _round_build({"ops": [repeated]}, {}, symbols=["AAA", "BBB", "AAA"])
 
 
 def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:
