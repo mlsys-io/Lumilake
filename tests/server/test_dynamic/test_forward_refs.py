@@ -843,6 +843,43 @@ def test_a_native_key_form_error_names_the_op_in_a_422():
     assert "LLMChatOp 'chat'" in refusal.value.detail
 
 
+def test_a_bare_native_graph_takes_its_top_level_seed():
+    """An unwrapped native graph carries the job seed beside its ops, and that
+    field is read as the seed rather than as an op."""
+    graph_specs: dict[str, Any] = {}
+    _dispatch_workflow_to_graph_specs(
+        workflow_format="native",
+        workflow_payload={
+            "seed": 7,
+            "cases": {
+                "_id": "cases",
+                "_op": "DataOp",
+                "_inputs": [],
+                "_max_iter": None,
+                "data": ["{}"],
+            },
+        },
+        batch_inputs={},
+        graph_name="g",
+        graph_specs=graph_specs,
+        idx=0,
+    )
+    assert graph_specs["g"]["seed"] == 7
+    assert list(graph_specs["g"]["graph"]) == ["cases"]
+
+
+def test_the_native_seed_must_be_an_integer():
+    with pytest.raises(HTTPException, match="'seed' must be an integer"):
+        _dispatch_workflow_to_graph_specs(
+            workflow_format="native",
+            workflow_payload={"graph": {"cases": {"_op": "DataOp"}}, "seed": "7"},
+            batch_inputs={},
+            graph_name="g",
+            graph_specs={},
+            idx=0,
+        )
+
+
 def test_forward_aligned_materializers_are_row_cardinality():
     # A forwarded round where News Report reads two materializers compiles as a
     # multi-row group: the materializer runtime nodes are aligned (not list),
