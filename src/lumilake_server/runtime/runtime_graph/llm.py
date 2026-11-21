@@ -23,6 +23,7 @@ from lumilake_server.ops.llm_ops import (
     LLMVisionOp,
 )
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
+from lumilake_server.runtime import lambda_task_helpers
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
     resolve_api_credential,
@@ -1266,12 +1267,12 @@ class _LLMBuilder(_EmbeddingBuilder):
                 if can_evaluate:
                     label = f"lambda_{op.id}"
                     # List-mode LambdaOps raise above, so this call is row-mode.
+                    # A row step decodes its values, whatever supplies them, so
+                    # these literals are decoded here too.
                     row_fn = cast(RowLambdaFn, op.fn)
+                    row = tuple(lambda_task_helpers._decode(v) for v in literal_args)
                     columns[label] = {
-                        "data": {
-                            "type": "list",
-                            "items": [str(row_fn(tuple(literal_args)))],
-                        }
+                        "data": {"type": "list", "items": [str(row_fn(row))]}
                     }
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
                 else:

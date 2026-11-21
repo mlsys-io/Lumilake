@@ -502,6 +502,34 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
     assert lambda_cols and lambda_cols[0]["data"]["items"] == ["HELLO, NVDA!"]
 
 
+def test_api_lambda_op_message_input_is_decoded_like_a_row_step() -> None:
+    """The server hands an evaluated LambdaOp the same decoded values a row
+    step hands it, so a JSON-text literal arrives as the object it holds."""
+    stock = input_placeholder("Stock")
+    payload = FormatOp('{{"name": "{name}"}}', name=stock)
+
+    def _name(inputs: tuple[str | list[Message], ...]) -> str:
+        (value,) = inputs
+        assert isinstance(value, dict)
+        return str(value["name"]).upper()
+
+    shout = LambdaOp([payload], fn=_name)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=shout)],
+        config=GenerationConfig(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api=ApiConfig(),
+        ),
+    )
+    output = as_output("result", llm)
+    compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    columns = runtime_graph.nodes[llm.id].data_spec["template"]["columns"]
+    lambda_cols = [col for col in columns if col.get("label", "").startswith("lambda_")]
+    assert lambda_cols and lambda_cols[0]["data"]["items"] == ["NVDA"]
+
+
 def test_api_lambda_over_runtime_output_fails_closed() -> None:
     """A Lambda message transform over a runtime output must fail closed in API
     mode with a self-explaining error: the API request body cannot carry a
