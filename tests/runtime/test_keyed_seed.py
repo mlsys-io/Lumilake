@@ -10,7 +10,7 @@ from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.parser.keyed_seed import rewrite_native_keys
+from lumilake_server.parser.keyed_seed import rewrite_native_keys, row_seed
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
@@ -70,31 +70,42 @@ def _seed_spec(payload: dict[str, Any]) -> dict[str, Any]:
     return node.data_spec
 
 
-def _seeds(spec: dict[str, Any], items: list[Any]) -> list[str]:
-    """Run the generated function over one source column, as its step does."""
+def _seeds(spec: dict[str, Any], rows: list[Any]) -> list[Any]:
+    """Run the generated row function over each row, as its step does."""
     fn = lambda_runtime.materialize(spec["code"], spec["fn_name"])
-    return fn((items,))
+    return [fn((row,)) for row in rows]
 
 
 def test_a_key_gives_the_same_seed_wherever_the_row_sits() -> None:
     spec = _seed_spec(_payload())
-    column = list(_COLUMN)
-    seeds = _seeds(spec, column)
+    rows = list(_COLUMN)
+    seeds = _seeds(spec, rows)
     assert seeds[0] == seeds[2] != seeds[1]
-    assert _seeds(spec, [column[1], column[2], column[0]]) == [
-        seeds[1],
-        seeds[2],
-        seeds[0],
-    ]
+    assert _seeds(spec, [rows[1], rows[2], rows[0]]) == [seeds[1], seeds[2], seeds[0]]
+
+
+def test_a_keyed_seed_does_not_pin_the_whole_input_list() -> None:
+    """A row-mode seed op is not a list-cardinality node, so the input set can
+    still be split into slices, and a row's seed is the same in any slice."""
+    payload = _payload()
+    workflow = next(iter(parse_yaml_payload(payload).values()))
+    compiled = Graph.from_json(workflow["graph"]).compile(**workflow["inputs"])
+    graph = RuntimeGraphBuilder().build(compiled)
+    assert graph.list_lambda_cardinality_nodes() == set()
+    seed_spec = _seed_spec(payload)
+    rows = list(_COLUMN)
+    first, second = _seeds(seed_spec, rows[:2]), _seeds(seed_spec, rows[2:])
+    assert first + second == _seeds(seed_spec, rows)
 
 
 def test_the_chat_op_reads_the_generated_seed_column() -> None:
     nodes = _nodes(_payload())
     chat = next(node for node in nodes.values() if node.task_type == "inference")
     (seed_id,) = [node_id for node_id in nodes if "__seed" in node_id]
+    assert "mode" not in nodes[seed_id].data_spec
     assert chat.data_spec["seeds"] == {
         "node": seed_id,
-        "path": "value.items.output",
+        "path": "value.items.value",
     }
     assert nodes[seed_id].data_spec["plan"] == [
         {
@@ -113,9 +124,9 @@ def test_a_different_job_seed_op_id_or_round_gives_a_different_seed() -> None:
     base = _seeds(_seed_spec(_payload()), column)
     assert _seeds(_seed_spec(_payload(seed=8)), column) != base
     key = _ROWS[0]["case_id"]
-    direct = lambda_runtime.row_seed(7, "Answer", None, key)
-    assert lambda_runtime.row_seed(7, "Other", None, key) != direct
-    assert lambda_runtime.row_seed(7, "Answer", 1, key) != direct
+    direct = row_seed(7, "Answer", None, key)
+    assert row_seed(7, "Other", None, key) != direct
+    assert row_seed(7, "Answer", 1, key) != direct
 
 
 def test_a_template_op_keeps_its_unrendered_id_across_rounds() -> None:
@@ -148,11 +159,11 @@ def test_a_template_op_keeps_its_unrendered_id_across_rounds() -> None:
     assert "[7, 'Answer{{round}}', 2, value]" in generated["_code"]
 
 
-def test_a_missing_or_null_key_fails_naming_the_op_and_row() -> None:
+def test_a_missing_or_null_key_fails_naming_the_op() -> None:
     spec = _seed_spec(_payload())
-    with pytest.raises(ValueError, match="Answer row 1 has no key"):
-        _seeds(spec, [json.dumps(_ROWS[0]), json.dumps({"question": "q"})])
-    with pytest.raises(ValueError, match="Answer row 0 has a null key"):
+    with pytest.raises(ValueError, match="Answer' has no row key in .*question"):
+        _seeds(spec, [json.dumps({"question": "q"})])
+    with pytest.raises(ValueError, match="Answer' has a null row key in .*case_id"):
         _seeds(spec, [json.dumps({"case_id": None})])
     with pytest.raises(ValueError, match="'seed' must be an integer"):
         parse_yaml_payload(_payload(seed="7"))
@@ -180,7 +191,7 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
     }
     out = rewrite_native_keys(rewritten, job_seed=7)
     generated = out[f"{chat_id}__seed"]
-    assert generated["mode"] == "list"
+    assert generated["mode"] == "row"
     assert out[chat_id]["rowwise_seed"] == {
         "node": f"{chat_id}__seed",
         "path": "items.output",

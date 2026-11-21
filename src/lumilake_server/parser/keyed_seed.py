@@ -3,17 +3,48 @@
 ``rowwise_seed: {key: {node, path}}`` names a column that holds each row's key;
 the seed is then a pseudo-random function of the job seed, the op's id, the
 round and that key, so it does not depend on batch position or worker. The
-parser turns the key form into a generated list-mode ``LambdaOp`` that reads the
+parser turns the key form into a generated row-mode ``LambdaOp`` that reads the
 key column and returns one seed per row, and binds the chat op to its output.
 """
 
+import hashlib
+import json
 from typing import Any
-
-from lumilake_server.utils import lambda_runtime
 
 SEED_SUFFIX = "__seed"
 SEED_FN_NAME = "seed_for_row"
 _OUTPUT = "output"
+SEED_MODULUS = 2**31
+
+_SEED_FN = """\
+import hashlib
+import json
+
+
+def {fn_name}(row):
+    value = row[0]
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            pass
+    for part in {parts!r}:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            raise ValueError({missing!r} % (row[0],))
+    if value is None:
+        raise ValueError({null!r} % (row[0],))
+    payload = json.dumps(
+        [{job_seed!r}, {template_id!r}, {round_number!r}, value],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % {modulus}
+"""
 
 
 def key_parts(path: str) -> list[str]:
@@ -30,6 +61,46 @@ def key_parts(path: str) -> list[str]:
 def seed_op_id(chat_op_id: str) -> str:
     """The id of the row function generated for one chat op."""
     return f"{chat_op_id}{SEED_SUFFIX}"
+
+
+def row_seed(
+    job_seed: int, template_id: str, round_number: int | None, key: object
+) -> int:
+    """The seed one row draws with: a pseudo-random function of the job seed,
+    the op's template id, the round and the row key, so the same four values
+    give the same draw wherever the row runs."""
+    payload = json.dumps(
+        [job_seed, template_id, round_number, key],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % SEED_MODULUS
+
+
+def seed_source(
+    fn_name: str,
+    job_seed: int,
+    template_id: str,
+    round_number: int | None,
+    parts: list[str],
+) -> str:
+    """The source of a keyed-seed row function: it reads one row's key out of
+    its input column and returns the seed that row draws with. The job seed,
+    template id, round and key path are constants of the generated code, so the
+    body never runs user code; ``row_seed`` is the same hash over the same
+    inputs, so both sides of the runtime share one definition."""
+    return _SEED_FN.format(
+        fn_name=fn_name,
+        parts=parts,
+        missing=f"LLMChatOp '{template_id}' has no row key in '%s' with path"
+        f" {'.'.join(parts) or '<the value itself>'}",
+        null=f"LLMChatOp '{template_id}' has a null row key in '%s'",
+        job_seed=job_seed,
+        template_id=template_id,
+        round_number=round_number,
+        modulus=SEED_MODULUS,
+    )
 
 
 def key_target(
@@ -78,7 +149,7 @@ def seed_op(
     round_number: int | None,
     template_id: str | None = None,
 ) -> dict[str, Any]:
-    """The ``LambdaOp`` that returns one seed per row from each row's key.
+    """The row-mode ``LambdaOp`` that returns each row's seed from its key.
     ``template_id`` is the op id as the user wrote it; it defaults to the
     internal id."""
     return {
@@ -87,14 +158,14 @@ def seed_op(
         "_max_iter": None,
         "_inputs": [key_node],
         "fn_name": SEED_FN_NAME,
-        "_code": lambda_runtime.seed_source(
+        "_code": seed_source(
             SEED_FN_NAME,
             job_seed,
             chat_op_id if template_id is None else template_id,
             round_number,
             key_parts(key_path),
         ),
-        "mode": "list",
+        "mode": "row",
     }
 
 

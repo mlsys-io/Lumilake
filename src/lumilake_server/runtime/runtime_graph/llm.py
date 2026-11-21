@@ -692,7 +692,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             dependencies.append(node_ref)
         data_spec["seeds"] = {
             "node": node_ref,
-            "path": self._op_output(upstream).read(
+            "path": self._op_output(upstream).read_value(
                 path, f"LLMChatOp {llm_op_id} rowwise_seed"
             ),
         }

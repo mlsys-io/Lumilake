@@ -36,9 +36,11 @@ def _build(mutate: Callable[[dict[str, Any]], None]) -> Any:
 
 def test_rowwise_seed_lowers_to_task_seeds() -> None:
     node = _build(lambda payload: None)
+    # A row Lambda keeps its return under ``value``; ``output`` is its text
+    # form, which would read as a string rather than an integer seed.
     assert node.data_spec["seeds"] == {
         "node": next(dep for dep in node.dependencies if "Seeds" in dep),
-        "path": "value.items.output",
+        "path": "value.items.value",
     }
 
 
