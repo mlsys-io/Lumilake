@@ -202,6 +202,7 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
+    _refuse_user_clears_markers(ops_block)
     op_entries = [
         _parse_op_entry(entry, idx)
         for idx, entry in enumerate(expand_routers(ops_block))
@@ -282,6 +283,17 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         graph_ops[op_id] = out_dict
 
     return _YamlGraphSpec(graph=graph_ops, inputs=inputs)
+
+
+def _refuse_user_clears_markers(ops_block: list[Any]) -> None:
+    """Refuse ``clears_markers`` on a user op entry: only a router branch the
+    parser expands sets it, so a user value never switches the guard off."""
+    for entry in ops_block:
+        if isinstance(entry, dict) and "clears_markers" in entry:
+            raise ValueError(
+                f"op '{entry.get('id')}' declares 'clears_markers', which is set"
+                " by a router's expansion and is not a workflow field"
+            )
 
 
 def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:

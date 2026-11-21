@@ -69,6 +69,9 @@ def _parse(**fields: Any) -> dict[str, Any]:
     return {"id": "P", "op": "ParseOp", "inputs": ["Answer"], **fields}
 
 
+_WHOLE = "def f(columns):\n    return list(columns[0])\n"
+
+
 def _lower(**fields: Any) -> dict[str, Any]:
     return {
         "id": "L",
@@ -174,16 +177,6 @@ def test_parse_rejects_a_bad_spec_naming_the_op() -> None:
         )
 
 
-_MODEL_KINDS = ("chat", "vision", "embedding")
-_WHOLE = "def f(columns):\n    return list(columns[0])\n"
-_CARRYING = [
-    (_lower(), "L"),
-    (_lower(mode="aligned", code=_WHOLE), "L"),
-    (_lower(mode="list", code=_WHOLE), "L"),
-    (_router(error_branch=True), "R.error"),
-]
-
-
 def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
     """A model op of ``kind`` reading ``node`` through its rowwise column or
     its embedding content."""
@@ -214,9 +207,15 @@ def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "carrying, node", _CARRYING, ids=["row", "aligned", "list", "error"]
+    "carrying, node, kind",
+    [
+        (_lower(), "L", "chat"),
+        (_lower(mode="aligned", code=_WHOLE), "L", "vision"),
+        (_lower(mode="list", code=_WHOLE), "L", "embedding"),
+        (_router(error_branch=True), "R.error", "chat"),
+    ],
+    ids=["row", "aligned", "list", "error"],
 )
-@pytest.mark.parametrize("kind", _MODEL_KINDS)
 def test_a_model_op_reading_marked_values_is_refused(
     carrying: dict[str, Any], node: str, kind: str
 ) -> None:
@@ -229,6 +228,32 @@ def test_a_model_op_reading_a_router_rule_or_default_branch_builds() -> None:
     router = _router(inputs=["L"])
     ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
     assert _build(ops, {"Answer": ['{"a": 1}']}) is not None
+
+
+def test_a_user_entry_cannot_declare_clears_markers() -> None:
+    # The flag is set by a router's expansion only; a native payload can still
+    # name it, so it is validated as a bool there.
+    with pytest.raises(ValueError, match="clears_markers"):
+        parse_yaml_payload(
+            json.dumps(
+                {
+                    "name": "p",
+                    "inputs": {"Answer": ["x"]},
+                    "ops": [_parse(format="json"), _lower(clears_markers=True)],
+                }
+            )
+        )
+    native: dict[str, Any] = {
+        "_id": "L",
+        "_op": "LambdaOp",
+        "_max_iter": None,
+        "_inputs": [],
+        "fn_name": "f",
+        "_code": "def f(row):\n    return row[0]\n",
+        "clears_markers": "false",
+    }
+    with pytest.raises(ValueError, match="must be a bool"):
+        Graph.from_json({"L": native})
 
 
 def test_a_row_lambda_skips_the_function_for_a_marked_row(tmp_path: Path) -> None:

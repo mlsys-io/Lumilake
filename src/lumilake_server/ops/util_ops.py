@@ -324,6 +324,11 @@ class LambdaOp(Op):
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
+        clears_markers = data.get("clears_markers", False)
+        if not isinstance(clears_markers, bool):
+            raise ValueError(
+                f"LambdaOp '{data.get('_id')}' 'clears_markers' must be a bool"
+            )
         return cls(
             inputs=input_ops,
             fn=fn,
@@ -335,7 +340,7 @@ class LambdaOp(Op):
             expected_runtime_s=expected_runtime_s,
             cache=cache,
             sample_value=sample_value,
-            clears_markers=bool(data.get("clears_markers", False)),
+            clears_markers=clears_markers,
         )
 
 

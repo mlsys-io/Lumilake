@@ -24,6 +24,8 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     op_dict["fn_name"] = fn_name
     op_dict["_code"] = code
     op_dict["mode"] = mode
+    # Set by a router's expansion, never by a user entry: the parser refuses a
+    # user value before expansion, so only a cleared branch reaches here.
     clears_markers = entry.fields.get("clears_markers")
     if clears_markers is not None:
         if not isinstance(clears_markers, bool):
