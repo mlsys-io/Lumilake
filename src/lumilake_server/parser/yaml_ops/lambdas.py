@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from lumilake_server.ops.router_ops import CLEARS_KEY
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import EmitContext
@@ -24,11 +25,10 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     op_dict["fn_name"] = fn_name
     op_dict["_code"] = code
     op_dict["mode"] = mode
-    # Set by a router's expansion, which the parser marks on the branches it
-    # generated; never a workflow field. The leading underscore keeps it
-    # parser-owned through serialization.
-    if ctx.clears_markers:
-        op_dict["_clears_markers"] = True
+    # Set by a router's expansion, which keeps it on the branch entries it
+    # generated; a user entry that declares it is refused before expansion.
+    if entry.fields.get(CLEARS_KEY):
+        op_dict[CLEARS_KEY] = True
     # Optional limits for the FlowMesh python task the op compiles to; bounds
     # are checked when the op is built.
     for key, kind in (("timeout_s", (int, float)), ("memory_mb", int)):

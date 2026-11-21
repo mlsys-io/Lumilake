@@ -16,6 +16,7 @@ from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY
 
 ROUTER_OP = "RouterOp"
 ERROR_BRANCH = "error"
+CLEARS_KEY = "_clears_markers"
 
 _MATCHES = ("contains", "equals")
 _NAME_RE = re.compile(r"^\w+$")
@@ -254,29 +255,36 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def reject_clears_markers(ops: list[dict[str, Any]], where: str) -> None:
-    """Refuse ``clears_markers`` on a user op entry: only a router's expansion
-    sets it, on the branches it generates, so it is not a workflow field."""
+def branch_clears_markers(branch_id: str) -> bool:
+    """Whether a branch a router's expansion produced drops failed records: a
+    rule or default branch keeps only the rows it matched, so it never emits
+    one, while the ``error`` branch is exactly the failed records."""
+    return not branch_id.endswith(f".{ERROR_BRANCH}")
+
+
+def reject_user_clears_markers(ops: list[dict[str, Any]], where: str) -> None:
+    """Refuse a marker-clearing key on a user op entry, under its public or its
+    parser-owned spelling: only a router's expansion sets it, on the branches
+    it generates, so it is not a workflow field."""
     for entry in ops:
-        if isinstance(entry, dict) and "clears_markers" in entry:
+        if not isinstance(entry, dict):
+            continue
+        if "clears_markers" in entry or CLEARS_KEY in entry:
             raise ValueError(
                 f"op '{entry.get('id')}' of {where} declares 'clears_markers',"
                 " which a router's expansion sets and is not a workflow field"
             )
 
 
-def expand_routers(
-    ops: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], set[str]]:
+def expand_routers(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Expand every ``RouterOp`` entry into one list-mode LambdaOp per branch,
     each reading the router's single input, so a consumer that names
     ``<router id>.<branch>`` in its ``inputs`` gets exactly that branch's rows.
     A rule or default branch keeps only the rows it matched, so it never emits
-    a failed record; the ``error`` branch is exactly the failed records.
-    Returns the expanded entries and the ids of the branches that clear
-    markers, which the parser sets on their LambdaOps."""
+    a failed record; the ``error`` branch is exactly the failed records. A
+    branch that drops markers carries ``CLEARS_KEY``, so a re-parse of the
+    entries it generated keeps the flag."""
     expanded: list[dict[str, Any]] = []
-    clearing: set[str] = set()
     for entry in ops:
         if not isinstance(entry, dict) or entry.get("op") != ROUTER_OP:
             expanded.append(entry)
@@ -284,16 +292,15 @@ def expand_routers(
         router = RouterOp.from_entry(entry)
         for branch in router.branches:
             branch_id = f"{router.id}.{branch}"
-            expanded.append(
-                {
-                    "id": branch_id,
-                    "op": "LambdaOp",
-                    "inputs": router.inputs.copy(),
-                    "mode": "list",
-                    "fn_name": f"route_{branch}",
-                    "code": branch_lambda_code(router, branch),
-                }
-            )
-            if branch != ERROR_BRANCH:
-                clearing.add(branch_id)
-    return expanded, clearing
+            branch_entry: dict[str, Any] = {
+                "id": branch_id,
+                "op": "LambdaOp",
+                "inputs": router.inputs.copy(),
+                "mode": "list",
+                "fn_name": f"route_{branch}",
+                "code": branch_lambda_code(router, branch),
+            }
+            if branch_clears_markers(branch_id):
+                branch_entry[CLEARS_KEY] = True
+            expanded.append(branch_entry)
+    return expanded

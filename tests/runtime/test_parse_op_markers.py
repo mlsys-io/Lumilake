@@ -8,7 +8,7 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.graphs import Graph
-from lumilake_server.ops.router_ops import expand_routers
+from lumilake_server.ops.router_ops import CLEARS_KEY, expand_routers
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -214,19 +214,16 @@ def test_a_model_op_reading_marked_values_is_refused(
 def test_a_user_entry_cannot_declare_clears_markers() -> None:
     # The flag is set by a router's expansion only, on the branches it
     # generates, so it is not a workflow field anywhere it could be declared.
+    expanded = expand_routers([_parse(format="json"), _router(error_branch=True)])
+    for entry in expanded:
+        if entry["id"] == "R.ok":
+            entry["clears_markers"] = True
     with pytest.raises(ValueError, match="clears_markers"):
         parse_yaml_payload(
-            json.dumps(
-                {
-                    "name": "p",
-                    "inputs": {"Answer": ["x"]},
-                    "ops": [_parse(format="json"), _lower(clears_markers=True)],
-                }
-            )
+            json.dumps({"name": "p", "inputs": {"Answer": ["x"]}, "ops": expanded})
         )
-    # The branch a router expands to keeps its clearing flag through the build,
-    # so a model op reading it is allowed and one reading the error branch is
-    # not.
+    # A round's build re-parses the entries its own expansion produced, and the
+    # flag still tells a model op which branch drops markers.
     values = {"Answer": ['{"a": 1}']}
     router = _router(inputs=["L"], error_branch=True)
     ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
@@ -304,8 +301,8 @@ def test_a_router_error_branch_passes_its_markers_and_refuses_a_new_one(
 
 
 def test_a_router_without_an_error_branch_sends_a_marked_row_nowhere() -> None:
-    ops, clearing = expand_routers([_router()])
-    assert clearing == {op["id"] for op in ops}
+    ops = expand_routers([_router()])
+    assert all(op.get(CLEARS_KEY) for op in ops)
     for op in ops:
         assert materialize(op["code"], op["fn_name"])(([_MARKED],)) == []
 

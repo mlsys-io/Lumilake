@@ -19,6 +19,9 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
+CLEARS_KEY = "_clears_markers"
+"""The private serialized key for ``LambdaOp.clears_markers``, which only a
+router's expansion sets; a user payload cannot declare it."""
 
 
 def _validate_limits(
@@ -350,9 +353,7 @@ class LambdaOp(Op):
         if self.sample_value is not None:
             data["sample_value"] = self.sample_value
         if self.clears_markers:
-            # Parser-owned, so the round builder still knows this branch drops
-            # markers after the graph crosses ``from_json``.
-            data["_clears_markers"] = True
+            data[CLEARS_KEY] = True
         return data
 
     @classmethod
@@ -374,7 +375,6 @@ class LambdaOp(Op):
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
-        input_ops = [other_ops[inp] for inp in data["_inputs"]]
         try:
             return cls(
                 inputs=input_ops,
@@ -388,7 +388,7 @@ class LambdaOp(Op):
                 expected_runtime_s=expected_runtime_s,
                 cache=cache,
                 sample_value=sample_value,
-                clears_markers=data.get("_clears_markers", False),
+                clears_markers=data.get(CLEARS_KEY, False),
             )
         except ValueError as exc:
             raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc
