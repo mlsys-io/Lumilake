@@ -390,7 +390,8 @@ per image); any other retrieval column must have the same per-symbol counts.
 `LambdaOp` runs a serialized Python function against the listed
 upstream values. YAML carries the function as source code (`code`) plus
 a `fn_name`. The function must accept the input tuple in the same
-order as `inputs:` and return a string. For `def` source, `fn_name` names the
+order as `inputs:` and return a string; a non-string return is archived as its
+JSON text. For `def` source, `fn_name` names the
 top-level function to call; imports, constants and helper functions may come
 before it, and a name the code references without binding, importing or
 defining is rejected at submit if the namespace does not provide it. For a
@@ -443,8 +444,8 @@ Where the function runs depends on what reads it:
   runs the task. This is not a Lumilake-provided isolation boundary; use the
   standalone form above for code that should run in its own container. The
   worker's namespace has no `import`, so the code must not import anything;
-  Lumilake wraps it so it decodes each row before calling it, and code that
-  shadows a name the wrapper binds is rejected at submit. If a
+  Lumilake wraps it so it decodes each row before calling it, and code whose own
+  top-level binding reuses a name the wrapper binds is rejected at submit. If a
   runtime node (such as a data-retrieval op) also reads the same
   `LambdaOp`, it is additionally compiled to its own standalone `python` task so
   that node can reference its output; the LLM still inlines it, so the function
