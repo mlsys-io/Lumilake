@@ -484,12 +484,13 @@ Where the function runs depends on what reads it:
   runs the task. This is not a Lumilake-provided isolation boundary; use the
   standalone form above for code that should run in its own container. The
   worker's namespace has no `import`, so the code must not import anything;
-  Lumilake wraps it so it decodes each row before calling it, and code whose own
-  top-level binding reuses a name the wrapper binds is rejected at submit. If a
-  runtime node (such as a data-retrieval op) also reads the same
-  `LambdaOp`, it is additionally compiled to its own standalone `python` task so
-  that node can reference its output; the LLM still inlines it, so the function
-  is evaluated once per reader.
+  Lumilake wraps it so it decodes each row before calling it. Submit rejects
+  code that cannot run in that namespace: a top-level binding that reuses a
+  name the wrapper binds, a top-level annotated assignment, and an annotation
+  naming a type the worker does not provide. If a runtime node (such as a
+  data-retrieval op) also reads the same `LambdaOp`, it is additionally compiled
+  to its own standalone `python` task so that node can reference its output; the
+  LLM still inlines it, so the function is evaluated once per reader.
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error

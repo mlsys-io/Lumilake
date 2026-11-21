@@ -72,7 +72,9 @@ def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
     assert [op["id"] in error_cleared for op in error] == [True, True, True, False]
 
 
-def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest(tmp_path) -> None:
+def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest(
+    tmp_path: Path,
+) -> None:
     for branch_id, expected in (
         ("route.patient", ["a"]),
         ("route.diagnose", ["b"]),
