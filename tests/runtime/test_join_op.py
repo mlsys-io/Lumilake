@@ -225,32 +225,6 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    "ops, upstream",
-    [
-        (
-            _merge("State, Route.diagnose"),
-            {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]},
-        ),
-        (
-            _REPLY + _merge("State, Reply") + "    attach: {reply: Reply}\n",
-            {
-                0: [{"output": [_ROWS[0], _ROWS[2]]}],
-                1: [{"output": '{"n": 1}', "value": {"n": 1}}],
-            },
-        ),
-    ],
-    ids=["missing_key", "attach_length"],
-)
-def test_join_on_missing_fail_row_marks_the_output_the_job_would_fail(
-    ops: str, upstream: dict[int, list[dict[str, Any]]], tmp_path: Path
-) -> None:
-    node = _join_node(ops + "    on_missing: fail_row\n")
-    (item,) = _run(tmp_path, node, upstream)["items"]
-    assert item["output"]["_fail"]["op"] == node.node_id
-    assert item["output"]["_fail"]["reason"]
-
-
 def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
     tmp_path: Path,
 ) -> None:
@@ -303,6 +277,93 @@ def test_join_refuses_a_composite_key_that_is_empty_or_not_a_field_name() -> Non
         _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: []}\n")
     with pytest.raises(ValueError, match="Merge.*by must be dotted field names"):
         _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: [case_id, 3]}\n")
+_MARK = {"_fail": {"op": "P", "reason": "no JSON object"}}
+_DIAG = _merge("State, Route.diagnose")
+_ATTACH = _REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n")
+_ALL = [{"output": list(_ROWS)}]
+_LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
+
+
+@pytest.mark.parametrize(
+    "ops, upstream, expected, fails",
+    [
+        # A marked first-input row keeps its position; every other row is whole.
+        (
+            _DIAG,
+            {0: [{"output": [_ROWS[0], _MARK, _ROWS[1]]}], 1: [{"output": [_ROWS[1]]}]},
+            [_ROWS[0], _MARK, _ROWS[1]],
+            "",
+        ),
+        # A marked further input keeps its key and marks that key's output.
+        (
+            _DIAG,
+            {0: _ALL, 1: [{"output": [{"case_id": "b", "text": _MARK}]}]},
+            [_ROWS[0], _MARK, _ROWS[2]],
+            "",
+        ),
+        # One whose key cannot be read cannot be placed.
+        (_DIAG, {0: _ALL, 1: [{"output": [_MARK]}]}, None, "cannot be placed"),
+        # A marked attach value marks the key its position pairs with.
+        (
+            _ATTACH,
+            {
+                0: _LIVE,
+                1: [
+                    {"output": "hi", "value": "hi"},
+                    {"output": json.dumps(_MARK), "value": _MARK},
+                ],
+                2: _LIVE,
+            },
+            [{**_ROWS[0], "reply": "hi"}, _MARK],
+            "",
+        ),
+        # fail_row marks only the rows the further input lacks, with its key.
+        (
+            _DIAG + "    on_missing: fail_row\n",
+            {0: _ALL, 1: [{"output": [_ROWS[1]]}]},
+            "fail_row",
+            "",
+        ),
+        # An attach length mismatch is a job failure under either policy.
+        (
+            _ATTACH + "    on_missing: fail_row\n",
+            {0: _LIVE, 1: [{"output": "hi", "value": "hi"}]},
+            None,
+            "values attached but",
+        ),
+    ],
+    ids=[
+        "first_input",
+        "further_keyed",
+        "further_unkeyed",
+        "attach_value",
+        "fail_row",
+        "attach_length",
+    ],
+)
+def test_a_marked_join_row_keeps_its_key_and_every_other_row(
+    ops: str,
+    upstream: dict[int, list[dict[str, Any]]],
+    expected: Any,
+    fails: str,
+    tmp_path: Path,
+) -> None:
+    node = _join_node(ops)
+    if fails:
+        with pytest.raises(ValueError, match=fails):
+            _run(tmp_path, node, upstream)
+        return
+    got = [item["output"] for item in _run(tmp_path, node, upstream)["items"]]
+    if expected == "fail_row":
+        # The join names itself and the absent key on each row it lacks.
+        assert [row.get("_fail", {}).get("op") == node.node_id for row in got] == [
+            True,
+            False,
+            True,
+        ]
+        assert got[1]["case_id"] == "b"
+        return
+    assert got == expected
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
