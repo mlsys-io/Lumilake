@@ -2206,6 +2206,10 @@ async def _run_dynamic_job(
         include_proposer = api is None
         while round_index < max_rounds:
             topology = list(node_registry.keys())
+            # The semantic round is one-based and counts only rounds that
+            # dispatch a graph, the same identity the template loop uses; the
+            # planner pass below draws no seed and does not advance it.
+            round_number = round_index + 1
             if api is not None and round_index == 0:
                 # Round 0 dispatches no graph: the planner is asked for the
                 # first subgraph directly, which round 1 then runs.
@@ -2276,6 +2280,7 @@ async def _run_dynamic_job(
                     rows=len(symbols),
                     job_seed=spec.seed,
                     cleared_ids=current_cleared,
+                    round_number=round_number,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:

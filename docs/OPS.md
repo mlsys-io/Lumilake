@@ -176,7 +176,9 @@ An optional `rowwise_seed` binds a per-row sampling seed. It takes the same `{no
   rowwise_seed: {node: Seeds, path: items.output.seed}
 ```
 
-`rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives each row's seed from its key: the first 8 bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON, reduced mod 2^31. The path names dict fields only and a key read under it keeps its JSON type, so `"123"` and `123` differ and a null key fails the job. The key form needs `rowwise_template`, takes no other `rowwise_seed` field, and fails the job naming the op and row on a missing key.
+`rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives each row's seed from its key: the first 8 bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON, reduced mod 2^31. The path names dict fields only and a key read under it keeps its JSON type, so `"123"` and `123` differ and a null key fails the job. A key that is the whole cell is read as its text, so an object or array cell is parsed back and a null one is the text `null`, which draws like any other string. The job's top-level `seed` (default 0), the op id as written and the dynamic round number are the other inputs, so two rows with the same key draw the same seed, and the parser generates a row-mode `LambdaOp` whose id a user op cannot hold. The key form needs `rowwise_template`, takes no other `rowwise_seed` field beside `key` and the optional `pairing`, and fails the job naming the op and row on a missing key.
+
+Two rows of one op that carry the same key draw the same seed, so the key form refuses a repeat, naming the op and both row indices; add `pairing: shared` to the key form to allow it. The round is the semantic round a job's loop is on, counted one-based over the rounds that dispatch a graph, and renumbering rounds changes every draw. A retry of a failed task draws the same seed, and changing the job seed, the op id, the round or the key is a deliberate unpairing.
 
 ```yaml
 - {id: Answer, op: LLMChatOp, inputs: [Cases], rowwise_template: "{question}",
@@ -262,6 +264,21 @@ ops:
           return [k for k in row[0].split(",") if k.strip()]
 ```
 
+A `row` or `expand` `LambdaOp` takes an optional keyed `seed`, shaped and checked like a chat op's `rowwise_seed` key form. The seed reaches the function as a second argument, so it can draw from `random.Random(seed)`; a function without `seed` keeps its one-argument signature, and a seeded one must accept exactly two. The key's node must be listed in `inputs:`. `list`, `aligned` and `reduce` modes take no `seed`.
+
+```yaml
+ops:
+  - id: "Sample"
+    op: LambdaOp
+    inputs: [Cases]
+    fn_name: sample
+    code: |
+      def sample(row, seed):
+          rng = random.Random(seed)
+          return rng.choice(["positive", "negative"])
+    seed: {key: {node: Cases, path: items.output.case_id}}
+```
+
 `mode: reduce` zips its inputs into row tuples as `row` mode does, groups them by the value at the required `by` dotted path into the first input's value (compared as JSON text, so `1` and `"1"` differ), and calls the function once per group with that group's row tuples in input order. The step emits one item per group, groups ordered by first appearance. A row missing the `by` path fails with the op and the row index named. `by` is accepted only in reduce mode.
 
 A row's key is read before its other fields, so a marked row whose key reads still joins its group; only a row whose key cannot be read forms its own group.
@@ -279,6 +296,19 @@ ops:
     mode: reduce
     by: patient_id
     on_fail: drop_failed
+    fn_name: top_three
+    code: |
+      def top_three(rows):
+          return sorted(rows, key=lambda r: -r[0]["score"])[:3]
+```
+
+```yaml
+ops:
+  - id: "TopThree"
+    op: LambdaOp
+    inputs: [Scores]
+    mode: reduce
+    by: patient_id
     fn_name: top_three
     code: |
       def top_three(rows):
