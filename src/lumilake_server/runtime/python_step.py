@@ -178,7 +178,7 @@ _ROW_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
     n = max((len(c) for c in columns), default=1)
     for entry, col in zip(_PLAN, columns):
         if len(col) not in (1, n):
@@ -206,7 +206,7 @@ _LIST_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
     values = fn(tuple(columns))
     # A received marker may come back decoded, so it counts as received too.
     received = tuple(value for column in columns for value in column)
@@ -224,7 +224,7 @@ _ALIGNED_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
     n = max((len(c) for c in columns), default=0)
     for entry, col in zip(_PLAN, columns):
         if len(col) not in (1, n):
@@ -268,10 +268,7 @@ _ON_EMPTY = {on_empty!r}
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [
-        [_decode(v) for v in _column(entry, inputs, lambda v: v)]
-        for entry in _PLAN
-    ]
+    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
     items = []
     for index, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
         marked = carried_marker(row)
@@ -312,10 +309,7 @@ _ON_FAIL = {on_fail!r}
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [
-        [_decode(v) for v in _column(entry, inputs, lambda v: v)]
-        for entry in _PLAN
-    ]
+    columns = [_column(entry, inputs, _decode) for entry in _PLAN]
     entries = []
     by_key = {{}}
     for i, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
