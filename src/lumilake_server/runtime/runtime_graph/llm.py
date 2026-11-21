@@ -1238,9 +1238,9 @@ class _LLMBuilder(_EmbeddingBuilder):
                     # A row step decodes its values, whatever supplies them, so
                     # these literals are decoded here too.
                     row_fn = cast(RowLambdaFn, op.fn)
-                    row = tuple(lambda_task_helpers._decode(v) for v in literal_args)
+                    row = tuple(lambda_task_helpers.decode(v) for v in literal_args)
                     columns[label] = Column(
-                        data=ListData(items=[lambda_task_helpers._text(row_fn(row))])
+                        data=ListData(items=[lambda_task_helpers.text(row_fn(row))])
                     )
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
                 else:
