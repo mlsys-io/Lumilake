@@ -58,10 +58,13 @@ _column = _RUNTIME._column
 _decode = _RUNTIME._decode
 _walk_path = _RUNTIME._walk_path
 _rows = _RUNTIME._rows
+failure_of = _RUNTIME.failure_of
+reject_reserved_key = _RUNTIME.reject_reserved_key
 materialize = _RUNTIME.materialize
 
 _USER_CODE = {code!r}
 _FN_NAME = {fn_name!r}
+_NODE = {op_id!r}
 _PLAN = json.loads({plan!r})
 """
 
@@ -75,6 +78,7 @@ _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
 _text = _RUNTIME._text
 _column = _RUNTIME._column
+failure_of = _RUNTIME.failure_of
 _NODE = {op_id!r}
 _PLAN = json.loads({plan!r})
 """
@@ -173,12 +177,20 @@ def main(inputs):
                 % (entry.get("node", "literal"), len(col), n)
             )
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
-    return {{
-        "items": [
-            {{"output": _text(r), "value": r}}
-            for r in (fn(row) for row in rows)
-        ]
-    }}
+    items = []
+    for row in rows:
+        marked = next(
+            (value for value in map(failure_of, row) if value is not None), None
+        )
+        if marked is not None:
+            # A row with a marked cell is not passed to the function: the
+            # record keeps its position and carries the marker onward.
+            items.append({{"output": marked, "value": marked}})
+            continue
+        value = fn(row)
+        reject_reserved_key(value, _NODE)
+        items.append({{"output": _text(value), "value": value}})
+    return {{"items": items}}
 """
 
 _LIST_MAIN = """\
@@ -187,6 +199,8 @@ def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
+    for value in values:
+        reject_reserved_key(value, _NODE)
     return {{"items": [{{"output": v}} for v in values]}}
 """
 
@@ -202,13 +216,28 @@ def main(inputs):
                 "input %r has %d rows; expected 1 or %d"
                 % (entry.get("node", "literal"), len(col), n)
             )
-    values = fn(tuple(columns))
-    if len(values) != n:
+    rows = (
+        tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)
+    )
+    marked = [
+        next((value for value in map(failure_of, row) if value is not None), None)
+        for row in rows
+    ]
+    live = [i for i, marker in enumerate(marked) if marker is None]
+    live_columns = tuple(
+        col if len(col) == 1 else [col[i] for i in live] for col in columns
+    )
+    values = fn(live_columns)
+    if len(values) != len(live):
         raise ValueError(
             "aligned lambda {op_id!r} returned %d values for %d rows"
-            % (len(values), n)
+            % (len(values), len(live))
         )
-    return {{"items": [{{"output": v}} for v in values]}}
+    merged = marked.copy()
+    for i, value in zip(live, values):
+        reject_reserved_key(value, _NODE, i)
+        merged[i] = value
+    return {{"items": [{{"output": v}} for v in merged]}}
 """
 
 
