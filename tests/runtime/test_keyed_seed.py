@@ -251,25 +251,13 @@ def test_a_row_lambda_takes_a_seeded_key_form(
         "code": "def draw(row, seed):\n    return '%d' % seed\n",
         "seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
     }
-    payload: dict[str, Any] = {
-        "seed": 7,
-        "ops": [
-            {
-                "id": "Cases",
-                "op": "DataOp",
-                "inputs": [],
-                "data": [json.dumps(row) for row in rows],
-            },
-            draw,
-            {
-                "id": "Read",
-                "op": "LambdaOp",
-                "inputs": ["Draw"],
-                "fn_name": "read",
-                "code": "def read(row):\n    return row[0]\n",
-            },
-        ],
+    cases = {
+        "id": "Cases",
+        "op": "DataOp",
+        "inputs": [],
+        "data": [json.dumps(row) for row in rows],
     }
+    payload: dict[str, Any] = {"seed": 7, "ops": [cases, draw]}
     spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
     (seed_id,) = [
         op_id for op_id, op in spec.items() if op.get("fn_name") == SEED_FN_NAME
@@ -279,19 +267,10 @@ def test_a_row_lambda_takes_a_seeded_key_form(
         "path": "items.output",
     }
     with pytest.raises(ValueError, match="seed is available in modes"):
-        parse_yaml_payload({"ops": [payload["ops"][0], {**draw, "mode": "list"}]})
+        parse_yaml_payload({"ops": [cases, {**draw, "mode": "list"}]})
     with pytest.raises(ValueError, match="exactly 2 parameters"):
         _graph(
-            {
-                "ops": [
-                    payload["ops"][0],
-                    {
-                        **draw,
-                        "fn_name": "draw",
-                        "code": "def draw(row):\n    return row[0]\n",
-                    },
-                ]
-            }
+            {"ops": [cases, {**draw, "code": "def draw(row):\n    return row[0]\n"}]}
         )
     # The built step runs the two-argument function with each row's seed.
     graph = _graph(payload)
@@ -314,18 +293,7 @@ def test_a_row_lambda_takes_a_seeded_key_form(
 
     seed_stage = tmp_path / "seed"
     seed_stage.mkdir()
-    (seed_stage / "results.json").write_text(
-        json.dumps(
-            {
-                "result": {
-                    "items": [
-                        {"output": v} for v in run(graph.nodes[entry["node"]], {})
-                    ]
-                }
-            }
-        )
-    )
-    assert run(node, {entry["node"]: str(seed_stage)}) == [
-        str(value)
-        for value in _documented_seed([row["case_id"] for row in rows], op_id="Draw")
-    ]
+    items = [{"output": v} for v in run(graph.nodes[entry["node"]], {})]
+    (seed_stage / "results.json").write_text(json.dumps({"result": {"items": items}}))
+    expected = _documented_seed([row["case_id"] for row in rows], op_id="Draw")
+    assert run(node, {entry["node"]: str(seed_stage)}) == [str(v) for v in expected]
