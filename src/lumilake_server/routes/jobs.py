@@ -2553,7 +2553,7 @@ async def _run_template_job(
                     principal=principal,
                     runtime_token=runtime_token,
                     trace_id=trace_id,
-                    round_index=round_index,
+                    round_index=round_index - 1,
                     optimizer_type=optimizer_type,
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,

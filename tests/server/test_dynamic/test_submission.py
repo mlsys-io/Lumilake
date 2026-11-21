@@ -1664,3 +1664,26 @@ async def test_dynamic_spec_store_flag_reaches_the_job(
     fake_server.leaf_item = lambda row: {"output": []}
     await _run_background(app)
     assert job_routes.jobs[job_id].store is True
+
+
+@pytest.mark.anyio
+async def test_template_rounds_carry_their_zero_based_index(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """The first template round runs as round 1 and names chain round 0, so a
+    stored record's one-based round matches the round it ran as."""
+    body = _submit_body(_TEMPLATE_DYNAMIC_YAML)
+    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    fake_server = job_routes._fake_runtime_server
+    replies = [[{"case_id": 1}, {"case_id": 2}], []]
+    fake_server.leaf_item = lambda row: {"output": replies.pop(0)}
+    await _run_background(app)
+    assert [config.chain_round for config in fake_server.configs] == [0, 1]
