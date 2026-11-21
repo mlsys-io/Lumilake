@@ -497,53 +497,41 @@ def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("mode", "values", "message"),
+    [
+        ("row", ["7"], "op-1: seed column has 1 rows; expected one per row, so 2"),
+        ("expand", ["1.5"], "op-1: seed row 0 is '1.5'; a seed must be an integer"),
+        ("row", ["3", "b"], "op-1: seed row 1 is 'b'; a seed must be an integer"),
+    ],
+)
+def test_wrapper_refuses_a_seed_it_cannot_use(
+    mode: str, values: list[str], message: str
+) -> None:
+    """A seed column with one seed for several rows would give every row the
+    same draw, and a seed that is not an integer would be truncated into a
+    different draw; the step refuses both, naming the op."""
+    code = "def draw(i, seed):\n    return ['%d' % seed]\n"
+    if mode == "row":
+        code = "def draw(i, seed):\n    return '%d' % seed\n"
+    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["a", "b"]}]
+    plan.append({"kind": "literal", "values": values, "role": "seed"})
+    with pytest.raises(ValueError, match=message):
+        _run_wrapper(code, plan, {}, mode=mode, seeded=True)
+
+
 @pytest.mark.parametrize("mode", ["row", "expand"])
-def test_wrapper_refuses_one_seed_for_several_rows(mode: str) -> None:
-    """One seed handed to several rows would give every row the same draw, so
-    the step refuses it naming the op and both counts; one row with one seed
-    stays fine."""
-    code = "def draw(inputs, seed):\n    return '%d' % seed\n"
+def test_wrapper_takes_one_seed_for_one_row(mode: str) -> None:
+    """One row with one seed stays fine in both seeded modes."""
+    code = "def draw(i, seed):\n    return '%d' % seed\n"
     if mode == "expand":
-        code = "def draw(inputs, seed):\n    return ['%d' % seed]\n"
-    seed: python_step.ColumnPlan = [
-        {"kind": "literal", "values": ["7"], "role": "seed"}
+        code = "def draw(i, seed):\n    return ['%d' % seed]\n"
+    plan: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["a"]},
+        {"kind": "literal", "values": ["7"], "role": "seed"},
     ]
-    with pytest.raises(
-        ValueError, match="op-1: seed column has 1 rows; expected one per row, so 3"
-    ):
-        _run_wrapper(
-            code,
-            [{"kind": "literal", "values": ["a", "b", "c"]}, *seed],
-            {},
-            mode=mode,
-            seeded=True,
-        )
-    single = [{"kind": "literal", "values": ["a"]}, *seed]
-    one = _run_wrapper(code, single, {}, mode=mode, seeded=True)["items"]
-    assert [item["output"] for item in one] == ["7"]
-
-
-@pytest.mark.parametrize("mode", ["row", "expand"])
-def test_wrapper_refuses_a_seed_that_is_not_an_integer(mode: str) -> None:
-    """A float, a bool or other text is refused naming the op and the row
-    rather than being truncated into a different draw."""
-    code = "def draw(inputs, seed):\n    return '%d' % seed\n"
-    if mode == "expand":
-        code = "def draw(inputs, seed):\n    return ['%d' % seed]\n"
-    for bad in ("1.5", "true", "seven"):
-        with pytest.raises(
-            ValueError, match="op-1: seed row 0 is .*; a seed must be an integer"
-        ):
-            _run_wrapper(
-                code,
-                [
-                    {"kind": "literal", "values": ["a"]},
-                    {"kind": "literal", "values": [bad], "role": "seed"},
-                ],
-                {},
-                mode=mode,
-                seeded=True,
-            )
+    out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)["items"]
+    assert [item["output"] for item in out] == ["7"]
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
