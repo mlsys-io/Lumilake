@@ -627,13 +627,36 @@ def test_inline_wrapper_calls_a_lambda_and_serializes_a_non_string(
     assert wrapper(args) == expected
 
 
-def test_inline_wrapper_and_shared_decoder_agree() -> None:
+_PARITY_TABLE = {"title": {"0": "t0", "1": "t1"}, "note": {"0": "a", "1": "b"}}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"a": 1}',
+        "[1, 2]",
+        "1",
+        "plain",
+        "{name} said hi",
+        {"df": json.dumps(_PARITY_TABLE)},
+        {"index": 0, "table": {"df": json.dumps(_PARITY_TABLE)}},
+        {"table": {"df": json.dumps(_PARITY_TABLE)}},
+        json.dumps({"table": {"df": json.dumps(_PARITY_TABLE)}}),
+        '\n{"a": 1}',
+        " [1]",
+        '{"df": "not json"}',
+        {"df": "not json"},
+        {"a": {"b": "[1, 2]"}},
+        {"a": 1},
+        {"-1": {"x": 1}, "0": {"x": 2}},
+        {"0": {"x": 2}, "10": {"x": 1}, "2": {"x": 3}},
+    ],
+)
+def test_inline_wrapper_and_shared_decoder_agree(value: Any) -> None:
     from lumilake_server.runtime.lambda_task_helpers import _decode as shared
 
     # The decoder source runs at module scope, so it needs one namespace, not
     # the wrapper's split globals and locals.
     namespace: dict[str, Any] = {"json": json}
     exec(lambda_runtime.DECODER_SOURCE, namespace)
-    inline = namespace["_decode"]
-    for value in ('{"a": 1}', "[1, 2]", "1", "plain", "{name} said hi"):
-        assert inline(value) == shared(value)
+    assert namespace["_decode"](value) == shared(value)
