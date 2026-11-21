@@ -310,13 +310,11 @@ async def test_seed_key_repeated_across_slices_is_refused_at_submit(
             }
         ],
     }
+    repeated = json.dumps({"k": "a"})
     body = _submit_body()
     body["data"][0]["workflow"] = yaml.safe_dump(workflow)
-    body["data"][0]["inputs"] = {
-        "Cases": [json.dumps({"k": "a"}), json.dumps({"k": "b"})]
-    }
+    body["data"][0]["inputs"] = {"Cases": [repeated, repeated]}
     body["data"][0]["input_batch_size"] = 1
-    body["data"][0]["inputs"]["Cases"][1] = json.dumps({"k": "a"})
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
