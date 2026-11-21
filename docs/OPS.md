@@ -442,9 +442,9 @@ Where the function runs depends on what reads it:
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the
   standalone form above for code that should run in its own container. The
-  worker's namespace has no `import`, and it calls the first name the code
-  binds, so here the code must not import anything and `fn_name` must be the
-  first definition; code that breaks either rule is rejected at submit. If a
+  worker's namespace has no `import`, so the code must not import anything;
+  Lumilake wraps it so it decodes each row before calling it, and code that
+  shadows a name the wrapper binds is rejected at submit. If a
   runtime node (such as a data-retrieval op) also reads the same
   `LambdaOp`, it is additionally compiled to its own standalone `python` task so
   that node can reference its output; the LLM still inlines it, so the function
@@ -454,6 +454,15 @@ Where the function runs depends on what reads it:
   request body cannot carry a function step, so the build fails with an error
   naming the step. Make the `LambdaOp` a workflow output, or use a non-API
   `LLMChatOp`.
+
+Every mode hands its function values the same way: each column value is
+decoded as it is read. A string that parses as a JSON object or array arrives
+as that object or list, a serialized table (`{"df": "<json>"}`) arrives as its
+list of row dicts, including one a data retrieval item carries under its
+`table` field, and anything else passes through unchanged, so a scalar stays a
+string (`"1"` stays `"1"`). This holds whether the function runs as its own
+`python` task or is inlined into an `LLM` message chain, and it is the value a
+router rule matches on too.
 
 A `LambdaOp` may declare `mode: list`. The function then receives each input as
 its whole list and returns a list of JSON values; the standalone `python` task
@@ -514,14 +523,11 @@ ops:
           return sorted(rows, key=lambda r: -r[0]["score"])[:3]
 ```
 
-In both modes each column value is decoded once before the function sees it:
-a string that parses as a JSON object or array is parsed, a serialized table
-(`{"df": "<json>"}`) becomes a list of row dicts, including one a data
-retrieval item carries under its `table` field, and anything else is passed
-as is. Both modes always run as a standalone `python` task, so the whole-list
-per-run rules apply to them as they do to list mode: a direct read of their
-column folds to one value, an `input_batch_size` that would split them is
-rejected at submit, and either mode may be the export that stops a template
+In both modes each column value is decoded as it is read, under the same rule
+every mode follows. Both modes always run as a standalone `python` task, so the
+whole-list per-run rules apply to them as they do to list mode: a direct read
+of their column folds to one value, an `input_batch_size` that would split them
+is rejected at submit, and either mode may be the export that stops a template
 round.
 
 `mode: aligned` is the same calling convention as `list` (whole columns in, a
@@ -605,6 +611,8 @@ serializes the function automatically via `dill.source.getsource` — see
 node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
 first rule that matches wins; `match` is `contains` or `equals`, optional
 `path` selects the field tested, and `default_branch` keeps unmatched rows.
+Each branch reads its rows through the same decode every `LambdaOp` mode uses,
+so a `path` walks a field of the decoded row object.
 
 ```yaml
 ops:
