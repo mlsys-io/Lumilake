@@ -205,7 +205,7 @@ def key_target(
     path = key.get("path")
     if not isinstance(path, str):
         raise ValueError(f"{op_kind} '{op_id}' seed key must name a path")
-    if op_kind != "LLMChatOp":
+    if op_kind == "LambdaOp":
         return node_ref, path
     if not isinstance(config, dict):
         raise ValueError(f"{op_kind} '{op_id}' config must be a mapping")
@@ -270,12 +270,16 @@ def rewrite_native_keys(
     output, just ahead of the op that reads it."""
     rewritten: dict[str, dict[str, Any]] = {}
     for op_id, op in graph.items():
-        field = "seed" if op.get("_op") == "LambdaOp" else "rowwise_seed"
+        op_kind = op["_op"]
+        field = "seed" if op_kind == "LambdaOp" else "rowwise_seed"
         seed = op.get(field)
-        if not isinstance(seed, dict) or "key" not in seed:
+        if (
+            op_kind not in ("LLMChatOp", "LambdaOp")
+            or not isinstance(seed, dict)
+            or "key" not in seed
+        ):
             rewritten[op_id] = op
             continue
-        op_kind = op["_op"]
         node_ref, path = key_target(
             op_id,
             seed,
