@@ -34,62 +34,55 @@ def digest_of(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def op_spec_digest(op: RuntimeOp) -> str:
+def op_spec_digest(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
     """The op's computation: task, code, prompt, config, model and decoding.
 
-    Only the computation enters: runtime node ids, a declared sampling seed and
-    the per-row data the op reads (literal rows and per-row seeds) are left out,
-    because physical ids belong nowhere in a digest, and a seed belongs to the
-    record's realization while per-row data belongs to that record's inputs. The
-    digest is therefore the same however the graph was sliced, prefixed or
-    ordered, and however many rows a slice holds.
+    Only the computation enters. Every runtime node id in the spec takes the
+    logical name consumers know it by, a declared sampling seed is left out
+    because it belongs to the record's realization, and the per-row data the op
+    reads (literal rows and per-row seeds) is left out because it belongs to
+    that record's inputs. Which field of an input the op reads and how its
+    columns are wired do stay: they change the value. The digest is therefore
+    the same however the graph was sliced, prefixed or ordered, and however
+    many rows a slice holds.
     """
     spec = {
         "task_type": op.task_type,
         "backend": op.backend,
         "model": op.model,
-        "model_spec": _without_data(op.model_spec),
-        "inference_spec": _without_data(op.inference_spec),
-        "api_spec": _without_data(op.api_spec),
-        "output_enforcement": _without_data(op.output_enforcement),
-        "data_spec": _without_data(op.data_spec),
+        "model_spec": _without_data(op.model_spec, logical_names),
+        "inference_spec": _without_data(op.inference_spec, logical_names),
+        "api_spec": _without_data(op.api_spec, logical_names),
+        "output_enforcement": _without_data(op.output_enforcement, logical_names),
+        "data_spec": _without_data(op.data_spec, logical_names),
     }
     return digest_of({"digest_version": DIGEST_VERSION, "spec": spec})
 
 
-_DATA_KEYS = frozenset(
-    {
-        "node",
-        "path",
-        "items",
-        "seeds",
-        "plan",
-        "values",
-        "columns",
-        "rows",
-        "seed",
-        "lumid_cfg",
-    }
-)
-"""Fields that name per-row data, a physical node or a secret, never the
-computation."""
+_DATA_KEYS = frozenset({"items", "seeds", "values", "seed", "lumid_cfg"})
+"""Fields that hold per-row data or a secret, never the computation."""
 
 
-def _without_data(value: Any) -> Any:
-    """Drop every data-carrying and physical-node field, recursively.
+def _without_data(value: Any, logical_names: Mapping[str, str]) -> Any:
+    """Replace every node reference and drop every per-row value, recursively.
 
-    A spec entry that is only data (a node reference or a per-row cell) becomes
-    a marker instead of vanishing, so a column that reads different rows stays
-    distinct from one that reads none."""
+    A ``node`` reference becomes the logical op name the consumer knows, so a
+    prefixed or sliced graph hashes the same. The rest of the structure stays:
+    ``path``, ``rows``, ``columns`` and each plan entry's kind and order decide
+    what the op computes, while the literal values, per-row seeds and
+    credentials beside them do not."""
     if isinstance(value, Mapping):
         kept: dict[str, Any] = {}
         for key, item in value.items():
             if not isinstance(key, str) or key in _DATA_KEYS:
                 continue
-            kept[key] = _without_data(item)
+            if key == "node" and isinstance(item, str):
+                kept[key] = logical_names.get(item, item)
+                continue
+            kept[key] = _without_data(item, logical_names)
         return kept
     if isinstance(value, list):
-        return [_without_data(item) for item in value]
+        return [_without_data(item, logical_names) for item in value]
     return value
 
 

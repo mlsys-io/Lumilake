@@ -122,11 +122,12 @@ class RecordPlan:
         op: RuntimeOp,
         op_name: str,
         key_path: str | None,
+        logical_names: Mapping[str, str],
     ) -> None:
         self.op = op
         self.op_name = op_name
         self.key_path = key_path
-        self.spec_digest = op_spec_digest(op)
+        self.spec_digest = op_spec_digest(op, logical_names)
 
     @property
     def keyed(self) -> bool:
@@ -407,6 +408,7 @@ def _resolve_plans(
 ) -> dict[str, RecordPlan]:
     """Resolve every node's plan, deriving a 1:1 node's key from its keyed
     input in dependency order."""
+    names = _logical_names(runtime_graph)
     plans: dict[str, RecordPlan] = {}
     for node_id in order:
         op = runtime_graph.nodes[node_id]
@@ -414,8 +416,18 @@ def _resolve_plans(
             op=op,
             op_name=node_id,
             key_path=_key_path(runtime_graph, node_id, plans),
+            logical_names=names,
         )
     return plans
+
+
+def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
+    """The logical op name of each runtime node, so no digest sees a prefix."""
+    names: dict[str, str] = {}
+    for op_name, node_ids in runtime_graph.dsl_to_runtime.items():
+        for node_id in node_ids:
+            names[node_id] = op_name
+    return names
 
 
 def _key_path(

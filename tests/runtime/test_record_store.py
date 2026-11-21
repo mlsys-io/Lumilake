@@ -14,6 +14,7 @@ from lumilake_server.runtime.python_step import TASK_TYPE
 from lumilake_server.runtime.record_store import (
     RecordEntry,
     entry_object_name,
+    op_spec_digest,
 )
 from lumilake_server.runtime.record_writer import (
     RecordWriter,
@@ -77,6 +78,37 @@ def _payload(inputs: dict[str, list[str]] | None = None) -> dict[str, Any]:
     if inputs is not None:
         workflow["inputs"] = inputs
     return workflow
+
+
+_PATHS_WORKFLOW: dict[str, Any] = {
+    "name": "paths",
+    "inputs": {"Rows": ['{"id": "a", "x": "1", "y": "2"}']},
+    "ops": [
+        {
+            "id": "Mark",
+            "op": "LambdaOp",
+            "inputs": ["Rows"],
+            "fn_name": "mark",
+            "mode": "row",
+            "code": "def mark(c):\n    import json\n    return json.loads(c[0][0])\n",
+        },
+        *[
+            {
+                "id": f"Ask{field}",
+                "op": "LLMChatOp",
+                "inputs": ["Mark"],
+                "config": {"model": "m"},
+                "messages": [{"role": "user", "content": "hi"}],
+                "rowwise_template": "{v}",
+                "rowwise_columns": [
+                    {"label": "v", "node": "Mark", "path": f"items.output.{field}"}
+                ],
+            }
+            for field in ("X", "Y")
+        ],
+    ],
+    "outputs": [{"name": "x", "ref": "AskX"}, {"name": "y", "ref": "AskY"}],
+}
 
 
 def _runtime_graph(payload: dict[str, Any]) -> Any:
@@ -288,6 +320,20 @@ async def test_signature_changes_when_input_value_changes(graph: Any) -> None:
     # consumer read a different value, so its record gets a new one.
     assert digests(first, "Mark") == digests(second, "Mark")
     assert digests(first, "Join") != digests(second, "Join")
+
+
+def test_ops_reading_different_paths_get_different_signatures() -> None:
+    """Two chat ops whose prompt columns read different paths of one producer
+    compute different values, so they never share a signature."""
+    graph = _runtime_graph(_PATHS_WORKFLOW)
+    names: dict[str, str] = {
+        node_id: op for op, ids in graph.dsl_to_runtime.items() for node_id in ids
+    }
+    digests = {
+        field: op_spec_digest(graph.nodes[_op_id(graph, field)], names)
+        for field in ("AskX", "AskY")
+    }
+    assert digests["AskX"] != digests["AskY"]
 
 
 @pytest.mark.asyncio
