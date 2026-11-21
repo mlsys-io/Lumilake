@@ -516,12 +516,20 @@ def main(inputs):
         try:
             parsed = parse_row(_PARSER, value)
         except ValueError as exc:
+            if _PARSER["on_fail"] == "raw":
+                # The row keeps its text as an ordinary value, so a downstream
+                # op reads it like any other row.
+                items.append({{"output": value, "value": value}})
+                continue
             reason = exc.args[0] if exc.args else str(exc)
             failed = {{FAIL_KEY: {{"op": _NODE, "reason": reason}}}}
             items.append({{"output": failed, "value": failed}})
             continue
         if isinstance(parsed, dict) and FAIL_KEY in parsed:
             # Model output cannot forge a marker with its own _fail key.
+            if _PARSER["on_fail"] == "raw":
+                items.append({{"output": value, "value": value}})
+                continue
             failed = {{FAIL_KEY: {{"op": _NODE, "reason": "reserved key '_fail'"}}}}
             items.append({{"output": failed, "value": failed}})
             continue
@@ -531,7 +539,8 @@ def main(inputs):
 
 
 def parse_source(op_id: str, plan: ColumnPlan, parse_spec: dict[str, Any]) -> str:
-    """The python-task code for a ParseOp: one parsed record per row."""
+    """The python-task code for a ParseOp: one parsed record per row, or a
+    failed-record marker naming the op, or with ``on_fail: raw`` its text."""
     return (_PARSE_PRELUDE + _PARSE_MAIN).format(
         op_id=op_id,
         module=TASK_RUNTIME_MODULE,
