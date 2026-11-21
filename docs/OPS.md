@@ -339,10 +339,14 @@ values are inlined as the seed list and take no `path`.
 
 `rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives
 each row's seed instead of reading one. The node and path name a column that
-holds each row's key, and the cell is read the way a `JoinOp` reads its `by`
-value: a cell that is JSON object or array text is parsed, and any other cell
-is the key as it stands, so a key written `"123"` stays the string and draws a
-different seed from the number `123`. The seed is the first 8 bytes of
+holds each row's key. A key read under a path keeps its JSON type: a cell that
+is JSON object or array text is parsed, the path drills into it, and the
+drilled value is the key as it stands, the cell rule a `JoinOp` reads its `by`
+value under, so a key written `"123"` stays the string and draws a different
+seed from the number `123`, and a null key there fails the job. A key that is
+the whole cell, `items.output` and every forwarded key included, is read as its
+text, so a scalar whole-cell key is its string form and a null one is the text
+`null`, which draws like any other string. The seed is the first 8 bytes of
 SHA-256 over `[seed, op id, round, key]` as canonical JSON, read big-endian and
 reduced mod 2^31; canonical JSON here is `json.dumps` with sorted keys, no
 whitespace separators, non-ASCII characters left unescaped, encoded as UTF-8.
@@ -355,8 +359,9 @@ a native graph names it after its chat op and refuses that id if the graph
 already has it. The key form keeps `spec.data.seeds`, and every check above
 applies without pinning the whole input list the way a list-mode Lambda would.
 It needs `rowwise_template`, carries no other `rowwise_seed` field beside
-`key`, and a row with a missing or null key fails the job naming the op and
-row. A `{{round}}` in the op id stays literal in the seed inputs.
+`key`, and a row with a missing key, or a null one where the key is read under
+a path, fails the job naming the op and row. A `{{round}}` in the op id stays
+literal in the seed inputs.
 
 ```yaml
 - id: Answer

@@ -143,8 +143,9 @@ def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:
     assert spec[make_id("yaml_workflow", "seed", "Answer")]["fn_name"] == SEED_FN_NAME
 
 
-def test_a_scalar_key_stays_a_string() -> None:
-    """``"7"`` and ``7`` draw different seeds, as a JoinOp's ``by`` tells them apart."""
+def test_a_text_cell_is_the_key_as_it_stands() -> None:
+    """A cell that is not JSON object or array text is kept as written, so the
+    text ``"7"`` hashes as the string, not as the number it spells."""
     op = seed_op("Answer", "Cases", "items.output", job_seed=7, round_number=None)
     fn = lambda_runtime.materialize(op["_code"], op["fn_name"])
     assert fn(("7",)) == _documented_seed(["7"])[0]
