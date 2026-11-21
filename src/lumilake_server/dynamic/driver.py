@@ -30,7 +30,6 @@ from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import SUPPORTED_OPS, parse_yaml_payload
-from lumilake_server.runtime.lambda_task_helpers import failure_of
 from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
@@ -439,92 +438,6 @@ def walk_archived_items(
                 ) from exc
         walked[node_id] = _forward_values(items, parts, node_id)
     return walked
-
-
-def _is_model_op(op_type: str) -> bool:
-    """Whether an op type renders its inputs into a model request, so a failed
-    record bound as an ordinary value would reach the model."""
-    return issubclass(ops_pkg.Op.registry.get_class(op_type), LLMOp)
-
-
-def _holds_marker(values: Sequence[Any]) -> bool:
-    """Whether any forwarded value is a failed record, or a per-row list of
-    values holding one."""
-    return any(
-        failure_of(value) is not None
-        or (
-            isinstance(value, list)
-            and any(failure_of(item) is not None for item in value)
-        )
-        for value in values
-    )
-
-
-def _bound_reads(op: dict[str, Any]) -> list[str]:
-    """Every node an op entry reads: its declared inputs, a prompt or top-level
-    format kwarg, a rowwise column, an aggregate table row, a rowwise seed, a
-    data-spec param and an image source."""
-    reads = [ref for ref in op.get("inputs", []) if isinstance(ref, str)]
-    prompt = op.get("prompt")
-    kwargs_groups = [op.get("format_kwargs")]
-    if isinstance(prompt, dict):
-        kwargs_groups.append(prompt.get("format_kwargs"))
-    for kwargs in kwargs_groups:
-        if isinstance(kwargs, dict):
-            reads.extend(ref for ref in kwargs.values() if isinstance(ref, str))
-    for key in ("aggregate_table", "rowwise_columns"):
-        for entry in op.get(key) or []:
-            if isinstance(entry, dict) and isinstance(entry.get("node"), str):
-                reads.append(entry["node"])
-    seed = op.get("rowwise_seed")
-    if isinstance(seed, dict) and isinstance(seed.get("node"), str):
-        reads.append(seed["node"])
-    image_source = op.get("image_source")
-    if isinstance(image_source, str):
-        reads.append(image_source)
-    data_spec = op.get("data_spec")
-    if isinstance(data_spec, dict):
-        for param in data_spec.get("params") or []:
-            if isinstance(param, dict) and isinstance(param.get("node"), str):
-                reads.append(param["node"])
-    return reads
-
-
-def _refuse_forwarded_markers(
-    forwarded: list[dict[str, Any]], inputs: dict[str, list[str]]
-) -> None:
-    """Refuse a model op that reads an earlier round's failed records through
-    any op except a router's rule or default branch, mirroring the build-time
-    rule for an in-graph source."""
-    marker_inputs = {
-        input_id for input_id, values in inputs.items() if _holds_marker(values)
-    }
-    if not marker_inputs:
-        return
-    reads = {str(op.get("id")): _bound_reads(op) for op in forwarded}
-    by_id = {str(op.get("id")): op for op in forwarded}
-
-    def reaches_marker(op_id: str, seen: set[str]) -> bool:
-        if op_id in marker_inputs:
-            return True
-        if op_id in seen:
-            return False
-        seen.add(op_id)
-        entry = by_id.get(op_id)
-        if entry is None or entry.get("clears_markers"):
-            return False
-        return any(reaches_marker(ref, seen) for ref in reads.get(op_id, []))
-
-    for op in forwarded:
-        op_type = op.get("op")
-        if not isinstance(op_type, str) or not _is_model_op(op_type):
-            continue
-        if any(reaches_marker(ref, set()) for ref in reads[str(op.get("id"))]):
-            raise DriverProtocolError(
-                f"op {op['id']!r} reads an earlier round's failed records"
-                " through its inputs, so a marker would reach the model as an"
-                " ordinary value; read a router's rule or default branch instead"
-            )
 
 
 def forward_refs(
@@ -1227,7 +1140,6 @@ def build_round(
     forwarded, inputs = forward_refs(
         subgraph, results if results is not None else {}, node_registry, rows
     )
-    _refuse_forwarded_markers(forwarded, inputs)
     workflow_inputs: dict[str, list[str]] = {INPUT_NODE_ID: []}
     workflow_inputs.update(inputs)
     workflow = {
