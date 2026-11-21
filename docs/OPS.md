@@ -648,9 +648,10 @@ every other row keeps its fields. A marked row in a further input or an attach
 source turns the output row of its key into that marker instead of filling the
 field; a marked further-input row whose key cannot be read fails the job,
 naming the input, since it cannot be placed. A marked attach row pairs by
-position with the live source rows as before. An attach value column that
-covers every source row pairs each value with its own row, so a marked source
-row keeps its marker and its value there is that marker passed through.
+position with the live source rows when the value column covers only those
+rows. An attach value column that covers every source row pairs each value
+with its own row, so a marked source row keeps its marker and its value there
+is that marker passed through.
 
 `on_missing` is the per-row policy and defaults to `null_fill`:
 
