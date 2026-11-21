@@ -9,6 +9,7 @@ import pytest
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
 from lumilake_server.data_specs import ColumnPlanEntry, PythonData
+from lumilake_server.dynamic.driver import forward_refs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -778,6 +779,45 @@ outputs: [{{name: out, ref: Group}}]
 def test_wrapper_requires_a_function() -> None:
     with pytest.raises(ValueError, match="no top-level function named 'a'"):
         _run_wrapper("X = 1\n", [], {}, fn_name="a")
+
+
+def test_wrapper_runs_a_forwarded_grouped_rounds_materializer() -> None:
+    # The dynamic driver binds a grouped per-row forward as JSON text plus an
+    # aligned LambdaOp; the generated step hands each row the decoded list.
+    sql_id = "s1"
+    results = {sql_id: [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
+    configs = {
+        sql_id: {
+            "id": sql_id,
+            "op": "DataRetrievalOp",
+            "inputs": [],
+            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+        }
+    }
+    subgraph = [
+        {
+            "id": "q4",
+            "op": "LLMChatOp",
+            "inputs": [],
+            "prompt": {"template": "x", "format_kwargs": {}},
+            "config": {"model": _MODEL},
+            "messages": [{"role": "user", "content": "x"}],
+            "aggregate_table": [
+                {"label": "summary", "node": sql_id, "path": "items.output"}
+            ],
+        }
+    ]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
+    workflow = {"name": "r1", "inputs": inputs, "ops": ops, "outputs": []}
+    spec = next(iter(parse_yaml_payload(workflow).values()))
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    (node,) = _python_nodes(graph).values()
+    data = node.data_spec
+    plan = [entry.model_dump(exclude_none=True) for entry in data.plan]
+    out = _run_wrapper(data.code, plan, {}, data.fn_name, data.mode)
+    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
 
 
 _PLAN_X: list[dict[str, Any]] = [{"kind": "literal", "values": ["x"]}]
