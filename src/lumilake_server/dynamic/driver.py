@@ -189,7 +189,7 @@ def validate_library(library: dict[str, dict[str, Any]] | None) -> None:
             continue
         problem = row_order_problem(data_spec)
         if problem is not None:
-            raise DriverProtocolError(f"library entry {ref!r} {problem}")
+            raise DriverProtocolError(f"library entry {ref!r}: {problem}")
 
 
 _LIBRARY_REF_OVERRIDES = frozenset({"id", "inputs", "op"})

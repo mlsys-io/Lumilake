@@ -60,7 +60,7 @@ class DataRetrievalOp(FunctionalOp):
         data_spec = data["data_spec"]
         problem = row_order_problem(data_spec)
         if problem is not None:
-            raise ValueError(f"DataRetrievalOp '{data['_id']}' {problem}")
+            raise ValueError(f"DataRetrievalOp '{data['_id']}': {problem}")
         return cls(data_spec=data_spec, inputs=inputs)
 
 
