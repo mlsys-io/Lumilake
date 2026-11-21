@@ -618,8 +618,8 @@ ops:
 `format: json` strips one surrounding fenced code block (```` ```json … ``` ````,
 any language tag) and any prose before the first `{` or `[`, then decodes the
 JSON, with `strict` off so a reply may carry literal control characters.
-`require` names top-level keys that must be present, checked on the object or
-on any element of a list of objects.
+`require` names top-level keys of the parsed object; a reply that parses to
+anything but an object fails it.
 
 `format: regex` returns an object of the named groups of
 `pattern`'s first match; the pattern must name at least one group
