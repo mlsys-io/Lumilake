@@ -124,10 +124,7 @@ def _run(
         )
         stages[plan[index]["node"]] = str(stage)
     code = join_step.join_source(
-        node.node_id,
-        node.data_spec["join"],
-        plan,
-        python_step.TASK_RUNTIME_MOUNT,
+        node.node_id, node.data_spec["join"], plan, python_step.TASK_RUNTIME_MOUNT
     ).replace(python_step.TASK_RUNTIME_MOUNT, _RUNTIME_MOUNT["path"])
     namespace: dict[str, Any] = {}
     exec(code, namespace)
@@ -201,8 +198,8 @@ def test_join_refuses_an_attach_whose_row_source_is_not_one_node() -> None:
 def test_join_refuses_a_format_op_as_an_attach_target() -> None:
     """A format op is a row source only as a hop on a chain, never a target."""
     ops = (
-        '  - {id: Prompt, op: FormatOp, inputs: [State], template: "{0}",\n'
-        "     format_args: [State]}\n"
+        '  - {id: Prompt, op: FormatOp, inputs: [State], template: "{0}",'
+        " format_args: [State]}\n"
         + _merge("State, Prompt", "    attach: {prompt: Prompt}\n")
     )
     with pytest.raises(ValueError, match="attach field 'prompt' reading .*hop on a"):
@@ -219,12 +216,7 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
             name="duplicate",
         )
     with pytest.raises(ValueError, match=r'key "a" is missing from'):
-        _run(
-            tmp_path,
-            node,
-            {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]},
-            name="missing",
-        )
+        _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
     stray = {"case_id": "z", "text": "not in the first input"}
     with pytest.raises(ValueError, match=r'key "z" is not in'):
         _run(
