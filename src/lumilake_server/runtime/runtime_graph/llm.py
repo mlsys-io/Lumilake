@@ -1291,7 +1291,11 @@ class _LLMBuilder(_EmbeddingBuilder):
                                 f"Invalid LambdaOp '{op.id}': {exc}"
                             ) from exc
                     label = f"lambda_{op.id}"
-                    steps[label] = (op.code, fn_args_serialized, True)
+                    steps[label] = (
+                        lambda_runtime.inline_lambda_source(op.code, op.fn.__name__),
+                        fn_args_serialized,
+                        True,
+                    )
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             else:

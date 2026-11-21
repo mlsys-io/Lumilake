@@ -128,44 +128,15 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         )
     with pytest.raises(ValueError, match="imports 'os'"):
         lambda_runtime.validate_inline_source("import os\ndef f(a):\n    return a", "f")
-    with pytest.raises(ValueError, match="first name its code binds"):
-        lambda_runtime.validate_inline_source("X = 1\ndef f(a):\n    return a", "f")
-    with pytest.raises(ValueError, match="first name its code binds"):
-        lambda_runtime.validate_inline_source(
-            "def g(a):\n    return a\ndef f(a):\n    return a", "f"
-        )
 
 
-@pytest.mark.parametrize(
-    "code",
-    [
-        "for i in range(1):\n    pass\ndef main(x):\n    return 'a'",
-        "if True:\n    K = 1\ndef main(x):\n    return 'a'",
-        "try:\n    K = 1\nexcept:\n    pass\ndef main(x):\n    return 'a'",
-        "with str() as f:\n    pass\ndef main(x):\n    return 'a'",
-    ],
-)
-def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
-    """A name bound first by a top-level ``for``/``if``/``try``/``with`` etc.
-    is what the FlowMesh worker would call, so it must be rejected at submit
-    just like any other non-``def`` first statement."""
-    with pytest.raises(ValueError, match="first name its code binds"):
+@pytest.mark.parametrize("name", ["_decode", "_table_rows", "_serialized_table"])
+def test_inline_source_rejects_a_name_the_wrapper_binds(name: str) -> None:
+    """The generated wrapper binds its decoder's names around the op's
+    function, so a definition that reuses one would shadow it on the worker."""
+    code = f"def {name}(v):\n    return v\ndef main(x):\n    return x"
+    with pytest.raises(ValueError, match="generated wrapper that already binds"):
         lambda_runtime.validate_inline_source(code, "main")
-
-
-def test_inline_source_allows_only_a_docstring_before_the_def() -> None:
-    """A module docstring before ``def main`` is fine; any other statement
-    before it is not."""
-    assert (
-        lambda_runtime.validate_inline_source(
-            '"""A docstring."""\ndef main(x):\n    return x', "main"
-        )
-        == "main"
-    )
-    with pytest.raises(ValueError, match="first name its code binds"):
-        lambda_runtime.validate_inline_source(
-            "X = 1\ndef main(x):\n    return x", "main"
-        )
 
 
 @pytest.mark.parametrize(
@@ -546,3 +517,69 @@ def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
         ValueError, match="Invalid LambdaOp '[^']*Shout[^']*': it imports 'math'"
     ):
         _build(payload)
+
+
+_INLINE_SAFE_BUILTINS = {
+    "int": int,
+    "float": float,
+    "str": str,
+    "bool": bool,
+    "list": list,
+    "dict": dict,
+    "tuple": tuple,
+    "set": set,
+    "len": len,
+    "sum": sum,
+    "max": max,
+    "min": min,
+    "abs": abs,
+    "round": round,
+    "sorted": sorted,
+    "reversed": reversed,
+    "enumerate": enumerate,
+    "zip": zip,
+    "map": map,
+    "filter": filter,
+    "any": any,
+    "all": all,
+    "range": range,
+    "isinstance": isinstance,
+}
+
+
+def _run_in_inline_namespace(source: str, name: str):
+    """Run generated source the way the FlowMesh worker does: one namespace of
+    whitelisted names and modules, with no exception classes."""
+    namespace: dict[str, Any] = {"__builtins__": dict(_INLINE_SAFE_BUILTINS)}
+    namespace.update({"json": json})
+    exec(source, namespace)
+    return namespace[name]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"a": 1}',
+        "[1, 2]",
+        "1",
+        "plain",
+        json.dumps({"df": json.dumps({"t": {"0": "x", "1": "y"}})}),
+        json.dumps({"index": 0, "table": {"df": json.dumps({"t": {"0": "x"}})}}),
+    ],
+)
+def test_inline_decoder_matches_the_shared_one(value: str) -> None:
+    """The wrapper carries its own copy of the decoder, because the inline
+    worker's namespace has no exception classes; both must agree."""
+    from lumilake_server.runtime.lambda_task_helpers import _decode as shared
+
+    inline = _run_in_inline_namespace(lambda_runtime.DECODER_SOURCE, "_decode")
+    assert inline(value) == shared(value)
+
+
+def test_inline_wrapper_decodes_its_row_before_the_user_function() -> None:
+    code = "def read(row):\n    return row[0]['name']"
+    wrapper = _run_in_inline_namespace(
+        lambda_runtime.inline_lambda_source(code, "read"), "adapt"
+    )
+    assert wrapper(('{"name": "nvda"}',)) == "nvda"
+    assert wrapper(("plain",)) == "plain"
