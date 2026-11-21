@@ -1,8 +1,58 @@
 from dataclasses import replace
+from typing import Any
+
+import pytest
 
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+
+
+def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeGraph:
+    """One graph whose chat nodes each come from their own workflow op."""
+    nodes = {
+        f"{scope}__{op_id}": RuntimeOp(
+            f"{scope}__{op_id}",
+            "inference",
+            "vllm",
+            "model-a",
+            {},
+            {},
+            {"temperature": 0.7, **inference},
+        )
+        for op_id in op_ids
+    }
+    return RuntimeGraph(
+        nodes,
+        [*nodes],
+        {},
+        dsl_to_runtime={op_id: [f"{scope}__{op_id}"] for op_id in op_ids},
+    )
+
+
+@pytest.mark.parametrize(
+    ("scopes", "op_ids", "inference", "expected"),
+    [
+        (("wf",), ["AskA", "AskB"], {}, 2),
+        (("wf",), ["AskA", "AskB"], {"seed": 7}, 2),
+        (("wf", "wf::1"), ["Ask"], {"seed": 7}, 1),
+        (("wf", "wf::1"), ["Ask"], {}, 1),
+        (("wf_a", "wf_b"), ["Ask"], {"seed": 7}, 2),
+    ],
+    ids=[
+        "unseeded-ops-keep-their-draws",
+        "seeded-ops-keep-their-draws",
+        "chunk-copies-of-a-seeded-op-share-a-draw",
+        "chunk-copies-of-an-unseeded-op-share-a-draw",
+        "equal-ops-of-different-workflows-keep-their-draws",
+    ],
+)
+def test_dedupe_scopes_a_draw_to_its_logical_op(
+    scopes: tuple[str, ...], op_ids: list[str], inference: dict[str, Any], expected: int
+) -> None:
+    graphs = {scope: _sampling_graph(scope, op_ids, **inference) for scope in scopes}
+    merged, _, _ = HaloOptimizer().optimize_graphs(graphs)
+    assert merged.node_count == expected
 
 
 def _build_scoped_graph(scope: str) -> RuntimeGraph:
