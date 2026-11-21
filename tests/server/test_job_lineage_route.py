@@ -1,9 +1,8 @@
-"""GET /jobs/{job_id}/lineage returns a stored record's chain."""
+"""GET /jobs/{job_id}/lineage returns a stored record's chain from the archive."""
 
 import datetime as dt
 import logging
 from collections.abc import Iterator
-from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -16,17 +15,20 @@ from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes.jobs import JobRecord
+from lumilake_server.runtime.record_lineage import build_lineage_payload
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
     RecordEntry,
+    RecordIndex,
+    RecordIndexEntry,
     RecordRealization,
     RecordSource,
     digest_of,
     entry_digest,
     entry_object_name,
+    index_object_name,
 )
-from lumilake_server.runtime.record_writer import RecordStore
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -37,6 +39,8 @@ _PRINCIPAL = PrincipalContext(
     principal_type="user",
     scopes=["admin"],
 )
+
+_JOB = "job-1"
 
 
 class _Identity:
@@ -70,10 +74,6 @@ class _Permissions:
         return None
 
 
-def _as_server(store: RecordStore) -> Any:
-    return SimpleNamespace(runtime_manager=SimpleNamespace(store=store))
-
-
 @pytest.fixture(autouse=True)
 def _hooks() -> Iterator[None]:
     hooks.IDENTITY_PROVIDERS.clear()
@@ -92,25 +92,17 @@ def _hooks() -> Iterator[None]:
 
 
 @pytest.fixture
-def job_routes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[Any, InMemoryJobStorage, RecordStore]:
+def job_routes(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, InMemoryJobStorage]:
     storage = InMemoryJobStorage()
     job_storage_module._job_storage = storage
     job_routes_module.jobs.clear()
     job_routes_module._job_storage = storage
-    store = RecordStore()
-    monkeypatch.setattr(
-        job_routes_module.LumilakeServer,
-        "get_started_instance",
-        lambda: _as_server(store),
-    )
-    return job_routes_module, storage, store
+    return job_routes_module, storage
 
 
 @pytest.fixture
-def app(job_routes: Any) -> FastAPI:
-    module, _, _ = job_routes
+def app(job_routes: tuple[Any, InMemoryJobStorage]) -> FastAPI:
+    module, _ = job_routes
     application = FastAPI()
     application.state.logger = logging.getLogger("test.job_lineage")
     application.state.background_tasks = set()
@@ -139,12 +131,10 @@ async def _client(app: FastAPI) -> httpx.AsyncClient:
     )
 
 
-def _seed_chain(storage: InMemoryJobStorage, store: RecordStore, job_id: str) -> None:
-    source = RecordSource(
-        job=job_id, round=0, task_id="task-mark", worker="w1", member_jobs=[job_id]
-    )
-    upstream_value = {"id": "a", "text": "ONE"}
+def _chain(job_id: str = _JOB) -> tuple[list[RecordEntry], RecordIndex]:
+    """An upstream entry and its consumer, plus the index that names them."""
     upstream_address = RecordAddress(op="Mark", record="a", round=0)
+    upstream_value = {"id": "a", "text": "ONE"}
     upstream = RecordEntry(
         digest=entry_digest(
             spec_digest=digest_of({"op": "Mark"}),
@@ -157,7 +147,9 @@ def _seed_chain(storage: InMemoryJobStorage, store: RecordStore, job_id: str) ->
         address=upstream_address,
         value=upstream_value,
         value_digest=digest_of(upstream_value),
-        source=source,
+        source=RecordSource(
+            job=job_id, round=0, task_id="task-mark", worker="w1", member_jobs=[job_id]
+        ),
         written_at=0.0,
     )
     downstream_address = RecordAddress(op="Join", record="a", round=0)
@@ -179,20 +171,32 @@ def _seed_chain(storage: InMemoryJobStorage, store: RecordStore, job_id: str) ->
         input_digests=[upstream.digest],
         input_values=[upstream.value_digest or ""],
     )
-    for entry in (upstream, downstream):
+    index = RecordIndex(
+        job=job_id,
+        entries=[
+            RecordIndexEntry(op="Join", record="a", round=0, digest=downstream.digest),
+            RecordIndexEntry(op="Mark", record="a", round=0, digest=upstream.digest),
+        ],
+    )
+    return [upstream, downstream], index
+
+
+def _write_chain(storage: InMemoryJobStorage) -> None:
+    entries, index = _chain()
+    for entry in entries:
         storage.save_blob(
             entry_object_name(entry.digest), entry.body(), "application/json"
         )
-        store.register(entry)
+    storage.save_blob(index_object_name(_JOB), index.body(), "application/json")
 
 
 @pytest.mark.anyio
 async def test_lineage_returns_the_chain(
-    app: FastAPI, job_routes: tuple[Any, InMemoryJobStorage, RecordStore]
+    app: FastAPI, job_routes: tuple[Any, InMemoryJobStorage]
 ) -> None:
-    module, storage, store = job_routes
-    _seed_job(module, "job-1")
-    _seed_chain(storage, store, "job-1")
+    module, storage = job_routes
+    _seed_job(module, _JOB)
+    _write_chain(storage)
     async with await _client(app) as client:
         resp = await client.get(
             "/jobs/job-1/lineage", params={"op": "Join", "record": "a"}
@@ -209,12 +213,47 @@ async def test_lineage_returns_the_chain(
 
 @pytest.mark.anyio
 async def test_lineage_unknown_record_is_404(
-    app: FastAPI, job_routes: tuple[Any, InMemoryJobStorage, RecordStore]
+    app: FastAPI, job_routes: tuple[Any, InMemoryJobStorage]
 ) -> None:
-    module, _, _ = job_routes
-    _seed_job(module, "job-1")
+    module, storage = job_routes
+    _seed_job(module, _JOB)
+    _write_chain(storage)
     async with await _client(app) as client:
         resp = await client.get(
-            "/jobs/job-1/lineage", params={"op": "Join", "record": "a"}
+            "/jobs/job-1/lineage", params={"op": "Join", "record": "zzz"}
         )
     assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_lineage_defaults_to_the_newest_stored_round(
+    job_routes: tuple[Any, InMemoryJobStorage],
+) -> None:
+    _, storage = job_routes
+    entries, index = _chain()
+    latest = entries[0].model_copy(
+        update={
+            "address": RecordAddress(op="Join", record="a", round=2),
+            "source": entries[0].source.model_copy(update={"round": 2}),
+        }
+    )
+    for entry in [*entries, latest]:
+        storage.save_blob(
+            entry_object_name(entry.digest), entry.body(), "application/json"
+        )
+    storage.save_blob(
+        index_object_name(_JOB),
+        RecordIndex(
+            job=_JOB,
+            entries=[
+                *index.entries,
+                RecordIndexEntry(op="Join", record="a", round=2, digest=latest.digest),
+            ],
+        ).body(),
+        "application/json",
+    )
+    payload = build_lineage_payload(
+        storage, job_id=_JOB, op="Join", record="a", round_number=None
+    )
+    assert payload is not None
+    assert payload["entries"][0]["round"] == 2
