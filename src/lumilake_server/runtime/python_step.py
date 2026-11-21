@@ -199,7 +199,13 @@ def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
-    originals = tuple(value for column in columns for value in column)
+    # A marker the step received may reach the function as its JSON text and be
+    # returned decoded, so the marker each received value holds counts as a
+    # received value too.
+    received = tuple(value for column in columns for value in column)
+    originals = received + tuple(
+        marker for marker in map(failure_of, received) if marker is not None
+    )
     items = []
     for value in values:
         reject_reserved_key(value, _NODE, originals=originals)

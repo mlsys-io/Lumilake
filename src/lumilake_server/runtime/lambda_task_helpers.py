@@ -40,10 +40,11 @@ def reject_reserved_key(
     value: Any, op: str, row: int | None = None, originals: tuple[Any, ...] = ()
 ) -> None:
     """Refuse a user value that carries the reserved ``_fail`` key, so it is
-    never mistaken for a failed record. A value the step received itself is a
-    pass-through, not a user value, and is kept."""
+    never mistaken for a failed record. A marker the step received itself is a
+    pass-through and is kept, matched by identity or by equal value so a step
+    that re-encodes its input still passes it on."""
     if isinstance(value, dict) and FAIL_KEY in value:
-        if any(value is original for original in originals):
+        if any(value is original or value == original for original in originals):
             return
         where = f" for row {row}" if row is not None else ""
         raise ValueError(
