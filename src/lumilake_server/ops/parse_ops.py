@@ -1,7 +1,7 @@
 """The ``ParseOp``: turn one input value per row into a structured record.
 
 A row it cannot parse emits a failed-record marker instead of failing the
-task.
+task, or keeps its text when ``on_fail`` is ``raw``.
 """
 
 import re
@@ -13,6 +13,7 @@ from lumilake_server.ops.ops import FunctionalOp, Op
 PARSE_OP = "ParseOp"
 FORMATS = ("json", "regex")
 FLAGS = "ism"
+ON_FAIL = ("marker", "raw")
 
 
 def validate_parse(
@@ -20,11 +21,14 @@ def validate_parse(
     pattern: Any,
     require: Any,
     flags: Any,
+    on_fail: Any,
     where: str,
 ) -> None:
     """Check a parse spec, naming the op in ``where``."""
     if form not in FORMATS:
         raise ValueError(f"{where} format must be one of {FORMATS}, got {form!r}")
+    if on_fail not in ON_FAIL:
+        raise ValueError(f"{where} on_fail must be one of {ON_FAIL}, got {on_fail!r}")
     if require is not None and (
         not isinstance(require, list)
         or not require
@@ -69,6 +73,7 @@ class ParseOp(FunctionalOp):
         pattern: str | None = None,
         require: list[str] | None = None,
         flags: str | None = None,
+        on_fail: str = "marker",
     ) -> None:
         if isinstance(inputs, (Op, str)):
             inputs = [inputs]
@@ -82,21 +87,27 @@ class ParseOp(FunctionalOp):
             )
             for inp in inputs
         ]
-        validate_parse(format, pattern, require, flags, PARSE_OP)
+        validate_parse(format, pattern, require, flags, on_fail, PARSE_OP)
         super().__init__(input_ops)
         self.format = format
         self.pattern = pattern
         self.require = require
         self.flags = flags
+        self.on_fail = on_fail
 
     @property
     def row_source(self) -> Op:
         return self.inputs[0]
 
     @property
+    def emits_markers(self) -> bool:
+        """Whether an unparsable row becomes a failed-record marker."""
+        return self.on_fail == "marker"
+
+    @property
     def parse_spec(self) -> dict[str, Any]:
         """The fields the generated step reads."""
-        spec: dict[str, Any] = {"format": self.format}
+        spec: dict[str, Any] = {"format": self.format, "on_fail": self.on_fail}
         if self.pattern is not None:
             spec["pattern"] = self.pattern
         if self.require is not None:
@@ -117,6 +128,7 @@ class ParseOp(FunctionalOp):
             pattern=data.get("pattern"),
             require=data.get("require"),
             flags=data.get("flags"),
+            on_fail=data.get("on_fail", "marker"),
         )
 
 
@@ -126,5 +138,6 @@ def parse_op(
     pattern: str | None = None,
     require: list[str] | None = None,
     flags: str | None = None,
+    on_fail: str = "marker",
 ) -> ParseOp:
-    return ParseOp(inputs, format, pattern, require, flags)
+    return ParseOp(inputs, format, pattern, require, flags, on_fail)
