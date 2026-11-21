@@ -55,6 +55,22 @@ def build_join_spec(fields: dict[str, Any], where: str) -> JoinSpec:
     return validate_fields(JoinSpec, fields, where)
 
 
+def join_key_paths(by: Any, op_id: str) -> list[str]:
+    """The join key as its paths, each one dotted field name: a single string
+    is one path, a list of them is a composite key."""
+    paths = [by] if isinstance(by, str) else by
+    if not isinstance(paths, list) or not paths:
+        raise ValueError(
+            f"JoinOp '{op_id}' requires 'by', a dotted field name or a list of them"
+        )
+    for path in paths:
+        if not isinstance(path, str) or not _PATH_RE.match(path):
+            raise ValueError(
+                f"JoinOp '{op_id}' by must be dotted field names, got {path!r}"
+            )
+    return paths.copy()
+
+
 @Op.registry.register(JOIN_OP)
 class JoinOp(Op):
     """A keyed join: first-input rows, others merged by ``by``, attaches joined back."""
@@ -76,6 +92,8 @@ class JoinOp(Op):
         for op in inputs:
             if op not in joined:
                 joined.append(op)
+        super().__init__(joined)
+        self.by = join_key_paths(by, self.id)
         self.attach_indices = {}
         target_indices = set()
         for field, target in attach.items():
@@ -92,7 +110,6 @@ class JoinOp(Op):
         ]
         if not self.column_indices:
             raise ValueError("JoinOp needs a row column besides its attach targets")
-        super().__init__(joined)
 
     @property
     def by(self) -> list[str]:
