@@ -496,7 +496,8 @@ output holds one value per element the Lambda returned, not one per job input
 row. Such an output is a whole-run result like the Lambda's own, so it is
 likewise rejected at submit when a submission would split it across slices, and
 the job's merge does not count it against the input rows. A row-mode step that
-reads only the job's input rows keeps the input's row count.
+reads the job's input rows keeps the input's row count, including one that also
+reads a list Lambda's result.
 
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source

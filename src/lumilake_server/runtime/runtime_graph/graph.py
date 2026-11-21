@@ -173,9 +173,11 @@ class RuntimeGraph:
 
     def list_lambda_fanout_nodes(self) -> set[str]:
         """Node ids whose output count a list-mode Lambda's fan-out sets, not
-        the job's input rows: every node below a list-mode Lambda that is not
-        itself whole-list. A row step keeps its input's cardinality, so below a
-        fan-out it emits one value per list element."""
+        the job's input rows: every node below a list-mode Lambda that reads
+        nothing but nodes of that fan-out. A row step keeps its input's
+        cardinality: below a fan-out alone it emits one value per list element,
+        and beside a read of the job's input rows it keeps the input's row
+        count and is merged against the slice like any row step."""
         seeds = {
             node_id
             for node_id, node in self.nodes.items()
@@ -188,9 +190,21 @@ class RuntimeGraph:
             if node_id in seeds:
                 reached.add(node_id)
                 continue
-            if any(dep in reached for dep in node.dependencies):
+            reads = self._fanout_graph_reads(node)
+            if reads and all(read in reached for read in reads):
                 reached.add(node_id)
         return reached - self.list_lambda_cardinality_nodes()
+
+    @staticmethod
+    def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
+        """The node ids a node reads, or ``None`` when it also reads a literal
+        value such as the job's input rows or a data op's own values."""
+        plan = node.data_spec.get("plan")
+        if not isinstance(plan, list):
+            return set(node.dependencies)
+        if any(entry["kind"] != "stage" for entry in plan):
+            return None
+        return {entry["node"] for entry in plan}
 
     def list_lambda_direct_read_nodes(self) -> set[str]:
         """Node ids whose list column binds a list-mode ``LambdaOp`` one hop
