@@ -471,46 +471,6 @@ def test_forward_per_row_rejects_variable_length_row_value():
         forward_refs(_three_row_subgraph(llm_id), results, configs, rows=3)
 
 
-def test_round_two_refuses_a_forwarded_failed_record_reaching_a_model_op():
-    # A round-1 ParseOp's marker is archived like any value; a round-2 model op
-    # reading it through a row Lambda would render it as an ordinary prompt
-    # value.
-    subgraph: list[dict[str, Any]] = [
-        {
-            "id": "l2",
-            "op": "LambdaOp",
-            "inputs": ["s0"],
-            "fn_name": "f",
-            "code": "def f(row):\n    return row[0]\n",
-        },
-        {
-            "id": "q2",
-            "op": "LLMChatOp",
-            "inputs": ["l2"],
-            "messages": [{"role": "user", "content": "x"}],
-            "rowwise_template": "Summarize {value}",
-            "rowwise_columns": [
-                {"label": "value", "node": "l2", "path": "items.output"}
-            ],
-            "config": {"model": "m"},
-        },
-    ]
-    with pytest.raises(DriverProtocolError, match="q2.*rule or default branch"):
-        build_round(
-            subgraph,
-            node_registry={"s0": {"id": "s0", "op": "ParseOp", "inputs": []}},
-            round_index=1,
-            goal="g",
-            observations=[],
-            topology=[],
-            preview_width=100,
-            model="m",
-            max_tokens=10,
-            temperature=0.0,
-            results={"s0": [{"output": {"_fail": {"op": "P", "reason": "x"}}}]},
-        )
-
-
 def test_forward_grouped_list_aggregate_column_materializes():
     # A per-row LIST (the symbol's news summaries) cannot ride a workflow input
     # literal (which is ungrouped on the worker), so an explicit aggregate

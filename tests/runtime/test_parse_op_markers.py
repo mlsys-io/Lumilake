@@ -207,21 +207,26 @@ def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "carrying, node, kind",
+    "source, carrying, node, kind",
     [
-        (_lower(), "L", "chat"),
-        (_lower(mode="aligned", code=_WHOLE), "L", "vision"),
-        (_lower(mode="list", code=_WHOLE), "L", "embedding"),
-        (_router(error_branch=True), "R.error", "chat"),
+        ([_parse(format="json")], _lower(), "L", "chat"),
+        ([_parse(format="json")], _lower(mode="aligned", code=_WHOLE), "L", "vision"),
+        ([_parse(format="json")], _lower(mode="list", code=_WHOLE), "L", "embedding"),
+        ([_parse(format="json")], _router(error_branch=True), "R.error", "chat"),
+        ([], _lower(inputs=["Answer"]), "L", "chat"),
     ],
-    ids=["row", "aligned", "list", "error"],
+    ids=["row", "aligned", "list", "error", "input"],
 )
 def test_a_model_op_reading_marked_values_is_refused(
-    carrying: dict[str, Any], node: str, kind: str
+    source: list[dict[str, Any]], carrying: dict[str, Any], node: str, kind: str
 ) -> None:
-    ops = [_parse(format="json"), carrying, _model_reading(node, kind)]
-    with pytest.raises(ValueError, match="rule or default"):
-        _build(ops, {"Answer": ["no idea"], "Images": ["img.png"]})
+    marked = json.dumps({"_fail": {"op": "P", "reason": "no JSON object"}})
+    model = _model_reading(node, kind)
+    ops = [*source, carrying, model]
+    with pytest.raises(
+        ValueError, match=f"model op '\\w+_p_{model['id']}_.*rule or default"
+    ):
+        _build(ops, {"Answer": [marked], "Images": ["img.png"]})
 
 
 def test_a_model_op_reading_a_router_rule_or_default_branch_builds() -> None:
