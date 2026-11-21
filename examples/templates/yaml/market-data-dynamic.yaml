@@ -154,6 +154,7 @@ library:
         SELECT symbol, name, sector, industry, employees, market_cap
         FROM reference.profile
         WHERE symbol = '{symbol}'
+        ORDER BY symbol
       params:
         - label: symbol
           node: Symbols

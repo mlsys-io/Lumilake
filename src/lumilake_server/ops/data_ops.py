@@ -3,6 +3,11 @@ from typing import Any, cast
 
 from lumilake_server.common import Message
 from lumilake_server.ops.ops import FunctionalOp, Op
+from lumilake_server.utils.retrieval_order import (
+    ROWS_KEY,
+    order_by_problem,
+    validate_rows,
+)
 from lumilake_server.utils.utils import check_and_cast_list
 
 
@@ -56,7 +61,14 @@ class DataRetrievalOp(FunctionalOp):
         cls, data: dict[str, Any], other_ops: dict[str, "Op"]
     ) -> "DataRetrievalOp":
         inputs = [other_ops[op_id] for op_id in data.get("_inputs", [])]
-        return cls(data_spec=data["data_spec"], inputs=inputs)
+        data_spec = data["data_spec"]
+        rows_problem = validate_rows(data_spec.get(ROWS_KEY))
+        order_problem = order_by_problem(data_spec)
+        if rows_problem is not None or order_problem is not None:
+            raise ValueError(
+                f"DataRetrievalOp '{data['_id']}' {rows_problem or order_problem}"
+            )
+        return cls(data_spec=data_spec, inputs=inputs)
 
 
 @Op.registry.register("MessageOp")

@@ -33,6 +33,11 @@ from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
 )
+from lumilake_server.utils.retrieval_order import (
+    ROWS_KEY,
+    order_by_problem,
+    validate_rows,
+)
 
 _OBSERVATION_TEMPLATE_FILE = Path(__file__).with_name("observation_template.py")
 
@@ -180,6 +185,17 @@ def validate_library(library: dict[str, dict[str, Any]] | None) -> None:
             raise DriverProtocolError(
                 f"library entry {ref!r} has unsupported op type {op_type!r}; "
                 f"supported: {sorted(SUPPORTED_OPS)}"
+            )
+        if op_type != "DataRetrievalOp":
+            continue
+        data_spec = template.get("data_spec")
+        if not isinstance(data_spec, dict):
+            continue
+        rows_problem = validate_rows(data_spec.get(ROWS_KEY))
+        order_problem = order_by_problem(data_spec)
+        if rows_problem is not None or order_problem is not None:
+            raise DriverProtocolError(
+                f"library entry {ref!r} {rows_problem or order_problem}"
             )
 
 

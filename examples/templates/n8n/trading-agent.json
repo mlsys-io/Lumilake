@@ -59,7 +59,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH profile AS (\n  SELECT symbol, \"companyName\", sector, industry, \"marketCap\", beta\n  FROM lumilake_demo.instrument_profile\n  WHERE symbol = '{{ $('Stock') }}'\n  LIMIT 1\n),\nincome_recent AS (\n  SELECT\n    symbol,\n    AVG(revenue) AS avg_revenue,\n    AVG(\"netIncome\") AS avg_net_income,\n    AVG(eps) AS avg_eps,\n    MAX(date::date)::text AS latest_report\n  FROM lumilake_demo.financial_income_statement\n  WHERE symbol = '{{ $('Stock') }}'\n    AND date::date >= '{{ $('SQL Date Planner').item.start_date }}'::date\n  GROUP BY symbol\n)\nSELECT\n  p.symbol,\n  p.\"companyName\" AS company_name,\n  p.sector,\n  p.industry,\n  p.\"marketCap\" AS market_cap,\n  p.beta,\n  COALESCE(i.avg_revenue, 0) AS avg_revenue,\n  COALESCE(i.avg_net_income, 0) AS avg_net_income,\n  COALESCE(i.avg_eps, 0) AS avg_eps,\n  i.latest_report\nFROM profile p\nLEFT JOIN income_recent i ON i.symbol = p.symbol;",
+        "query": "WITH profile AS (\n  SELECT symbol, \"companyName\", sector, industry, \"marketCap\", beta\n  FROM lumilake_demo.instrument_profile\n  WHERE symbol = '{{ $('Stock') }}'\n  LIMIT 1\n),\nincome_recent AS (\n  SELECT\n    symbol,\n    AVG(revenue) AS avg_revenue,\n    AVG(\"netIncome\") AS avg_net_income,\n    AVG(eps) AS avg_eps,\n    MAX(date::date)::text AS latest_report\n  FROM lumilake_demo.financial_income_statement\n  WHERE symbol = '{{ $('Stock') }}'\n    AND date::date >= '{{ $('SQL Date Planner').item.start_date }}'::date\n  GROUP BY symbol\n)\nSELECT\n  p.symbol,\n  p.\"companyName\" AS company_name,\n  p.sector,\n  p.industry,\n  p.\"marketCap\" AS market_cap,\n  p.beta,\n  COALESCE(i.avg_revenue, 0) AS avg_revenue,\n  COALESCE(i.avg_net_income, 0) AS avg_net_income,\n  COALESCE(i.avg_eps, 0) AS avg_eps,\n  i.latest_report\nFROM profile p\nLEFT JOIN income_recent i ON i.symbol = p.symbol\nORDER BY p.symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
@@ -75,7 +75,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH bars_recent AS (\n  SELECT\n    symbol,\n    MAX(high) AS recent_high,\n    MIN(low) AS recent_low,\n    AVG(close) AS recent_close_avg,\n    SUM(volume) AS total_volume,\n    MAX(timestamp)::text AS latest_ts\n  FROM lumilake_demo.ohlc_10m\n  WHERE symbol = '{{ $('Stock') }}'\n    AND timestamp >= '{{ $('SQL Date Planner').item.start_date }}'::timestamp\n  GROUP BY symbol\n),\nmetrics AS (\n  SELECT symbol, metric::jsonb AS m\n  FROM lumilake_demo.market_metrics\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY version DESC\n  LIMIT 1\n)\nSELECT\n  b.symbol,\n  b.latest_ts,\n  b.recent_high,\n  b.recent_low,\n  b.recent_close_avg,\n  b.total_volume,\n  m.m ->> '52WeekHigh'     AS week52_high,\n  m.m ->> '52WeekLow'      AS week52_low,\n  m.m ->> 'beta'           AS beta,\n  m.m ->> 'peTTM'          AS pe_ttm,\n  m.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm\nFROM bars_recent b\nLEFT JOIN metrics m ON m.symbol = b.symbol;",
+        "query": "WITH bars_recent AS (\n  SELECT\n    symbol,\n    MAX(high) AS recent_high,\n    MIN(low) AS recent_low,\n    AVG(close) AS recent_close_avg,\n    SUM(volume) AS total_volume,\n    MAX(timestamp)::text AS latest_ts\n  FROM lumilake_demo.ohlc_10m\n  WHERE symbol = '{{ $('Stock') }}'\n    AND timestamp >= '{{ $('SQL Date Planner').item.start_date }}'::timestamp\n  GROUP BY symbol\n),\nmetrics AS (\n  SELECT symbol, metric::jsonb AS m\n  FROM lumilake_demo.market_metrics\n  WHERE symbol = '{{ $('Stock') }}'\n  ORDER BY version DESC\n  LIMIT 1\n)\nSELECT\n  b.symbol,\n  b.latest_ts,\n  b.recent_high,\n  b.recent_low,\n  b.recent_close_avg,\n  b.total_volume,\n  m.m ->> '52WeekHigh'     AS week52_high,\n  m.m ->> '52WeekLow'      AS week52_low,\n  m.m ->> 'beta'           AS beta,\n  m.m ->> 'peTTM'          AS pe_ttm,\n  m.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm\nFROM bars_recent b\nLEFT JOIN metrics m ON m.symbol = b.symbol\nORDER BY b.symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",
@@ -91,7 +91,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT\n  symbol,\n  STRING_AGG(title, ' | ' ORDER BY \"publishedDate\" DESC) AS headlines,\n  STRING_AGG(\n    LEFT(COALESCE(summary, text, ''), 200),\n    ' || ' ORDER BY \"publishedDate\" DESC\n  ) AS synopses,\n  COUNT(*) AS news_count\nFROM (\n  SELECT *\n  FROM lumilake_demo.news_metadata\n  WHERE symbol = '{{ $('Stock') }}'\n    AND id IS NOT NULL\n  ORDER BY \"publishedDate\" DESC\n  LIMIT 5\n) recent\nGROUP BY symbol;",
+        "query": "SELECT\n  symbol,\n  STRING_AGG(title, ' | ' ORDER BY \"publishedDate\" DESC) AS headlines,\n  STRING_AGG(\n    LEFT(COALESCE(summary, text, ''), 200),\n    ' || ' ORDER BY \"publishedDate\" DESC\n  ) AS synopses,\n  COUNT(*) AS news_count\nFROM (\n  SELECT *\n  FROM lumilake_demo.news_metadata\n  WHERE symbol = '{{ $('Stock') }}'\n    AND id IS NOT NULL\n  ORDER BY \"publishedDate\" DESC\n  LIMIT 5\n) recent\nGROUP BY symbol\nORDER BY symbol;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",

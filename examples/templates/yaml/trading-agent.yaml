@@ -82,7 +82,8 @@ ops:
           COALESCE(i.avg_eps, 0) AS avg_eps,
           i.latest_report
         FROM profile p
-        LEFT JOIN income_recent i ON i.symbol = p.symbol;
+        LEFT JOIN income_recent i ON i.symbol = p.symbol
+        ORDER BY p.symbol;
       params:
         - label: symbol
           node: "Stock"
@@ -130,7 +131,8 @@ ops:
           m.m ->> 'peTTM'          AS pe_ttm,
           m.m ->> 'epsGrowthTTMYoy' AS eps_growth_ttm
         FROM bars_recent b
-        LEFT JOIN metrics m ON m.symbol = b.symbol;
+        LEFT JOIN metrics m ON m.symbol = b.symbol
+        ORDER BY b.symbol;
       params:
         - label: symbol
           node: "Stock"
@@ -161,7 +163,8 @@ ops:
           ORDER BY "publishedDate" DESC
           LIMIT 5
         ) recent
-        GROUP BY symbol;
+        GROUP BY symbol
+        ORDER BY symbol;
       params:
         - label: symbol
           node: "Stock"
