@@ -25,9 +25,10 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     op_dict["_code"] = code
     op_dict["mode"] = mode
     # Set by a router's expansion, which the parser marks on the branches it
-    # generated; never a workflow field.
+    # generated; never a workflow field. The leading underscore keeps it
+    # parser-owned through serialization.
     if ctx.clears_markers:
-        op_dict["clears_markers"] = True
+        op_dict["_clears_markers"] = True
     # Optional limits for the FlowMesh python task the op compiles to; bounds
     # are checked when the op is built.
     for key, kind in (("timeout_s", (int, float)), ("memory_mb", int)):

@@ -350,7 +350,9 @@ class LambdaOp(Op):
         if self.sample_value is not None:
             data["sample_value"] = self.sample_value
         if self.clears_markers:
-            data["clears_markers"] = True
+            # Parser-owned, so the round builder still knows this branch drops
+            # markers after the graph crosses ``from_json``.
+            data["_clears_markers"] = True
         return data
 
     @classmethod
@@ -372,11 +374,7 @@ class LambdaOp(Op):
             raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
 
         input_ops = [other_ops[inp] for inp in data["_inputs"]]
-        clears_markers = data.get("clears_markers", False)
-        if not isinstance(clears_markers, bool):
-            raise ValueError(
-                f"LambdaOp '{data.get('_id')}' 'clears_markers' must be a bool"
-            )
+        input_ops = [other_ops[inp] for inp in data["_inputs"]]
         try:
             return cls(
                 inputs=input_ops,
@@ -390,7 +388,7 @@ class LambdaOp(Op):
                 expected_runtime_s=expected_runtime_s,
                 cache=cache,
                 sample_value=sample_value,
-                clears_markers=clears_markers,
+                clears_markers=data.get("_clears_markers", False),
             )
         except ValueError as exc:
             raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc
