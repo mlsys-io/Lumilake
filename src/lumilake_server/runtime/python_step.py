@@ -193,9 +193,10 @@ def main(inputs):
     seeds = None
     if seed_entry is not None:
         seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
-        if len(seeds) not in (1, n):
+        if len(seeds) != n:
             raise ValueError(
-                "seed column has %d rows; expected 1 or %d" % (len(seeds), n)
+                "%s: seed column has %d rows; expected one per row, so %d"
+                % ({op_id!r}, len(seeds), n)
             )
     items = []
     for i, row in enumerate(rows):
@@ -206,10 +207,7 @@ def main(inputs):
             # A marked row keeps its position and passes the marker on.
             items.append({{"output": marked, "value": marked}})
             continue
-        if seeds is None:
-            value = fn(row)
-        else:
-            value = fn(row, seeds[0] if len(seeds) == 1 else seeds[i])
+        value = fn(row) if seeds is None else fn(row, seeds[i])
         reject_reserved_key(value, _NODE)
         items.append({{"output": text(value), "value": value}})
     return {{"items": items}}
@@ -288,9 +286,9 @@ def main(inputs):
     seeds = None
     if seed_entry is not None:
         seeds = [_raw_seed(v) for v in _column(seed_entry, inputs, text)]
-        if len(seeds) not in (1, len(rows)):
+        if len(seeds) != len(rows):
             raise ValueError(
-                "%s: seed column has %d rows; expected 1 or %d"
+                "%s: seed column has %d rows; expected one per row, so %d"
                 % ({op_id!r}, len(seeds), len(rows))
             )
     items = []
@@ -300,7 +298,7 @@ def main(inputs):
             # A marked row keeps one defined slot, so no child is run or lost.
             items.append({{"output": marked, "parent": index, "child": 0}})
             continue
-        values = fn(row) if seeds is None else fn(row, seeds[0] if len(seeds) == 1 else seeds[index])
+        values = fn(row) if seeds is None else fn(row, seeds[index])
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"

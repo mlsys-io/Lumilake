@@ -497,6 +497,32 @@ def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("mode", ["row", "expand"])
+def test_wrapper_refuses_one_seed_for_several_rows(mode: str) -> None:
+    """One seed handed to several rows would give every row the same draw, so
+    the step refuses it naming the op and both counts; one row with one seed
+    stays fine."""
+    code = "def draw(inputs, seed):\n    return '%d' % seed\n"
+    if mode == "expand":
+        code = "def draw(inputs, seed):\n    return ['%d' % seed]\n"
+    seed: python_step.ColumnPlan = [
+        {"kind": "literal", "values": ["7"], "role": "seed"}
+    ]
+    with pytest.raises(
+        ValueError, match="op-1: seed column has 1 rows; expected one per row, so 3"
+    ):
+        _run_wrapper(
+            code,
+            [{"kind": "literal", "values": ["a", "b", "c"]}, *seed],
+            {},
+            mode=mode,
+            seeded=True,
+        )
+    single = [{"kind": "literal", "values": ["a"]}, *seed]
+    one = _run_wrapper(code, single, {}, mode=mode, seeded=True)["items"]
+    assert [item["output"] for item in one] == ["7"]
+
+
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     py_dir = _stage(tmp_path, "py", {"value": {"items": [{"output": "p"}]}})
     api_dir = _stage(tmp_path, "api", {"text": "t"})
