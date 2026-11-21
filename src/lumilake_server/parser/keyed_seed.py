@@ -10,7 +10,7 @@ key column and returns one seed per row, and binds the chat op to its output.
 from typing import Any
 
 from lumilake_server.common import GenerationConfig
-from lumilake_server.ops.llm_ops import RowwiseSeed, _validate_rowwise_seed
+from lumilake_server.ops.llm_ops import RowwiseSeed, rowwise_seed_fits
 from lumilake_server.parser.common import make_id
 
 SEED_SUFFIX = "__seed"
@@ -104,9 +104,10 @@ def seed_source(
 
 
 def _seed_message(message: str) -> str:
-    """One runtime message, with its value placeholder and any ``%`` in the
-    baked op id or path escaped, so the function fills in just the value."""
-    return (message + " %s").replace("%", "%%").replace("%%s", "%s")
+    """One runtime message, with its value placeholder appended and any ``%``
+    in the baked op id or path escaped, so the function fills in just the
+    value."""
+    return message.replace("%", "%%") + " %s"
 
 
 def key_target(
@@ -114,7 +115,7 @@ def key_target(
     seed: dict[str, Any],
     *,
     rowwise_template: str | None,
-    config: dict[str, Any],
+    config: Any,
 ) -> tuple[str, str]:
     """The ``(node, path)`` a key form reads, after checking the form fits
     this chat op, with the op named in the refusal."""
@@ -134,8 +135,14 @@ def key_target(
     path = key.get("path")
     if not isinstance(path, str):
         raise ValueError(f"LLMChatOp '{op_id}' rowwise_seed key must name a path")
-    _validate_rowwise_seed(
-        RowwiseSeed(node_ref, path), rowwise_template, GenerationConfig(**config), op_id
+    if not isinstance(config, dict):
+        raise ValueError(f"LLMChatOp '{op_id}' config must be a mapping")
+    try:
+        generation_config = GenerationConfig(**config)
+    except TypeError as exc:
+        raise ValueError(f"LLMChatOp '{op_id}' config is not valid: {exc}") from exc
+    rowwise_seed_fits(
+        RowwiseSeed(node_ref, path), rowwise_template, generation_config, op_id
     )
     return node_ref, path
 

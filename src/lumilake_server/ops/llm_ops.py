@@ -197,7 +197,7 @@ class LLMChatOp(LLMOp):
         self.rowwise_seed = rowwise_seed
         self.system_messages = system_messages
         self.condition = condition
-        _validate_rowwise_seed(rowwise_seed, rowwise_template, self.config)
+        rowwise_seed_fits(rowwise_seed, rowwise_template, self.config)
 
     @property
     def messages(self) -> Op:
@@ -290,7 +290,7 @@ class LLMChatOp(LLMOp):
         )
 
 
-def _validate_rowwise_seed(
+def rowwise_seed_fits(
     rowwise_seed: RowwiseSeed | None,
     rowwise_template: str | None,
     config: GenerationConfig,
