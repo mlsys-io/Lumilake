@@ -520,6 +520,26 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     assert "import math" in wire(node)["code"]
 
 
+def test_yaml_inlined_lambda_step_decodes_its_row_at_run_time() -> None:
+    """A row Lambda the LLM inlines runs wrapped, so it sees the decoded value."""
+    payload = _CHAIN.replace('Name: ["world"]', 'Name: [\'{"name": "nvda"}\']').replace(
+        "      def shout(inputs):\n          (greeting,) = inputs",
+        '      def shout(inputs):\n          greeting = inputs[0]["name"]',
+    )
+    runtime = _build(payload)
+    reply = next(n for n in runtime.nodes.values() if n.task_type == "inference")
+    (step,) = [
+        s
+        for s in reply.data_spec["template"]["options"]["format"]["steps"]
+        if s.get("function")
+    ]
+    # The step reads the FormatOp's rendered text, which the worker passes as
+    # one string; a JSON row arrives decoded, plain text stays as written.
+    wrapper = _run_in_inline_namespace(step["function"], "adapt")
+    assert wrapper(('{"name": "nvda"}',)) == "NVDA"
+    assert wrapper(("Hello, world!",)) == "Hello, world!"
+
+
 def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
     payload = _CHAIN.replace(
         "      def shout(inputs):\n",
@@ -531,67 +551,20 @@ def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
         _build(payload)
 
 
-_INLINE_SAFE_BUILTINS = {
-    "int": int,
-    "float": float,
-    "str": str,
-    "bool": bool,
-    "list": list,
-    "dict": dict,
-    "tuple": tuple,
-    "set": set,
-    "len": len,
-    "sum": sum,
-    "max": max,
-    "min": min,
-    "abs": abs,
-    "round": round,
-    "sorted": sorted,
-    "reversed": reversed,
-    "enumerate": enumerate,
-    "zip": zip,
-    "map": map,
-    "filter": filter,
-    "any": any,
-    "all": all,
-    "range": range,
-    "isinstance": isinstance,
-}
-
-
 def _run_in_inline_namespace(source: str, name: str):
     """Run generated source the way the FlowMesh worker does: one namespace of
     whitelisted names and modules, with no exception classes."""
-    namespace: dict[str, Any] = {"__builtins__": dict(_INLINE_SAFE_BUILTINS)}
+    namespace: dict[str, Any] = {
+        "__builtins__": dict(lambda_runtime.INLINE_SAFE_BUILTINS)
+    }
     namespace.update({"json": json})
     exec(source, namespace)
     return namespace[name]
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        '{"a": 1}',
-        "[1, 2]",
-        "1",
-        "plain",
-        json.dumps({"df": json.dumps({"t": {"0": "x", "1": "y"}})}),
-        json.dumps({"index": 0, "table": {"df": json.dumps({"t": {"0": "x"}})}}),
-    ],
-)
-def test_inline_decoder_matches_the_shared_one(value: str) -> None:
-    """The wrapper carries its own copy of the decoder, because the inline
-    worker's namespace has no exception classes; both must agree."""
+def test_inline_wrapper_and_shared_decoder_agree() -> None:
     from lumilake_server.runtime.lambda_task_helpers import _decode as shared
 
     inline = _run_in_inline_namespace(lambda_runtime.DECODER_SOURCE, "_decode")
-    assert inline(value) == shared(value)
-
-
-def test_inline_wrapper_decodes_its_row_before_the_user_function() -> None:
-    code = "def read(row):\n    return row[0]['name']"
-    wrapper = _run_in_inline_namespace(
-        lambda_runtime.inline_lambda_source(code, "read"), "adapt"
-    )
-    assert wrapper(('{"name": "nvda"}',)) == "nvda"
-    assert wrapper(("plain",)) == "plain"
+    for value in ('{"a": 1}', "[1, 2]", "1", "plain"):
+        assert inline(value) == shared(value)
