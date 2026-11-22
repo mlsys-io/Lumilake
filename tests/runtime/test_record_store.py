@@ -265,31 +265,25 @@ async def test_signature_follows_the_inputs(constant: bool) -> None:
     column plan rather than as a dependency and a record still names the value it
     read, so Mark returns the same value from a changed literal with a new key,
     and the consumer's key moves with it while its own value stays equal."""
-    stored: dict[str, dict[tuple[str, str | None], RecordEntry]] = {}
+    stored = []
     for round_index in ("first", "second"):
         literal = "changed" if constant and round_index == "second" else "one"
         payload = _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
         if constant:
             payload["ops"][0].update(fn_name="constant", code=_CODE_CONSTANT)
         graph = _runtime_graph(payload)
-        text = "SAME" if constant else f"{round_index.upper()}"
-        stored[round_index] = {
-            (entry.address.op, entry.address.record): entry
-            for entry in await _store(
-                graph,
-                {
-                    "Mark": [{"id": "a", "text": text}],
-                    "Join": [{"id": "a", "text": f"{text}!"}],
-                },
-            )
-        }
+        text = "SAME" if constant else round_index.upper()
+        stored.append(
+            {
+                (e.address.op, e.address.record): e
+                for e in await _store(graph, _rows(text))
+            }
+        )
         mark, join = _declared_name(graph, "Mark"), _declared_name(graph, "Join")
-    first, second = stored["first"], stored["second"]
-    assert (first[(mark, "a")].digest == second[(mark, "a")].digest) is not constant
-    assert (
-        first[(mark, "a")].value_digest == second[(mark, "a")].value_digest
-    ) is constant
-    assert first[(join, "a")].digest != second[(join, "a")].digest
+    first, second = stored
+    assert (first[mark, "a"].digest == second[mark, "a"].digest) is not constant
+    assert (first[mark, "a"].value_digest == second[mark, "a"].value_digest) is constant
+    assert first[join, "a"].digest != second[join, "a"].digest
 
 
 @pytest.mark.asyncio
@@ -299,16 +293,17 @@ async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
     failure's lineage names the inputs it read."""
     join = _declared_name(graph, "Join")
     entries = []
-    for literal, join_value in (
+    for literal, value in (
         ("one", {"_fail": {"reason": "boom"}}),
         ("two", {"_fail": {"reason": "boom"}}),
         ("one", {"id": "a"}),
     ):
         payload = _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
-        results = {"Mark": [{"id": "a", "text": "SAME"}], "Join": [join_value]}
-        # Join reads Mark, whose key follows its own literal.
-        stored = await _store(_runtime_graph(payload), results)
-        entries.append(next(entry for entry in stored if entry.address.op == join))
+        stored = await _store(
+            _runtime_graph(payload),
+            {"Mark": [{"id": "a", "text": "SAME"}], "Join": [value]},
+        )
+        entries.append(next(e for e in stored if e.address.op == join))
     first, second, ok = entries
     assert first.status == "failed"
     assert first.address.record == "a"
