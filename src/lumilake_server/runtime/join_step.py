@@ -154,8 +154,7 @@ def _keyed(rows, where):
 def _pairs(values, rows, live, where):
     """An attach column paired with its source rows by position, as (value, row,
     key, position), or ``None`` when its length matches neither every source row
-    nor only the live rows (each an (index, row) pair). Over the live rows only,
-    a row without a key fails the job."""
+    nor only the live rows."""
     if len(values) == len(rows):
         keys = (_key_of(row, where) for row in rows)
         return [
@@ -174,10 +173,10 @@ def _pairs(values, rows, live, where):
 def _attach(keyed, marked, name, source_index, values, rows, where):
     """Merge one attach field's values onto the source rows by position."""
     live = []
-    for row in rows:
+    for position, row in enumerate(rows):
         carried = carried_marker((row,))
         if carried is None:
-            live.append(row)
+            live.append((position, row))
             continue
         key = _key_of(row, where)
         if key is not None and key not in marked:
@@ -269,11 +268,9 @@ def main(inputs):
 
 def _row_keys(rows, where):
     """The first input's rows as (record, key, row) with their markers. A live
-    row's record is its row_key value, unique in the input, which is how several
-    rows may share one by key: a duplicate fails the job. A marked row is never
-    a merge target, so it takes a private slot at its position instead of a
-    record key and passes through as its marker, whether the marker is the whole
-    row or one of its fields. Its by key is ``None`` when it cannot be read."""
+    row's record is its row_key value, unique in the input: a duplicate fails the
+    job. A marked row takes a private slot at its position. Its by key is
+    ``None`` when it cannot be read."""
     taken = set()
     keyed = []
     marked = {{}}
@@ -306,7 +303,6 @@ def _record_of(row, where):
 
 
 def _first_keys(keyed):
-    """The by keys the first input carries."""
     return {{key for _, key, _ in keyed}}
 
 
@@ -338,9 +334,7 @@ def _broadcast(inputs):
                 continue
             merged = row.copy()
             _merge(merged, more[key], where)
-            # Every output row keeps its own fields: a further input's row is
-            # written onto that row's copy, never onto a row it shares with
-            # another output.
+            # Copy, so a shared further row never writes onto a sibling's output.
             keyed[position] = (record, key, merged)
     for name, value_index, source_index, first_source in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
@@ -362,9 +356,8 @@ def _attach_broadcast(
     keyed, marked, name, source_index, first_source, values, rows, where
 ):
     """Merge one attach field's values onto the output rows their source rows
-    belong to: the record a source row's row_key fields name, or else every
-    output row of its by key. A source row of the first input is the output row
-    at its position, and a marked source row marks the rows it reaches."""
+    reach: the record its row_key fields name, or else every row of its by key.
+    A source row of the first input is the output row at its position."""
     targets = _AttachTargets(keyed, marked)
     live = [
         (position, row)
@@ -398,8 +391,6 @@ def _attach_broadcast(
             _merged(merged, name, value, where)
             keyed[target] = (record, held_key, merged)
     if _ON_MISSING == "fail_row":
-        # Only a row this source carries no value for becomes a marker; under
-        # null_fill its field is simply left out.
         for position, (record, _, key) in enumerate(keyed):
             if position not in covered and record not in marked:
                 marked[record] = _failed("key %s is missing from %r" % (key, where))
@@ -434,7 +425,6 @@ class _AttachTargets:
 
 
 def _slot(position):
-    """A marked first-input row's private key inside the step, never in the
-    output: it is no record identity, only the place one marker keeps."""
+    """A marked row's private key inside the step, never in the output."""
     return "#marker:%d" % position
 '''

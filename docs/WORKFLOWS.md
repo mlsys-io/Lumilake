@@ -60,20 +60,6 @@ Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` 
 
 `LLMChatOp` supports output validation and local beam search; see [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 
-A `JoinOp` takes `by` as one dotted field path or a list of them, an optional
-`attach` mapping a field to a 1:1 op, `on_missing: null_fill | fail_row`, and an
-optional `row_key` that lets the first input hold several rows per `by` key:
-`row_key` names the record identity of those rows as dotted field names and must
-include every `by` path, and each further input's row then reaches every
-first-input row of its key. A native graph payload carries the same field. See
-[`docs/OPS.md`](OPS.md#joinop).
-
-```yaml
-ops:
-  - {id: PerRow, op: JoinOp, inputs: [Papers, UnitSummary], by: unit,
-     row_key: [unit, paper_id]}
-```
-
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its `parameters.pythonCode` is the function source, and its `notes` field carries Lumilake annotations as a JSON object with kebab-case keys:
