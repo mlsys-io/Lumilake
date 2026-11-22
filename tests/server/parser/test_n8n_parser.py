@@ -372,7 +372,7 @@ def test_n8n_code_node_rejects_an_unknown_mode() -> None:
             {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
         ]
     }
-    with pytest.raises(ValueError, match="'mode'"):
+    with pytest.raises(ValueError, match="Code node 'Code': mode"):
         parse_n8n_payload(payload)
 
 

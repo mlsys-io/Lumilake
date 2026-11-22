@@ -788,9 +788,8 @@ ops:
      code: "def f(rows):\\n    return rows\\n"}}
 outputs: [{{name: out, ref: Group}}]
 """
-    spec = parse_yaml_payload(payload)
     with pytest.raises(ValueError, match=expected):
-        Graph.from_json(spec["shapes"]["graph"])
+        parse_yaml_payload(payload)
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
@@ -1087,14 +1086,10 @@ async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
         )
 
 
-def test_lambda_op_rejects_a_non_bool_cache() -> None:
-    for bad in (1, "yes", 0.0):
-        with pytest.raises(ValueError, match="cache"):
-            LambdaOp(
-                [["x"]],
-                fn=lambda inputs: str(inputs[0]),
-                cache=bad,  # type: ignore[call-overload]
-            )
+@pytest.mark.parametrize("bad", [1, "yes", 0.0])
+def test_lambda_op_rejects_a_non_bool_cache(bad: Any) -> None:
+    with pytest.raises(ValueError, match="cache"):
+        LambdaOp([["x"]], fn=lambda inputs: str(inputs[0]), cache=bad)
 
 
 @pytest.mark.parametrize(
