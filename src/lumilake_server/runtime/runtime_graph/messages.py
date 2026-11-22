@@ -124,6 +124,7 @@ class _MessagesBuilder(_DerivedBuilder):
             dependencies=dependencies or None,
             output_enforcement=llm_op.config.output_enforcement_spec(),
             skip_when_all_inputs_empty=bool(dependencies),
+            source_op=llm_op,
         )
 
 

@@ -74,6 +74,14 @@ def _refuse_fields_beside_rowwise_messages(
         )
 
 
+def _decodes_by_sampling(config: GenerationConfig) -> bool:
+    """An absent temperature draws; ``temperature: 0`` or ``num_beams > 1`` is
+    deterministic."""
+    if config.num_beams is not None and config.num_beams > 1:
+        return False
+    return config.temperature != 0
+
+
 class LLMOp(Op):
     config: GenerationConfig
     cacheable: bool
@@ -116,6 +124,10 @@ class LLMChatOp(LLMOp):
     rowwise_seed: RowwiseSeed | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
+
+    @property
+    def samples(self) -> bool:
+        return _decodes_by_sampling(self.config)
 
     def __init__(
         self,
@@ -323,6 +335,10 @@ def llm_chat(
 class LLMCompletionOp(LLMOp):
     """Generate from rendered string prompts without a chat template."""
 
+    @property
+    def samples(self) -> bool:
+        return _decodes_by_sampling(self.config)
+
     def __init__(
         self,
         prompt: str | list[str] | Op,
@@ -481,6 +497,11 @@ def llm_vision(
 @Op.registry.register("ImageGenerationOp")
 class ImageGenerationOp(LLMOp):
     """Op for generating images from text content."""
+
+    @property
+    def samples(self) -> bool:
+        """Every generation is a fresh draw of the diffusion sampler."""
+        return True
 
     def __init__(
         self,

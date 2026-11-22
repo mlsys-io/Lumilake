@@ -50,6 +50,25 @@ def make_node_prefix(name: str) -> str:
     return f"{safe}_{digest}"
 
 
+_CHUNK_GROUP_SEPARATOR = "::"
+
+
+def make_chunk_group_key(parent: str, index: int) -> str:
+    """The graph key of one chunk group of ``parent``: the first group keeps
+    the parent key, later ones append their index."""
+    if index == 0:
+        return parent
+    return f"{parent}{_CHUNK_GROUP_SEPARATOR}{index}"
+
+
+def chunk_group_parent(group_key: str) -> str:
+    """The parent workflow key a chunk group was split from."""
+    parent, _, chunk = group_key.rpartition(_CHUNK_GROUP_SEPARATOR)
+    if parent and chunk.isdigit():
+        return parent
+    return group_key
+
+
 @dataclass
 class RuntimeGraph:
     nodes: dict[str, RuntimeOp]
@@ -245,6 +264,7 @@ class RuntimeGraph:
                     else None
                 ),
                 skip_when_all_inputs_empty=op.skip_when_all_inputs_empty,
+                samples=op.samples,
             )
 
         node_order = [mapping[node_id] for node_id in self.node_order]

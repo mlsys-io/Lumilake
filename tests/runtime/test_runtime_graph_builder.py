@@ -1283,6 +1283,18 @@ def _build_llm_graph(**config_kwargs):
     return RuntimeGraphBuilder().build(compiled), llm.id
 
 
+@pytest.mark.parametrize(
+    ("config_kwargs", "samples"),
+    [({}, True), ({"temperature": 0.0}, False), ({"num_beams": 3}, False)],
+)
+def test_runtime_node_carries_the_sampling_tag_of_its_op(
+    config_kwargs: dict, samples: bool
+) -> None:
+    runtime_graph, llm_id = _build_llm_graph(**config_kwargs)
+
+    assert runtime_graph.nodes[llm_id].samples is samples
+
+
 _ENGINE_FIELDS = (
     "max_model_len",
     "gpu_memory_utilization",
@@ -1446,7 +1458,9 @@ def _build_image_gen_graph(**config_kwargs):
 
 def test_image_gen_defaults_emitted_when_user_omits() -> None:
     runtime_graph, img_id = _build_image_gen_graph()
-    spec = runtime_graph.nodes[img_id].inference_spec
+    node = runtime_graph.nodes[img_id]
+    assert node.samples is True
+    spec = node.inference_spec
     assert spec["num_inference_steps"] == 8
     assert spec["guidance_scale"] == 1.0
     assert spec["height"] == 1024

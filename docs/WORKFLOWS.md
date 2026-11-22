@@ -38,7 +38,22 @@ outputs:
 
 Unquoted `on`, `yes`, or bare-number keys are read by YAML as non-strings; the server refuses such a workflow with a 400, so quote them.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, and `RouterOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `RouterOp`, and `RepeatOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+
+`RepeatOp` repeats an op body a fixed number of times, unrolled at submit into one ordinary op per iteration:
+
+```yaml
+ops:
+  - id: Retry
+    op: RepeatOp
+    times: 3
+    input: Draft          # what the first iteration reads
+    output: Rectify       # body id the next iteration reads
+    body:
+      - {id: Rectify, op: LLMChatOp, inputs: [$in], messages: [...], config: {...}}
+```
+
+Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or `RouterOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
 
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).

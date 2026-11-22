@@ -80,4 +80,5 @@ class _EmbeddingBuilder(_LambdaBuilder):
                 _default_output_destination(),
                 ["results.json", "embeddings.safetensors"],
             ),
+            source_op=llm_op,
         )
