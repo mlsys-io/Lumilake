@@ -318,8 +318,8 @@ async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
     join = _declared_name(graph, "Join")
     entries = []
     for literal, join_value in (
-        ("one", {"id": "a", "_fail": {"reason": "boom"}}),
-        ("two", {"id": "a", "_fail": {"reason": "boom"}}),
+        ("one", {"_fail": {"reason": "boom"}}),
+        ("two", {"_fail": {"reason": "boom"}}),
         ("one", {"id": "a"}),
     ):
         payload = _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
