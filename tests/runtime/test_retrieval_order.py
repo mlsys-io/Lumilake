@@ -120,3 +120,15 @@ def _reader_doc(path: str) -> str:
         "    rowwise_columns:\n"
         f'      - label: df\n        node: "Search"\n        path: "{path}"\n'
     )
+
+
+def test_rows_is_declared_only_on_a_sql_retrieval() -> None:
+    doc = (
+        "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
+        '  - id: "Fetch"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
+        "    data_spec:\n      type: lumid\n      mode: s3\n      rows: one\n"
+        '      template: "k/{symbol}"\n'
+        '      params:\n        - label: symbol\n          node: "Stock"\n'
+    )
+    with pytest.raises(ValueError, match="only on a mode: sql retrieval"):
+        Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
