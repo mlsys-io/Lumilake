@@ -176,17 +176,11 @@ An optional `rowwise_seed` binds a per-row sampling seed. It takes the same `{no
   rowwise_seed: {node: Seeds, path: items.output.seed}
 ```
 
-`rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives each row's seed from a column that holds its key. The path names dict fields only, so it takes no list index; a key read under a path keeps its JSON type, so `"123"` and `123` draw different seeds, and a null key fails the job. A key that is the whole cell (including `items.output`) is read as text, so a null one is the string `"null"`. The seed is the first 8 bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON, reduced mod 2^31, with `seed` the job seed, the op id as written and `round` the dynamic round number, so a row keeps its draw across batches, positions and spec edits that keep the op id. The parser generates a row-mode `LambdaOp` for the seed, under an id a user op cannot hold. The key form needs `rowwise_template`, takes no other `rowwise_seed` field, and fails the job naming the op and row on a missing key.
+`rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives each row's seed from its key: the first 8 bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON, reduced mod 2^31. The path names dict fields only and a key read under it keeps its JSON type, so `"123"` and `123` differ and a null key fails the job. The key form needs `rowwise_template`, takes no other `rowwise_seed` field, and fails the job naming the op and row on a missing key.
 
 ```yaml
-- id: Answer
-  op: LLMChatOp
-  inputs: [Cases]
-  messages: [{role: user, content: placeholder}]
-  rowwise_template: "{question}"
-  rowwise_columns:
-    - {label: question, node: Cases, path: items.output.question}
-  rowwise_seed: {key: {node: Cases, path: items.output.case_id}}
+- {id: Answer, op: LLMChatOp, inputs: [Cases], rowwise_template: "{question}",
+   rowwise_seed: {key: {node: Cases, path: items.output.case_id}}}
 ```
 
 When every upstream column a per-row chat reads is empty, FlowMesh completes the task with an empty result without dispatching a worker.
