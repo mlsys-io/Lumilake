@@ -31,9 +31,11 @@ from lumilake_server.ops import (
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
+    LiteralColumn,
     LLMChatOp,
     LLMCompletionOp,
     LLMVisionOp,
+    NodeColumn,
 )
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime.flowmesh_client import (
@@ -96,7 +98,6 @@ def _literal_seed(value: Any, llm_op_id: str) -> int | None:
 
 
 class _LLMBuilder(_EmbeddingBuilder):
-
     def _row_condition(
         self,
         condition: dict[str, str] | None,
@@ -603,42 +604,35 @@ class _LLMBuilder(_EmbeddingBuilder):
             raise ValueError(f"LLMChatOp {llm_op_id} has no rowwise_template")
         columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
-        for col in llm_op.rowwise_columns or []:
-            label = col.get("label")
-            data = col.get("data")
-            node_ref = col.get("node")
-            path = col.get("path")
-            if isinstance(label, str) and isinstance(data, dict):
-                columns.append(Column.model_validate({"label": label, "data": data}))
-                continue
-            if isinstance(label, str) and isinstance(node_ref, str):
-                upstream = graph_dict.get(node_ref)
-                if path is None and not isinstance(upstream, (InputOp, DataOp)):
-                    raise ValueError(
-                        f"Column '{label}' of consumer '{llm_op_id}'"
-                        f" references node '{node_ref}' without a path;"
-                        " only InputOp and DataOp refs may omit it."
-                    )
+        for column in llm_op.rowwise_columns or []:
+            if isinstance(column, LiteralColumn):
                 columns.append(
-                    self._node_ref_column(
-                        consumer_id=llm_op_id,
-                        label=label,
-                        node_ref=node_ref,
-                        path=path if isinstance(path, str) else "",
-                        upstream=upstream,
-                        inputs_dict=inputs_dict,
+                    Column(
+                        label=column.label,
+                        data=ListData.model_validate(column.data),
                     )
                 )
-                # A literal-backed column has no runtime node to depend on.
-                if node_ref not in dependencies and not isinstance(
-                    upstream, (InputOp, DataOp)
-                ):
-                    dependencies.append(node_ref)
                 continue
-            raise ValueError(
-                f"Column '{label}' of consumer '{llm_op_id}' has neither"
-                " data nor node+path"
+            upstream = graph_dict.get(column.node)
+            if column.path is None and not isinstance(upstream, (InputOp, DataOp)):
+                raise ValueError(
+                    f"Column '{column.label}' of consumer '{llm_op_id}'"
+                    f" references node '{column.node}' without a path;"
+                    " only InputOp and DataOp refs may omit it."
+                )
+            columns.append(
+                self._node_ref_column(
+                    consumer_id=llm_op_id,
+                    column=column,
+                    upstream=upstream,
+                    inputs_dict=inputs_dict,
+                )
             )
+            # A literal-backed column has no runtime node to depend on.
+            if column.node not in dependencies and not isinstance(
+                upstream, (InputOp, DataOp)
+            ):
+                dependencies.append(column.node)
         if not columns:
             raise ValueError(f"LLMChatOp {llm_op_id} has empty rowwise_columns")
         messages = [
@@ -745,31 +739,23 @@ class _LLMBuilder(_EmbeddingBuilder):
         base_steps = template_spec.options.format.steps or []
         table_columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
-        for col in llm_op.aggregate_table or []:
-            label = col.get("label")
-            node_ref = col.get("node")
-            path = col.get("path")
-            if not (
-                isinstance(label, str)
-                and isinstance(node_ref, str)
-                and isinstance(path, str)
-            ):
+        for column in llm_op.aggregate_table or []:
+            if not isinstance(column, NodeColumn) or column.path is None:
                 continue
+            upstream = graph_dict.get(column.node)
             table_columns.append(
                 self._node_ref_column(
                     consumer_id=llm_op_id,
-                    label=label,
-                    node_ref=node_ref,
-                    path=path,
-                    upstream=graph_dict.get(node_ref),
+                    column=column,
+                    upstream=upstream,
                     inputs_dict=inputs_dict,
                 )
             )
             # A literal-backed column has no runtime node to depend on.
-            if node_ref not in dependencies and not isinstance(
-                graph_dict.get(node_ref), (InputOp, DataOp)
+            if column.node not in dependencies and not isinstance(
+                upstream, (InputOp, DataOp)
             ):
-                dependencies.append(node_ref)
+                dependencies.append(column.node)
         for dep in self._collect_graph_template_dependencies(
             template_spec.model_dump(exclude_none=True)
         ):
@@ -1135,9 +1121,9 @@ class _LLMBuilder(_EmbeddingBuilder):
                             label = f"ref_{op.id}_{k}"
                             columns[label] = self._node_ref_column(
                                 consumer_id=llm_op_id,
-                                label=label,
-                                node_ref=v.id,
-                                path=field_path,
+                                column=NodeColumn(
+                                    label=label, node=v.id, path=field_path
+                                ),
                                 upstream=upstream,
                                 inputs_dict=inputs_dict,
                             )

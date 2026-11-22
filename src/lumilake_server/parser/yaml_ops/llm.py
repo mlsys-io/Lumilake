@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 
+from lumilake_server.ops import ColumnTable, NodeColumn, build_column_table
 from lumilake_server.parser.common import make_id
 
 from .common import EmitContext, OpEntry, build_generation_config
@@ -143,17 +144,21 @@ def _emit_llm_like_op(
 
     aggregate_table = entry.fields.get("aggregate_table")
     rowwise_columns = entry.fields.get("rowwise_columns")
-    resolved_aggregate = _resolve_table_nodes(aggregate_table, user_id_to_internal)
-    resolved_rowwise = _resolve_table_nodes(rowwise_columns, user_id_to_internal)
+    resolved_aggregate = _resolve_table_nodes(
+        aggregate_table, user_id_to_internal, "aggregate_table"
+    )
+    resolved_rowwise = _resolve_table_nodes(
+        rowwise_columns, user_id_to_internal, "rowwise_columns"
+    )
 
     if "structural_outputs" in entry.fields:
         op_dict["structural_outputs"] = entry.fields["structural_outputs"]
     if resolved_aggregate is not None:
-        op_dict["aggregate_table"] = resolved_aggregate
+        op_dict["aggregate_table"] = [column.to_dict() for column in resolved_aggregate]
     if "rowwise_template" in entry.fields:
         op_dict["rowwise_template"] = entry.fields["rowwise_template"]
     if resolved_rowwise is not None:
-        op_dict["rowwise_columns"] = resolved_rowwise
+        op_dict["rowwise_columns"] = [column.to_dict() for column in resolved_rowwise]
     _emit_rowwise_messages(entry, op_dict, user_id_to_internal, op_kind)
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]
@@ -174,14 +179,9 @@ def _emit_llm_like_op(
     llm_inputs = [msg_internal_id]
     if op_kind == "LLMChatOp":
         for table in (resolved_aggregate, resolved_rowwise):
-            if not table:
-                continue
-            for item in table:
-                if not isinstance(item, dict):
-                    continue
-                node_id = item.get("node")
-                if isinstance(node_id, str) and node_id not in llm_inputs:
-                    llm_inputs.append(node_id)
+            for column in table or []:
+                if isinstance(column, NodeColumn) and column.node not in llm_inputs:
+                    llm_inputs.append(column.node)
     op_dict["_inputs"] = llm_inputs
 
 
@@ -292,28 +292,20 @@ def _queue_inline_message_op(
 
 
 def _resolve_table_nodes(
-    table: Any, user_id_to_internal: Mapping[str, str]
-) -> list[dict[str, Any]] | None:
-    """Resolve ``node:`` user-ids inside aggregate/rowwise table specs.
-
-    Each row is copied, and a ``node`` entry that matches a known user-facing
-    id gets rewritten to the corresponding internal op id. Rows without a
-    ``node`` field (e.g. ``data``-only entries) pass through untouched.
-    """
+    table: Any, user_id_to_internal: Mapping[str, str], field: str
+) -> ColumnTable | None:
+    """Validate one ``aggregate_table``/``rowwise_columns`` table and rewrite
+    each ``node`` user-id to the corresponding internal op id."""
     if table is None:
         return None
     if not isinstance(table, list):
-        raise ValueError("aggregate_table/rowwise_columns must be a list")
-    out: list[dict[str, Any]] = []
-    for item in table:
-        if not isinstance(item, dict):
-            raise ValueError("aggregate_table/rowwise_columns entries must be mappings")
-        resolved = dict(item)
-        node_ref = resolved.get("node")
-        if isinstance(node_ref, str) and node_ref in user_id_to_internal:
-            resolved["node"] = user_id_to_internal[node_ref]
-        out.append(resolved)
-    return out
+        raise ValueError(f"{field} must be a list")
+    columns = build_column_table(table, field)
+    assert columns is not None
+    for column in columns:
+        if isinstance(column, NodeColumn) and column.node in user_id_to_internal:
+            column.node = user_id_to_internal[column.node]
+    return columns
 
 
 def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:

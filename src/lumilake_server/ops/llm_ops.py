@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from lumilake_server.common import GenerationConfig
+from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
+
+from lumilake_server.common import GenerationConfig, InputRef
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake_server.ops.ops import Op, RowShape
 
@@ -27,6 +29,56 @@ class RowwiseMessages:
         return payload
 
 
+ColumnTable = list["LiteralColumn | NodeColumn"]
+ColumnTableIn = list["ColumnSpec | dict[str, Any]"]
+
+
+class ColumnSpec(BaseModel):
+    """One ``rowwise_columns`` or ``aggregate_table`` entry: a literal ``data``
+    list, or a ``node`` reference with an optional drill ``path``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: StrictStr
+    input_ref: InputRef | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(exclude_none=True)
+
+
+class LiteralColumn(ColumnSpec):
+    """A column bound to its own list of values."""
+
+    data: dict[str, Any]
+
+
+class NodeColumn(ColumnSpec):
+    """A column read from a node's output at an optional drill ``path``."""
+
+    node: StrictStr
+    path: StrictStr | None = None
+
+
+def build_column_table(table: ColumnTableIn | None, field: str) -> ColumnTable | None:
+    """Validate one column table, keeping the entries that are already specs."""
+    if table is None:
+        return None
+    columns: ColumnTable = []
+    for entry in table:
+        if isinstance(entry, (LiteralColumn, NodeColumn)):
+            columns.append(entry)
+            continue
+        try:
+            columns.append(
+                NodeColumn.model_validate(entry)
+                if "node" in entry
+                else LiteralColumn.model_validate(entry)
+            )
+        except ValidationError as exc:
+            raise ValueError(f"{field} column {entry!r} is invalid: {exc}") from exc
+    return columns
+
+
 @dataclass(frozen=True)
 class RowwiseSeed:
     """Locates one sampling seed per row at ``path`` under the seed producer's
@@ -46,9 +98,9 @@ class RowwiseSeed:
 def _refuse_fields_beside_rowwise_messages(
     op_kind: str,
     producer: Op,
-    aggregate_table: list[dict[str, Any]] | None,
+    aggregate_table: ColumnTableIn | None,
     rowwise_template: str | None,
-    rowwise_columns: list[dict[str, Any]] | None,
+    rowwise_columns: ColumnTableIn | None,
     system_messages: list[str] | None,
     condition: dict[str, str] | None,
     return_history: bool,
@@ -117,9 +169,9 @@ class LLMChatOp(LLMOp):
     config: GenerationConfig
     return_history: bool
     structural_outputs: dict[str, Any] | list[dict[str, Any]] | None
-    aggregate_table: list[dict[str, Any]] | None
+    aggregate_table: ColumnTable | None
     rowwise_template: str | None
-    rowwise_columns: list[dict[str, Any]] | None
+    rowwise_columns: ColumnTable | None
     rowwise_messages: RowwiseMessages | None
     rowwise_seed: RowwiseSeed | None
     system_messages: list[str] | None
@@ -135,9 +187,9 @@ class LLMChatOp(LLMOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         structural_outputs: dict[str, Any] | list[dict[str, Any]] | None = None,
-        aggregate_table: list[dict[str, Any]] | None = None,
+        aggregate_table: list[ColumnSpec | dict[str, Any]] | None = None,
         rowwise_template: str | None = None,
-        rowwise_columns: list[dict[str, Any]] | None = None,
+        rowwise_columns: list[ColumnSpec | dict[str, Any]] | None = None,
         rowwise_messages: RowwiseMessages | None = None,
         rowwise_messages_op: Op | None = None,
         system_messages: list[str] | None = None,
@@ -151,8 +203,7 @@ class LLMChatOp(LLMOp):
         if rowwise_messages is not None:
             if rowwise_messages_op is None:
                 raise ValueError(
-                    f"{type(self).__name__} rowwise_messages requires the"
-                    " producing op"
+                    f"{type(self).__name__} rowwise_messages requires the producing op"
                 )
             _refuse_fields_beside_rowwise_messages(
                 type(self).__name__,
@@ -190,9 +241,9 @@ class LLMChatOp(LLMOp):
         super().__init__(inputs, config, cacheable)
         self.return_history = return_history
         self.structural_outputs = structural_outputs
-        self.aggregate_table = aggregate_table
+        self.aggregate_table = build_column_table(aggregate_table, "aggregate_table")
         self.rowwise_template = rowwise_template
-        self.rowwise_columns = rowwise_columns
+        self.rowwise_columns = build_column_table(rowwise_columns, "rowwise_columns")
         self.rowwise_messages = rowwise_messages
         self.rowwise_seed = rowwise_seed
         self.system_messages = system_messages
@@ -224,11 +275,15 @@ class LLMChatOp(LLMOp):
         if self.structural_outputs is not None:
             payload["structural_outputs"] = self.structural_outputs
         if self.aggregate_table is not None:
-            payload["aggregate_table"] = self.aggregate_table
+            payload["aggregate_table"] = [
+                column.to_dict() for column in self.aggregate_table
+            ]
         if self.rowwise_template is not None:
             payload["rowwise_template"] = self.rowwise_template
         if self.rowwise_columns is not None:
-            payload["rowwise_columns"] = self.rowwise_columns
+            payload["rowwise_columns"] = [
+                column.to_dict() for column in self.rowwise_columns
+            ]
         if self.rowwise_messages is not None:
             payload["rowwise_messages"] = self.rowwise_messages.to_dict(
                 self.inputs[1].id
@@ -288,25 +343,17 @@ class LLMChatOp(LLMOp):
             seed,
             seed_op,
         )
-        op._add_column_producers(aggregate_table, rowwise_columns, other_ops)
+        op._add_column_producers(other_ops)
         return op
 
-    def _add_column_producers(
-        self,
-        aggregate_table: list[dict[str, Any]] | None,
-        rowwise_columns: list[dict[str, Any]] | None,
-        other_ops: dict[str, "Op"],
-    ) -> None:
+    def _add_column_producers(self, other_ops: dict[str, "Op"]) -> None:
         """Add each column's producer to ``inputs``: a producer read only
         through a column feeds no message, so the traversal would miss it."""
-        for table in (aggregate_table, rowwise_columns):
-            for col in table or []:
-                if not isinstance(col, dict):
+        for table in (self.aggregate_table, self.rowwise_columns):
+            for column in table or []:
+                if not isinstance(column, NodeColumn):
                     continue
-                node_ref = col.get("node")
-                if not isinstance(node_ref, str):
-                    continue
-                producer = other_ops.get(node_ref)
+                producer = other_ops.get(column.node)
                 if producer is not None and producer not in self.inputs:
                     self.inputs.append(producer)
 
@@ -434,7 +481,7 @@ class LLMVisionOp(LLMChatOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         rowwise_template: str | None = None,
-        rowwise_columns: list[dict[str, Any]] | None = None,
+        rowwise_columns: list[ColumnSpec | dict[str, Any]] | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
     ) -> None:
@@ -487,7 +534,7 @@ class LLMVisionOp(LLMChatOp):
             system_messages=system_messages,
             cacheable=cacheable,
         )
-        op._add_column_producers(None, rowwise_columns, other_ops)
+        op._add_column_producers(other_ops)
         return op
 
 
@@ -499,7 +546,7 @@ def llm_vision(
     config: GenerationConfig | None = None,
     return_history: bool = False,
     rowwise_template: str | None = None,
-    rowwise_columns: list[dict[str, Any]] | None = None,
+    rowwise_columns: list[ColumnSpec | dict[str, Any]] | None = None,
     system_messages: list[str] | None = None,
     cacheable: bool = False,
 ) -> LLMVisionOp:

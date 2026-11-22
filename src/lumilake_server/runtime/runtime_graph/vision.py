@@ -12,7 +12,7 @@ from lumilake_server.data_specs import (
     TemplateOptions,
 )
 from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
-from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMVisionOp
+from lumilake_server.ops.llm_ops import ImageGenerationOp, LiteralColumn, LLMVisionOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import (
     _default_output_destination,
@@ -80,38 +80,29 @@ class _VisionBuilder(_RetrievalBuilder):
                 runtime_nodes=runtime_nodes,
             )
             columns: list[Column] = []
-            for col in llm_op.rowwise_columns or []:
-                label = col.get("label")
-                data = col.get("data")
-                node_ref = col.get("node")
-                path = col.get("path")
-                if isinstance(label, str) and isinstance(data, dict):
+            for column in llm_op.rowwise_columns or []:
+                if isinstance(column, LiteralColumn):
                     columns.append(
-                        Column.model_validate({"label": label, "data": data})
-                    )
-                    continue
-                if isinstance(label, str) and isinstance(node_ref, str):
-                    upstream = graph_dict.get(node_ref)
-                    if path is None and not isinstance(upstream, (InputOp, DataOp)):
-                        raise ValueError(
-                            f"Column '{label}' of consumer '{llm_op_id}'"
-                            f" references node '{node_ref}' without a path;"
-                            " only InputOp and DataOp refs may omit it."
-                        )
-                    columns.append(
-                        self._node_ref_column(
-                            consumer_id=llm_op_id,
-                            label=label,
-                            node_ref=node_ref,
-                            path=path if isinstance(path, str) else "",
-                            upstream=upstream,
-                            inputs_dict=inputs_dict,
+                        Column(
+                            label=column.label,
+                            data=ListData.model_validate(column.data),
                         )
                     )
                     continue
-                raise ValueError(
-                    f"Column '{label}' of consumer '{llm_op_id}' has neither"
-                    " data nor node+path"
+                upstream = graph_dict.get(column.node)
+                if column.path is None and not isinstance(upstream, (InputOp, DataOp)):
+                    raise ValueError(
+                        f"Column '{column.label}' of consumer '{llm_op_id}'"
+                        f" references node '{column.node}' without a path;"
+                        " only InputOp and DataOp refs may omit it."
+                    )
+                columns.append(
+                    self._node_ref_column(
+                        consumer_id=llm_op_id,
+                        column=column,
+                        upstream=upstream,
+                        inputs_dict=inputs_dict,
+                    )
                 )
             if not columns:
                 raise ValueError(f"LLMVisionOp {llm_op_id} has empty rowwise_columns")

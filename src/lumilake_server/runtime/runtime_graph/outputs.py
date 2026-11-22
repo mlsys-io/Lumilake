@@ -15,9 +15,11 @@ from lumilake_server.ops import (
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
+    LiteralColumn,
     LLMChatOp,
     LLMCompletionOp,
     LLMVisionOp,
+    NodeColumn,
 )
 from lumilake_server.ops.ops import RowShape
 
@@ -203,18 +205,16 @@ def _llm_row_count(
     row count of the ops its message chain binds."""
     if op.rowwise_columns:
         counts: list[int | None] = []
-        for col in op.rowwise_columns:
-            data = col.get("data")
-            if isinstance(data, dict):
-                items = data.get("items")
+        for column in op.rowwise_columns:
+            if isinstance(column, LiteralColumn):
+                items = column.data.get("items")
                 if isinstance(items, list):
                     counts.append(len(items))
-                    continue
-            node_ref = col.get("node")
-            if isinstance(node_ref, str):
-                upstream = graph_dict.get(node_ref)
-                if upstream is not None:
-                    counts.append(output_row_count(upstream, inputs_dict, graph_dict))
+                continue
+            assert isinstance(column, NodeColumn)
+            upstream = graph_dict.get(column.node)
+            if upstream is not None:
+                counts.append(output_row_count(upstream, inputs_dict, graph_dict))
         return _max_known(counts)
     messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
     return _max_known(

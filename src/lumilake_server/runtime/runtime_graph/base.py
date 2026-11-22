@@ -11,9 +11,11 @@ from lumilake_server.data_specs import (
     ListData,
 )
 from lumilake_server.ops import (
+    ColumnTable,
     DataOp,
     InputOp,
     LLMOp,
+    NodeColumn,
     Op,
 )
 from lumilake_server.runtime.runtime_graph.outputs import (
@@ -187,14 +189,15 @@ class _RuntimeGraphBuilderBase:
         self,
         *,
         consumer_id: str,
-        label: str,
-        node_ref: str,
-        path: str,
+        column: NodeColumn,
         upstream: Op | None,
         inputs_dict: dict[str, list[str]],
     ) -> Column:
-        """Bind a ``node:`` reference into a spec column, mapping the declared
-        path to the upstream's read path."""
+        """Bind a node column into a spec column, mapping the declared path to
+        the upstream's read path."""
+        label = column.label
+        node_ref = column.node
+        path = column.path or ""
         if isinstance(upstream, InputOp):
             values = inputs_dict.get(upstream.name)
             if values is None:
@@ -207,10 +210,10 @@ class _RuntimeGraphBuilderBase:
             # ``path`` (which would drill into the envelope) is meaningless
             # here. The scalar value is inlined verbatim; ``path`` must be
             # absent / empty.
-            if path not in (None, ""):
+            if column.path:
                 raise ValueError(
                     f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" InputOp '{node_ref}' with drill path {path!r}; "
+                    f" InputOp '{node_ref}' with drill path {column.path!r}; "
                     "InputOp-derived columns cannot be drilled — wrap "
                     "record-shaped inputs in an upstream op that exposes the "
                     "target field, or drop the ``path`` for scalar inputs."
@@ -218,7 +221,7 @@ class _RuntimeGraphBuilderBase:
             return Column(label=label, data=ListData(items=list(values)))
         if isinstance(upstream, DataOp):
             # A DataOp has no runtime envelope; ``items.output`` names it whole.
-            if path not in (None, "", "items.output"):
+            if column.path not in (None, "items.output"):
                 raise ValueError(
                     f"Column '{label}' of consumer '{consumer_id}' references"
                     f" DataOp '{node_ref}' with drill path {path!r}; a"
@@ -233,18 +236,15 @@ class _RuntimeGraphBuilderBase:
         return Column(label=label, node=node_ref, path=path)
 
     def _mark_literal_column_producers_visited(
-        self, columns: list[dict[str, Any]] | None, visited_node_ids: set[str]
+        self, columns: ColumnTable | None, visited_node_ids: set[str]
     ) -> None:
         """Mark every literal column producer visited, so the orphan check
         accepts a read that reaches no message."""
-        for col in columns or []:
-            if not isinstance(col, dict):
-                continue
-            node_ref = col.get("node")
-            if isinstance(node_ref, str) and isinstance(
-                self._graph_dict.get(node_ref), (InputOp, DataOp)
+        for column in columns or []:
+            if isinstance(column, NodeColumn) and isinstance(
+                self._graph_dict.get(column.node), (InputOp, DataOp)
             ):
-                visited_node_ids.add(node_ref)
+                visited_node_ids.add(column.node)
 
     def _project_input_field(
         self, values: list[str], path: str, input_name: str
