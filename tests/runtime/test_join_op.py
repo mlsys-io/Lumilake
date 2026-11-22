@@ -491,3 +491,12 @@ def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     extra = [{"unit": "u1", "rid": "a", "part": "A"}, {"unit": "u2", "rid": "c"}]
     part = _broadcast(tmp_path, rows=read, attach="part", extra=extra, tags=["A", "C"])
     assert part == [_MARK, {**_UNITS[2], "size": 1, "part": "C"}]
+    every = [
+        {"unit": "u1", "rid": _MARK},
+        {"unit": "u1", "rid": "b", "text": _MARK},
+        _UNITS[2],
+    ]
+    both = _broadcast(
+        tmp_path, rows=every, attach="part", extra=extra, tags=["A", "C"], name="ev"
+    )
+    assert both == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]

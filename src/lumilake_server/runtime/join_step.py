@@ -356,9 +356,12 @@ def _attach_broadcast(
     keyed, marked, name, source_index, first_source, values, rows, where
 ):
     """Merge one attach field's values onto the output rows their source rows
-    reach: the record its row_key fields name, or else every row of its by key.
-    A source row of the first input is the output row at its position."""
-    targets = _AttachTargets(keyed, marked)
+    reach: every row of its by key. A source row of the first input is the
+    output row at its position."""
+    by_key = {{}}
+    for position, (_, key, _) in enumerate(keyed):
+        by_key.setdefault(key, []).append(position)
+    first_keys = _first_keys(keyed)
     live = [
         (position, row)
         for position, row in enumerate(rows)
@@ -378,7 +381,8 @@ def _attach_broadcast(
         if first_source:
             reached = [position]
         else:
-            reached = targets.reach(source_row, key, where)
+            _required(first_keys, (key,), where)
+            reached = by_key[key]
         for target in reached:
             covered.add(target)
             record, held_key, held_row = keyed[target]
@@ -394,34 +398,6 @@ def _attach_broadcast(
         for position, (record, _, key) in enumerate(keyed):
             if position not in covered and record not in marked:
                 marked[record] = _failed("key %s is missing from %r" % (key, where))
-
-
-class _AttachTargets:
-    """The output rows one attach source row's value reaches: the record its
-    row_key fields name, or else every output row of its by key."""
-
-    def __init__(self, keyed, marked):
-        self._by_key = {{}}
-        self._by_record = {{}}
-        for position, (record, key, row) in enumerate(keyed):
-            self._by_key.setdefault(key, []).append(position)
-            if record in marked:
-                # A marked row answers to its readable record as well, so an
-                # attach source row naming it reaches its slot and skips it.
-                record = _record_of(row, where=_NODE) or record
-            self._by_record.setdefault(record, []).append(position)
-        self._first_keys = _first_keys(keyed)
-
-    def reach(self, row, key, where):
-        """The output rows a live source row's value reaches. A row whose
-        record or key the first input lacks fails the job."""
-        record = _record_of(row, where)
-        if record is not None:
-            if record not in self._by_record:
-                raise ValueError("%s: row_key %s is not in %r" % (_NODE, record, where))
-            return self._by_record[record]
-        _required(self._first_keys, (key,), where)
-        return self._by_key[key]
 
 
 def _slot(position):
