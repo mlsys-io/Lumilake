@@ -317,63 +317,53 @@ def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
     with pytest.raises(ValueError, match="rule or default"):
         _build([_parse(format="json"), _model_reading("P")], values)
 
-
-def _lowering(mode: str, code: str, **fields: Any) -> dict[str, Any]:
-    return _lower(mode=mode, fn_name="f", code=code, **fields)
-
-
-_EXPAND = _lowering(
-    "expand", "def f(row):\n    return [p for p in row[0]['unit'].split(',') if p]\n"
-)
-
-
-def _reduce(on_fail: str, **fields: Any) -> dict[str, Any]:
-    return _lowering(
-        "reduce",
-        "def f(rows):\n    return len(rows)\n",
+def _reduce(on_fail: str) -> dict[str, Any]:
+    return _lower(
+        mode="reduce",
         by="unit",
         on_fail=on_fail,
-        **fields,
+        code="def f(rows):\n    return len(rows)\n",
     )
 
 
-def _group(on_fail: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """A reduce by unit, over a wrapper that moves a row's marker into a
-    non-key field so its key still reads and it joins its group."""
-    wrapper = _lowering(
-        "list",
-        "def f(c):\n"
-        "    rows = [json.loads(v) if isinstance(v, str) else v for v in c[0]]\n"
-        "    return [{'unit': v.get('unit', 'u'), 'score': v} for v in rows]\n",
-        id="W",
-    )
-    return wrapper, _reduce(on_fail, inputs=["W"])
+_EXPAND = _lower(
+    mode="expand",
+    code="def f(row):\n    return [p for p in row[0]['unit'].split(',') if p]\n",
+)
+_MARKED_KEY = json.dumps({"unit": "u", "score": json.loads(_MARKED)})
 
 
 @pytest.mark.parametrize(
-    "tail, answers, expected",
+    "op, answers, expected",
     [
-        # A row whose key cannot be read is its own group and emits its marker.
-        ([_reduce("fail_group")], ["bad", '{"unit": "u"}'], ["marker", 1]),
-        # A row whose key reads joins its group; the policy decides that group.
-        (_group("fail_group"), ['{"unit": "u"}', "bad"], ["marker"]),
-        (_group("drop_failed"), ['{"unit": "u"}', "bad"], [1]),
+        # A row whose key cannot be read is its own group and emits its marker,
+        # whether the row is the marker or its key path reaches one.
+        (
+            _reduce("fail_group"),
+            ["bad", json.dumps({"unit": json.loads(_MARKED)}), '{"unit": "u"}'],
+            ["no JSON object", "no JSON object", 1],
+        ),
+        # A row whose key reads joins its group, and on_fail decides that group.
+        (_reduce("fail_group"), [_MARKED_KEY], ["no JSON object"]),
+        (_reduce("drop_failed"), [_MARKED_KEY, '{"unit": "u"}'], [1]),
+        (_reduce("drop_failed"), [_MARKED_KEY], ["empty group"]),
         # An expand emits one tombstone for a marked parent at child zero, and
         # every item names its parent and child.
-        ([_EXPAND], ['{"unit": "a,b"}', "bad"], ["a@0.0", "b@0.1", "marker@1.0"]),
+        (
+            _EXPAND,
+            ['{"unit": "a,b"}', "bad"],
+            ["a@0.0", "b@0.1", "no JSON object@1.0"],
+        ),
     ],
 )
 def test_a_marked_row_keeps_its_group_or_its_slot(
-    tail: list[dict[str, Any]],
-    answers: list[str],
-    expected: list[Any],
-    tmp_path: Path,
+    op: dict[str, Any], answers: list[str], expected: list[Any], tmp_path: Path
 ) -> None:
     got = []
-    for item in _run([_parse(format="json"), *tail], {"Answer": answers}, tmp_path):
+    for item in _run([_parse(format="json"), op], {"Answer": answers}, tmp_path):
         output = item["output"]
-        if isinstance(output, dict) and list(output) == ["_fail"]:
-            output = "marker"
+        if isinstance(output, dict):
+            output = output["_fail"]["reason"]
         got.append(
             f"{output}@{item['parent']}.{item['child']}" if "parent" in item else output
         )
