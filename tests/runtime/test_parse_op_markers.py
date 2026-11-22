@@ -326,6 +326,13 @@ _EXPAND_UNITS: dict[str, Any] = {
     "code": "def units(row):\n"
     "    return [u for u in row[0]['units'].split(',') if u]\n",
 }
+
+_EXPAND_UNITS = _lower(
+    mode="expand",
+    id="E",
+    inputs=["Answer"],
+    code="def f(row):\n    return [u for u in row[0]['units'].split(',') if u]\n",
+)
 _EMPTY_PARENT = ['{"units": "a,b"}', '{"units": ""}', '{"units": "c"}']
 
 
