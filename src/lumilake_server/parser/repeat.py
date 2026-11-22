@@ -7,7 +7,7 @@ op per iteration. Iteration ``i`` copies each body entry to ``R.i.<bodyId>``;
 ``$in`` reads ``input`` on the first iteration and ``R.(i-1).<output>``
 afterwards, another body id resolves within the same iteration, and any other
 name resolves outside the repeat. Elsewhere ``R`` refers to
-``R.<times>.<output>``.
+``R.<times>.<output>``, and a body may not name its own ``R``.
 """
 
 from collections.abc import Callable, Iterator, Mapping
@@ -54,16 +54,22 @@ class _Scoped(Mapping[str, str]):
         where: str,
         body_owner: dict[str, str],
         names: dict[str, str],
+        own: str | None,
     ) -> None:
         self._ids = ids
         self._where = where
         self._body_owner = body_owner
         self._names = names
+        self._own = own
 
     def target(self, ref: Any) -> Any:
         """The id ``ref`` names in this op's scope, before id derivation."""
-        if not isinstance(ref, str) or ref in self._names:
-            return self._names.get(ref, ref)
+        if not isinstance(ref, str):
+            return ref
+        if ref == self._own:
+            raise ValueError(f"Repeat '{self._own}' body reads its own id")
+        if ref in self._names:
+            return self._names[ref]
         if ref == INPUT_REF:
             raise ValueError(f"{self._where} may not read '{INPUT_REF}'")
         owner = self._body_owner.get(ref)
@@ -139,6 +145,7 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
             )
 
     frames: dict[str, dict[str, str]] = {}
+    frame_owner: dict[str, str] = {}
     iterations: dict[str, list[Any]] = {}
     for spec in ordered:
         iterations[spec.id] = []
@@ -147,6 +154,9 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
             frames.update(
                 (spec.at(index, body_id), {**outside, **iteration})
                 for body_id in spec.body_ids
+            )
+            frame_owner.update(
+                (spec.at(index, body_id), spec.id) for body_id in spec.body_ids
             )
             iterations[spec.id].extend(
                 {**copy, "id": iteration[copy["id"]]} for copy in spec.body
@@ -160,7 +170,13 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
             unrolled.append(entry)
 
     def bind(ids: Mapping[str, str], where: str, referrer: str) -> _Scoped:
-        return _Scoped(ids, where, owner, frames.get(referrer, outside))
+        return _Scoped(
+            ids,
+            where,
+            owner,
+            frames.get(referrer, outside),
+            frame_owner.get(referrer),
+        )
 
     return unrolled, bind
 
@@ -168,7 +184,7 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
 def _in_dependency_order(repeats: dict[str, _Repeat]) -> list[_Repeat]:
     """``repeats`` in unroll order: a repeat's source repeat comes first."""
     ordered: list[_Repeat] = []
-    pending = dict(repeats)
+    pending = repeats.copy()
     while pending:
         ready = [spec for spec in pending.values() if spec.input_ref not in pending]
         if not ready:

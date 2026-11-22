@@ -62,12 +62,14 @@ def test_a_repeat_reads_another_by_its_last_output() -> None:
     assert _named(in_body, "S_1_A")["_inputs"] == [_named(in_body, "R_2_Second")["_id"]]
 
 
-def test_a_literal_whose_first_part_is_a_body_id_is_read_as_text() -> None:
-    fmt = "  - {id: Fmt, op: FormatOp, inputs: [Start], template: '{d}',"
-    fmt += " format_kwargs: {d: 'Step.json'}}\n"
-    graph = _graph(_repeat() + fmt, _OUTPUT)
-    op = next(op for op in graph.values() if op["_op"] == "FormatOp")
-    assert op["format_kwargs"] == {"d": "Step.json"}
+def test_a_message_starting_with_a_body_id_is_read_as_text() -> None:
+    body = _op("Step", "[$in]", "      ")
+    chat = "  - {id: Ask, op: LLMChatOp, inputs: [Start], config: {model: m},"
+    chat += " messages: [{role: user, content: 'Step. Then rewrite it.'}]}\n"
+    graph = _graph(_repeat(output="Step", body=body) + chat)
+    op = next(op for op in graph.values() if op["_op"] == "LLMChatOp")
+    message = graph[op["messages"]]["messages"]
+    assert message == [{"role": "user", "content": "Step. Then rewrite it."}]
 
 
 def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -> None:
@@ -112,6 +114,12 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
         ),
         pytest.param(_op("After", "[$in]") + _repeat(), r"may not read '\$in'"),
         pytest.param(_repeat() + _op("After", "[Second]"), r"a body id of 'R'"),
+        pytest.param(
+            _repeat(
+                body=_op("First", "[R]", "      ") + _op("Second", "[First]", "      ")
+            ),
+            "body reads its own id",
+        ),
         pytest.param(
             _repeat(source="S") + _second("R"),
             "cycle detected",
