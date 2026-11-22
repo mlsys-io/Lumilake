@@ -40,13 +40,18 @@ def _carries_markers(
     op: Op, inputs_dict: dict[str, list[str]], cache: dict[str, bool]
 ) -> bool:
     """Whether an op's output can hold a failed-record marker: a ``ParseOp``
-    emits one, an ``InputOp`` carries one of its literal values, and every
-    other op passes on the markers of what it reads, except a router branch
-    that drops them (its rule and default branches). ``cache`` holds each
-    op's answer for one build, so shared ancestors are walked once."""
+    emits one, an ``InputOp`` carries one of its literal values, an expand
+    whose ``on_empty`` is ``fail`` emits one for a parent with no children, and
+    every other op passes on the markers of what it reads, except a router
+    branch that drops them (its rule and default branches). ``cache`` holds
+    each op's answer for one build, so shared ancestors are walked once."""
     if op.id in cache:
         return cache[op.id]
     if isinstance(op, ParseOp):
+        carries = True
+    elif isinstance(op, LambdaOp) and op.mode == "expand" and op.on_empty == "fail":
+        # A parent with no children emits a marker of its own, so an expand
+        # with this policy is a marker source whatever it reads.
         carries = True
     elif isinstance(op, InputOp):
         carries = any(_holds_marker(value) for value in inputs_dict.get(op.name, []))
