@@ -1670,9 +1670,9 @@ async def test_dynamic_spec_store_flag_reaches_the_job(
     await _run_background(app)
     assert job_routes.jobs[resp.json()["data"]["job_id"]].store is store
     assert [config.chain_round for config in fake_server.configs] == [0, 1]
-    graph_names = {
-        meta.public_graph_name
-        for slices in fake_server.workflow_slices_calls
-        for meta in slices.values()
+    names = {
+        m.public_graph_name
+        for sl in fake_server.workflow_slices_calls
+        for m in sl.values()
     }
-    assert graph_names == {"round_1", "round_2"}
+    assert names == {"round_1", "round_2"}
