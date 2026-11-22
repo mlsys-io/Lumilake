@@ -235,16 +235,14 @@ async def test_slices_of_one_job_store_equal_digests() -> None:
     """One keyed job run whole and sliced batch by batch stores the same records
     under the same keys: neither the address nor the spec digest sees the
     slice, whose graph name and so op ids differ."""
-    payload = _payload()
-    rows = [
-        {"id": json.loads(row)["id"], "text": "X"} for row in payload["inputs"]["Rows"]
-    ]
-    whole = _keys(await _store(_runtime_graph(payload), {"Mark": rows, "Join": rows}))
+    rows = [{"id": json.loads(row)["id"], "text": "X"} for row in _ROWS]
+    whole = _keys(
+        await _store(_runtime_graph(_payload()), {"Mark": rows, "Join": rows})
+    )
     assert len(whole) == 4
     for index, row in enumerate(rows):
         graph = _runtime_graph(
-            _payload({"Rows": [payload["inputs"]["Rows"][index]]}),
-            node_prefix=f"slice-{index}",
+            _payload({"Rows": [_ROWS[index]]}), node_prefix=f"slice-{index}"
         )
         stored = _keys(await _store(graph, {"Mark": [row], "Join": [row]}))
         assert stored == {key: whole[key] for key in stored}
