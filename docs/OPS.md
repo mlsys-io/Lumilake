@@ -700,10 +700,11 @@ columns stay aligned.
   sees every row and passes them on.
 - An expand `LambdaOp` emits one tombstone item for a marked parent, and every
   item carries `parent` and `child`. A reduce `LambdaOp` groups by each row's
-  key, and `on_fail` decides a group holding a marker; a row whose key cannot be
-  read emits its marker. A `JoinOp` turns a marked row into a marker, keeping one
-  output row per first-input row in order. Downstream reads see the marker under
-  each item's `output`, so a row Lambda or a parse step treats it as marked.
+  key, and `on_fail` decides a group holding a marker; a row whose key cannot
+  be read emits its marker. A `JoinOp` turns a marked row into a marker,
+  keeping one output row per first-input row in order. Downstream reads see the
+  marker under each item's `output`, so a row Lambda or a parse step treats it
+  as marked.
 - A user function that raises fails the task; only a parse or a pass-through
   produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares
