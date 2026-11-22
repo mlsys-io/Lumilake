@@ -71,20 +71,37 @@ ops:
           return seed_value({"name": inputs[0]})
 ```
 
-The listed sources are prepended to the op's own `code` in the listed order,
+The listed sources are appended after the op's own `code` in the listed order,
 separated by a blank line, and everything after that sees the combined
 program: dispatch, the inline-namespace checks and every digest treat it
 exactly as if the source had been written in the op. A block is included once
 per op that uses it.
 
+Appending matters for a `LambdaOp` that feeds an `LLMChatOp`: that code runs
+inline in the FlowMesh worker, which calls the first name the code binds, so
+the op's own `def` stays first and the helpers follow it. The inline namespace
+has no import statements and none of `try`/`except`/`raise`/`finally`, so such
+an op can only use blocks that need neither.
+
+`code` is optional beside `uses`. Without it the op's code is the joined
+blocks, which is how a block can hold the whole function the op runs. `uses`
+needs a `def`: it cannot be combined with `code` that is a lambda expression,
+because the block would then be part of that expression rather than a
+module-level helper.
+
 Submission is refused, naming the op and the function, when `uses` names a
-function the block does not define, names one twice, sits on a non-`LambdaOp`
+function `functions:` does not define, names one twice, sits on a non-`LambdaOp`
 op, or when a `functions:` entry does not parse. It is also refused when a
 name is defined by both a used block and the op's own code, or by two used
-blocks: the op must end up with a single definition per name.
+blocks: the op must end up with a single definition per name. An import that
+binds the same module under the same name in several places is not such a
+collision.
 
 `functions:` and `uses:` are YAML-only. A native payload carries resolved code
-already and an n8n workflow has no equivalent annotation.
+already and an n8n workflow has no equivalent annotation. They apply to a
+static YAML workflow: a dynamic workflow's library and template entries are
+built without a `functions:` block, so a `uses` there names an unknown
+function.
 
 ## n8n code-node notes
 

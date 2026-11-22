@@ -415,8 +415,8 @@ outputs:
 ```
 
 A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in
-`uses:`. The listed sources are prepended to `code` in the listed order, so a
-helper used by several ops is written once; see
+`uses:`. The listed sources are appended after `code` in the listed order, so
+a helper used by several ops is written once; see
 [`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses).
 
 Where the function runs depends on what reads it:
