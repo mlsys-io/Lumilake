@@ -19,6 +19,7 @@ from lumilake_server.ops import (
     LLMChatOp,
     LLMCompletionOp,
     LLMVisionOp,
+    MessageOp,
     Op,
     OpMessage,
     RowwiseMessages,
@@ -554,6 +555,35 @@ def test_local_aggregate_op_emits_condition() -> None:
         "node": "gate",
         "expr": "gate == 'on'",
     }
+
+
+def test_row_lambda_message_step_keeps_multi_message_arguments() -> None:
+    """A row Lambda fed by a multi-message op becomes an inline function step
+    whose argument is the whole message list, not a single string."""
+    stock = input_placeholder("Stock")
+    returner = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        return_history=True,
+    )
+    chat = MessageOp([OpMessage(role="user", content=returner)])
+
+    def join_contents(messages):
+        return "|".join(message["content"] for message in messages)
+
+    step = LambdaOp([chat], fn=join_contents)
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=step)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    compiled = Graph.from_ops([as_output("result", consumer)]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (consumer_id,) = runtime_graph.dsl_to_runtime[consumer.id]
+    template = dump_data_spec(runtime_graph.nodes[consumer_id].data_spec)["template"]
+    (function_step,) = template["options"]["format"]["steps"]
+    (argument,) = function_step["arguments"]
+    assert [message["role"] for message in argument] == ["user", "assistant"]
 
 
 def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:

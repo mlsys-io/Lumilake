@@ -65,7 +65,7 @@ class FormatStep(DataSpecModel):
     label: str
     template: str | None = None
     function: str | None = None
-    arguments: list[FormatArgument | str] = Field(default_factory=list)
+    arguments: list[FormatArgument | str | list[Message]] = Field(default_factory=list)
 
 
 class FormatConfig(DataSpecModel):
