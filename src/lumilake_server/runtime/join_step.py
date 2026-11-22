@@ -257,25 +257,30 @@ def main(inputs):
 
 
 def _row_keys(rows, where):
-    """The first input's rows with their record keys. A row's record key is
-    unique in the input, which is how several rows may share one by key: a
-    duplicate fails the job, and a live row whose key cannot be read does too,
-    since a record's identity is never its position."""
+    """The first input's rows with their record keys. A row's record key is its
+    row_key value, unique in the input, which is how several rows may share one
+    by key: a duplicate fails the job, and a row whose key cannot be read does
+    too, since a record's identity is never its position. A marker carries no
+    row_key of its own, so it takes its by key as its record key and passes
+    through as its marker; a marker without a readable key fails the job."""
+    taken = {{}}
     keyed = []
-    seen = {{}}
     for row in rows:
+        carried = carried_marker((row,))
         record = _record_of(row, where)
+        if carried is not None:
+            key = _key_of(row, where)
+            if record is None:
+                record = key
+        else:
+            key = _key(row, where)
         if record is None:
             raise ValueError(
                 "%s: a row whose key cannot be read cannot be placed" % where
             )
-        if record in seen:
+        if record in taken:
             raise ValueError("%s: duplicate row_key %s" % (where, record))
-        seen[record] = True
-        # A marked row whose key cannot be read keeps its own slot as a marker;
-        # a live row without a key fails the job, as it does without a row_key.
-        carried = carried_marker((row,))
-        key = _key_of(row, where) if carried is not None else _key(row, where)
+        taken[record] = True
         keyed.append((record, key, row))
     return keyed
 
