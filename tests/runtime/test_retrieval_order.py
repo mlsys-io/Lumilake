@@ -93,19 +93,21 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
     [("items.table.close", False), ("items.table.0.close", True)],
 )
 def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> None:
-    graph = Graph.from_json(parse_yaml_payload(_reader_doc(path))["order"]["graph"])
-    if not refused:
-        RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
-        return
-    with pytest.raises(ValueError, match="reads '.*' from op '.*_Search_.*'"):
+    doc = _reader_doc(path)
+    graph = Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
+    match = "reads '.*' from op '.*_Search_.*'"
+    if refused:
+        with pytest.raises(ValueError, match=match):
+            RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
+    else:
         RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
 
 
-def _reader_doc(path: str, mode: str = "sql") -> str:
+def _reader_doc(path: str) -> str:
     return (
         "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
         '  - id: "Search"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
-        f"    data_spec:\n      type: lumid\n      mode: {mode}\n      rows: table\n"
+        "    data_spec:\n      type: lumid\n      mode: sql\n      rows: table\n"
         "      template: \"SELECT close FROM t WHERE symbol = '{symbol}'\"\n"
         '      params:\n        - label: symbol\n          node: "Stock"\n'
         f'outputs:\n  - name: rows\n    ref: "Search"\n    path: "{path}"\n'
@@ -113,7 +115,6 @@ def _reader_doc(path: str, mode: str = "sql") -> str:
 
 
 def test_rows_is_declared_only_on_a_sql_retrieval() -> None:
+    doc = _reader_doc("items.table").replace("mode: sql", "mode: s3")
     with pytest.raises(ValueError, match="only on a mode: sql retrieval"):
-        Graph.from_json(
-            parse_yaml_payload(_reader_doc("items.table", "s3"))["order"]["graph"]
-        )
+        Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
