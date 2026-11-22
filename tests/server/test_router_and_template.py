@@ -117,19 +117,23 @@ def test_an_empty_rule_refuses_a_value() -> None:
         expand_routers([_router(rules=[rule])])
 
 
-def test_an_empty_rule_routes_null_blank_and_empty_containers_only() -> None:
+def test_an_empty_rule_routes_null_blank_and_empty_containers_only(
+    tmp_path: Path,
+) -> None:
     router = _router(rules=_EMPTY_RULE, default_branch="ret")
-    column = [json.dumps({"case_id": n, "text": t}) for n, t in _EMPTY_ROWS]
-    got = _branch_rows(router, "route.no_ret", column)
+    column = [{"case_id": n, "text": t} for n, t in _EMPTY_ROWS]
+    got = _branch_rows(tmp_path, router, "route.no_ret", column)
     assert [row["case_id"] for row in got] == ["null", "blank", "list", "map"]
-    rest = _branch_rows(router, "route.ret", column)
+    rest = _branch_rows(tmp_path, router, "route.ret", column)
     assert [row["case_id"] for row in rest] == ["null-text", "full"]
 
 
-def test_a_row_missing_an_empty_rule_path_fails_naming_the_part() -> None:
+def test_a_row_missing_an_empty_rule_path_fails_naming_the_part(
+    tmp_path: Path,
+) -> None:
     router = _router(path="ctx.question", rules=_EMPTY_RULE, default_branch="ret")
     with pytest.raises(ValueError, match=r"route\.no_ret row has no 'question'"):
-        _branch_rows(router, "route.no_ret", [json.dumps({"ctx": {}})])
+        _branch_rows(tmp_path, router, "route.no_ret", [{"ctx": {}}])
 
 
 def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
