@@ -103,11 +103,11 @@ def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> No
         RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
 
 
-def _reader_doc(path: str) -> str:
+def _reader_doc(path: str, mode: str = "sql") -> str:
     return (
         "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
         '  - id: "Search"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
-        "    data_spec:\n      type: lumid\n      mode: sql\n      rows: table\n"
+        f"    data_spec:\n      type: lumid\n      mode: {mode}\n      rows: table\n"
         "      template: \"SELECT close FROM t WHERE symbol = '{symbol}'\"\n"
         '      params:\n        - label: symbol\n          node: "Stock"\n'
         f'outputs:\n  - name: rows\n    ref: "Search"\n    path: "{path}"\n'
