@@ -56,7 +56,10 @@ ops:
 Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or `RouterOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
 
 `LLMChatOp` supports output validation and local beam search; see
-[`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
+[`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search). A
+`RouterOp` rule with `match: empty` takes no `value` and routes rows whose
+field is `null`, `""`, `[]` or `{}`; native graphs spell the same rule without
+a `value` field.
 
 ## n8n code-node notes
 

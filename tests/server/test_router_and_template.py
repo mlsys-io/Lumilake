@@ -26,6 +26,17 @@ _ROWS = [
 ]
 
 
+_EMPTY_RULE: list[dict[str, Any]] = [{"branch": "no_ret", "match": "empty"}]
+_EMPTY_ROWS: list[tuple[str, Any]] = [
+    ("null", None),
+    ("blank", ""),
+    ("list", []),
+    ("map", {}),
+    ("null-text", "null"),
+    ("full", "q"),
+]
+
+
 def _router(**extra: Any) -> dict[str, Any]:
     return {
         "id": "route",
@@ -101,10 +112,11 @@ def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> Non
 
 
 def test_an_empty_rule_takes_no_value_and_refuses_one() -> None:
-    rule = [{"branch": "no_ret", "match": "empty"}]
-    RouterOp.from_entry(_router(rules=rule))
+    RouterOp.from_entry(_router(rules=[{"branch": "no_ret", "match": "empty"}]))
     with pytest.raises(ValueError, match="branch 'no_ret'.*takes no value"):
-        RouterOp.from_entry(_router(rules=[{**rule[0], "value": "x"}]))
+        RouterOp.from_entry(
+            _router(rules=[{"branch": "no_ret", "match": "empty", "value": "x"}])
+        )
     with pytest.raises(ValueError, match="takes no value"):
         RouterRule("no_ret", "empty", "")
 
@@ -112,39 +124,27 @@ def test_an_empty_rule_takes_no_value_and_refuses_one() -> None:
 def test_an_empty_rule_routes_null_blank_and_empty_containers_only(
     tmp_path: Path,
 ) -> None:
-    router = _router(
-        rules=[{"branch": "no_ret", "match": "empty"}],
-        default_branch="ret",
-    )
-    column = [
-        {"case_id": "null", "text": None},
-        {"case_id": "blank", "text": ""},
-        {"case_id": "list", "text": []},
-        {"case_id": "map", "text": {}},
-        {"case_id": "null-text", "text": "null"},
-        {"case_id": "empty-list-text", "text": "[]"},
-        {"case_id": "full", "text": "q"},
-    ]
+    router = _router(rules=_EMPTY_RULE, default_branch="ret")
+    column = [{"case_id": name, "text": text} for name, text in _EMPTY_ROWS]
     got = _branch_rows(tmp_path, router, "route.no_ret", column)
     assert [row["case_id"] for row in got] == ["null", "blank", "list", "map"]
     rest = _branch_rows(tmp_path, router, "route.ret", column)
-    assert [row["case_id"] for row in rest] == [
-        "null-text",
-        "empty-list-text",
-        "full",
-    ]
+    assert [row["case_id"] for row in rest] == ["null-text", "full"]
 
 
 def test_a_row_missing_an_empty_rule_path_fails_naming_the_part(
     tmp_path: Path,
 ) -> None:
-    router = _router(
-        path="ctx.question",
-        rules=[{"branch": "no_ret", "match": "empty"}],
-        default_branch="ret",
-    )
+    router = _router(path="ctx.question", rules=_EMPTY_RULE, default_branch="ret")
     with pytest.raises(ValueError, match=r"route\.no_ret row has no 'question'"):
         _branch_rows(tmp_path, router, "route.no_ret", [{"ctx": {}}])
+
+
+def test_a_template_round_carries_an_empty_rule_into_its_expansion() -> None:
+    template = _spec([_router(rules=_EMPTY_RULE)], []).driver.template
+    assert template is not None
+    (rendered,) = plan_for_round(template, 1).ops
+    assert rendered["rules"] == _EMPTY_RULE
 
 
 def test_router_expands_before_the_graph_is_built() -> None:

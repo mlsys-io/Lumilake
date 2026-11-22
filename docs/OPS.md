@@ -623,10 +623,15 @@ serializes the function automatically via `dill.source.getsource` — see
 
 `RouterOp` partitions one source op's rows into named branches, one ordinary
 node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
-first rule that matches wins; `match` is `contains` or `equals`, optional
-`path` selects the field tested, and `default_branch` keeps unmatched rows.
-`error_branch: true` adds an `error` branch that receives the [failed
-records](#failed-records); every other branch skips them.
+first rule that matches wins; `match` is `contains`, `equals` or `empty`,
+optional `path` selects the field tested, and `default_branch` keeps unmatched
+rows. `error_branch: true` adds an `error` branch that receives the [failed
+records](#failed-records); every other branch skips them. Each branch is a
+list-mode `LambdaOp`, so a `path` walks its decoded row.
+
+`match: empty` takes no `value` and matches a field holding `null`, `""`, `[]`
+or `{}`; it tests the value itself, so a string `"null"` or `"[]"` is not
+empty. A row missing a `path` part fails the job naming that part.
 
 ```yaml
 ops:
@@ -634,6 +639,8 @@ ops:
      error_branch: true,
      rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"},
              {branch: test, match: contains, value: "REQUEST TEST"}]}
+  - {id: split, op: RouterOp, inputs: [feedback], path: feedback_question,
+     default_branch: ret, rules: [{branch: no_ret, match: empty}]}
 ```
 
 ### JoinOp
