@@ -40,6 +40,11 @@ def row_order_problem(data_spec: dict[str, Any]) -> str | None:
             f"'rows' must be '{ROWS_ONE}' or '{ROWS_TABLE}' when declared"
             f" (got {rows!r})"
         )
+    if rows is not None and data_spec.get("mode") != "sql":
+        return (
+            f"'rows' is declared only on a mode: sql retrieval"
+            f" (got mode {data_spec.get('mode')!r})"
+        )
     if data_spec.get("mode") != "sql" or rows in ROWS_VALUES:
         return None
     template = data_spec.get("template")

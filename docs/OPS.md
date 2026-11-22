@@ -43,7 +43,8 @@ those rows come back in:
   `rows: one` instead. The declaration is checked at run time: if any
   parameter row returns more than one row, the job fails naming the op and
   the parameter rows that broke the bound. An n8n Postgres node declares it
-  with `"rows": "one"` in its `notes`.
+  with `"rows": "one"` in its `notes`. Submit rejects `rows` on any mode
+  other than `sql`, naming the op.
 - A retrieval whose whole result is one value declares `rows: table`. Each
   parameter row then emits exactly one record whose value is the whole
   result: the table, with its columns and rows in the order the database
