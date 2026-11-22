@@ -1,11 +1,7 @@
 """The ``ParseOp``: turn one input value per row into a structured record.
 
-The op reads a single upstream column and emits, for each row, the value it
-parsed out of that row's text. A row it cannot parse emits a failed-record
-marker instead of failing the task, so one malformed reply never costs the
-whole job. ``format: json`` strips one surrounding code fence and any prose
-before the first ``{`` or ``[``, then decodes; ``format: regex`` builds an
-object from the named groups of ``pattern``.
+A row it cannot parse emits a failed-record marker instead of failing the
+task.
 """
 
 import re
@@ -26,9 +22,7 @@ def validate_parse(
     flags: Any,
     where: str,
 ) -> None:
-    """Check a parse spec, naming the op in ``where``; the parser and the
-    constructor both call this, so a YAML job and a constructed op reject the
-    same spec with the same message."""
+    """Check a parse spec, naming the op in ``where``."""
     if form not in FORMATS:
         raise ValueError(f"{where} format must be one of {FORMATS}, got {form!r}")
     if require is not None and (
@@ -66,8 +60,7 @@ def validate_parse(
 
 @Op.registry.register(PARSE_OP)
 class ParseOp(FunctionalOp):
-    """Parse each row's value with ``format``; an unparsable row carries a
-    failed-record marker."""
+    """Parse each row's value with ``format`` or ``pattern``."""
 
     def __init__(
         self,
@@ -102,7 +95,7 @@ class ParseOp(FunctionalOp):
 
     @property
     def parse_spec(self) -> dict[str, Any]:
-        """The parse options the generated step reads."""
+        """The fields the generated step reads."""
         spec: dict[str, Any] = {"format": self.format}
         if self.pattern is not None:
             spec["pattern"] = self.pattern

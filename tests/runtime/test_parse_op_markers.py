@@ -39,8 +39,7 @@ def _build(ops: list[dict[str, Any]], values: dict[str, list[str]]) -> Any:
 def _run(
     ops: list[dict[str, Any]], values: dict[str, list[str]], tmp_path: Path
 ) -> list[Any]:
-    """Build the workflow's python tasks from YAML, run them in order, writing
-    each result where its consumer reads it."""
+    """Build the workflow's python tasks from YAML and run them in order."""
     graph = _build(ops, values)
     stages: dict[str, str] = {}
     items: list[Any] = []
@@ -116,8 +115,7 @@ _MARKER = {"_fail": {"op": "Q", "reason": "x"}}
 def test_parse_json_reads_a_record_or_marks_the_row(
     answer: str, expected: Any, tmp_path: Path
 ) -> None:
-    """A record decodes as it is; anything else becomes a marker whose reason
-    names the problem, and a reply that is literally a marker stays one."""
+    """A record decodes as it is; anything else becomes a marker."""
     (item,) = _run([_parse(format="json")], {"Answer": [answer]}, tmp_path)
     if isinstance(expected, str):
         assert item["value"]["_fail"]["reason"].startswith(expected)
@@ -155,8 +153,7 @@ def test_parse_rejects_a_bad_spec_naming_the_op() -> None:
 
 
 def _model_reading(node: str, kind: str = "chat") -> dict[str, Any]:
-    """A model op of ``kind`` reading ``node`` through its rowwise column or
-    its embedding content."""
+    """A model op of ``kind`` reading ``node``."""
     if kind == "embedding":
         return {
             "id": "E",

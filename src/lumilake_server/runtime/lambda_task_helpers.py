@@ -16,14 +16,13 @@ def fail_marker(op: str, reason: str) -> dict[str, Any]:
 
 
 def _is_marker(value: Any) -> bool:
-    """Whether a decoded value is a marker: an object whose only key is
-    ``_fail``, so a record that merely carries such a field stays ok."""
+    """Whether a decoded value is a marker, an object whose only key is
+    ``_fail``."""
     return isinstance(value, dict) and list(value) == [FAIL_KEY]
 
 
 def failure_of(value: Any) -> dict[str, Any] | None:
-    """The marker a value carries, or ``None`` when its record is ok. A text
-    value counts only when it decodes to the marker object itself."""
+    """The marker a value carries, or ``None`` when its record is ok."""
     if _is_marker(value):
         return value
     if isinstance(value, str) and FAIL_KEY in value:
@@ -39,10 +38,8 @@ def failure_of(value: Any) -> dict[str, Any] | None:
 def reject_reserved_key(
     value: Any, op: str, row: int | None = None, originals: tuple[Any, ...] = ()
 ) -> None:
-    """Refuse a user value that carries the reserved ``_fail`` key, so it is
-    never mistaken for a failed record. A marker the step received itself is a
-    pass-through and is kept, matched by identity or by equal value so a step
-    that re-encodes its input still passes it on."""
+    """Refuse a user value carrying the reserved ``_fail`` key; a marker the
+    step received passes through."""
     if isinstance(value, dict) and FAIL_KEY in value:
         if any(value is original or value == original for original in originals):
             return
@@ -54,10 +51,8 @@ def reject_reserved_key(
 
 
 def parse_row(spec: dict[str, Any], text: Any) -> Any:
-    """Parse one record's text by a ParseOp's spec; raise a ``ValueError``
-    saying why the parse failed. ``json`` drops one code fence and
-    any prose before the first ``{`` or ``[``; ``regex`` returns the named
-    groups of the first match."""
+    """Parse one record's text by a ParseOp's spec, raising ``ValueError`` on
+    failure."""
     if spec["format"] == "regex":
         mask = 0
         for name, flag in (("i", re.IGNORECASE), ("s", re.DOTALL), ("m", re.MULTILINE)):
@@ -83,11 +78,7 @@ def parse_row(spec: dict[str, Any], text: Any) -> Any:
 
 
 def _decode_record(body: str) -> Any:
-    """Decode the JSON record that starts after any prose, ignoring trailing
-    prose, so ``Here it is: {...} hope that helps`` yields the object. Only the
-    first ``{`` or ``[`` is tried, and no further one may follow the record, so
-    a truncated reply or a bracketed citation before the record fails instead
-    of yielding a fragment."""
+    """Decode the JSON record after any prose, which must end the reply."""
     decoder = json.JSONDecoder(strict=False)
     start = next((index for index, char in enumerate(body) if char in "{["), None)
     if start is None:

@@ -26,8 +26,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def _holds_marker(value: Any) -> bool:
-    """Whether a literal value is a marker, or decodes to a list holding one:
-    a grouped value reaches a consumer as the JSON text of its per-row list."""
+    """Whether a literal value is a marker, or decodes to a list holding one."""
     if not isinstance(value, str):
         return failure_of(value) is not None
     if FAIL_KEY not in value:
@@ -45,10 +44,8 @@ def _carries_markers(
     op: Op, inputs_dict: dict[str, list[str]], cache: dict[str, bool]
 ) -> bool:
     """Whether an op's output can hold a failed-record marker: a ``ParseOp``
-    emits one, an ``InputOp`` carries one of its literal values, and every
-    other op passes on the markers of what it reads, except a router branch
-    that drops them (its rule and default branches). ``cache`` holds each
-    op's answer for one build, so shared ancestors are walked once."""
+    emits one, an ``InputOp`` may carry one, and every other op passes on the
+    markers of what it reads except a router rule or default branch."""
     if op.id in cache:
         return cache[op.id]
     if isinstance(op, ParseOp):
@@ -86,8 +83,7 @@ class _RuntimeGraphBuilderBase:
         # The workflow being built, so every read site describes the same one.
         self._inputs_dict: dict[str, list[str]] = {}
         self._graph_dict: dict[str, Op] = {}
-        # Each op's marker answer for one build, so guarded columns of a shared
-        # ancestor cost one walk.
+        # Marker answers for one build, so a shared ancestor is walked once.
         self._marker_cache: dict[str, bool] = {}
 
     def _create_runtime_op(
@@ -389,8 +385,7 @@ class _RuntimeGraphBuilderBase:
         label: str,
         upstream: Op | None,
     ) -> None:
-        """Refuse a model-op column that reads a source carrying failed-record
-        markers, which the model would render as an ordinary value."""
+        """Refuse a model-op column that reads a marker source."""
         if upstream is None or not _carries_markers(
             upstream, self._inputs_dict, self._marker_cache
         ):

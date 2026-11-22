@@ -186,8 +186,7 @@ def main(inputs):
             (value for value in map(failure_of, row) if value is not None), None
         )
         if marked is not None:
-            # A row with a marked cell is not passed to the function: the
-            # record keeps its position and carries the marker onward.
+            # A marked row keeps its position and passes the marker on.
             items.append({{"output": marked, "value": marked}})
             continue
         value = fn(row)
@@ -202,9 +201,7 @@ def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
-    # A marker the step received may reach the function as its JSON text and be
-    # returned decoded, so the marker each received value holds counts as a
-    # received value too.
+    # A received marker may come back decoded, so it counts as received too.
     received = tuple(value for column in columns for value in column)
     originals = received + tuple(
         marker for marker in map(failure_of, received) if marker is not None
@@ -237,7 +234,7 @@ def main(inputs):
     ]
     live = [i for i, marker in enumerate(marked) if marker is None]
     if not live:
-        # Every row is marked: the function has no live row to run on.
+        # Every row is marked, so the function has no live row.
         return {{"items": [{{"output": marker}} for marker in marked]}}
     live_columns = tuple(
         col if len(col) == 1 and n > 1 else [col[i] for i in live]
@@ -513,8 +510,7 @@ def main(inputs):
     for value in columns[0]:
         marked = failure_of(value)
         if marked is not None:
-            # A marker reaching the column as its JSON text still leaves the
-            # step as the decoded marker object, as the row step does.
+            # A marker leaves as the decoded object, as the row step does.
             items.append({{"output": marked, "value": marked}})
             continue
         try:
@@ -525,8 +521,7 @@ def main(inputs):
             items.append({{"output": failed, "value": failed}})
             continue
         if isinstance(parsed, dict) and FAIL_KEY in parsed:
-            # The reply is model output, so its own _fail key must not forge or
-            # carry a marker.
+            # Model output cannot forge a marker with its own _fail key.
             failed = {{FAIL_KEY: {{"op": _NODE, "reason": "reserved key '_fail'"}}}}
             items.append({{"output": failed, "value": failed}})
             continue
@@ -536,8 +531,7 @@ def main(inputs):
 
 
 def parse_source(op_id: str, plan: ColumnPlan, parse_spec: dict[str, Any]) -> str:
-    """The python-task code for a ParseOp: one parsed record per row, or a
-    failed-record marker naming the op and the parse error."""
+    """The python-task code for a ParseOp: one parsed record per row."""
     return (_PARSE_PRELUDE + _PARSE_MAIN).format(
         op_id=op_id,
         module=TASK_RUNTIME_MODULE,

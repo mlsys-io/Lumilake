@@ -8,8 +8,7 @@ from .common import EmitContext
 
 
 def emit_parse_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
-    """Fill in a ``ParseOp`` entry: its format, and the pattern, required keys
-    and flags that format takes."""
+    """Fill in a ``ParseOp`` entry from its YAML fields."""
     entry = ctx.entry
     form = entry.fields.get("format", "json")
     pattern = entry.fields.get("pattern")

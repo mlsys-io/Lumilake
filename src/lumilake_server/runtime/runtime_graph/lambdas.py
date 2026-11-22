@@ -259,8 +259,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
 
     @register(ParseOp, Phase.ROW_LAMBDA)
     def _lower_parse(self, op: ParseOp, ctx: LoweringContext) -> LoweringResult | None:
-        """Lower a ParseOp to its own python step: one parsed record per row of
-        its single input column."""
+        """Lower a ParseOp to its own python step."""
         if op.id in ctx.nodes:
             return None
         plan, dependencies = self._parse_plan(op, ctx)

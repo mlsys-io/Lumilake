@@ -2064,9 +2064,7 @@ def _admit_subgraph(
     library: dict[str, dict[str, Any]] | None,
     results: dict[str, list[dict[str, Any]]],
 ) -> tuple[list[dict[str, Any]], frozenset[str]]:
-    """Validate an emitted subgraph, resolve it, and register its nodes,
-    returning the resolved ops and the router branches whose expansion dropped
-    markers, which the round's build keeps the flag for."""
+    """Validate an emitted subgraph, resolve it, and register its nodes."""
     ops, cleared = expand_routers(plan.ops)
     validate_emitted_subgraph(
         ops,

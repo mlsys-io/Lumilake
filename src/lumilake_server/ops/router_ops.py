@@ -118,8 +118,8 @@ class RouterOp:
 
     @property
     def branches(self) -> tuple[str, ...]:
-        """The default branch first, then every rule branch in rule order, then
-        the ``error`` branch when one is declared."""
+        """The default branch, the rule branches in order, then ``error`` when
+        declared."""
         ordered = (self.default_branch, *(rule.branch for rule in self.rules))
         return (*ordered, ERROR_BRANCH) if self.error_branch else ordered
 

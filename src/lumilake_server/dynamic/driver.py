@@ -402,10 +402,7 @@ def _walk_values_per_row(
 
 
 def _explode_one_list(values: list[Any], rows: int) -> list[Any]:
-    """Split one stored item that holds the run's whole list into its rows: a
-    template round forwards an export as a single item whose output is the
-    list its list-mode step returned, and its rows are what a later round reads
-    one per row."""
+    """Split a single stored item holding the run's whole list into its rows."""
     if rows > 1 and len(values) == 1 and isinstance(values[0], list):
         return values[0]
     return values
@@ -1125,8 +1122,6 @@ def build_round(
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
-    ``cleared_ids`` are the router branches this round's expansion dropped
-    markers on, which its parse keeps the flag for.
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(

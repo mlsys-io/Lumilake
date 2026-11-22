@@ -313,9 +313,8 @@ def test_admit_subgraph_forwards_export_to_validation():
 
 
 def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
-    # A dynamic round submits the native graph it just built, whose router
-    # branches carry the clearing key; the round names exactly those ops from
-    # its own expansion, and any other graph declaring the key is refused.
+    # A round names the clearing ops from its own expansion; another graph
+    # declaring the key is refused.
     native = {
         "L": {
             "_id": "L",

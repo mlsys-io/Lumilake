@@ -35,9 +35,7 @@ ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
 CLEARS_KEY = "_clears_markers"
-"""The private serialized key for ``LambdaOp.clears_markers``, which the parser
-sets on the branches a router's expansion produced; a user payload cannot
-declare it."""
+"""The private serialized key for ``LambdaOp.clears_markers``."""
 
 
 class LambdaSpec(BaseModel):
@@ -331,8 +329,8 @@ class LambdaOp(Op):
 
     @property
     def clears_markers(self) -> bool:
-        """Whether a router branch keeps only the rows its rule or the default
-        matched, so it never emits a failed record."""
+        """Parser-owned: set on generated router branches, never a workflow
+        field."""
         return bool(self.spec.clears_markers)
 
     @property

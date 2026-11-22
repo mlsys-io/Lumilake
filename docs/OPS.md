@@ -572,10 +572,9 @@ serializes the function automatically via `dill.source.getsource` — see
 `RouterOp` partitions one source op's rows into named branches, one ordinary
 node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
 first rule that matches wins; `match` is `contains` or `equals`, optional
-`path` selects the field tested, and `default_branch` keeps unmatched rows. A
-router that declares `error_branch: true` also exposes an `error` branch, which
-receives exactly the [failed records](#failed-records); every rule and default
-branch skips them, so without an `error` branch a failed row reaches none.
+`path` selects the field tested, and `default_branch` keeps unmatched rows.
+`error_branch: true` adds an `error` branch that receives the [failed
+records](#failed-records); every other branch skips them.
 
 ```yaml
 ops:
@@ -600,79 +599,28 @@ are left out. A duplicate key or a misaligned attach fails the job.
 
 ### ParseOp
 
-`ParseOp` reads one input column and emits one parsed record per row, so a
-reply that is JSON, fenced JSON, or JSON wrapped in prose becomes a field
-lookup instead of hand-written decoding in a `LambdaOp`. It runs as its own
-standalone `python` task, one value per input row, read at
-`value.items.output` (a textified `output` plus the raw `value`).
+`ParseOp` parses one input column, one record per row, read at
+`value.items.output`.
 
 ```yaml
-ops:
-  - id: Verdict
-    op: ParseOp
-    inputs: [Answer]
-    format: json              # json | regex
-    require: [eligibility]    # optional top-level keys, json only
+- {id: Verdict, op: ParseOp, inputs: [Answer], format: json, require: [eligibility]}
 ```
 
-`format: json` strips one surrounding fenced code block (```` ```json … ``` ````,
-any language tag) and any prose before the first `{` or `[`, then decodes the
-JSON, with `strict` off so a reply may carry literal control characters. No
-further `{` or `[` may follow the record, so a reply citing a source after it
-fails. `require` names top-level keys of the parsed object; a reply that parses
-to anything but an object fails it.
-
-`format: regex` returns an object of the named groups of
-`pattern`'s first match; the pattern must name at least one group
-(`(?P<name>…)`). `flags` is any of `i`, `s`, `m`. `pattern`, `require` and
-`flags` are validated at submit, and every error names the op.
-
-```yaml
-ops:
-  - id: Score
-    op: ParseOp
-    inputs: [Answer]
-    format: regex
-    pattern: 'Score: (?P<score>\d+)/\d+'
-```
-
-A row the parse cannot handle becomes a failed record rather than failing the
-task: see [Failed records](#failed-records).
+`format: json` strips one fenced block and any prose before the first `{` or
+`[`, then decodes the JSON, which must end the reply; `require` names top-level
+keys it must carry. `format: regex` returns the named groups of `pattern`'s
+first match; `flags` is any of `i`, `s`, `m`. Invalid fields are refused at
+submit. A row the parse cannot handle becomes a failed record.
 
 ### Failed records
 
-A record that fails becomes a marker instead of an error, so one bad row costs
-neither its siblings nor the job. A failed record's value is the object
-`{"_fail": {"op": "<op id>", "reason": "<text>"}}` and nothing else; an ok
-record has no `_fail` key. A failed record keeps its position, so parallel
-columns stay aligned.
-
-- `ParseOp` emits the marker for a row it cannot parse; the reason names what
-  went wrong, such as `no JSON object`, `missing key 'eligibility'` or
-  `pattern did not match`.
-- A row `LambdaOp` does not call the function for a row with a marked cell; it
-  emits the first such marker for that row. An aligned `LambdaOp` calls the
-  function on the live columns and merges the marked rows back by position. A
-  list `LambdaOp` receives markers as ordinary values, so a whole-list function
-  sees every row and passes them on.
-- A user function that raises fails the task; only a parse or a pass-through
-  produces a marker.
-- `RouterOp` sends failed rows to an `error` branch when the op declares
-  `error_branch: true`; otherwise a failed row goes to no branch. See
-  [`RouterOp`](#routerop).
-- Outputs archive the marker, so a job result shows which records failed and
-  why.
-- A source carries markers when a `ParseOp` or an input whose value is a marker
-  reaches it through any op except a router's rule or default branch, which
-  drop them. A model op (`LLMChatOp` with `rowwise_template`, `LLMVisionOp`,
-  `LLMCompletionOp`, `EmbeddingOp`, or a rowwise seed or aggregate table) may
-  not read such a source: the job is refused at submit when a rowwise column,
-  aggregate table, rowwise seed or embedding content reads one. Read a router's
-  rule or default branch instead, so failed records never reach the model. An
-  earlier round's output is an input like any other, so a reference that binds
-  a marker follows the same rule.
-
-`_fail` is reserved: a user function that returns an object carrying it fails
-the task, so a user value is never mistaken for a marker.
+A failed record's value is `{"_fail": {"op": <op id>, "reason": <text>}}`,
+which keeps its position; an ok record has no `_fail` key. A row `LambdaOp`
+passes the row's marker on without calling its function, an aligned one merges
+the marked rows back by position, and a list one sees markers as ordinary
+values. A function that raises, or returns an object carrying `_fail`, fails
+the task. `RouterOp` with `error_branch: true` sends failed rows to its `error`
+branch; otherwise they reach none. A model op may not read a source carrying
+markers, so read a router's rule or default branch.
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
