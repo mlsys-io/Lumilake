@@ -94,7 +94,7 @@ import yaml
 from ..ops.router_ops import expand_routers
 from .common import make_id as _make_id
 from .repeat import unroll_repeats
-from .yaml_functions import WorkflowFunctions
+from .yaml_functions import WorkflowFunctions, parse_functions, parse_uses
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
 
@@ -206,12 +206,11 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
+    functions = parse_functions(spec.get("functions"))
     ops_block, unroll = unroll_repeats(ops_block, set(inputs))
     ops_block = expand_routers(ops_block)
-    functions = WorkflowFunctions.from_block(spec.get("functions"))
     op_entries = [
-        _parse_op_entry(entry, idx, functions)
-        for idx, entry in enumerate(ops_block)
+        _parse_op_entry(entry, idx, functions) for idx, entry in enumerate(ops_block)
     ]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
@@ -332,22 +331,10 @@ def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEnt
         raise ValueError(f"op '{user_id}' max_iter must be int or null")
 
     entry_id = user_id.strip()
-    is_lambda = op_type.strip() == "LambdaOp"
     uses = entry.get("uses")
-    code = entry.get("code")
-    if is_lambda and code is not None and not isinstance(code, str):
-        raise ValueError(f"LambdaOp '{entry_id}' requires 'code: str'")
     if uses is not None:
-        if not is_lambda:
-            raise ValueError(
-                f"op '{entry_id}' declares 'uses', which only a LambdaOp accepts"
-            )
-        if isinstance(code, str) and code.strip().startswith("lambda"):
-            raise ValueError(
-                f"LambdaOp '{entry_id}' cannot combine 'uses' with lambda-expression"
-                " code; write the function as a 'def'"
-            )
-        fields_dict["code"] = functions.include(uses, entry_id, code)
+        extended = parse_uses(op_type, uses, entry.get("code"), entry_id)
+        fields_dict["code"] = functions.include(extended.uses, entry_id, extended.code)
 
     return OpEntry(
         id=entry_id,

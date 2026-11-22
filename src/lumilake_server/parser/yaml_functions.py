@@ -9,9 +9,31 @@ cannot use a block.
 import ast
 import symtable
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import Annotated, Any, Self
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    RootModel,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 _SEPARATOR = "\n\n"
+_Ident = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def _validated[M: BaseModel](model: type[M], payload: Any, where: str) -> M:
+    """``payload`` as ``model``; its first error names ``where``."""
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        field = ".".join(map(str, error["loc"]))
+        said = error["msg"].removeprefix("Value error, ")
+        raise ValueError(f"{where}: {f'{field}: {said}' if field else said}") from exc
 
 
 def _import_targets(tree: ast.Module) -> dict[str, str]:
@@ -65,27 +87,13 @@ def _collides(first: _Bindings, second: _Bindings) -> set[str]:
     return collisions
 
 
-@dataclass(frozen=True)
-class WorkflowFunctions:
-    """The workflow's ``functions:`` block, keyed by its ``uses:`` name."""
+class WorkflowFunctions(RootModel[dict[_Ident, _Ident]]):
+    """A workflow's ``functions:`` block, keyed by its ``uses:`` name."""
 
-    sources: dict[str, str]
-
+    @field_validator("root")
     @classmethod
-    def from_block(cls, raw: Any) -> Self:
-        """Validate a top-level ``functions:`` mapping."""
-        if raw is None:
-            return cls(sources={})
-        if not isinstance(raw, dict):
-            raise ValueError("'functions' must be a mapping of name -> Python source")
-        sources: dict[str, str] = {}
-        for name, source in raw.items():
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError("'functions' names must be non-empty strings")
-            if not isinstance(source, str) or not source.strip():
-                raise ValueError(
-                    f"function {name!r} must be a non-empty Python source string"
-                )
+    def _each_parses(cls, sources: dict[str, str]) -> dict[str, str]:
+        for name, source in sources.items():
             try:
                 ast.parse(source)
             except SyntaxError as exc:
@@ -93,19 +101,23 @@ class WorkflowFunctions:
                     f"function {name!r} does not parse as Python: {exc.msg}"
                     f" (line {exc.lineno})"
                 ) from exc
-            sources[name] = source
-        return cls(sources=sources)
+        return sources
 
-    def include(self, uses: Any, op_id: str, code: str | None) -> str:
+    def include(self, uses: list[str], op_id: str, code: str | None) -> str:
         """The op's source with the blocks it ``uses`` appended."""
-        names = self._checked_uses(uses, op_id)
+        unknown = [name for name in uses if name not in self.root]
+        if unknown:
+            raise ValueError(
+                f"LambdaOp '{op_id}' uses unknown function {unknown[0]!r};"
+                f" 'functions' defines {sorted(self.root)}"
+            )
         own = None
         if code is not None:
             own = _Bindings.parse(code, f"LambdaOp '{op_id}' code")
         blocks = [code.strip()] if code is not None else []
         included: list[tuple[str, _Bindings]] = []
-        for name in names:
-            source = self.sources[name]
+        for name in uses:
+            source = self.root[name]
             current = _Bindings.parse(source, f"function {name!r}")
             for other_name, other in included:
                 shared = sorted(_collides(other, current))
@@ -125,24 +137,42 @@ class WorkflowFunctions:
             blocks.append(source.strip())
         return _SEPARATOR.join(blocks)
 
-    def _checked_uses(self, uses: Any, op_id: str) -> list[str]:
-        if not isinstance(uses, list) or not all(
-            isinstance(name, str) for name in uses
-        ):
+
+class UsedFunctions(BaseModel):
+    """A LambdaOp's ``uses``: function names, each listed once, with its code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: _Ident
+    code: str | None = None
+    uses: list[_Ident]
+
+    @model_validator(mode="after")
+    def _checked(self) -> Self:
+        if self.op != "LambdaOp":
+            raise ValueError("declares 'uses', which only a LambdaOp accepts")
+        if self.code is not None and self.code.strip().startswith("lambda"):
             raise ValueError(
-                f"LambdaOp '{op_id}' 'uses' must be a list of function names"
+                "cannot combine 'uses' with lambda-expression code; write the"
+                " function as a 'def'"
             )
-        seen: set[str] = set()
-        for name in uses:
-            if name in seen:
-                raise ValueError(
-                    f"LambdaOp '{op_id}' 'uses' names the function {name!r}"
-                    " more than once"
-                )
-            seen.add(name)
-            if name not in self.sources:
-                raise ValueError(
-                    f"LambdaOp '{op_id}' uses unknown function {name!r};"
-                    f" 'functions' defines {sorted(self.sources)}"
-                )
-        return uses
+        for name in self.uses:
+            if self.uses.count(name) > 1:
+                raise ValueError(f"names the function {name!r} more than once")
+        return self
+
+
+def parse_functions(block: Any) -> WorkflowFunctions:
+    """A workflow's ``functions:`` block."""
+    return _validated(
+        WorkflowFunctions,
+        block if block is not None else {},
+        "'functions' must be a mapping of name -> Python source",
+    )
+
+
+def parse_uses(op: Any, uses: Any, code: Any, op_id: str) -> UsedFunctions:
+    """A LambdaOp's ``uses`` and its own ``code``."""
+    return _validated(
+        UsedFunctions, {"op": op, "uses": uses, "code": code}, f"op {op_id!r}"
+    )
