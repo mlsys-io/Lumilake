@@ -45,7 +45,7 @@ _JOIN = json.loads({join!r})
 
 _NODE = _JOIN["node"]
 _BY = _JOIN["by"]
-_ROW_KEY = _JOIN.get("row_key")
+_ROW_KEY = _JOIN["row_key"]
 _ON_MISSING = _JOIN["on_missing"]
 
 
@@ -268,32 +268,31 @@ def main(inputs):
 
 
 def _row_keys(rows, where):
-    """The first input's rows with their record keys. A row's record key is its
-    row_key value, unique in the input, which is how several rows may share one
-    by key: a duplicate fails the job, and a row whose key cannot be read does
-    too, since a record's identity is never its position. A marker carries no
-    row_key of its own, so it takes its by key as its record key and passes
-    through as its marker; a marker without a readable key fails the job."""
-    taken = {{}}
+    """The first input's rows as (record, key, row) with their markers. A live
+    row's record is its row_key value, unique in the input, which is how several
+    rows may share one by key: a duplicate fails the job. A marked row is never
+    a merge target, so it takes a private slot at its position instead of a
+    record key and passes through as its marker, whether the marker is the whole
+    row or one of its fields. Its by key is ``None`` when it cannot be read."""
+    taken = set()
     keyed = []
-    for row in rows:
+    marked = {{}}
+    for position, row in enumerate(rows):
         carried = carried_marker((row,))
-        record = _record_of(row, where)
         if carried is not None:
-            key = _key_of(row, where)
-            if record is None:
-                record = key
-        else:
-            key = _key(row, where)
+            record = _slot(position)
+            marked[record] = carried
+            keyed.append((record, _key_of(row, where), row))
+            continue
+        record = _record_of(row, where)
         if record is None:
-            raise ValueError(
-                "%s: a row whose key cannot be read cannot be placed" % where
-            )
+            missing = next(path for path in _ROW_KEY if _value(row, path) is None)
+            raise ValueError("%s: row has no row_key field %r" % (where, missing))
         if record in taken:
             raise ValueError("%s: duplicate row_key %s" % (where, record))
-        taken[record] = True
-        keyed.append((record, key, row))
-    return keyed
+        taken.add(record)
+        keyed.append((record, _key(row, where), row))
+    return keyed, marked
 
 
 def _record_of(row, where):
@@ -318,15 +317,8 @@ def _broadcast(inputs):
     columns = [_column(_PLAN[index], inputs, _decoded_cell) for index in indexes]
     first = _where(_PLAN[indexes[0]])
     rows = _rows(columns[0], first)
-    keyed = _row_keys(rows, first)
+    keyed, marked = _row_keys(rows, first)
     first_keys = _first_keys(keyed)
-    marked = {{}}
-    for record, _, row in keyed:
-        # A first-input row that carries a failed record passes through as its
-        # marker, and no further input fills it.
-        carried = carried_marker((row,))
-        if carried is not None:
-            marked[record] = carried
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
@@ -370,6 +362,7 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
     its value lands on that output row alone; any other source row carries one
     value per by key, and it lands on every output row of that key. Values pair
     with source rows as in a join without a row_key."""
+    targets = _AttachTargets(keyed)
     live = []
     for row in rows:
         if carried_marker((row,)) is None:
@@ -380,26 +373,26 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
             "%s: %d values attached but %d rows from %r"
             % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
         )
-    targets = _AttachTargets(keyed)
     covered = set()
     for value, source_row, key in pairs:
-        record = _record_of(source_row, where)
-        carried = failure_of(value) or carried_marker((source_row,))
-        for position in targets.of(record, key, where):
-            covered.add(position)
-            held = keyed[position][0]
-            if held in marked:
+        carried = failure_of(value)
+        if carried is None:
+            carried = carried_marker((source_row,))
+        for target in targets.of(source_row, key, where):
+            covered.add(target)
+            record, held_key, held_row = keyed[target]
+            if record in marked:
                 continue
             if carried is not None:
-                marked[held] = carried
+                marked[record] = carried
                 continue
-            merged = keyed[position][2].copy()
+            merged = held_row.copy()
             _merged(merged, name, value, where)
-            keyed[position] = (held, keyed[position][1], merged)
+            keyed[target] = (record, held_key, merged)
     if _ON_MISSING == "fail_row":
         # Only a row this source carries no value for becomes a marker; under
         # null_fill its field is simply left out.
-        for position, (record, key, _) in enumerate(keyed):
+        for position, (record, _, key) in enumerate(keyed):
             if position not in covered and record not in marked:
                 marked[record] = _failed("key %s is missing from %r" % (key, where))
 
@@ -409,24 +402,29 @@ class _AttachTargets:
     row_key fields name, or else every output row of its by key."""
 
     def __init__(self, keyed):
-        self._positions = {{}}
-        self._records = {{}}
+        self._by_key = {{}}
+        self._by_record = {{}}
         for position, (record, key, _) in enumerate(keyed):
-            self._positions.setdefault(key, []).append(position)
-            self._records.setdefault(record, []).append(position)
+            self._by_key.setdefault(key, []).append(position)
+            self._by_record.setdefault(record, []).append(position)
         self._first_keys = _first_keys(keyed)
 
-    def of(self, record, key, where):
-        if record is not None:
-            if record not in self._records:
-                raise ValueError(
-                    "%s: row_key %s is not in %r" % (_NODE, record, where)
-                )
-            return self._records[record]
+    def of(self, row, key, where):
         if key is None:
             raise ValueError(
                 "%s: a failed row whose key cannot be read cannot be placed" % where
             )
-        _required(self._first_keys, {{key: True}}, where)
-        return self._positions[key]
+        record = _record_of(row, where)
+        if record is not None:
+            if record not in self._by_record:
+                raise ValueError("%s: row_key %s is not in %r" % (_NODE, record, where))
+            return self._by_record[record]
+        _required(self._first_keys, (key,), where)
+        return self._by_key[key]
+
+
+def _slot(position):
+    """A marked first-input row's private key inside the step, never in the
+    output: it is no record identity, only the place one marker keeps."""
+    return "#marker:%d" % position
 '''
