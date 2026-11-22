@@ -8,8 +8,8 @@ op's ``code`` in the listed order, so the dispatched source and every digest
 see the full program exactly as if it had been written in the op.
 
 An op that an LLM op reads runs inline in the FlowMesh worker, where the
-source must be the function alone, so such an op cannot use a block; the build
-refuses it where the inline source is checked.
+``def`` must be the last statement of its source, so such an op cannot use a
+block; the build refuses it where the inline source is checked.
 """
 
 import ast
