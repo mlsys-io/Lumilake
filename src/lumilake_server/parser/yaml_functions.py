@@ -1,15 +1,9 @@
 """Workflow-level ``functions:`` sources and the ``uses:`` that includes them.
 
-A workflow may keep helper code in one top-level ``functions:`` mapping and
-have each ``LambdaOp`` name the blocks it needs with ``uses:``, so a helper is
-written once instead of copied into every op that calls it. The sources are
-resolved while the entry is still raw: the named blocks are appended after the
-op's ``code`` in the listed order, so the dispatched source and every digest
-see the full program exactly as if it had been written in the op.
-
-An op that an LLM op reads runs inline in the FlowMesh worker, where the
-``def`` must be the last statement of its source, so such an op cannot use a
-block; the build refuses it where the inline source is checked.
+A ``LambdaOp``'s named blocks are appended after its ``code`` in listed order,
+so the dispatched source and every digest see one program. An op an LLM op
+reads runs inline, where only a module docstring may follow the ``def``, so it
+cannot use a block.
 """
 
 import ast
@@ -21,8 +15,7 @@ _SEPARATOR = "\n\n"
 
 
 def _import_targets(tree: ast.Module) -> dict[str, str]:
-    """The module each top-level import binds a name to; a plain dotted import
-    binds its first part, an ``as`` alias and a ``from`` name the full target."""
+    """The module each top-level import binds a name to."""
     targets: dict[str, str] = {}
     for stmt in tree.body:
         if isinstance(stmt, ast.Import):
@@ -62,7 +55,7 @@ class _Bindings:
 
 
 def _collides(first: _Bindings, second: _Bindings) -> set[str]:
-    """The names both sources bind, ignoring the same import written twice."""
+    """The names both sources bind, ignoring an import written twice."""
     collisions: set[str] = set()
     for name in first.names & second.names:
         if name in first.imports and name in second.imports:
@@ -74,7 +67,7 @@ def _collides(first: _Bindings, second: _Bindings) -> set[str]:
 
 @dataclass(frozen=True)
 class WorkflowFunctions:
-    """The workflow's ``functions:`` block, keyed by the name ``uses:`` names."""
+    """The workflow's ``functions:`` block, keyed by its ``uses:`` name."""
 
     sources: dict[str, str]
 
@@ -104,7 +97,7 @@ class WorkflowFunctions:
         return cls(sources=sources)
 
     def include(self, uses: Any, op_id: str, code: str | None) -> str:
-        """The op's source with the blocks it ``uses`` appended, in order."""
+        """The op's source with the blocks it ``uses`` appended."""
         names = self._checked_uses(uses, op_id)
         own = None
         if code is not None:

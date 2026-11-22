@@ -268,8 +268,7 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
 
 
 def _inline_statement_binding(stmt: ast.stmt) -> str | None:
-    """The name ``stmt`` first binds at module level, or ``None`` when it
-    binds none."""
+    """The name ``stmt`` first binds at module level, if any."""
     table = symtable.symtable(ast.unparse(stmt), _SOURCE_NAME, "exec")
     bound = {
         symbol.get_name()
@@ -290,7 +289,7 @@ def _inline_statement_binding(stmt: ast.stmt) -> str | None:
 
 
 def _inline_statement_kind(stmt: ast.stmt) -> str:
-    """A short name for the kind of statement ``stmt`` is, for messages."""
+    """A short name for the kind of statement ``stmt`` is."""
     if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return "function definition"
     if isinstance(stmt, ast.ClassDef):
@@ -305,11 +304,9 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
 
     A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
     which the FlowMesh worker materializes in its own restricted namespace: no
-    ``__import__``, and it gives its module-level names no scope. So the
-    ``def`` named ``fn_name`` must be the last statement of the source, with
-    only a module docstring allowed before it and after it. Code that a
-    standalone LambdaOp accepts but that namespace cannot run is rejected
-    here, at submit, with the reason.
+    ``__import__``, and its module-level names have no scope. So the ``def``
+    named ``fn_name`` must be the last statement, with only module docstrings
+    around it. Code that namespace cannot run is rejected here, at submit.
     """
     name = validate_source(code, fn_name)
     tree = _parse(code)

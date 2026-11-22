@@ -416,12 +416,8 @@ outputs:
 ```
 
 A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in
-`uses:`. The listed sources are appended after `code` in the listed order, so
-a helper used by several ops is written once; see
-[`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses). An op
-that no LLM op reads can use blocks freely; one an LLM op reads is evaluated
-inline, where the `def` must be the last statement of its source, so a shared
-block is refused at submit.
+`uses:`; see
+[`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses).
 
 Where the function runs depends on what reads it:
 
@@ -451,11 +447,10 @@ Where the function runs depends on what reads it:
   runs the task. This is not a Lumilake-provided isolation boundary; use the
   standalone form above for code that should run in its own container. The
   worker's namespace has no `import` and gives a module-level name no scope, so
-  here the `def` named by `fn_name` must be the last statement of its source,
-  with only a module docstring before it or after it. Any statement after the
-  `def` is rejected at submit, naming the binding it makes, or its kind when
-  it makes none. That one rule also refuses a shared `uses:` block and a
-  trailing helper or constant, whatever the workflow format. If a runtime
+  the `def` named by `fn_name` must be the last statement of its source, with
+  only a module docstring before or after it. Submission is refused for any
+  statement after it, a shared `uses:` block and a trailing helper included.
+  If a runtime
   node (such as a data-retrieval op) also
   reads the same `LambdaOp`, it is additionally compiled to its own standalone
   `python` task so that node can reference its output; the LLM still inlines
