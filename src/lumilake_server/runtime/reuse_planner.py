@@ -42,7 +42,7 @@ from lumilake_server.runtime.record_writer import (
     _input_nodes,
     _input_values,
     _key_path,
-    _literal_entries,
+    _literal_rows,
     _logical_names,
     _position_inputs,
     _reads_unversioned,
@@ -253,7 +253,10 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
     node's records so a consumer names them identically.
 
     A keyed op's entry value is one row's output; a whole-op record's value is
-    the node's whole item list, which is what the writer reads at position 0."""
+    the node's whole item list, which is what the writer reads at position 0.
+
+    An entry is addressed at the round it was stored at, so a consumer names it
+    at that round and the writer's round lookup finds it."""
     served: dict[str, NodeRecords] = {}
     for node_id, entries in plan.hits.items():
         keyed = entries[0].address.record is not None
@@ -265,7 +268,10 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
             keys=[entry.address.record for entry in entries],
         )
         for entry in entries:
-            records.digests[entry.address.record] = (entry.digest, entry.value_digest)
+            records.digests[entry.address.record, entry.address.round] = (
+                entry.digest,
+                entry.value_digest,
+            )
         served[node_id] = records
     return served
 
@@ -422,8 +428,8 @@ def _planner_inputs(plan: RecordPlan, decision: ReusePlan) -> list[_Input]:
                 keys=[None],
             )
         )
-    for entry in _literal_entries(plan):
-        inputs.append(_literal_input(entry, plan.key_path))
+    for rows in _literal_rows(plan):
+        inputs.append(_literal_input(rows, plan.key_path))
     return inputs
 
 
@@ -438,9 +444,8 @@ def _served_input(records: Sequence[RecordEntry]) -> _Input:
     )
 
 
-def _literal_input(entry: Any, key_path: str | None) -> _Input:
-    """A literal entry, named and keyed per value."""
-    values = entry.get("values", [])
+def _literal_input(values: Sequence[Any], key_path: str | None) -> _Input:
+    """One literal rows list, named and keyed per value."""
     return _Input(
         named=RecordInput(
             keyed=True,

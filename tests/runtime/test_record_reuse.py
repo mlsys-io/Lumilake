@@ -23,9 +23,7 @@ from lumilake_server.runtime.reuse_planner import (
 )
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.conftest import (
-    job_storage as job_storage,
-)  # noqa: F401
+from tests.runtime.runtime_manager.conftest import job_storage as job_storage
 from tests.runtime.test_record_store import (
     _WORKFLOW,
     _runtime_graph,
@@ -81,6 +79,30 @@ def _with_code(workflow: dict[str, Any], op_id: str, code: str) -> dict[str, Any
     }
 
 
+def _chat_graph(rows: list[dict[str, str]]) -> Any:
+    """The keyed workflow's middle op made a deterministic chat that reads a
+    literal input column in its data spec, keyed by each row's ``id``."""
+    graph = _runtime_graph(_FOUR_OPS)
+    join = _node(graph, "Join")
+    column = {
+        "label": "q",
+        "data": {"type": "list", "items": [json.dumps(r) for r in rows]},
+    }
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        dependencies=[],
+        task_type="inference",
+        inference_spec={"temperature": 0},
+        model_spec={},
+        data_spec={
+            "type": "dataframe",
+            "columns": [column],
+            "messages": [{"role": "user", "content": "{q}"}],
+        },
+    )
+    return graph
+
+
 async def _run(
     storage: InMemoryJobStorage,
     workflow: dict[str, Any],
@@ -88,9 +110,10 @@ async def _run(
     results: dict[str, Any],
     job_id: str,
     served: dict[str, Any] | None = None,
+    graph: Any = None,
 ) -> Any:
     """Write one job's finished tasks the way dispatch does."""
-    graph = _runtime_graph(workflow)
+    graph = _runtime_graph(workflow) if graph is None else graph
     await _writer(storage).write(
         job_id=job_id,
         member_job_ids=[job_id],
@@ -127,8 +150,8 @@ async def test_all_hit_serves_every_op_and_writes_nothing() -> None:
     )
     assert _decisions(plan) == dict.fromkeys(("Mark", "Join", "Final"), ("hit", None))
     assert dispatched.nodes == {}
-    out = rebuilt_output(plan, _node(graph, "Final"))
-    assert [json.loads(v) for v in out] == _ROWS["Final"]
+    out = [json.loads(v) for v in rebuilt_output(plan, _node(graph, "Final"))]
+    assert out == _ROWS["Final"]
 
 
 @pytest.mark.asyncio
@@ -139,7 +162,6 @@ async def test_no_hit_dispatches_the_whole_graph() -> None:
     plan, dispatched = await _planner(InMemoryJobStorage()).plan(
         runtime_graph=graph, round_number=0, job_id="req-1"
     )
-
     assert {d.decision for d in plan.decisions} == {"miss"}
     assert plan.decisions[0].reason == "no entry"
     assert set(dispatched.nodes) == set(graph.nodes)
@@ -153,12 +175,10 @@ async def test_one_changed_op_reruns_only_it_and_its_descendants() -> None:
     storage = InMemoryJobStorage()
     await _run(storage, _FOUR_OPS, results=_ROWS, job_id="req-1")
     changed = _with_code(_FOUR_OPS, "Final", _THIRD_CODE.replace("+ '?'", "+ '!!'"))
-    graph = _runtime_graph(changed)
-    planner = _planner(storage)
+    graph, planner = _runtime_graph(changed), _planner(storage)
     plan, dispatched = await planner.plan(
         runtime_graph=graph, round_number=0, job_id="req-2"
     )
-
     assert _decisions(plan) == {
         "Mark": ("hit", None),
         "Join": ("hit", None),
@@ -166,7 +186,6 @@ async def test_one_changed_op_reruns_only_it_and_its_descendants() -> None:
     }
     assert list(dispatched.nodes) == [_node(graph, "Final")]
     assert dispatched.record_keys[_node(graph, "Final")]["path"] == "id"
-
     await _run(
         storage,
         changed,
@@ -195,6 +214,31 @@ def test_a_rebuilt_output_keeps_a_stored_string() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_chat_literal_input_column_hits_by_key() -> None:
+    """A chat carries its literal input column in its data spec, so a one-row
+    change misses only that record while its unchanged neighbour still hits."""
+    base = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
+    changed = [{"id": "a", "q": "CHANGED"}, {"id": "b", "q": "two"}]
+    storage = InMemoryJobStorage()
+    await _run(
+        storage, _FOUR_OPS, results=_ROWS, job_id="req-1", graph=_chat_graph(base)
+    )
+    planner = _planner(storage)
+
+    async def join(rows: list[dict[str, str]]) -> Any:
+        plan, _ = await planner.plan(
+            runtime_graph=_chat_graph(rows), round_number=0, job_id="req-2"
+        )
+        return _decisions(plan)["Join"]
+
+    assert await join(changed) == ("miss", "no entry")
+    await _run(
+        storage, _FOUR_OPS, results=_ROWS, job_id="req-3", graph=_chat_graph(changed)
+    )
+    assert await join(base) == ("hit", None)
+
+
+@pytest.mark.asyncio
 async def test_a_failed_entry_is_never_served() -> None:
     """A stored failure answers no request: its op and everything downstream of
     it miss."""
@@ -220,11 +264,9 @@ async def test_an_unseeded_sampling_op_always_misses() -> None:
     graph.nodes[final] = replace(
         graph.nodes[final], task_type="inference", inference_spec={"temperature": 0.7}
     )
-
     plan, _ = await _planner(storage).plan(
         runtime_graph=graph, round_number=0, job_id="req-2"
     )
-
     assert _decisions(plan)["Mark"] == ("hit", None)
     assert _decisions(plan)["Join"][0] == "miss"
 
@@ -240,8 +282,8 @@ async def test_an_all_hit_request_dispatches_no_task(
     await _run(
         job_storage,
         _WORKFLOW,
-        results={k: _ROWS[k] for k in ("Mark", "Join")},
         job_id="req-1",
+        results={k: _ROWS[k] for k in ("Mark", "Join")},
     )
     request_info = RequestInfo(
         request_id="req-2",

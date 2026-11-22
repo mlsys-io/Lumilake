@@ -1680,40 +1680,31 @@ async def test_reuse_flag_requires_store_and_reaches_the_job(
 ) -> None:
     """`reuse: true` rides the dynamic spec to the job beside `store`, and a
     workflow asking to reuse without storing is refused."""
-    flags = "store: true\nreuse: true"
-    yaml_text = _TEMPLATE_DYNAMIC_YAML.replace(
-        "type: dynamic", f"type: dynamic\n{flags}"
-    )
-    body = _submit_body(yaml_text)
-    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
     fake_server = job_routes._fake_runtime_server
     replies = [[{"case_id": 1}, {"case_id": 2}], []]
     fake_server.leaf_item = lambda row: {"output": replies.pop(0)}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
+
+        async def submit(flags: str) -> httpx.Response:
+            body = _submit_body(
+                _TEMPLATE_DYNAMIC_YAML.replace(
+                    "type: dynamic", f"type: dynamic\n{flags}"
+                )
+            )
+            body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
+            return await client.post(
+                "/jobs",
+                json=body,
+                headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+            )
+
+        resp = await submit("store: true\nreuse: true")
+        refused = await submit("reuse: true")
     assert resp.status_code == 200, resp.text
     await _run_background(app)
     record = job_routes.jobs[resp.json()["data"]["job_id"]]
     assert (record.store, record.reuse) == (True, True)
-
-    only_reuse = _TEMPLATE_DYNAMIC_YAML.replace(
-        "type: dynamic", "type: dynamic\nreuse: true"
-    )
-    body = _submit_body(only_reuse)
-    body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        refused = await client.post(
-            "/jobs",
-            json=body,
-            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
-        )
     assert refused.status_code == 422
     assert "reuse" in refused.text

@@ -179,7 +179,8 @@ async def test_job_get_exposes_a_reuse_decisions_field(
 ) -> None:
     """A job that reused the store reports one decision per op on its GET, and
     a job that did not reports an empty list."""
-    application, _, jobs_module = app
+    application, _ = app
+    jobs_module = job_routes_module
     jobs_module.jobs[_JOB].reuse_decisions = [
         {"op": "Answer", "decision": "hit", "reason": None, "records": 1},
         {"op": "Score", "decision": "miss", "reason": "no entry", "records": 1},
