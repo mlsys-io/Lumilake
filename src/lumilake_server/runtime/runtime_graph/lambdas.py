@@ -238,9 +238,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         )
 
     def _referenced_row_lambdas(self, ctx: LoweringContext) -> set[str]:
-        """Row-mode LambdaOps referenced by any built runtime node, either in
-        its data_spec/condition or as a runtime dependency, or by a join, which
-        reads its columns and attach targets in the join phase."""
+        """Row-mode LambdaOps referenced by any built runtime node, or by a
+        join."""
         refs: set[str] = set()
         for node in ctx.nodes.values():
             for ref in _RuntimeGraphBuilderBase._iter_runtime_refs(node):

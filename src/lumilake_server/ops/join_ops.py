@@ -1,12 +1,5 @@
-"""``JoinOp``: merge row columns and 1:1 outputs back onto keyed rows.
-
-The first input fixes the output: one row per first-input row, in its order.
-Every further input is merged into the row carrying the same key, and each
-``attach`` entry joins one 1:1 op's per-row output to the row it was computed
-from. An attach target's row source is resolved when the runtime graph is
-built, so no user code positions values; a field a row is missing is either
-left out or fails the job.
-"""
+"""``JoinOp``: merge keyed row columns and 1:1 outputs onto the rows they came
+from."""
 
 import re
 from typing import Any
@@ -71,12 +64,12 @@ class JoinOp(Op):
 
     @property
     def columns(self) -> list[Op]:
-        """The joined row columns, in declaration order."""
+        """The row columns, in declaration order."""
         return [self.inputs[index] for index in self.column_indices]
 
     @property
     def column_ids(self) -> list[str]:
-        """The joined row columns' op ids, in declaration order."""
+        """The row columns' op ids, in declaration order."""
         return [op.id for op in self.columns]
 
     @property
@@ -88,7 +81,7 @@ class JoinOp(Op):
 
     @property
     def row_source(self) -> Op:
-        """The first input fixes the output: one row per its row."""
+        """The first input, whose rows fix the output."""
         return self.columns[0]
 
     def _serialize(self) -> dict[str, Any]:
@@ -112,7 +105,7 @@ class JoinOp(Op):
 
 
 def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
-    """The op a join reads, which the graph payload must carry before it."""
+    """The op a join reads, from the ops the payload already built."""
     op = other_ops.get(op_id)
     if op is None:
         raise ValueError(
@@ -123,7 +116,7 @@ def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
 
 
 def _as_path(by: str | list[str]) -> list[str]:
-    """The key path as parts, refusing anything but a dotted field name."""
+    """The key path as parts; only a dotted field name is accepted."""
     parts = by.split(".") if isinstance(by, str) else by.copy()
     if not parts or not all(isinstance(part, str) for part in parts):
         raise ValueError(f"JoinOp by must be a dotted field name, got {by!r}")
@@ -133,6 +126,6 @@ def _as_path(by: str | list[str]) -> list[str]:
 
 
 def _validate_field(field: str) -> None:
-    """Refuse an attach name that is not a single field of the joined row."""
+    """Refuse an attach name that is not a single field name."""
     if not _FIELD_RE.match(field):
         raise ValueError(f"JoinOp attach field must be a field name, got {field!r}")

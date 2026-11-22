@@ -1,10 +1,8 @@
 """Building one join's python step.
 
-A join reads one plan column per row column and one value/source pair per
-attach field. An attach target's row source is resolved here, when the runtime
-graph is built, so the step pairs values with keys by position and never by
-user code. Consumers in an earlier phase read the join by its op id, which is
-its runtime node id, so only the join phase builds the step.
+An attach target's row source is resolved here, so the step pairs values with
+keys by position. Consumers in an earlier phase read the join by its op id,
+which is its runtime node id, so only the join phase builds the step.
 """
 
 from typing import Any
@@ -26,8 +24,8 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[Op]:
-    """The ops ``op`` emits one output row per, narrowed to a single candidate
-    where the op's shape names one."""
+    """The inputs ``op`` emits one output row per, one candidate where its
+    shape names one."""
     graph = ctx.graph_dict
     if isinstance(op, LambdaOp):
         if op.mode not in ("row", "aligned"):
@@ -42,7 +40,6 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
         if op.rowwise_messages is not None:
             return op.inputs[1:2]
         if op.rowwise_columns:
-            # Every column reads one node, or the op has no single row source.
             nodes = {
                 column["node"]
                 for column in op.rowwise_columns
@@ -70,7 +67,7 @@ def _non_literal(op: Op) -> list[Op]:
 
 
 def _drop_broadcasts(inputs: list[Op], ctx: LoweringContext) -> list[Op]:
-    """Ignore a length-1 input: a broadcast source does not fix the row count."""
+    """Ignore a length-1 input: a broadcast does not fix the row count."""
     if len(inputs) > 1:
         kept = [
             inp
@@ -85,8 +82,7 @@ def _drop_broadcasts(inputs: list[Op], ctx: LoweringContext) -> list[Op]:
 def resolve_row_source(
     target: Op, allowed: set[str], ctx: LoweringContext, consumer: str
 ) -> Op:
-    """Follow an attach target's row sources to the node whose rows its values
-    belong to."""
+    """Follow an attach target's row sources to the node holding its rows."""
     current = target
     while current.id not in allowed:
         source = current.row_source
@@ -175,8 +171,7 @@ def _planned(
     if output.needs_flatten:
         entry["flatten"] = True
     elif output.kind is OutputKind.ROW_LAMBDA:
-        # A row step writes the result both as JSON text under ``output`` and
-        # as the value itself under ``value``; read the value to keep its type.
+        # A row step writes the typed value under ``value``.
         entry["path"] = "value"
     else:
         entry["path"] = item_relative_path(output.path)

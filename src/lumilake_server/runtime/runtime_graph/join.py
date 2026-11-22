@@ -1,9 +1,7 @@
 """Join lowering: one standalone python step merging keyed rows.
 
-The first join input fixes the output rows. Each further input contributes the
-fields of the row with the same key, and each attach value lands on the row it
-was computed from. The join phase runs after every other phase, so the ops the
-join reads have their runtime nodes before the step is built.
+The join phase runs after every other phase, so the ops a join reads have
+their runtime nodes before its step is built.
 """
 
 from lumilake_server.ops.join_ops import JoinOp

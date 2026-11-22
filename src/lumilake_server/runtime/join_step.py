@@ -1,11 +1,7 @@
 """Standalone join step: merge row columns and 1:1 outputs onto keyed rows.
 
-A ``JoinOp`` lowers to one FlowMesh ``python`` task whose ``main`` reads one
-plan column per join input and one value/source pair per attach field, then
-merges them by the join key. The task carries its whole description in
-``_JOIN``, so the generated source holds no user code: the first input fixes
-the output rows, every further input contributes the fields of the row with the
-same key, and each attach value lands on the source row it was computed from.
+The generated task carries its whole description in ``_JOIN``, so its source
+holds no user code.
 """
 
 import json

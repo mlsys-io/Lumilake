@@ -149,8 +149,7 @@ def op_output(
     elif isinstance(op, LambdaOp):
         kind = OutputKind.LIST_LAMBDA if op.mode != "row" else OutputKind.ROW_LAMBDA
     elif isinstance(op, JoinOp):
-        # A join's result is enveloped like a list Lambda's: one item per row,
-        # each carrying that row's merged fields under ``output``.
+        # A join is enveloped like a list Lambda: one item per row.
         kind = OutputKind.JOIN
     else:
         kind = OutputKind.DECLARED

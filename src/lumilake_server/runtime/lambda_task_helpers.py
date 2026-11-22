@@ -52,8 +52,8 @@ def _walk_path(value: Any, parts: list[str], where: str) -> Any:
 
 
 def _decoded_cell(value: Any) -> Any:
-    """Decode one cell of a column: JSON object or array text becomes the
-    object or list it holds, and any other value passes through."""
+    """JSON object or array text becomes the value it holds; anything else
+    passes through."""
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
@@ -65,8 +65,7 @@ def _decoded_cell(value: Any) -> Any:
 
 
 def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
-    """A column-major table, a mapping from row index to cell per column, as
-    one row per index in index order."""
+    """A column-major table as one dict per row index, in index order."""
     rows: dict[str, dict[str, Any]] = {}
     for name, column in table.items():
         if not isinstance(column, dict):
@@ -81,8 +80,8 @@ def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _decoded_rows(value: Any, where: str) -> list[Any]:
-    """The rows one decoded cell carries: a table's ``{"df": "<json>"}``
-    envelope, a row object, or a list of any of these."""
+    """The rows a decoded cell carries: a ``{"df": "<json>"}`` table's rows,
+    a row object, or a list of these."""
     if (
         isinstance(value, dict)
         and list(value) == ["df"]

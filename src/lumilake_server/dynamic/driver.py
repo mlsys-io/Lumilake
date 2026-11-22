@@ -695,8 +695,7 @@ def _validate_declared_inputs(
 
     config_refs = collect_config_refs(native_op)
     if op_type == "JoinOp":
-        # A join consumes every input it declares: its row columns carry no
-        # config key of their own.
+        # A join consumes every input it declares.
         config_refs.update(ref for ref in native_op["_inputs"] if isinstance(ref, str))
     if not any(internal in native for internal in config_refs):
         return
