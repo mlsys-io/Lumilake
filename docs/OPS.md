@@ -649,6 +649,14 @@ read at `value.items.output`. A list-mode `LambdaOp` is read through a node
 column (`rowwise_columns` / `aggregate_table`), not through an LLM message
 chain.
 
+Any op may declare `key: {node, path}` to name its records' logical keys, so a
+job submitted with `store: true` writes one record-store entry per key instead of
+one for the whole op. `node` names the op or input that carries the keys and
+`path` drills into it. A downstream row-mode `LambdaOp` or one-row-in-one-row-out
+model op needs no declaration: it inherits its single keyed input's key by
+position. See
+[`docs/WORKFLOWS.md`](WORKFLOWS.md#per-record-store-store).
+
 An `LLMCompletionOp` prompt, an `EmbeddingOp` content or an
 `ImageGenerationOp` content whose list column binds a list-mode `LambdaOp`
 directly runs once per element, so it produces one whole-list value holding

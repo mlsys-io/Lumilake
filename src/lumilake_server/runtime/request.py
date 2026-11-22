@@ -55,6 +55,19 @@ class RequestInfo:
     profiles the optimizer scheduled with. CPU nodes offer every other
     selected worker, so an idle GPU worker never takes a CPU step."""
 
+    store_records: bool = False
+    """Whether any member job asked for the record store; a batch may hold a
+    storing and a non-storing job, and only the storing one writes and
+    indexes."""
+    member_store: dict[str, bool] = field(default_factory=dict)
+    """Whether each member job asked for the store, keyed by job id."""
+    member_rounds: dict[str, int] = field(default_factory=dict)
+    """The semantic round each member job's ops belong to, so two dynamic jobs
+    at different rounds never store records under one round."""
+    round_number: int = 0
+    """The semantic round this batch's ops belong to, ``0`` for a standalone
+    job."""
+
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)
     data_profile_graph: RuntimeGraph = field(init=False)

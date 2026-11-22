@@ -312,6 +312,7 @@ def _compile_workflow(
         op_id = _make_id(scope, "input", input_name)
         graph_ops[op_id] = {
             "_id": op_id,
+            "_declared_id": input_name,
             "_op": "InputOp",
             "_max_iter": None,
             "_inputs": [],
@@ -376,6 +377,7 @@ def _compile_workflow(
             raise ValueError(f"duplicate output id derived for '{out.name}'")
         out_dict: dict[str, Any] = {
             "_id": op_id,
+            "_declared_id": out.name,
             "_op": "OutputOp",
             "_max_iter": None,
             "_inputs": [refs[out.ref]],
@@ -406,7 +408,7 @@ def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:
 def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEntry:
     if not isinstance(entry, dict):
         raise ValueError(f"op entry at index {idx} must be a mapping")
-    reserved = {"id", "op", "inputs", "max_iter", "uses"}
+    reserved = {"id", "op", "inputs", "max_iter", "uses", "key"}
     user_id = entry.get("id")
     op_type = entry.get("op")
     if not isinstance(user_id, str) or not user_id.strip():
@@ -449,7 +451,26 @@ def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEnt
         inputs=list(raw_inputs),
         fields=fields_dict,
         max_iter=max_iter,
+        key=_parse_key(entry.get("key"), user_id.strip()),
     )
+
+
+def _parse_key(key: Any, op_id: str) -> dict[str, str] | None:
+    """A `key: {node, path}` record-key declaration, or `key: none`.
+
+    The node names the op (or input) that carries the row keys and the path
+    drills into it, the same shape a rowwise column uses."""
+    if key is None:
+        return None
+    if not isinstance(key, dict):
+        raise ValueError(f"op '{op_id}' key must be a mapping of node and path")
+    node = key.get("node")
+    path = key.get("path", "")
+    if not isinstance(node, str) or not node.strip():
+        raise ValueError(f"op '{op_id}' key must name a node")
+    if not isinstance(path, str):
+        raise ValueError(f"op '{op_id}' key path must be a string")
+    return {"node": node.strip(), "path": path}
 
 
 def _parse_output_entry(entry: Any, idx: int) -> _OutputEntry:
@@ -486,6 +507,7 @@ def _build_op_dict(
 
     op_dict: dict[str, Any] = {
         "_id": internal_id,
+        "_declared_id": entry.id,
         "_op": entry.op,
         "_max_iter": entry.max_iter,
         "_inputs": input_ids,
@@ -501,4 +523,12 @@ def _build_op_dict(
         template_ids=template_ids or {},
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
+    if entry.key is not None:
+        node_ref = entry.key["node"]
+        if node_ref not in user_id_to_internal:
+            raise ValueError(f"op '{entry.id}' key references unknown id '{node_ref}'")
+        op_dict["key"] = {
+            "node": user_id_to_internal[node_ref],
+            "path": entry.key["path"],
+        }
     return op_dict

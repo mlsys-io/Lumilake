@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any, Literal
 
+import requests
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from lumilake import envs
@@ -18,6 +19,11 @@ from lumilake_server.utils import lumid_data_client
 
 class ArchiveNotFound(Exception):
     """Raised by archive backends when a key is missing."""
+
+
+class ArchiveError(Exception):
+    """Raised by archive backends when a put or get fails on the store side: a
+    rejected upload, or an unreachable or erroring lumid-data endpoint."""
 
 
 def _normalize_payload(value: Any) -> Any:
@@ -85,6 +91,9 @@ class JobStorage:
         raise NotImplementedError
 
     def save_blob(self, key: str, data: bytes, content_type: str) -> str:
+        raise NotImplementedError
+
+    def load_blob(self, key: str) -> tuple[bytes, str]:
         raise NotImplementedError
 
     def list_summaries(
@@ -244,6 +253,11 @@ class InMemoryJobStorage(JobStorage):
         self._blobs[key] = (data, content_type)
         return key
 
+    def load_blob(self, key: str) -> tuple[bytes, str]:
+        if key not in self._blobs:
+            raise KeyError(key)
+        return self._blobs[key]
+
     def list_summaries(
         self,
         *,
@@ -285,13 +299,18 @@ class PersistentJobStorage(JobStorage):
         self._index_lock = threading.Lock()
 
     def _put_blob(self, key: str, body: bytes, content_type: str) -> None:
-        lumid_data_client.put_blob(key, body, content_type)
+        try:
+            lumid_data_client.put_blob(key, body, content_type)
+        except (requests.RequestException, RuntimeError) as exc:
+            raise ArchiveError(f"put {key!r}: {exc}") from exc
 
     def _get_blob(self, key: str) -> tuple[bytes, str]:
         try:
             return lumid_data_client.get_blob(key)
         except lumid_data_client.BlobNotFound as exc:
             raise ArchiveNotFound(key) from exc
+        except (requests.RequestException, RuntimeError) as exc:
+            raise ArchiveError(f"get {key!r}: {exc}") from exc
 
     def _object_name(self, job_id: str) -> str:
         if self.key_prefix:
@@ -423,6 +442,10 @@ class PersistentJobStorage(JobStorage):
         object_name = f"{self.key_prefix}/{key}" if self.key_prefix else key
         self._put_blob(object_name, data, content_type)
         return object_name
+
+    def load_blob(self, key: str) -> tuple[bytes, str]:
+        object_name = f"{self.key_prefix}/{key}" if self.key_prefix else key
+        return self._get_blob(object_name)
 
     def _put_json(self, object_name: str, body: bytes) -> None:
         self._put_blob(object_name, body, "application/json")

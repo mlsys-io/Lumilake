@@ -20,6 +20,8 @@ class OpEntry:
     inputs: list[str] = field(default_factory=list)
     fields: dict[str, Any] = field(default_factory=dict)
     max_iter: int | None = None
+    key: dict[str, str] | None = None
+    """A declared record key: the node carrying row keys and the path into it."""
 
 
 @dataclass

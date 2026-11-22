@@ -134,6 +134,76 @@ static YAML workflow: a dynamic workflow's library and template entries are
 built without a `functions:` block, so a `uses` there names an unknown
 function.
 
+## Per-record store (`store:`)
+
+A workflow can ask the server to store every computed record, so a later read can
+name what produced a value. Set `store: true` at the top level of a YAML
+document, or beside `graph` in a native payload. It defaults to off, so existing
+workflows are unchanged. A dynamic workflow sets it at its top level beside
+`type: dynamic`, and then every round writes its records.
+
+A record key is declared once, on the op or input that carries it:
+`key: {node, path}` names the op or input that holds the keys, and `path` drills
+into it, the same shape a rowwise column uses. Every op downstream derives its
+key: a row-mode `LambdaOp` and a one-row-in-one-row-out model op inherit their
+single keyed input's key by position. An op with no keyed input, a list-mode op
+and a reduce are one whole-op record, and any op that exists only on an unmerged
+branch (expand, reduce, join) stays whole-op here.
+
+```yaml
+name: keyed
+store: true
+inputs:
+  Cases: ['{"case_id": "c1", "q": "first"}', '{"case_id": "c2", "q": "second"}']
+ops:
+  - id: Answer
+    op: LambdaOp
+    inputs: [Cases]
+    fn_name: answer
+    mode: row
+    code: "def answer(c):\n    return c[0]\n"
+    key: {node: Cases, path: case_id}
+outputs:
+  - name: answer
+    ref: Answer
+```
+
+Each entry is written once, as one object under the archive prefix at
+`records/<digest>.json`, and each write also updates the job's index object at
+`records/jobs/<job id>.json`, which lists the job's entries by op, key and round.
+The digest is a SHA-256 over the op's computation (code, prompt, config, model id
+and decoding), the record's address (op, key, semantic round), the records it
+read (a keyed record reads the one at its own position; a whole-op record reads
+every record of every input, in order) and their values, the per-row seed it drew
+with when it declares one, and the effect versions. Per-row data enters as the
+record's inputs and a per-row seed as its realization, never through the op's own
+spec: that covers a python step's plan entries, every literal rows list a model,
+retrieval, join or format op carries in its data spec, and a rowwise seed column.
+So two slices of one op at any `input_batch_size` store the same records under
+the same keys. The address names the op the workflow declares. Physical node
+ids, batch positions, job ids and workers never enter the digest.
+
+The round is the semantic one: one-based for a round of a dynamic job, `0` for a
+standalone job. A reader trusts an object only when the digest recorded inside it
+equals its key. A failed record carries the same inputs, realization and versions
+a success would, with `status: failed` added, so it never answers a request for a
+success and two failures on different inputs never share a key.
+
+An op that reads a retrieval or fetch that records no snapshot is marked
+`versions.unversioned`, because such a read is never reusable; a hosted model
+call counts as one, since no recorded revision fixes its model. A record whose
+value no seed or snapshot fixes, an unversioned one or a sampling op with no
+seed, carries a realization unique to its production (the job and task that made
+it), so it never shares a key with another run's draw. An unversioned record
+always names its production, even when its op declares a seed: the seed stays
+beside it as information, since one seed does not promise the same value twice.
+A sampling op decodes deterministically only under beam search wider than one, a
+zero temperature or `do_sample: false`; an absent temperature samples at the
+engine's own default.
+
+Read a record's chain back with `GET /api/v1/jobs/{job_id}/lineage`; see
+[`docs/API.md`](API.md).
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its

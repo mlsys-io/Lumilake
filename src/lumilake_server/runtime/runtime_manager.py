@@ -40,6 +40,7 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
+from lumilake_server.runtime.record_writer import RecordWriter
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.retrieval_key_check import key_problem
 from lumilake_server.runtime.runtime_graph import (
@@ -50,7 +51,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
-from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.job_storage import ArchiveError, get_job_storage
 from lumilake_server.utils.retrieval_key import retrieval_key_column
 from lumilake_server.utils.retrieval_order import (
     ROWS_KEY,
@@ -59,7 +60,7 @@ from lumilake_server.utils.retrieval_order import (
 )
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
-_STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
+_STATUS_POLL_FIELDS: Final = ["status", "error", "last_error", "assigned_worker"]
 
 
 @dataclass
@@ -318,6 +319,9 @@ class FlowmeshRuntimeManager:
         self._execution_task_errors: dict[str, str] = (
             {}
         )  # task ID -> recorded FlowMesh error for a failed task
+        self._task_workers: dict[str, dict[str, str | None]] = (
+            {}
+        )  # FlowMesh workflow id -> task_id -> the worker that ran it
         self._execution_output_tasks: dict[tuple[str, str], set[str]] = (
             {}
         )  # (request_id, batch_id) -> set of output task IDs
@@ -725,6 +729,10 @@ class FlowmeshRuntimeManager:
                 if row.task_id not in pending_task_ids or row.status is None:
                     continue
                 task_status[row.task_id] = row.status
+                if row.assigned_worker is not None:
+                    self._task_workers.setdefault(workflow_id, {})[
+                        row.task_id
+                    ] = row.assigned_worker
                 if row.status == "FAILED":
                     self._record_task_error(row.task_id, row)
             cursor = page.next_cursor
@@ -1672,6 +1680,7 @@ class FlowmeshRuntimeManager:
             poll_timeout = envs.LUMILAKE_POLL_TIMEOUT_SECONDS
             poll_interval = envs.LUMILAKE_POLL_INTERVAL_SECONDS
             downloaded_tasks: set[str] = set()
+            stored_responses: dict[str, Any] = {}
             output_terminal = False
             output_task_status: dict[str, str] = {}
             start_time = time.time()
@@ -1707,6 +1716,8 @@ class FlowmeshRuntimeManager:
                         self._assert_retrieval_key(
                             request_info.runtime_graph, [node_id], response_data
                         )
+                        if request_info.store_records:
+                            stored_responses[tid] = response_data
                         downloaded_tasks.add(tid)
 
                 # Count statuses for all nodes and output nodes
@@ -1875,11 +1886,62 @@ class FlowmeshRuntimeManager:
                 prompts[output_op_id] = output_prompts
 
         self.logger.info(f"Aggregated {len(flat_outputs)} output results.")
+        if request_info.store_records and stored_responses:
+            await self._write_records(
+                request_info,
+                runtime_graph=request_info.runtime_graph,
+                node_task_map=node_task_map,
+                workflow_id=workflow_id,
+                results=stored_responses,
+            )
         return {
             "flat_outputs": flat_outputs,
             "chat_histories": prompts,
             "task_node_map": dict(raw_task_node_map),
         }
+
+    async def _write_records(
+        self,
+        request_info: RequestInfo,
+        *,
+        runtime_graph: RuntimeGraph,
+        node_task_map: Mapping[str, str],
+        workflow_id: str,
+        results: Mapping[str, Any],
+    ) -> None:
+        """Write this batch's records once, without failing the job: the values
+        the job returns are already computed, so neither an archive error nor a
+        graph the writer cannot key (a seed count that does not match its rows)
+        may fail it."""
+        writer = RecordWriter(
+            storage=get_job_storage(),
+            enabled=request_info.store_records,
+            logger=self.logger,
+        )
+        workers: dict[str, str | None] = self._task_workers.get(workflow_id, {}).copy()
+        job_ids = sorted(request_info.member_request_ids) or [request_info.request_id]
+        try:
+            await writer.write(
+                job_id=job_ids[0],
+                member_job_ids=job_ids,
+                round_number=request_info.round_number,
+                runtime_graph=runtime_graph,
+                node_task_map=node_task_map,
+                task_worker=workers,
+                results=results,
+                member_store=request_info.member_store,
+                member_rounds=request_info.member_rounds,
+                node_owners=request_info.task_owner_members,
+            )
+        except (ArchiveError, ValueError, IndexError) as exc:
+            self.logger.warning(
+                "Record store write failed for job %s (%s); job results are"
+                " unaffected",
+                job_ids[0],
+                exc,
+            )
+        finally:
+            self._task_workers.pop(workflow_id, None)
 
     async def _build_task_spec(
         self,
@@ -3251,7 +3313,9 @@ class FlowmeshRuntimeManager:
         """
         for key in self._batch_workflow_id.copy():
             if key[0] in execution_ids:
-                self._batch_workflow_id.pop(key, None)
+                workflow_id = self._batch_workflow_id.pop(key, None)
+                if workflow_id is not None:
+                    self._task_workers.pop(workflow_id, None)
 
     def release_request_task_ids(self, request_id: str) -> None:
         """Drop the member request's owned task ids; other members of a shared

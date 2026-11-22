@@ -43,6 +43,7 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
         output_node_map: dict[str, str] = {}
         output_paths: dict[str, str] = {}
         dsl_to_runtime: dict[str, list[str]] = {}
+        op_names: dict[str, str] = {}
 
         ctx = LoweringContext(
             graph_dict=graph_dict,
@@ -55,6 +56,13 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
             visited=visited,
         )
         node_order = self._lower_ops(ctx, output_node_map, output_paths)
+        for op in graph_dict.values():
+            if op.declared_id is None:
+                continue
+            for node_id in dsl_to_runtime.get(op.id, []):
+                # One declared op can lower to several nodes; the first is the
+                # op, the rest are steps it needed.
+                op_names.setdefault(node_id, op.declared_id)
 
         if task_type_override != "data_profile":
             unvisited_node_ids = set(graph_dict) - visited
@@ -72,6 +80,8 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
             output_node_map=output_node_map,
             output_paths=output_paths,
             dsl_to_runtime=dsl_to_runtime,
+            record_keys=self._record_keys(graph_dict, dsl_to_runtime),
+            op_names=op_names,
         )
         runtime_graph.node_order = runtime_graph.topological_order()
         if node_prefix:
@@ -79,6 +89,22 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
                 make_node_prefix(node_prefix)
             )
         return runtime_graph
+
+    @staticmethod
+    def _record_keys(
+        graph_dict: dict[str, Op], dsl_to_runtime: dict[str, list[str]]
+    ) -> dict[str, dict[str, str]]:
+        """Each node whose op declares a record key, with that key."""
+        keys: dict[str, dict[str, str]] = {}
+        for op in graph_dict.values():
+            if op.key is None:
+                continue
+            node_ids = dsl_to_runtime.get(op.id) or []
+            if not node_ids:
+                continue
+            for node_id in node_ids:
+                keys[node_id] = op.key.copy()
+        return keys
 
     def _collect_outputs(
         self,
