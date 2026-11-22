@@ -504,6 +504,22 @@ async def test_a_stored_value_is_redacted_but_its_digest_is_the_raw_graph(
     assert entry.value_digest == digest_of(raw)
 
 
+def test_a_schema_field_named_items_stays_in_the_spec_digest() -> None:
+    """A structured-output schema's own ``items`` decides how the output is
+    shaped, so two schemas whose arrays hold different element types never
+    share a signature."""
+
+    def digest(element: str) -> str:
+        schema = {"type": "array", "items": {"type": element}}
+        env = {"response_format": {"json_schema": {"schema": schema}}}
+        graph = _paths_graph(api_spec={"json": env}, task_type="api")
+        node = graph.nodes[_node_id(graph, "AskX")]
+        names = {node.node_id: graph.op_names.get(node.node_id, "AskX")}
+        return op_spec_digest(node, names)
+
+    assert digest("string") != digest("integer")
+
+
 def test_ops_reading_different_paths_get_different_signatures() -> None:
     """Two chat ops whose prompt columns read different paths of one producer
     compute different values, so they never share a signature."""
