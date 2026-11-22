@@ -1793,14 +1793,19 @@ async def _submit_dynamic_child(
     job_timeout: float = 600.0,
     one_slice: bool = False,
     store_records: bool = False,
+    semantic_round: int | None = None,
 ) -> str | None:
     """Create and dispatch one dynamic round as a child job, returning its id.
 
     The caller must check the child record's status after this returns,
-    because ``_run_job`` swallows failures.
-    """
+    because ``_run_job`` swallows failures. ``round_index`` names the round's
+    graph and messages; ``semantic_round`` is the zero-based chain round every
+    other round carries, which a stored record's round is derived from, and
+    defaults to ``round_index``."""
     child_job_id = f"req-{unique_id()}"
     graph_name = f"round_{round_index}"
+    if semantic_round is None:
+        semantic_round = round_index
     inputs = {INPUT_NODE_ID: list(symbols)}
     inputs.update(forwarded_inputs)
     # Slice the round exactly as a static submission with ``input_batch_size:
@@ -1913,7 +1918,7 @@ async def _submit_dynamic_child(
             parsed_graphs=child_graphs,
             suppress_hooks=True,
             chain_id=parent_job_id,
-            chain_round=round_index,
+            chain_round=semantic_round,
             store=store_records,
         )
     )
@@ -2553,7 +2558,8 @@ async def _run_template_job(
                     principal=principal,
                     runtime_token=runtime_token,
                     trace_id=trace_id,
-                    round_index=round_index - 1,
+                    round_index=round_index,
+                    semantic_round=round_index - 1,
                     optimizer_type=optimizer_type,
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,
