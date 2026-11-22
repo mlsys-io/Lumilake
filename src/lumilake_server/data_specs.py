@@ -144,13 +144,13 @@ class ColumnPlanEntry(DataSpecModel):
 
 
 class JoinDescription(DataSpecModel):
-    """A lowered join: key path, row-column plan indexes, attach values and sources."""
+    """A lowered join: key paths, row-column plan indexes, attach values and sources."""
 
     node: str
     by: list[str]
     row_key: list[str] | None = None
     inputs: list[int]
-    attach: list[tuple[str, int, int]]
+    attach: list[tuple[str, int, int, bool]]
     on_missing: Literal["null_fill", "fail_row"]
 
 

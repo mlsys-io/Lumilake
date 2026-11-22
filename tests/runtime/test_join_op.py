@@ -502,8 +502,15 @@ def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     tmp_path: Path,
 ) -> None:
     """A marked first-input row passes through as its marker whether the marker is
-    a field of it or the whole row, and two such rows in one unit keep their own
-    rows while the unit still takes the broadcast."""
+    a field of it or the whole row; an attach over the first input reaches each
+    output row at its position, so such a row marks only itself while the other
+    rows of its unit still take the broadcast."""
     rows = [{"unit": "u1", "rid": _MARK}, _MARK, _UNITS[1], _UNITS[2]]
     expected = [_MARK, _MARK, {**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
     assert _broadcast(tmp_path, rows=rows, attach="", name="mark") == expected
+    assert _broadcast(tmp_path, rows=rows, tags=["A", "B", "C", "D"]) == [
+        _MARK,
+        _MARK,
+        {**_UNITS[1], "size": 2, "tag": "C"},
+        {**_UNITS[2], "size": 1, "tag": "D"},
+    ]
