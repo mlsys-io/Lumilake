@@ -82,7 +82,7 @@ class RecordInput:
 
 class NodeRecords:
     """One node's records: its values, the key of each, and (once written)
-    each one's digest and value digest."""
+    each one's digest and value digest, per round it was stored at."""
 
     def __init__(
         self,
@@ -94,32 +94,52 @@ class NodeRecords:
         self.keyed = keyed
         self.values = values
         self.keys = keys
-        self.digests: dict[str | None, tuple[str, str | None]] = {}
+        self.digests: dict[tuple[str | None, int], tuple[str, str | None]] = {}
 
     def value_at(self, position: int) -> Any:
         """The value of the record at ``position``; a node's unkeyed record is
         its whole value list."""
         return self.values[position] if self.keyed else self.values
 
-    def identity_at(self, position: int) -> tuple[str, str] | None:
-        """The record at ``position`` as a consumer names it: its signature
-        digest and its value digest, or ``None`` when the row has no record."""
+    def identity_at(self, position: int, round_number: int) -> tuple[str, str] | None:
+        """The record at ``position`` as a consumer at ``round_number`` names
+        it: its signature digest and its value digest, or ``None`` when the row
+        has no record.
+
+        A record is stored once per round it addresses, so a consumer reads the
+        one at its own round. A node stored only at another round (a record
+        shared by jobs that run it at different rounds) is read at the lowest
+        round it was stored at."""
         if not self.keyed:
-            if None in self.digests:
-                digest, value = self.digests[None]
+            found = self._digest_at(None, round_number)
+            if found is not None:
+                digest, value = found
                 return digest, value or ""
             value_digest = digest_of(self.values)
             return digest_of({"values": self.values}), value_digest
         key = record_key_at(self.keys, position)
         if key is None:
             return None
-        if key in self.digests:
-            digest, value = self.digests[key]
+        found = self._digest_at(key, round_number)
+        if found is not None:
+            digest, value = found
             return digest, value or ""
         raise ValueError(
             f"record {key!r} at position {position} has no signature yet: every"
             " keyed node is written before its consumers"
         )
+
+    def _digest_at(
+        self, record: str | None, round_number: int
+    ) -> tuple[str, str | None] | None:
+        """One record's digest and value digest at a round, else at the lowest
+        round it was stored at."""
+        if (record, round_number) in self.digests:
+            return self.digests[record, round_number]
+        rounds = sorted(round_ for key, round_ in self.digests if key == record)
+        if not rounds:
+            return None
+        return self.digests[record, rounds[0]]
 
 
 class RecordPlan:
@@ -205,32 +225,32 @@ class RecordWriter:
             )
             if not storing:
                 continue
-            inputs = _record_inputs(plan, records)
             if _reads_unversioned(plan) or any(
                 node in unversioned for node in _input_nodes(plan)
             ):
                 unversioned.add(node_id)
             versions = EffectVersions(unversioned=node_id in unversioned)
-            source = RecordSource(
-                job=job_id,
-                round=max(rounds_of.get(member, round_number) for member in storing),
-                task_id=task_id,
-                worker=task_worker.get(task_id),
-                member_jobs=list(member_job_ids),
-            )
             targets = sorted(
                 (member, rounds_of.get(member, round_number)) for member in storing
             )
-            written.extend(
-                (entry, targets)
-                for entry in self._node_entries(
-                    plan=plan,
-                    node_records=node_records,
-                    inputs=inputs,
-                    versions=versions,
-                    source=source,
+            for member_round, members in _members_by_round(targets):
+                source = RecordSource(
+                    job=job_id,
+                    round=member_round,
+                    task_id=task_id,
+                    worker=task_worker.get(task_id),
+                    member_jobs=list(member_job_ids),
                 )
-            )
+                written.extend(
+                    (entry, [(member, member_round) for member in members])
+                    for entry in self._node_entries(
+                        plan=plan,
+                        node_records=node_records,
+                        inputs=_record_inputs(plan, records, member_round),
+                        versions=versions,
+                        source=source,
+                    )
+                )
         entries = [entry for entry, _ in written]
         for entry in entries:
             await asyncio.to_thread(
@@ -308,7 +328,7 @@ class RecordWriter:
                 realization=realization,
                 versions=versions,
             )
-            node_records.digests[record] = (digest, value_hash)
+            node_records.digests[record, source.round] = (digest, value_hash)
             entries.append(
                 RecordEntry(
                     digest=digest,
@@ -398,6 +418,18 @@ def _storing_owners(
     return [member for member in candidates if store.get(member, False)]
 
 
+def _members_by_round(
+    targets: Sequence[tuple[str, int]],
+) -> list[tuple[int, list[str]]]:
+    """The members that store a node, grouped by the round each stores it at,
+    in round order. Rounds are part of a record's address, so members that
+    run the node at different rounds get one entry each."""
+    grouped: dict[int, list[str]] = {}
+    for member, member_round in targets:
+        grouped.setdefault(member_round, []).append(member)
+    return sorted((member_round, members) for member_round, members in grouped.items())
+
+
 def _position_inputs(
     inputs: Sequence[RecordInput], position: int, *, keyed: bool
 ) -> tuple[list[str], list[str]]:
@@ -430,9 +462,9 @@ def _position_inputs(
 
 
 def _record_inputs(
-    plan: RecordPlan, records: Mapping[str, NodeRecords]
+    plan: RecordPlan, records: Mapping[str, NodeRecords], round_number: int
 ) -> list[RecordInput]:
-    """The inputs a node reads, in its declared order.
+    """The inputs a node reads, in its declared order, at ``round_number``.
 
     An input this batch did not store (a node outside the stored graph) is
     named by the spec side it declares. A literal input is one dependency the
@@ -447,7 +479,10 @@ def _record_inputs(
             inputs.append(
                 RecordInput(
                     keyed=produced.keyed,
-                    records=[produced.identity_at(position) for position in positions],
+                    records=[
+                        produced.identity_at(position, round_number)
+                        for position in positions
+                    ],
                 )
             )
             continue

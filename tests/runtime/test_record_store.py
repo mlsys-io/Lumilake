@@ -445,6 +445,53 @@ async def test_a_batch_writes_and_indexes_per_member_job(graph: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_node_shared_at_two_rounds_stores_one_entry_each(graph: Any) -> None:
+    """Rounds are part of a record's address, so two storing jobs that share a
+    deduplicated node at different rounds get one entry each: every index entry
+    names the address its own round probes, and the consumer names the inputs
+    of its own round."""
+    storage = InMemoryJobStorage()
+    writer = RecordWriter(
+        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
+    )
+    mark, join = _node_id(graph, "Mark"), _node_id(graph, "Join")
+    await writer.write(
+        job_id="req-one",
+        member_job_ids=["req-one", "req-two"],
+        round_number=0,
+        runtime_graph=graph,
+        node_task_map={mark: "task-Mark", join: "task-Join"},
+        task_worker={},
+        results={
+            task: {"items": [{"output": {"id": "a"}}]}
+            for task in ("task-Mark", "task-Join")
+        },
+        member_store={"req-one": True, "req-two": True},
+        member_rounds={"req-one": 1, "req-two": 2},
+        node_owners={mark: {"req-one", "req-two"}, join: {"req-one", "req-two"}},
+    )
+    by_job: dict[str, dict[str, RecordEntry]] = {}
+    for job_id, round_number in (("req-one", 1), ("req-two", 2)):
+        index = read_index(storage, job_id)
+        assert index is not None
+        entries = [read_entry(storage, item.digest) for item in index.entries]
+        by_job[job_id] = {entry.digest: entry for entry in entries if entry}
+        assert all(
+            entry.address.round == round_number for entry in by_job[job_id].values()
+        )
+    assert set(by_job["req-one"]).isdisjoint(by_job["req-two"])
+    join_record = _declared_name(graph, "Join")
+    for records_by_digest in by_job.values():
+        consumer = next(
+            e for e in records_by_digest.values() if e.address.op == join_record
+        )
+        producer = next(
+            e for e in records_by_digest.values() if e.address.op != join_record
+        )
+        assert consumer.input_digests == [producer.digest]
+
+
+@pytest.mark.asyncio
 async def test_a_stored_value_is_redacted_but_digested_raw(graph: Any) -> None:
     """A response that echoes a credential is stored the way the per-task
     artifact is, redacted, while its value digest stays over the raw value the
