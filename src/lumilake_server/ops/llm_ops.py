@@ -39,7 +39,10 @@ class ColumnSpec(BaseModel):
     input_ref: InputRef | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        payload = self.model_dump(exclude_none=True)
+        if self.input_ref is not None:
+            payload["input_ref"] = self.input_ref
+        return payload
 
 
 class LiteralColumn(ColumnSpec):
