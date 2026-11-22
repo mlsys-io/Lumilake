@@ -507,21 +507,19 @@ async def test_a_record_is_written_once(graph: Any) -> None:
     still names where the value was first produced."""
     storage = InMemoryJobStorage()
     results = {"Mark": [{"id": "a", "text": "ONE"}]}
-    await _write(graph, results, storage=storage, job_id="req-one")
-    (first,) = _entries(storage, "req-one")
-    await _write(graph, results, storage=storage, job_id="req-two")
-    (second,) = _entries(storage, "req-two")
-    assert first.digest == second.digest
-    stored = read_entry(storage, first.digest)
-    assert stored is not None
-    assert stored.source.job == "req-one"
+    digests = []
+    for job_id in ("req-one", "req-two"):
+        await _write(graph, results, storage=storage, job_id=job_id)
+        digests.append(_entries(storage, job_id)[0].digest)
+    assert digests[0] == digests[1]
+    stored = read_entry(storage, digests[0])
+    assert stored is not None and stored.source.job == "req-one"
 
 
 @pytest.mark.asyncio
 async def test_store_off_writes_nothing(graph: Any) -> None:
     storage, written = await _write(graph, {"Mark": [{"id": "a"}]}, enabled=False)
-    assert written == 0
-    assert read_index(storage, "req-1") is None
+    assert (written, read_index(storage, "req-1")) == (0, None)
 
 
 @pytest.mark.asyncio
