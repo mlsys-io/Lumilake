@@ -4,14 +4,12 @@ A workflow may keep helper code in one top-level ``functions:`` mapping and
 have each ``LambdaOp`` name the blocks it needs with ``uses:``, so a helper is
 written once instead of copied into every op that calls it. The sources are
 resolved while the entry is still raw: the named blocks are appended after the
-op's ``code`` in the listed order, so the dispatched source, the
-inline-namespace checks and every digest see the full program exactly as if it
-had been written in the op.
+op's ``code`` in the listed order, so the dispatched source and every digest
+see the full program exactly as if it had been written in the op.
 
-Appending keeps the op's own function the first name the source binds, which
-is what an inline Lambda needs. That namespace has no imports and no
-``try``/``raise``-family builtins, so an inline Lambda can only use blocks
-that need neither.
+An op that an LLM op reads runs inline in the FlowMesh worker, whose namespace
+gives a module-level name no scope, so such an op cannot use a block; the build
+refuses it where the inline source is checked.
 """
 
 import ast
@@ -100,8 +98,11 @@ class WorkflowFunctions:
             sources[name] = source
         return cls(sources=sources)
 
-    def include(self, uses: Any, op_id: str, code: str | None) -> str:
-        """The op's source with the blocks it ``uses`` appended, in order."""
+    def include(
+        self, uses: Any, op_id: str, code: str | None
+    ) -> tuple[str, tuple[str, ...]]:
+        """The op's source with the blocks it ``uses`` appended, in order, and
+        the names it included."""
         names = self._checked_uses(uses, op_id)
         own = None
         if code is not None:
@@ -127,7 +128,7 @@ class WorkflowFunctions:
                     )
             included.append((name, current))
             blocks.append(source.strip())
-        return _SEPARATOR.join(blocks)
+        return _SEPARATOR.join(blocks), tuple(names)
 
     def _checked_uses(self, uses: Any, op_id: str) -> list[str]:
         if not isinstance(uses, list) or not all(

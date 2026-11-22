@@ -417,7 +417,9 @@ outputs:
 A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in
 `uses:`. The listed sources are appended after `code` in the listed order, so
 a helper used by several ops is written once; see
-[`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses).
+[`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses). An op
+that no LLM op reads can use blocks freely; one an LLM op reads is evaluated
+inline, where a shared block has no scope, so the submit refuses it.
 
 Where the function runs depends on what reads it:
 
@@ -448,7 +450,10 @@ Where the function runs depends on what reads it:
   standalone form above for code that should run in its own container. The
   worker's namespace has no `import`, and it calls the first name the code
   binds, so here the code must not import anything and `fn_name` must be the
-  first definition; code that breaks either rule is rejected at submit. If a
+  first definition; code that breaks either rule is rejected at submit. The
+  namespace also gives a module-level name no scope, so an op read here cannot
+  `uses:` a workflow function: the block is appended to the code but is never
+  visible to the inline function, so the submit refuses it. If a
   runtime node (such as a data-retrieval op) also reads the same
   `LambdaOp`, it is additionally compiled to its own standalone `python` task so
   that node can reference its output; the LLM still inlines it, so the function

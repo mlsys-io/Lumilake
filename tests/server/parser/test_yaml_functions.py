@@ -6,7 +6,7 @@ import yaml
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.utils import lambda_runtime
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 _SEED = 'def seed_value(row):\n    return PREFIX + row["name"]\nPREFIX = "seed:"\n'
 
@@ -36,6 +36,13 @@ def _lambda_ops(spec: dict[str, Any]) -> list[LambdaOp]:
     return [op for op in graph.iter_ops() if isinstance(op, LambdaOp)]
 
 
+def _build_runtime(spec: dict[str, Any]) -> Any:
+    parsed = parse_yaml_payload(yaml.safe_dump(spec, sort_keys=False))
+    compiled = next(iter(parsed.values()))
+    graph = Graph.from_json(compiled["graph"])
+    return RuntimeGraphBuilder().build(graph.compile(**compiled["inputs"]))
+
+
 def test_blocks_are_appended_in_use_order_and_each_using_op_runs_them() -> None:
     code = "def op(inputs):\n    return TAIL + HEAD"
     spec = _workflow()
@@ -50,21 +57,25 @@ def test_blocks_are_appended_in_use_order_and_each_using_op_runs_them() -> None:
         assert namespace["op"](None) == "th"
 
 
-def test_an_inline_lambda_passes_the_inline_source_check_with_its_blocks() -> None:
+def test_an_inline_lambda_cannot_use_a_block() -> None:
     spec = _workflow()
     spec["functions"] = {"prefix": "PREFIX = 'seed:'\n"}
-    spec["ops"] = [
+    spec["ops"] = spec["ops"][:1]
+    spec["ops"][0].update(
+        uses=["prefix"], code="def op1(inputs):\n    return PREFIX + inputs[0]\n"
+    )
+    spec["ops"].append(
         {
-            "id": "op",
-            "op": "LambdaOp",
-            "fn_name": "op",
-            "inputs": ["rows"],
-            "uses": ["prefix"],
-            "code": "def op(inputs):\n    return PREFIX + inputs[0]\n",
+            "id": "chat",
+            "op": "LLMChatOp",
+            "inputs": ["op1"],
+            "messages": [{"role": "user", "content": "op1"}],
+            "config": {"model": "meta-llama/Llama-3.1-8B-Instruct"},
         }
-    ]
-    spec["outputs"] = [{"name": "result", "ref": "op"}]
-    assert lambda_runtime.validate_inline_source(_lambda_ops(spec)[0].code, "op")
+    )
+    spec["outputs"] = [{"name": "reply", "ref": "chat"}]
+    with pytest.raises(ValueError, match=r"Invalid LambdaOp '[^']*': it uses the"):
+        _build_runtime(spec)
 
 
 @pytest.mark.parametrize(

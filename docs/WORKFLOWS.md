@@ -73,15 +73,15 @@ ops:
 
 The listed sources are appended after the op's own `code` in the listed order,
 separated by a blank line, and everything after that sees the combined
-program: dispatch, the inline-namespace checks and every digest treat it
-exactly as if the source had been written in the op. A block is included once
-per op that uses it.
+program: dispatch and every digest treat it exactly as if the source had been
+written in the op. A block is included once per op that uses it.
 
-Appending matters for a `LambdaOp` that feeds an `LLMChatOp`: that code runs
-inline in the FlowMesh worker, which calls the first name the code binds, so
-the op's own `def` stays first and the helpers follow it. The inline namespace
-has no import statements and none of `try`/`except`/`raise`/`finally`, so such
-an op can only use blocks that need neither.
+A `LambdaOp` that an `LLMChatOp` reads is evaluated inline in the FlowMesh
+worker, and that worker gives an inline function's module-level names no
+scope, so a shared block cannot reach it. Submission is refused, naming the op
+and the function, and the code must move what it needs inside its own
+function. A `LambdaOp` that is a workflow output, or that only other
+`LambdaOp`s read, runs as its own `python` task and can use blocks freely.
 
 `code` is optional beside `uses`. Without it the op's code is the joined
 blocks, which is how a block can hold the whole function the op runs. `uses`
@@ -91,7 +91,8 @@ module-level helper.
 
 Submission is refused, naming the op and the function, when `uses` names a
 function `functions:` does not define, names one twice, sits on a non-`LambdaOp`
-op, or when a `functions:` entry does not parse. It is also refused when a
+op, on a `LambdaOp` that an LLM op reads inline, or when a `functions:` entry
+does not parse. It is also refused when a
 name is defined by both a used block and the op's own code, or by two used
 blocks: the op must end up with a single definition per name. An import that
 binds the same module under the same name in several places is not such a
