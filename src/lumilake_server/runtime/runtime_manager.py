@@ -1919,9 +1919,12 @@ class FlowmeshRuntimeManager:
             )
             return None
         request_info.runtime_graph = planned_graph
-        schedule.worker_assignment = dict(schedule.worker_assignment)
-        for node_id in plan.hit_nodes():
-            schedule.worker_assignment.pop(node_id, None)
+        hits = plan.hit_nodes()
+        schedule.worker_assignment = {
+            worker: kept
+            for worker, nodes in schedule.worker_assignment.items()
+            if (kept := [node for node in nodes if node not in hits])
+        }
         return plan
 
     async def _write_records(

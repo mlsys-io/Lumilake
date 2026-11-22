@@ -234,8 +234,8 @@ async def test_an_all_hit_request_dispatches_no_task(
     monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage
 ) -> None:
     """A reusing request whose graph the store already answers submits no
-    FlowMesh workflow: the plan removes every node, and each hit output is
-    rebuilt from its stored entries."""
+    FlowMesh workflow: every op hits, every output is rebuilt from its stored
+    entries, and the schedule names no node."""
     graph = _runtime_graph(_WORKFLOW)
     await _run(
         job_storage,
@@ -249,22 +249,23 @@ async def test_an_all_hit_request_dispatches_no_task(
         data_profile_graphs={},
         store_records=True,
         reuse_records=True,
+        member_reuse={"req-2": True},
     )
     request_info.batch_id = "batch-1"
     request_info.runtime_graph = graph
-    request_info.data_profile_graph = _runtime_graph(_WORKFLOW)
-    request_info.output_node_map = dict.fromkeys(graph.output_node_map, ("g", "final"))
+    request_info.output_node_map = dict.fromkeys(graph.output_node_map, ("g", "x"))
+    schedule = Schedule(worker_assignment={"w": list(graph.nodes)})
 
     async def _never(*_: Any) -> tuple[str, list[str]]:
         raise AssertionError("an all-hit request must submit nothing")
 
     monkeypatch.setattr(FlowmeshRuntimeManager, "_submit_workflow", _never)
+
     outputs = await FlowmeshRuntimeManager().process_request(
-        request_info,
-        Schedule(worker_assignment={node: ["w"] for node in graph.nodes}),
-        worker_ids=["w"],
+        request_info, schedule, worker_ids=["w"]
     )
 
+    assert schedule.worker_assignment == {}
     assert outputs["flat_outputs"] == {
         _node(graph, "Join"): [json.dumps(row) for row in _ROWS["Join"]]
     }
