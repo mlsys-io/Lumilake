@@ -424,20 +424,18 @@ async def test_a_batch_writes_and_indexes_per_member_job(graph: Any) -> None:
         round_number=0,
         runtime_graph=graph,
         node_task_map={mark: "task-Mark", join: "task-Join"},
-        task_worker={"task-Mark": "worker-1"},
+        task_worker={},
         results={
-            "task-Mark": {"items": [{"output": {"id": "a"}}]},
-            "task-Join": {"items": [{"output": {"id": "a"}}]},
+            task: {"items": [{"output": {"id": "a"}}]}
+            for task in ("task-Mark", "task-Join")
         },
         member_store={"req-one": True, "req-two": True, "req-plain": False},
         member_rounds={"req-one": 1, "req-two": 2, "req-plain": 1},
         node_owners={mark: {"req-one"}, join: {"req-two", "req-plain"}},
     )
-    first = read_index(storage, "req-one")
-    second = read_index(storage, "req-two")
+    first, second = read_index(storage, "req-one"), read_index(storage, "req-two")
     assert first is not None and second is not None
-    assert first.rounds() == [1]
-    assert second.rounds() == [2]
+    assert (first.rounds(), second.rounds()) == ([1], [2])
     assert read_index(storage, "req-plain") is None
 
 
