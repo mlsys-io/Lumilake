@@ -17,6 +17,7 @@ from lumilake_server.ops.router_ops import ROUTER_OP
 
 REPEAT_OP = "Repeat"
 INPUT_REF = "$in"
+_MAX_UNROLLED = 1000
 _FIELDS = frozenset({"id", "op", "times", "input", "output", "body"})
 
 
@@ -126,9 +127,16 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
     ordered = _in_dependency_order(repeats)
     outside: dict[str, str] = {}
     sources: dict[str, str] = {}
+    total = 0
     for spec in ordered:
         sources[spec.id] = outside.get(spec.input_ref, spec.input_ref)
         outside[spec.id] = spec.at(spec.times, spec.output_ref)
+        total += spec.times * len(spec.body)
+        if total > _MAX_UNROLLED:
+            raise ValueError(
+                f"Repeat '{spec.id}' would unroll {total} entries, "
+                f"over the limit of {_MAX_UNROLLED}"
+            )
 
     frames: dict[str, dict[str, str]] = {}
     iterations: dict[str, list[Any]] = {}

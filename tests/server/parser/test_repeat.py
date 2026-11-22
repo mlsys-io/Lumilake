@@ -26,14 +26,14 @@ def _repeat(
     times: str = "3",
     source: str = "Start",
     output: str = "Second",
-    extra: str = "",
     body: str | None = None,
+    repeat_id: str = "R",
 ) -> str:
     if body is None:
         body = _op("First", "[$in]", "      ") + _op("Second", "[First]", "      ")
     return (
-        f"  - id: R\n    op: Repeat\n    times: {times}\n    input: {source}\n"
-        f"    output: {output}\n{extra}    body:\n{body}"
+        f"  - id: {repeat_id}\n    op: Repeat\n    times: {times}\n"
+        f"    input: {source}\n    output: {output}\n    body:\n{body}"
     )
 
 
@@ -42,47 +42,32 @@ def _graph(ops: str, outputs: str = "") -> dict:
 
 
 def _named(graph: dict, name: str) -> dict:
-    return next(
-        op
-        for op in graph.values()
-        if op["_op"] == "LambdaOp" and op["_id"].startswith(f"lambda_repeat_{name}_")
-    )
+    start = f"lambda_repeat_{name}_"
+    return next(op for op in graph.values() if op["_id"].startswith(start))
 
 
-def _second(source: str, body: str | None = None) -> str:
-    if body is None:
-        body = _op("Lead", f"[{source}]", "      ") + _op("Last", "[Lead]", "      ")
-    return (
-        f"  - id: S\n    op: Repeat\n    times: 2\n    input: {source}\n"
-        f"    output: Last\n    body:\n{body}"
-    )
+def _second(source: str, body: str = "") -> str:
+    body = body or _op("A", f"[{source}]", "      ") + _op("B", "[A]", "      ")
+    return _repeat("2", source, "B", body, "S")
 
 
-def test_a_chained_repeat_reads_another_repeats_last_output() -> None:
-    outputs = _OUTPUT.replace("ref: R", "ref: S")
-    graph = _graph(_repeat(times="2") + _second("R"), outputs)
-    last_of_r = _named(graph, "R_2_Second")["_id"]
-    assert _named(graph, "S_1_Lead")["_inputs"] == [last_of_r]
-    assert _named(graph, "S_2_Lead")["_inputs"] == [last_of_r]
-    output = next(op for op in graph.values() if op["_op"] == "OutputOp")
-    assert output["_inputs"] == [_named(graph, "S_2_Last")["_id"]]
-
-
-def test_a_body_reads_another_repeat_by_its_last_output() -> None:
-    body = _op("Lead", "[R]", "      ") + _op("Last", "[Lead]", "      ")
-    graph = _graph(_repeat(times="2") + _second("Start", body))
-    lead = _named(graph, "S_2_Lead")
-    assert lead["_inputs"] == [_named(graph, "R_2_Second")["_id"]]
+def test_a_repeat_reads_another_by_its_last_output() -> None:
+    chained = _graph(_repeat(times="2") + _second("R"), _OUTPUT.replace("R", "S"))
+    last_of_r = _named(chained, "R_2_Second")["_id"]
+    assert _named(chained, "S_1_A")["_inputs"] == [last_of_r]
+    output = next(op for op in chained.values() if op["_op"] == "OutputOp")
+    assert output["_inputs"] == [_named(chained, "S_2_B")["_id"]]
+    body = _op("A", "[R]", "      ") + _op("B", "[A]", "      ")
+    in_body = _graph(_repeat(times="2") + _second("Start", body))
+    assert _named(in_body, "S_1_A")["_inputs"] == [_named(in_body, "R_2_Second")["_id"]]
 
 
 def test_a_literal_whose_first_part_is_a_body_id_is_read_as_text() -> None:
-    fmt = (
-        "  - {id: Fmt, op: FormatOp, inputs: [Start], template: '{doc}', "
-        "format_kwargs: {doc: 'Step.json'}}\n"
-    )
+    fmt = "  - {id: Fmt, op: FormatOp, inputs: [Start], template: '{d}',"
+    fmt += " format_kwargs: {d: 'Step.json'}}\n"
     graph = _graph(_repeat() + fmt, _OUTPUT)
     op = next(op for op in graph.values() if op["_op"] == "FormatOp")
-    assert op["format_kwargs"] == {"doc": "Step.json"}
+    assert op["format_kwargs"] == {"d": "Step.json"}
 
 
 def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -> None:
@@ -104,7 +89,10 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
     ("ops", "message"),
     [
         pytest.param(_repeat(times="0"), "positive integer"),
-        pytest.param(_repeat(extra="    steps: 3\n"), "unknown fields"),
+        pytest.param(_repeat(times="1000"), "over the limit of 1000"),
+        pytest.param(
+            _repeat().replace("    times:", "    steps: 3\n    times:"), "unknown"
+        ),
         pytest.param(_repeat(body="      - [First]\n"), "must be a mapping"),
         pytest.param(
             _repeat().replace("  - id: R\n", "  - op: Repeat\n"), "missing 'id'"
