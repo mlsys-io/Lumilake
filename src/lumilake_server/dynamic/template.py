@@ -92,8 +92,7 @@ def stop_export(template: DriverTemplate, round_number: int) -> str:
 
 def archive_result_items(decoded: list[Any]) -> list[Any]:
     """Flatten a decoded archive value into the whole result items it holds: a
-    whole-result export archives one value whose ``output`` is the whole list
-    its step returned, so its items sit one level down from where the stop
+    whole-result export archives its items one level down from where the stop
     count and a later round's forwarding read them."""
     items: list[Any] = []
     for value in decoded:
@@ -105,9 +104,7 @@ def archive_result_items(decoded: list[Any]) -> list[Any]:
 
 
 def archived_element_count(items: list[Any]) -> int:
-    """Count the rows an archived export holds: a whole-result Lambda archives
-    one item whose ``output`` is the list its step returned, so an export that
-    returned no rows counts 0."""
+    """Count the rows an archived export holds, 0 when it returned none."""
     total = 0
     for item in items:
         held = item.get("output") if isinstance(item, dict) else item
@@ -168,8 +165,7 @@ def _require_export(plan: SubgraphPlan, export_id: str, round_number: int) -> No
 
 
 def _require_list_lambda(op: dict[str, Any], export_id: str) -> None:
-    """Require the stop export to be a LambdaOp whose archived export collapses
-    to a single value."""
+    """Require the stop export to be a whole-result LambdaOp."""
     op_type = op.get("op", "")
     if op_type != "LambdaOp":
         raise DriverProtocolError(

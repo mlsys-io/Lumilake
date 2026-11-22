@@ -172,9 +172,8 @@ class RuntimeGraph:
         ]
 
     def list_lambda_cardinality_nodes(self) -> set[str]:
-        """Node ids that emit one whole-list value per run: whole-result Lambdas and
-        their dependents, up to a row-mode python step. Aligned-mode Lambdas are
-        row-cardinality, so they are neither seeds nor barriers here."""
+        """Node ids that emit one whole-list value per run: whole-result
+        Lambdas and their dependents, up to a row-mode python step."""
         list_lambda_nodes = {
             node_id
             for node_id, node in self.nodes.items()
@@ -199,8 +198,7 @@ class RuntimeGraph:
 
     def list_lambda_direct_read_nodes(self) -> set[str]:
         """Node ids whose list column binds a whole-result ``LambdaOp`` one hop
-        away. FlowMesh runs such a task once per element, so the task's items
-        are the whole list and the aggregator folds them into one value."""
+        away, which FlowMesh runs once per element of the whole list."""
         reads: dict[str, str | None] = {}
         for node_id, node in self.nodes.items():
             data_spec = node.data_spec

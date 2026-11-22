@@ -476,53 +476,20 @@ value per input row: the row-wise LLM groups its per-row outputs back into one
 item internally, and the standalone `python` step flattens that grouped item
 back to one value per row before the function sees its whole-list input.
 
-`mode: expand` calls the function once per input row with that row's tuple
-(same zip and length-1 broadcast as `row` mode) and expects a list back. The
-step emits the concatenation, in input order, one item per element, so each
-output's dependencies are known from the op alone; an empty list drops the row,
-and a non-list return fails with the op named.
+`mode: expand` calls the function once per input row, as `row` mode does, and
+expects a list back: the step emits one item per element, in input order, and
+an empty list drops the row.
 
-```yaml
-ops:
-  - id: "SplitKeywords"
-    op: LambdaOp
-    inputs: [Keywords]
-    mode: expand
-    fn_name: split
-    code: |
-      def split(row):
-          return [k for k in row[0].split(",") if k.strip()]
-```
+`mode: reduce` groups the row tuples by the value at the required `by` dotted
+path (compared as JSON text, so `1` and `"1"` differ) and calls the function
+once per group with that group's rows in input order, emitting one item per
+group in order of first appearance. A non-list expand return, or a row missing
+its `by` path, fails with the op named; `by` is accepted only in reduce mode.
 
-`mode: reduce` zips its inputs into row tuples as `row` mode does, groups them
-by the value at the required `by` dotted path into the first input's value
-(compared as JSON text, so `1` and `"1"` differ), and calls the function once
-per group with that group's row tuples in input order. The step emits one item
-per group, groups ordered by first appearance; a row missing the `by` path
-fails with the op and the row index named. `by` is accepted only in reduce mode.
-
-```yaml
-ops:
-  - id: "TopThree"
-    op: LambdaOp
-    inputs: [Scores]
-    mode: reduce
-    by: patient_id
-    fn_name: top_three
-    code: |
-      def top_three(rows):
-          return sorted(rows, key=lambda r: -r[0]["score"])[:3]
-```
-
-In both modes each column value is decoded once before the function sees it:
-a string that parses as a JSON object or array is parsed, a serialized table
-(`{"df": "<json>"}`) becomes a list of row dicts, including one a data
-retrieval item carries under its `table` field, and anything else is passed
-as is. Both modes always run as a standalone `python` task, so the whole-list
-per-run rules apply to them as they do to list mode: a direct read of their
-column folds to one value, an `input_batch_size` that would split them is
-rejected at submit, and either mode may be the export that stops a template
-round.
+Both modes decode each column value once (JSON text is parsed, a serialized
+table becomes its row dicts) and always run as a standalone `python` task, so
+they follow the list-mode whole-result rules for slices, template stops and
+direct reads.
 
 `mode: aligned` is the same calling convention as `list` (whole columns in, a
 list out, read at `value.items.output`), with one added guarantee: the function
