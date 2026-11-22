@@ -492,10 +492,9 @@ one slice is rejected at submit with a message naming the output and the fix
 (submit one input value per job, or raise `input_batch_size` so the whole input
 set runs in a single slice).
 
-A row-mode step below a list-mode `LambdaOp` keeps its input's cardinality: its
-output holds one value per element the Lambda returned, not one per job input
-row, so it cannot be split across slices either. A step that also reads the
-job's input rows keeps the input's row count.
+A row-mode step below a list-mode `LambdaOp` keeps its input's cardinality:
+one value per element the Lambda returned, not per job input row, so submit
+refuses to split it across slices too.
 
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source
