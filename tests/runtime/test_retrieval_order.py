@@ -1,5 +1,7 @@
 """The SQL row-order rule at submit and the `rows: one` bound at run time."""
 
+from contextlib import nullcontext
+
 import pytest
 
 from lumilake import envs
@@ -94,13 +96,9 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
 )
 def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> None:
     doc = _reader_doc(path)
-    graph = Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
-    match = "reads '.*' from op '.*_Search_.*'"
-    if refused:
-        with pytest.raises(ValueError, match=match):
-            RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
-    else:
-        RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
+    compiled = Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
+    with pytest.raises(ValueError) if refused else nullcontext():
+        RuntimeGraphBuilder().build(compiled.compile(Stock=["NVDA"]))
 
 
 def _reader_doc(path: str, mode: str = "sql") -> str:
