@@ -240,8 +240,8 @@ def _sql_data_spec(
     notes: dict[str, Any],
     table: str | None = None,
 ) -> dict[str, Any]:
-    """The retrieval spec for an n8n postgres node, carrying its ``rows``
-    declaration when the node's notes set one."""
+    """The retrieval spec for an n8n postgres node, with its ``rows``
+    declaration when the notes set one."""
     data_spec: dict[str, Any] = {
         "type": "lumid",
         "mode": "sql",

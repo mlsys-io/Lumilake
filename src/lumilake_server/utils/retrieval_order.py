@@ -1,9 +1,8 @@
 """Submit-time checks for a ``DataRetrievalOp``'s row order.
 
 A SQL result has no defined row order without an ``ORDER BY``, so a spec that
-returns several rows from one parameter row must declare one. A lookup that
-returns at most one row per parameter row declares ``rows: one`` instead; the
-runtime then checks that bound when it reads the result.
+may return several rows from one parameter row must declare one, or declare
+``rows: one`` for a lookup that returns at most one.
 """
 
 import re
@@ -23,11 +22,7 @@ _ORDER_BY_SPACING = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 
 
 def row_order_problem(data_spec: dict[str, Any]) -> str | None:
-    """Describe the first problem a retrieval spec has with its row order.
-
-    Returns ``None`` when the declared ``rows`` value is valid and the spec's
-    order is either defined or does not matter.
-    """
+    """The first problem a retrieval spec has with its row order, if any."""
     rows = data_spec.get(ROWS_KEY)
     if rows is not None and rows != ROWS_ONE:
         return f"'rows' must be '{ROWS_ONE}' when declared (got {rows!r})"
@@ -60,18 +55,11 @@ def _carrying_tokens(tokens: list[Token]) -> list[Token]:
 
 
 def sql_has_top_level_order_by(query: str) -> bool:
-    """Whether a SQL query orders its final result.
+    """Whether a SQL query orders its own final result.
 
-    The last statement's outer query counts, and so does a query wrapped whole
-    in parentheses. An ``ORDER BY`` inside a subquery, a CTE, or an
-    aggregate's argument does not count: sqlparse groups those under a
-    ``Parenthesis`` or a function call, and the scan stops there.
-
-    Two rewrites make the scan see the keyword where a reader would: one
-    regular expression collapses whitespace inside ``ORDER BY`` itself, since
-    sqlparse's ``WHERE`` group only closes on the exact keyword and would
-    otherwise swallow an ``ORDER BY`` written across lines, and comments are
-    stripped so a trailing comment is not mistaken for another statement.
+    Only the last statement's outer query counts, and so does a query wrapped
+    whole in parentheses; an ``ORDER BY`` inside a subquery, a CTE or an
+    aggregate argument does not.
     """
     collapsed = _ORDER_BY_SPACING.sub(_ORDER_BY, query)
     stripped = sqlparse.format(collapsed, strip_comments=True)
@@ -88,12 +76,7 @@ def sql_has_top_level_order_by(query: str) -> bool:
 
 
 def multi_row_item_indexes(items: Any) -> list[int]:
-    """The indexes of the retrieval items that returned more than one row.
-
-    A ``rows: one`` retrieval fails when this list is non-empty: the declared
-    bound failed for some item, so every row that item feeds downstream would
-    be silently reduced to its first.
-    """
+    """The indexes of the retrieval items that returned more than one row."""
     if not isinstance(items, list):
         return []
     multi: list[int] = []

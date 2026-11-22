@@ -27,35 +27,12 @@ YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` 
 
 ### DataRetrievalOp
 
-`DataRetrievalOp` retrieves data through lumid-data-app in `sql`, `s3` or
-`agent` mode. Every item's position downstream is its identity, so a
-retrieval that returns several rows per parameter row must define the order
-those rows come back in:
+`DataRetrievalOp` retrieves data through lumid-data-app in `sql`, `s3` or `agent` mode. Item position is item identity downstream, so a retrieval must define the order its rows come back in:
 
-- A `sql` retrieval must end its query with a top-level `ORDER BY`. The
-  submit rejects it otherwise, naming the op. An `ORDER BY` inside a
-  subquery, a CTE or an aggregate argument does not count. A statement with
-  several `;`-separated parts is checked on its last.
-- The `ORDER BY` must be **total**: it must end with a column no two
-  returned rows share, such as the primary key or a timestamp that is unique
-  within one symbol. The parser cannot check totality and does not claim to;
-  breaking ties is the author's responsibility.
-- A lookup that returns at most one row per parameter row declares
-  `rows: one` instead. The declaration is checked at run time: if any
-  parameter row returns more than one row, the job fails naming the op and
-  the parameter rows that broke the bound. An n8n Postgres node declares it
-  with `"rows": "one"` in its `notes`.
-- An `agent` retrieval replays SQL it writes at run time, so its order is
-  not visible at submit and is not checked.
-- A library template entry (`library:` in a dynamic workflow) is checked at
-  submit, like a submitted YAML op.
-- A retrieval the planner writes inline in a round is checked when that
-  round compiles, so an unordered one fails the round and the job.
-- An `s3` retrieval reads one key per parameter row; nothing expands a
-  prefix there and rows come back in parameter-row order. A workflow
-  *input* whose `S3Location` names a prefix is expanded to its keys in
-  lexicographic order, so that order is fixed. (A `template` that renders a
-  key per parameter row is the retrieval's own order, not an expansion.)
+- A `sql` retrieval ends its query with a top-level `ORDER BY`, or declares `rows: one` for a lookup that returns at most one row per parameter row. Submit rejects a query with neither, naming the op; an `ORDER BY` inside a subquery, a CTE or an `;`-separated part before the last does not count.
+- The `ORDER BY` must break ties on a column no two returned rows share, such as the primary key. Submit cannot check that, so it is the author's.
+- `rows: one` is checked at run time: a parameter row that returns more than one row fails the job. An n8n Postgres node declares it as `"rows": "one"` in its `notes`.
+- An `agent` retrieval replays SQL it writes at run time, so its order is not checked. An `s3` retrieval reads one key per parameter row, in parameter-row order; a workflow `S3Location` input naming a prefix is expanded to its keys in lexicographic order.
 
 ```yaml
 ops:
@@ -72,23 +49,7 @@ ops:
         ORDER BY timestamp DESC
         LIMIT 5
       params:
-        - label: symbol
-          node: "Stock"
-
-  - id: "Instrument lookup"
-    op: DataRetrievalOp
-    inputs: [Stock]
-    data_spec:
-      type: lumid
-      mode: sql
-      rows: one
-      template: |-
-        SELECT symbol, sector, industry
-        FROM reference.profile
-        WHERE symbol = '{symbol}'
-      params:
-        - label: symbol
-          node: "Stock"
+        - {label: symbol, node: "Stock"}
 ```
 
 ### FormatOp
