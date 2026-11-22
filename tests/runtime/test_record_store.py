@@ -208,6 +208,8 @@ def graph() -> Any:
 
 @pytest.mark.asyncio
 async def test_writer_stores_one_entry_per_keyed_row(graph: Any) -> None:
+    """Each keyed row of each op is one entry, both ops declare ``id`` as their
+    record key, and a stored object parses back to its own digest."""
     results = {
         "Mark": [{"id": "a", "text": "ONE"}, {"id": "b", "text": "TWO"}],
         "Join": [{"id": "a", "text": "ONE!"}, {"id": "b", "text": "TWO!"}],
@@ -225,6 +227,7 @@ async def test_writer_stores_one_entry_per_keyed_row(graph: Any) -> None:
     for entry in entries:
         body, _ = storage.load_blob(entry_object_name(entry.digest))
         assert RecordEntry.from_body(body).digest == entry.digest
+    assert sorted(key["path"] for key in graph.record_keys.values()) == ["id", "id"]
 
 
 @pytest.mark.asyncio
@@ -526,9 +529,3 @@ async def test_unversioned_retrieval_flows_downstream(graph: Any) -> None:
     )
     entries = await _store(graph, {"Mark": [{"id": "a", "text": "ONE"}]})
     assert all(entry.versions.unversioned for entry in entries)
-
-
-def test_record_key_rides_the_graph(graph: Any) -> None:
-    """Both lowered python ops declare ``id`` as their record key."""
-    paths = sorted(key["path"] for key in graph.record_keys.values())
-    assert paths == ["id", "id"]
