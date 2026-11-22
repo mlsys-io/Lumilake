@@ -38,7 +38,7 @@ outputs:
 
 A workflow with an unquoted `on`, `yes` or bare-number key is refused with a 400, because YAML reads such a key as a boolean or number and workflow keys must be strings.
 
-Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `ParseOp`, `RouterOp`, `JoinOp`, and `RepeatOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
+Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `ParseOp`, `RouterOp`, `JoinOp`, and `RepeatOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks. A `LambdaOp` in expand mode takes `on_empty: drop | fail`, as `docs/OPS.md` describes.
 
 `RepeatOp` repeats an op body a fixed number of times, unrolled at submit into one ordinary op per iteration:
 
