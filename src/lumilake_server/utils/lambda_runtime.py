@@ -91,9 +91,8 @@ SAFE_BUILTIN_NAMES = _SAFE_BUILTIN_BASE_NAMES + EXCEPTION_BUILTIN_NAMES
 # code that references them is rejected at submit.
 INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 
-# The standalone namespace binds ``Message`` and ``ops`` only so an SDK
-# callable's annotations resolve when its ``def`` runs. The inline namespace
-# lacks both, so a ``def`` there evaluates such an annotation and raises.
+# The standalone namespace binds ``Message`` and ``ops`` so an SDK callable's
+# annotations resolve there; the inline namespace lacks both.
 INLINE_UNAVAILABLE_ANNOTATION_NAMES = ("Message", "ops")
 
 # Names the standalone LambdaOp namespace provides beyond the safe builtins.
@@ -103,12 +102,8 @@ NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
 
 _SOURCE_NAME = "<lambda_op>"
 
-# ``DECODER_SOURCE`` carries the same behaviour as the decoder in
-# ``lambda_task_helpers``, without annotations, docstrings or exception
-# classes, which FlowMesh's inline namespace cannot evaluate. The generated
-# wrapper of an inlined row Lambda embeds it, so the function sees what a
-# standalone step gives it, and ``test_inline_wrapper_and_shared_decoder_agree``
-# pins the parity.
+# The same decode as ``lambda_task_helpers``, in the form FlowMesh's inline
+# namespace can evaluate; a test pins the two decoders to agree.
 DECODER_SOURCE = """\
 def _serialized_table(value):
     if isinstance(value, str):
@@ -163,9 +158,7 @@ def _decode(value):
 
 
 def _top_level_bindings(code: str) -> set[str]:
-    """Every name the code's own top-level scope binds: a definition, an
-    import alias, an assignment, ``for`` and ``with ... as`` targets, an
-    ``except ... as`` name, and so on."""
+    """Every name the code's own top-level scope binds."""
     table = symtable.symtable(code.strip(), _SOURCE_NAME, "exec")
     return {
         symbol.get_name()
@@ -177,13 +170,10 @@ def _top_level_bindings(code: str) -> set[str]:
 def inline_lambda_source(code: str, fn_name: str) -> str:
     """The function step source for a row-mode LambdaOp an LLM inlines.
 
-    The worker hands every row argument over as text, so a generated wrapper
-    decodes each argument with the shared decoder before calling the op's own
-    function, which then sees what a standalone step gives it. The worker runs
-    the source with separate globals and locals and calls the first local, so
-    the wrapper is the only local binding: the op's code stays at top level,
-    byte for byte, and a ``global`` line keeps its names, the decoder's and a
-    lambda's ``_op`` out of the locals.
+    A wrapper decodes each row argument first, so the op's function sees what
+    a standalone step gives it. The op's code stays at top level, byte for
+    byte; a ``global`` line keeps its names out of the wrapper's locals, which
+    hold only the wrapper.
     """
     src = code.strip()
     tree = _parse(src)
@@ -206,14 +196,9 @@ def inline_lambda_source(code: str, fn_name: str) -> str:
 
 
 def callable_source(fn: Callable[..., Any], code: str) -> str:
-    """The function source behind an SDK callable, or ``""`` when the callable's
-    own code cannot be read.
-
-    ``dill`` captures the statement that bound an SDK lambda, so an
-    ``LambdaOp([...], fn=lambda inputs: ...)`` carries that whole statement
-    rather than the lambda alone. A lambda's text is recoverable when the
-    statement holds exactly one lambda.
-    """
+    """The function source behind an SDK callable, or ``""`` when it cannot be
+    read. ``dill`` captures the statement that bound an SDK lambda, so the
+    lambda's own text is recovered when the statement holds exactly one."""
     stripped = code.strip()
     if fn.__name__ != "<lambda>":
         return stripped
@@ -458,9 +443,7 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
 
 
 def _inline_names() -> frozenset[str]:
-    """The names the generated inline wrapper binds around the op's code: the
-    adapter it is called through, the ``_op`` a lambda expression is bound to,
-    and the decoder functions it embeds."""
+    """The names the inline wrapper binds around the op's code."""
     tree = ast.parse(DECODER_SOURCE)
     return frozenset(
         (

@@ -557,7 +557,7 @@ def test_forward_grouped_list_aggregate_column_materializes():
     row = ops[0]["aggregate_table"][0]
     assert row["node"] == materializer_id
     assert row["path"] == "items.output"
-    # The materializer is a row-aligned LambdaOp passing decoded rows through.
+    # The materializer is a row-aligned LambdaOp passing rows through.
     materializer = ops[1]
     assert materializer["id"] == materializer_id
     assert materializer["op"] == "LambdaOp"
