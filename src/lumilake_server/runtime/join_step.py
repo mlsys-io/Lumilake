@@ -302,10 +302,6 @@ def _record_of(row, where):
     return _encoded(key, where)
 
 
-def _first_keys(keyed):
-    return {{key for _, key, _ in keyed}}
-
-
 def _broadcast(inputs):
     """Join with a row_key: every first-input row keeps its own output row, and
     every further input's row reaches each of them through its by key."""
@@ -314,7 +310,7 @@ def _broadcast(inputs):
     first = _where(_PLAN[indexes[0]])
     rows = _rows(columns[0], first)
     keyed, marked = _row_keys(rows, first)
-    first_keys = _first_keys(keyed)
+    first_keys = {{key for _, key, _ in keyed}}
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
@@ -361,7 +357,6 @@ def _attach_broadcast(
     by_key = {{}}
     for position, (_, key, _) in enumerate(keyed):
         by_key.setdefault(key, []).append(position)
-    first_keys = _first_keys(keyed)
     live = [
         (position, row)
         for position, row in enumerate(rows)
@@ -381,7 +376,7 @@ def _attach_broadcast(
         if first_source:
             reached = [position]
         else:
-            _required(first_keys, (key,), where)
+            _required(by_key, (key,), where)
             reached = by_key[key]
         for target in reached:
             covered.add(target)
