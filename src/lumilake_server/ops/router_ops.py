@@ -67,14 +67,7 @@ class RouterRule:
             raise ValueError(
                 f"RouterRule match must be one of {_MATCHES}, got {self.match!r}"
             )
-        if self.match == "empty":
-            if self.value is not None:
-                raise ValueError(
-                    f"RouterRule branch {self.branch!r} matches 'empty' and takes no"
-                    f" value, got {self.value!r}"
-                )
-            return
-        if not self.value:
+        if self.match != "empty" and not self.value:
             raise ValueError("RouterRule requires a non-empty string value")
 
     def matches(self) -> str:
@@ -163,23 +156,15 @@ class RouterOp:
             branch = raw_rule.get("branch")
             match = raw_rule.get("match")
             value = raw_rule.get("value")
-            if match == "empty":
-                if value is not None:
-                    raise ValueError(
-                        f"RouterOp {router_id!r} branch {branch!r} matches 'empty'"
-                        f" and takes no value, got {value!r}"
-                    )
-                if not isinstance(branch, str):
-                    raise ValueError(
-                        f"RouterOp {router_id!r} rules require a string branch, got"
-                        f" {raw_rule!r}"
-                    )
-                rules.append(RouterRule(branch, match))
-                continue
+            if match == "empty" and value is not None:
+                raise ValueError(
+                    f"RouterOp {router_id!r} branch {branch!r} matches 'empty'"
+                    f" and takes no value, got {value!r}"
+                )
             if not (
                 isinstance(branch, str)
                 and isinstance(match, str)
-                and isinstance(value, str)
+                and (value is None if match == "empty" else isinstance(value, str))
             ):
                 raise ValueError(
                     f"RouterOp {router_id!r} rules require string branch, match "
