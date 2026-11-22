@@ -6,6 +6,8 @@ from .graph import (
     Roles,
     RuntimeGraph,
     RuntimeGraphSchema,
+    chunk_group_parent,
+    make_chunk_group_key,
     make_node_prefix,
     merge_runtime_graphs,
 )
@@ -23,6 +25,8 @@ __all__ = [
     "_API_CREDENTIAL_PLACEHOLDER",
     "_RuntimeProfileSamplers",
     "_default_sql_sampler",
+    "chunk_group_parent",
+    "make_chunk_group_key",
     "make_node_prefix",
     "merge_runtime_graphs",
 ]

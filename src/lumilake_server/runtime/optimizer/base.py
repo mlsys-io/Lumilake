@@ -8,8 +8,12 @@ from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule
-from lumilake_server.runtime.runtime_graph import RuntimeGraph, merge_runtime_graphs
-from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.runtime_graph import (
+    RuntimeGraph,
+    chunk_group_parent,
+    merge_runtime_graphs,
+)
+from lumilake_server.runtime.runtime_ops import SAMPLING_TASK_TYPES, RuntimeOp
 
 __all__ = ["BaseOptimizer", "Schedule"]
 
@@ -112,6 +116,79 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
     )
 
 
+_TEXT_TASK_TYPES: frozenset[str] = frozenset({"inference", "api"})
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
+    """The sampler settings of a node that generates text or images, or
+    ``None`` when the node's output is a pure function of its inputs: a
+    Python step, a retrieval, an embedding, a classification, or an API
+    request other than a chat completion."""
+    if op.task_type in SAMPLING_TASK_TYPES:
+        return op.inference_spec
+    if op.task_type == "api":
+        body = op.api_spec.get("json")
+        if isinstance(body, dict) and "messages" in body:
+            return body
+    return None
+
+
+def _decodes_deterministically(op: RuntimeOp, sampler: dict[str, Any]) -> bool:
+    """Whether the node's text decoder is greedy or beam search. An absent
+    temperature is not greedy: the engine then samples at its own default, so
+    only an explicit ``temperature: 0`` or a beam width above 1 counts. Image
+    samplers read neither setting, so they never count."""
+    if op.task_type not in _TEXT_TASK_TYPES:
+        return False
+    num_beams = _number(sampler.get("num_beams"))
+    if num_beams is not None and num_beams > 1:
+        return True
+    return _number(sampler.get("temperature")) == 0.0
+
+
+def _dedupe_scope(
+    op: RuntimeOp, owners: tuple[tuple[str, str], ...] | None
+) -> tuple[Any, ...] | None:
+    """The per-node part of the dedupe key, or ``None`` when the node must not
+    be merged. A node that samples draws from a distribution rather than
+    computing a function of its inputs, so it merges only with the copies of
+    its own logical op (``owners``: one ``(workflow, op id)`` pair per copy),
+    never with a different op of equal settings, seeded or not. Python steps
+    stay eligible, as their output function is the user's to keep pure."""
+    sampler = _sampling_spec(op)
+    if sampler is None or _decodes_deterministically(op, sampler):
+        return ("pure",)
+    if not owners:
+        return None
+    return ("sampled", *owners)
+
+
+def _logical_ops(
+    graphs: dict[str, RuntimeGraph],
+) -> dict[str, tuple[tuple[str, str], ...]]:
+    """Map each runtime node to its ``(workflow, op id)`` owners. A request
+    split into chunk groups is one workflow, so its chunk groups share a
+    scope. Read from the per-group graphs, before ``merge_runtime_graphs``
+    folds their ``dsl_to_runtime`` by bare op id, so two workflows that both
+    name an op ``Ask`` keep separate owners."""
+    owners: dict[str, list[tuple[str, str]]] = {}
+    for group_name, graph in graphs.items():
+        scope = chunk_group_parent(group_name)
+        for op_id, runtime_ids in graph.dsl_to_runtime.items():
+            for runtime_id in runtime_ids:
+                entry = (scope, op_id)
+                pairs = owners.setdefault(runtime_id, [])
+                if entry not in pairs:
+                    pairs.append(entry)
+    return {node_id: tuple(sorted(pairs)) for node_id, pairs in owners.items()}
+
+
 def _dedupe_ordered(items: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -164,8 +241,13 @@ def _remap_node_spec(spec: dict[str, Any], mapping: dict[str, str]) -> dict[str,
 
 def _dedupe_runtime_graph(
     graph: RuntimeGraph,
+    logical_ops: dict[str, tuple[tuple[str, str], ...]],
 ) -> tuple[RuntimeGraph, dict[str, str]]:
     """Merge identical runtime ops with identical dependencies (non-output nodes).
+
+    ``logical_ops`` maps a runtime node to the ``(workflow, op id)`` pairs it
+    was built from; ``_dedupe_scope`` needs it to keep sampling nodes of
+    different ops apart.
 
     Returns the deduplicated graph and the ``node_id -> canonical node_id``
     mapping (identity for nodes that were not deduplicated).
@@ -178,7 +260,12 @@ def _dedupe_runtime_graph(
         if node_id in output_nodes:
             mapping[node_id] = node_id
             continue
-        signature = _runtime_signature(graph.nodes[node_id], mapping)
+        op = graph.nodes[node_id]
+        scope = _dedupe_scope(op, logical_ops.get(node_id))
+        if scope is None:
+            mapping[node_id] = node_id
+            continue
+        signature = (*scope, *_runtime_signature(op, mapping))
         canonical = canonical_by_signature.get(signature)
         if canonical is None:
             canonical_by_signature[signature] = node_id
@@ -291,6 +378,9 @@ class BaseOptimizer(ABC):
         Returns the merged, deduplicated graph, the output mapping, and the
         dedup ``node_id -> canonical node_id`` mapping (identity for nodes
         that were not deduplicated)."""
+        logical_ops = _logical_ops(graphs)
         merged_graph, output_mapping = merge_runtime_graphs(graphs)
-        optimized_graph, dedup_mapping = _dedupe_runtime_graph(merged_graph)
+        optimized_graph, dedup_mapping = _dedupe_runtime_graph(
+            merged_graph, logical_ops
+        )
         return optimized_graph, output_mapping, dedup_mapping

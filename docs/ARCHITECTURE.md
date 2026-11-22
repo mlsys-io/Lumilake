@@ -61,6 +61,8 @@ Lumilake is organized as a small control plane around workflow parsing, scheduli
 5. The runtime manager dispatches the plan to FlowMesh. A node the plan put on a GPU worker stays on that worker; a CPU node may run on any CPU worker.
 6. Progress, results, traces, and artifacts are stored through the archive layer.
 
+Optimization merges runtime nodes that are identical in every spec, dependency, condition and enforcement, so one FlowMesh task serves every reader of it. A node whose output is a function of its inputs merges across ops: greedy or beam-search text decoding, Python steps, retrievals, embeddings, classifications and non-chat API calls all qualify. A node that samples instead draws from a distribution, so it merges only within one logical op, meaning the copies built from the same workflow op whether or not they bind a seed: two chat or image ops with equal settings keep their own draws, while the copies of one op split across the chunk groups of a native or n8n request still share one; a YAML request parses each slice under its own scope, so its chunk groups draw separately. A sampling node that belongs to no workflow op keeps a task of its own. Keeping a Python step pure is the workflow author's side of the contract.
+
 Standalone `python` tasks receive their shared Lambda runtime through a content-addressed FlowMesh blob instead of embedding it in every task's source. Large literal plan entries are also uploaded once by digest and mounted as JSON files; literals at or below 1 KiB stay inline. FlowMesh verifies each blob by SHA-256 and caches the verified bytes per worker.
 
 ## Storage Model
