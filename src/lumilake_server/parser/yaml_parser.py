@@ -268,7 +268,8 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
 
     # 3. OutputOps.
     for out in output_entries:
-        refs = unroll(user_id_to_internal, f"output '{out.name}'", out.ref)
+        where = f"output '{out.name}'"
+        refs = unroll(user_id_to_internal, where, where)
         if out.ref not in refs:
             raise ValueError(f"output '{out.name}' references unknown id '{out.ref}'")
         op_id = _make_id(scope, "output", out.name)
