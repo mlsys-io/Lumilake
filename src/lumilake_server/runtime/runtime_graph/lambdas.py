@@ -108,6 +108,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             mode=op.mode if op.mode != "row" else None,
             by=op.by,
             on_fail=op.on_fail if op.mode == "reduce" else None,
+            on_empty=op.on_empty if op.mode == "expand" else None,
             memory_mb=op.memory_mb,
             image=op.image,
             expected_runtime_s=op.expected_runtime_s,

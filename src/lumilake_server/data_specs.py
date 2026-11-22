@@ -161,6 +161,7 @@ class PythonData(DataSpecModel):
     mode: PythonMode | None = None
     by: str | None = None
     on_fail: ReduceOnFail | None = None
+    on_empty: ExpandOnEmpty | None = None
     join: JoinDescription | None = None
     template: str | None = None
     timeout_s: int | float = 600
