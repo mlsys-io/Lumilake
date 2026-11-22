@@ -777,7 +777,8 @@ out of the output row.
 `by` is one dotted field path, or a list of them for a composite key: the key
 is then the list of their values, so two rows that share only the first field
 stay distinct. An empty list or an entry that is not a dotted field name is
-refused at submit, naming the op.
+refused at submit, naming the op. A key field may not be null: a live row whose
+key path is missing or holds JSON `null` fails the job.
 
 A first-input row that carries a failed record makes that row's output its
 marker: the first input fixes one output row per its row, in its order, and
