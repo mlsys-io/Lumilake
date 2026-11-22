@@ -688,15 +688,26 @@ def _workflow_store_flag(workflow_payload: Any, graph_name: str) -> bool:
 
     The flag sits at the top level of a YAML document or beside ``graph`` in a
     native payload, and defaults to off so existing workflows are unchanged."""
+    return _workflow_bool_flag(workflow_payload, graph_name, "store")
+
+
+def _workflow_reuse_flag(workflow_payload: Any, graph_name: str) -> bool:
+    """Whether the workflow asks to reuse the records an earlier storing job
+    computed."""
+    return _workflow_bool_flag(workflow_payload, graph_name, "reuse")
+
+
+def _workflow_bool_flag(workflow_payload: Any, graph_name: str, name: str) -> bool:
+    """One optional boolean field of a workflow's top level, off unless set."""
     if not isinstance(workflow_payload, dict):
         return False
-    flag = workflow_payload.get("store")
+    flag = workflow_payload.get(name)
     if flag is None:
         return False
     if not isinstance(flag, bool):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"workflow '{graph_name}' field 'store' must be a boolean",
+            detail=f"workflow '{graph_name}' field '{name}' must be a boolean",
         )
     return flag
 
@@ -727,6 +738,9 @@ class JobRecord:
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
     store: bool = False
+    reuse: bool = False
+    reuse_decisions: list[dict[str, Any]] = field(default_factory=list)
+    """The reuse plan's per-op decisions, empty when the job did not reuse."""
 
     def __post_init__(self) -> None:
         if not self.output_location:
@@ -801,6 +815,14 @@ class JobStatusPayload(BaseModel):
         default_factory=list,
         description=(
             "Raw per-workflow scheduler dispatch rows, one per actual dispatch."
+        ),
+    )
+    reuse_decisions: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "One hit-or-miss decision per op when the job asked to reuse the"
+            " record store, each with the first reason a miss ran; empty"
+            " otherwise."
         ),
     )
 
@@ -2880,6 +2902,7 @@ async def _run_job(
     chain_id: str | None = None,
     chain_round: int = 0,
     store: bool = False,
+    reuse: bool = False,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -2944,6 +2967,7 @@ async def _run_job(
                 chain_id=chain_id,
                 chain_round=chain_round,
                 store=store,
+                reuse=reuse,
             ),
             workflow_slices=workflow_slices,
         )
@@ -2959,6 +2983,11 @@ async def _run_job(
         )
         artifact_uris = _collect_artifact_uris(stored_payload)
         validated_result = LumilakeResponse.model_validate(stored_payload)
+        try:
+            reuse_decisions = server.reuse_decisions_for_request(job_id)
+        except Exception:
+            reuse_decisions = []
+            logger.exception("Failed to resolve reuse decisions for job %s", job_id)
         try:
             optimization_seconds = server.optimization_seconds_for_request(job_id)
         except Exception:
@@ -2984,6 +3013,7 @@ async def _run_job(
             else:
                 record.result = validated_result
                 record.trace_ids = list(trace_ids)
+                record.reuse_decisions = reuse_decisions
                 if optimization_seconds is not None:
                     record.optimization_seconds = optimization_seconds
                 if selection_seconds is not None:
@@ -3661,6 +3691,7 @@ async def submit_job(
     seen_public_names: set[str] = set()
     dynamic_spec: DynamicSpec | None = None
     store_records = False
+    reuse_records = False
     for idx, entry in enumerate(entries):
         dynamic_output_location: dict[str, Any] | None = None
         workflow_payload = _decode_workflow_body(entry.workflow, workflow_format, idx)
@@ -3677,6 +3708,7 @@ async def submit_job(
         if is_dynamic:
             dynamic_spec = _decode_dynamic_spec(entry.workflow, idx)
             store_records = store_records or dynamic_spec.store
+            reuse_records = reuse_records or dynamic_spec.reuse
             workflow_payload, dynamic_output_location = _render_dynamic_round0(
                 dynamic_spec
             )
@@ -3689,6 +3721,7 @@ async def submit_job(
             )
         seen_public_names.add(name)
         store_records = store_records or _workflow_store_flag(workflow_payload, name)
+        reuse_records = reuse_records or _workflow_reuse_flag(workflow_payload, name)
         inputs: dict[str, list[str]] = {}
         output_location = _effective_dynamic_output_location(
             dynamic_output_location, entry.output_location
@@ -3822,6 +3855,11 @@ async def submit_job(
 
     if is_dynamic and dynamic_spec is not None:
         _validate_dynamic_submission(resolved_inputs)
+    if reuse_records and not store_records:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="workflow field 'reuse' requires 'store: true'",
+        )
 
     record = JobRecord(
         job_id=job_id,
@@ -3834,6 +3872,7 @@ async def submit_job(
         user_id=principal.external_id,
         progress=JobProgress(),
         store=store_records,
+        reuse=reuse_records,
     )
 
     async with jobs_lock:
@@ -3881,6 +3920,7 @@ async def submit_job(
                 hardware,
                 graphs,
                 store=record.store,
+                reuse=record.reuse,
             )
         )
     request.app.state.background_tasks.add(task)

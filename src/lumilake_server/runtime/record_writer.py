@@ -191,6 +191,7 @@ class RecordWriter:
         member_store: Mapping[str, bool] | None = None,
         member_rounds: Mapping[str, int] | None = None,
         node_owners: Mapping[str, set[str]] | None = None,
+        served: Mapping[str, NodeRecords] | None = None,
     ) -> int:
         """Write the records of every node this batch produced.
 
@@ -200,14 +201,20 @@ class RecordWriter:
         A batch may hold several jobs. Each entry is written under the round of
         the member jobs that own its node, and only a job that asked for the
         store takes the entry into its index: a batch's first job's flag never
-        speaks for the others."""
+        speaks for the others.
+
+        ``served`` holds the records a reuse plan answered without a task, so a
+        consumer names such an input by the entry the store returned, exactly
+        as a full run names the entry the batch wrote."""
         if not self._enabled or not results:
             return 0
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order)
-        records = _collect_node_records(
+        records: dict[str, NodeRecords] = _collect_node_records(
             runtime_graph, plans, order, node_task_map, results
         )
+        for node_id, served_records_of_node in (served or {}).items():
+            records.setdefault(node_id, served_records_of_node)
         store = {} if member_store is None else member_store
         rounds_of = {} if member_rounds is None else member_rounds
         owners_of = {} if node_owners is None else node_owners
@@ -647,11 +654,14 @@ def _one_to_one(op: RuntimeOp) -> bool:
 def _keyed_input(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
 ) -> str | None:
-    """The single keyed node a 1:1 node reads, if it reads exactly one."""
+    """The single keyed node a 1:1 node reads, if it reads exactly one.
+
+    A dependency this batch did not plan is a served record, which is keyed by
+    its own entries; the caller names it from those."""
     op = runtime_graph.nodes[node_id]
     if not _one_to_one(op):
         return None
-    keyed = [node for node in op.dependencies if plans[node].keyed]
+    keyed = [node for node in op.dependencies if node in plans and plans[node].keyed]
     if len(keyed) != 1:
         return None
     return keyed[0]

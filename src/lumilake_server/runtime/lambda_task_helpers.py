@@ -304,6 +304,8 @@ def _rows(
 def _column(
     entry: dict[str, Any], inputs: dict[str, str], read: Callable[[Any], Any]
 ) -> list[Any]:
+    if "values" in entry:
+        return [read(v) for v in entry["values"]]
     if entry["kind"] == "literal":
         if "file" in entry:
             with open(entry["file"], encoding="utf-8") as fh:

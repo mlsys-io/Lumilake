@@ -118,6 +118,9 @@ class RequestState:
     workflow_lengths: dict[str, int] = field(default_factory=dict)
     error_info: list[dict[str, Any]] | None = None
     task_node_map: dict[str, dict[str, str]] = field(default_factory=dict)
+    reuse_decisions: list[dict[str, Any]] = field(default_factory=list)
+    """The reuse plan's per-op decisions across the request's batches; empty
+    when no batch was planned from the store."""
     plan_cache: dict[str, "PlanCacheEntry"] = field(default_factory=dict)
     pending_runtime_nodes_raw: int = 0
     processing_runtime_nodes_raw: int = 0
@@ -728,6 +731,11 @@ class LumilakeServer:
             self.runtime_manager.release_executions(released)
         self.runtime_manager.release_request_task_ids(request_id)
         self.runtime_manager.clear_dispatch_token(request_id)
+
+    def reuse_decisions_for_request(self, request_id: str) -> list[dict[str, Any]]:
+        """The reuse plan's per-op decisions for a request, if it was planned."""
+        state = self._requests.get(request_id)
+        return [] if state is None else list(state.reuse_decisions)
 
     def optimization_seconds_for_request(self, request_id: str) -> float | None:
         state = self._requests.get(request_id)
@@ -3089,6 +3097,10 @@ class LumilakeServer:
                 item.request_id: item.config.semantic_round for item in batch.workflows
             },
             round_number=batch.config.semantic_round,
+            reuse_records=any(item.config.reuse for item in batch.workflows),
+            member_reuse={
+                item.request_id: item.config.reuse for item in batch.workflows
+            },
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph
@@ -3273,6 +3285,12 @@ class LumilakeServer:
                 state = self._requests.get(request_id)
                 if state is not None:
                     state.task_node_map[batch_id] = dict(task_node_map)
+        reuse_decisions = connector_result.get("reuse_decisions") or []
+        if reuse_decisions:
+            for request_id in member_request_ids:
+                state = self._requests.get(request_id)
+                if state is not None:
+                    state.reuse_decisions.extend(reuse_decisions)
         self.logger.debug(
             "Batch %s completed: %d outputs (cache_hit=%s)",
             batch_id,

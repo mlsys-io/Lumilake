@@ -171,3 +171,27 @@ async def test_lineage_reads_a_stored_chain(
     ]
     assert (entries[0]["task_id"], entries[0]["worker"]) == ("task-join", "w2")
     assert missing.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_job_get_exposes_a_reuse_decisions_field(
+    app: tuple[FastAPI, Any],
+) -> None:
+    """A job that reused the store reports one decision per op on its GET, and
+    a job that did not reports an empty list."""
+    application, _ = app
+    jobs_module = job_routes_module
+    jobs_module.jobs[_JOB].reuse_decisions = [
+        {"op": "Answer", "decision": "hit", "reason": None, "records": 1},
+        {"op": "Score", "decision": "miss", "reason": "no entry", "records": 1},
+    ]
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/jobs/" + _JOB, headers={"Authorization": "Bearer token"}
+        )
+    decisions = resp.json()["data"]["reuse_decisions"]
+    assert [(d["op"], d["decision"], d["reason"]) for d in decisions] == [
+        ("Answer", "hit", None),
+        ("Score", "miss", "no entry"),
+    ]

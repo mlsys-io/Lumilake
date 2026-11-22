@@ -742,7 +742,11 @@ def flowmesh_spec(
         _blob_entry(blob) for blob in literal_mounts
     ]
     stages = list(
-        dict.fromkeys(entry["node"] for entry in plan if entry["kind"] == "stage")
+        dict.fromkeys(
+            entry["node"]
+            for entry in plan
+            if entry["kind"] == "stage" and "values" not in entry
+        )
     )
     if stages:
         spec["inputs"] = [{"stage": stage} for stage in stages]

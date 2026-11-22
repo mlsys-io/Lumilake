@@ -88,6 +88,8 @@ class DynamicSpec(BaseModel):
     goal: StrictStr
     store: bool = False
     """Whether each round writes its records to the per-record store."""
+    reuse: bool = False
+    """Whether each round keeps the records an earlier storing run computed."""
     driver: DriverSettings
     library: dict[StrictStr, dict[StrictStr, Any]] | None = None
 

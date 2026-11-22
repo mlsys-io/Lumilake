@@ -204,6 +204,47 @@ engine's own default.
 Read a record's chain back with `GET /api/v1/jobs/{job_id}/lineage`; see
 [`docs/API.md`](API.md).
 
+## Reusing stored records (`reuse:`)
+
+A workflow can keep what an earlier storing run already computed instead of
+recomputing it. Set `reuse: true` beside `store: true` at the top level of a
+YAML document, or beside `graph` in a native payload; `store: true` is required,
+and the flag defaults to off, so an existing workflow is unchanged.
+
+Before dispatch the server keys each op's records exactly as the store wrote
+them and asks whether every record of the op is already there. An op is kept
+only when all of its records answer; one missing record reruns the whole op.
+Every op downstream of a kept op reads that op's stored values instead of
+running, and every op downstream of a rerun misses with it. Granularity is the
+whole op: an op that carries no record key is one record.
+
+A kept op is not dispatched; its consumers read its stored values in key order.
+A request the store answers in full submits nothing and returns the stored
+values. A failed record is never served, and neither is one whose recorded
+digest does not equal its key.
+
+```yaml
+name: revise
+store: true
+reuse: true
+inputs:
+  Cases: ['{"case_id": "c1", "q": "first"}']
+ops:
+  - id: Answer
+    op: LambdaOp
+    inputs: [Cases]
+    fn_name: answer
+    mode: row
+    code: "def answer(c):\n    return c[0]\n"
+    key: {node: Cases, path: case_id}
+outputs:
+  - name: answer
+    ref: Answer
+```
+
+A job records one decision per op, `hit` or `miss` with the first reason it
+missed; see [`docs/API.md`](API.md).
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its

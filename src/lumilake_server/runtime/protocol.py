@@ -73,6 +73,9 @@ class LumilakeRequestConfig(BaseModel):
     ``cohort_pack`` scheduling policy groups items by it."""
     store: bool = False
     """Whether the job's records are written to the per-record store."""
+    reuse: bool = False
+    """Whether the job keeps every record an earlier storing job computed and
+    dispatches only the ops the store cannot answer. Requires ``store``."""
 
     @property
     def semantic_round(self) -> int:
