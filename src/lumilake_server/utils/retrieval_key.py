@@ -23,7 +23,7 @@ def retrieval_key_problem(data_spec: dict[str, Any], op_id: str) -> str | None:
         return None
     if not isinstance(key, dict):
         return f"key must be a mapping of column, got {key!r}"
-    if list(key) != [COLUMN_FIELD]:
+    if set(key) != {COLUMN_FIELD}:
         return f"key takes only a column field, got {sorted(key)}"
     column = key[COLUMN_FIELD]
     if not isinstance(column, str) or not column.strip():
@@ -103,11 +103,14 @@ def _item_index(item: Any, position: int) -> Any:
 
 
 def _item_rows(item: Any) -> list[Any]:
-    """The rows one retrieval item carries: its ``table``, decoded when it
-    holds a column table written as text."""
+    """The rows one retrieval item carries: its ``table``, as a column table
+    either bare or in its ``{"df": <json text>}`` envelope, with a table
+    written as text decoded."""
     if not isinstance(item, dict):
         return []
     table = _decoded(item.get("table"))
+    if isinstance(table, dict) and set(table) == {"df"}:
+        table = _decoded(table["df"])
     if isinstance(table, dict):
         return _column_rows(table)
     if isinstance(table, list):
