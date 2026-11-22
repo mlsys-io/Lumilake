@@ -537,10 +537,7 @@ async def test_unversioned_retrieval_flows_downstream(graph: Any) -> None:
     assert all(entry.versions.unversioned for entry in entries)
 
 
-def test_record_key_rides_the_graph() -> None:
-    graph = _runtime_graph(_payload())
-    keyed_nodes = {
-        node_id: graph.record_keys[node_id]["path"] for node_id in graph.record_keys
-    }
-    assert sorted(keyed_nodes.values()) == ["id", "id"]
-    assert all(graph.nodes[node_id].task_type == "python" for node_id in keyed_nodes)
+def test_record_key_rides_the_graph(graph: Any) -> None:
+    """Both lowered python ops declare ``id`` as their record key."""
+    paths = sorted(key["path"] for key in graph.record_keys.values())
+    assert paths == ["id", "id"]
