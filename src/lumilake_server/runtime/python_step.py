@@ -14,6 +14,7 @@ from typing import Any
 
 from lumilake import envs
 from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
+from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.runtime import join_step, lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.lumid_data_client import encode_blob_key
@@ -619,7 +620,7 @@ def wrapper_source(
     mode: str = "row",
     by: str | None = None,
     on_fail: str = "fail_group",
-    on_empty: str = "drop",
+    on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode == "list":
@@ -688,7 +689,7 @@ def flowmesh_spec(
             mode,
             data_spec.by,
             data_spec.on_fail or "fail_group",
-            data_spec.on_empty or "drop",
+            data_spec.on_empty or LambdaOp.ON_EMPTY_DROP,
         )
     spec: dict[str, Any] = {
         "taskType": PYTHON_TASK_TYPE,
