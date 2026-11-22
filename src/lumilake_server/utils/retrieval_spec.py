@@ -100,18 +100,10 @@ class RetrievalSpec(BaseModel):
         )
 
     @classmethod
-    def load(cls, data: Any, where: str) -> Self:
-        """Validate a user-authored ``data_spec``, naming ``where`` on failure."""
+    def load(cls, data: Any, where: str, check_order: bool = True) -> Self:
+        """Validate a ``data_spec``, naming ``where`` and the field on failure."""
         try:
-            return cls.model_validate(data, context={_CHECK_ROW_ORDER: True})
-        except ValidationError as exc:
-            raise ValueError(f"{where}: {problem_text(exc)}") from None
-
-    @classmethod
-    def parse(cls, data: Any, where: str) -> Self:
-        """Convert a spec built in process; ``_from_json`` runs the order rule."""
-        try:
-            return cls.model_validate(data)
+            return cls.model_validate(data, context={_CHECK_ROW_ORDER: check_order})
         except ValidationError as exc:
             raise ValueError(f"{where}: {problem_text(exc)}") from None
 

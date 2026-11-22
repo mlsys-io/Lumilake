@@ -230,17 +230,11 @@ class _RetrievalBuilder(_LLMBuilder):
                             )
                         param_row_counts[str(param.label)] = row_count
                 if isinstance(upstream, LambdaOp):
-                    resolved = param.model_copy(
-                        update={
-                            "path": self._op_output(upstream).read(
-                                param.path or "",
-                                (
-                                    f"DataRetrievalOp '{op_id}' template param "
-                                    f"{param.label!r}"
-                                ),
-                            )
-                        }
+                    path = self._op_output(upstream).read(
+                        param.path or "",
+                        f"DataRetrievalOp '{op_id}' template param {param.label!r}",
                     )
+                    resolved = param.model_copy(update={"path": path})
                 if param.node not in seen:
                     seen.add(param.node)
                     dependencies.append(param.node)

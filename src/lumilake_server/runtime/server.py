@@ -18,6 +18,7 @@ from typing import Any
 import lumid_hooks
 import yaml
 from flowmesh.exceptions import APIError
+from pydantic import ValidationError
 
 import lumilake_server.hooks as server_hooks
 from lumilake import envs
@@ -27,7 +28,7 @@ from lumilake.log import (
     init_child_logger,
     log_on_exception_async,
 )
-from lumilake_server.common import InputRef, project_input_values
+from lumilake_server.common import project_input_values
 from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
@@ -86,7 +87,7 @@ from lumilake_server.runtime.worker_capability import (
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.retrieval_spec import RetrievalParam
+from lumilake_server.utils.retrieval_spec import InputRefSpec, RetrievalParam
 from lumilake_server.utils.utils import (
     async_runner,
     parse_memory_to_bytes,
@@ -97,19 +98,17 @@ from lumilake_server.utils.utils import (
 
 def _owner_input_ref(
     owner: RetrievalParam | dict[str, Any], label: str, group_context: str
-) -> InputRef | None:
+) -> InputRefSpec | None:
     """The ``input_ref`` a rowwise column or retrieval param declares."""
-    if isinstance(owner, RetrievalParam):
-        ref = owner.input_ref
-        return None if ref is None else {"key": ref.key, "path": ref.path}
-    input_ref = owner.get("input_ref")
-    if input_ref is None:
+    ref = (
+        owner.input_ref if isinstance(owner, RetrievalParam) else owner.get("input_ref")
+    )
+    if ref is None:
         return None
-    key = input_ref.get("key")
-    path = input_ref.get("path")
-    if not isinstance(key, str) or not isinstance(path, (str, type(None))):
-        raise ValueError(f"Invalid input_ref for '{label}' in {group_context}")
-    return {"key": key, "path": path}
+    try:
+        return InputRefSpec.model_validate(ref)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid input_ref for '{label}' in {group_context}") from exc
 
 
 def _empty_runtime_graph() -> RuntimeGraph:
@@ -1857,15 +1856,12 @@ class LumilakeServer:
         inferred_aliases: dict[str, str] = {}
 
         def _rewrite_target_key(
-            label: str, owner: RetrievalParam | dict[str, Any]
+            label: str, input_ref: InputRefSpec | None
         ) -> str | None:
-            input_ref = _owner_input_ref(owner, label, group_context)
             if input_ref is not None:
                 # An explicit input_ref pins the column to that input; a
                 # non-varying key must not fall through to label matching.
-                return (
-                    input_ref["key"] if input_ref["key"] in varying_input_keys else None
-                )
+                return input_ref.key if input_ref.key in varying_input_keys else None
             if label in varying_input_keys:
                 return label
             return inferred_aliases.get(label)
@@ -1891,16 +1887,16 @@ class LumilakeServer:
                 inferred_aliases[label] = matched_keys[0]
 
         for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            rewrite_target_key = _rewrite_target_key(label, owner)
+            input_ref = _owner_input_ref(owner, label, group_context)
+            rewrite_target_key = _rewrite_target_key(label, input_ref)
             if rewrite_target_key is None:
                 continue
             replacement = merged_inputs[rewrite_target_key]
-            input_ref = _owner_input_ref(owner, label, group_context)
             if input_ref is not None:
                 projected = project_input_values(
                     replacement,
-                    input_ref["path"],
-                    input_ref["key"],
+                    input_ref.path,
+                    input_ref.key,
                 )
                 data["items"] = list(projected)
                 if len(replacement) > 1:
@@ -1923,7 +1919,8 @@ class LumilakeServer:
                 )
 
         for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            validation_target_key = _rewrite_target_key(label, owner)
+            input_ref = _owner_input_ref(owner, label, group_context)
+            validation_target_key = _rewrite_target_key(label, input_ref)
             if validation_target_key is None:
                 continue
             items = data["items"]

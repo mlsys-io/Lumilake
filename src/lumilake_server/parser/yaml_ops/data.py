@@ -22,7 +22,9 @@ def emit_data_retrieval_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     data_spec = entry.fields.get("data_spec")
     if data_spec is None:
         raise ValueError(f"DataRetrievalOp '{entry.id}' requires 'data_spec'")
-    spec = RetrievalSpec.parse(data_spec, f"DataRetrievalOp '{entry.id}' data_spec")
+    spec = RetrievalSpec.load(
+        data_spec, f"DataRetrievalOp '{entry.id}' data_spec", check_order=False
+    )
     op_dict["data_spec"] = _resolve_param_nodes(spec, entry.id, ctx.user_id_to_internal)
 
 
