@@ -328,19 +328,15 @@ async def test_whole_op_record_names_every_input_row() -> None:
         }
     )
     payload["outputs"].append({"name": "read", "ref": "Read"})
-    stored = []
+    keys = []
     for second in ("TWO", "CHANGED"):
         graph = _runtime_graph(payload)
         mark = [{"id": "a", "text": "ONE"}, {"id": "b", "text": second}]
-        keys = _keys(await _store(graph, {"Mark": mark, "Read": [mark]}))
-        stored.append(
-            [
-                keys[(_declared_name(graph, op), record)]
-                for op, record in (("Mark", "a"), ("Read", None))
-            ]
-        )
-    assert stored[0][0] == stored[1][0]
-    assert stored[0][1] != stored[1][1]
+        keys.append(_keys(await _store(graph, {"Mark": mark, "Read": [mark]})))
+    mark_name = _declared_name(graph, "Mark")
+    read_name = _declared_name(graph, "Read")
+    assert keys[0][mark_name, "a"] == keys[1][mark_name, "a"]
+    assert keys[0][read_name, None] != keys[1][read_name, None]
 
 
 def _paths_graph(**changes: Any) -> Any:
