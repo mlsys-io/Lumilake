@@ -419,14 +419,14 @@ def _broadcast(
     extra: list[Any] | None = None,
     name: str = "run",
 ) -> list[Any]:
-    """Run the broadcast join over one summary row per unit, a tag per first-input
-    row, or a part column whose source rows are ``extra``."""
+    """Run the broadcast join over a tag per first-input row, or a part column
+    whose source rows are ``extra``."""
     if attach == "part":
-        ops = (
-            "  - {id: Extra, op: DataOp, data: "
-            + _quoted(extra or [])
-            + "}\n  - {id: Part, op: LambdaOp, mode: row, inputs: [Extra],"
-            " fn_name: part, code: \"def part(row): return row['part']\"}\n"
+        part = "\"def part(row): return row['part']\""
+        ops = "  - {id: Extra, op: DataOp, data: "
+        ops += _quoted(extra or []) + "}\n  - id: Part\n    op: LambdaOp\n"
+        ops += (
+            f"    mode: row\n    inputs: [Extra]\n    fn_name: part\n    code: {part}\n"
         )
         inputs, line = ", Extra, Part", "    attach: {part: Part}"
     else:
@@ -461,8 +461,8 @@ def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> Non
     in its order, and a record's fields follow its row_key, not its position."""
     assert _broadcast(tmp_path) == _JOINED
     reordered = [_UNITS[1], _UNITS[0], _UNITS[2]]
-    swapped = _broadcast(tmp_path, rows=reordered, tags=["B", "A", "C"], name="swap")
-    assert swapped == [_JOINED[1], _JOINED[0], _JOINED[2]]
+    swap = _broadcast(tmp_path, rows=reordered, tags=["B", "A", "C"], name="swap")
+    assert swap == [_JOINED[1], _JOINED[0], _JOINED[2]]
 
 
 def test_a_broadcast_join_refuses_a_repeated_or_partial_row_key(tmp_path: Path) -> None:
@@ -480,40 +480,25 @@ def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> N
     assert _broadcast(tmp_path, sizes=only_u1) == [_JOINED[0], _JOINED[1], missing]
     fail = ("row_key: [unit, rid]", "on_missing: fail_row")
     rows = _broadcast(tmp_path, sizes=only_u1, fields=fail, name="fail")
-    assert rows[:2] == [_JOINED[0], _JOINED[1]]
-    assert "key" in rows[2]["_fail"]["reason"]
+    assert rows[:2] == [_JOINED[0], _JOINED[1]] and "key" in rows[2]["_fail"]["reason"]
 
 
 def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> None:
-    """A marked further-input row marks every output row of its key and leaves
-    the other keys' rows as they were, and a marked attach source row does too,
-    even when the value column covers the live rows only."""
+    """A marked further-input or attach source row marks every row of its key."""
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
     assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
     sources = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
-    assert _broadcast(tmp_path, attach="part", extra=sources, tags=["C"]) == [
-        _MARK,
-        _MARK,
-        {**_UNITS[2], "size": 1, "part": "C"},
-    ]
+    filled = [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
+    assert _broadcast(tmp_path, attach="part", extra=sources, tags=["C"]) == filled
 
 
 def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     tmp_path: Path,
 ) -> None:
-    """A marked first-input row passes through as its marker, whatever its marker
-    is; an attach over the first input reaches each output row at its position,
-    so such a row marks only itself while its unit still takes the broadcast."""
+    """A marked first-input row passes through as its marker whatever its marker
+    is, and an attach over the first input reaches its output row by position."""
     rows = [{"unit": "u1", "rid": _MARK}, _MARK, _UNITS[1], _UNITS[2]]
-    assert _broadcast(tmp_path, rows=rows, attach="", name="mark") == [
-        _MARK,
-        _MARK,
-        {**_UNITS[1], "size": 2},
-        {**_UNITS[2], "size": 1},
-    ]
-    assert _broadcast(tmp_path, rows=rows, tags=["A", "B", "C", "D"]) == [
-        _MARK,
-        _MARK,
-        {**_UNITS[1], "size": 2, "tag": "C"},
-        {**_UNITS[2], "size": 1, "tag": "D"},
-    ]
+    plain = [{**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
+    assert _broadcast(tmp_path, rows=rows, attach="") == [_MARK, _MARK, *plain]
+    got = _broadcast(tmp_path, rows=rows, tags=["A", "B", "C", "D"])
+    assert got[2:] == [{**_JOINED[1], "tag": "C"}, {**_JOINED[2], "tag": "D"}]
