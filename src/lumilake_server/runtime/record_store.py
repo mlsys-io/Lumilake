@@ -54,31 +54,75 @@ def op_spec_digest(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
         "inference_spec": _without_data(op.inference_spec, logical_names),
         "api_spec": _without_data(op.api_spec, logical_names),
         "output_enforcement": _without_data(op.output_enforcement, logical_names),
-        "data_spec": _without_data(op.data_spec, logical_names),
+        "data_spec": _without_data_data_spec(op.data_spec, logical_names),
     }
     return digest_of({"digest_version": DIGEST_VERSION, "spec": spec})
 
 
-_DATA_KEYS = frozenset({"items", "seeds", "values", "seed", "lumid_cfg"})
-"""Fields that hold per-row data or a secret, never the computation."""
+_DATA_KEYS = frozenset({"items", "values"})
+"""Fields that hold per-row data at the positions where a spec keeps them."""
+
+_SECRET_KEYS = frozenset({"seed", "lumid_cfg"})
+"""Fields that hold a seed or a credential wherever they sit."""
 
 _SAMPLING_TASKS = frozenset({"inference", "api"})
 """Task types whose decoding may draw tokens; classification takes an argmax
 and every other task computes without a model."""
 
 
+def _without_data_data_spec(
+    data_spec: Mapping[str, Any], logical_names: Mapping[str, str]
+) -> Any:
+    """A python step's data spec without the rows it reads.
+
+    ``items`` is the list of rows the task is given and each plan entry's
+    ``values`` are the rows it reads; both belong to the record's inputs. A
+    schema that happens to name ``items`` elsewhere stays, because it changes
+    the value."""
+    dropped = frozenset({*_DATA_KEYS, "seeds"})
+    kept: dict[str, Any] = {}
+    for key, item in data_spec.items():
+        if key in dropped:
+            continue
+        if key == "plan" and isinstance(item, list):
+            kept[key] = [
+                (
+                    _without_values(entry, logical_names)
+                    if isinstance(entry, Mapping)
+                    else _without_data(entry, logical_names)
+                )
+                for entry in item
+            ]
+            continue
+        kept[key] = _without_data(item, logical_names)
+    return kept
+
+
+def _without_values(entry: Mapping[str, Any], logical_names: Mapping[str, str]) -> Any:
+    """A plan entry without the rows it reads, its node reference named by the
+    logical op."""
+    kept: dict[str, Any] = {}
+    for key, item in entry.items():
+        if key == "values":
+            continue
+        if key == "node" and isinstance(item, str):
+            kept[key] = logical_names.get(item, item)
+            continue
+        kept[key] = _without_data(item, logical_names)
+    return kept
+
+
 def _without_data(value: Any, logical_names: Mapping[str, str]) -> Any:
-    """Replace every node reference and drop every per-row value, recursively.
+    """Replace every node reference and drop every secret, recursively.
 
     A ``node`` reference becomes the logical op name the consumer knows, so a
-    prefixed or sliced graph hashes the same. The rest of the structure stays:
-    ``path``, ``rows``, ``columns`` and each plan entry's kind and order decide
-    what the op computes, while the literal values, per-row seeds and
-    credentials beside them do not."""
+    prefixed or sliced graph hashes the same, and a seed or credential drops
+    wherever it sits. Every other field stays, including a schema's own
+    ``items``: what the op computes depends on it."""
     if isinstance(value, Mapping):
         kept: dict[str, Any] = {}
         for key, item in value.items():
-            if not isinstance(key, str) or key in _DATA_KEYS:
+            if not isinstance(key, str) or key in _SECRET_KEYS:
                 continue
             if key == "node" and isinstance(item, str):
                 kept[key] = logical_names.get(item, item)
