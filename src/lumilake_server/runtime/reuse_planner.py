@@ -18,7 +18,7 @@ inputs and the worker's read of the column all stay what they were.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -88,6 +88,10 @@ class ReusePlan(BaseModel):
     outputs: dict[str, str] = Field(default_factory=dict)
     """Node id -> its output name, so a fully answered request rebuilds every
     hit output without the graph it planned from."""
+    key_paths: dict[str, str] = Field(default_factory=dict)
+    """Node id -> the record-key path it plans with, so a dispatched op keeps
+    the key it inherited from a served input even after that input left the
+    graph."""
 
     def hit_nodes(self) -> set[str]:
         return set(self.hits)
@@ -131,6 +135,8 @@ class ReusePlanner:
                 logical_names=names,
             )
             plan = plans[node_id]
+            if plan.key_path is not None:
+                decision.key_paths[node_id] = plan.key_path
             inputs = _planner_inputs(plan, decision)
             records = _record_keys(plan, inputs)
             reason, hit = self._decide(
@@ -230,12 +236,16 @@ def rebuilt_output(plan: ReusePlan, node_id: str) -> list[str]:
     """One hit output node's archived values, from its stored entries.
 
     A row op archives one value per record; a list-mode op archives one value
-    holding its whole list. Both are what the node's own aggregation returns
-    for a stored record's value, so a hit's outputs equal a full run's."""
+    holding its whole list. A stored value is emitted the way the aggregator
+    emits it: a string as itself, any other value as its JSON text."""
     entries = plan.hits[node_id]
     if entries[0].address.record is None:
-        return [json.dumps(entries[0].value)]
-    return [json.dumps(entry.value) for entry in entries]
+        return [_output_text(entries[0].value)]
+    return [_output_text(entry.value) for entry in entries]
+
+
+def _output_text(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value)
 
 
 def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
@@ -278,7 +288,8 @@ def _rewritten(op: RuntimeOp, plan: ReusePlan) -> RuntimeOp:
 
     The hit stays in the op's dependencies and its column-plan entry keeps its
     kind, node and path, so the op's spec digest and the names its writer gives
-    its inputs do not move. Only the values the entry reads are added."""
+    its inputs do not move. Only the values the entry reads are added, which
+    the worker reads as data and the digest leaves out."""
     served = [node for node in op.dependencies if node in plan.hits]
     if not served:
         return op
@@ -357,13 +368,33 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
             op_id: [node_id for node_id in runtime_ids]
             for op_id, runtime_ids in runtime_graph.dsl_to_runtime.items()
         },
-        record_keys={
-            node_id: key
-            for node_id, key in runtime_graph.record_keys.items()
-            if node_id in nodes
-        },
+        record_keys=_dispatch_record_keys(runtime_graph, plan, nodes),
         op_names=dict(runtime_graph.op_names),
     )
+
+
+def _dispatch_record_keys(
+    runtime_graph: RuntimeGraph, plan: ReusePlan, nodes: Mapping[str, RuntimeOp]
+) -> dict[str, dict[str, str]]:
+    """Each dispatched op's declared record key, plus the key it inherited from
+    a served input that then left the graph.
+
+    An op that declares no key of its own takes the key of its single keyed
+    input; once that input is served its node is gone, so the dispatched graph
+    states the inherited key outright, keeping the writer on the addresses the
+    plan read."""
+    keys = {
+        node_id: key
+        for node_id, key in runtime_graph.record_keys.items()
+        if node_id in nodes
+    }
+    for node_id, op in nodes.items():
+        if node_id in keys or plan.key_paths.get(node_id) is None:
+            continue
+        sources = [node for node in op.dependencies if plan.key_paths.get(node)]
+        if len(sources) == 1:
+            keys[node_id] = {"node": sources[0], "path": plan.key_paths[node_id]}
+    return keys
 
 
 def _planner_inputs(plan: RecordPlan, decision: ReusePlan) -> list[_Input]:

@@ -74,6 +74,19 @@ class DispatchCredentials:
     api_credential: str | None = None
 
 
+def _batch_reuses_as_one(request_info: RequestInfo) -> bool:
+    """Whether every member of the batch asked for reuse under one round.
+
+    The plan keys every op at the batch's round, so a batch that mixes a
+    reusing and a plain job, or members at different rounds, is not planned; the
+    batch then runs whole, as it would without the flag."""
+    if not request_info.member_reuse:
+        return request_info.reuse_records
+    return all(request_info.member_reuse.values()) and (
+        len(set(request_info.member_rounds.values())) <= 1
+    )
+
+
 def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
     if hardware is not None and hardware.cpu is not None:
         return hardware.cpu
@@ -1888,6 +1901,8 @@ class FlowmeshRuntimeManager:
         run and shrinks the schedule to them, so an all-hit batch submits
         nothing. The plan is returned so the writer and the output step can use
         the records it served; a failure keeps the job's full run."""
+        if not _batch_reuses_as_one(request_info):
+            return None
         try:
             plan, planned_graph = await ReusePlanner(
                 storage=get_job_storage(), logger=self.logger
@@ -1896,7 +1911,7 @@ class FlowmeshRuntimeManager:
                 round_number=request_info.round_number,
                 job_id=request_info.request_id,
             )
-        except ArchiveError as exc:
+        except (ArchiveError, ValueError, KeyError, IndexError) as exc:
             self.logger.warning(
                 "Record reuse plan failed for job %s (%s); running the full job",
                 request_info.request_id,

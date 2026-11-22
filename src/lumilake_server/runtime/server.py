@@ -3066,6 +3066,9 @@ class LumilakeServer:
             },
             round_number=batch.config.semantic_round,
             reuse_records=any(item.config.reuse for item in batch.workflows),
+            member_reuse={
+                item.request_id: item.config.reuse for item in batch.workflows
+            },
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph

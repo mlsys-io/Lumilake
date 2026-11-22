@@ -71,6 +71,9 @@ class RequestInfo:
     reuse_records: bool = False
     """Whether a member job asked the store to answer what it already holds,
     so the plan runs before dispatch and only its misses are submitted."""
+    member_reuse: dict[str, bool] = field(default_factory=dict)
+    """Whether each member job asked for reuse, keyed by job id; a batch that
+    mixes a reusing and a plain job, or two rounds, plans nothing."""
 
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)

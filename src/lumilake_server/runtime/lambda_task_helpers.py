@@ -61,6 +61,8 @@ def _row_content(row: Any) -> Any:
 def _column(
     entry: dict[str, Any], inputs: dict[str, str], text: Callable[[Any], str]
 ) -> list[str]:
+    if "values" in entry:
+        return [text(v) for v in entry["values"]]
     if entry["kind"] == "literal":
         if "file" in entry:
             with open(entry["file"], encoding="utf-8") as fh:

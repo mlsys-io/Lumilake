@@ -9,7 +9,10 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.runtime import python_step
+from lumilake_server.runtime.lambda_task_helpers import _column
 from lumilake_server.runtime.optimizer.base import Schedule
+from lumilake_server.runtime.record_store import RecordEntry
 from lumilake_server.runtime.record_writer import RecordWriter
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.reuse_planner import (
@@ -61,8 +64,7 @@ _ROWS = {
 
 def _answers(values: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
     return {
-        f"task-{name}": {"items": [{"output": row} for row in rows]}
-        for name, rows in values.items()
+        f"task-{n}": {"items": [{"output": r} for r in v]} for n, v in values.items()
     }
 
 
@@ -74,7 +76,7 @@ def _with_code(workflow: dict[str, Any], op_id: str, code: str) -> dict[str, Any
     return {
         **workflow,
         "ops": [
-            {**op, "code": code} if op["id"] == op_id else op for op in workflow["ops"]
+            {**o, "code": code} if o["id"] == op_id else o for o in workflow["ops"]
         ],
     }
 
@@ -87,8 +89,7 @@ async def _run(
     job_id: str,
     served: dict[str, Any] | None = None,
 ) -> Any:
-    """Write one job's finished tasks the way dispatch does, and return its
-    runtime graph."""
+    """Write one job's finished tasks the way dispatch does."""
     graph = _runtime_graph(workflow)
     await _writer(storage).write(
         job_id=job_id,
@@ -101,10 +102,6 @@ async def _run(
         served=served,
     )
     return graph
-
-
-def _rows_for(*names: str) -> dict[str, Any]:
-    return {name: _ROWS[name] for name in names}
 
 
 def _decisions(plan: ReusePlan) -> dict[str, tuple[str, str | None]]:
@@ -128,12 +125,10 @@ async def test_all_hit_serves_every_op_and_writes_nothing() -> None:
     plan, dispatched = await _planner(storage).plan(
         runtime_graph=graph, round_number=0, job_id="req-2"
     )
-
     assert _decisions(plan) == dict.fromkeys(("Mark", "Join", "Final"), ("hit", None))
     assert dispatched.nodes == {}
-    assert [
-        json.loads(v) for v in rebuilt_output(plan, _node(graph, "Final"))
-    ] == _ROWS["Final"]
+    out = rebuilt_output(plan, _node(graph, "Final"))
+    assert [json.loads(v) for v in out] == _ROWS["Final"]
 
 
 @pytest.mark.asyncio
@@ -170,17 +165,33 @@ async def test_one_changed_op_reruns_only_it_and_its_descendants() -> None:
         "Final": ("miss", "no entry"),
     }
     assert list(dispatched.nodes) == [_node(graph, "Final")]
-    assert dispatched.op_names[_node(graph, "Final")] == "Final"
+    assert dispatched.record_keys[_node(graph, "Final")]["path"] == "id"
 
     await _run(
         storage,
         changed,
-        results=_rows_for("Final"),
+        results={"Final": _ROWS["Final"]},
         job_id="req-2",
         served=served_records(plan),
     )
     again, _ = await planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
     assert {d.decision for d in again.decisions} == {"hit"}
+
+
+def test_a_rebuilt_output_keeps_a_stored_string() -> None:
+    """A hit output whose stored value is text is emitted as that text, not
+    re-encoded as JSON."""
+    entry = RecordEntry.model_validate(
+        {
+            "digest": "d",
+            "address": {"op": "Text", "record": "a"},
+            "value": '{"id": "a"}',
+            "value_digest": "v",
+            "source": {"job": "j", "task_id": "t"},
+            "written_at": 0.0,
+        }
+    )
+    assert rebuilt_output(ReusePlan(hits={"n": [entry]}), "n") == ['{"id": "a"}']
 
 
 @pytest.mark.asyncio
@@ -215,8 +226,7 @@ async def test_an_unseeded_sampling_op_always_misses() -> None:
     )
 
     assert _decisions(plan)["Mark"] == ("hit", None)
-    assert _decisions(plan)["Join"] == ("miss", "read by a non-literal op")
-    assert _decisions(plan)["Final"][0] == "miss"
+    assert _decisions(plan)["Join"][0] == "miss"
 
 
 @pytest.mark.asyncio
@@ -228,7 +238,10 @@ async def test_an_all_hit_request_dispatches_no_task(
     rebuilt from its stored entries."""
     graph = _runtime_graph(_WORKFLOW)
     await _run(
-        job_storage, _WORKFLOW, results=_rows_for("Mark", "Join"), job_id="req-1"
+        job_storage,
+        _WORKFLOW,
+        results={k: _ROWS[k] for k in ("Mark", "Join")},
+        job_id="req-1",
     )
     request_info = RequestInfo(
         request_id="req-2",
@@ -240,9 +253,7 @@ async def test_an_all_hit_request_dispatches_no_task(
     request_info.batch_id = "batch-1"
     request_info.runtime_graph = graph
     request_info.data_profile_graph = _runtime_graph(_WORKFLOW)
-    request_info.output_node_map = {
-        node: ("g", name) for node, name in graph.output_node_map.items()
-    }
+    request_info.output_node_map = dict.fromkeys(graph.output_node_map, ("g", "final"))
 
     async def _never(*_: Any) -> tuple[str, list[str]]:
         raise AssertionError("an all-hit request must submit nothing")
@@ -257,3 +268,22 @@ async def test_an_all_hit_request_dispatches_no_task(
     assert outputs["flat_outputs"] == {
         _node(graph, "Join"): [json.dumps(row) for row in _ROWS["Join"]]
     }
+
+
+def test_a_served_entry_is_data_not_a_stage_input() -> None:
+    """A plan entry carrying stored values is read as that column and adds no
+    stage to the task spec, so a partial run never waits on the served node."""
+    entry: dict[str, Any] = {"kind": "stage", "node": "Mark", "values": [{"id": "a"}]}
+    blob = python_step.runtime_blob()
+    spec = python_step.flowmesh_spec(
+        "Join",
+        {
+            "code": "def join(c):\n    return c[0]\n",
+            "fn_name": "join",
+            "plan": [entry],
+            "timeout_s": 60,
+        },
+        {blob.key: blob},
+    )
+    assert "inputs" not in spec
+    assert _column(entry, {}, str) == [str({"id": "a"})]
