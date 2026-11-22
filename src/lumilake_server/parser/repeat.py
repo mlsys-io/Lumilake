@@ -5,8 +5,9 @@ rewrites each repeat entry into ordinary op entries before any id is
 registered, so the graph, the optimizer and the record store see one declared
 op per iteration. Iteration ``i`` copies each body entry to ``R.i.<bodyId>``;
 ``$in`` reads ``input`` on the first iteration and ``R.(i-1).<output>``
-afterwards, and another body id resolves within the same iteration. Elsewhere
-``R`` refers to ``R.<times>.<output>``.
+afterwards, another body id resolves within the same iteration, and any other
+name resolves outside the repeat. Elsewhere ``R`` refers to
+``R.<times>.<output>``.
 """
 
 from collections.abc import Callable, Iterator, Mapping
@@ -33,9 +34,9 @@ class _Repeat(NamedTuple):
     def at(self, index: int, body_id: str) -> str:
         return f"{self.id}.{index}.{body_id}"
 
-    def names(self, index: int) -> dict[str, str]:
+    def names(self, index: int, source: str) -> dict[str, str]:
         """The names iteration ``index`` writes, ``$in`` included."""
-        read = self.input_ref if index == 1 else self.at(index - 1, self.output_ref)
+        read = source if index == 1 else self.at(index - 1, self.output_ref)
         return {INPUT_REF: read, **{bid: self.at(index, bid) for bid in self.body_ids}}
 
 
@@ -86,8 +87,10 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
     """Replace every ``Repeat`` entry with its unrolled iterations.
 
     ``known_ids`` holds the workflow input names, so a repeat's ``input``
-    reference is checked at submit time. The returned callable binds a parser
-    id map to one referring op, so its lookups resolve that op's names first.
+    reference is checked at submit time. A repeat may also name another
+    repeat as its ``input``; repeats are then unrolled in dependency order.
+    The returned callable binds a parser id map to one referring op, so its
+    lookups resolve that op's names first.
     """
     plain = {
         _entry_id(entry)
@@ -117,28 +120,55 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
                 f"Repeat '{spec.id}' output '{spec.output_ref}' is not one of its "
                 f"body ids {sorted(spec.body_ids)}"
             )
-        if spec.input_ref not in known_ids | plain:
+        if spec.input_ref not in known_ids | plain | (set(repeats) - {spec.id}):
             raise ValueError(f"Repeat '{spec.id}' input '{spec.input_ref}' is unknown")
 
-    outside = {
-        rid: spec.at(spec.times, spec.output_ref) for rid, spec in repeats.items()
-    }
+    ordered = _in_dependency_order(repeats)
+    outside: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    for spec in ordered:
+        sources[spec.id] = outside.get(spec.input_ref, spec.input_ref)
+        outside[spec.id] = spec.at(spec.times, spec.output_ref)
+
     frames: dict[str, dict[str, str]] = {}
+    iterations: dict[str, list[Any]] = {}
+    for spec in ordered:
+        iterations[spec.id] = []
+        for index in range(1, spec.times + 1):
+            iteration = spec.names(index, sources[spec.id])
+            frames.update(
+                (spec.at(index, body_id), {**outside, **iteration})
+                for body_id in spec.body_ids
+            )
+            iterations[spec.id].extend(
+                {**copy, "id": iteration[copy["id"]]} for copy in spec.body
+            )
+
     unrolled: list[Any] = []
     for entry in ops:
-        if not isinstance(entry, dict) or entry.get("op") != REPEAT_OP:
+        if isinstance(entry, dict) and entry.get("op") == REPEAT_OP:
+            unrolled.extend(iterations[entry["id"]])
+        else:
             unrolled.append(entry)
-            continue
-        spec = repeats[entry["id"]]
-        for index in range(1, spec.times + 1):
-            iteration = spec.names(index)
-            frames.update((spec.at(index, bid), iteration) for bid in spec.body_ids)
-            unrolled.extend({**copy, "id": iteration[copy["id"]]} for copy in spec.body)
 
     def bind(ids: Mapping[str, str], where: str, referrer: str) -> _Scoped:
         return _Scoped(ids, where, owner, frames.get(referrer, outside))
 
     return unrolled, bind
+
+
+def _in_dependency_order(repeats: dict[str, _Repeat]) -> list[_Repeat]:
+    """``repeats`` in unroll order: a repeat's source repeat comes first."""
+    ordered: list[_Repeat] = []
+    pending = dict(repeats)
+    while pending:
+        ready = [spec for spec in pending.values() if spec.input_ref not in pending]
+        if not ready:
+            named = ", ".join(f"'{rid}'" for rid in sorted(pending))
+            raise ValueError(f"cycle detected between repeats {named}")
+        ordered.extend(ready)
+        pending = {rid: spec for rid, spec in pending.items() if spec not in ready}
+    return ordered
 
 
 def _parse_repeat(entry: dict[str, Any], idx: int) -> _Repeat:

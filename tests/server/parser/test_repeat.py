@@ -41,6 +41,40 @@ def _graph(ops: str, outputs: str = "") -> dict:
     return parse_yaml_payload(f"{_HEADER}ops:\n{ops}{outputs}")["repeat"]["graph"]
 
 
+def _named(graph: dict, name: str) -> dict:
+    return next(
+        op
+        for op in graph.values()
+        if op["_op"] == "LambdaOp" and op["_id"].startswith(f"lambda_repeat_{name}_")
+    )
+
+
+def _second(source: str, body: str | None = None) -> str:
+    if body is None:
+        body = _op("Lead", f"[{source}]", "      ") + _op("Last", "[Lead]", "      ")
+    return (
+        f"  - id: S\n    op: Repeat\n    times: 2\n    input: {source}\n"
+        f"    output: Last\n    body:\n{body}"
+    )
+
+
+def test_a_chained_repeat_reads_another_repeats_last_output() -> None:
+    outputs = _OUTPUT.replace("ref: R", "ref: S")
+    graph = _graph(_repeat(times="2") + _second("R"), outputs)
+    last_of_r = _named(graph, "R_2_Second")["_id"]
+    assert _named(graph, "S_1_Lead")["_inputs"] == [last_of_r]
+    assert _named(graph, "S_2_Lead")["_inputs"] == [last_of_r]
+    output = next(op for op in graph.values() if op["_op"] == "OutputOp")
+    assert output["_inputs"] == [_named(graph, "S_2_Last")["_id"]]
+
+
+def test_a_body_reads_another_repeat_by_its_last_output() -> None:
+    body = _op("Lead", "[R]", "      ") + _op("Last", "[Lead]", "      ")
+    graph = _graph(_repeat(times="2") + _second("Start", body))
+    lead = _named(graph, "S_2_Lead")
+    assert lead["_inputs"] == [_named(graph, "R_2_Second")["_id"]]
+
+
 def test_a_literal_whose_first_part_is_a_body_id_is_read_as_text() -> None:
     fmt = (
         "  - {id: Fmt, op: FormatOp, inputs: [Start], template: '{doc}', "
@@ -90,6 +124,10 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
         ),
         pytest.param(_op("After", "[$in]") + _repeat(), r"may not read '\$in'"),
         pytest.param(_repeat() + _op("After", "[Second]"), r"a body id of 'R'"),
+        pytest.param(
+            _repeat(source="S") + _second("R"),
+            "cycle detected",
+        ),
     ],
 )
 def test_a_repeat_that_cannot_be_unrolled_is_refused(ops: str, message: str) -> None:
