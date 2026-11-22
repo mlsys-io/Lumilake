@@ -631,6 +631,8 @@ class JobRecord:
     child_job_ids: list[str] = field(default_factory=list)
     store: bool = False
     reuse: bool = False
+    reuse_decisions: list[dict[str, Any]] = field(default_factory=list)
+    """The reuse plan's per-op decisions, empty when the job did not reuse."""
 
     def __post_init__(self) -> None:
         if not self.output_location:
@@ -2840,6 +2842,11 @@ async def _run_job(
         artifact_uris = _collect_artifact_uris(stored_payload)
         validated_result = LumilakeResponse.model_validate(stored_payload)
         try:
+            reuse_decisions = server.reuse_decisions_for_request(job_id)
+        except Exception:
+            reuse_decisions = []
+            logger.exception("Failed to resolve reuse decisions for job %s", job_id)
+        try:
             optimization_seconds = server.optimization_seconds_for_request(job_id)
         except Exception:
             optimization_seconds = None
@@ -2864,6 +2871,7 @@ async def _run_job(
             else:
                 record.result = validated_result
                 record.trace_ids = list(trace_ids)
+                record.reuse_decisions = reuse_decisions
                 if optimization_seconds is not None:
                     record.optimization_seconds = optimization_seconds
                 if selection_seconds is not None:

@@ -269,6 +269,10 @@ async def test_an_all_hit_request_dispatches_no_task(
     assert outputs["flat_outputs"] == {
         _node(graph, "Join"): [json.dumps(row) for row in _ROWS["Join"]]
     }
+    assert [(d["op"], d["decision"]) for d in outputs["reuse_decisions"]] == [
+        ("Mark", "hit"),
+        ("Join", "hit"),
+    ]
 
 
 def test_a_served_entry_is_data_not_a_stage_input() -> None:

@@ -1871,6 +1871,11 @@ class FlowmeshRuntimeManager:
             "flat_outputs": flat_outputs,
             "chat_histories": prompts,
             "task_node_map": dict(raw_task_node_map),
+            "reuse_decisions": (
+                []
+                if reuse_plan is None
+                else [d.model_dump() for d in reuse_plan.decisions]
+            ),
         }
 
     def _reused_outputs(
@@ -1890,6 +1895,7 @@ class FlowmeshRuntimeManager:
             "flat_outputs": flat_outputs,
             "chat_histories": {},
             "task_node_map": {},
+            "reuse_decisions": [d.model_dump() for d in plan.decisions],
         }
 
     async def _plan_reuse(
