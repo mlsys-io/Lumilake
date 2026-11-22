@@ -54,7 +54,7 @@ _CHUNK_GROUP_SEPARATOR = "::"
 
 
 def make_chunk_group_key(parent: str, index: int) -> str:
-    """The graph key of one chunk group of ``parent``. The first group keeps
+    """The graph key of one chunk group of ``parent``: the first group keeps
     the parent key, later ones append their index."""
     if index == 0:
         return parent

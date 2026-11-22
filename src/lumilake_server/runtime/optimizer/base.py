@@ -127,9 +127,7 @@ def _number(value: Any) -> float | None:
 
 def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
     """The sampler settings of a node that generates text or images, or
-    ``None`` when the node's output is a pure function of its inputs: a
-    Python step, a retrieval, an embedding, a classification, or an API
-    request other than a chat completion."""
+    ``None`` when the node's output is a function of its inputs."""
     if op.task_type in SAMPLING_TASK_TYPES:
         return op.inference_spec
     if op.task_type == "api":
@@ -141,9 +139,8 @@ def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
 
 def _decodes_deterministically(op: RuntimeOp, sampler: dict[str, Any]) -> bool:
     """Whether the node's text decoder is greedy or beam search. An absent
-    temperature is not greedy: the engine then samples at its own default, so
-    only an explicit ``temperature: 0`` or a beam width above 1 counts. Image
-    samplers read neither setting, so they never count."""
+    temperature is not greedy: the engine samples at its own default, so only
+    an explicit ``temperature: 0`` or a beam width above 1 counts."""
     if op.task_type not in _TEXT_TASK_TYPES:
         return False
     num_beams = _number(sampler.get("num_beams"))
@@ -156,11 +153,8 @@ def _dedupe_scope(
     op: RuntimeOp, owners: tuple[tuple[str, str], ...] | None
 ) -> tuple[Any, ...] | None:
     """The per-node part of the dedupe key, or ``None`` when the node must not
-    be merged. A node that samples draws from a distribution rather than
-    computing a function of its inputs, so it merges only with the copies of
-    its own logical op (``owners``: one ``(workflow, op id)`` pair per copy),
-    never with a different op of equal settings, seeded or not. Python steps
-    stay eligible, as their output function is the user's to keep pure."""
+    be merged. A node that samples merges only with the copies of its own
+    logical op, ``owners``: one ``(workflow, op id)`` pair per copy."""
     sampler = _sampling_spec(op)
     if sampler is None or _decodes_deterministically(op, sampler):
         return ("pure",)
@@ -172,11 +166,9 @@ def _dedupe_scope(
 def _logical_ops(
     graphs: dict[str, RuntimeGraph],
 ) -> dict[str, tuple[tuple[str, str], ...]]:
-    """Map each runtime node to its ``(workflow, op id)`` owners. A request
-    split into chunk groups is one workflow, so its chunk groups share a
-    scope. Read from the per-group graphs, before ``merge_runtime_graphs``
-    folds their ``dsl_to_runtime`` by bare op id, so two workflows that both
-    name an op ``Ask`` keep separate owners."""
+    """Map each runtime node to its ``(workflow, op id)`` owners. Read from the
+    per-group graphs, before ``merge_runtime_graphs`` folds their
+    ``dsl_to_runtime`` by bare op id."""
     owners: dict[str, list[tuple[str, str]]] = {}
     for group_name, graph in graphs.items():
         scope = chunk_group_parent(group_name)
@@ -246,8 +238,7 @@ def _dedupe_runtime_graph(
     """Merge identical runtime ops with identical dependencies (non-output nodes).
 
     ``logical_ops`` maps a runtime node to the ``(workflow, op id)`` pairs it
-    was built from; ``_dedupe_scope`` needs it to keep sampling nodes of
-    different ops apart.
+    was built from, which ``_dedupe_scope`` needs.
 
     Returns the deduplicated graph and the ``node_id -> canonical node_id``
     mapping (identity for nodes that were not deduplicated).

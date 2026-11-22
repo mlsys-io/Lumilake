@@ -8,8 +8,7 @@ from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
 
-# Task types that carry an ``inference`` spec, whose output a model sampler
-# draws.
+# Task types that carry an ``inference`` spec drawn by a model sampler.
 SAMPLING_TASK_TYPES: frozenset[str] = frozenset(
     {"inference", "diffusion", "omni_text2image"}
 )
