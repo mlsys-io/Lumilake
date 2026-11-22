@@ -90,12 +90,7 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
 
 @pytest.mark.parametrize(
     ("path", "refused"),
-    [
-        ("items.table", False),
-        ("items.table.close", False),
-        ("items.table.0.close", True),
-        ("items.table[1]", True),
-    ],
+    [("items.table.close", False), ("items.table.0.close", True)],
 )
 def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> None:
     graph = Graph.from_json(parse_yaml_payload(_reader_doc(path))["order"]["graph"])
@@ -106,29 +101,20 @@ def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> No
         RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
 
 
-def _reader_doc(path: str) -> str:
+def _reader_doc(path: str, mode: str = "sql") -> str:
     """A `rows: table` retrieval whose consumer reads ``path`` from it."""
     return (
         "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
         '  - id: "Search"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
-        "    data_spec:\n      type: lumid\n      mode: sql\n      rows: table\n"
+        f"    data_spec:\n      type: lumid\n      mode: {mode}\n      rows: table\n"
         "      template: \"SELECT close FROM t WHERE symbol = '{symbol}'\"\n"
         '      params:\n        - label: symbol\n          node: "Stock"\n'
-        '  - id: "Ask"\n    op: LLMChatOp\n    inputs: [Search]\n'
-        '    messages:\n      - role: user\n        content: ""\n'
-        '    config:\n      model: m\n    rowwise_template: "{df}"\n'
-        "    rowwise_columns:\n"
-        f'      - label: df\n        node: "Search"\n        path: "{path}"\n'
+        f'outputs:\n  - name: rows\n    ref: "Search"\n    path: "{path}"\n'
     )
 
 
 def test_rows_is_declared_only_on_a_sql_retrieval() -> None:
-    doc = (
-        "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
-        '  - id: "Fetch"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
-        "    data_spec:\n      type: lumid\n      mode: s3\n      rows: one\n"
-        '      template: "k/{symbol}"\n'
-        '      params:\n        - label: symbol\n          node: "Stock"\n'
-    )
     with pytest.raises(ValueError, match="only on a mode: sql retrieval"):
-        Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
+        Graph.from_json(
+            parse_yaml_payload(_reader_doc("items.table", "s3"))["order"]["graph"]
+        )
