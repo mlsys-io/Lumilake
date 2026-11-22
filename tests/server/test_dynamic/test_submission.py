@@ -1648,7 +1648,8 @@ async def test_dynamic_spec_store_flag_reaches_the_job(
 ) -> None:
     """A dynamic spec that asks for the store carries the flag to the job, so
     its rounds write records, and its template rounds name the zero-based chain
-    round, so a stored record's one-based round matches the round it ran as."""
+    round, so a stored record's one-based round matches the round it ran as.
+    The round's own graph and messages keep counting from one."""
     yaml_text = _TEMPLATE_DYNAMIC_YAML
     if store:
         yaml_text = yaml_text.replace("type: dynamic", "type: dynamic\nstore: true")
@@ -1669,3 +1670,9 @@ async def test_dynamic_spec_store_flag_reaches_the_job(
     await _run_background(app)
     assert job_routes.jobs[resp.json()["data"]["job_id"]].store is store
     assert [config.chain_round for config in fake_server.configs] == [0, 1]
+    graph_names = {
+        meta.public_graph_name
+        for slices in fake_server.workflow_slices_calls
+        for meta in slices.values()
+    }
+    assert graph_names == {"round_1", "round_2"}
