@@ -151,6 +151,26 @@ def _keyed(rows, where):
     return keyed, marked
 
 
+def _pairs(values, rows, live, where):
+    """An attach column paired with its source rows by position, as (value, row,
+    key), or ``None`` when its length matches neither every source row nor only
+    the live rows, since it then cannot be attributed to one row. Over every
+    source row, a row whose key cannot be read is already its own marker, so it
+    pairs with no key; over the live rows only, a row without a key fails the
+    job."""
+    if len(values) == len(rows):
+        return [
+            (value, row, key)
+            for value, row, key in zip(
+                values, rows, (_key_of(row, where) for row in rows)
+            )
+            if key is not None
+        ]
+    if len(values) == len(live):
+        return [(value, row, _key(row, where)) for value, row in zip(values, live)]
+    return None
+
+
 def _attach(keyed, marked, name, source_index, values, rows, where):
     """Merge one attach field's values onto the source rows by position."""
     live = []
@@ -164,24 +184,15 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
             # The source row's own failed record is its key's output, unless another
             # marker already holds that key.
             marked[key] = carried
-    if len(values) == len(rows):
-        # A row whose key cannot be read is already its own marker, and its value is the
-        # marker passed through: there is no key to pair it with.
-        pairs = [
-            (value, key)
-            for value, key in zip(values, (_key_of(row, where) for row in rows))
-            if key is not None
-        ]
-    elif len(values) == len(live):
-        pairs = list(zip(values, (_key(row, where) for row in live)))
-    else:
+    pairs = _pairs(values, rows, live, where)
+    if pairs is None:
         raise ValueError(
             "%s: %d values attached but %d rows from %r"
             % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
         )
-    paired = dict.fromkeys(key for _, key in pairs)
+    paired = dict.fromkeys(key for _, _, key in pairs)
     _required(keyed, paired, where)
-    for value, key in pairs:
+    for value, _, key in pairs:
         if key in marked:
             continue
         carried = failure_of(value)
@@ -308,6 +319,7 @@ def _broadcast(inputs):
     first = _where(_PLAN[indexes[0]])
     rows = _rows(columns[0], first)
     keyed = _row_keys(rows, first)
+    first_keys = _first_keys(keyed)
     marked = {{}}
     for record, _, row in keyed:
         # A first-input row that carries a failed record passes through as its
@@ -318,7 +330,7 @@ def _broadcast(inputs):
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
-        _required(_first_keys(keyed), more, where)
+        _required(first_keys, more, where)
         for position, (record, key, row) in enumerate(keyed):
             if record in marked:
                 # A marked output row is its marker: no further input fills it.
@@ -356,37 +368,34 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
     """Merge one attach field's values onto the output rows their source rows
     belong to. A source row that reads the row_key fields names one record, so
     its value lands on that output row alone; any other source row carries one
-    value per by key, and it lands on every output row of that key."""
+    value per by key, and it lands on every output row of that key. Values pair
+    with source rows as in a join without a row_key."""
     live = []
     for row in rows:
         if carried_marker((row,)) is None:
             live.append(row)
-    if len(values) == len(rows):
-        paired = list(zip(values, rows))
-    elif len(values) == len(live):
-        paired = list(zip(values, live))
-    else:
+    pairs = _pairs(values, rows, live, where)
+    if pairs is None:
         raise ValueError(
             "%s: %d values attached but %d rows from %r"
             % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
         )
-    positions = {{record: position for position, (record, _, _) in enumerate(keyed)}}
-    first_keys = _first_keys(keyed)
+    targets = _AttachTargets(keyed)
     covered = set()
-    for value, source_row in paired:
-        targets = _attach_targets(keyed, positions, first_keys, source_row, where)
+    for value, source_row, key in pairs:
+        record = _record_of(source_row, where)
         carried = failure_of(value) or carried_marker((source_row,))
-        for position in targets:
+        for position in targets.of(record, key, where):
             covered.add(position)
-            record = keyed[position][0]
-            if record in marked:
+            held = keyed[position][0]
+            if held in marked:
                 continue
             if carried is not None:
-                marked[record] = carried
+                marked[held] = carried
                 continue
             merged = keyed[position][2].copy()
             _merged(merged, name, value, where)
-            keyed[position] = (record, keyed[position][1], merged)
+            keyed[position] = (held, keyed[position][1], merged)
     if _ON_MISSING == "fail_row":
         # Only a row this source carries no value for becomes a marker; under
         # null_fill its field is simply left out.
@@ -395,18 +404,29 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
                 marked[record] = _failed("key %s is missing from %r" % (key, where))
 
 
-def _attach_targets(keyed, positions, first_keys, source_row, where):
-    """The output rows one attach source row's value belongs to."""
-    record = _record_of(source_row, where)
-    if record is not None:
-        if record not in positions:
-            raise ValueError("%s: row_key %s is not in %r" % (_NODE, record, where))
-        return [positions[record]]
-    key = _key_of(source_row, where)
-    if key is None:
-        raise ValueError(
-            "%s: a failed row whose key cannot be read cannot be placed" % where
-        )
-    _required(first_keys, {{key: True}}, where)
-    return [position for position, (_, at, _) in enumerate(keyed) if at == key]
+class _AttachTargets:
+    """The output rows one attach source row's value reaches: the record its
+    row_key fields name, or else every output row of its by key."""
+
+    def __init__(self, keyed):
+        self._positions = {{}}
+        self._records = {{}}
+        for position, (record, key, _) in enumerate(keyed):
+            self._positions.setdefault(key, []).append(position)
+            self._records.setdefault(record, []).append(position)
+        self._first_keys = _first_keys(keyed)
+
+    def of(self, record, key, where):
+        if record is not None:
+            if record not in self._records:
+                raise ValueError(
+                    "%s: row_key %s is not in %r" % (_NODE, record, where)
+                )
+            return self._records[record]
+        if key is None:
+            raise ValueError(
+                "%s: a failed row whose key cannot be read cannot be placed" % where
+            )
+        _required(self._first_keys, {{key: True}}, where)
+        return self._positions[key]
 '''
