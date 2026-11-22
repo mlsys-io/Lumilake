@@ -226,6 +226,23 @@ def _workflow_template_hash(workflow_payload: Any, workflow_format: str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _refuse_non_string_yaml_keys(value: Any, idx: int, path: str) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Invalid workflow YAML for index {idx}: mapping key "
+                        f"{key!r} at {path} is not a string; quote the key"
+                    ),
+                )
+            _refuse_non_string_yaml_keys(item, idx, f"{path}.{key}")
+    elif isinstance(value, list):
+        for position, item in enumerate(value):
+            _refuse_non_string_yaml_keys(item, idx, f"{path}[{position}]")
+
+
 def _decode_workflow_body(raw: str, workflow_format: str, idx: int) -> Any:
     """Decode the raw ``entry.workflow`` string for the declared format.
 
@@ -235,7 +252,7 @@ def _decode_workflow_body(raw: str, workflow_format: str, idx: int) -> Any:
     """
     if workflow_format == "yaml":
         try:
-            return yaml.safe_load(raw)
+            payload = yaml.safe_load(raw)
         except yaml.MarkedYAMLError as exc:
             mark = exc.problem_mark
             if mark is not None:
@@ -256,6 +273,8 @@ def _decode_workflow_body(raw: str, workflow_format: str, idx: int) -> Any:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid workflow YAML for index {idx}: {exc}",
             ) from exc
+        _refuse_non_string_yaml_keys(payload, idx, "$")
+        return payload
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
