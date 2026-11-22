@@ -223,7 +223,6 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         )
     own = names.index(branch) if branch in names else None
     tests = [rule.matches() for rule in rules]
-    needs_text = any(rule.match != "empty" for rule in rules)
     if own is None:
         # The default branch keeps the rows no rule matched.
         skip, keep = tests, None
@@ -244,13 +243,13 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         lines.append("            if not isinstance(value, dict) or part not in value:")
         lines.append('                raise ValueError(f"{LABEL} row has no {part!r}")')
         lines.append("            value = value[part]")
-    else:
-        lines.append("        value = row")
-    if needs_text:
         lines.append(
             "        text = value if isinstance(value, str) else "
             "json.dumps(value, ensure_ascii=False)"
         )
+    else:
+        lines.append("        value = row")
+        lines.append("        text = json.dumps(row, ensure_ascii=False)")
     if skip:
         lines.append(f"        if {' or '.join(skip)}:")
         lines.append("            continue")
