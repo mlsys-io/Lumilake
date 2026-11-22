@@ -237,13 +237,14 @@ class RecordWriter:
                 entry,
             )
         if entries:
+            indexed = {member for _, targets in written for member, _ in targets}
             for entry, targets in written:
                 for member, member_round in targets:
                     await self._write_index(member, entry, member_round)
             self.logger.info(
-                "Record store wrote %d record(s) for job %s round %d",
+                "Record store wrote %d record(s) for job(s) %s round %d",
                 len(entries),
-                job_id,
+                ", ".join(sorted(indexed)),
                 round_number,
             )
         return len(entries)
