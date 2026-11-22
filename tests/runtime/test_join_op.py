@@ -409,13 +409,6 @@ def _quoted(rows: list[Any]) -> str:
     return "[" + ", ".join(f"'{json.dumps(row)}'" for row in rows) + "]"
 
 
-# Attach source rows that are not a join column: a per-unit part value.
-_EXTRA = """  - {id: Extra, op: DataOp, data: __EXTRA__}
-  - {id: Part, op: LambdaOp, mode: row, inputs: [Extra], fn_name: part,
-     code: "def part(row): return row['part']"}
-"""
-
-
 def _broadcast(
     tmp_path: Path,
     rows: list[Any] | None = None,
@@ -429,7 +422,12 @@ def _broadcast(
     """Run the broadcast join over one summary row per unit, a tag per first-input
     row, or a part column whose source rows are ``extra``."""
     if attach == "part":
-        ops = _EXTRA.replace("__EXTRA__", _quoted(extra or []))
+        ops = (
+            "  - {id: Extra, op: DataOp, data: "
+            + _quoted(extra or [])
+            + "}\n  - {id: Part, op: LambdaOp, mode: row, inputs: [Extra],"
+            " fn_name: part, code: \"def part(row): return row['part']\"}\n"
+        )
         inputs, line = ", Extra, Part", "    attach: {part: Part}"
     else:
         ops = ""
