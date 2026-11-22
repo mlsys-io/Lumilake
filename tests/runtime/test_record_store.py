@@ -192,6 +192,7 @@ def _rows(text: str = "ONE") -> dict[str, list[Any]]:
 
 
 _BROADCAST_WORKFLOW: dict[str, Any] = {
+    **_WORKFLOW,
     "name": "broadcast",
     "inputs": {
         "Rows": [
@@ -201,26 +202,9 @@ _BROADCAST_WORKFLOW: dict[str, Any] = {
         "Cfg": ["shared"],
     },
     "ops": [
-        {
-            "id": "Mark",
-            "op": "LambdaOp",
-            "inputs": ["Rows"],
-            "fn_name": "keyed",
-            "mode": "row",
-            "code": _CODE_KEYED,
-            "key": {"node": "Rows", "path": "id"},
-        },
-        {
-            "id": "Join",
-            "op": "LambdaOp",
-            "inputs": ["Mark", "Cfg"],
-            "fn_name": "second",
-            "mode": "row",
-            "code": _CODE_SECOND,
-            "key": {"node": "Mark", "path": "id"},
-        },
+        _WORKFLOW["ops"][0],
+        {**_WORKFLOW["ops"][1], "inputs": ["Mark", "Cfg"]},
     ],
-    "outputs": [{"name": "joined", "ref": "Join"}],
 }
 
 _SAMPLING_TASK_TYPES = {"inference", "api"}
@@ -389,11 +373,7 @@ async def test_unseeded_sampling_runs_get_different_keys() -> None:
             graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
         )
         listed.append(
-            next(
-                entry
-                for entry in entries
-                if entry.address.op == _declared_name(graph, "AskX")
-            )
+            next(e for e in entries if e.address.op == _declared_name(graph, "AskX"))
         )
     first, second = listed
     assert first.realization.production == "req-one/task-AskX"
@@ -412,9 +392,9 @@ async def test_api_chats_with_different_seeds_get_different_keys() -> None:
             task_type="api", model_spec={}, inference_spec={}, api_spec=api_spec
         )
         entry = next(
-            entry
-            for entry in await _store(graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]})
-            if entry.address.op == _declared_name(graph, "AskX")
+            e
+            for e in await _store(graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]})
+            if e.address.op == _declared_name(graph, "AskX")
         )
         assert entry.realization.seed == seed
         digests[seed] = entry.digest
@@ -430,40 +410,14 @@ async def test_broadcast_literal_yields_when_the_row_is_past_it() -> None:
     join = _declared_name(graph, "Join")
     rows = [{"id": "a", "text": "ONE!"}, {"id": "b", "text": "TWO!"}]
     entries = await _store(graph, {"Mark": rows, "Join": rows})
-    pair = sorted(entry.digest for entry in entries if entry.address.op == join)
-    assert len(pair) == 2
-    assert len(set(pair)) == 2
+    assert len({entry.digest for entry in entries if entry.address.op == join}) == 2
 
 
 @pytest.mark.asyncio
-async def test_a_batch_indexes_only_the_jobs_that_store(graph: Any) -> None:
-    """One batch may hold a storing and a non-storing job: the storing job's
-    index lists the records and the other job gets no index at all."""
-    storage = InMemoryJobStorage()
-    writer = RecordWriter(
-        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
-    )
-    mark = _node_id(graph, "Mark")
-    await writer.write(
-        job_id="req-store",
-        member_job_ids=["req-store", "req-plain"],
-        round_number=0,
-        runtime_graph=graph,
-        node_task_map={mark: "task-Mark"},
-        task_worker={"task-Mark": "worker-1"},
-        results={"task-Mark": {"items": [{"output": {"id": "a"}}]}},
-        member_store={"req-store": True, "req-plain": False},
-        member_rounds={"req-store": 0, "req-plain": 0},
-        node_owners={mark: {"req-store"}},
-    )
-    assert read_index(storage, "req-store") is not None
-    assert read_index(storage, "req-plain") is None
-
-
-@pytest.mark.asyncio
-async def test_a_batch_indexes_each_member_at_its_own_round(graph: Any) -> None:
-    """Two dynamic jobs at different rounds share a batch without one job's
-    records landing under the other's round."""
+async def test_a_batch_writes_and_indexes_per_member_job(graph: Any) -> None:
+    """One batch may hold a storing and a non-storing job and two dynamic jobs
+    at different rounds: a job that did not ask for the store gets no index,
+    and each job that did stores under its own round."""
     storage = InMemoryJobStorage()
     writer = RecordWriter(
         storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
@@ -471,24 +425,25 @@ async def test_a_batch_indexes_each_member_at_its_own_round(graph: Any) -> None:
     mark, join = _node_id(graph, "Mark"), _node_id(graph, "Join")
     await writer.write(
         job_id="req-one",
-        member_job_ids=["req-one", "req-two"],
-        round_number=1,
+        member_job_ids=["req-one", "req-two", "req-plain"],
+        round_number=0,
         runtime_graph=graph,
         node_task_map={mark: "task-Mark", join: "task-Join"},
-        task_worker={},
+        task_worker={"task-Mark": "worker-1"},
         results={
             "task-Mark": {"items": [{"output": {"id": "a"}}]},
             "task-Join": {"items": [{"output": {"id": "a"}}]},
         },
-        member_store={"req-one": True, "req-two": True},
-        member_rounds={"req-one": 1, "req-two": 2},
-        node_owners={mark: {"req-one"}, join: {"req-two"}},
+        member_store={"req-one": True, "req-two": True, "req-plain": False},
+        member_rounds={"req-one": 1, "req-two": 2, "req-plain": 1},
+        node_owners={mark: {"req-one"}, join: {"req-two", "req-plain"}},
     )
-    mark_index = read_index(storage, "req-one")
-    join_index = read_index(storage, "req-two")
-    assert mark_index is not None and join_index is not None
-    assert mark_index.rounds() == [1]
-    assert join_index.rounds() == [2]
+    first = read_index(storage, "req-one")
+    second = read_index(storage, "req-two")
+    assert first is not None and second is not None
+    assert first.rounds() == [1]
+    assert second.rounds() == [2]
+    assert read_index(storage, "req-plain") is None
 
 
 @pytest.mark.asyncio
