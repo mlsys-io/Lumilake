@@ -123,7 +123,7 @@ class _DerivedBuilder(_VisionBuilder):
             # step can expand it to one value per row.
             step = self._flatten_step(op_id, values)
             return (
-                ListData(type="list", items=[f"${{{step.node_id}.value.items}}"]),
+                ListData(type="list", items=f"${{{step.node_id}.value.items}}"),
                 [step.node_id],
                 [step],
             )
@@ -225,9 +225,7 @@ class _DerivedBuilder(_VisionBuilder):
                     dependencies=pairs_dependencies or None,
                 )
             )
-            data_spec = ListData(
-                type="list", items=[f"${{{pairs_node_id}.value.items}}"]
-            )
+            data_spec = ListData(type="list", items=f"${{{pairs_node_id}.value.items}}")
             dependencies = [pairs_node_id]
 
         backend = op.config.backend

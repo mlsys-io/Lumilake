@@ -229,6 +229,11 @@ class _VisionBuilder(_RetrievalBuilder):
         plan: list[ColumnPlanEntry] = [image_entry]
         for c in columns:
             if isinstance(c.data, ListData):
+                if not isinstance(c.data.items, list):
+                    raise ValueError(
+                        f"Per-row VLM '{llm_op_id}' column '{c.label}' carries no"
+                        " literal values"
+                    )
                 plan.append(
                     ColumnPlanEntry(
                         kind="literal",

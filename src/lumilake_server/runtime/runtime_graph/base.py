@@ -154,7 +154,7 @@ class _RuntimeGraphBuilderBase:
         if not isinstance(data_spec, ListData) or data_spec.lumid_cfg is not None:
             return data_spec
         items = data_spec.items
-        if items is None:
+        if not isinstance(items, list):
             return data_spec
         has_s3 = any(
             isinstance(item, str) and item.startswith("s3://") for item in items

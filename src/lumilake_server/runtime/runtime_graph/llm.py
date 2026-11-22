@@ -1179,7 +1179,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         data = col.data
                         if (
                             isinstance(data, ListData)
-                            and data.items is not None
+                            and isinstance(data.items, list)
                             and len(data.items) == 1
                         ):
                             return str(data.items[0])

@@ -1250,7 +1250,7 @@ class FlowmeshRuntimeManager:
         if node is None or node.task_type != "embedding":
             return None
         data_spec = node.data_spec
-        if isinstance(data_spec, ListData) and data_spec.items is not None:
+        if isinstance(data_spec, ListData) and isinstance(data_spec.items, list):
             return len(data_spec.items)
         return None
 

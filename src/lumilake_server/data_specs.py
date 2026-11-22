@@ -27,10 +27,11 @@ class ImageEmbedding(NodeRead):
 
 
 class ListData(DataSpecModel):
-    """A list-fed task reading literal items or an upstream node."""
+    """A list-fed task reading literal items, an upstream node, or a
+    placeholder that resolves to a whole upstream list."""
 
     type: Literal["list"] = "list"
-    items: list[Any] | None = None
+    items: list[Any] | str | None = None
     node: str | None = None
     path: str | None = None
     grouped: bool | None = None
