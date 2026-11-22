@@ -1498,6 +1498,8 @@ class FlowmeshRuntimeManager:
         reuse_plan: ReusePlan | None = None
         if request_info.reuse_records:
             reuse_plan = await self._plan_reuse(request_info, schedule)
+            if reuse_plan is not None and not request_info.runtime_graph.nodes:
+                return self._reused_outputs(request_info, reuse_plan)
 
         # Build task spec from the runtime graph.
         task_spec, output_node_indices, flowmesh_to_raw = await self._build_task_spec(
@@ -1856,6 +1858,25 @@ class FlowmeshRuntimeManager:
             "flat_outputs": flat_outputs,
             "chat_histories": prompts,
             "task_node_map": dict(raw_task_node_map),
+        }
+
+    def _reused_outputs(
+        self, request_info: RequestInfo, plan: ReusePlan
+    ) -> dict[str, Any]:
+        """The batch result of a request the store answered in full: every hit
+        output node's value rebuilt from its stored entries, with no task run."""
+        flat_outputs: dict[str, Any] = {}
+        for node_id in plan.outputs:
+            if node_id in plan.hits:
+                flat_outputs[node_id] = rebuilt_output(plan, node_id)
+        self.logger.info(
+            "Record reuse answered request %s from the store with no dispatch",
+            request_info.request_id,
+        )
+        return {
+            "flat_outputs": flat_outputs,
+            "chat_histories": {},
+            "task_node_map": {},
         }
 
     async def _plan_reuse(

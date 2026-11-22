@@ -85,6 +85,9 @@ class ReusePlan(BaseModel):
     decisions: list[RecordDecision] = Field(default_factory=list)
     hits: dict[str, list[RecordEntry]] = Field(default_factory=dict)
     """Node id -> the trusted entries that answer its records, in key order."""
+    outputs: dict[str, str] = Field(default_factory=dict)
+    """Node id -> its output name, so a fully answered request rebuilds every
+    hit output without the graph it planned from."""
 
     def hit_nodes(self) -> set[str]:
         return set(self.hits)
@@ -117,7 +120,7 @@ class ReusePlanner:
         are dispatched is built from the same declared form and served entries,
         so its writer keys those ops exactly as this walk did."""
         names = _logical_names(runtime_graph)
-        decision = ReusePlan()
+        decision = ReusePlan(outputs=dict(runtime_graph.output_node_map))
         misses: set[str] = set()
         plans: dict[str, RecordPlan] = {}
         for node_id in runtime_graph.topological_order():
@@ -137,6 +140,7 @@ class ReusePlanner:
                 round_number=round_number,
                 job_id=job_id,
                 misses=misses,
+                decision=decision,
                 runtime_graph=runtime_graph,
                 node_id=node_id,
             )
@@ -149,6 +153,12 @@ class ReusePlanner:
                 )
             )
             if hit is None:
+                misses.add(node_id)
+                continue
+            if _has_non_literal_reader(runtime_graph, node_id):
+                decision.decisions[-1] = decision.decisions[-1].model_copy(
+                    update={"decision": "miss", "reason": "read by a non-literal op"}
+                )
                 misses.add(node_id)
                 continue
             decision.hits[node_id] = hit
@@ -169,6 +179,7 @@ class ReusePlanner:
         round_number: int,
         job_id: str,
         misses: set[str],
+        decision: ReusePlan,
         runtime_graph: RuntimeGraph,
         node_id: str,
     ) -> tuple[str | None, list[RecordEntry] | None]:
@@ -459,6 +470,18 @@ def _planned_realization(
     if production is not None:
         return None
     return RecordRealization(seed=seed, attempt=attempt)
+
+
+def _has_non_literal_reader(runtime_graph: RuntimeGraph, node_id: str) -> bool:
+    """Whether any op that reads ``node_id`` cannot take its stored values as a
+    literal plan entry, so the node must run for that reader to see its output.
+
+    Only a python step reads a served input, so a hit read by any other kind of
+    op is not servable; it runs, and its downstream misses with it."""
+    for reader in runtime_graph.nodes.values():
+        if node_id in reader.dependencies and reader.task_type != _LAMBDA_TASK_TYPE:
+            return True
+    return False
 
 
 def _entry_miss_reason(entry: RecordEntry | None) -> str | None:
