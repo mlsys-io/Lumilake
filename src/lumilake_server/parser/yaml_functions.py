@@ -30,10 +30,7 @@ def _validated[M: BaseModel](model: type[M], payload: Any, where: str) -> M:
     try:
         return model.model_validate(payload)
     except ValidationError as exc:
-        error = exc.errors()[0]
-        field = ".".join(map(str, error["loc"]))
-        said = error["msg"].removeprefix("Value error, ")
-        raise ValueError(f"{where}: {f'{field}: {said}' if field else said}") from exc
+        raise ValueError(f"{where}: {exc.errors()[0]['msg']}") from exc
 
 
 def _import_targets(tree: ast.Module) -> dict[str, str]:
@@ -167,7 +164,7 @@ def parse_functions(block: Any) -> WorkflowFunctions:
     return _validated(
         WorkflowFunctions,
         block if block is not None else {},
-        "'functions' must be a mapping of name -> Python source",
+        "'functions'",
     )
 
 
