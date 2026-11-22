@@ -79,21 +79,27 @@ Each entry is written once, as one object under the archive prefix at
 `records/<digest>.json`, and each write also updates the job's index object at
 `records/jobs/<job id>.json`, which lists the job's entries by op, key and round.
 The digest is a SHA-256 over the op's computation (code, prompt, config, model id
-and decoding), the record's address (op, key, semantic round), the record it read
-at the same position and that record's value, the per-row seed it drew with when
-it declares one, and the effect versions. Per-row data enters as the record's
-inputs and a per-row seed as its realization, never through the op's own spec, so
-two slices of one op at any `input_batch_size` store the same records under the
-same keys. The address names the op the workflow declares. Physical node ids,
-batch positions, job ids and workers never enter the digest.
+and decoding), the record's address (op, key, semantic round), the records it
+read (a keyed record reads the one at its own position; a whole-op record reads
+every record of every input, in order) and their values, the per-row seed it drew
+with when it declares one, and the effect versions. Per-row data enters as the
+record's inputs and a per-row seed as its realization, never through the op's own
+spec, so two slices of one op at any `input_batch_size` store the same records
+under the same keys. The address names the op the workflow declares. Physical
+node ids, batch positions, job ids and workers never enter the digest.
 
 The round is the semantic one: one-based for a round of a dynamic job, `0` for a
 standalone job. A reader trusts an object only when the digest recorded inside it
 equals its key. A failed record carries the same inputs, realization and versions
 a success would, with `status: failed` added, so it never answers a request for a
-success and two failures on different inputs never share a key. An op that reads a
-retrieval or fetch that records no snapshot is marked `versions.unversioned`,
-because such a read is never reusable.
+success and two failures on different inputs never share a key.
+
+An op that reads a retrieval or fetch that records no snapshot is marked
+`versions.unversioned`, because such a read is never reusable; a hosted model
+call counts as one, since no recorded revision fixes its model. A record whose
+value no seed or snapshot fixes, an unversioned one or a sampling op with no
+seed, carries a realization unique to its production (the job and task that made
+it), so it never shares a key with another run's draw.
 
 Read a record's chain back with `GET /api/v1/jobs/{job_id}/lineage`; see
 [`docs/API.md`](API.md).
