@@ -349,28 +349,24 @@ def _paths_graph(**changes: Any) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_unseeded_sampling_runs_get_different_keys() -> None:
+async def test_a_draw_no_seed_reproduces_gets_its_own_key() -> None:
     """An op that samples with no seed draws a value no key reproduces, so each
-    run's record is its own: a second run never shares the first one's entry."""
-    graph = _paths_graph(task_type="inference", inference_spec={"temperature": 0.7})
+    run's record names its own production and never shares another run's entry.
+    A hosted chat's seed lives in its request body and enters the realization,
+    so seeds 7 and 8 are two draws of one op."""
+    unseeded = _paths_graph(task_type="inference", inference_spec={"temperature": 0.7})
     listed = []
     for job_id in ("req-one", "req-two"):
         entries = await _store(
-            graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
+            unseeded, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
         )
         listed.append(next(e for e in entries if e.address.record is None))
-    first, second = listed
     assert [e.realization.production for e in listed] == [
         "req-one/task-AskX",
         "req-two/task-AskX",
     ]
-    assert first.digest != second.digest
+    assert listed[0].digest != listed[1].digest
 
-
-@pytest.mark.asyncio
-async def test_api_chats_with_different_seeds_get_different_keys() -> None:
-    """A hosted chat carries its seed in the request body, which enters the
-    record's realization: seeds 7 and 8 are different draws of one op."""
     digests = {}
     for seed in (7, 8):
         api_spec = {"json": {"model": "m", "messages": "{{prompt}}", "seed": seed}}
@@ -380,7 +376,7 @@ async def test_api_chats_with_different_seeds_get_different_keys() -> None:
         entry = next(
             e
             for e in await _store(graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]})
-            if e.address.op == _declared_name(graph, "AskX")
+            if e.address.record is None
         )
         assert entry.realization.seed == seed
         digests[seed] = entry.digest
