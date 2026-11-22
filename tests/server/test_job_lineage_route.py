@@ -72,21 +72,21 @@ class _Permissions:
         return None
 
 
-@pytest.fixture(autouse=True)
-def _hooks() -> Iterator[None]:
+def _clear_hooks() -> None:
     hooks.IDENTITY_PROVIDERS.clear()
     hooks.SUBMISSION_GUARDS.clear()
     hooks.USAGE_SINKS.clear()
     hooks.PERMISSION_CHECKERS.clear()
     hooks.RESOURCE_REGISTRARS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _hooks() -> Iterator[None]:
+    _clear_hooks()
     hooks.IDENTITY_PROVIDERS.append(_Identity())
     hooks.PERMISSION_CHECKERS.append(_Permissions())
     yield
-    hooks.IDENTITY_PROVIDERS.clear()
-    hooks.SUBMISSION_GUARDS.clear()
-    hooks.USAGE_SINKS.clear()
-    hooks.PERMISSION_CHECKERS.clear()
-    hooks.RESOURCE_REGISTRARS.clear()
+    _clear_hooks()
 
 
 @pytest.fixture
@@ -158,7 +158,6 @@ def _store_chain(
     upstream = _entry("Mark", task_id="task-mark", worker="w1")
     entries = [
         upstream,
-        _entry("Join", task_id="task-join", worker="w2", producer=upstream),
         *[
             _entry(
                 "Join",
@@ -167,7 +166,7 @@ def _store_chain(
                 round_number=number,
                 producer=upstream,
             )
-            for number in extra_rounds
+            for number in (0, *extra_rounds)
         ],
     ]
     for entry in entries:
