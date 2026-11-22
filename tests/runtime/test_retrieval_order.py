@@ -5,6 +5,7 @@ from contextlib import nullcontext
 import pytest
 
 from lumilake import envs
+from lumilake_server.data_specs import RetrievalData
 from lumilake_server.dynamic.driver import DriverProtocolError, validate_library
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
@@ -65,7 +66,7 @@ def test_the_refusals_name_the_library_entry_and_the_field() -> None:
 
 
 def test_rows_one_checks_its_bound() -> None:
-    with pytest.raises(ValueError, match="rows: Input should be 'one'"):
+    with pytest.raises(ValueError, match="rows: Input should be 'one' or 'table'"):
         _graph("SELECT a FROM t", "      rows: all\n")
     runtime = RuntimeGraphBuilder().build(
         _graph("SELECT a FROM t", "      rows: one\n").compile(Stock=["NVDA"])
@@ -86,13 +87,14 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
         _graph(template, "      rows: table\n").compile(Stock=["NVDA"])
     )
     (node,) = [n for n in runtime.nodes.values() if n.task_type == "data_retrieval"]
-    assert node.data_spec["rows"] == "table"
-    assert node.data_spec["require_non_empty_rows"] is False
+    assert isinstance(node.data_spec, RetrievalData)
+    assert node.data_spec.rows == "table"
+    assert node.data_spec.require_non_empty_rows is False
 
 
 @pytest.mark.parametrize("path", ["items.table.close", "items.table.0.close"])
 def test_rows_table_refuses_a_position_inside_it(path: str) -> None:
-    expect = pytest.raises(ValueError, match="no position inside it")
+    expect = pytest.raises(ValueError, match="read the whole value or")
     with expect if path.startswith("items.table.0") else nullcontext():
         _reader_graph(path)
 

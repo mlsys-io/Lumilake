@@ -32,7 +32,7 @@ YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` 
 - A `sql` retrieval ends its query with a top-level `ORDER BY`, or declares `rows: one` when a lookup returns at most one row per parameter row. Submit refuses a query with neither, naming the op; only the outer query of the last statement counts.
 - The `ORDER BY` breaks ties on a column no two returned rows share, such as the primary key. Submit reads the template only, so the author keeps ties unique.
 - `rows: one` is checked at run time: a parameter row that returns more than one row fails the job. An n8n Postgres node declares it as `"rows": "one"` in its `notes`.
-- A retrieval whose whole result is one value declares `rows: table` instead. Each parameter row emits one record holding the whole table; an empty result is one record with an empty table. A consumer reads the whole value or a column of it, so submit refuses a path that indexes a position under the result field, naming the consumer, op and path; rename an all-digit column in the query (`AS y2024`). An n8n Postgres node declares it as `"rows": "table"` in its `notes`.
+- A retrieval whose whole result is one value declares `rows: table` instead. Each parameter row emits one record holding the whole table; an empty result is one record with an empty table. Submit refuses a path that indexes a position under the result field, naming the consumer, op and path; rename an all-digit column in the query (`AS y2024`). An n8n Postgres node declares it as `"rows": "table"` in its `notes`.
 - `rows` is accepted only on a `sql` retrieval; submit rejects it elsewhere, naming the op.
 - An `agent` retrieval replays SQL it writes at run time, so its order is the run-time SQL's. An `s3` retrieval reads one key per parameter row, in parameter-row order; a workflow `S3Location` input naming a prefix is expanded to its keys in lexicographic order.
 
@@ -53,16 +53,16 @@ ops:
       params:
         - {label: symbol, node: "Stock"}
 
-  - id: "Instrument lookup"
+  - id: "OHLC table"
     op: DataRetrievalOp
     inputs: [Stock]
     data_spec:
       type: lumid
       mode: sql
-      rows: one
+      rows: table
       template: |-
-        SELECT symbol, sector, industry
-        FROM reference.profile
+        SELECT symbol, close, timestamp
+        FROM demo.fact_ohlc_10m
         WHERE symbol = '{symbol}'
       params:
         - label: symbol

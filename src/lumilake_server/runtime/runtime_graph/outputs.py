@@ -20,7 +20,7 @@ from lumilake_server.ops.llm_ops import (
     LLMVisionOp,
 )
 from lumilake_server.ops.ops import RowShape
-from lumilake_server.utils.retrieval_order import ROWS_TABLE
+from lumilake_server.utils.retrieval_spec import ROWS_TABLE
 
 
 def item_relative_path(path: str) -> str:
@@ -86,9 +86,8 @@ class OpOutput:
             return
         raise ValueError(
             f"{consumer} reads '{declared}' from op '{self.node}', which"
-            " declares its whole result as one value; no position inside it"
-            " is fixed, so it is not an identity. Read the whole value or one"
-            " of its columns instead."
+            " declares its whole result as one value; read the whole value or"
+            " one of its columns instead."
         )
 
     def read(self, declared: str, consumer: str) -> str:
