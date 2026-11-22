@@ -367,12 +367,12 @@ async def test_unseeded_sampling_runs_get_different_keys() -> None:
         entries = await _store(
             graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
         )
-        listed.append(
-            next(e for e in entries if e.address.op == _declared_name(graph, "AskX"))
-        )
+        listed.append(next(e for e in entries if e.address.record is None))
     first, second = listed
-    assert first.realization.production == "req-one/task-AskX"
-    assert second.realization.production == "req-two/task-AskX"
+    assert [e.realization.production for e in listed] == [
+        "req-one/task-AskX",
+        "req-two/task-AskX",
+    ]
     assert first.digest != second.digest
 
 
