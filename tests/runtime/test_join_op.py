@@ -374,19 +374,12 @@ def test_join_output_reads_as_a_rowwise_node_column() -> None:
     assert column.path == "value.items.output.text"
 
 
-# A broadcast join: two rows of unit u1 and one of u2, a summary row per unit
-# and a tag per first-input row.
-_UNITS = [
-    {"unit": "u1", "rid": "a"},
-    {"unit": "u1", "rid": "b"},
-    {"unit": "u2", "rid": "c"},
-]
-_SIZES = [{"unit": "u1", "size": 2}, {"unit": "u2", "size": 1}]
-_JOINED = [
-    {**_UNITS[0], "size": 2, "tag": "A"},
-    {**_UNITS[1], "size": 2, "tag": "B"},
-    {**_UNITS[2], "size": 1, "tag": "C"},
-]
+# A broadcast join: two rows of unit u1 and one of u2, a size per unit and a
+# tag per first-input row.
+_UNITS = [{"unit": "u1", "rid": r} for r in "ab"] + [{"unit": "u2", "rid": "c"}]
+_SZ = {"u1": 2, "u2": 1}
+_SIZES = [{"unit": u, "size": n} for u, n in _SZ.items()]
+_JOINED = [{**u, "size": _SZ[u["unit"]], "tag": u["rid"].upper()} for u in _UNITS]
 _BROADCAST_YAML = """
 name: u
 inputs: {Rows: []}
@@ -419,14 +412,12 @@ def _broadcast(
     extra: list[Any] | None = None,
     name: str = "run",
 ) -> list[Any]:
-    """Run the broadcast join over a tag per first-input row, or a part column
-    whose source rows are ``extra``."""
     if attach == "part":
-        part = "\"def part(row): return row['part']\""
-        ops = "  - {id: Extra, op: DataOp, data: "
-        ops += _quoted(extra or []) + "}\n  - id: Part\n    op: LambdaOp\n"
-        ops += (
-            f"    mode: row\n    inputs: [Extra]\n    fn_name: part\n    code: {part}\n"
+        ops = (
+            "  - {id: Extra, op: DataOp, data: "
+            + _quoted(extra or [])
+            + "}\n  - id: Part\n    op: LambdaOp\n    mode: row\n    inputs: [Extra]\n"
+            "    fn_name: part\n    code: \"def part(row): return row['part']\"\n"
         )
         inputs, line = ", Extra, Part", "    attach: {part: Part}"
     else:
@@ -442,27 +433,22 @@ def _broadcast(
         .replace("__FIELDS__\n", "".join(f"    {line}\n" for line in fields))
     )
     spec = parse_yaml_payload(code)["u"]
-    runtime = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    node = _join_of(runtime)
+    graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    node = _join_of(RuntimeGraphBuilder().build(graph))
     upstream: dict[int, list[dict[str, Any]]] = {}
     if attach == "part":
         _, value_index, *_ = node.data_spec.join.attach[0]
         upstream[value_index] = _cells(*(tags or ["A", "B"]))
     elif attach == "tag":
         upstream[2] = _cells(*(tags or ["A", "B", "C"]))
-    out = _run(tmp_path, node, upstream, name)
-    return [item["output"] for item in out["items"]]
+    return [item["output"] for item in _run(tmp_path, node, upstream, name)["items"]]
 
 
 def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> None:
-    """Several first-input rows may share a by key: each keeps a row of its own,
-    in its order, and a record's fields follow its row_key, not its position."""
+    """Each row of a shared by key keeps its own output row, in its order."""
     assert _broadcast(tmp_path) == _JOINED
-    reordered = [_UNITS[1], _UNITS[0], _UNITS[2]]
-    swap = _broadcast(tmp_path, rows=reordered, tags=["B", "A", "C"], name="swap")
-    assert swap == [_JOINED[1], _JOINED[0], _JOINED[2]]
+    swap = _broadcast(tmp_path, rows=_UNITS[::-1], tags=["C", "B", "A"], name="swap")
+    assert swap == _JOINED[::-1]
 
 
 def test_a_broadcast_join_refuses_a_repeated_or_partial_row_key(tmp_path: Path) -> None:
@@ -473,14 +459,13 @@ def test_a_broadcast_join_refuses_a_repeated_or_partial_row_key(tmp_path: Path) 
 
 
 def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> None:
-    """A further input missing a key leaves that key's rows out under null_fill
-    and marks each of them, and only them, under fail_row."""
-    only_u1 = [_SIZES[0]]
-    missing = {**_UNITS[2], "tag": "C"}
+    """A missing key leaves its rows out under null_fill and marks them under
+    fail_row."""
+    only_u1, missing = [_SIZES[0]], {**_UNITS[2], "tag": "C"}
     assert _broadcast(tmp_path, sizes=only_u1) == [_JOINED[0], _JOINED[1], missing]
     fail = ("row_key: [unit, rid]", "on_missing: fail_row")
     rows = _broadcast(tmp_path, sizes=only_u1, fields=fail, name="fail")
-    assert rows[:2] == [_JOINED[0], _JOINED[1]] and "key" in rows[2]["_fail"]["reason"]
+    assert rows[:2] == _JOINED[:2] and "key" in rows[2]["_fail"]["reason"]
 
 
 def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> None:
@@ -495,14 +480,13 @@ def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> N
 def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     tmp_path: Path,
 ) -> None:
-    """A marked first-input row passes through as its marker whatever its marker
-    is, and an attach over the first input reaches its output row by position."""
-    rows = [{"unit": "u1", "rid": _MARK}, _MARK, _UNITS[1], _UNITS[2]]
+    """A marked first-input row is its own marker; an attach over it lands by
+    position."""
+    rows = [{"unit": "u1", "rid": _MARK}, _MARK, *_UNITS[1:]]
     plain = [{**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
     assert _broadcast(tmp_path, rows=rows, attach="") == [_MARK, _MARK, *plain]
     tagged = _broadcast(tmp_path, rows=rows, tags=["A", "B", "C", "D"])
-    tail = [{**_JOINED[1], "tag": "C"}, {**_JOINED[2], "tag": "D"}]
-    assert tagged == [_MARK, _MARK, *tail]
+    assert tagged[2:] == [{**_JOINED[1], "tag": "C"}, {**_JOINED[2], "tag": "D"}]
     read = [{"unit": "u1", "rid": "a", "text": _MARK}, _UNITS[2]]
     extra = [{"unit": "u1", "rid": "a", "part": "A"}, {"unit": "u2", "rid": "c"}]
     part = _broadcast(tmp_path, rows=read, attach="part", extra=extra, tags=["A", "C"])
