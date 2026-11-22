@@ -56,8 +56,7 @@ def build_join_spec(fields: dict[str, Any], where: str) -> JoinSpec:
 
 
 def join_key_paths(by: Any, op_id: str) -> list[str]:
-    """The join key as its paths, each one dotted field name: a single string
-    is one path, a list of them is a composite key."""
+    """The join key paths: one for a string, several for a composite key."""
     paths = [by] if isinstance(by, str) else by
     if not isinstance(paths, list) or not paths:
         raise ValueError(

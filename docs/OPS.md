@@ -373,10 +373,9 @@ A first-input row carrying a failed record makes its output row that marker, and
 
 A duplicate key and an attach length mismatch fail the job under either policy.
 
-`by` is one dotted field path, or a list of them for a composite key: the key
-is then the list of their values, so two rows that share only the first field
-stay distinct. An empty list or an entry that is not a dotted field name is
-refused at submit, naming the op.
+`by` is one dotted field path, or a list of them for a composite key whose key
+is the list of their values. An empty list or an entry that is not a dotted
+field name is refused at submit, naming the op.
 
 ```yaml
 ops:
