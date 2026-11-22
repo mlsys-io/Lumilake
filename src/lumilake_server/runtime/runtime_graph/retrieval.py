@@ -317,6 +317,8 @@ class _RetrievalBuilder(_LLMBuilder):
             # The whole result is the value, so an empty one is a record
             # holding an empty table rather than a failed retrieval.
             data_spec["require_non_empty_rows"] = False
+        if isinstance(spec.get("key"), dict):
+            data_spec["key"] = spec["key"]
 
         node = self._create_runtime_op(
             name=op_id,

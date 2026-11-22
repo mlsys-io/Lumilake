@@ -41,6 +41,7 @@ from lumilake_server.runtime.flowmesh_client import (
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
+from lumilake_server.runtime.retrieval_key_check import key_problem
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
@@ -50,6 +51,7 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.retrieval_key import retrieval_key_column
 from lumilake_server.utils.retrieval_order import (
     ROWS_KEY,
     ROWS_ONE,
@@ -1393,7 +1395,8 @@ class FlowmeshRuntimeManager:
     ) -> dict[str, Any]:
         """Fetch a task's raw FlowMesh response and archive it as a job
         artifact, redacting the untrusted body before persisting it. Returns
-        the archived response when it is a JSON object, and ``{}`` otherwise."""
+        the archived response when its body is a JSON object, and ``{}``
+        otherwise."""
         try:
             response_data = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1440,6 +1443,25 @@ class FlowmeshRuntimeManager:
             "needs at most one row per parameter row. Make the query select one "
             "row, or drop the rows: one declaration and order the query instead."
         )
+
+    def _assert_retrieval_key(
+        self,
+        runtime_graph: RuntimeGraph,
+        node_ids: list[str],
+        response_data: dict[str, Any],
+    ) -> None:
+        """Fail a keyed retrieval whose result breaks its declared key,
+        naming the op, the key column and both row positions of a repeat."""
+        for node_id in node_ids:
+            node = runtime_graph.nodes.get(node_id)
+            if node is None or node.task_type != "data_retrieval":
+                continue
+            column = retrieval_key_column(node.data_spec)
+            if column is None:
+                continue
+            problem = key_problem(node_id, response_data.get("items"), column)
+            if problem is not None:
+                raise RuntimeError(problem)
 
     async def process_request(
         self,
@@ -1681,6 +1703,9 @@ class FlowmeshRuntimeManager:
                         )
                         self._assert_rows_one(
                             request_info.runtime_graph, node_id, response_data
+                        )
+                        self._assert_retrieval_key(
+                            request_info.runtime_graph, [node_id], response_data
                         )
                         downloaded_tasks.add(tid)
 
