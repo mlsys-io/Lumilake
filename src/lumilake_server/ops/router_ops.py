@@ -5,8 +5,7 @@ YAML construct, not a runtime op: :func:`expand_routers` rewrites it, before
 any graph is built, into one ordinary list-mode ``LambdaOp`` per branch named
 ``<id>.<branch>``, so a consumer lists ``route.test`` in ``inputs`` like any
 other node and reads exactly that branch's rows; the generated function reads
-its already-decoded values (a list-mode ``LambdaOp``'s input contract) and
-walks its ``path``.
+its already-decoded values and walks its ``path``.
 """
 
 import re

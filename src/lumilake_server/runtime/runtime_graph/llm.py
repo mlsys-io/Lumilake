@@ -1235,8 +1235,8 @@ class _LLMBuilder(_EmbeddingBuilder):
                 if can_evaluate:
                     label = f"lambda_{op.id}"
                     # List-mode LambdaOps raise above, so this call is row-mode.
-                    # A row step decodes its values, whatever supplies them, so
-                    # these literals are decoded here too.
+                    # A row step decodes its values, so these literals are
+                    # decoded here to match.
                     row_fn = cast(RowLambdaFn, op.fn)
                     row = tuple(lambda_task_helpers.decode(v) for v in literal_args)
                     columns[label] = Column(

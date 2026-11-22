@@ -225,8 +225,8 @@ def test_a_router_branch_clears_markers_only_where_its_own_expansion_set_it() ->
 def test_a_row_or_aligned_lambda_keeps_a_marked_row_in_place(
     carrying: dict[str, Any], key: str, tmp_path: Path
 ) -> None:
-    # Each column arrives decoded, so a parsed record reaches the function as
-    # its object and only a marker the function returns stays a marker.
+    # A parsed record arrives as its object; only a marker the function
+    # returns stays a marker.
     items = _run(
         [_parse(format="json"), carrying],
         {"Answer": ["no idea", '{"a": 1}', "bad"]},

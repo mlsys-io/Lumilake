@@ -232,7 +232,7 @@ def _serialized_table(value: Any) -> dict[str, Any] | None:
 
 
 def decode(value: Any) -> Any:
-    """Decode a row or group call's column value: JSON parses, tables become rows."""
+    """Decode a value before the function sees it: JSON parses, tables become rows."""
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
