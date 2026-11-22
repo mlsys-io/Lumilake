@@ -302,19 +302,6 @@ ops:
           return sorted(rows, key=lambda r: -r[0]["score"])[:3]
 ```
 
-```yaml
-ops:
-  - id: "TopThree"
-    op: LambdaOp
-    inputs: [Scores]
-    mode: reduce
-    by: patient_id
-    fn_name: top_three
-    code: |
-      def top_three(rows):
-          return sorted(rows, key=lambda r: -r[0]["score"])[:3]
-```
-
 Both modes decode each column value once (JSON text is parsed, a serialized table becomes its row dicts) and always run as a standalone `python` task, so they follow the list-mode whole-result rules for slices, template stops and direct reads.
 
 `mode: aligned` is the same calling convention as `list` (whole columns in, a list out, read at `value.items.output`), with one added guarantee: the function returns exactly one value per input row, and the standalone task raises if the returned list's length does not match the row count. Because its output is row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run value, so its dependents keep one item per row and can be split across slices. In both `row` and `aligned` mode, inputs with unequal multi-row counts are rejected at submit: every multi-row input must carry the same number of rows.
@@ -346,8 +333,6 @@ For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)` serializes the
 
 `RouterOp` partitions one source op's rows into named branches, one ordinary node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The first rule that matches wins; `match` is `contains`, `equals` or `empty`, optional `path` selects the field tested, and `default_branch` keeps unmatched rows. `error_branch: true` adds an `error` branch that receives the [failed records](#failed-records); every other branch skips them. Each branch is a list-mode `LambdaOp`, so a `path` walks its decoded row.
 
-`match: empty` takes no `value` and matches `null`, `""`, `[]` or `{}`.
-
 ```yaml
 ops:
   - {id: route, op: RouterOp, inputs: [norm], default_branch: patient,
@@ -372,10 +357,6 @@ A first-input row carrying a failed record makes its output row that marker, and
 - `fail_row` marks the rows lacking a key instead of failing the job.
 
 A duplicate key and an attach length mismatch fail the job under either policy.
-
-`by` is one dotted field path, or a list of them for a composite key whose key
-is the list of their values. An empty list or an entry that is not a dotted
-field name is refused at submit, naming the op.
 
 `row_key` (one dotted path or a list, naming every `by` path) lets the first
 input hold several rows per `by` key, each unique by its `row_key` value. Each
