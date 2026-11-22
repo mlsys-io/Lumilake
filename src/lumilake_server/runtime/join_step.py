@@ -67,11 +67,11 @@ def _rows(column, where):
 
 
 def _key(row, where):
-    value = row
-    for part in _BY:
-        if not isinstance(value, dict) or part not in value:
-            raise ValueError("%s: row has no key field %r" % (where, part))
-        value = value[part]
+    """A row's join key, from its dotted key path; a row without the field
+    fails the job."""
+    value = _value(row, ".".join(_BY))
+    if value is None:
+        raise ValueError("%s: row has no key field %r" % (where, ".".join(_BY)))
     return _encoded(value, where)
 
 
@@ -80,15 +80,19 @@ def _encoded(value, where):
         return json.dumps(value, sort_keys=True)
     except TypeError:
         raise ValueError("%s: key %r is not a JSON value" % (where, value))
+
+
+def _value(row, path):
+    """The value a dotted field path names in one row, or ``None`` when the
+    row lacks a field of the path or the path reaches a marker."""
     value = row
-    for part in _BY:
+    for part in path.split("."):
         if not isinstance(value, dict) or part not in value:
-            raise ValueError("%s: row has no key field %r" % (where, part))
+            return None
         value = value[part]
-    try:
-        return json.dumps(value, sort_keys=True)
-    except TypeError:
-        raise ValueError("%s: key %r is not a JSON value" % (where, value))
+        if failure_of(value) is not None:
+            return None
+    return value
 
 
 def _failed(reason):
@@ -98,17 +102,12 @@ def _failed(reason):
 
 def _key_of(row, where):
     """The row's key, or ``None`` when a failed record leaves it without one:
-    the row is itself a marker, or its key path reaches one. A row whose key
-    reads keeps that key even when another of its fields is a marker."""
-    if carried_marker((row,)) is None:
-        return _key(row, where)
-    value = row
-    for part in _BY:
-        if not isinstance(value, dict) or part not in value:
-            return None
-        value = value[part]
-        if failure_of(value) is not None:
-            return None
+    the row is itself a marker, or its key path reaches a marker or a field the
+    row lacks. A row whose key reads keeps that key even when another of its
+    fields is a marker."""
+    value = _value(row, ".".join(_BY))
+    if value is None:
+        return None
     return _encoded(value, where)
 
 
