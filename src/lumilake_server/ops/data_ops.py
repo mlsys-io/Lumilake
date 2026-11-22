@@ -67,7 +67,7 @@ class DataRetrievalOp(FunctionalOp):
     ) -> "DataRetrievalOp":
         inputs = [other_ops[op_id] for op_id in data.get("_inputs", [])]
         data_spec = data["data_spec"]
-        problem = retrieval_key_problem(data_spec, data["_id"])
+        problem = retrieval_key_problem(data_spec)
         if problem is not None:
             raise ValueError(f"DataRetrievalOp '{data['_id']}' {problem}")
         return cls(data_spec=data_spec, inputs=inputs)

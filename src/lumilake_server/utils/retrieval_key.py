@@ -15,7 +15,7 @@ KEY_FIELD = "key"
 COLUMN_FIELD = "column"
 
 
-def retrieval_key_problem(data_spec: dict[str, Any], op_id: str) -> str | None:
+def retrieval_key_problem(data_spec: dict[str, Any]) -> str | None:
     """Describe the first problem with a declared ``key``, or ``None`` when it
     is absent or well-formed."""
     key = data_spec.get(KEY_FIELD)
@@ -67,7 +67,7 @@ def key_problem(op_id: str, items: Any, column: str) -> str | None:
                     f"DataRetrievalOp '{op_id}' declares key {column!r}, but"
                     f" {where} has a null key; a record key is never null"
                 )
-            key = _key_text(op_id, column, value)
+            key = _key_text(value)
             if key in seen:
                 first_row, first_item = seen[key]
                 return (
@@ -80,19 +80,13 @@ def key_problem(op_id: str, items: Any, column: str) -> str | None:
     return None
 
 
-def _key_text(op_id: str, column: str, value: Any) -> str:
+def _key_text(value: Any) -> str:
     """A key value as the text a repeat is reported and compared by: a string
     key is its own text, and any other JSON value is written canonically so
     ``1`` and ``"1"`` stay distinct keys."""
     if isinstance(value, str):
         return value
-    try:
-        return json.dumps(value, sort_keys=True, ensure_ascii=False)
-    except TypeError:
-        raise ValueError(
-            f"DataRetrievalOp '{op_id}' declares key {column!r}, but the value"
-            f" {value!r} is not a JSON value"
-        ) from None
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
 def _item_index(item: Any, position: int) -> Any:
