@@ -1,5 +1,6 @@
 """YAML emitters for the data-plane ops."""
 
+from collections.abc import Mapping
 from typing import Any
 
 from lumilake_server.utils.retrieval_key import retrieval_key_problem
@@ -32,7 +33,7 @@ def emit_data_retrieval_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
 def _resolve_data_spec(
     data_spec: dict[str, Any],
     entry_id: str,
-    user_id_to_internal: dict[str, str],
+    user_id_to_internal: Mapping[str, str],
     *,
     op_label: str = "DataRetrievalOp",
     field_label: str = "data_spec",

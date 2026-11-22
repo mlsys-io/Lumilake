@@ -1,5 +1,6 @@
 """YAML emitters for the LLM ops."""
 
+from collections.abc import Mapping
 from typing import Any
 
 from lumilake_server.parser.common import make_id
@@ -193,7 +194,7 @@ def _emit_llm_like_op(
 def _emit_rowwise_messages(
     entry: OpEntry,
     op_dict: dict[str, Any],
-    user_id_to_internal: dict[str, str],
+    user_id_to_internal: Mapping[str, str],
     op_kind: str,
 ) -> None:
     """Fill in the ``rowwise_messages`` column, which replaces the rendered
@@ -297,7 +298,7 @@ def _queue_inline_message_op(
 
 
 def _resolve_table_nodes(
-    table: Any, user_id_to_internal: dict[str, str]
+    table: Any, user_id_to_internal: Mapping[str, str]
 ) -> list[dict[str, Any]] | None:
     """Resolve ``node:`` user-ids inside aggregate/rowwise table specs.
 
