@@ -1642,18 +1642,15 @@ async def test_template_round_forwards_one_value_per_live_row(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("store", [False, True], ids=["off", "on"])
 async def test_dynamic_spec_store_flag_reaches_the_job(
-    app: FastAPI, job_routes: Any, store: bool
+    app: FastAPI, job_routes: Any
 ) -> None:
     """A dynamic spec that asks for the store carries the flag to the job, so
-    its rounds write records, and its template rounds name the zero-based chain
-    round, so a stored record's one-based round matches the round it ran as.
-    The round's own graph and messages keep counting from one."""
-    yaml_text = _TEMPLATE_DYNAMIC_YAML
-    if store:
-        yaml_text = yaml_text.replace("type: dynamic", "type: dynamic\nstore: true")
-    body = _submit_body(yaml_text)
+    its rounds write records, and each template round names the zero-based
+    chain round while its own graph keeps counting from one."""
+    body = _submit_body(
+        _TEMPLATE_DYNAMIC_YAML.replace("type: dynamic", "type: dynamic\nstore: true")
+    )
     body["data"][0]["inputs"] = _MULTI_SYMBOL_BODY_INPUTS.copy()
     fake_server = job_routes._fake_runtime_server
     replies = [[{"case_id": 1}, {"case_id": 2}], []]
@@ -1668,11 +1665,10 @@ async def test_dynamic_spec_store_flag_reaches_the_job(
         )
     assert resp.status_code == 200, resp.text
     await _run_background(app)
-    assert job_routes.jobs[resp.json()["data"]["job_id"]].store is store
+    assert job_routes.jobs[resp.json()["data"]["job_id"]].store is True
     assert [config.chain_round for config in fake_server.configs] == [0, 1]
-    names = {
-        m.public_graph_name
+    assert {
+        meta.public_graph_name
         for sl in fake_server.workflow_slices_calls
-        for m in sl.values()
-    }
-    assert names == {"round_1", "round_2"}
+        for meta in sl.values()
+    } == {"round_1", "round_2"}

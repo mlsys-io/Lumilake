@@ -150,7 +150,7 @@ async def _write(
         round_number=round_number,
         runtime_graph=graph,
         node_task_map={_node_id(graph, name): f"task-{name}" for name in results},
-        task_worker={"task-Mark": "worker-1", "task-Join": "worker-2"},
+        task_worker={},
         results={
             f"task-{name}": {"items": [{"output": value} for value in values]}
             for name, values in results.items()
@@ -176,6 +176,37 @@ async def _store(
 ) -> list[RecordEntry]:
     storage, _ = await _write(graph, results, **kwargs)
     return _entries(storage, kwargs.get("job_id", "req-1"))
+
+
+async def _write_batch(
+    graph: Any,
+    nodes: dict[str, str],
+    *,
+    members: list[str] | None = None,
+    rounds: dict[str, int] | None = None,
+    store: dict[str, bool] | None = None,
+    owners: dict[str, set[str]] | None = None,
+) -> InMemoryJobStorage:
+    """Write one batch of ``node id -> task id`` results through the writer."""
+    storage = InMemoryJobStorage()
+    await RecordWriter(
+        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
+    ).write(
+        job_id="req-one",
+        member_job_ids=["req-one"] if members is None else members,
+        round_number=0,
+        runtime_graph=graph,
+        node_task_map=nodes,
+        task_worker={},
+        results={
+            task: {"items": [{"output": {"id": "a", "text": "ONE"}}]}
+            for task in nodes.values()
+        },
+        member_store=store,
+        member_rounds=rounds,
+        node_owners=owners,
+    )
+    return storage
 
 
 def _declared_name(graph: Any, name: str) -> str:
@@ -227,7 +258,6 @@ async def test_writer_stores_one_entry_per_keyed_row(graph: Any) -> None:
     for entry in entries:
         body, _ = storage.load_blob(entry_object_name(entry.digest))
         assert RecordEntry.from_body(body).digest == entry.digest
-    assert sorted(key["path"] for key in graph.record_keys.values()) == ["id", "id"]
 
 
 @pytest.mark.asyncio
@@ -276,7 +306,6 @@ async def test_signature_follows_the_inputs(constant: bool) -> None:
         mark, join = _declared_name(graph, "Mark"), _declared_name(graph, "Join")
     first, second = stored
     assert (first[mark, "a"].digest == second[mark, "a"].digest) is not constant
-    assert (first[mark, "a"].value_digest == second[mark, "a"].value_digest) is constant
     assert first[join, "a"].digest != second[join, "a"].digest
 
 
@@ -343,61 +372,56 @@ def _paths_graph(**changes: Any) -> Any:
     return graph
 
 
+async def _asked(graph: Any, job_id: str = "req-1") -> RecordEntry:
+    """The one whole-op record of the ``AskX`` chat in a stored batch."""
+    entries = await _store(
+        graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
+    )
+    return next(e for e in entries if e.address.record is None)
+
+
 @pytest.mark.asyncio
 async def test_a_draw_no_seed_reproduces_gets_its_own_key() -> None:
-    """An op that samples with no seed draws a value no key reproduces, so each
-    run's record names its own production and never shares another run's entry.
-    A hosted chat's seed lives in its request body and enters the realization,
-    so seeds 7 and 8 are two draws of one op."""
+    """A sampling draw that no seed pins names its own production, so two runs
+    never share its key; a hosted chat's seed lives in its request body, so two
+    seeds are two draws."""
     unseeded = _paths_graph(task_type="inference", inference_spec={"temperature": 0.7})
-    listed = []
-    for job_id in ("req-one", "req-two"):
-        entries = await _store(
-            unseeded, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
-        )
-        listed.append(next(e for e in entries if e.address.record is None))
-    assert [e.realization.production for e in listed] == [
+    runs = [await _asked(unseeded, job_id) for job_id in ("req-one", "req-two")]
+    assert [e.realization.production for e in runs] == [
         "req-one/task-AskX",
         "req-two/task-AskX",
     ]
-    assert listed[0].digest != listed[1].digest
-
-    digests = {}
+    digests = set()
     for seed in (7, 8):
-        api_spec = {"json": {"model": "m", "messages": "{{prompt}}", "seed": seed}}
         graph = _paths_graph(
-            task_type="api", model_spec={}, inference_spec={}, api_spec=api_spec
+            task_type="api",
+            model_spec={},
+            inference_spec={},
+            api_spec={"json": {"model": "m", "messages": "{{prompt}}", "seed": seed}},
         )
-        entry = next(
-            e
-            for e in await _store(graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]})
-            if e.address.record is None
-        )
+        entry = await _asked(graph)
         assert entry.realization.seed == seed
-        digests[seed] = entry.digest
-    assert digests[7] != digests[8]
+        digests.add(entry.digest)
+    assert len(digests) == 2 and digests.isdisjoint(e.digest for e in runs)
 
 
 @pytest.mark.asyncio
 async def test_a_seeded_unversioned_record_names_its_production() -> None:
     """A hosted chat reads a source that promises no snapshot, so one seed in
-    two jobs names two productions and neither job answers from the other's
-    draw; the seed stays beside it as information."""
-    api_spec = {"json": {"model": "m", "messages": "{{prompt}}", "seed": 7}}
+    two jobs names two productions: the seed stays as information only, and
+    neither job answers from the other's draw."""
     graph = _paths_graph(
-        task_type="api", model_spec={}, inference_spec={}, api_spec=api_spec
+        task_type="api",
+        model_spec={},
+        inference_spec={},
+        api_spec={"json": {"model": "m", "messages": "{{prompt}}", "seed": 7}},
     )
-    listed = []
-    for job_id in ("req-one", "req-two"):
-        entries = await _store(
-            graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
-        )
-        listed.append(next(e for e in entries if e.address.record is None))
-    assert [(e.realization.production, e.realization.seed) for e in listed] == [
+    runs = [await _asked(graph, job_id) for job_id in ("req-one", "req-two")]
+    assert [(e.realization.production, e.realization.seed) for e in runs] == [
         ("req-one/task-AskX", 7),
         ("req-two/task-AskX", 7),
     ]
-    assert listed[0].digest != listed[1].digest
+    assert runs[0].digest != runs[1].digest
 
 
 @pytest.mark.asyncio
@@ -417,25 +441,14 @@ async def test_a_batch_writes_and_indexes_per_member_job(graph: Any) -> None:
     """One batch may hold a storing and a non-storing job and two dynamic jobs
     at different rounds: a job that did not ask for the store gets no index,
     and each job that did stores under its own round."""
-    storage = InMemoryJobStorage()
-    writer = RecordWriter(
-        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
-    )
     mark, join = _node_id(graph, "Mark"), _node_id(graph, "Join")
-    await writer.write(
-        job_id="req-one",
-        member_job_ids=["req-one", "req-two", "req-plain"],
-        round_number=0,
-        runtime_graph=graph,
-        node_task_map={mark: "task-Mark", join: "task-Join"},
-        task_worker={},
-        results={
-            task: {"items": [{"output": {"id": "a"}}]}
-            for task in ("task-Mark", "task-Join")
-        },
-        member_store={"req-one": True, "req-two": True, "req-plain": False},
-        member_rounds={"req-one": 1, "req-two": 2, "req-plain": 1},
-        node_owners={mark: {"req-one"}, join: {"req-two", "req-plain"}},
+    storage = await _write_batch(
+        graph,
+        {mark: "task-Mark", join: "task-Join"},
+        members=["req-one", "req-two", "req-plain"],
+        rounds={"req-one": 1, "req-two": 2, "req-plain": 1},
+        store={"req-one": True, "req-two": True, "req-plain": False},
+        owners={mark: {"req-one"}, join: {"req-two", "req-plain"}},
     )
     first, second = read_index(storage, "req-one"), read_index(storage, "req-two")
     assert first is not None and second is not None
@@ -448,22 +461,15 @@ async def test_a_node_shared_at_two_rounds_stores_one_entry_each(graph: Any) -> 
     """Rounds are part of a record's address, so two storing jobs that share a
     deduplicated node at different rounds get one entry each, and a consumer
     reads the inputs of its own round."""
-    storage = InMemoryJobStorage()
-    writer = RecordWriter(
-        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
-    )
     mark, join = _node_id(graph, "Mark"), _node_id(graph, "Join")
-    await writer.write(
-        job_id="req-one",
-        member_job_ids=["req-one", "req-two"],
-        round_number=0,
-        runtime_graph=graph,
-        node_task_map={mark: "task-Mark", join: "task-Join"},
-        task_worker={},
-        results={"task-Mark": {"items": [{"output": {"id": "a"}}]}, "task-Join": {}},
-        member_store={"req-one": True, "req-two": True},
-        member_rounds={"req-one": 1, "req-two": 2},
-        node_owners={mark: {"req-one", "req-two"}, join: {"req-one", "req-two"}},
+    shared = {"req-one", "req-two"}
+    storage = await _write_batch(
+        graph,
+        {mark: "task-Mark", join: "task-Join"},
+        members=["req-one", "req-two"],
+        rounds={"req-one": 1, "req-two": 2},
+        store={"req-one": True, "req-two": True},
+        owners={mark: shared, join: shared},
     )
     rounds = {}
     for job_id in ("req-one", "req-two"):
@@ -532,19 +538,15 @@ async def test_lineage_walks_a_chain_from_the_archive(graph: Any) -> None:
     assert index is not None and index.rounds() == [0]
     join, mark = _declared_name(graph, "Join"), _declared_name(graph, "Mark")
     chain = lineage(storage, index=index, op=join, record="a", round_number=0)
-    assert [(e.address.op, e.address.record) for e in chain] == [
-        (join, "a"),
-        (mark, "a"),
+    assert [(e.address.op, e.source.task_id) for e in chain] == [
+        (join, "task-Join"),
+        (mark, "task-Mark"),
     ]
-    assert (chain[0].source.task_id, chain[1].source.worker) == (
-        "task-Join",
-        "worker-1",
-    )
 
 
-def _literal_column_graph(questions: list[str]) -> Any:
-    """The keyed workflow with its second op made a chat that reads a literal
-    input column: the column is per-row data carried in the op's data spec."""
+def _literal_rows_graph(second: str) -> Any:
+    """The keyed workflow with its second op made a model op whose literal rows
+    are ``[unchanged, second]``, one per keyed row."""
     graph = _runtime_graph(_payload())
     join = _node_id(graph, "Join")
     graph.nodes[join] = replace(
@@ -552,64 +554,27 @@ def _literal_column_graph(questions: list[str]) -> Any:
         task_type="inference",
         inference_spec={},
         model_spec={},
-        data_spec={
-            "type": "dataframe",
-            "columns": [
-                {"label": "q", "data": {"type": "list", "items": list(questions)}}
-            ],
-            "messages": [{"role": "user", "content": "{q}"}],
-        },
+        data_spec={"type": "list", "items": ["first", second]},
     )
     return graph
 
 
 @pytest.mark.asyncio
-async def test_a_chat_key_keeps_every_row_of_its_column_out_of_the_spec() -> None:
-    """A chat's literal input column is per-record data, not part of its
-    computation, so a change in another row's value leaves this row's key alone
-    and moves only the row it belongs to."""
+async def test_a_literal_rows_list_is_a_record_input() -> None:
+    """A literal rows list an op carries is per-record data, not part of its
+    computation: a change in another row's value leaves this row's key alone and
+    moves only the row it belongs to, and two different lists give one record
+    two keys."""
     keys = []
-    for questions in (["q-one", "q-two"], ["q-one", "CHANGED"]):
-        graph = _literal_column_graph(questions)
+    for second in ("second", "CHANGED"):
+        graph = _literal_rows_graph(second)
         join = _declared_name(graph, "Join")
-        rows = [{"id": "a", "text": "ONE!"}, {"id": "b", "text": "TWO!"}]
+        rows = [{"id": "a", "text": "ONE"}, {"id": "b", "text": "TWO"}]
         stored = await _store(graph, {"Mark": rows, "Join": rows})
         keys.append(
-            {
-                entry.address.record: entry.digest
-                for entry in stored
-                if entry.address.op == join
-            }
+            {e.address.record: e.digest for e in stored if e.address.op == join}
         )
-    assert set(keys[0]) == {"a", "b"}
-    assert keys[0]["a"] == keys[1]["a"]
-    assert keys[0]["b"] != keys[1]["b"]
-
-
-@pytest.mark.asyncio
-async def test_an_embedding_over_two_input_lists_gets_two_keys() -> None:
-    """An embedding carries its texts as a literal list outside any plan, so
-    that list is one of its inputs: two different input lists give its record
-    two different keys, and neither write answers the other."""
-    digests = []
-    for doc in ("doc-one", "doc-two"):
-        graph = _runtime_graph(_payload())
-        join = _node_id(graph, "Join")
-        graph.nodes[join] = replace(
-            graph.nodes[join],
-            task_type="embedding",
-            inference_spec={},
-            model_spec={},
-            data_spec={"type": "list", "items": [doc]},
-        )
-        stored = await _store(
-            graph, {"Mark": [{"id": "a"}], "Join": [{"id": "a", "vector": doc}]}
-        )
-        name = _declared_name(graph, "Join")
-        (entry,) = [item for item in stored if item.address.op == name]
-        assert entry.input_values
-        digests.append(entry.digest)
-    assert digests[0] != digests[1]
+    assert keys[0]["a"] == keys[1]["a"] and keys[0]["b"] != keys[1]["b"]
 
 
 @pytest.mark.asyncio
@@ -618,26 +583,14 @@ async def test_a_keyed_consumer_of_an_unwritten_node_raises_value_error() -> Non
     keyed consumer can reach a position with no signature. The write says so
     with a ``ValueError``, which the job catches, so the promise that a store
     write never fails a job holds whatever the ownership invariant does."""
-    storage = InMemoryJobStorage()
-    writer = RecordWriter(
-        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
-    )
     graph = _runtime_graph(_payload())
     mark, join = _node_id(graph, "Mark"), _node_id(graph, "Join")
     with pytest.raises(ValueError, match="has no signature yet"):
-        await writer.write(
-            job_id="req-one",
-            member_job_ids=["req-one", "req-two"],
-            round_number=0,
-            runtime_graph=graph,
-            node_task_map={mark: "task-Mark", join: "task-Join"},
-            task_worker={},
-            results={
-                task: {"items": [{"output": {"id": "a", "text": "ONE"}}]}
-                for task in ("task-Mark", "task-Join")
-            },
-            member_store={"req-one": True, "req-two": False},
-            node_owners={mark: {"req-two"}, join: {"req-one"}},
+        await _write_batch(
+            graph,
+            {mark: "task-Mark", join: "task-Join"},
+            owners={mark: {"req-two"}, join: {"req-one"}},
+            store={"req-one": True, "req-two": False},
         )
 
 

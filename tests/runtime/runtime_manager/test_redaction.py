@@ -477,20 +477,22 @@ async def test_archive_task_response_returns_the_response_not_its_key(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The record writer reads what this returns, so it must hand back the
-    task's response rather than the key its archive copy went to."""
+    """The record writer reads what this returns, so it hands back the task's
+    response, and that response is what the archived copy holds."""
     payload = {"task_type": "python", "items": [{"output": "a"}]}
     monkeypatch.setattr(
         "lumilake_server.runtime.runtime_manager.flowmesh_for_context",
         lambda: _FakeFlowMeshClient(payload),
     )
+    saved: dict[str, Any] = {}
 
     async def _fake_save_json_artifact(
         _self: FlowmeshRuntimeManager,
         _request_info: Any,
         _filename: str,
-        _data: Any,
+        data: Any,
     ) -> str:
+        saved["data"] = data
         return "memory://archived.json"
 
     monkeypatch.setattr(
@@ -507,7 +509,7 @@ async def test_archive_task_response_returns_the_response_not_its_key(
         request_info, "task-1", "node-a"
     )
 
-    assert response == payload
+    assert response == saved["data"] == payload
 
 
 def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
