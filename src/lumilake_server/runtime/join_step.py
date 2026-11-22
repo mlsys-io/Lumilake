@@ -68,14 +68,17 @@ def _rows(column, where):
 
 def _key(row, where):
     """A row's join key: one path's value, or a composite key's value list."""
-    values = []
-    for path in _BY:
-        value = _value(row, path)
-        if value is None:
-            raise ValueError("%s: row has no key field %r" % (where, path))
-        values.append(value)
+    values = [_live_value(row, path, where) for path in _BY]
     key = values[0] if len(values) == 1 else values
     return _encoded(key, where)
+
+
+def _live_value(row, path, where):
+    """One path's value on a live row; a row without a key field fails the job."""
+    value = _value(row, path)
+    if value is None:
+        raise ValueError("%s: row has no key field %r" % (where, path))
+    return value
 
 
 def _encoded(value, where):

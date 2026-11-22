@@ -6,9 +6,9 @@ object or array text arrives as the object or list it holds, and a serialized
 table as its rows. The function is written as a lambda, or as module source
 that defines a one-parameter ``def`` named by ``fn_name``, optionally after
 imports, constants and helpers. It sees a fixed namespace: a small set of
-builtins plus ``json``, ``re``, ``math``, ``np`` and ``pd``
-(``np``/``pd`` imported only when the code names them), and it may ``import``
-any module the container image provides.
+builtins plus ``json``, ``re``, ``math``, ``np`` and ``pd`` (``np``/``pd``
+imported only when the code names them), and it may ``import`` any module the
+container image provides.
 
 The namespace fixes what names resolve; it is not a security boundary, because
 the object graph reaches every class without a single builtin. Caller-supplied
