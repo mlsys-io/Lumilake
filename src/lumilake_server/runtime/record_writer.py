@@ -115,8 +115,10 @@ class NodeRecords:
         if key in self.digests:
             digest, value = self.digests[key]
             return digest, value or ""
-        value = self.values[position]
-        return digest_of({"position": position, "value": value}), digest_of(value)
+        raise KeyError(
+            f"record {key!r} at position {position} has no signature yet: every"
+            " keyed node is written before its consumers"
+        )
 
 
 class RecordPlan:
@@ -181,7 +183,9 @@ class RecordWriter:
             return 0
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order)
-        records = _collect_node_records(runtime_graph, plans, node_task_map, results)
+        records = _collect_node_records(
+            runtime_graph, plans, order, node_task_map, results
+        )
         store = {} if member_store is None else member_store
         rounds_of = {} if member_rounds is None else member_rounds
         owners_of = {} if node_owners is None else node_owners
@@ -189,12 +193,12 @@ class RecordWriter:
         written: list[tuple[RecordEntry, list[tuple[str, int]]]] = []
         for node_id in order:
             node_records = records.get(node_id)
-            plan = plans[node_id]
             if node_records is None:
                 continue
             task_id = node_task_map.get(node_id)
             if task_id is None:
                 continue
+            plan = plans[node_id]
             storing = _storing_owners(
                 node_id, member_job_ids, store=store, owners=owners_of
             )
@@ -248,9 +252,11 @@ class RecordWriter:
         """Write an entry unless its object already exists.
 
         Objects are content-addressed by the decisions that produce the value,
-        so an object already there is the same record: a job that computes it
-        again adds itself to the entry's sources instead of replacing the
-        record of where it was first produced."""
+        so an object already there is the same record, and the first job to
+        produce it keeps the stored source. Written once is best effort: the
+        read-then-write is not atomic, so two writers of one digest can both
+        write and the last wins. Both bodies carry the same digest, so a reader
+        stays correct either way."""
         if read_entry(self._storage, entry.digest) is not None:
             return
         self._storage.save_blob(
@@ -599,6 +605,7 @@ def _input_values(op: RuntimeOp, node: str) -> Any:
 def _collect_node_records(
     runtime_graph: RuntimeGraph,
     plans: Mapping[str, RecordPlan],
+    order: Sequence[str],
     node_task_map: Mapping[str, str],
     results: Mapping[str, Any],
 ) -> dict[str, NodeRecords]:
@@ -618,7 +625,31 @@ def _collect_node_records(
             values=values,
             keys=keys,
         )
+    _inherit_marker_keys(order, plans, runtime_graph, records)
     return records
+
+
+def _inherit_marker_keys(
+    order: Sequence[str],
+    plans: Mapping[str, RecordPlan],
+    runtime_graph: RuntimeGraph,
+    records: dict[str, NodeRecords],
+) -> None:
+    """A failed record keeps its address: a marker carries no key of its own,
+    so a keyed node's marker takes the key of the record it replaces, at the
+    same position of the node's one keyed input."""
+    for node_id in order:
+        node_records = records.get(node_id)
+        if node_records is None or node_records.keys is None:
+            continue
+        source = _keyed_input(runtime_graph, node_id, plans)
+        inherited = None if source is None else records.get(source)
+        if inherited is None or inherited.keys is None:
+            continue
+        for position, value in enumerate(node_records.values):
+            if node_records.keys[position] is None and is_marker(value):
+                if position < len(inherited.keys):
+                    node_records.keys[position] = inherited.keys[position]
 
 
 def _record_values(response: Any) -> list[Any]:

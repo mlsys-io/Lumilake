@@ -146,6 +146,12 @@ def declared_seed(op: RuntimeOp) -> int | None:
     return None
 
 
+def has_declared_seed(op: RuntimeOp) -> bool:
+    """Whether the op names a seed; a sampling op that does not gets no
+    reproducible realization."""
+    return declared_seed(op) is not None
+
+
 def samples(op: RuntimeOp) -> bool:
     """Whether the op draws tokens rather than decoding deterministically."""
     if op.task_type not in _SAMPLING_TASKS:
@@ -162,8 +168,9 @@ def samples(op: RuntimeOp) -> bool:
 
 
 def is_marker(value: Any) -> bool:
-    """Whether a value is a failed record's marker rather than a result."""
-    return isinstance(value, dict) and _MARKER_KEY in value
+    """Whether a value is a failed record's marker rather than a result: the
+    object whose only key is ``_fail``, as the parse-op branch defines it."""
+    return isinstance(value, dict) and list(value) == [_MARKER_KEY]
 
 
 def marker_reason(value: Any) -> Any:
@@ -242,9 +249,6 @@ class RecordEntry(BaseModel):
 
     def body(self) -> bytes:
         return canonical_json(self.model_dump(mode="json")).encode("utf-8")
-
-    def for_job(self, job_id: str) -> bool:
-        return job_id == self.source.job or job_id in self.source.member_jobs
 
     @classmethod
     def from_body(cls, body: bytes) -> Self:
